@@ -12,3 +12,7 @@ export {
   initProject,
   type BuiltinCommandMeta,
 } from "./commands.ts";
+export {
+  PermissionChecker,
+  type PermissionResolver,
+} from "./permissions.ts";

@@ -1,5 +1,18 @@
 import type { ZodType } from "zod";
 import type { UIEvent } from "./events.ts";
+import type { Mode } from "./types.ts";
+
+/** Result of a permission check for a side-effecting tool call. */
+export interface PermissionResult {
+  allowed: boolean;
+  reason?: string;
+}
+
+/** Evaluates whether a side-effecting tool call may proceed. */
+export type CheckPermission = (
+  toolName: string,
+  input: unknown,
+) => Promise<PermissionResult> | PermissionResult;
 
 /** Runtime context handed to a tool's `execute`. */
 export interface ToolContext {
@@ -36,5 +49,7 @@ export interface ToolDefinition<Input = any> {
   inputSchema: ZodType<Input>;
   readOnly: boolean;
   concurrencySafe?: boolean;
+  /** If set, the tool is only available in these modes (default: all). */
+  modes?: Mode[];
   execute: (input: Input, ctx: ToolContext) => Promise<ToolResult>;
 }

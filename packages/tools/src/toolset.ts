@@ -1,9 +1,17 @@
 import { tool, type Tool } from "ai";
-import type { Mode, ToolContext, ToolDefinition } from "@vibe/shared";
+import type {
+  CheckPermission,
+  Mode,
+  ToolContext,
+  ToolDefinition,
+} from "@vibe/shared";
 import { builtinTools } from "./builtins/index.ts";
 
 /** The session-scoped parts of a ToolContext supplied by the engine. */
-export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit">;
+export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & {
+  /** Optional gate for side-effecting tools (allow/deny/ask). */
+  checkPermission?: CheckPermission;
+};
 
 /**
  * Holds tool definitions and produces the AI-SDK tool map for a given mode.
@@ -29,10 +37,13 @@ export class Toolset {
     return this.#tools.get(name);
   }
 
-  /** Tools permitted in `mode`. Plan mode -> read-only only. */
+  /** Tools permitted in `mode`. Plan mode -> read-only only; respects `modes`. */
   forMode(mode: Mode): ToolDefinition[] {
-    const all = this.all();
-    return mode === "plan" ? all.filter((t) => t.readOnly) : all;
+    return this.all().filter((t) => {
+      if (t.modes && !t.modes.includes(mode)) return false;
+      if (mode === "plan" && !t.readOnly) return false;
+      return true;
+    });
   }
 
   /** Names permitted in `mode` (for AI-SDK `activeTools`). */
@@ -64,6 +75,21 @@ export function toAISDKTool(
         toolCallId: options.toolCallId,
         abortSignal: options.abortSignal ?? new AbortController().signal,
       };
+
+      // Gate side-effecting tools through the permission layer.
+      if (!def.readOnly && base.checkPermission) {
+        const decision = await base.checkPermission(def.name, input);
+        if (!decision.allowed) {
+          const reason = decision.reason ?? "denied";
+          base.emit({
+            type: "notice",
+            level: "warn",
+            message: `Blocked ${def.name}: ${reason}`,
+          });
+          return `ERROR: tool "${def.name}" was not permitted (${reason}). Choose a different approach.`;
+        }
+      }
+
       const result = await def.execute(input, ctx);
       if (result.isError) {
         const text =

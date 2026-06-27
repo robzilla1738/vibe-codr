@@ -24,3 +24,9 @@ test("every plan-mode tool is marked readOnly", () => {
     expect(tool.readOnly).toBe(true);
   }
 });
+
+test("present_plan is available only in plan mode", () => {
+  const ts = new Toolset();
+  expect(ts.names("plan")).toContain("present_plan");
+  expect(ts.names("execute")).not.toContain("present_plan");
+});

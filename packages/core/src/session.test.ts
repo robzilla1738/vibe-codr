@@ -128,6 +128,60 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
   expect(snap.busy).toBe(false);
 });
 
+test("a deny permission rule blocks a side-effecting tool", async () => {
+  const dangerTool: ToolDefinition<{ x: string }> = {
+    name: "danger",
+    description: "A side-effecting tool.",
+    inputSchema: z.object({ x: z.string() }),
+    readOnly: false,
+    async execute() {
+      throw new Error("danger should never execute when denied");
+    },
+  };
+
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "danger",
+        input: JSON.stringify({ x: "boom" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t1" },
+      { type: "text-delta", id: "t1", delta: "ok" },
+      { type: "text-end", id: "t1" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => steps[call++] as never,
+  });
+
+  const config = { ...defaultConfig(), permissions: [{ tool: "danger", action: "deny" as const }] };
+  const bus = new EventBus();
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([dangerTool]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  const events = await collect(bus, () => session.run("do the dangerous thing"));
+  expect(
+    events.some((e) => e.type === "notice" && e.message.includes("Blocked danger")),
+  ).toBe(true);
+  expect(events.some((e) => e.type === "engine-error")).toBe(false);
+});
+
 test("emits engine-error when the provider is unconfigured", async () => {
   const bus = new EventBus();
   const session = new Session({

@@ -31,6 +31,13 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
         process.stderr.write(`${ansi.red("✗ tool error")}\n`);
       }
       break;
+    case "plan-presented":
+      process.stdout.write(
+        `\n${ansi.magenta(ansi.bold("── Plan ──"))}\n${event.plan}\n${ansi.dim(
+          "Run /execute to proceed.",
+        )}\n`,
+      );
+      break;
     case "notice":
       process.stderr.write(
         `${noticeColor(event.level)(`[${event.level}] ${event.message}`)}\n`,

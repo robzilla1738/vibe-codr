@@ -19,7 +19,13 @@ export type {
 } from "./commands.ts";
 
 // Tool contract
-export type { ToolContext, ToolResult, ToolDefinition } from "./tool.ts";
+export type {
+  ToolContext,
+  ToolResult,
+  ToolDefinition,
+  PermissionResult,
+  CheckPermission,
+} from "./tool.ts";
 
 // Errors
 export {

@@ -17,6 +17,7 @@ import { HookBus, CommandRegistry, SkillRegistry } from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
+import type { PermissionResolver } from "./permissions.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -28,6 +29,7 @@ export interface EngineOptions {
   skills?: SkillRegistry;
   catalog?: CatalogService;
   projectMemory?: string;
+  permissionResolver?: PermissionResolver;
   logger?: Logger;
 }
 
@@ -69,6 +71,7 @@ export class Engine implements EngineClient {
       model: opts.config.model,
       mode: opts.config.mode,
       projectMemory: opts.projectMemory,
+      permissionResolver: opts.permissionResolver,
     });
   }
 

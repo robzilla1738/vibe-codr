@@ -13,6 +13,7 @@ import type { ProviderRegistry } from "@vibe/providers";
 import type { Toolset } from "@vibe/tools";
 import type { EventBus } from "./event-bus.ts";
 import { composeSystemPrompt } from "./system-prompt.ts";
+import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 
 export interface SessionDeps {
   config: Config;
@@ -24,6 +25,7 @@ export interface SessionDeps {
   mode: Mode;
   goal?: string | null;
   projectMemory?: string;
+  permissionResolver?: PermissionResolver;
   id?: string;
 }
 
@@ -111,10 +113,16 @@ export class Session {
         goal: this.goal,
         projectMemory: this.#deps.projectMemory,
       });
+      const checker = new PermissionChecker(
+        config.permissions,
+        this.#deps.permissionResolver,
+      );
       const base = {
         cwd: this.#deps.cwd,
         sessionId: this.id,
         emit: (e: UIEvent) => bus.emit(e),
+        checkPermission: (name: string, input: unknown) =>
+          checker.check(name, input),
       };
 
       const result = streamText({

@@ -46,6 +46,7 @@ export type UIEvent =
   | { type: "mode-changed"; sessionId: string; mode: Mode }
   | { type: "model-changed"; sessionId: string; model: string }
   | { type: "goal-changed"; sessionId: string; goal: string | null }
+  | { type: "plan-presented"; sessionId: string; plan: string }
   | { type: "compacted"; sessionId: string; freedTokens: number }
   | { type: "subagent-started"; sessionId: string; subagentId: string; prompt: string }
   | { type: "subagent-finished"; sessionId: string; subagentId: string; result: string }

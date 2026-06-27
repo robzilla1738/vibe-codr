@@ -7,8 +7,9 @@ import { bashTool } from "./bash.ts";
 import { writeTool } from "./write.ts";
 import { editTool } from "./edit.ts";
 import { webfetchTool } from "./webfetch.ts";
+import { presentPlanTool } from "./present-plan.ts";
 
-/** All file/shell/web built-in tools (subagent + plan tools live in core). */
+/** All file/shell/web/plan built-in tools (subagent tools are added by core). */
 export function builtinTools(): ToolDefinition[] {
   return [
     readTool,
@@ -19,6 +20,7 @@ export function builtinTools(): ToolDefinition[] {
     writeTool,
     editTool,
     bashTool,
+    presentPlanTool,
   ];
 }
 
@@ -31,4 +33,5 @@ export {
   writeTool,
   editTool,
   webfetchTool,
+  presentPlanTool,
 };

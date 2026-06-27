@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { loadConfig, type Config } from "@vibe/config";
-import { Engine, formatModelList } from "@vibe/core";
+import { Engine, formatModelList, SessionStore, type PersistedSession } from "@vibe/core";
 import { runOneShot, startTui } from "@vibe/tui";
 
 export const VERSION = "0.0.0";
@@ -18,6 +18,8 @@ OPTIONS
       --mode <mode>     start mode: plan | execute  (default: execute)
       --cwd <dir>       working directory (default: current)
       --reasoning       print model reasoning to stderr
+  -c, --continue        resume the most recent session
+      --resume <id>     resume a specific session by id
   -v, --version         print version and exit
   -h, --help            show this help
 
@@ -36,6 +38,8 @@ export async function run(argv: string[]): Promise<number> {
       mode: { type: "string" },
       cwd: { type: "string" },
       reasoning: { type: "boolean" },
+      continue: { type: "boolean", short: "c" },
+      resume: { type: "string" },
       version: { type: "boolean", short: "v" },
       help: { type: "boolean", short: "h" },
     },
@@ -58,7 +62,18 @@ export async function run(argv: string[]): Promise<number> {
   }
 
   const config = await loadConfig({ cwd, overrides });
-  const engine = new Engine({ config, cwd });
+
+  // Resume a persisted session with --continue (latest) or --resume <id>.
+  let resume: PersistedSession | undefined;
+  if (values.continue || values.resume) {
+    const store = new SessionStore(cwd);
+    const id = values.resume ?? (await store.latestId());
+    const loaded = id ? await store.load(id) : null;
+    if (loaded) resume = loaded;
+    else process.stderr.write("No session to resume; starting fresh.\n");
+  }
+
+  const engine = new Engine({ config, cwd, ...(resume ? { resume } : {}) });
   await engine.bootstrap();
 
   // `vibe models` — list available models for configured providers and exit.

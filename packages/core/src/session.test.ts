@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
@@ -7,6 +10,7 @@ import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
+import { SessionStore } from "./store.ts";
 
 /** Build a provider-level stream from LanguageModelV2 stream parts. */
 function stream(chunks: unknown[]) {
@@ -126,6 +130,64 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
   const snap = session.snapshot();
   expect(snap.history.at(-1)?.role).toBe("assistant");
   expect(snap.busy).toBe(false);
+});
+
+test("persists after a turn and can be resumed with prior context", async () => {
+  const reply = (text: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: text },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]);
+  let call = 0;
+  const replies = [reply("first answer"), reply("second answer")];
+  const model = new MockLanguageModelV2({
+    doStream: async () => replies[call++] as never,
+  });
+
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-resume-"));
+  const store = new SessionStore(cwd);
+  const registry = mockRegistry(model);
+  const bus = new EventBus();
+
+  const first = new Session({
+    config: defaultConfig(),
+    registry,
+    toolset: new Toolset([]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    store,
+    id: "ses_resume",
+  });
+  await first.run("remember the number 42");
+
+  const persisted = await store.load("ses_resume");
+  expect(persisted).not.toBeNull();
+  expect(persisted!.meta.model).toBe("mock/test");
+  expect(persisted!.modelMessages.length).toBeGreaterThanOrEqual(2);
+  expect(persisted!.history.at(-1)?.role).toBe("assistant");
+
+  // Resume into a fresh session and continue the conversation.
+  const resumed = new Session({
+    config: defaultConfig(),
+    registry,
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd,
+    model: persisted!.meta.model,
+    mode: persisted!.meta.mode,
+    store,
+    id: persisted!.meta.id,
+    initialModelMessages: persisted!.modelMessages,
+    initialHistory: persisted!.history,
+  });
+  await resumed.run("what was the number?");
+  // The resumed session retained the prior turn plus the new exchange.
+  expect(resumed.messageCount).toBeGreaterThanOrEqual(4);
 });
 
 test("a deny permission rule blocks a side-effecting tool", async () => {

@@ -30,6 +30,7 @@ import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, type NamedAgent } from "./agents.ts";
 import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
+import { SessionStore, type PersistedSession } from "./store.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -42,6 +43,8 @@ export interface EngineOptions {
   catalog?: CatalogService;
   projectMemory?: string;
   permissionResolver?: PermissionResolver;
+  /** Persisted session to resume (from SessionStore.load). */
+  resume?: PersistedSession;
   logger?: Logger;
 }
 
@@ -66,11 +69,13 @@ export class Engine implements EngineClient {
   #agents = new Map<string, NamedAgent>();
   #loop: LoopController | undefined;
   #permissionResolver: PermissionResolver | undefined;
+  #store: SessionStore;
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
     this.#cwd = opts.cwd ?? process.cwd();
     this.#permissionResolver = opts.permissionResolver;
+    this.#store = new SessionStore(this.#cwd);
     this.registry = opts.registry ?? new ProviderRegistry();
     this.toolset = opts.toolset ?? new Toolset();
     this.hooks = opts.hooks ?? new HookBus();
@@ -78,20 +83,33 @@ export class Engine implements EngineClient {
     this.skills = opts.skills ?? new SkillRegistry();
     this.catalog = opts.catalog ?? new CatalogService();
     this.#log = opts.logger ?? createLogger("engine");
+    const resume = opts.resume;
     this.#session = new Session({
       config: opts.config,
       registry: this.registry,
       toolset: this.toolset,
       bus: this.#bus,
       cwd: this.#cwd,
-      model: opts.config.model,
-      mode: opts.config.mode,
+      model: resume?.meta.model ?? opts.config.model,
+      mode: resume?.meta.mode ?? opts.config.mode,
+      goal: resume?.meta.goal ?? null,
       projectMemory: opts.projectMemory,
       permissionResolver: opts.permissionResolver,
       agents: this.#agents,
       skills: this.skills,
+      store: this.#store,
+      getContextWindow: (model) => this.catalog.contextWindow(model),
+      ...(resume
+        ? {
+            id: resume.meta.id,
+            createdAt: resume.meta.createdAt,
+            initialModelMessages: resume.modelMessages,
+            initialHistory: resume.history,
+          }
+        : {}),
     });
   }
+
 
   /**
    * Load project-local resources from disk: named agents, custom slash command
@@ -172,11 +190,7 @@ export class Engine implements EngineClient {
         this.#enqueue(() => this.#handleSlash(command.name, command.args));
         break;
       case "compact":
-        this.#bus.emit({
-          type: "notice",
-          level: "info",
-          message: "Compaction is not implemented yet.",
-        });
+        this.#enqueue(() => this.#session.compact());
         break;
       case "shutdown":
         this.#loop?.stop("shutdown");

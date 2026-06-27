@@ -30,3 +30,14 @@ export {
   type LoopOptions,
   type ParsedLoop,
 } from "./loop.ts";
+export {
+  compactMessages,
+  estimateTokens,
+  type CompactOptions,
+  type CompactResult,
+} from "./compaction.ts";
+export {
+  SessionStore,
+  type SessionMeta,
+  type PersistedSession,
+} from "./store.ts";

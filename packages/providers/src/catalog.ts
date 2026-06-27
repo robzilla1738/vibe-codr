@@ -32,6 +32,12 @@ export class CatalogService {
     );
   }
 
+  /** Best-effort context window (tokens) for a `provider/model` string. */
+  async contextWindow(modelString: string): Promise<number | undefined> {
+    const meta = await this.#loadMetadata();
+    return meta.get(modelString)?.contextWindow;
+  }
+
   /** Enrich live models with models.dev metadata (best-effort). */
   async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
     const meta = await this.#loadMetadata();

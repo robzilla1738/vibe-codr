@@ -31,6 +31,11 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
         process.stderr.write(`${ansi.red("✗ tool error")}\n`);
       }
       break;
+    case "compacted":
+      process.stderr.write(
+        `${ansi.dim(`(compacted history, freed ~${event.freedTokens} tokens)`)}\n`,
+      );
+      break;
     case "loop-tick":
       process.stderr.write(
         `\n${ansi.cyan("↻")} ${ansi.dim(`loop iteration ${event.iteration}`)}\n`,

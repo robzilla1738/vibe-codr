@@ -1,4 +1,10 @@
-import { streamText, stepCountIs, type ModelMessage } from "ai";
+import {
+  streamText,
+  generateText,
+  stepCountIs,
+  type ModelMessage,
+  type LanguageModel,
+} from "ai";
 import { z } from "zod";
 import {
   createId,
@@ -19,6 +25,11 @@ import { EventBus as EventBusImpl } from "./event-bus.ts";
 import { composeSystemPrompt } from "./system-prompt.ts";
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
+import { compactMessages } from "./compaction.ts";
+import type { SessionStore } from "./store.ts";
+
+const DEFAULT_CONTEXT_WINDOW = 128_000;
+const COMPACT_KEEP_RECENT = 6;
 
 export interface SessionDeps {
   config: Config;
@@ -40,6 +51,14 @@ export interface SessionDeps {
   /** Subagent recursion depth (0 = root). */
   depth?: number;
   id?: string;
+  /** Persistence backend; when set, the session is saved after each turn. */
+  store?: SessionStore;
+  /** Seed context/history when resuming a persisted session. */
+  initialModelMessages?: ModelMessage[];
+  initialHistory?: Message[];
+  createdAt?: number;
+  /** Resolve the active model's context window (for compaction). */
+  getContextWindow?: (model: string) => Promise<number | undefined>;
 }
 
 /**
@@ -54,8 +73,9 @@ export class Session {
   busy = false;
 
   #deps: SessionDeps;
-  #modelMessages: ModelMessage[] = [];
-  #history: Message[] = [];
+  #modelMessages: ModelMessage[];
+  #history: Message[];
+  #createdAt: number;
   #abort = new AbortController();
 
   constructor(deps: SessionDeps) {
@@ -64,6 +84,9 @@ export class Session {
     this.model = deps.model;
     this.mode = deps.mode;
     this.goal = deps.goal ?? null;
+    this.#modelMessages = deps.initialModelMessages ?? [];
+    this.#history = deps.initialHistory ?? [];
+    this.#createdAt = deps.createdAt ?? Date.now();
   }
 
   snapshot(): EngineSnapshot {
@@ -192,6 +215,7 @@ export class Session {
 
     try {
       const model = await registry.resolveModel(this.model, config);
+      await this.#maybeCompact(model, false);
       const skills = this.#deps.skills;
       const system = composeSystemPrompt({
         mode: this.mode,
@@ -253,8 +277,90 @@ export class Session {
       });
     } finally {
       this.busy = false;
+      await this.#persist();
       bus.emit({ type: "turn-finished", sessionId: this.id });
       bus.emit({ type: "session-idle", sessionId: this.id });
+    }
+  }
+
+  /** Force a compaction pass now (used by /compact). */
+  async compact(): Promise<void> {
+    const model = await this.#deps.registry.resolveModel(
+      this.model,
+      this.#deps.config,
+    );
+    await this.#maybeCompact(model, true);
+  }
+
+  /** Summarize older context when over the threshold (or when forced). */
+  async #maybeCompact(model: LanguageModel, force: boolean): Promise<void> {
+    const contextWindow =
+      (await this.#deps.getContextWindow?.(this.model)) ??
+      DEFAULT_CONTEXT_WINDOW;
+    const result = await compactMessages(this.#modelMessages, {
+      contextWindow,
+      threshold: this.#deps.config.compaction.threshold,
+      keep: COMPACT_KEEP_RECENT,
+      force,
+      summarize: (msgs) => this.#summarize(model, msgs),
+    });
+    if (!result) {
+      if (force) {
+        this.#deps.bus.emit({
+          type: "notice",
+          level: "info",
+          message: "Nothing to compact yet.",
+        });
+      }
+      return;
+    }
+    this.#modelMessages = result.messages;
+    this.#deps.bus.emit({
+      type: "compacted",
+      sessionId: this.id,
+      freedTokens: result.freed,
+    });
+  }
+
+  async #summarize(model: LanguageModel, messages: ModelMessage[]): Promise<string> {
+    const transcript = messages
+      .map(
+        (m) =>
+          `${m.role}: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`,
+      )
+      .join("\n");
+    const { text } = await generateText({
+      model,
+      prompt:
+        "Summarize the following conversation excerpt for an AI coding agent. " +
+        "Preserve decisions made, facts learned, file paths touched, and any open tasks. Be concise.\n\n" +
+        transcript,
+    });
+    return text;
+  }
+
+  async #persist(): Promise<void> {
+    const store = this.#deps.store;
+    if (!store) return;
+    try {
+      await store.save(
+        {
+          id: this.id,
+          model: this.model,
+          mode: this.mode,
+          goal: this.goal,
+          createdAt: this.#createdAt,
+          updatedAt: Date.now(),
+        },
+        this.#modelMessages,
+        this.#history,
+      );
+    } catch (err) {
+      this.#deps.bus.emit({
+        type: "notice",
+        level: "warn",
+        message: `Failed to persist session: ${(err as Error).message}`,
+      });
     }
   }
 

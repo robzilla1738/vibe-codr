@@ -6,10 +6,11 @@ class of Claude Code / opencode, but able to drive coding and agentic tasks on
 Fireworks, Baseten**), and first-party providers (**OpenAI, Anthropic, DeepSeek,
 xAI/Grok**).
 
-> Status: **Phase 0 — full scaffold.** The monorepo, all package interfaces, the
-> agent loop, the provider/model abstraction, the tool system, and a working
-> headless UI are in place. Later phases layer in the live model catalog,
-> plan/execute gating polish, subagents, skills/plugins, and `/loop` + `/goal`.
+> Status: **feature-complete core (Phases 0–7).** Multi-provider agent loop,
+> live model catalog, plan/execute modes with a permission layer, subagents,
+> slash commands / skills / plugins, `/goal` + `/loop`, and session persistence
+> with context-aware compaction — all covered by 50+ tests (including
+> mock-model integration tests of the agent loop with zero network).
 
 ## Stack
 
@@ -50,7 +51,36 @@ bun packages/cli/bin/vibe.ts -p "list the TS files and read package.json" \
 
 # interactive
 bun packages/cli/bin/vibe.ts
+
+# other entry points
+bun packages/cli/bin/vibe.ts models           # list models for configured providers
+bun packages/cli/bin/vibe.ts --continue        # resume the most recent session
+bun packages/cli/bin/vibe.ts --resume <id>     # resume a specific session
 ```
+
+### In-session commands
+
+`/help` · `/model <id>` · `/models` · `/plan` · `/execute` · `/goal <text>` ·
+`/agents` · `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`) ·
+`/compact` · `/clear` · `/init`. Custom commands live in `.vibe/commands/*.md`,
+skills in `.vibe/skills/*/SKILL.md`, named subagents in `.vibe/agents/*.md`, and
+plugins are listed in config.
+
+### Features
+
+- **Plan vs execute** — plan mode exposes only read-only tools (it cannot edit
+  or run commands); the model calls `present_plan`, and you approve via
+  `/execute`. A glob-based allow/deny/ask **permission layer** gates
+  side-effecting tools.
+- **Subagents** — `spawn_subagent` forks an isolated child with its own context
+  that returns only its final answer; depth-capped and parallel-safe.
+- **`/goal`** injects a north-star into every system prompt; **`/loop`** reruns a
+  prompt on an interval until a `--until` condition (checked with a structured
+  model call) or `--max` is reached.
+- **Persistence & compaction** — every turn is saved to
+  `.vibe/sessions/<id>/`; long conversations auto-compact against the active
+  model's context window (from the catalog), preserving the system prompt, goal,
+  and most recent turns.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,
@@ -68,8 +98,19 @@ bun run typecheck     # tsc across all packages
 bun test              # unit tests
 ```
 
-## Roadmap
+## Status
 
-Phase 0 scaffold → 1 agent spine → 2 multi-provider + live catalog → 3 full
-tools + permissions + plan/execute → 4 subagents → 5 extensibility (commands,
-skills, plugins) → 6 `/goal` + `/loop` → 7 persistence + compaction + polish.
+All planned phases are implemented and tested:
+
+0. ✅ Full scaffold (monorepo, contracts, core/TUI boundary)
+1. ✅ Agent spine — `streamText` loop with multi-step tool execution
+2. ✅ Multi-provider + live model catalog (models.dev + `/v1/models`)
+3. ✅ Permission layer + plan/execute gating
+4. ✅ Subagents (isolated, depth-capped, parallel) + named agents
+5. ✅ Slash command files, skills (progressive disclosure), plugins
+6. ✅ `/goal` steering + `/loop` (interval, `--until`, `--max`)
+7. ✅ Session persistence (`--continue`/`--resume`) + context-aware compaction
+
+Next: install the provider SDKs you use (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`)
+and OpenTUI (`@opentui/core`, `@opentui/solid`, `solid-js`) for the full
+interactive experience; wire up CI.

@@ -10,11 +10,12 @@
  */
 import { chromium } from "playwright";
 import type { LanguageModel } from "ai";
-import type { UIEvent, ToolDefinition } from "@vibe/shared";
+import type { UIEvent, ToolDefinition, Task, QueuedItem } from "@vibe/shared";
 import { ProviderRegistry, type ModelInfo } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { Session } from "../src/session.ts";
+import { Engine } from "../src/engine.ts";
 import { EventBus } from "../src/event-bus.ts";
 import { formatModelList } from "../src/commands.ts";
 
@@ -61,13 +62,22 @@ interface Scene {
   cwd: string;
   lines: Line[];
   plan?: PlanBlock;
+  tasks?: Task[];
+  queued?: QueuedItem[];
   input: string;
 }
 
 // ── Event -> display-line reducer (mirrors app.tsx onMount handler) ─────────
-function reduce(events: UIEvent[]): { lines: Line[]; plan?: PlanBlock } {
+function reduce(events: UIEvent[]): {
+  lines: Line[];
+  plan?: PlanBlock;
+  tasks?: Task[];
+  queued?: QueuedItem[];
+} {
   const lines: Line[] = [];
   let plan: PlanBlock | undefined;
+  let tasks: Task[] | undefined;
+  let queued: QueuedItem[] = [];
   let assistant: Line | null = null;
   const pushText = (delta: string) => {
     if (!assistant) {
@@ -116,6 +126,13 @@ function reduce(events: UIEvent[]): { lines: Line[]; plan?: PlanBlock } {
         };
         assistant = null;
         break;
+      case "tasks-updated":
+        tasks = e.tasks;
+        break;
+      case "queue-changed":
+        // Keep the deepest backlog observed, so a transient queue is visible.
+        if (e.pending.length >= queued.length) queued = e.pending;
+        break;
       case "notice":
         lines.push({ kind: "notice", text: e.message });
         break;
@@ -124,7 +141,12 @@ function reduce(events: UIEvent[]): { lines: Line[]; plan?: PlanBlock } {
     }
   }
   // Expand multi-line assistant text into separate display lines.
-  return { lines: lines.flatMap(splitMultiline), ...(plan ? { plan } : {}) };
+  return {
+    lines: lines.flatMap(splitMultiline),
+    ...(plan ? { plan } : {}),
+    ...(tasks && tasks.length ? { tasks } : {}),
+    ...(queued.length ? { queued } : {}),
+  };
 }
 
 function splitMultiline(line: Line): Line[] {
@@ -200,6 +222,32 @@ async function runSession(
   });
   await session.run(opts.prompt);
   bus.close();
+  await collector;
+  return events;
+}
+
+/** Drive a real Engine (with a mock provider) and collect its event stream. */
+async function runEngine(
+  model: LanguageModel,
+  modelString: string,
+  prompts: string[],
+): Promise<UIEvent[]> {
+  const providerId = modelString.split("/")[0]!;
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: modelString },
+    cwd: REPO_ROOT,
+    registry: new ProviderRegistry([
+      { id: providerId, auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    ]),
+    toolset: new Toolset([]),
+  });
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const ev of engine.events()) events.push(ev);
+  })();
+  for (const p of prompts) engine.send({ type: "submit-prompt", text: p });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
   await collector;
   return events;
 }
@@ -290,6 +338,75 @@ async function buildScenes(): Promise<Scene[]> {
       .map((t): Line => ({ kind: "plain", text: t })),
   ];
 
+  // D — execute mode with a live task list (real update_tasks tool call).
+  const taskList = [
+    { title: "Track cumulative usage from step-finished events", status: "completed" },
+    { title: "Resolve per-token pricing from the models.dev catalog", status: "in_progress" },
+    { title: "Render `tokens · $cost` in the status bar", status: "pending" },
+    { title: "Add a test for the footer formatter", status: "pending" },
+  ];
+  const dEvents = await runSession(
+    mockModel([
+      [
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "d" },
+        {
+          type: "text-delta",
+          id: "d",
+          delta: "I'll implement this in steps and track progress as I go.\n",
+        },
+        { type: "text-end", id: "d" },
+        {
+          type: "tool-call",
+          toolCallId: "t4",
+          toolName: "update_tasks",
+          input: JSON.stringify({ tasks: taskList }),
+        },
+        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      ],
+      [
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "d2" },
+        {
+          type: "text-delta",
+          id: "d2",
+          delta:
+            "Usage now accumulates on the session. Wiring the catalog pricing\nlookup next, then the status-bar render.",
+        },
+        { type: "text-end", id: "d2" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ],
+    ]),
+    new Toolset().all(),
+    { mode: "execute", modelString: "anthropic/claude-opus-4-8", prompt: "Implement the usage/cost footer" },
+  );
+  const d = reduce(dEvents);
+
+  // E — prompt queue: a second prompt typed while the first is running.
+  const reply = (id: string, text: string): unknown[] => [
+    { type: "stream-start", warnings: [] },
+    { type: "text-start", id },
+    { type: "text-delta", id, delta: text },
+    { type: "text-end", id },
+    { type: "finish", finishReason: "stop", usage: USAGE },
+  ];
+  const eEvents = await runEngine(
+    mockModel([
+      reply("q1", "Refactoring the config loader to accept JSONC and merge\nlayers in precedence order…"),
+      reply("q2", "done"),
+    ]),
+    "anthropic/claude-opus-4-8",
+    ["Refactor the config loader to support JSONC", "Then add tests for the new parser"],
+  );
+  const eReduced = reduce(eEvents);
+  // Show the moment the backlog existed: transcript up to the second prompt.
+  const userIdxs = eReduced.lines
+    .map((l, i) => (l.kind === "user" ? i : -1))
+    .filter((i) => i >= 0);
+  const eLines =
+    userIdxs.length > 1 ? eReduced.lines.slice(0, userIdxs[1]) : eReduced.lines;
+  const eQueued = eReduced.queued ?? [];
+
   return [
     {
       name: "01-chat",
@@ -313,6 +430,22 @@ async function buildScenes(): Promise<Scene[]> {
       cwd: "~/vibe-codr",
       lines: cLines,
       input: "",
+    },
+    {
+      name: "04-tasks",
+      status: "anthropic/claude-opus-4-8 · execute",
+      cwd: "~/vibe-codr",
+      lines: d.lines,
+      ...(d.tasks ? { tasks: d.tasks } : {}),
+      input: "",
+    },
+    {
+      name: "05-queue",
+      status: `anthropic/claude-opus-4-8 · execute${eQueued.length ? ` · ${eQueued.length} queued` : ""}`,
+      cwd: "~/vibe-codr",
+      lines: eLines,
+      ...(eQueued.length ? { queued: eQueued } : {}),
+      input: "Then add tests for the new parser",
     },
   ];
 }
@@ -361,6 +494,34 @@ function renderLines(scene: Scene): string {
     rows.push(`<div class="row" style="color:${COLORS.dim}">${esc(scene.plan.hint)}</div>`);
     rows.push(`</div>`);
   }
+  if (scene.tasks?.length) {
+    const done = scene.tasks.filter((t) => t.status === "completed").length;
+    rows.push(`<div class="tasksbox">`);
+    rows.push(
+      `<div class="row" style="color:${COLORS.dim};font-weight:700">Tasks · ${done}/${scene.tasks.length}</div>`,
+    );
+    for (const t of scene.tasks) {
+      const glyph = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "○";
+      const color =
+        t.status === "completed"
+          ? COLORS.dim
+          : t.status === "in_progress"
+            ? COLORS.cyan
+            : COLORS.fg;
+      const deco = t.status === "completed" ? "text-decoration:line-through" : "";
+      rows.push(
+        `<div class="row" style="color:${color};${deco}">${glyph} ${esc(t.title)}</div>`,
+      );
+    }
+    rows.push(`</div>`);
+  }
+  if (scene.queued?.length) {
+    rows.push(
+      `<div class="row" style="color:${COLORS.dim}">↳ ${scene.queued.length} queued: ${esc(
+        scene.queued.map((q) => q.label).join(", "),
+      )}</div>`,
+    );
+  }
   return rows.join("\n");
 }
 
@@ -387,6 +548,10 @@ function renderFrame(scene: Scene): string {
   .row { white-space:pre-wrap; word-break:break-word; }
   .planbox {
     border:1px solid ${COLORS.magenta}; border-radius:6px;
+    padding:8px 12px; margin:8px 0;
+  }
+  .tasksbox {
+    border:1px solid ${COLORS.cyan}; border-radius:6px;
     padding:8px 12px; margin:8px 0;
   }
   .inputwrap {
@@ -419,7 +584,7 @@ ${renderLines(scene)}
         <span class="prompt">› </span>${
           scene.input
             ? `<span class="typed">${esc(scene.input)}</span><span class="cursor">&nbsp;</span>`
-            : `<span class="placeholder">Ask vibe-codr…  (/plan, /execute, /model &lt;id&gt;, /goal &lt;text&gt;)</span>`
+            : `<span class="placeholder">Ask vibe-codr…  (/plan, /execute, /model &lt;id&gt;, /goal &lt;text&gt;, /queue)</span>`
         }
       </div>
       <div class="footer">/help for commands · /plan to plan · ctrl-c to quit</div>

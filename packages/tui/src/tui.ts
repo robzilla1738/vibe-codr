@@ -1,7 +1,8 @@
 import * as readline from "node:readline";
-import type { EngineClient, EngineCommand } from "@vibe/shared";
+import type { EngineClient } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { renderHeadless } from "./headless.ts";
+import { lineToCommand } from "./slash.ts";
 
 /**
  * Start the interactive UI. Tries the OpenTUI app first; if OpenTUI isn't
@@ -25,28 +26,6 @@ export async function startTui(engine: EngineClient): Promise<void> {
   }
 }
 
-/** Map a slash line to an engine command, or null to send as a prompt. */
-function slashToCommand(line: string): EngineCommand | null {
-  const m = line.trim().match(/^\/(\w+)(?:\s+(.*))?$/);
-  if (!m) return null;
-  const name = m[1] ?? "";
-  const args = (m[2] ?? "").trim();
-  switch (name) {
-    case "plan":
-      return { type: "set-mode", mode: "plan" };
-    case "execute":
-      return { type: "set-mode", mode: "execute" };
-    case "model":
-      return args ? { type: "set-model", model: args } : { type: "run-slash", name, args };
-    case "goal":
-      return { type: "set-goal", goal: args || null };
-    case "compact":
-      return { type: "compact" };
-    default:
-      return { type: "run-slash", name, args };
-  }
-}
-
 async function startRepl(engine: EngineClient): Promise<void> {
   const snap = engine.snapshot();
   process.stdout.write(
@@ -67,11 +46,7 @@ async function startRepl(engine: EngineClient): Promise<void> {
         rl.close();
         return;
       }
-      if (trimmed) {
-        const cmd = slashToCommand(trimmed);
-        if (cmd) engine.send(cmd);
-        else engine.send({ type: "submit-prompt", text: trimmed });
-      }
+      if (trimmed) engine.send(lineToCommand(trimmed));
       ask();
     });
   ask();

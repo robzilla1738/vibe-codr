@@ -10,6 +10,7 @@
 import { render } from "@opentui/solid";
 import { createSignal, onMount, For, Show } from "solid-js";
 import type { EngineClient, Task, UIEvent } from "@vibe/shared";
+import { lineToCommand } from "./slash.ts";
 
 interface Line {
   kind: "user" | "assistant" | "tool" | "notice" | "plan" | "subagent";
@@ -98,11 +99,9 @@ function App(props: { engine: EngineClient }) {
     const text = draft().trim();
     if (!text) return;
     setDraft("");
-    if (text.startsWith("/")) {
-      props.engine.send({ type: "run-slash", name: text.slice(1).split(" ")[0]!, args: "" });
-    } else {
-      props.engine.send({ type: "submit-prompt", text });
-    }
+    // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.
+    // keep their arguments (the same logic the REPL uses).
+    props.engine.send(lineToCommand(text));
   };
 
   return (

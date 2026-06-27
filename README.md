@@ -69,9 +69,10 @@ vibecodr --resume <id>        # resume a specific session
 
 `/help` · `/model <id>` · `/models` · `/plan` · `/execute` · `/goal <text>` ·
 `/agents` · `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`) ·
-`/queue` (`/queue clear`) · `/compact` · `/clear` · `/init`. Custom commands live
-in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`, named subagents in
-`.vibe/agents/*.md`, and plugins are listed in config.
+`/queue` (`/queue clear`) · `/undo` · `/checkpoints` · `/verify` · `/compact` ·
+`/clear` · `/init`. Custom commands live in `.vibe/commands/*.md`, skills in
+`.vibe/skills/*/SKILL.md`, named subagents in `.vibe/agents/*.md`, and plugins
+are listed in config.
 
 ### Features
 
@@ -91,6 +92,20 @@ in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`, named subagents i
   (free tier, no card) is on by default; the model can search the live web and
   follow up with `webfetch`. Set `TINYFISH_API_KEY` (or `search.apiKey`); disable
   with `search.enabled: false`.
+- **MCP client** — connect [Model Context Protocol](https://modelcontextprotocol.io)
+  servers under `mcp.servers` (stdio or SSE/HTTP); their tools register as
+  `mcp__<server>__<tool>` and flow through the same permission gate. Requires the
+  optional `@modelcontextprotocol/sdk` peer dep; failures are skipped, not fatal.
+- **Interactive permissions** — side-effecting tools prompt for approval
+  (**allow once / always / deny**) under `approvalMode: "ask"` (the default);
+  `always` is remembered for the session. Headless runs auto-allow. `auto` mode
+  or explicit allow/deny rules skip the prompt.
+- **Checkpoints & undo** — in a git repo, the workspace is snapshotted before
+  each edit turn (a hidden `refs/vibecodr/*` ref — your branch/history untouched);
+  `/undo` rolls back, `/checkpoints` lists them.
+- **Self-verify** — set `verify.command` (e.g. `"bun run typecheck && bun test"`)
+  and run it with `/verify`; with `verify.auto`, failures after an edit turn are
+  fed back so the agent self-corrects (capped by `verify.maxRetries`).
 - **Live token & cost tracking** — cumulative input/output tokens and an
   estimated USD cost are tracked every step and shown in the status bar / footer.
   Prices come from the live catalog (models.dev); override or pin a rate per
@@ -129,6 +144,14 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
   "search": { "enabled": true, "apiKey": "tf-..." },   // TinyFish web search
   "pricing": {                                          // USD per 1M tokens
     "anthropic/claude-opus-4-8": { "input": 5, "output": 25 }
+  },
+  "approvalMode": "ask",                                // ask | auto
+  "checkpoints": { "enabled": true },
+  "verify": { "command": "bun run typecheck && bun test", "auto": true, "maxRetries": 2 },
+  "mcp": {
+    "servers": {
+      "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }
+    }
   },
   "providers": { "anthropic": { "apiKey": "sk-..." } }
 }

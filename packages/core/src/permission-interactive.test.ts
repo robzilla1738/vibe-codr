@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
@@ -61,6 +64,7 @@ function makeEngine(steps: unknown[], interactive: boolean) {
     registry,
     toolset: new Toolset([danger]),
     interactive,
+    cwd: mkdtempSync(join(tmpdir(), "vibe-perm-")), // isolated, non-git
   });
   return { engine, runs: () => runs };
 }

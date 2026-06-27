@@ -87,6 +87,7 @@ export class Session {
   #tasks: Task[];
   #usage: TokenTotals;
   #price: ModelPrice | undefined;
+  #turnMutated = false;
   #createdAt: number;
   #abort = new AbortController();
 
@@ -127,6 +128,11 @@ export class Session {
   /** The current working task list (live reference; treat as read-only). */
   get tasks(): Task[] {
     return this.#tasks;
+  }
+
+  /** Whether the most recent turn ran a side-effecting (non-read-only) tool. */
+  get didMutate(): boolean {
+    return this.#turnMutated;
   }
 
   setMode(mode: Mode): void {
@@ -290,6 +296,7 @@ export class Session {
   async run(input: string): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;
     this.busy = true;
+    this.#turnMutated = false;
     this.#pushUser(input);
 
     try {
@@ -534,6 +541,11 @@ export class Session {
           break;
         }
         case "tool-call": {
+          // Track whether this turn changed the workspace (drives auto-verify).
+          const def = this.#deps.toolset.get(part.toolName);
+          if ((def && !def.readOnly) || part.toolName === "spawn_subagent") {
+            this.#turnMutated = true;
+          }
           bus.emit({
             type: "tool-call-started",
             sessionId: this.id,

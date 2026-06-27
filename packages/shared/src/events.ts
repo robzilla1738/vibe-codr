@@ -65,6 +65,8 @@ export type UIEvent =
     }
   | { type: "checkpoint-created"; id: string; label: string }
   | { type: "checkpoint-restored"; id: string; label: string }
+  | { type: "verify-started"; command: string }
+  | { type: "verify-finished"; ok: boolean; output: string }
   | { type: "compacted"; sessionId: string; freedTokens: number }
   | { type: "subagent-started"; sessionId: string; subagentId: string; prompt: string }
   | { type: "subagent-finished"; sessionId: string; subagentId: string; result: string }

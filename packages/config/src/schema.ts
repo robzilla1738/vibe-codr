@@ -84,6 +84,18 @@ export const ConfigSchema = z.object({
     .object({ servers: z.record(z.string(), McpServerSchema).default({}) })
     .default({ servers: {} }),
   /**
+   * Self-verification: a shell command (e.g. "bun run typecheck && bun test")
+   * run after edit turns. `auto` feeds failures back so the agent self-corrects,
+   * up to `maxRetries` times. Always runnable on demand via `/verify`.
+   */
+  verify: z
+    .object({
+      command: z.string().optional(),
+      auto: z.boolean().default(false),
+      maxRetries: z.number().int().min(0).max(10).default(2),
+    })
+    .default({ auto: false, maxRetries: 2 }),
+  /**
    * Per-model price overrides keyed by model string (`provider/model`), in USD
    * per 1M tokens. Used for cost tracking when a model is missing from the
    * catalog or you want to pin a negotiated rate. Overrides catalog pricing.

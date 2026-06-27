@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -40,6 +43,7 @@ function mockEngine(model: MockLanguageModelV2): { engine: Engine; events: UIEve
     config: { ...defaultConfig(), model: "mock/test" },
     registry,
     toolset: new Toolset([]),
+    cwd: mkdtempSync(join(tmpdir(), "vibe-queue-")), // isolated, non-git
   });
   const events: UIEvent[] = [];
   void (async () => {

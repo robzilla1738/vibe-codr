@@ -75,6 +75,16 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
     case "checkpoint-restored":
       process.stderr.write(`${ansi.green("⟲")} ${ansi.dim(`reverted: ${event.label}`)}\n`);
       break;
+    case "verify-started":
+      process.stderr.write(`\n${ansi.cyan("✓")} ${ansi.dim(`verifying: ${event.command}`)}\n`);
+      break;
+    case "verify-finished":
+      process.stderr.write(
+        event.ok
+          ? `${ansi.green("✓ verification passed")}\n`
+          : `${ansi.red("✗ verification failed")}\n`,
+      );
+      break;
     case "loop-tick":
       process.stderr.write(
         `\n${ansi.cyan("↻")} ${ansi.dim(`loop iteration ${event.iteration}`)}\n`,

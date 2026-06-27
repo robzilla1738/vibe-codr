@@ -35,6 +35,7 @@ import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
+import { runVerify } from "./verify.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -89,6 +90,7 @@ export class Engine implements EngineClient {
   #store: SessionStore;
   #checkpoints: CheckpointManager;
   #mcp: McpHub;
+  #verifyAttempts = 0;
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
@@ -220,6 +222,8 @@ export class Engine implements EngineClient {
   send(command: EngineCommand): void {
     switch (command.type) {
       case "submit-prompt":
+        // A fresh user prompt resets the auto-verify retry budget.
+        this.#verifyAttempts = 0;
         this.#enqueue(queueLabel(command.text), () =>
           this.#handlePrompt(command.text),
         );
@@ -477,6 +481,9 @@ export class Engine implements EngineClient {
       case "checkpoints":
         await this.#handleCheckpoints();
         break;
+      case "verify":
+        await this.#handleVerify();
+        break;
       case "compact":
         this.send({ type: "compact" });
         break;
@@ -592,6 +599,60 @@ export class Engine implements EngineClient {
     }
     const hooked = await this.hooks.run("user.prompt.submit", { text });
     await this.#session.run(hooked.text);
+    await this.#maybeVerify();
+  }
+
+  /**
+   * Auto-verify: after an edit turn, run the verify command; on failure, feed
+   * the output back as a follow-up so the agent self-corrects (capped retries).
+   */
+  async #maybeVerify(): Promise<void> {
+    const { command, auto, maxRetries } = this.#config.verify;
+    if (!auto || !command) return;
+    if (this.#session.mode !== "execute" || !this.#session.didMutate) return;
+
+    const result = await this.#runVerifyCommand(command);
+    if (result.ok) return;
+    if (this.#verifyAttempts >= maxRetries) {
+      this.#notice(
+        `Verification still failing after ${maxRetries} attempt(s); stopping auto-fix.`,
+        "warn",
+      );
+      return;
+    }
+    this.#verifyAttempts += 1;
+    this.#enqueue("verify-fix", () =>
+      this.#handlePrompt(
+        `The verification command \`${command}\` failed:\n\n${result.output}\n\n` +
+          `Fix the cause and keep changes minimal.`,
+      ),
+    );
+  }
+
+  /** Run the verify command, emitting start/finish events. */
+  async #runVerifyCommand(command: string): Promise<{ ok: boolean; output: string }> {
+    this.#bus.emit({ type: "verify-started", command });
+    const result = await runVerify(this.#cwd, command);
+    this.#bus.emit({
+      type: "verify-finished",
+      ok: result.ok,
+      output: result.output,
+    });
+    return result;
+  }
+
+  /** `/verify` — run the verify command on demand. */
+  async #handleVerify(): Promise<void> {
+    const command = this.#config.verify.command;
+    if (!command) {
+      this.#notice(
+        'No verify command configured. Set `verify.command` (e.g. "bun run typecheck && bun test").',
+        "warn",
+      );
+      return;
+    }
+    const result = await this.#runVerifyCommand(command);
+    this.#notice(result.ok ? "Verification passed." : "Verification failed.");
   }
 
   /** `/undo` — restore the most recent checkpoint. */

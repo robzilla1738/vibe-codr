@@ -48,6 +48,7 @@ export {
   type TokenTotals,
 } from "./usage.ts";
 export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";
+export { runVerify, type VerifyResult } from "./verify.ts";
 export {
   McpHub,
   toToolDefinition,

@@ -20,6 +20,7 @@ export const BUILTIN_COMMANDS: BuiltinCommandMeta[] = [
   { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
   { name: "undo", description: "Revert the workspace to the last checkpoint" },
   { name: "checkpoints", description: "List workspace checkpoints" },
+  { name: "verify", description: "Run the configured verify command (typecheck/tests)" },
   { name: "compact", description: "Compact the conversation history" },
   { name: "clear", description: "Clear the conversation history" },
   { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },

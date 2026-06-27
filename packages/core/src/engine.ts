@@ -45,6 +45,11 @@ export interface EngineOptions {
   catalog?: CatalogService;
   projectMemory?: string;
   permissionResolver?: PermissionResolver;
+  /**
+   * Whether a UI can answer permission prompts. When false (headless/`-p`),
+   * `ask` decisions auto-allow instead of hanging. Defaults to false.
+   */
+  interactive?: boolean;
   /** Persisted session to resume (from SessionStore.load). */
   resume?: PersistedSession;
   logger?: Logger;
@@ -74,12 +79,19 @@ export class Engine implements EngineClient {
   #agents = new Map<string, NamedAgent>();
   #loop: LoopController | undefined;
   #permissionResolver: PermissionResolver | undefined;
+  #interactive: boolean;
+  #alwaysAllow = new Set<string>();
+  #pendingPermissions = new Map<string, (d: "once" | "always" | "deny") => void>();
   #store: SessionStore;
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
     this.#cwd = opts.cwd ?? process.cwd();
-    this.#permissionResolver = opts.permissionResolver;
+    this.#interactive = opts.interactive ?? false;
+    // Use the caller's resolver if given (tests); otherwise bridge `ask`
+    // decisions to the UI via permission-request / resolve-permission.
+    this.#permissionResolver =
+      opts.permissionResolver ?? ((req) => this.#askPermission(req));
     this.#store = new SessionStore(this.#cwd);
     this.registry = opts.registry ?? new ProviderRegistry();
     // Default toolset is config-driven so web search picks up the TinyFish key
@@ -112,7 +124,7 @@ export class Engine implements EngineClient {
       mode: resume?.meta.mode ?? opts.config.mode,
       goal: resume?.meta.goal ?? null,
       projectMemory: opts.projectMemory,
-      permissionResolver: opts.permissionResolver,
+      permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       skills: this.skills,
       store: this.#store,
@@ -227,11 +239,48 @@ export class Engine implements EngineClient {
       case "compact":
         this.#enqueue("/compact", () => this.#session.compact());
         break;
+      case "resolve-permission": {
+        const resolve = this.#pendingPermissions.get(command.id);
+        if (resolve) {
+          this.#pendingPermissions.delete(command.id);
+          resolve(command.decision);
+        }
+        break;
+      }
       case "shutdown":
         this.#loop?.stop("shutdown");
+        // Unblock any in-flight permission prompts so nothing hangs.
+        for (const resolve of this.#pendingPermissions.values()) resolve("deny");
+        this.#pendingPermissions.clear();
         this.#bus.close();
         break;
     }
+  }
+
+  /**
+   * Permission bridge: emit a `permission-request` and await the UI's
+   * `resolve-permission`. Auto-allows when non-interactive (nothing can answer)
+   * and remembers `always` decisions for the rest of the session.
+   */
+  async #askPermission(req: {
+    toolName: string;
+    input: unknown;
+  }): Promise<boolean> {
+    if (!this.#interactive) return true;
+    if (this.#alwaysAllow.has(req.toolName)) return true;
+    const id = createId("perm");
+    const decision = await new Promise<"once" | "always" | "deny">((resolve) => {
+      this.#pendingPermissions.set(id, resolve);
+      this.#bus.emit({
+        type: "permission-request",
+        sessionId: this.#session.id,
+        id,
+        toolName: req.toolName,
+        input: req.input,
+      });
+    });
+    if (decision === "always") this.#alwaysAllow.add(req.toolName);
+    return decision !== "deny";
   }
 
   /** Snapshot of the queue for first paint / `/queue`. */

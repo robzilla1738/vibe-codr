@@ -13,6 +13,11 @@ export type EngineCommand =
   | { type: "set-goal"; goal: string | null }
   | { type: "abort" }
   | { type: "compact" }
+  | {
+      type: "resolve-permission";
+      id: string;
+      decision: "once" | "always" | "deny";
+    }
   | { type: "shutdown" };
 
 export type EngineCommandType = EngineCommand["type"];

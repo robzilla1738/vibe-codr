@@ -38,10 +38,32 @@ async function startRepl(engine: EngineClient): Promise<void> {
   // Print engine events in the background.
   void renderHeadless(engine, { showTools: true });
 
+  // A pending permission prompt; while set, the next line answers it.
+  let pendingPerm: string | null = null;
+  void (async () => {
+    for await (const event of engine.events()) {
+      if (event.type === "permission-request") {
+        pendingPerm = event.id;
+        process.stdout.write(
+          `\n${ansi.yellow("⚠ permission")} ${ansi.bold(event.toolName)} wants to run ` +
+            `${ansi.dim(truncate(JSON.stringify(event.input ?? {}), 100))}\n` +
+            ansi.dim("  Allow? [y]es · [a]lways · [n]o\n"),
+        );
+      }
+    }
+  })();
+
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = () =>
     rl.question(ansi.green("› "), (line) => {
       const trimmed = line.trim();
+      if (pendingPerm) {
+        const decision = parseDecision(trimmed);
+        engine.send({ type: "resolve-permission", id: pendingPerm, decision });
+        pendingPerm = null;
+        ask();
+        return;
+      }
       if (trimmed === "/exit" || trimmed === "/quit") {
         rl.close();
         return;
@@ -52,4 +74,16 @@ async function startRepl(engine: EngineClient): Promise<void> {
   ask();
 
   await new Promise<void>((resolve) => rl.on("close", resolve));
+}
+
+/** Map a y/a/n answer to a permission decision (default deny on anything else). */
+function parseDecision(input: string): "once" | "always" | "deny" {
+  const c = input.trim().toLowerCase()[0];
+  if (c === "y") return "once";
+  if (c === "a") return "always";
+  return "deny";
+}
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s;
 }

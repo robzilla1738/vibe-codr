@@ -27,6 +27,7 @@ function App(props: { engine: EngineClient }) {
   let model = snap.model;
   let mode = snap.mode;
   let usage: SessionUsage = snap.usage;
+  let pendingPerm: string | null = null;
   const [status, setStatus] = createSignal(statusLine(model, mode, 0, usage));
 
   const append = (line: Line) => setLines((prev) => [...prev, line]);
@@ -64,6 +65,13 @@ function App(props: { engine: EngineClient }) {
             usage = event.usage;
             refreshStatus();
             break;
+          case "permission-request":
+            pendingPerm = event.id;
+            append({
+              kind: "notice",
+              text: `⚠ allow ${event.toolName}? [y]es · [a]lways · [n]o`,
+            });
+            break;
           case "plan-presented":
             append({ kind: "plan", text: `${event.plan}\n— run /execute to proceed` });
             streaming = null;
@@ -99,6 +107,14 @@ function App(props: { engine: EngineClient }) {
     const text = draft().trim();
     if (!text) return;
     setDraft("");
+    // While a permission prompt is pending, the next input answers it.
+    if (pendingPerm) {
+      const c = text.toLowerCase()[0];
+      const decision = c === "y" ? "once" : c === "a" ? "always" : "deny";
+      props.engine.send({ type: "resolve-permission", id: pendingPerm, decision });
+      pendingPerm = null;
+      return;
+    }
     // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.
     // keep their arguments (the same logic the REPL uses).
     props.engine.send(lineToCommand(text));

@@ -37,6 +37,12 @@ export const ConfigSchema = z.object({
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
   /** Tool permission rules, evaluated in order; first match wins. */
   permissions: z.array(PermissionRuleSchema).default([]),
+  /**
+   * Default handling for side-effecting tools with no matching rule:
+   * `ask` prompts interactively (auto-allowed when non-interactive),
+   * `auto` runs them without asking. Read-only tools are never gated.
+   */
+  approvalMode: z.enum(["ask", "auto"]).default("ask"),
   /** UI theme name. */
   theme: z.string().default("default"),
   /** Plugin module specifiers (npm names or local paths). */

@@ -23,18 +23,24 @@ function globToRegExp(glob: string): RegExp {
 export class PermissionChecker {
   #rules: { test: RegExp; action: PermissionRule["action"] }[];
   #resolve: PermissionResolver;
+  #defaultAction: PermissionRule["action"];
 
-  constructor(rules: PermissionRule[], resolver?: PermissionResolver) {
+  constructor(
+    rules: PermissionRule[],
+    resolver?: PermissionResolver,
+    defaultAction: PermissionRule["action"] = "allow",
+  ) {
     this.#rules = rules.map((r) => ({
       test: globToRegExp(r.tool),
       action: r.action,
     }));
     this.#resolve = resolver ?? (() => true);
+    this.#defaultAction = defaultAction;
   }
 
   async check(toolName: string, input: unknown): Promise<PermissionResult> {
     const rule = this.#rules.find((r) => r.test.test(toolName));
-    const action = rule?.action ?? "allow";
+    const action = rule?.action ?? this.#defaultAction;
     if (action === "allow") return { allowed: true };
     if (action === "deny") return { allowed: false, reason: "denied by policy" };
     const ok = await this.#resolve({ toolName, input });

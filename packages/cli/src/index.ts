@@ -87,7 +87,12 @@ export async function run(argv: string[]): Promise<number> {
     else process.stderr.write("No session to resume; starting fresh.\n");
   }
 
-  const engine = new Engine({ config, cwd, ...(resume ? { resume } : {}) });
+  const engine = new Engine({
+    config,
+    cwd,
+    interactive,
+    ...(resume ? { resume } : {}),
+  });
   await engine.bootstrap();
 
   // `vibe models` — list available models for configured providers and exit.

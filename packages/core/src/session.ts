@@ -310,6 +310,7 @@ export class Session {
       const checker = new PermissionChecker(
         config.permissions,
         this.#deps.permissionResolver,
+        config.approvalMode === "auto" ? "allow" : "ask",
       );
       const base: ToolRuntimeBase = {
         cwd: this.#deps.cwd,

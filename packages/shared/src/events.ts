@@ -48,6 +48,13 @@ export type UIEvent =
   | { type: "model-changed"; sessionId: string; model: string }
   | { type: "goal-changed"; sessionId: string; goal: string | null }
   | { type: "plan-presented"; sessionId: string; plan: string }
+  | {
+      type: "permission-request";
+      sessionId: string;
+      id: string;
+      toolName: string;
+      input: unknown;
+    }
   | { type: "tasks-updated"; sessionId: string; tasks: Task[] }
   | {
       type: "queue-changed";

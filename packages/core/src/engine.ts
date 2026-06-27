@@ -150,7 +150,14 @@ export class Engine implements EngineClient {
             initialModelMessages: resume.modelMessages,
             initialHistory: resume.history,
             ...(resume.meta.tasks ? { initialTasks: resume.meta.tasks } : {}),
-            ...(resume.meta.usage ? { initialUsage: resume.meta.usage } : {}),
+            ...(resume.meta.usage
+              ? {
+                  initialUsage: resume.meta.usage,
+                  ...(resume.meta.usage.costUSD !== undefined
+                    ? { initialCostUSD: resume.meta.usage.costUSD }
+                    : {}),
+                }
+              : {}),
           }
         : {}),
     });

@@ -29,7 +29,8 @@ import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages } from "./compaction.ts";
 import type { SessionStore } from "./store.ts";
-import { addUsage, sessionUsage, type TokenTotals } from "./usage.ts";
+import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
+import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const COMPACT_KEEP_RECENT = 6;
@@ -63,6 +64,8 @@ export interface SessionDeps {
   initialTasks?: Task[];
   /** Seed cumulative token usage when resuming a persisted session. */
   initialUsage?: TokenTotals;
+  /** Seed accrued cost (USD) when resuming a persisted session. */
+  initialCostUSD?: number;
   createdAt?: number;
   /** Resolve the active model's context window (for compaction). */
   getContextWindow?: (model: string) => Promise<number | undefined>;
@@ -86,6 +89,8 @@ export class Session {
   #history: Message[];
   #tasks: Task[];
   #usage: TokenTotals;
+  /** Cost accrued per step at the price in effect then (correct across model switches). */
+  #costUSD: number;
   #price: ModelPrice | undefined;
   #turnMutated = false;
   #createdAt: number;
@@ -104,6 +109,7 @@ export class Session {
       inputTokens: deps.initialUsage?.inputTokens ?? 0,
       outputTokens: deps.initialUsage?.outputTokens ?? 0,
     };
+    this.#costUSD = deps.initialCostUSD ?? 0;
     this.#createdAt = deps.createdAt ?? Date.now();
   }
 
@@ -115,8 +121,18 @@ export class Session {
       goal: this.goal,
       history: this.#history,
       tasks: this.#tasks,
-      usage: sessionUsage(this.#usage, this.#price),
+      usage: this.#usageSnapshot(),
       busy: this.busy,
+    };
+  }
+
+  /** Current cumulative token + accrued-cost view for the UI. */
+  #usageSnapshot(): SessionUsage {
+    return {
+      inputTokens: this.#usage.inputTokens,
+      outputTokens: this.#usage.outputTokens,
+      totalTokens: this.#usage.inputTokens + this.#usage.outputTokens,
+      costUSD: this.#costUSD,
     };
   }
 
@@ -357,10 +373,17 @@ export class Session {
             usage: stepUsage,
           });
           addUsage(this.#usage, stepUsage);
+          // Accrue cost at the price in effect for this step, so a mid-session
+          // model/price change doesn't retroactively reprice earlier tokens.
+          this.#costUSD += computeCost(
+            stepUsage?.inputTokens ?? 0,
+            stepUsage?.outputTokens ?? 0,
+            this.#price,
+          );
           bus.emit({
             type: "usage-updated",
             sessionId: this.id,
-            usage: sessionUsage(this.#usage, this.#price),
+            usage: this.#usageSnapshot(),
           });
         },
       });
@@ -449,7 +472,7 @@ export class Session {
           mode: this.mode,
           goal: this.goal,
           tasks: this.#tasks,
-          usage: { ...this.#usage },
+          usage: { ...this.#usage, costUSD: this.#costUSD },
           createdAt: this.#createdAt,
           updatedAt: Date.now(),
         },

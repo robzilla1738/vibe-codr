@@ -1,4 +1,4 @@
-import type { SessionUsage, Usage } from "@vibe/shared";
+import type { Usage } from "@vibe/shared";
 import type { ModelPrice } from "@vibe/config";
 
 /** A running token total accumulated across a session's steps. */
@@ -24,17 +24,4 @@ export function computeCost(
   const inCost = price.input ? (inputTokens / 1_000_000) * price.input : 0;
   const outCost = price.output ? (outputTokens / 1_000_000) * price.output : 0;
   return inCost + outCost;
-}
-
-/** Build a `SessionUsage` snapshot from totals and the active model's price. */
-export function sessionUsage(
-  total: TokenTotals,
-  price: ModelPrice | undefined,
-): SessionUsage {
-  return {
-    inputTokens: total.inputTokens,
-    outputTokens: total.outputTokens,
-    totalTokens: total.inputTokens + total.outputTokens,
-    costUSD: computeCost(total.inputTokens, total.outputTokens, price),
-  };
 }

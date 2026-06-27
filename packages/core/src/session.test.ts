@@ -190,6 +190,87 @@ test("persists after a turn and can be resumed with prior context", async () => 
   expect(resumed.messageCount).toBeGreaterThanOrEqual(4);
 });
 
+test("accumulates per-step usage and prices it (no double-counting)", async () => {
+  // Two steps, each reporting USAGE (10 in / 5 out). onStepFinish usage is
+  // per-step, so the turn total must be the SUM, not a cumulative re-count.
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "c1", toolName: "echo", input: JSON.stringify({ text: "x" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "done" },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([echoTool]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    getPricing: async () => ({ input: 3, output: 15 }), // USD per 1M tokens
+  });
+
+  const events = await collect(bus, () => session.run("go"));
+  const last = [...events].reverse().find((e) => e.type === "usage-updated");
+  expect(last && last.type === "usage-updated" && last.usage.totalTokens).toBe(30);
+
+  const usage = session.snapshot().usage;
+  expect(usage.inputTokens).toBe(20); // 2 steps × 10
+  expect(usage.outputTokens).toBe(10); // 2 steps × 5
+  // 20/1e6*3 + 10/1e6*15 = 0.00006 + 0.00015
+  expect(usage.costUSD).toBeCloseTo(0.00021, 9);
+});
+
+test("cost accrues at the price in effect per step, across a model switch", async () => {
+  const reply = () =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "ok" },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE }, // 10 in / 5 out
+    ]);
+  let call = 0;
+  const replies = [reply(), reply()];
+  const model = new MockLanguageModelV2({ doStream: async () => replies[call++] as never });
+
+  const prices: Record<string, { input: number; output: number }> = {
+    "mock/cheap": { input: 1, output: 1 },
+    "mock/dear": { input: 10, output: 10 },
+  };
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/cheap",
+    mode: "execute",
+    getPricing: async (m) => prices[m],
+  });
+
+  await session.run("first"); // priced cheap: 15 tok × $1/1M = 0.000015
+  session.setModel("mock/dear");
+  await session.run("second"); // priced dear: 15 tok × $10/1M = 0.00015
+  bus.close();
+
+  // Accrual = 0.000015 + 0.00015, NOT 30 tok × $10/1M (= 0.0003).
+  expect(session.snapshot().usage.costUSD).toBeCloseTo(0.000165, 9);
+});
+
 test("a deny permission rule blocks a side-effecting tool", async () => {
   const dangerTool: ToolDefinition<{ x: string }> = {
     name: "danger",

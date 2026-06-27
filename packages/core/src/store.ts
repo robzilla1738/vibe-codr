@@ -10,8 +10,8 @@ export interface SessionMeta {
   goal: string | null;
   /** The working task list at the time of the last save. */
   tasks?: Task[];
-  /** Cumulative token usage at the time of the last save. */
-  usage?: { inputTokens: number; outputTokens: number };
+  /** Cumulative token usage + accrued cost at the time of the last save. */
+  usage?: { inputTokens: number; outputTokens: number; costUSD?: number };
   createdAt: number;
   updatedAt: number;
 }

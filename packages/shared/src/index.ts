@@ -5,6 +5,9 @@ export type {
   Part,
   Usage,
   Message,
+  Task,
+  TaskStatus,
+  QueuedItem,
   EngineSnapshot,
 } from "./types.ts";
 

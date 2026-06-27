@@ -1,4 +1,4 @@
-import type { Mode, Usage } from "./types.ts";
+import type { Mode, QueuedItem, Task, Usage } from "./types.ts";
 
 /**
  * Events emitted by the engine and consumed by any UI (TUI, headless printer).
@@ -47,6 +47,14 @@ export type UIEvent =
   | { type: "model-changed"; sessionId: string; model: string }
   | { type: "goal-changed"; sessionId: string; goal: string | null }
   | { type: "plan-presented"; sessionId: string; plan: string }
+  | { type: "tasks-updated"; sessionId: string; tasks: Task[] }
+  | {
+      type: "queue-changed";
+      /** Item currently running, if any. */
+      active: QueuedItem | null;
+      /** Items waiting to run, in order. */
+      pending: QueuedItem[];
+    }
   | { type: "compacted"; sessionId: string; freedTokens: number }
   | { type: "subagent-started"; sessionId: string; subagentId: string; prompt: string }
   | { type: "subagent-finished"; sessionId: string; subagentId: string; result: string }

@@ -5,6 +5,7 @@ import type { ModelInfo } from "./types.ts";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const FETCH_TIMEOUT_MS = 8000;
 
 interface CacheFile {
   fetchedAt: number;
@@ -21,6 +22,7 @@ export class CatalogService {
   #log: Logger;
   #cachePath: string;
   #metadata: Map<string, Partial<ModelInfo>> | null = null;
+  #loadPromise: Promise<Map<string, Partial<ModelInfo>>> | null = null;
 
   constructor(log: Logger = createLogger("catalog")) {
     this.#log = log;
@@ -32,26 +34,37 @@ export class CatalogService {
     );
   }
 
-  /** Best-effort context window (tokens) for a `provider/model` string. */
+  /**
+   * Best-effort context window (tokens) for a `provider/model` string.
+   * NON-BLOCKING: if the catalog isn't loaded yet, this kicks off a background
+   * load and returns `undefined` so the caller (per-turn compaction) never
+   * stalls on the network. Subsequent turns get the real value once it lands.
+   */
   async contextWindow(modelString: string): Promise<number | undefined> {
-    const meta = await this.#loadMetadata();
-    return meta.get(modelString)?.contextWindow;
+    if (this.#metadata) return this.#metadata.get(modelString)?.contextWindow;
+    void this.#load(); // warm the cache for next time, but don't wait on it
+    return undefined;
   }
 
-  /** Enrich live models with models.dev metadata (best-effort). */
+  /** Enrich live models with models.dev metadata (best-effort, awaits load). */
   async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
-    const meta = await this.#loadMetadata();
+    const meta = await this.#load();
     return live.map((m) => {
       const extra = meta.get(`${m.providerId}/${m.id}`);
       return extra ? { ...extra, ...m } : m;
     });
   }
 
-  async #loadMetadata(): Promise<Map<string, Partial<ModelInfo>>> {
-    if (this.#metadata) return this.#metadata;
-    const raw = await this.#fetchCatalog();
-    this.#metadata = raw ? parseModelsDev(raw) : new Map();
-    return this.#metadata;
+  /** Load (and memoize) the catalog metadata; a single in-flight fetch is shared. */
+  #load(): Promise<Map<string, Partial<ModelInfo>>> {
+    if (this.#metadata) return Promise.resolve(this.#metadata);
+    if (!this.#loadPromise) {
+      this.#loadPromise = this.#fetchCatalog().then((raw) => {
+        this.#metadata = raw ? parseModelsDev(raw) : new Map();
+        return this.#metadata;
+      });
+    }
+    return this.#loadPromise;
   }
 
   async #fetchCatalog(): Promise<unknown | null> {
@@ -60,7 +73,9 @@ export class CatalogService {
       return cached.data;
     }
     try {
-      const res = await fetch(MODELS_DEV_URL);
+      const res = await fetch(MODELS_DEV_URL, {
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       await this.#writeCache({ fetchedAt: Date.now(), data });

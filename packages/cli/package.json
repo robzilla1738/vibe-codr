@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "bin": {
-    "vibe": "./bin/vibe.ts"
+    "vibecodr": "./bin/vibecodr.ts",
+    "vibe": "./bin/vibecodr.ts"
   },
   "exports": {
     ".": "./src/index.ts"

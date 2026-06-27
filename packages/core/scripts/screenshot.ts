@@ -234,7 +234,7 @@ async function buildScenes(): Promise<Scene[]> {
           type: "text-delta",
           id: "b",
           delta:
-            "Found 7 package entry points. The CLI is wired in\n`packages/cli/bin/vibe.ts`: it loads config, builds the Engine,\nand hands off to the TUI (or headless `-p`). The agent loop lives in\n`packages/core/src/session.ts`.",
+            "Found 7 package entry points. The CLI is wired in\n`packages/cli/bin/vibecodr.ts`: it loads config, builds the Engine,\nand hands off to the TUI (or headless `-p`). The agent loop lives in\n`packages/core/src/session.ts`.",
         },
         { type: "text-end", id: "b" },
         { type: "finish", finishReason: "stop", usage: USAGE },

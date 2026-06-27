@@ -7,6 +7,7 @@ import {
   type EngineCommand,
   type EngineSnapshot,
   type Logger,
+  type QueuedItem,
   type UIEvent,
 } from "@vibe/shared";
 import type { Config } from "@vibe/config";
@@ -65,7 +66,10 @@ export class Engine implements EngineClient {
   #cwd: string;
   #session: Session;
   #log: Logger;
-  #queue: Promise<void> = Promise.resolve();
+  #pending: { id: string; label: string; run: () => Promise<void> }[] = [];
+  #active: QueuedItem | null = null;
+  #draining = false;
+  #idleResolvers: (() => void)[] = [];
   #agents = new Map<string, NamedAgent>();
   #loop: LoopController | undefined;
   #permissionResolver: PermissionResolver | undefined;
@@ -105,6 +109,7 @@ export class Engine implements EngineClient {
             createdAt: resume.meta.createdAt,
             initialModelMessages: resume.modelMessages,
             initialHistory: resume.history,
+            ...(resume.meta.tasks ? { initialTasks: resume.meta.tasks } : {}),
           }
         : {}),
     });
@@ -154,9 +159,10 @@ export class Engine implements EngineClient {
     return this.#session.snapshot();
   }
 
-  /** Resolves when the queued commands (prompts, slashes) have drained. */
+  /** Resolves when the queue (running + pending work) has fully drained. */
   whenIdle(): Promise<void> {
-    return this.#queue;
+    if (!this.#draining && this.#pending.length === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => this.#idleResolvers.push(resolve));
   }
 
   /** Emit the initial session-start event (call once after subscribing). */
@@ -172,7 +178,9 @@ export class Engine implements EngineClient {
   send(command: EngineCommand): void {
     switch (command.type) {
       case "submit-prompt":
-        this.#enqueue(() => this.#handlePrompt(command.text));
+        this.#enqueue(queueLabel(command.text), () =>
+          this.#handlePrompt(command.text),
+        );
         break;
       case "set-mode":
         this.#session.setMode(command.mode);
@@ -184,19 +192,70 @@ export class Engine implements EngineClient {
         this.#session.setGoal(command.goal);
         break;
       case "abort":
+        // Drop everything still waiting, then cancel the in-flight turn.
+        if (this.#pending.length) {
+          this.#pending = [];
+          this.#emitQueue();
+        }
         this.#session.abort();
         break;
       case "run-slash":
-        this.#enqueue(() => this.#handleSlash(command.name, command.args));
+        // `/queue` inspects/clears the queue, so it must run immediately rather
+        // than wait behind the work it is meant to describe.
+        if (command.name === "queue") this.#handleQueueCommand(command.args);
+        else
+          this.#enqueue(`/${command.name}`, () =>
+            this.#handleSlash(command.name, command.args),
+          );
         break;
       case "compact":
-        this.#enqueue(() => this.#session.compact());
+        this.#enqueue("/compact", () => this.#session.compact());
         break;
       case "shutdown":
         this.#loop?.stop("shutdown");
         this.#bus.close();
         break;
     }
+  }
+
+  /** Snapshot of the queue for first paint / `/queue`. */
+  queueState(): { active: QueuedItem | null; pending: QueuedItem[] } {
+    return {
+      active: this.#active,
+      pending: this.#pending.map(({ id, label }) => ({ id, label })),
+    };
+  }
+
+  /** `/queue` (show pending) and `/queue clear` (drop everything waiting). */
+  #handleQueueCommand(args: string): void {
+    if (args.trim() === "clear") {
+      const dropped = this.#pending.length;
+      if (dropped) {
+        this.#pending = [];
+        this.#emitQueue();
+      }
+      this.#notice(
+        dropped ? `Cleared ${dropped} queued item(s).` : "Queue is already empty.",
+      );
+      return;
+    }
+    const { active, pending } = this.queueState();
+    const lines: string[] = [];
+    if (active) lines.push(`● running: ${active.label}`);
+    pending.forEach((p, i) => lines.push(`${i + 1}. ${p.label}`));
+    this.#notice(
+      lines.length
+        ? `Queue:\n${lines.join("\n")}`
+        : "Queue is empty. Type ahead while a turn runs to queue prompts; /queue clear drops them.",
+    );
+  }
+
+  #emitQueue(): void {
+    this.#bus.emit({
+      type: "queue-changed",
+      active: this.#active,
+      pending: this.#pending.map(({ id, label }) => ({ id, label })),
+    });
   }
 
   /** Build an ephemeral session sharing infra but with a fresh context. */
@@ -373,20 +432,58 @@ export class Engine implements EngineClient {
     );
   }
 
-  /** Run prompts one at a time to keep history consistent. */
-  #enqueue(task: () => Promise<void>): void {
-    this.#queue = this.#queue.then(task).catch((err) => {
-      this.#log.error("turn failed", err);
-      this.#bus.emit({
-        type: "engine-error",
-        sessionId: this.#session.id,
-        message: (err as Error).message,
-      });
-    });
+  /**
+   * Append a unit of work to the queue and ensure the drainer is running.
+   * Work runs strictly one at a time (FIFO) so history stays consistent; extra
+   * prompts submitted while busy become a visible, cancelable backlog.
+   */
+  #enqueue(label: string, run: () => Promise<void>): void {
+    this.#pending.push({ id: createId("q"), label, run });
+    // Only surface the queue when something is actually waiting behind active
+    // work; a lone item drains immediately and would otherwise just flicker.
+    if (this.#draining) this.#emitQueue();
+    void this.#drain();
+  }
+
+  /** Run queued work to completion, emitting queue state as it changes. */
+  async #drain(): Promise<void> {
+    if (this.#draining) return;
+    this.#draining = true;
+    do {
+      while (this.#pending.length) {
+        const item = this.#pending.shift()!;
+        this.#active = { id: item.id, label: item.label };
+        this.#emitQueue();
+        try {
+          await item.run();
+        } catch (err) {
+          this.#log.error("turn failed", err);
+          this.#bus.emit({
+            type: "engine-error",
+            sessionId: this.#session.id,
+            message: (err as Error).message,
+          });
+        }
+      }
+      this.#active = null;
+      this.#emitQueue();
+      // Yield a macrotask so subscribers flush their buffered events before we
+      // report idle — callers awaiting whenIdle() then see a delivered stream.
+      // (New work may also have been queued during this gap; the loop re-checks.)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } while (this.#pending.length);
+    this.#draining = false;
+    for (const resolve of this.#idleResolvers.splice(0)) resolve();
   }
 
   async #handlePrompt(text: string): Promise<void> {
     const hooked = await this.hooks.run("user.prompt.submit", { text });
     await this.#session.run(hooked.text);
   }
+}
+
+/** A short one-line label for a queued prompt. */
+function queueLabel(text: string): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > 48 ? `${oneLine.slice(0, 47)}…` : oneLine;
 }

@@ -7,10 +7,11 @@
   "description": "A cutting-edge, model-agnostic CLI coding agent for the terminal.",
   "workspaces": ["packages/*"],
   "bin": {
-    "vibe": "packages/cli/bin/vibe.ts"
+    "vibecodr": "packages/cli/bin/vibecodr.ts",
+    "vibe": "packages/cli/bin/vibecodr.ts"
   },
   "scripts": {
-    "vibe": "bun packages/cli/bin/vibe.ts",
+    "vibecodr": "bun packages/cli/bin/vibecodr.ts",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",

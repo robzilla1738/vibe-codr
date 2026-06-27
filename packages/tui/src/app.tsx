@@ -8,21 +8,32 @@
  * installed, adjust the component imports below to match its current API.
  */
 import { render } from "@opentui/solid";
-import { createSignal, onMount, For } from "solid-js";
-import type { EngineClient, UIEvent } from "@vibe/shared";
+import { createSignal, onMount, For, Show } from "solid-js";
+import type { EngineClient, Task, UIEvent } from "@vibe/shared";
 
 interface Line {
-  kind: "user" | "assistant" | "tool" | "notice";
+  kind: "user" | "assistant" | "tool" | "notice" | "plan" | "subagent";
   text: string;
 }
+
+const TASK_GLYPH: Record<Task["status"], string> = {
+  completed: "✔",
+  in_progress: "▶",
+  pending: "○",
+};
 
 function App(props: { engine: EngineClient }) {
   const snap = props.engine.snapshot();
   const [lines, setLines] = createSignal<Line[]>([]);
   const [draft, setDraft] = createSignal("");
-  const [status, setStatus] = createSignal(`${snap.model} · ${snap.mode}`);
+  const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
+  const [queued, setQueued] = createSignal(0);
+  let model = snap.model;
+  let mode = snap.mode;
+  const [status, setStatus] = createSignal(statusLine(model, mode, 0));
 
   const append = (line: Line) => setLines((prev) => [...prev, line]);
+  const refreshStatus = () => setStatus(statusLine(model, mode, queued()));
 
   onMount(() => {
     void (async () => {
@@ -45,11 +56,30 @@ function App(props: { engine: EngineClient }) {
             append({ kind: "tool", text: `⚒ ${event.toolName}` });
             streaming = null;
             break;
+          case "tasks-updated":
+            setTasks(event.tasks);
+            break;
+          case "queue-changed":
+            setQueued(event.pending.length);
+            refreshStatus();
+            break;
+          case "plan-presented":
+            append({ kind: "plan", text: `${event.plan}\n— run /execute to proceed` });
+            streaming = null;
+            break;
+          case "subagent-started":
+            append({ kind: "subagent", text: `⤷ subagent: ${event.prompt}` });
+            break;
+          case "subagent-finished":
+            append({ kind: "subagent", text: `⤶ subagent done` });
+            break;
           case "mode-changed":
-            setStatus(`${snap.model} · ${event.mode}`);
+            mode = event.mode;
+            refreshStatus();
             break;
           case "model-changed":
-            setStatus(`${event.model} · ${snap.mode}`);
+            model = event.model;
+            refreshStatus();
             break;
           case "notice":
             append({ kind: "notice", text: event.message });
@@ -87,26 +117,57 @@ function App(props: { engine: EngineClient }) {
           )}
         </For>
       </box>
+      <Show when={tasks().length > 0}>
+        <box border title="Tasks" flexDirection="column">
+          <For each={tasks()}>
+            {(task) => (
+              <text fg={taskColor(task.status)}>
+                {`${TASK_GLYPH[task.status]} ${task.title}`}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
       <box border title={status()}>
         <input
           value={draft()}
           onInput={(v: string) => setDraft(v)}
           onSubmit={submit}
-          placeholder="Ask vibe-codr…  (/plan, /execute, /model <id>, /goal <text>)"
+          placeholder="Ask vibe-codr…  (/plan, /execute, /model <id>, /goal <text>, /queue)"
         />
       </box>
     </box>
   );
 }
 
+function statusLine(model: string, mode: string, queued: number): string {
+  const q = queued > 0 ? ` · ${queued} queued` : "";
+  return `${model} · ${mode}${q}`;
+}
+
 function colorFor(kind: Line["kind"]): string {
-  return kind === "user"
-    ? "#7aa2f7"
-    : kind === "tool"
+  switch (kind) {
+    case "user":
+      return "#7aa2f7";
+    case "tool":
+      return "#7dcfff";
+    case "notice":
+      return "#e0af68";
+    case "plan":
+      return "#bb9af7";
+    case "subagent":
+      return "#9ece6a";
+    default:
+      return "#c0caf5";
+  }
+}
+
+function taskColor(status: Task["status"]): string {
+  return status === "completed"
+    ? "#565f89"
+    : status === "in_progress"
       ? "#7dcfff"
-      : kind === "notice"
-        ? "#e0af68"
-        : "#c0caf5";
+      : "#c0caf5";
 }
 
 function prefixFor(kind: Line["kind"]): string {

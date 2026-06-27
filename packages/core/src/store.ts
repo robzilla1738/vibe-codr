@@ -1,13 +1,15 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
-import type { Message, Mode } from "@vibe/shared";
+import type { Message, Mode, Task } from "@vibe/shared";
 
 export interface SessionMeta {
   id: string;
   model: string;
   mode: Mode;
   goal: string | null;
+  /** The working task list at the time of the last save. */
+  tasks?: Task[];
   createdAt: number;
   updatedAt: number;
 }

@@ -7,10 +7,13 @@ Fireworks, Baseten**), and first-party providers (**OpenAI, Anthropic, DeepSeek,
 xAI/Grok**).
 
 > Status: **feature-complete core (Phases 0–7).** Multi-provider agent loop,
-> live model catalog, plan/execute modes with a permission layer, subagents,
-> slash commands / skills / plugins, `/goal` + `/loop`, and session persistence
-> with context-aware compaction — all covered by 50+ tests (including
-> mock-model integration tests of the agent loop with zero network).
+> live model catalog, plan/execute modes with a permission layer, a live
+> **task list**, an observable **prompt queue**, subagents, slash commands /
+> skills / plugins, `/goal` + `/loop`, and session persistence with
+> context-aware compaction — all covered by 55+ tests (including mock-model
+> integration tests of the agent loop with zero network).
+>
+> The terminal command is **`vibecodr`** (`vibe` works as an alias).
 
 ## Stack
 
@@ -43,28 +46,31 @@ the engine is fully testable headless.
 
 ```bash
 bun install
+bun link                      # makes `vibecodr` available on your PATH
 cp .env.example .env          # add the provider key(s) you use
 
 # one-shot (headless / pipeable)
-bun packages/cli/bin/vibe.ts -p "list the TS files and read package.json" \
+vibecodr -p "list the TS files and read package.json" \
   --model anthropic/claude-opus-4-8
 
 # interactive
-bun packages/cli/bin/vibe.ts
+vibecodr
 
 # other entry points
-bun packages/cli/bin/vibe.ts models           # list models for configured providers
-bun packages/cli/bin/vibe.ts --continue        # resume the most recent session
-bun packages/cli/bin/vibe.ts --resume <id>     # resume a specific session
+vibecodr models               # list models for configured providers
+vibecodr --continue           # resume the most recent session
+vibecodr --resume <id>        # resume a specific session
+
+# (without linking, run from source: `bun packages/cli/bin/vibecodr.ts ...`)
 ```
 
 ### In-session commands
 
 `/help` · `/model <id>` · `/models` · `/plan` · `/execute` · `/goal <text>` ·
 `/agents` · `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`) ·
-`/compact` · `/clear` · `/init`. Custom commands live in `.vibe/commands/*.md`,
-skills in `.vibe/skills/*/SKILL.md`, named subagents in `.vibe/agents/*.md`, and
-plugins are listed in config.
+`/queue` (`/queue clear`) · `/compact` · `/clear` · `/init`. Custom commands live
+in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`, named subagents in
+`.vibe/agents/*.md`, and plugins are listed in config.
 
 ### Features
 
@@ -72,6 +78,14 @@ plugins are listed in config.
   or run commands); the model calls `present_plan`, and you approve via
   `/execute`. A glob-based allow/deny/ask **permission layer** gates
   side-effecting tools.
+- **Task list** — for any multi-step request the agent maintains a live
+  checklist via the `update_tasks` tool (pending / in-progress / completed),
+  rendered in the UI and persisted with the session so it survives `--resume`.
+  The list can be seeded while planning and carries into execution.
+- **Prompt queue** — type-ahead while a turn is running; submitted prompts form
+  a visible, ordered backlog that drains one at a time so history stays
+  consistent. `/queue` shows it, `/queue clear` (or aborting) drops what's
+  waiting.
 - **Subagents** — `spawn_subagent` forks an isolated child with its own context
   that returns only its final answer; depth-capped and parallel-safe.
 - **`/goal`** injects a north-star into every system prompt; **`/loop`** reruns a

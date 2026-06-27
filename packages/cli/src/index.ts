@@ -5,12 +5,12 @@ import { runOneShot, startTui } from "@vibe/tui";
 
 export const VERSION = "0.0.0";
 
-const HELP = `vibe-codr ${VERSION} — a model-agnostic coding agent for the terminal
+const HELP = `vibecodr ${VERSION} — a model-agnostic coding agent for the terminal
 
 USAGE
-  vibe [options]                 start the interactive TUI
-  vibe -p "<prompt>" [options]   run one prompt headlessly and print the result
-  vibe models [options]          list available models for configured providers
+  vibecodr [options]                 start the interactive TUI
+  vibecodr -p "<prompt>" [options]   run one prompt headlessly and print the result
+  vibecodr models [options]          list available models for configured providers
 
 OPTIONS
   -p, --prompt <text>   run a single prompt (headless / pipeable)

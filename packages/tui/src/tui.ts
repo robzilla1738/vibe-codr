@@ -50,8 +50,10 @@ function slashToCommand(line: string): EngineCommand | null {
 async function startRepl(engine: EngineClient): Promise<void> {
   const snap = engine.snapshot();
   process.stdout.write(
-    `${ansi.bold("vibe-codr")} ${ansi.dim(`(${snap.model}, ${snap.mode} mode)`)}\n` +
-      ansi.dim("Type a prompt, /plan, /execute, /model <id>, /goal <text>, or /exit.\n\n"),
+    `${ansi.bold("vibecodr")} ${ansi.dim(`(${snap.model}, ${snap.mode} mode)`)}\n` +
+      ansi.dim(
+        "Type a prompt, /plan, /execute, /model <id>, /goal <text>, /queue, or /exit.\n\n",
+      ),
   );
 
   // Print engine events in the background.

@@ -1,5 +1,29 @@
-import type { EngineClient, UIEvent } from "@vibe/shared";
+import type { EngineClient, Task, UIEvent } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
+
+const TASK_GLYPH: Record<Task["status"], string> = {
+  completed: "✔",
+  in_progress: "▶",
+  pending: "○",
+};
+
+/** Render the task list as an indented checklist. */
+export function formatTasks(tasks: Task[]): string {
+  if (!tasks.length) return "";
+  const lines = tasks.map((t) => {
+    const glyph = TASK_GLYPH[t.status];
+    const color =
+      t.status === "completed"
+        ? ansi.green
+        : t.status === "in_progress"
+          ? ansi.cyan
+          : ansi.dim;
+    const title = t.status === "completed" ? ansi.dim(t.title) : t.title;
+    return `  ${color(glyph)} ${title}`;
+  });
+  const done = tasks.filter((t) => t.status === "completed").length;
+  return `${ansi.dim(`Tasks (${done}/${tasks.length})`)}\n${lines.join("\n")}`;
+}
 
 export interface HeadlessOptions {
   /** Print reasoning deltas (default false). */
@@ -60,6 +84,21 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
           "Run /execute to proceed.",
         )}\n`,
       );
+      break;
+    case "tasks-updated":
+      if (event.tasks.length) process.stderr.write(`\n${formatTasks(event.tasks)}\n`);
+      break;
+    case "queue-changed":
+      // Only surface a backlog (type-ahead); the active item is shown elsewhere.
+      if (event.pending.length) {
+        process.stderr.write(
+          `${ansi.dim(
+            `↳ ${event.pending.length} queued: ${event.pending
+              .map((p) => p.label)
+              .join(", ")}`,
+          )}\n`,
+        );
+      }
       break;
     case "notice":
       process.stderr.write(

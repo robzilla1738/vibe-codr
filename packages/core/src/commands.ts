@@ -17,6 +17,7 @@ export const BUILTIN_COMMANDS: BuiltinCommandMeta[] = [
   { name: "goal", description: "Set or clear the north-star goal (/goal <text>)" },
   { name: "agents", description: "List named subagents" },
   { name: "loop", description: "Run a prompt on a loop (/loop <interval> <prompt>)" },
+  { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
   { name: "compact", description: "Compact the conversation history" },
   { name: "clear", description: "Clear the conversation history" },
   { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },

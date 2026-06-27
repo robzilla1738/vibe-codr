@@ -12,6 +12,8 @@ import {
   type Message,
   type Mode,
   type Part,
+  type Task,
+  type TaskStatus,
   type ToolDefinition,
   type UIEvent,
   type Usage,
@@ -56,6 +58,8 @@ export interface SessionDeps {
   /** Seed context/history when resuming a persisted session. */
   initialModelMessages?: ModelMessage[];
   initialHistory?: Message[];
+  /** Seed the working task list when resuming a persisted session. */
+  initialTasks?: Task[];
   createdAt?: number;
   /** Resolve the active model's context window (for compaction). */
   getContextWindow?: (model: string) => Promise<number | undefined>;
@@ -75,6 +79,7 @@ export class Session {
   #deps: SessionDeps;
   #modelMessages: ModelMessage[];
   #history: Message[];
+  #tasks: Task[];
   #createdAt: number;
   #abort = new AbortController();
 
@@ -86,6 +91,7 @@ export class Session {
     this.goal = deps.goal ?? null;
     this.#modelMessages = deps.initialModelMessages ?? [];
     this.#history = deps.initialHistory ?? [];
+    this.#tasks = deps.initialTasks ?? [];
     this.#createdAt = deps.createdAt ?? Date.now();
   }
 
@@ -96,8 +102,14 @@ export class Session {
       mode: this.mode,
       goal: this.goal,
       history: this.#history,
+      tasks: this.#tasks,
       busy: this.busy,
     };
+  }
+
+  /** The current working task list (a copy; mutate via the update_tasks tool). */
+  get tasks(): Task[] {
+    return this.#tasks;
   }
 
   setMode(mode: Mode): void {
@@ -124,6 +136,7 @@ export class Session {
   clear(): void {
     this.#modelMessages = [];
     this.#history = [];
+    if (this.#tasks.length) this.setTasks([]);
     this.#deps.bus.emit({
       type: "notice",
       level: "info",
@@ -207,6 +220,54 @@ export class Session {
     };
   }
 
+  /**
+   * Replace the working task list. Reuses the id of any existing task with the
+   * same title so UI list keys stay stable across updates. Emits `tasks-updated`.
+   */
+  setTasks(incoming: { title: string; status: TaskStatus }[]): Task[] {
+    const byTitle = new Map(this.#tasks.map((t) => [t.title, t]));
+    this.#tasks = incoming.map((t) => ({
+      id: byTitle.get(t.title)?.id ?? createId("task"),
+      title: t.title,
+      status: t.status,
+    }));
+    this.#deps.bus.emit({
+      type: "tasks-updated",
+      sessionId: this.id,
+      tasks: this.#tasks,
+    });
+    return this.#tasks;
+  }
+
+  /** Build the per-session `update_tasks` tool (closes over this session). */
+  #tasksTool(): ToolDefinition<{
+    tasks: { title: string; status: TaskStatus }[];
+  }> {
+    const Task = z.object({
+      title: z.string().describe("Short imperative description of the task."),
+      status: z
+        .enum(["pending", "in_progress", "completed"])
+        .describe("Exactly one task should be in_progress at a time."),
+    });
+    return {
+      name: "update_tasks",
+      description:
+        "Record and update your working task list for a multi-step request. " +
+        "Pass the COMPLETE list every time (it replaces the previous one). " +
+        "Keep exactly one task in_progress, mark tasks completed as you finish " +
+        "them, and add new tasks as they emerge. Use this to plan and to show " +
+        "the user live progress on non-trivial work.",
+      inputSchema: z.object({ tasks: z.array(Task) }),
+      readOnly: true,
+      concurrencySafe: false,
+      execute: async ({ tasks }) => {
+        const updated = this.setTasks(tasks);
+        const done = updated.filter((t) => t.status === "completed").length;
+        return { output: `Task list updated (${done}/${updated.length} complete).` };
+      },
+    };
+  }
+
   /** Execute one agentic turn for `input`. Resolves when the turn ends. */
   async run(input: string): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;
@@ -239,6 +300,9 @@ export class Session {
       };
 
       const tools = toolset.aiTools(this.mode, base);
+      // The task list is available in both modes: the model can lay out tasks
+      // while planning, and they carry over into execution.
+      tools["update_tasks"] = toAISDKTool(this.#tasksTool(), base);
       // Subagents do real work, so only offer spawning in execute mode and
       // below the configured recursion depth.
       if (this.mode === "execute" && this.depth < config.subagent.maxDepth) {
@@ -349,6 +413,7 @@ export class Session {
           model: this.model,
           mode: this.mode,
           goal: this.goal,
+          tasks: this.#tasks,
           createdAt: this.#createdAt,
           updatedAt: Date.now(),
         },

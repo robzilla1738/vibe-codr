@@ -15,6 +15,9 @@ interface GitResult {
   stderr: string;
 }
 
+/** Keep at most this many checkpoints; older refs are pruned. */
+const MAX_CHECKPOINTS = 50;
+
 /**
  * Workspace checkpoints via git plumbing — a safety net for agent edits. Each
  * snapshot is a commit object on a hidden `refs/vibecodr/*` ref (GC-safe,
@@ -99,6 +102,11 @@ export class CheckpointManager {
 
     const cp: Checkpoint = { id, label, commit, createdAt: Date.now() };
     this.#list.push(cp);
+    // Prune the oldest checkpoints so refs don't grow without bound.
+    while (this.#list.length > MAX_CHECKPOINTS) {
+      const old = this.#list.shift();
+      if (old) await this.#git(["update-ref", "-d", `refs/vibecodr/${old.id}`]);
+    }
     await this.#save();
     return cp;
   }

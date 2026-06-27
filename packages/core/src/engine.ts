@@ -431,8 +431,12 @@ export class Engine implements EngineClient {
     const custom = this.commands.get(name);
     if (custom) {
       const result = custom.run(args);
-      if (result.kind === "prompt") await this.#session.run(result.text);
-      else if (result.kind === "command") this.send(result.command);
+      if (result.kind === "prompt") {
+        // Treat an expanded command like a user prompt: checkpoint, hooks,
+        // and auto-verify all apply, and it starts a fresh verify budget.
+        this.#verifyAttempts = 0;
+        await this.#handlePrompt(result.text);
+      } else if (result.kind === "command") this.send(result.command);
       else this.#notice(result.message);
       return;
     }

@@ -2,7 +2,7 @@ import * as readline from "node:readline";
 import type { EngineClient } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { renderHeadless } from "./headless.ts";
-import { lineToCommand } from "./slash.ts";
+import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 
 /**
  * Start the interactive UI. Tries the OpenTUI app first; if OpenTUI isn't
@@ -60,7 +60,11 @@ async function startRepl(engine: EngineClient): Promise<void> {
       const trimmed = line.trim();
       const permId = pendingPerms.shift();
       if (permId) {
-        engine.send({ type: "resolve-permission", id: permId, decision: parseDecision(trimmed) });
+        engine.send({
+          type: "resolve-permission",
+          id: permId,
+          decision: parsePermissionDecision(trimmed),
+        });
         ask();
         return;
       }
@@ -74,14 +78,6 @@ async function startRepl(engine: EngineClient): Promise<void> {
   ask();
 
   await new Promise<void>((resolve) => rl.on("close", resolve));
-}
-
-/** Map a y/a/n answer to a permission decision (default deny on anything else). */
-function parseDecision(input: string): "once" | "always" | "deny" {
-  const c = input.trim().toLowerCase()[0];
-  if (c === "y") return "once";
-  if (c === "a") return "always";
-  return "deny";
 }
 
 function truncate(s: string, n: number): string {

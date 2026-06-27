@@ -10,7 +10,7 @@
 import { render } from "@opentui/solid";
 import { createSignal, onMount, For, Show } from "solid-js";
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
-import { lineToCommand } from "./slash.ts";
+import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { TASK_GLYPH, formatUsage } from "./headless.ts";
 
 interface Line {
@@ -110,9 +110,11 @@ function App(props: { engine: EngineClient }) {
     // While permission prompts are pending, each input answers the oldest.
     const permId = pendingPerms.shift();
     if (permId) {
-      const c = text.toLowerCase()[0];
-      const decision = c === "y" ? "once" : c === "a" ? "always" : "deny";
-      props.engine.send({ type: "resolve-permission", id: permId, decision });
+      props.engine.send({
+        type: "resolve-permission",
+        id: permId,
+        decision: parsePermissionDecision(text),
+      });
       return;
     }
     // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { lineToCommand } from "./slash.ts";
+import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 
 test("plain text becomes a prompt submission", () => {
   expect(lineToCommand("fix the bug")).toEqual({
@@ -34,6 +34,15 @@ test("/goal sets and clears", () => {
     goal: "ship it",
   });
   expect(lineToCommand("/goal")).toEqual({ type: "set-goal", goal: null });
+});
+
+test("parsePermissionDecision maps y/a/* to once/always/deny", () => {
+  expect(parsePermissionDecision("y")).toBe("once");
+  expect(parsePermissionDecision("Yes")).toBe("once");
+  expect(parsePermissionDecision("a")).toBe("always");
+  expect(parsePermissionDecision("always")).toBe("always");
+  expect(parsePermissionDecision("n")).toBe("deny");
+  expect(parsePermissionDecision("")).toBe("deny");
 });
 
 test("unknown slash commands pass through with their args", () => {

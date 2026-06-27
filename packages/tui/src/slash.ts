@@ -32,3 +32,11 @@ export function lineToCommand(line: string): EngineCommand {
       return { type: "run-slash", name, args };
   }
 }
+
+/** Map a typed answer to a permission decision (default deny). Shared by both UIs. */
+export function parsePermissionDecision(
+  input: string,
+): "once" | "always" | "deny" {
+  const c = input.trim().toLowerCase()[0];
+  return c === "y" ? "once" : c === "a" ? "always" : "deny";
+}

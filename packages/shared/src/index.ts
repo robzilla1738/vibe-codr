@@ -27,6 +27,7 @@ export type {
   ToolContext,
   ToolResult,
   ToolDefinition,
+  JsonSchema,
   PermissionResult,
   CheckPermission,
 } from "./tool.ts";

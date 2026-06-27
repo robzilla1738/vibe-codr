@@ -26,6 +26,19 @@ export const ModelPriceSchema = z.object({
   output: z.number().nonnegative().optional(),
 });
 
+/** An MCP server: a local stdio process or a remote SSE/HTTP URL. */
+export const McpServerSchema = z.union([
+  z.object({
+    command: z.string(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional(),
+  }),
+]);
+
 export const ConfigSchema = z.object({
   /** Default model string, e.g. "anthropic/claude-opus-4-8" or "lmstudio/<id>". */
   model: z.string().default("anthropic/claude-opus-4-8"),
@@ -66,6 +79,10 @@ export const ConfigSchema = z.object({
   checkpoints: z
     .object({ enabled: z.boolean().default(true) })
     .default({ enabled: true }),
+  /** MCP servers to connect; their tools register as `mcp__<server>__<tool>`. */
+  mcp: z
+    .object({ servers: z.record(z.string(), McpServerSchema).default({}) })
+    .default({ servers: {} }),
   /**
    * Per-model price overrides keyed by model string (`provider/model`), in USD
    * per 1M tokens. Used for cost tracking when a model is missing from the
@@ -79,3 +96,4 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type PermissionRule = z.infer<typeof PermissionRuleSchema>;
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
+export type McpServer = z.infer<typeof McpServerSchema>;

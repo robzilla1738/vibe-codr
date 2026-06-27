@@ -1,4 +1,5 @@
-import { tool, type Tool } from "ai";
+import { tool, jsonSchema, type Tool } from "ai";
+import type { ZodType } from "zod";
 import type {
   CheckPermission,
   Mode,
@@ -6,6 +7,11 @@ import type {
   ToolDefinition,
 } from "@vibe/shared";
 import { builtinTools } from "./builtins/index.ts";
+
+/** Zod schemas expose `.parse`; raw JSON Schema objects don't. */
+function isZodSchema(s: unknown): boolean {
+  return typeof (s as { parse?: unknown })?.parse === "function";
+}
 
 /** The session-scoped parts of a ToolContext supplied by the engine. */
 export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & {
@@ -66,9 +72,14 @@ export function toAISDKTool(
   def: ToolDefinition,
   base: ToolRuntimeBase,
 ): Tool {
+  // Built-ins carry a Zod schema; bridged tools (MCP) carry a JSON Schema that
+  // the AI SDK accepts once wrapped with `jsonSchema()`.
+  const inputSchema = isZodSchema(def.inputSchema)
+    ? (def.inputSchema as ZodType<unknown>)
+    : jsonSchema(def.inputSchema as Parameters<typeof jsonSchema>[0]);
   return tool({
     description: def.description,
-    inputSchema: def.inputSchema,
+    inputSchema,
     async execute(input, options) {
       const ctx: ToolContext = {
         ...base,

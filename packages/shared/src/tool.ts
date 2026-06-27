@@ -2,6 +2,18 @@ import type { ZodType } from "zod";
 import type { UIEvent } from "./events.ts";
 import type { Mode } from "./types.ts";
 
+/**
+ * A JSON Schema object (draft-07-ish). Used by bridged tools (e.g. MCP) whose
+ * input shape is only known at runtime; the tools layer wraps it for the AI SDK.
+ * Kept structural so `@vibe/shared` stays dependency-light.
+ */
+export interface JsonSchema {
+  type?: string;
+  properties?: Record<string, unknown>;
+  required?: string[];
+  [key: string]: unknown;
+}
+
 /** Result of a permission check for a side-effecting tool call. */
 export interface PermissionResult {
   allowed: boolean;
@@ -46,7 +58,8 @@ export interface ToolResult {
 export interface ToolDefinition<Input = any> {
   name: string;
   description: string;
-  inputSchema: ZodType<Input>;
+  /** A Zod type (built-ins) or a raw JSON Schema (bridged/MCP tools). */
+  inputSchema: ZodType<Input> | JsonSchema;
   readOnly: boolean;
   concurrencySafe?: boolean;
   /** If set, the tool is only available in these modes (default: all). */

@@ -48,3 +48,11 @@ export {
   type TokenTotals,
 } from "./usage.ts";
 export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";
+export {
+  McpHub,
+  toToolDefinition,
+  renderContent,
+  type McpClient,
+  type McpConnect,
+  type McpHubDeps,
+} from "./mcp.ts";

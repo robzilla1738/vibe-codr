@@ -4,6 +4,7 @@ export {
   PermissionRuleSchema,
   SearchConfigSchema,
   ModelPriceSchema,
+  McpServerSchema,
 } from "./schema.ts";
 export type {
   Config,
@@ -11,6 +12,7 @@ export type {
   PermissionRule,
   SearchConfig,
   ModelPrice,
+  McpServer,
 } from "./schema.ts";
 export {
   loadConfig,

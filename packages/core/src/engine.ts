@@ -34,6 +34,7 @@ import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { CheckpointManager } from "./checkpoints.ts";
+import { McpHub, type McpConnect } from "./mcp.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -46,6 +47,8 @@ export interface EngineOptions {
   catalog?: CatalogService;
   projectMemory?: string;
   permissionResolver?: PermissionResolver;
+  /** Override the MCP transport (tests inject a fake connector). */
+  mcpConnect?: McpConnect;
   /**
    * Whether a UI can answer permission prompts. When false (headless/`-p`),
    * `ask` decisions auto-allow instead of hanging. Defaults to false.
@@ -85,6 +88,7 @@ export class Engine implements EngineClient {
   #pendingPermissions = new Map<string, (d: "once" | "always" | "deny") => void>();
   #store: SessionStore;
   #checkpoints: CheckpointManager;
+  #mcp: McpHub;
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
@@ -96,6 +100,10 @@ export class Engine implements EngineClient {
       opts.permissionResolver ?? ((req) => this.#askPermission(req));
     this.#store = new SessionStore(this.#cwd);
     this.#checkpoints = new CheckpointManager(this.#cwd);
+    this.#mcp = new McpHub({
+      registerTool: (def) => this.toolset.register(def),
+      ...(opts.mcpConnect ? { connect: opts.mcpConnect } : {}),
+    });
     this.registry = opts.registry ?? new ProviderRegistry();
     // Default toolset is config-driven so web search picks up the TinyFish key
     // and respects `search.enabled`.
@@ -180,6 +188,9 @@ export class Engine implements EngineClient {
         this.skills.register(skill);
       }
     }
+
+    // Connect MCP servers last so their tools join the same registry.
+    await this.#mcp.start(this.#config.mcp.servers);
   }
 
   events(): AsyncIterable<UIEvent> {
@@ -255,6 +266,7 @@ export class Engine implements EngineClient {
         // Unblock any in-flight permission prompts so nothing hangs.
         for (const resolve of this.#pendingPermissions.values()) resolve("deny");
         this.#pendingPermissions.clear();
+        void this.#mcp.close();
         this.#bus.close();
         break;
     }

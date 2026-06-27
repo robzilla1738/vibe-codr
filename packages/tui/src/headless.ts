@@ -1,7 +1,8 @@
 import type { EngineClient, Task, UIEvent } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 
-const TASK_GLYPH: Record<Task["status"], string> = {
+/** Status → checklist glyph, shared by the headless printer and the OpenTUI app. */
+export const TASK_GLYPH: Record<Task["status"], string> = {
   completed: "✔",
   in_progress: "▶",
   pending: "○",

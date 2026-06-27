@@ -44,6 +44,23 @@ test("save then load round-trips a session", async () => {
   expect(loaded!.history).toEqual(history);
 });
 
+test("save then load round-trips the working task list", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
+  const store = new SessionStore(cwd);
+  const { meta, model, history } = fixture();
+  const withTasks: SessionMeta = {
+    ...meta,
+    tasks: [
+      { id: "task_1", title: "Read the spec", status: "completed" },
+      { id: "task_2", title: "Implement it", status: "in_progress" },
+    ],
+  };
+  await store.save(withTasks, model, history);
+
+  const loaded = await store.load(meta.id);
+  expect(loaded!.meta.tasks).toEqual(withTasks.tasks);
+});
+
 test("latestId returns the most recently updated session", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
   const store = new SessionStore(cwd);

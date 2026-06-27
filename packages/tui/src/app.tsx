@@ -11,17 +11,12 @@ import { render } from "@opentui/solid";
 import { createSignal, onMount, For, Show } from "solid-js";
 import type { EngineClient, Task, UIEvent } from "@vibe/shared";
 import { lineToCommand } from "./slash.ts";
+import { TASK_GLYPH } from "./headless.ts";
 
 interface Line {
   kind: "user" | "assistant" | "tool" | "notice" | "plan" | "subagent";
   text: string;
 }
-
-const TASK_GLYPH: Record<Task["status"], string> = {
-  completed: "✔",
-  in_progress: "▶",
-  pending: "○",
-};
 
 function App(props: { engine: EngineClient }) {
   const snap = props.engine.snapshot();

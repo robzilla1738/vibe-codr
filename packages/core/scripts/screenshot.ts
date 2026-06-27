@@ -495,6 +495,8 @@ function renderLines(scene: Scene): string {
     rows.push(`</div>`);
   }
   if (scene.tasks?.length) {
+    // Glyphs mirror @vibe/tui's TASK_GLYPH; kept local because this dev script
+    // lives in @vibe/core, which must not import @vibe/tui (core→tui boundary).
     const done = scene.tasks.filter((t) => t.status === "completed").length;
     rows.push(`<div class="tasksbox">`);
     rows.push(

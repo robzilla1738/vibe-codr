@@ -107,7 +107,7 @@ export class Session {
     };
   }
 
-  /** The current working task list (a copy; mutate via the update_tasks tool). */
+  /** The current working task list (live reference; treat as read-only). */
   get tasks(): Task[] {
     return this.#tasks;
   }

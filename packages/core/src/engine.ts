@@ -7,11 +7,16 @@ import {
   type UIEvent,
 } from "@vibe/shared";
 import type { Config } from "@vibe/config";
-import { ProviderRegistry } from "@vibe/providers";
+import {
+  ProviderRegistry,
+  CatalogService,
+  type ModelInfo,
+} from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
-import { HookBus } from "@vibe/plugins";
+import { HookBus, CommandRegistry, SkillRegistry } from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
+import { helpText, formatModelList, initProject } from "./commands.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -19,6 +24,9 @@ export interface EngineOptions {
   registry?: ProviderRegistry;
   toolset?: Toolset;
   hooks?: HookBus;
+  commands?: CommandRegistry;
+  skills?: SkillRegistry;
+  catalog?: CatalogService;
   projectMemory?: string;
   logger?: Logger;
 }
@@ -31,25 +39,33 @@ export class Engine implements EngineClient {
   readonly registry: ProviderRegistry;
   readonly toolset: Toolset;
   readonly hooks: HookBus;
+  readonly commands: CommandRegistry;
+  readonly skills: SkillRegistry;
+  readonly catalog: CatalogService;
 
   #bus = new EventBus();
   #config: Config;
+  #cwd: string;
   #session: Session;
   #log: Logger;
   #queue: Promise<void> = Promise.resolve();
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
+    this.#cwd = opts.cwd ?? process.cwd();
     this.registry = opts.registry ?? new ProviderRegistry();
     this.toolset = opts.toolset ?? new Toolset();
     this.hooks = opts.hooks ?? new HookBus();
+    this.commands = opts.commands ?? new CommandRegistry();
+    this.skills = opts.skills ?? new SkillRegistry();
+    this.catalog = opts.catalog ?? new CatalogService();
     this.#log = opts.logger ?? createLogger("engine");
     this.#session = new Session({
       config: opts.config,
       registry: this.registry,
       toolset: this.toolset,
       bus: this.#bus,
-      cwd: opts.cwd ?? process.cwd(),
+      cwd: this.#cwd,
       model: opts.config.model,
       mode: opts.config.mode,
       projectMemory: opts.projectMemory,
@@ -62,6 +78,11 @@ export class Engine implements EngineClient {
 
   snapshot(): EngineSnapshot {
     return this.#session.snapshot();
+  }
+
+  /** Resolves when the queued commands (prompts, slashes) have drained. */
+  whenIdle(): Promise<void> {
+    return this.#queue;
   }
 
   /** Emit the initial session-start event (call once after subscribing). */
@@ -92,11 +113,7 @@ export class Engine implements EngineClient {
         this.#session.abort();
         break;
       case "run-slash":
-        this.#bus.emit({
-          type: "notice",
-          level: "warn",
-          message: `Unknown command: /${command.name}`,
-        });
+        this.#enqueue(() => this.#handleSlash(command.name, command.args));
         break;
       case "compact":
         this.#bus.emit({
@@ -108,6 +125,74 @@ export class Engine implements EngineClient {
       case "shutdown":
         this.#bus.close();
         break;
+    }
+  }
+
+  /** List models for configured providers, enriched with models.dev metadata. */
+  async listModels(): Promise<ModelInfo[]> {
+    const live = await this.registry.listConfiguredModels(this.#config);
+    return this.catalog.enrich(live);
+  }
+
+  #notice(message: string, level: "info" | "warn" | "error" = "info"): void {
+    this.#bus.emit({ type: "notice", level, message });
+  }
+
+  /** Handle a built-in or plugin/file slash command. */
+  async #handleSlash(name: string, args: string): Promise<void> {
+    // Plugin/file commands take precedence over built-ins of the same name.
+    const custom = this.commands.get(name);
+    if (custom) {
+      const result = custom.run(args);
+      if (result.kind === "prompt") await this.#session.run(result.text);
+      else if (result.kind === "command") this.send(result.command);
+      else this.#notice(result.message);
+      return;
+    }
+
+    switch (name) {
+      case "help":
+        this.#notice(helpText(this.commands.list()));
+        break;
+      case "model":
+        if (args) this.#session.setModel(args);
+        else this.#notice(`Current model: ${this.#session.model}`);
+        break;
+      case "models": {
+        this.#notice("Fetching models…");
+        this.#notice(formatModelList(await this.listModels()));
+        break;
+      }
+      case "plan":
+        this.#session.setMode("plan");
+        break;
+      case "execute":
+        this.#session.setMode("execute");
+        break;
+      case "goal":
+        this.#session.setGoal(args || null);
+        this.#notice(args ? `Goal set: ${args}` : "Goal cleared.");
+        break;
+      case "clear":
+        this.#session.clear();
+        break;
+      case "agents":
+        this.#notice("No named agents configured yet.");
+        break;
+      case "compact":
+        this.send({ type: "compact" });
+        break;
+      case "init": {
+        const created = await initProject(this.#cwd);
+        this.#notice(
+          created.length
+            ? `Created: ${created.join(", ")}`
+            : "Project already initialized.",
+        );
+        break;
+      }
+      default:
+        this.#notice(`Unknown command: /${name}`, "warn");
     }
   }
 

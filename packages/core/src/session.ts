@@ -82,6 +82,22 @@ export class Session {
     this.#abort = new AbortController();
   }
 
+  /** Reset conversation history (model context and UI history). */
+  clear(): void {
+    this.#modelMessages = [];
+    this.#history = [];
+    this.#deps.bus.emit({
+      type: "notice",
+      level: "info",
+      message: "Conversation cleared.",
+    });
+  }
+
+  /** Number of model messages currently in context (for diagnostics/compaction). */
+  get messageCount(): number {
+    return this.#modelMessages.length;
+  }
+
   /** Execute one agentic turn for `input`. Resolves when the turn ends. */
   async run(input: string): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;

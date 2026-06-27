@@ -5,3 +5,10 @@ export {
   composeSystemPrompt,
   type SystemPromptInputs,
 } from "./system-prompt.ts";
+export {
+  BUILTIN_COMMANDS,
+  helpText,
+  formatModelList,
+  initProject,
+  type BuiltinCommandMeta,
+} from "./commands.ts";

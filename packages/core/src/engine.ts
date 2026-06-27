@@ -13,12 +13,18 @@ import {
   type ModelInfo,
 } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
-import { HookBus, CommandRegistry, SkillRegistry } from "@vibe/plugins";
+import {
+  HookBus,
+  CommandRegistry,
+  SkillRegistry,
+  PluginHost,
+} from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
 import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, type NamedAgent } from "./agents.ts";
+import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -75,16 +81,43 @@ export class Engine implements EngineClient {
       projectMemory: opts.projectMemory,
       permissionResolver: opts.permissionResolver,
       agents: this.#agents,
+      skills: this.skills,
     });
   }
 
   /**
-   * Load project-local resources from disk (named agents now; skills/commands/
-   * plugins are layered in by later phases). Safe to call before the first run.
+   * Load project-local resources from disk: named agents, custom slash command
+   * files, skills, and plugins (which may register more of any of these).
+   * Safe to call once before the first run.
    */
   async bootstrap(): Promise<void> {
-    const agents = await loadAgents(this.#cwd);
-    for (const [name, agent] of agents) this.#agents.set(name, agent);
+    for (const [name, agent] of await loadAgents(this.#cwd)) {
+      this.#agents.set(name, agent);
+    }
+    for (const cmd of await loadCommandFiles(this.#cwd)) {
+      this.commands.register(cmd);
+    }
+    for (const skill of await loadSkills(this.#cwd)) {
+      this.skills.register(skill);
+    }
+
+    const extraSkillDirs: string[] = [];
+    const host = new PluginHost({
+      hooks: this.hooks,
+      commands: this.commands,
+      skills: this.skills,
+      registerTool: (def) => this.toolset.register(def),
+      registerProvider: (def) => this.registry.register(def),
+      addSkillDir: (path) => extraSkillDirs.push(path),
+      logger: this.#log,
+    });
+    await host.load(this.#config.plugins);
+
+    for (const dir of extraSkillDirs) {
+      for (const skill of await loadSkillsFrom(dir)) {
+        this.skills.register(skill);
+      }
+    }
   }
 
   events(): AsyncIterable<UIEvent> {

@@ -13,6 +13,7 @@ import {
 import type { Config } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
 import { Toolset, toAISDKTool, type ToolRuntimeBase } from "@vibe/tools";
+import type { SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
 import { EventBus as EventBusImpl } from "./event-bus.ts";
 import { composeSystemPrompt } from "./system-prompt.ts";
@@ -34,6 +35,8 @@ export interface SessionDeps {
   extraSystem?: string[];
   /** Named subagents available to spawn. */
   agents?: Map<string, NamedAgent>;
+  /** Skills available for progressive disclosure via `use_skill`. */
+  skills?: SkillRegistry;
   /** Subagent recursion depth (0 = root). */
   depth?: number;
   id?: string;
@@ -189,11 +192,15 @@ export class Session {
 
     try {
       const model = await registry.resolveModel(this.model, config);
+      const skills = this.#deps.skills;
       const system = composeSystemPrompt({
         mode: this.mode,
         goal: this.goal,
         projectMemory: this.#deps.projectMemory,
         pluginBlocks: this.#deps.extraSystem,
+        ...(skills && skills.list().length
+          ? { skillDescriptions: skills.descriptions() }
+          : {}),
       });
       const checker = new PermissionChecker(
         config.permissions,
@@ -212,6 +219,10 @@ export class Session {
       // below the configured recursion depth.
       if (this.mode === "execute" && this.depth < config.subagent.maxDepth) {
         tools["spawn_subagent"] = toAISDKTool(this.#spawnTool(), base);
+      }
+      // Progressive disclosure: expose use_skill when skills are available.
+      if (skills && skills.list().length) {
+        tools["use_skill"] = toAISDKTool(this.#useSkillTool(), base);
       }
 
       const result = streamText({
@@ -257,6 +268,28 @@ export class Session {
       goal: overrides.goal ?? null,
       ...overrides,
     });
+  }
+
+  /** Build the `use_skill` tool that loads a skill's full body into context. */
+  #useSkillTool(): ToolDefinition<{ name: string }> {
+    const skills = this.#deps.skills;
+    return {
+      name: "use_skill",
+      description:
+        "Load the full instructions for a named skill before performing a task it applies to. Call this when a listed skill is relevant.",
+      inputSchema: z.object({
+        name: z.string().describe("The skill name to load."),
+      }),
+      readOnly: true,
+      execute: async ({ name }) => {
+        const skill = skills?.get(name);
+        if (!skill) {
+          return { output: `Unknown skill "${name}".`, isError: true };
+        }
+        const body = await skill.load();
+        return { output: `# Skill: ${skill.name}\n\n${body}` };
+      },
+    };
   }
 
   #pushUser(input: string): void {

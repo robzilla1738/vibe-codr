@@ -17,3 +17,9 @@ export {
   type PermissionResolver,
 } from "./permissions.ts";
 export { loadAgents, type NamedAgent } from "./agents.ts";
+export {
+  applyArgs,
+  loadCommandFiles,
+  loadSkills,
+  loadSkillsFrom,
+} from "./loaders.ts";

@@ -62,6 +62,10 @@ export const ConfigSchema = z.object({
     .default({ threshold: 0.75 }),
   /** Web search (TinyFish). Enabled by default; needs a free API key to run. */
   search: SearchConfigSchema.default({ enabled: true }),
+  /** Workspace checkpoints before each edit turn (git repos only). */
+  checkpoints: z
+    .object({ enabled: z.boolean().default(true) })
+    .default({ enabled: true }),
   /**
    * Per-model price overrides keyed by model string (`provider/model`), in USD
    * per 1M tokens. Used for cost tracking when a model is missing from the

@@ -47,3 +47,4 @@ export {
   sessionUsage,
   type TokenTotals,
 } from "./usage.ts";
+export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";

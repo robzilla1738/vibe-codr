@@ -33,6 +33,7 @@ import { loadAgents, type NamedAgent } from "./agents.ts";
 import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
+import { CheckpointManager } from "./checkpoints.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -83,6 +84,7 @@ export class Engine implements EngineClient {
   #alwaysAllow = new Set<string>();
   #pendingPermissions = new Map<string, (d: "once" | "always" | "deny") => void>();
   #store: SessionStore;
+  #checkpoints: CheckpointManager;
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
@@ -93,6 +95,7 @@ export class Engine implements EngineClient {
     this.#permissionResolver =
       opts.permissionResolver ?? ((req) => this.#askPermission(req));
     this.#store = new SessionStore(this.#cwd);
+    this.#checkpoints = new CheckpointManager(this.#cwd);
     this.registry = opts.registry ?? new ProviderRegistry();
     // Default toolset is config-driven so web search picks up the TinyFish key
     // and respects `search.enabled`.
@@ -456,6 +459,12 @@ export class Engine implements EngineClient {
       case "loop":
         this.#handleLoop(args);
         break;
+      case "undo":
+        await this.#handleUndo();
+        break;
+      case "checkpoints":
+        await this.#handleCheckpoints();
+        break;
       case "compact":
         this.send({ type: "compact" });
         break;
@@ -562,8 +571,40 @@ export class Engine implements EngineClient {
   }
 
   async #handlePrompt(text: string): Promise<void> {
+    // Snapshot the workspace before an edit turn so /undo can roll it back.
+    if (this.#config.checkpoints.enabled && this.#session.mode === "execute") {
+      const cp = await this.#checkpoints.snapshot(queueLabel(text));
+      if (cp) {
+        this.#bus.emit({ type: "checkpoint-created", id: cp.id, label: cp.label });
+      }
+    }
     const hooked = await this.hooks.run("user.prompt.submit", { text });
     await this.#session.run(hooked.text);
+  }
+
+  /** `/undo` — restore the most recent checkpoint. */
+  async #handleUndo(): Promise<void> {
+    if (!(await this.#checkpoints.isGitRepo())) {
+      this.#notice("Checkpoints need a git repository; nothing to undo.", "warn");
+      return;
+    }
+    const cp = await this.#checkpoints.undo();
+    if (!cp) {
+      this.#notice("No checkpoint to undo.");
+      return;
+    }
+    this.#bus.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
+    this.#notice(`Reverted to checkpoint: ${cp.label}`);
+  }
+
+  /** `/checkpoints` — list saved checkpoints. */
+  async #handleCheckpoints(): Promise<void> {
+    const list = await this.#checkpoints.list();
+    this.#notice(
+      list.length
+        ? `Checkpoints (newest last):\n${list.map((c) => `  ${c.label}`).join("\n")}`
+        : "No checkpoints yet. One is taken before each edit turn (git repos).",
+    );
   }
 }
 

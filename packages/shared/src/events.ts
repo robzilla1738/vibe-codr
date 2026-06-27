@@ -63,6 +63,8 @@ export type UIEvent =
       /** Items waiting to run, in order. */
       pending: QueuedItem[];
     }
+  | { type: "checkpoint-created"; id: string; label: string }
+  | { type: "checkpoint-restored"; id: string; label: string }
   | { type: "compacted"; sessionId: string; freedTokens: number }
   | { type: "subagent-started"; sessionId: string; subagentId: string; prompt: string }
   | { type: "subagent-finished"; sessionId: string; subagentId: string; result: string }

@@ -18,6 +18,8 @@ export const BUILTIN_COMMANDS: BuiltinCommandMeta[] = [
   { name: "agents", description: "List named subagents" },
   { name: "loop", description: "Run a prompt on a loop (/loop <interval> <prompt>)" },
   { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
+  { name: "undo", description: "Revert the workspace to the last checkpoint" },
+  { name: "checkpoints", description: "List workspace checkpoints" },
   { name: "compact", description: "Compact the conversation history" },
   { name: "clear", description: "Clear the conversation history" },
   { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },

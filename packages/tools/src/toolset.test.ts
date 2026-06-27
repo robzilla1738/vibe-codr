@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { Toolset } from "./toolset.ts";
+import { builtinTools } from "./builtins/index.ts";
 
 test("plan mode exposes only read-only tools", () => {
   const ts = new Toolset();
@@ -29,4 +30,17 @@ test("present_plan is available only in plan mode", () => {
   const ts = new Toolset();
   expect(ts.names("plan")).toContain("present_plan");
   expect(ts.names("execute")).not.toContain("present_plan");
+});
+
+test("web_search is included by default and omitted when disabled", () => {
+  expect(builtinTools().map((t) => t.name)).toContain("web_search");
+  expect(
+    builtinTools({ search: { enabled: false } }).map((t) => t.name),
+  ).not.toContain("web_search");
+});
+
+test("web_search is read-only (usable while planning)", () => {
+  const search = builtinTools().find((t) => t.name === "web_search");
+  expect(search?.readOnly).toBe(true);
+  expect(new Toolset().names("plan")).toContain("web_search");
 });

@@ -18,7 +18,7 @@ import {
   type UIEvent,
   type Usage,
 } from "@vibe/shared";
-import type { Config } from "@vibe/config";
+import type { Config, ModelPrice } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
 import { Toolset, toAISDKTool, type ToolRuntimeBase } from "@vibe/tools";
 import type { SkillRegistry } from "@vibe/plugins";
@@ -29,6 +29,7 @@ import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages } from "./compaction.ts";
 import type { SessionStore } from "./store.ts";
+import { addUsage, sessionUsage, type TokenTotals } from "./usage.ts";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const COMPACT_KEEP_RECENT = 6;
@@ -60,9 +61,13 @@ export interface SessionDeps {
   initialHistory?: Message[];
   /** Seed the working task list when resuming a persisted session. */
   initialTasks?: Task[];
+  /** Seed cumulative token usage when resuming a persisted session. */
+  initialUsage?: TokenTotals;
   createdAt?: number;
   /** Resolve the active model's context window (for compaction). */
   getContextWindow?: (model: string) => Promise<number | undefined>;
+  /** Resolve the active model's price (USD per 1M tokens) for cost tracking. */
+  getPricing?: (model: string) => Promise<ModelPrice | undefined>;
 }
 
 /**
@@ -80,6 +85,8 @@ export class Session {
   #modelMessages: ModelMessage[];
   #history: Message[];
   #tasks: Task[];
+  #usage: TokenTotals;
+  #price: ModelPrice | undefined;
   #createdAt: number;
   #abort = new AbortController();
 
@@ -92,6 +99,10 @@ export class Session {
     this.#modelMessages = deps.initialModelMessages ?? [];
     this.#history = deps.initialHistory ?? [];
     this.#tasks = deps.initialTasks ?? [];
+    this.#usage = {
+      inputTokens: deps.initialUsage?.inputTokens ?? 0,
+      outputTokens: deps.initialUsage?.outputTokens ?? 0,
+    };
     this.#createdAt = deps.createdAt ?? Date.now();
   }
 
@@ -103,8 +114,14 @@ export class Session {
       goal: this.goal,
       history: this.#history,
       tasks: this.#tasks,
+      usage: sessionUsage(this.#usage, this.#price),
       busy: this.busy,
     };
+  }
+
+  /** Cumulative token totals for this session (for persistence/diagnostics). */
+  get usage(): TokenTotals {
+    return { ...this.#usage };
   }
 
   /** The current working task list (live reference; treat as read-only). */
@@ -195,7 +212,8 @@ export class Session {
         }
         const child = this.fork({
           bus: new EventBusImpl(), // isolate the subagent's fine-grained stream
-          model: model ?? named?.model ?? this.model,
+          model:
+            model ?? named?.model ?? this.#deps.config.subagent.model ?? this.model,
           mode: mode ?? named?.mode ?? "execute",
           goal: this.goal,
           depth: this.depth + 1,
@@ -276,6 +294,8 @@ export class Session {
 
     try {
       const model = await registry.resolveModel(this.model, config);
+      // Resolve the active model's price once per turn for live cost tracking.
+      this.#price = await this.#deps.getPricing?.(this.model);
       await this.#maybeCompact(model, false);
       const skills = this.#deps.skills;
       const system = composeSystemPrompt({
@@ -322,10 +342,17 @@ export class Session {
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: this.#abort.signal,
         onStepFinish: ({ usage }) => {
+          const stepUsage = normalizeUsage(usage);
           bus.emit({
             type: "step-finished",
             sessionId: this.id,
-            usage: normalizeUsage(usage),
+            usage: stepUsage,
+          });
+          addUsage(this.#usage, stepUsage);
+          bus.emit({
+            type: "usage-updated",
+            sessionId: this.id,
+            usage: sessionUsage(this.#usage, this.#price),
           });
         },
       });
@@ -414,6 +441,7 @@ export class Session {
           mode: this.mode,
           goal: this.goal,
           tasks: this.#tasks,
+          usage: { ...this.#usage },
           createdAt: this.#createdAt,
           updatedAt: Date.now(),
         },

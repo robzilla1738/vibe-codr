@@ -1,4 +1,4 @@
-import type { Mode, QueuedItem, Task, Usage } from "./types.ts";
+import type { Mode, QueuedItem, SessionUsage, Task, Usage } from "./types.ts";
 
 /**
  * Events emitted by the engine and consumed by any UI (TUI, headless printer).
@@ -43,6 +43,7 @@ export type UIEvent =
       isError: boolean;
     }
   | { type: "step-finished"; sessionId: string; usage?: Usage }
+  | { type: "usage-updated"; sessionId: string; usage: SessionUsage }
   | { type: "mode-changed"; sessionId: string; mode: Mode }
   | { type: "model-changed"; sessionId: string; model: string }
   | { type: "goal-changed"; sessionId: string; goal: string | null }

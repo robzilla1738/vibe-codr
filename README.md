@@ -47,14 +47,15 @@ the engine is fully testable headless.
 ```bash
 bun install
 bun link                      # makes `vibecodr` available on your PATH
-cp .env.example .env          # add the provider key(s) you use
+
+# interactive — on first run, vibecodr walks you through entering your
+# provider key and an (optional, free) TinyFish web-search key, saved to
+# ~/.config/vibe-codr/config.json. Or set keys yourself: cp .env.example .env
+vibecodr
 
 # one-shot (headless / pipeable)
 vibecodr -p "list the TS files and read package.json" \
   --model anthropic/claude-opus-4-8
-
-# interactive
-vibecodr
 
 # other entry points
 vibecodr models               # list models for configured providers
@@ -86,8 +87,18 @@ in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`, named subagents i
   a visible, ordered backlog that drains one at a time so history stays
   consistent. `/queue` shows it, `/queue clear` (or aborting) drops what's
   waiting.
+- **Web search** — a `web_search` tool powered by [TinyFish](https://tinyfish.ai)
+  (free tier, no card) is on by default; the model can search the live web and
+  follow up with `webfetch`. Set `TINYFISH_API_KEY` (or `search.apiKey`); disable
+  with `search.enabled: false`.
+- **Live token & cost tracking** — cumulative input/output tokens and an
+  estimated USD cost are tracked every step and shown in the status bar / footer.
+  Prices come from the live catalog (models.dev); override or pin a rate per
+  model in config under `pricing` (USD per 1M tokens).
 - **Subagents** — `spawn_subagent` forks an isolated child with its own context
-  that returns only its final answer; depth-capped and parallel-safe.
+  that returns only its final answer; depth-capped and parallel-safe. Set a
+  default subagent model with `subagent.model` (named agents in `.vibe/agents/`
+  can override per agent).
 - **`/goal`** injects a north-star into every system prompt; **`/loop`** reruns a
   prompt on an interval until a `--until` condition (checked with a structured
   model call) or `--max` is reached.
@@ -104,6 +115,27 @@ Model strings are `<provider>/<model-id>` (split on the first slash):
 Provider SDKs (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`) and OpenTUI are
 **optional** peer deps — install the ones you use; a missing one yields a clear
 error rather than blocking startup.
+
+### Config
+
+Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/config.json`
+→ `.vibe/config.json` → env → CLI flags. Beyond `model`, `mode`, `maxSteps`,
+`permissions`, and `plugins`:
+
+```jsonc
+{
+  "model": "anthropic/claude-opus-4-8",
+  "subagent": { "model": "anthropic/claude-haiku-4-5", "maxDepth": 3 },
+  "search": { "enabled": true, "apiKey": "tf-..." },   // TinyFish web search
+  "pricing": {                                          // USD per 1M tokens
+    "anthropic/claude-opus-4-8": { "input": 5, "output": 25 }
+  },
+  "providers": { "anthropic": { "apiKey": "sk-..." } }
+}
+```
+
+API keys belong in env vars or this file; keys entered during first-run setup
+are written to the user-global config.
 
 ## Develop
 

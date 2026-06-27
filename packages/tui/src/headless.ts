@@ -1,5 +1,16 @@
-import type { EngineClient, Task, UIEvent } from "@vibe/shared";
+import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
+
+/** Compact "12.3k tok · $0.0421" usage label (cost omitted when unpriced). */
+export function formatUsage(u: SessionUsage): string {
+  const tok =
+    u.totalTokens >= 1000
+      ? `${(u.totalTokens / 1000).toFixed(1)}k`
+      : `${u.totalTokens}`;
+  const cost =
+    u.costUSD > 0 ? ` · $${u.costUSD.toFixed(u.costUSD < 1 ? 4 : 2)}` : "";
+  return `${tok} tok${cost}`;
+}
 
 /** Status → checklist glyph, shared by the headless printer and the OpenTUI app. */
 export const TASK_GLYPH: Record<Task["status"], string> = {
@@ -109,6 +120,8 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
     case "engine-error":
       process.stderr.write(`${ansi.red(`error: ${event.message}`)}\n`);
       break;
+    // `usage-updated` is tracked by the drivers and shown as a per-turn footer
+    // rather than printed on every step (which would be noisy).
     default:
       break;
   }
@@ -133,17 +146,30 @@ export async function runOneShot(
 ): Promise<void> {
   const events = engine.events();
   engine.send({ type: "submit-prompt", text: prompt });
+  let usage: SessionUsage | undefined;
   for await (const event of events) {
+    if (event.type === "usage-updated") usage = event.usage;
     render(event, opts);
     if (event.type === "session-idle") break;
   }
   process.stdout.write("\n");
+  if (usage && usage.totalTokens > 0) {
+    process.stderr.write(`${ansi.dim(formatUsage(usage))}\n`);
+  }
 }
 
-/** Continuously print events (for a future headless REPL). Never resolves. */
+/** Continuously print events (used by the REPL). Never resolves. */
 export async function renderHeadless(
   engine: EngineClient,
   opts: HeadlessOptions = {},
 ): Promise<void> {
-  for await (const event of engine.events()) render(event, opts);
+  let usage: SessionUsage | undefined;
+  for await (const event of engine.events()) {
+    if (event.type === "usage-updated") usage = event.usage;
+    render(event, opts);
+    // After each turn, show a compact running token/cost footer.
+    if (event.type === "turn-finished" && usage && usage.totalTokens > 0) {
+      process.stderr.write(`${ansi.dim(formatUsage(usage))}\n`);
+    }
+  }
 }

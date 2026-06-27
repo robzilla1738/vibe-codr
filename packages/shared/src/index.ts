@@ -8,6 +8,7 @@ export type {
   Task,
   TaskStatus,
   QueuedItem,
+  SessionUsage,
   EngineSnapshot,
 } from "./types.ts";
 

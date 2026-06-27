@@ -8,7 +8,9 @@ import type { EngineCommand } from "@vibe/shared";
  */
 export function lineToCommand(line: string): EngineCommand {
   const trimmed = line.trim();
-  const m = trimmed.match(/^\/(\w+)(?:\s+([\s\S]*))?$/);
+  // Command name is everything up to the first space, matching the engine's
+  // `parseSlash` (so hyphenated custom commands like `/run-tests` route too).
+  const m = trimmed.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
   if (!m) return { type: "submit-prompt", text: trimmed };
 
   const name = m[1] ?? "";

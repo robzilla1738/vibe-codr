@@ -12,6 +12,20 @@ export const PermissionRuleSchema = z.object({
   action: z.enum(["allow", "deny", "ask"]),
 });
 
+/** Web-search configuration (TinyFish: free tier, no card — agent.tinyfish.ai). */
+export const SearchConfigSchema = z.object({
+  /** Whether the `web_search` tool is offered to the model. */
+  enabled: z.boolean().default(true),
+  /** TinyFish API key. Env `TINYFISH_API_KEY` takes precedence. */
+  apiKey: z.string().optional(),
+});
+
+/** Manual price override for a model, in USD per 1,000,000 tokens. */
+export const ModelPriceSchema = z.object({
+  input: z.number().nonnegative().optional(),
+  output: z.number().nonnegative().optional(),
+});
+
 export const ConfigSchema = z.object({
   /** Default model string, e.g. "anthropic/claude-opus-4-8" or "lmstudio/<id>". */
   model: z.string().default("anthropic/claude-opus-4-8"),
@@ -30,6 +44,8 @@ export const ConfigSchema = z.object({
   subagent: z
     .object({
       maxDepth: z.number().int().positive().default(3),
+      /** Default model for subagents. Falls back to the main model when unset. */
+      model: z.string().optional(),
     })
     .default({ maxDepth: 3 }),
   compaction: z
@@ -38,8 +54,18 @@ export const ConfigSchema = z.object({
       threshold: z.number().min(0.1).max(0.95).default(0.75),
     })
     .default({ threshold: 0.75 }),
+  /** Web search (TinyFish). Enabled by default; needs a free API key to run. */
+  search: SearchConfigSchema.default({ enabled: true }),
+  /**
+   * Per-model price overrides keyed by model string (`provider/model`), in USD
+   * per 1M tokens. Used for cost tracking when a model is missing from the
+   * catalog or you want to pin a negotiated rate. Overrides catalog pricing.
+   */
+  pricing: z.record(z.string(), ModelPriceSchema).default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type PermissionRule = z.infer<typeof PermissionRuleSchema>;
+export type SearchConfig = z.infer<typeof SearchConfigSchema>;
+export type ModelPrice = z.infer<typeof ModelPriceSchema>;

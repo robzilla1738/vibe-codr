@@ -46,6 +46,19 @@ export class CatalogService {
     return undefined;
   }
 
+  /**
+   * Best-effort price (USD per 1M tokens) for a `provider/model` string.
+   * NON-BLOCKING, like {@link contextWindow}: returns undefined until the
+   * catalog has loaded in the background.
+   */
+  async pricing(
+    modelString: string,
+  ): Promise<{ input?: number; output?: number } | undefined> {
+    if (this.#metadata) return this.#metadata.get(modelString)?.cost;
+    void this.#load();
+    return undefined;
+  }
+
   /** Enrich live models with models.dev metadata (best-effort, awaits load). */
   async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
     const meta = await this.#load();

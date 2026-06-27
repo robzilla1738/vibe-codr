@@ -1,7 +1,9 @@
 import { parseArgs } from "node:util";
 import { loadConfig, type Config } from "@vibe/config";
 import { Engine, formatModelList, SessionStore, type PersistedSession } from "@vibe/core";
+import { ProviderRegistry } from "@vibe/providers";
 import { runOneShot, startTui } from "@vibe/tui";
+import { needsOnboarding, runOnboarding } from "./onboarding.ts";
 
 export const VERSION = "0.0.0";
 
@@ -61,7 +63,19 @@ export async function run(argv: string[]): Promise<number> {
     overrides.mode = values.mode;
   }
 
-  const config = await loadConfig({ cwd, overrides });
+  let config = await loadConfig({ cwd, overrides });
+
+  // First-run setup: if the interactive user has no key for their model's
+  // provider, capture keys and reload config before starting. Skipped for
+  // headless (-p) and `models`, which surface the normal auth error instead.
+  const interactive = !values.prompt && positionals[0] !== "models";
+  if (interactive) {
+    const registry = new ProviderRegistry();
+    if (needsOnboarding(config, registry)) {
+      const onboarded = await runOnboarding(config, registry);
+      if (onboarded) config = await loadConfig({ cwd, overrides });
+    }
+  }
 
   // Resume a persisted session with --continue (latest) or --resume <id>.
   let resume: PersistedSession | undefined;

@@ -16,7 +16,8 @@ import {
   CatalogService,
   type ModelInfo,
 } from "@vibe/providers";
-import { Toolset } from "@vibe/tools";
+import { Toolset, builtinTools } from "@vibe/tools";
+import type { ModelPrice } from "@vibe/config";
 import {
   HookBus,
   CommandRegistry,
@@ -81,7 +82,20 @@ export class Engine implements EngineClient {
     this.#permissionResolver = opts.permissionResolver;
     this.#store = new SessionStore(this.#cwd);
     this.registry = opts.registry ?? new ProviderRegistry();
-    this.toolset = opts.toolset ?? new Toolset();
+    // Default toolset is config-driven so web search picks up the TinyFish key
+    // and respects `search.enabled`.
+    this.toolset =
+      opts.toolset ??
+      new Toolset(
+        builtinTools({
+          search: {
+            enabled: opts.config.search.enabled,
+            ...(opts.config.search.apiKey
+              ? { apiKey: opts.config.search.apiKey }
+              : {}),
+          },
+        }),
+      );
     this.hooks = opts.hooks ?? new HookBus();
     this.commands = opts.commands ?? new CommandRegistry();
     this.skills = opts.skills ?? new SkillRegistry();
@@ -103,6 +117,7 @@ export class Engine implements EngineClient {
       skills: this.skills,
       store: this.#store,
       getContextWindow: (model) => this.catalog.contextWindow(model),
+      getPricing: (model) => this.#resolvePricing(model),
       ...(resume
         ? {
             id: resume.meta.id,
@@ -110,6 +125,7 @@ export class Engine implements EngineClient {
             initialModelMessages: resume.modelMessages,
             initialHistory: resume.history,
             ...(resume.meta.tasks ? { initialTasks: resume.meta.tasks } : {}),
+            ...(resume.meta.usage ? { initialUsage: resume.meta.usage } : {}),
           }
         : {}),
     });
@@ -272,6 +288,8 @@ export class Engine implements EngineClient {
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       skills: this.skills,
+      getContextWindow: (model) => this.catalog.contextWindow(model),
+      getPricing: (model) => this.#resolvePricing(model),
     });
   }
 
@@ -309,6 +327,24 @@ export class Engine implements EngineClient {
         `Return done=true only if the condition is clearly satisfied.`,
     });
     return object;
+  }
+
+  /**
+   * Resolve a model's price (USD per 1M tokens). A config `pricing[model]`
+   * override wins; otherwise fall back to the live catalog. A partial override
+   * (e.g. only `input`) is completed from the catalog.
+   */
+  async #resolvePricing(model: string): Promise<ModelPrice | undefined> {
+    const override = this.#config.pricing[model];
+    if (override?.input !== undefined && override?.output !== undefined) {
+      return override;
+    }
+    const catalog = await this.catalog.pricing(model);
+    if (!override) return catalog;
+    return {
+      input: override.input ?? catalog?.input,
+      output: override.output ?? catalog?.output,
+    };
   }
 
   /** List models for configured providers, enriched with models.dev metadata. */

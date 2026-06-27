@@ -41,3 +41,9 @@ export {
   type SessionMeta,
   type PersistedSession,
 } from "./store.ts";
+export {
+  addUsage,
+  computeCost,
+  sessionUsage,
+  type TokenTotals,
+} from "./usage.ts";

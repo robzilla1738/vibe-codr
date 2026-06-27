@@ -9,9 +9,9 @@
  */
 import { render } from "@opentui/solid";
 import { createSignal, onMount, For, Show } from "solid-js";
-import type { EngineClient, Task, UIEvent } from "@vibe/shared";
+import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { lineToCommand } from "./slash.ts";
-import { TASK_GLYPH } from "./headless.ts";
+import { TASK_GLYPH, formatUsage } from "./headless.ts";
 
 interface Line {
   kind: "user" | "assistant" | "tool" | "notice" | "plan" | "subagent";
@@ -26,10 +26,11 @@ function App(props: { engine: EngineClient }) {
   const [queued, setQueued] = createSignal(0);
   let model = snap.model;
   let mode = snap.mode;
-  const [status, setStatus] = createSignal(statusLine(model, mode, 0));
+  let usage: SessionUsage = snap.usage;
+  const [status, setStatus] = createSignal(statusLine(model, mode, 0, usage));
 
   const append = (line: Line) => setLines((prev) => [...prev, line]);
-  const refreshStatus = () => setStatus(statusLine(model, mode, queued()));
+  const refreshStatus = () => setStatus(statusLine(model, mode, queued(), usage));
 
   onMount(() => {
     void (async () => {
@@ -57,6 +58,10 @@ function App(props: { engine: EngineClient }) {
             break;
           case "queue-changed":
             setQueued(event.pending.length);
+            refreshStatus();
+            break;
+          case "usage-updated":
+            usage = event.usage;
             refreshStatus();
             break;
           case "plan-presented":
@@ -134,9 +139,15 @@ function App(props: { engine: EngineClient }) {
   );
 }
 
-function statusLine(model: string, mode: string, queued: number): string {
+function statusLine(
+  model: string,
+  mode: string,
+  queued: number,
+  usage: SessionUsage,
+): string {
   const q = queued > 0 ? ` · ${queued} queued` : "";
-  return `${model} · ${mode}${q}`;
+  const u = usage.totalTokens > 0 ? ` · ${formatUsage(usage)}` : "";
+  return `${model} · ${mode}${q}${u}`;
 }
 
 function colorFor(kind: Line["kind"]): string {

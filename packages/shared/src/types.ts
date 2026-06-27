@@ -50,6 +50,15 @@ export interface Usage {
   totalTokens?: number;
 }
 
+/** Cumulative token usage and estimated cost for a session. */
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** Estimated cost in USD (0 when no price is known for the model). */
+  costUSD: number;
+}
+
 /** A persisted conversation message. */
 export interface Message {
   id: string;
@@ -71,6 +80,8 @@ export interface EngineSnapshot {
   history: Message[];
   /** The agent's current working task list (may be empty). */
   tasks: Task[];
+  /** Cumulative token usage + cost for the session. */
+  usage: SessionUsage;
   /** True while a turn is in flight. */
   busy: boolean;
 }

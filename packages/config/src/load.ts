@@ -54,12 +54,29 @@ export interface LoadOptions {
   overrides?: Partial<Config>;
 }
 
+/** The user-global config path (`~/.config/vibe-codr/config.json`). */
+export function globalConfigPath(): string {
+  return join(homedir(), ".config", "vibe-codr", "config.json");
+}
+
 /** Locations searched, lowest precedence first. */
 export function configLocations(cwd: string): string[] {
-  return [
-    join(homedir(), ".config", "vibe-codr", "config.json"),
-    join(cwd, ".vibe", "config.json"),
-  ];
+  return [globalConfigPath(), join(cwd, ".vibe", "config.json")];
+}
+
+/**
+ * Merge `patch` into the user-global config file (creating it if absent) and
+ * write it back. Used by first-run onboarding to persist API keys outside any
+ * project. Returns the merged object that was written.
+ */
+export async function writeGlobalConfig(
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const path = globalConfigPath();
+  const existing = (await readConfigFile(path)) ?? {};
+  const merged = deepMerge(existing, patch);
+  await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
+  return merged;
 }
 
 /**

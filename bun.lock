@@ -17,11 +17,13 @@
       "name": "@vibe/cli",
       "version": "0.0.0",
       "bin": {
-        "vibe": "./bin/vibe.ts",
+        "vibecodr": "./bin/vibecodr.ts",
+        "vibe": "./bin/vibecodr.ts",
       },
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
+        "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
         "@vibe/tui": "workspace:*",
       },

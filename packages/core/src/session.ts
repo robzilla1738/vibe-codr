@@ -203,8 +203,27 @@ export class Session {
             sessionId: this.id,
             toolCallId: part.toolCallId,
             toolName: part.toolName,
-            output: part.output ?? part.result,
-            isError: Boolean(part.isError),
+            output: part.output,
+            isError: false,
+          });
+          break;
+        }
+        case "tool-error": {
+          bus.emit({
+            type: "tool-call-finished",
+            sessionId: this.id,
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            output: String((part.error as Error)?.message ?? part.error),
+            isError: true,
+          });
+          break;
+        }
+        case "abort": {
+          bus.emit({
+            type: "notice",
+            level: "warn",
+            message: "Turn aborted.",
           });
           break;
         }

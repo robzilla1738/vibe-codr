@@ -1,19 +1,23 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
+import { z } from "zod";
 import {
   createId,
   type EngineSnapshot,
   type Message,
   type Mode,
   type Part,
+  type ToolDefinition,
   type UIEvent,
   type Usage,
 } from "@vibe/shared";
 import type { Config } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
-import type { Toolset } from "@vibe/tools";
+import { Toolset, toAISDKTool, type ToolRuntimeBase } from "@vibe/tools";
 import type { EventBus } from "./event-bus.ts";
+import { EventBus as EventBusImpl } from "./event-bus.ts";
 import { composeSystemPrompt } from "./system-prompt.ts";
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
+import type { NamedAgent } from "./agents.ts";
 
 export interface SessionDeps {
   config: Config;
@@ -26,6 +30,12 @@ export interface SessionDeps {
   goal?: string | null;
   projectMemory?: string;
   permissionResolver?: PermissionResolver;
+  /** Extra system-prompt blocks (e.g. a named agent's instructions). */
+  extraSystem?: string[];
+  /** Named subagents available to spawn. */
+  agents?: Map<string, NamedAgent>;
+  /** Subagent recursion depth (0 = root). */
+  depth?: number;
   id?: string;
 }
 
@@ -100,6 +110,77 @@ export class Session {
     return this.#modelMessages.length;
   }
 
+  /** Subagent recursion depth (0 = root). */
+  get depth(): number {
+    return this.#deps.depth ?? 0;
+  }
+
+  /** The concatenated text of the most recent assistant message. */
+  lastAssistantText(): string {
+    for (let i = this.#history.length - 1; i >= 0; i--) {
+      const m = this.#history[i];
+      if (m && m.role === "assistant") {
+        return m.parts
+          .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
+          .map((p) => p.text)
+          .join("");
+      }
+    }
+    return "";
+  }
+
+  /** Build the per-session `spawn_subagent` tool (closes over this session). */
+  #spawnTool(): ToolDefinition<{
+    prompt: string;
+    agent?: string;
+    model?: string;
+    mode?: Mode;
+  }> {
+    const Input = z.object({
+      prompt: z.string().describe("The complete, self-contained subtask."),
+      agent: z.string().optional().describe("Named agent to use (see /agents)."),
+      model: z.string().optional().describe("Override the model for this subagent."),
+      mode: z.enum(["plan", "execute"]).optional(),
+    });
+    return {
+      name: "spawn_subagent",
+      description:
+        "Delegate an independent subtask to a fresh subagent that has its own context window and returns only its final answer. Use for parallel or independent workstreams; give a complete, self-contained prompt.",
+      inputSchema: Input,
+      readOnly: false,
+      concurrencySafe: true,
+      execute: async ({ prompt, agent, model, mode }) => {
+        const named = agent ? this.#deps.agents?.get(agent) : undefined;
+        if (agent && !named) {
+          return { output: `Unknown agent "${agent}". Run /agents to list them.`, isError: true };
+        }
+        const child = this.fork({
+          bus: new EventBusImpl(), // isolate the subagent's fine-grained stream
+          model: model ?? named?.model ?? this.model,
+          mode: mode ?? named?.mode ?? "execute",
+          goal: this.goal,
+          depth: this.depth + 1,
+          ...(named?.system ? { extraSystem: [named.system] } : {}),
+        });
+        this.#deps.bus.emit({
+          type: "subagent-started",
+          sessionId: this.id,
+          subagentId: child.id,
+          prompt,
+        });
+        await child.run(prompt);
+        const result = child.lastAssistantText() || "(subagent produced no output)";
+        this.#deps.bus.emit({
+          type: "subagent-finished",
+          sessionId: this.id,
+          subagentId: child.id,
+          result,
+        });
+        return { output: result };
+      },
+    };
+  }
+
   /** Execute one agentic turn for `input`. Resolves when the turn ends. */
   async run(input: string): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;
@@ -112,12 +193,13 @@ export class Session {
         mode: this.mode,
         goal: this.goal,
         projectMemory: this.#deps.projectMemory,
+        pluginBlocks: this.#deps.extraSystem,
       });
       const checker = new PermissionChecker(
         config.permissions,
         this.#deps.permissionResolver,
       );
-      const base = {
+      const base: ToolRuntimeBase = {
         cwd: this.#deps.cwd,
         sessionId: this.id,
         emit: (e: UIEvent) => bus.emit(e),
@@ -125,11 +207,18 @@ export class Session {
           checker.check(name, input),
       };
 
+      const tools = toolset.aiTools(this.mode, base);
+      // Subagents do real work, so only offer spawning in execute mode and
+      // below the configured recursion depth.
+      if (this.mode === "execute" && this.depth < config.subagent.maxDepth) {
+        tools["spawn_subagent"] = toAISDKTool(this.#spawnTool(), base);
+      }
+
       const result = streamText({
         model,
         system,
         messages: this.#modelMessages,
-        tools: toolset.aiTools(this.mode, base),
+        tools,
         toolChoice: "auto",
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: this.#abort.signal,

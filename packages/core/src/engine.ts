@@ -18,6 +18,7 @@ import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
 import type { PermissionResolver } from "./permissions.ts";
+import { loadAgents, type NamedAgent } from "./agents.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -51,6 +52,7 @@ export class Engine implements EngineClient {
   #session: Session;
   #log: Logger;
   #queue: Promise<void> = Promise.resolve();
+  #agents = new Map<string, NamedAgent>();
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
@@ -72,7 +74,17 @@ export class Engine implements EngineClient {
       mode: opts.config.mode,
       projectMemory: opts.projectMemory,
       permissionResolver: opts.permissionResolver,
+      agents: this.#agents,
     });
+  }
+
+  /**
+   * Load project-local resources from disk (named agents now; skills/commands/
+   * plugins are layered in by later phases). Safe to call before the first run.
+   */
+  async bootstrap(): Promise<void> {
+    const agents = await loadAgents(this.#cwd);
+    for (const [name, agent] of agents) this.#agents.set(name, agent);
   }
 
   events(): AsyncIterable<UIEvent> {
@@ -180,7 +192,13 @@ export class Engine implements EngineClient {
         this.#session.clear();
         break;
       case "agents":
-        this.#notice("No named agents configured yet.");
+        this.#notice(
+          this.#agents.size
+            ? [...this.#agents.values()]
+                .map((a) => `  ${a.name} — ${a.description}`)
+                .join("\n")
+            : "No named agents. Add .vibe/agents/<name>.md to define one.",
+        );
         break;
       case "compact":
         this.send({ type: "compact" });

@@ -16,3 +16,4 @@ export {
   PermissionChecker,
   type PermissionResolver,
 } from "./permissions.ts";
+export { loadAgents, type NamedAgent } from "./agents.ts";

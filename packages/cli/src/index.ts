@@ -59,6 +59,7 @@ export async function run(argv: string[]): Promise<number> {
 
   const config = await loadConfig({ cwd, overrides });
   const engine = new Engine({ config, cwd });
+  await engine.bootstrap();
 
   // `vibe models` — list available models for configured providers and exit.
   if (positionals[0] === "models") {

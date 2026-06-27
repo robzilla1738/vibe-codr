@@ -31,6 +31,16 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
         process.stderr.write(`${ansi.red("✗ tool error")}\n`);
       }
       break;
+    case "subagent-started":
+      process.stderr.write(
+        `\n${ansi.magenta("⤷")} ${ansi.dim(`subagent ${event.subagentId.slice(-6)}: ${truncate(event.prompt, 80)}`)}\n`,
+      );
+      break;
+    case "subagent-finished":
+      process.stderr.write(
+        `${ansi.magenta("⤶")} ${ansi.dim(`subagent ${event.subagentId.slice(-6)} done`)}\n`,
+      );
+      break;
     case "plan-presented":
       process.stdout.write(
         `\n${ansi.magenta(ansi.bold("── Plan ──"))}\n${event.plan}\n${ansi.dim(

@@ -1,0 +1,41 @@
+{
+  "name": "@vibe/providers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "lint": "echo \"(no lint configured)\"",
+    "build": "echo \"(bun runs from source)\"",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@vibe/config": "workspace:*",
+    "@vibe/shared": "workspace:*",
+    "ai": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@ai-sdk/anthropic": "*",
+    "@ai-sdk/baseten": "*",
+    "@ai-sdk/deepseek": "*",
+    "@ai-sdk/fireworks": "*",
+    "@ai-sdk/openai": "*",
+    "@ai-sdk/openai-compatible": "*",
+    "@ai-sdk/xai": "*",
+    "@openrouter/ai-sdk-provider": "*"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/anthropic": { "optional": true },
+    "@ai-sdk/baseten": { "optional": true },
+    "@ai-sdk/deepseek": { "optional": true },
+    "@ai-sdk/fireworks": { "optional": true },
+    "@ai-sdk/openai": { "optional": true },
+    "@ai-sdk/openai-compatible": { "optional": true },
+    "@ai-sdk/xai": { "optional": true },
+    "@openrouter/ai-sdk-provider": { "optional": true }
+  }
+}

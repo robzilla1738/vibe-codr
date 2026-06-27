@@ -1,0 +1,5 @@
+# vibe-codr Bun configuration
+
+[test]
+# Bun's built-in test runner picks up *.test.ts across packages
+root = "./packages"

@@ -1,0 +1,29 @@
+{
+  "name": "vibe-codr",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.11",
+  "description": "A cutting-edge, model-agnostic CLI coding agent for the terminal.",
+  "workspaces": ["packages/*"],
+  "bin": {
+    "vibe": "packages/cli/bin/vibe.ts"
+  },
+  "scripts": {
+    "vibe": "bun packages/cli/bin/vibe.ts",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "@types/node": "^22.10.0",
+    "turbo": "^2.3.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}

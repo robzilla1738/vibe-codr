@@ -1,0 +1,24 @@
+{
+  "name": "@vibe/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "lint": "echo \"(no lint configured)\"",
+    "build": "echo \"(bun runs from source)\"",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@vibe/config": "workspace:*",
+    "@vibe/plugins": "workspace:*",
+    "@vibe/providers": "workspace:*",
+    "@vibe/shared": "workspace:*",
+    "@vibe/tools": "workspace:*",
+    "ai": "^5.0.0"
+  }
+}

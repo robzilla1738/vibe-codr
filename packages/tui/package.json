@@ -1,0 +1,29 @@
+{
+  "name": "@vibe/tui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "lint": "echo \"(no lint configured)\"",
+    "build": "echo \"(bun runs from source)\"",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "@vibe/shared": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opentui/core": "*",
+    "@opentui/solid": "*",
+    "solid-js": "*"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": { "optional": true },
+    "@opentui/solid": { "optional": true },
+    "solid-js": { "optional": true }
+  }
+}

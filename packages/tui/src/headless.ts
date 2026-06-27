@@ -31,6 +31,14 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
         process.stderr.write(`${ansi.red("✗ tool error")}\n`);
       }
       break;
+    case "loop-tick":
+      process.stderr.write(
+        `\n${ansi.cyan("↻")} ${ansi.dim(`loop iteration ${event.iteration}`)}\n`,
+      );
+      break;
+    case "loop-stopped":
+      process.stderr.write(`${ansi.cyan("■")} ${ansi.dim(`loop ${event.reason}`)}\n`);
+      break;
     case "subagent-started":
       process.stderr.write(
         `\n${ansi.magenta("⤷")} ${ansi.dim(`subagent ${event.subagentId.slice(-6)}: ${truncate(event.prompt, 80)}`)}\n`,

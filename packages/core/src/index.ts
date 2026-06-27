@@ -23,3 +23,10 @@ export {
   loadSkills,
   loadSkillsFrom,
 } from "./loaders.ts";
+export {
+  LoopController,
+  parseLoopArgs,
+  parseDuration,
+  type LoopOptions,
+  type ParsedLoop,
+} from "./loop.ts";

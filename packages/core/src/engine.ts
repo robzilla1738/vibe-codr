@@ -1,4 +1,7 @@
+import { generateObject } from "ai";
+import { z } from "zod";
 import {
+  createId,
   createLogger,
   type EngineClient,
   type EngineCommand,
@@ -18,6 +21,7 @@ import {
   CommandRegistry,
   SkillRegistry,
   PluginHost,
+  parseSlash,
 } from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -25,6 +29,7 @@ import { helpText, formatModelList, initProject } from "./commands.ts";
 import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, type NamedAgent } from "./agents.ts";
 import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
+import { LoopController, parseLoopArgs } from "./loop.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -59,10 +64,13 @@ export class Engine implements EngineClient {
   #log: Logger;
   #queue: Promise<void> = Promise.resolve();
   #agents = new Map<string, NamedAgent>();
+  #loop: LoopController | undefined;
+  #permissionResolver: PermissionResolver | undefined;
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
     this.#cwd = opts.cwd ?? process.cwd();
+    this.#permissionResolver = opts.permissionResolver;
     this.registry = opts.registry ?? new ProviderRegistry();
     this.toolset = opts.toolset ?? new Toolset();
     this.hooks = opts.hooks ?? new HookBus();
@@ -171,9 +179,63 @@ export class Engine implements EngineClient {
         });
         break;
       case "shutdown":
+        this.#loop?.stop("shutdown");
         this.#bus.close();
         break;
     }
+  }
+
+  /** Build an ephemeral session sharing infra but with a fresh context. */
+  #buildSession(): Session {
+    return new Session({
+      config: this.#config,
+      registry: this.registry,
+      toolset: this.toolset,
+      bus: this.#bus,
+      cwd: this.#cwd,
+      model: this.#session.model,
+      mode: this.#session.mode,
+      goal: this.#session.goal,
+      permissionResolver: this.#permissionResolver,
+      agents: this.#agents,
+      skills: this.skills,
+    });
+  }
+
+  /** Run one loop iteration; expands a leading custom /command if present. */
+  async #runLoopIteration(prompt: string): Promise<string> {
+    let text = prompt;
+    const slash = parseSlash(prompt);
+    if (slash) {
+      const cmd = this.commands.get(slash.name);
+      if (cmd) {
+        const r = cmd.run(slash.args);
+        if (r.kind === "prompt") text = r.text;
+      }
+    }
+    const session = this.#buildSession();
+    await session.run(text);
+    return session.lastAssistantText();
+  }
+
+  /** Evaluate a loop's --until condition with a cheap structured call. */
+  async #evaluateCondition(
+    result: string,
+    condition: string,
+  ): Promise<{ done: boolean; reason: string }> {
+    const model = await this.registry.resolveModel(
+      this.#session.model,
+      this.#config,
+    );
+    const { object } = await generateObject({
+      model,
+      schema: z.object({ done: z.boolean(), reason: z.string() }),
+      prompt:
+        `You are checking whether a stop condition has been satisfied.\n` +
+        `Condition: ${condition}\n\nMost recent result:\n${result}\n\n` +
+        `Return done=true only if the condition is clearly satisfied.`,
+    });
+    return object;
   }
 
   /** List models for configured providers, enriched with models.dev metadata. */
@@ -233,6 +295,9 @@ export class Engine implements EngineClient {
             : "No named agents. Add .vibe/agents/<name>.md to define one.",
         );
         break;
+      case "loop":
+        this.#handleLoop(args);
+        break;
       case "compact":
         this.send({ type: "compact" });
         break;
@@ -248,6 +313,50 @@ export class Engine implements EngineClient {
       default:
         this.#notice(`Unknown command: /${name}`, "warn");
     }
+  }
+
+  #handleLoop(args: string): void {
+    if (args.trim() === "stop") {
+      if (this.#loop) {
+        this.#loop.stop();
+        this.#loop = undefined;
+      } else {
+        this.#notice("No active loop.");
+      }
+      return;
+    }
+    if (this.#loop) {
+      this.#notice("A loop is already running. Run /loop stop first.", "warn");
+      return;
+    }
+    const parsed = parseLoopArgs(args);
+    if (!parsed) {
+      this.#notice(
+        "Usage: /loop [interval] <prompt|/command> [--until <condition>] [--max N]",
+        "warn",
+      );
+      return;
+    }
+    const loop = new LoopController({
+      id: createId("loop"),
+      ...parsed,
+      run: (p) => this.#runLoopIteration(p),
+      ...(parsed.until
+        ? { evaluate: (r: string, c: string) => this.#evaluateCondition(r, c) }
+        : {}),
+      emit: (e) => this.#bus.emit(e),
+    });
+    this.#loop = loop;
+    void loop.whenDone().then(() => {
+      if (this.#loop === loop) this.#loop = undefined;
+    });
+    loop.start();
+    this.#notice(
+      `Loop started (every ${Math.round(parsed.intervalMs / 1000)}s)` +
+        (parsed.until ? `, until: ${parsed.until}` : "") +
+        (parsed.max ? `, max ${parsed.max}` : "") +
+        ". Run /loop stop to cancel.",
+    );
   }
 
   /** Run prompts one at a time to keep history consistent. */

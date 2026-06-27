@@ -27,7 +27,7 @@ function App(props: { engine: EngineClient }) {
   let model = snap.model;
   let mode = snap.mode;
   let usage: SessionUsage = snap.usage;
-  let pendingPerm: string | null = null;
+  const pendingPerms: string[] = []; // FIFO of unanswered permission ids
   const [status, setStatus] = createSignal(statusLine(model, mode, 0, usage));
 
   const append = (line: Line) => setLines((prev) => [...prev, line]);
@@ -66,7 +66,7 @@ function App(props: { engine: EngineClient }) {
             refreshStatus();
             break;
           case "permission-request":
-            pendingPerm = event.id;
+            pendingPerms.push(event.id);
             append({
               kind: "notice",
               text: `⚠ allow ${event.toolName}? [y]es · [a]lways · [n]o`,
@@ -107,12 +107,12 @@ function App(props: { engine: EngineClient }) {
     const text = draft().trim();
     if (!text) return;
     setDraft("");
-    // While a permission prompt is pending, the next input answers it.
-    if (pendingPerm) {
+    // While permission prompts are pending, each input answers the oldest.
+    const permId = pendingPerms.shift();
+    if (permId) {
       const c = text.toLowerCase()[0];
       const decision = c === "y" ? "once" : c === "a" ? "always" : "deny";
-      props.engine.send({ type: "resolve-permission", id: pendingPerm, decision });
-      pendingPerm = null;
+      props.engine.send({ type: "resolve-permission", id: permId, decision });
       return;
     }
     // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.

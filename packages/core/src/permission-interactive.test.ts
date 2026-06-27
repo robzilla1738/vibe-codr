@@ -115,6 +115,32 @@ test("interactive: 'always' suppresses the second prompt", async () => {
   expect(runs()).toBe(2);
 });
 
+test("interactive: two tool calls in one step each get a distinct prompt", async () => {
+  const twoCalls = {
+    stream: simulateReadableStream({
+      chunks: [
+        { type: "stream-start", warnings: [] },
+        { type: "tool-call", toolCallId: "c1", toolName: "danger", input: "{}" },
+        { type: "tool-call", toolCallId: "c2", toolName: "danger", input: "{}" },
+        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      ] as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
+  const { engine, runs } = makeEngine([twoCalls, finalText()], true);
+  const events = drive(engine, "once");
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+
+  const ids = events
+    .filter((e) => e.type === "permission-request")
+    .map((e) => (e as Extract<UIEvent, { type: "permission-request" }>).id);
+  expect(ids.length).toBe(2);
+  expect(new Set(ids).size).toBe(2); // distinct ids, both resolvable
+  expect(runs()).toBe(2);
+});
+
 test("non-interactive: side-effecting tools auto-allow without prompting", async () => {
   const { engine, runs } = makeEngine([toolCall("c1"), finalText()], false);
   const events = drive(engine, "deny"); // would deny if asked

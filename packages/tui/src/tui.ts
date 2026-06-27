@@ -38,12 +38,13 @@ async function startRepl(engine: EngineClient): Promise<void> {
   // Print engine events in the background.
   void renderHeadless(engine, { showTools: true });
 
-  // A pending permission prompt; while set, the next line answers it.
-  let pendingPerm: string | null = null;
+  // Pending permission prompts (FIFO) — while non-empty, each line answers the
+  // oldest, so parallel side-effecting tool calls in one step don't get stuck.
+  const pendingPerms: string[] = [];
   void (async () => {
     for await (const event of engine.events()) {
       if (event.type === "permission-request") {
-        pendingPerm = event.id;
+        pendingPerms.push(event.id);
         process.stdout.write(
           `\n${ansi.yellow("⚠ permission")} ${ansi.bold(event.toolName)} wants to run ` +
             `${ansi.dim(truncate(JSON.stringify(event.input ?? {}), 100))}\n` +
@@ -57,10 +58,9 @@ async function startRepl(engine: EngineClient): Promise<void> {
   const ask = () =>
     rl.question(ansi.green("› "), (line) => {
       const trimmed = line.trim();
-      if (pendingPerm) {
-        const decision = parseDecision(trimmed);
-        engine.send({ type: "resolve-permission", id: pendingPerm, decision });
-        pendingPerm = null;
+      const permId = pendingPerms.shift();
+      if (permId) {
+        engine.send({ type: "resolve-permission", id: permId, decision: parseDecision(trimmed) });
         ask();
         return;
       }

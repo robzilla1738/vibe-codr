@@ -24,6 +24,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "clear", description: "Clear the conversation history (alias /new)" },
       { name: "compact", description: "Compact the conversation to free context" },
       { name: "resume", description: "List saved sessions to resume" },
+      { name: "export", description: "Export the conversation to a Markdown file (/export [path])" },
       { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
     ],
   },
@@ -67,6 +68,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "skills", description: "List available skills" },
       { name: "commands", description: "List custom slash commands" },
       { name: "mcp", description: "Show connected MCP servers" },
+      { name: "doctor", description: "Run an environment health check" },
     ],
   },
 ];

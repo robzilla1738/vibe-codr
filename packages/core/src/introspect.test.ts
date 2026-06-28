@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import type { ToolDefinition } from "@vibe/shared";
+import type { Message, ToolDefinition } from "@vibe/shared";
 import { ConfigSchema } from "@vibe/config";
 import {
   formatStatus,
@@ -9,6 +9,8 @@ import {
   formatMcp,
   formatPermissions,
   formatNamedList,
+  formatTranscript,
+  formatDoctor,
   type StatusInfo,
 } from "./introspect.ts";
 
@@ -112,5 +114,62 @@ test("formatNamedList falls back when empty", () => {
   expect(formatNamedList("Skills:", [], "none here")).toBe("none here");
   expect(formatNamedList("Skills:", [{ name: "x", description: "y" }], "none")).toContain(
     "x — y",
+  );
+});
+
+test("formatTranscript renders user/assistant/tool turns as Markdown", () => {
+  const history: Message[] = [
+    {
+      id: "1",
+      role: "user",
+      parts: [{ type: "text", text: "fix the bug" }],
+      createdAt: 0,
+    },
+    {
+      id: "2",
+      role: "assistant",
+      parts: [
+        { type: "text", text: "On it." },
+        { type: "tool-call", toolCallId: "t1", toolName: "edit", input: { path: "a.ts" } },
+      ],
+      createdAt: 1,
+    },
+    {
+      id: "3",
+      role: "tool",
+      parts: [{ type: "tool-result", toolCallId: "t1", toolName: "edit", output: "ok" }],
+      createdAt: 2,
+    },
+  ];
+  const md = formatTranscript(history, {
+    sessionId: "ses_1",
+    model: "anthropic/claude-opus-4-8",
+    goal: "ship",
+  });
+  expect(md).toContain("# vibe-codr transcript");
+  expect(md).toContain("ses_1");
+  expect(md).toContain("goal: ship");
+  expect(md).toContain("## User");
+  expect(md).toContain("fix the bug");
+  expect(md).toContain("## Assistant");
+  expect(md).toContain("`edit(");
+  expect(md).toContain("> ok");
+});
+
+test("formatDoctor marks failures and summarizes", () => {
+  const out = formatDoctor([
+    { label: "provider", ok: true, detail: "anthropic: ok" },
+    { label: "git", ok: false, detail: "not a repo" },
+    { label: "mcp", ok: null, detail: "none configured" },
+  ]);
+  expect(out).toContain("✓ provider");
+  expect(out).toContain("✗ git");
+  expect(out).toContain("○ mcp");
+  expect(out).toContain("1 issue(s) found");
+});
+
+test("formatDoctor reports all-clear", () => {
+  expect(formatDoctor([{ label: "git", ok: true, detail: "ok" }])).toContain(
+    "All checks passed.",
   );
 });

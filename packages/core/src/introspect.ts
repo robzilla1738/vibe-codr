@@ -1,5 +1,5 @@
 import type { Config } from "@vibe/config";
-import type { SessionUsage, ToolDefinition } from "@vibe/shared";
+import type { Message, SessionUsage, ToolDefinition } from "@vibe/shared";
 import type { ModelPrice } from "@vibe/config";
 import type { McpServerStatus } from "./mcp.ts";
 
@@ -168,4 +168,66 @@ export function formatNamedList(
 function firstLine(s: string): string {
   const line = s.split("\n")[0]?.trim() ?? "";
   return line.length > 100 ? `${line.slice(0, 99)}…` : line;
+}
+
+/** `/export` — render the conversation history as a Markdown transcript. */
+export function formatTranscript(
+  history: Message[],
+  meta: { sessionId: string; model: string; goal: string | null },
+): string {
+  const lines: string[] = [
+    `# vibe-codr transcript`,
+    "",
+    `- session: ${meta.sessionId}`,
+    `- model: ${meta.model}`,
+    ...(meta.goal ? [`- goal: ${meta.goal}`] : []),
+    "",
+  ];
+  for (const msg of history) {
+    const heading =
+      msg.role === "user"
+        ? "## User"
+        : msg.role === "assistant"
+          ? "## Assistant"
+          : msg.role === "tool"
+            ? "### Tool"
+            : "## System";
+    const body: string[] = [];
+    for (const part of msg.parts) {
+      if (part.type === "text" && part.text.trim()) body.push(part.text.trim());
+      else if (part.type === "reasoning" && part.text.trim()) {
+        body.push(`_(reasoning)_ ${part.text.trim()}`);
+      } else if (part.type === "tool-call") {
+        body.push(`\`${part.toolName}(${firstLine(JSON.stringify(part.input ?? {}))})\``);
+      } else if (part.type === "tool-result") {
+        const out =
+          typeof part.output === "string" ? part.output : JSON.stringify(part.output);
+        body.push(`> ${firstLine(out)}`);
+      }
+    }
+    if (body.length) lines.push(heading, "", body.join("\n\n"), "");
+  }
+  return lines.join("\n");
+}
+
+/** One line of the `/doctor` report: ok=true ✓, false ✗, null ○ (n/a). */
+export interface DoctorCheck {
+  label: string;
+  ok: boolean | null;
+  detail: string;
+}
+
+/** `/doctor` — render the environment health checklist. */
+export function formatDoctor(checks: DoctorCheck[]): string {
+  const glyph = (ok: boolean | null) => (ok === true ? "✓" : ok === false ? "✗" : "○");
+  const width = Math.max(0, ...checks.map((c) => c.label.length));
+  const lines = checks.map(
+    (c) => `  ${glyph(c.ok)} ${c.label.padEnd(width)}  ${c.detail}`,
+  );
+  const problems = checks.filter((c) => c.ok === false).length;
+  const summary =
+    problems === 0
+      ? "All checks passed."
+      : `${problems} issue(s) found — see ✗ above.`;
+  return `vibe-codr doctor\n${lines.join("\n")}\n\n${summary}`;
 }

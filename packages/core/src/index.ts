@@ -66,7 +66,10 @@ export {
   formatMcp,
   formatPermissions,
   formatNamedList,
+  formatTranscript,
+  formatDoctor,
   type StatusInfo,
+  type DoctorCheck,
 } from "./introspect.ts";
 export {
   McpHub,

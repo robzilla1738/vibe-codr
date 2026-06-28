@@ -1,3 +1,4 @@
+import { join, resolve } from "node:path";
 import { generateObject } from "ai";
 import { z } from "zod";
 import {
@@ -36,6 +37,9 @@ import {
   formatMcp,
   formatPermissions,
   formatNamedList,
+  formatTranscript,
+  formatDoctor,
+  type DoctorCheck,
 } from "./introspect.ts";
 import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, type NamedAgent } from "./agents.ts";
@@ -562,6 +566,12 @@ export class Engine implements EngineClient {
       case "resume":
         await this.#handleResume();
         break;
+      case "export":
+        await this.#handleExport(args);
+        break;
+      case "doctor":
+        await this.#handleDoctor();
+        break;
       case "exit":
       case "quit":
         this.#notice("Press Ctrl-C (or Ctrl-D) to exit.");
@@ -928,6 +938,97 @@ export class Engine implements EngineClient {
     this.#notice(
       `Saved sessions (restart with \`vibecodr --resume <id>\`):\n${lines.join("\n")}`,
     );
+  }
+
+  /** `/export [path]` — write the conversation as a Markdown transcript. */
+  async #handleExport(args: string): Promise<void> {
+    const snap = this.#session.snapshot();
+    if (!snap.history.length) {
+      this.#notice("Nothing to export yet — the conversation is empty.");
+      return;
+    }
+    const md = formatTranscript(snap.history, {
+      sessionId: snap.sessionId,
+      model: snap.model,
+      goal: snap.goal,
+    });
+    const path = args.trim()
+      ? resolve(this.#cwd, args.trim())
+      : join(this.#cwd, `vibe-export-${snap.sessionId}.md`);
+    try {
+      await Bun.write(path, md);
+      this.#notice(`Exported ${snap.history.length} message(s) to ${path}`);
+    } catch (err) {
+      this.#notice(`Export failed: ${(err as Error).message}`, "error");
+    }
+  }
+
+  /** `/doctor` — environment health check (keys, git, MCP, verify, search). */
+  async #handleDoctor(): Promise<void> {
+    const checks: DoctorCheck[] = [];
+
+    const providerId = this.#session.model.split("/")[0] ?? "";
+    const configured = this.registry.isConfigured(providerId, this.#config);
+    checks.push({
+      label: "provider",
+      ok: configured,
+      detail: configured
+        ? `${providerId}: credentials found`
+        : `${providerId}: no API key (set ${providerId.toUpperCase()}_API_KEY or providers.${providerId}.apiKey)`,
+    });
+
+    const configuredProviders = this.registry
+      .list()
+      .filter((p) => this.registry.isConfigured(p.id, this.#config))
+      .map((p) => p.id);
+    checks.push({
+      label: "providers",
+      ok: configuredProviders.length > 0,
+      detail: configuredProviders.length
+        ? `configured: ${configuredProviders.join(", ")}`
+        : "no providers configured",
+    });
+
+    const isGit = await this.#checkpoints.isGitRepo();
+    checks.push({
+      label: "git",
+      ok: isGit,
+      detail: isGit ? "repository detected (checkpoints/undo enabled)" : "not a git repo (no checkpoints)",
+    });
+
+    const mcpNames = Object.keys(this.#config.mcp.servers);
+    if (mcpNames.length) {
+      const failed = this.#mcp.status().filter((s) => !s.connected);
+      checks.push({
+        label: "mcp",
+        ok: failed.length === 0,
+        detail: failed.length
+          ? `${failed.length}/${mcpNames.length} server(s) failed`
+          : `${mcpNames.length} server(s) connected`,
+      });
+    } else {
+      checks.push({ label: "mcp", ok: null, detail: "no servers configured" });
+    }
+
+    checks.push({
+      label: "verify",
+      ok: this.#config.verify.command ? true : null,
+      detail: this.#config.verify.command ?? "no verify command set",
+    });
+
+    const searchOk = this.#config.search.enabled;
+    const searchKey = this.#config.search.apiKey || process.env.TINYFISH_API_KEY;
+    checks.push({
+      label: "web search",
+      ok: searchOk ? Boolean(searchKey) : null,
+      detail: !searchOk
+        ? "disabled"
+        : searchKey
+          ? "enabled, key present"
+          : "enabled but no TINYFISH_API_KEY (searches will fail)",
+    });
+
+    this.#notice(formatDoctor(checks));
   }
 
   /** Run a git command in the workspace, returning trimmed stdout/stderr. */

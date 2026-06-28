@@ -74,7 +74,7 @@ vibecodr --resume <id>        # resume a specific session
 Type `/help` for the full, grouped list. Highlights:
 
 - **Session** — `/status` (model, mode, cwd, tokens, cost), `/cost`, `/clear`
-  (alias `/new`), `/compact`, `/resume`, `/init`, `/exit`.
+  (alias `/new`), `/compact`, `/resume`, `/export [path]`, `/init`, `/exit`.
 - **Model & mode** — `/model <id>`, `/models`, `/plan`, `/execute`,
   `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`, `/theme <name>`.
 - **Steering** — `/goal <text>`,
@@ -82,7 +82,8 @@ Type `/help` for the full, grouped list. Highlights:
   `/queue` (`/queue clear`).
 - **Code & safety** — `/diff`, `/review`, `/verify`, `/undo`, `/checkpoints`.
 - **Extensions & config** — `/config` (effective settings, secrets masked),
-  `/permissions`, `/tools`, `/agents`, `/skills`, `/commands`, `/mcp`.
+  `/permissions`, `/tools`, `/agents`, `/skills`, `/commands`, `/mcp`, `/doctor`
+  (environment health check).
 
 Custom commands live in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`,
 named subagents in `.vibe/agents/*.md`, and plugins are listed in config.

@@ -71,3 +71,22 @@ test("/cost reports a zero-cost session honestly", async () => {
   await engine.whenIdle();
   expect(notices(events)).toContain("Session cost");
 });
+
+test("/doctor runs the environment health check", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "doctor", args: "" });
+  await engine.whenIdle();
+  const out = notices(events);
+  expect(out).toContain("vibe-codr doctor");
+  expect(out).toContain("provider");
+  expect(out).toContain("git");
+});
+
+test("/export reports an empty conversation honestly", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "export", args: "" });
+  await engine.whenIdle();
+  expect(notices(events)).toContain("Nothing to export");
+});

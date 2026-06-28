@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
-import { gitStatusTool, gitDiffTool, gitCommitTool } from "./git.ts";
+import { gitStatusTool, gitDiffTool, gitCommitTool, gitLogTool, gitPushTool } from "./git.ts";
 
 function ctx(cwd: string): ToolContext {
   const events: UIEvent[] = [];
@@ -55,4 +55,27 @@ test("git_commit with nothing staged is an error", async () => {
   const cwd = await initRepo();
   const r = await gitCommitTool.execute({ message: "noop" }, ctx(cwd));
   expect(r.isError).toBe(true);
+});
+
+test("git_log shows commit subjects", async () => {
+  const cwd = await initRepo();
+  await Bun.write(join(cwd, "a.txt"), "x\n");
+  await gitCommitTool.execute({ message: "first commit", all: true }, ctx(cwd));
+  await Bun.write(join(cwd, "b.txt"), "y\n");
+  await gitCommitTool.execute({ message: "second commit", all: true }, ctx(cwd));
+
+  const log = await gitLogTool.execute({ max: 5 }, ctx(cwd));
+  expect(log.isError).toBeUndefined();
+  expect(String(log.output)).toContain("first commit");
+  expect(String(log.output)).toContain("second commit");
+});
+
+test("git_push fails clearly when there is no remote", async () => {
+  const cwd = await initRepo();
+  await Bun.write(join(cwd, "a.txt"), "x\n");
+  await gitCommitTool.execute({ message: "init", all: true }, ctx(cwd));
+  // No 'origin' remote configured -> push errors rather than throwing.
+  const r = await gitPushTool.execute({}, ctx(cwd));
+  expect(r.isError).toBe(true);
+  expect(String(r.output).length).toBeGreaterThan(0);
 });

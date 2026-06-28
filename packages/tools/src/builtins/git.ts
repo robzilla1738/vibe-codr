@@ -83,4 +83,67 @@ export const gitCommitTool: ToolDefinition<z.infer<typeof CommitInput>> = {
   },
 };
 
-export const gitTools: ToolDefinition[] = [gitStatusTool, gitDiffTool, gitCommitTool];
+const LogInput = z.object({
+  max: z.number().int().positive().max(100).optional().describe("Number of commits to show (default 10)."),
+  path: z.string().optional().describe("Limit history to this path."),
+});
+
+export const gitLogTool: ToolDefinition<z.infer<typeof LogInput>> = {
+  name: "git_log",
+  description: "Show recent commit history (hash, author, date, subject).",
+  inputSchema: LogInput,
+  readOnly: true,
+  async execute({ max, path }, ctx) {
+    const args = [
+      "log",
+      `-n${max ?? 10}`,
+      "--pretty=format:%h %an %ad %s",
+      "--date=short",
+    ];
+    if (path) args.push("--", path);
+    const { code, out } = await git(args, ctx);
+    if (code !== 0) return { output: out || "git log failed", isError: true };
+    return { output: cap(out) || "(no commits yet)" };
+  },
+};
+
+const PushInput = z.object({
+  remote: z.string().optional().describe("Remote name (default: origin)."),
+  branch: z.string().optional().describe("Branch to push (default: current branch)."),
+  setUpstream: z
+    .boolean()
+    .optional()
+    .describe("Pass -u to set the upstream tracking branch."),
+});
+
+export const gitPushTool: ToolDefinition<z.infer<typeof PushInput>> = {
+  name: "git_push",
+  description:
+    "Push commits to a remote (default origin / current branch). Use after git_commit to publish work to GitHub.",
+  inputSchema: PushInput,
+  readOnly: false,
+  concurrencySafe: false,
+  async execute({ remote, branch, setUpstream }, ctx) {
+    // Resolve the current branch when none is given so `-u` has a target.
+    let target = branch;
+    if (!target) {
+      const head = await git(["rev-parse", "--abbrev-ref", "HEAD"], ctx);
+      if (head.code !== 0) return { output: head.out || "cannot resolve HEAD", isError: true };
+      target = head.out.trim();
+    }
+    const args = ["push"];
+    if (setUpstream) args.push("-u");
+    args.push(remote ?? "origin", target);
+    const { code, out } = await git(args, ctx);
+    if (code !== 0) return { output: out || "git push failed", isError: true };
+    return { output: out || `Pushed ${target} to ${remote ?? "origin"}.` };
+  },
+};
+
+export const gitTools: ToolDefinition[] = [
+  gitStatusTool,
+  gitDiffTool,
+  gitLogTool,
+  gitCommitTool,
+  gitPushTool,
+];

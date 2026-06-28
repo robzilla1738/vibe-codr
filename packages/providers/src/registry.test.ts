@@ -15,6 +15,14 @@ test("the new providers are registered", () => {
   expect(reg.has("minimax")).toBe(true);
   expect(reg.has("codex")).toBe(true);
   expect(reg.has("xai")).toBe(true);
+  expect(reg.has("ollama")).toBe(true);
+  expect(reg.has("lmstudio")).toBe(true);
+});
+
+test("keyless local providers (ollama, lmstudio) are configured without a key", () => {
+  const reg = new ProviderRegistry();
+  expect(reg.isConfigured("ollama", defaultConfig())).toBe(true);
+  expect(reg.isConfigured("lmstudio", defaultConfig())).toBe(true);
 });
 
 test("config apiKey is used when no env var is set", () => {

@@ -114,6 +114,17 @@ const BUILTINS: BuiltinSpec[] = [
     module: "@ai-sdk/openai-compatible",
     factory: "createOpenAICompatible",
   },
+  {
+    // Ollama: local models via its OpenAI-compatible endpoint (keyless).
+    // `ollama serve` listens on 11434; override the host with OLLAMA_BASE_URL.
+    id: "ollama",
+    env: [],
+    baseURL: "http://localhost:11434/v1",
+    baseURLEnv: "OLLAMA_BASE_URL",
+    keyless: true,
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
 ];
 
 function buildDef(spec: BuiltinSpec): ProviderDef {

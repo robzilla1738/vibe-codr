@@ -97,8 +97,12 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 - **Resilience & git/process tools** — provider calls retry transient failures
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a
   notice instead of failing silently. Structured `git_status` / `git_diff` /
-  `git_commit` tools avoid hand-parsing porcelain, and `bash background:true`
+  `git_log` / `git_commit` / `git_push` tools avoid hand-parsing porcelain and
+  let the agent commit and publish to GitHub end-to-end, and `bash background:true`
   starts long-running commands you poll with `job_status` / stop with `job_kill`.
+  For richer GitHub workflows (issues, PRs, reviews), connect the official
+  [GitHub MCP server](https://github.com/github/github-mcp-server) under
+  `mcp.servers` (see the MCP example below).
 - **`@file` mentions & images** — reference files inline (`summarize @src/app.ts`)
   and their contents are injected as context; image mentions (`@shot.png`) are
   attached for vision models (with a notice when the model lacks vision). The
@@ -166,7 +170,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,
 `minimax/MiniMax-M1`, `codex/gpt-...`, `openrouter/anthropic/claude-...`,
-`fireworks/...`, `baseten/...`, `lmstudio/<id>`.
+`fireworks/...`, `baseten/...`, `lmstudio/<id>`, `ollama/llama3.1`.
 
 #### Providers & subscription auth
 
@@ -176,7 +180,8 @@ Model strings are `<provider>/<model-id>` (split on the first slash):
 | `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | premium/Grok models via an xAI API key; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
 | `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
-| `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` |
+| `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
+| `ollama` | none (keyless) | local; run `ollama serve`. `OLLAMA_BASE_URL` (default `:11434`). Models: `ollama/llama3.1`, `ollama/qwen2.5-coder`, … |
 
 **Any** provider can authenticate from a credential file or with extra headers —
 useful for subscription/OAuth tokens another CLI obtained:
@@ -220,7 +225,13 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
   "verify": { "command": "bun run typecheck && bun test", "auto": true, "maxRetries": 2 },
   "mcp": {
     "servers": {
-      "github": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] }
+      // GitHub: issues, PRs, reviews, code search. Needs a personal access
+      // token; tools register as mcp__github__* and flow through the permission gate.
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
+      }
     }
   },
   "providers": { "anthropic": { "apiKey": "sk-..." } }

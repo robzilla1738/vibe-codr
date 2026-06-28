@@ -128,6 +128,13 @@ export const ConfigSchema = z.object({
       onExceed: z.enum(["warn", "stop"]).default("warn"),
     })
     .default({ onExceed: "warn" }),
+  /** Transient-error retry policy for provider calls (network / 429 / 5xx). */
+  retry: z
+    .object({
+      maxAttempts: z.number().int().min(0).max(10).default(2),
+      baseDelayMs: z.number().int().min(0).max(60_000).default(500),
+    })
+    .default({ maxAttempts: 2, baseDelayMs: 500 }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

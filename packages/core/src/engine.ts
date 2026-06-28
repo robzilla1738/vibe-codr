@@ -334,7 +334,9 @@ export class Engine implements EngineClient {
     const { active, pending } = this.queueState();
     const lines: string[] = [];
     if (active) lines.push(`● running: ${active.label}`);
-    pending.forEach((p, i) => lines.push(`${i + 1}. ${p.label}`));
+    pending.forEach((p, i) => {
+      lines.push(`${i + 1}. ${p.label}`);
+    });
     this.#notice(
       lines.length
         ? `Queue:\n${lines.join("\n")}`

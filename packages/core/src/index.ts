@@ -48,6 +48,7 @@ export {
   type ImageAttachment,
   type ExpandedPrompt,
 } from "./mentions.ts";
+export { withRetry, isTransientError, type RetryOptions } from "./retry.ts";
 export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";
 export { runVerify, type VerifyResult } from "./verify.ts";
 export {

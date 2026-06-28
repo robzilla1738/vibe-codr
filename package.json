@@ -13,12 +13,15 @@
   "scripts": {
     "vibecodr": "bun packages/cli/bin/vibecodr.ts",
     "build": "turbo run build",
+    "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "lint": "turbo run lint",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "lint": "biome lint packages",
+    "format": "biome format --write packages",
+    "clean": "turbo run clean && rm -rf node_modules dist"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.1",
     "@types/bun": "^1.2.0",
     "@types/node": "^22.10.0",
     "msw": "^2.14.6",

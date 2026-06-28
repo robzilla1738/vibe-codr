@@ -20,7 +20,7 @@ import {
 } from "@vibe/shared";
 import type { Config, ModelPrice } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
-import { Toolset, toAISDKTool, type ToolRuntimeBase } from "@vibe/tools";
+import { type Toolset, toAISDKTool, type ToolRuntimeBase } from "@vibe/tools";
 import type { SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
 import { EventBus as EventBusImpl } from "./event-bus.ts";
@@ -32,6 +32,7 @@ import type { SessionStore } from "./store.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
 import type { ImageAttachment } from "./mentions.ts";
+import { withRetry } from "./retry.ts";
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -347,7 +348,10 @@ export class Session {
       // another one — warn and end the turn immediately.
       if (this.#enforceBudget() && config.budget.onExceed === "stop") return;
 
-      const model = await registry.resolveModel(this.model, config);
+      const model = await withRetry(() => registry.resolveModel(this.model, config), {
+        maxAttempts: config.retry.maxAttempts,
+        baseDelayMs: config.retry.baseDelayMs,
+      });
       // Resolve the active model's price once per turn for live cost tracking.
       this.#price = await this.#deps.getPricing?.(this.model);
       await this.#maybeCompact(model, false);
@@ -357,7 +361,7 @@ export class Session {
         goal: this.goal,
         projectMemory: this.#deps.projectMemory,
         pluginBlocks: this.#deps.extraSystem,
-        ...(skills && skills.list().length
+        ...(skills?.list().length
           ? { skillDescriptions: skills.descriptions() }
           : {}),
       });
@@ -377,15 +381,15 @@ export class Session {
       const tools = toolset.aiTools(this.mode, base);
       // The task list is available in both modes: the model can lay out tasks
       // while planning, and they carry over into execution.
-      tools["update_tasks"] = toAISDKTool(this.#tasksTool(), base);
+      tools.update_tasks = toAISDKTool(this.#tasksTool(), base);
       // Subagents do real work, so only offer spawning in execute mode and
       // below the configured recursion depth.
       if (this.mode === "execute" && this.depth < config.subagent.maxDepth) {
-        tools["spawn_subagent"] = toAISDKTool(this.#spawnTool(), base);
+        tools.spawn_subagent = toAISDKTool(this.#spawnTool(), base);
       }
       // Progressive disclosure: expose use_skill when skills are available.
-      if (skills && skills.list().length) {
-        tools["use_skill"] = toAISDKTool(this.#useSkillTool(), base);
+      if (skills?.list().length) {
+        tools.use_skill = toAISDKTool(this.#useSkillTool(), base);
       }
 
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
@@ -408,6 +412,14 @@ export class Session {
         toolChoice: "auto",
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: this.#abort.signal,
+        maxRetries: config.retry.maxAttempts,
+        onError: ({ error }) => {
+          bus.emit({
+            type: "notice",
+            level: "warn",
+            message: `provider error: ${(error as Error)?.message ?? String(error)}`,
+          });
+        },
         ...(tuning.providerOptions
           ? {
               providerOptions: tuning.providerOptions as NonNullable<

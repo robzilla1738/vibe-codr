@@ -9,14 +9,19 @@ import { editTool } from "./edit.ts";
 import { webfetchTool } from "./webfetch.ts";
 import { webSearchTool } from "./web-search.ts";
 import { presentPlanTool } from "./present-plan.ts";
+import { gitTools } from "./git.ts";
+import { BackgroundJobs, backgroundJobTools } from "./jobs.ts";
 
 export interface BuiltinToolOptions {
   /** Web search (TinyFish). Omit or set `enabled: false` to leave it out. */
   search?: { enabled?: boolean; apiKey?: string };
+  /** Shared background-job registry; enables `bash background:true` + job tools. */
+  jobs?: BackgroundJobs;
 }
 
-/** All file/shell/web/plan built-in tools (subagent tools are added by core). */
+/** All file/shell/web/plan/git built-in tools (subagent tools are added by core). */
 export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
+  const jobs = opts.jobs ?? new BackgroundJobs();
   const tools: ToolDefinition[] = [
     readTool,
     globTool,
@@ -25,8 +30,10 @@ export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
     webfetchTool,
     writeTool,
     editTool,
-    bashTool,
+    bashTool(jobs),
     presentPlanTool,
+    ...gitTools,
+    ...backgroundJobTools(jobs),
   ];
   if (opts.search?.enabled !== false) {
     tools.push(webSearchTool({ apiKey: opts.search?.apiKey }));
@@ -45,4 +52,6 @@ export {
   webfetchTool,
   webSearchTool,
   presentPlanTool,
+  gitTools,
 };
+export { BackgroundJobs, backgroundJobTools } from "./jobs.ts";

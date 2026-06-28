@@ -13,6 +13,7 @@ USAGE
   vibecodr [options]                 start the interactive TUI
   vibecodr -p "<prompt>" [options]   run one prompt headlessly and print the result
   vibecodr models [options]          list available models for configured providers
+  vibecodr sessions                  list saved sessions (resume with --resume <id>)
 
 OPTIONS
   -p, --prompt <text>   run a single prompt (headless / pipeable)
@@ -63,6 +64,12 @@ export async function run(argv: string[]): Promise<number> {
     overrides.mode = values.mode;
   }
 
+  // `vibecodr sessions` — list saved sessions and exit (no engine needed).
+  if (positionals[0] === "sessions") {
+    process.stdout.write(await formatSessions(cwd));
+    return 0;
+  }
+
   let config = await loadConfig({ cwd, overrides });
 
   // First-run setup: if the interactive user has no key for their model's
@@ -108,4 +115,17 @@ export async function run(argv: string[]): Promise<number> {
 
   await startTui(engine);
   return 0;
+}
+
+/** Render the saved-session list for `vibecodr sessions`. */
+export async function formatSessions(cwd: string): Promise<string> {
+  const metas = await new SessionStore(cwd).list();
+  if (!metas.length) return "No saved sessions.\n";
+  const lines = metas.map((m) => {
+    const when = new Date(m.updatedAt).toISOString().replace("T", " ").slice(0, 16);
+    const cost = m.usage?.costUSD ? ` $${m.usage.costUSD.toFixed(4)}` : "";
+    const goal = m.goal ? ` — ${m.goal.slice(0, 60)}` : "";
+    return `${m.id}  ${when}  ${m.model}${cost}${goal}`;
+  });
+  return `${lines.join("\n")}\n`;
 }

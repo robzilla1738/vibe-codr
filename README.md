@@ -80,6 +80,11 @@ are listed in config.
   or run commands); the model calls `present_plan`, and you approve via
   `/execute`. A glob-based allow/deny/ask **permission layer** gates
   side-effecting tools.
+- **Resilience & git/process tools** — provider calls retry transient failures
+  (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a
+  notice instead of failing silently. Structured `git_status` / `git_diff` /
+  `git_commit` tools avoid hand-parsing porcelain, and `bash background:true`
+  starts long-running commands you poll with `job_status` / stop with `job_kill`.
 - **`@file` mentions & images** — reference files inline (`summarize @src/app.ts`)
   and their contents are injected as context; image mentions (`@shot.png`) are
   attached for vision models (with a notice when the model lacks vision). The
@@ -183,9 +188,14 @@ are written to the user-global config.
 ## Develop
 
 ```bash
+bun run lint          # biome lint across packages
+bun run format        # biome format --write
 bun run typecheck     # tsc across all packages
 bun test              # unit tests
+bun run build:binary  # standalone binary -> dist/vibecodr (bun --compile)
 ```
+
+`vibecodr sessions` lists saved sessions (resume one with `--resume <id>`).
 
 ## Status
 

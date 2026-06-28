@@ -50,9 +50,12 @@ function applyOne(text: string, edit: EditOp): { text: string } | { error: strin
       )}`,
     };
   }
+  // Use a function replacer for the single-replace branch so `$`-sequences in
+  // newString (`$&`, `$1`, `$$`) are inserted literally rather than interpreted
+  // as String.replace special patterns. (split/join is already literal.)
   const next = replaceAll
     ? text.split(oldString).join(newString)
-    : text.replace(oldString, newString);
+    : text.replace(oldString, () => newString);
   return { text: next };
 }
 

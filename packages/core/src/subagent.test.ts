@@ -98,4 +98,8 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
     .map((e) => e.delta)
     .join("");
   expect(text).toBe("parent done");
+
+  // The child's tokens are folded into the parent so /cost and the spend guard
+  // account for delegated work: parent's own 2 steps (2+2) + child's 1 step (2).
+  expect(session.snapshot().usage.totalTokens).toBe(6);
 });

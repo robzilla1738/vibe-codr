@@ -56,6 +56,27 @@ test("the user's staging area is left untouched after a snapshot", async () => {
   expect(out).toContain(" M a.txt");
 });
 
+test("snapshot in a repo with no commits leaves the index empty", async () => {
+  // A freshly `git init`'d repo has no HEAD; the snapshot must not leave the
+  // working tree staged in the user's index.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-cp-fresh-"));
+  await git(dir, ["init", "-q"]);
+  await git(dir, ["config", "user.email", "t@t.dev"]);
+  await git(dir, ["config", "user.name", "t"]);
+  await Bun.write(join(dir, "a.txt"), "hello\n");
+
+  const cp = new CheckpointManager(dir);
+  const snap = await cp.snapshot("first");
+  expect(snap).not.toBeNull();
+
+  // a.txt should still be untracked ("??"), not staged ("A ").
+  const proc = Bun.spawn(["git", "status", "--porcelain"], { cwd: dir, stdout: "pipe" });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  expect(out).toContain("?? a.txt");
+  expect(out).not.toContain("A  a.txt");
+});
+
 test("non-git directories are a safe no-op", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-nogit-"));
   const cp = new CheckpointManager(dir);

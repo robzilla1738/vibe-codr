@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId } from "@vibe/shared";
 
@@ -37,12 +39,13 @@ export class CheckpointManager {
     this.#file = join(cwd, ".vibe", "checkpoints.json");
   }
 
-  async #git(args: string[]): Promise<GitResult> {
+  async #git(args: string[], env?: Record<string, string>): Promise<GitResult> {
     const proc = Bun.spawn(["git", ...args], {
       cwd: this.#cwd,
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     const [stdout, stderr] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -84,21 +87,29 @@ export class CheckpointManager {
     if (!(await this.isGitRepo())) return null;
     await this.#ensureLoaded();
 
-    await this.#git(["add", "-A"]);
-    const tree = (await this.#git(["write-tree"])).stdout;
-    if (!tree) return null;
+    const id = createId("cp");
+    // Stage and write the tree against a throwaway index file, so the user's
+    // real staging area is never touched — correct even in a repo with no
+    // commits yet (where `git reset` has no HEAD to restore the index to).
+    const indexFile = join(tmpdir(), `vibecodr-index-${id}`);
+    const env = { GIT_INDEX_FILE: indexFile };
+    let commit = "";
+    try {
+      await this.#git(["add", "-A"], env);
+      const tree = (await this.#git(["write-tree"], env)).stdout;
+      if (!tree) return null;
 
-    const head = await this.#git(["rev-parse", "HEAD"]);
-    const parent = head.ok ? ["-p", head.stdout] : [];
-    const commit = (
-      await this.#git(["commit-tree", tree, ...parent, "-m", `vibecodr: ${label}`])
-    ).stdout;
+      const head = await this.#git(["rev-parse", "HEAD"]);
+      const parent = head.ok ? ["-p", head.stdout] : [];
+      commit = (
+        await this.#git(["commit-tree", tree, ...parent, "-m", `vibecodr: ${label}`])
+      ).stdout;
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => undefined);
+    }
     if (!commit) return null;
 
-    const id = createId("cp");
     await this.#git(["update-ref", `refs/vibecodr/${id}`, commit]);
-    // Restore the index to HEAD so the user's staging area is left untouched.
-    if (head.ok) await this.#git(["reset", "-q"]);
 
     const cp: Checkpoint = { id, label, commit, createdAt: Date.now() };
     this.#list.push(cp);

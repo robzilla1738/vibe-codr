@@ -171,6 +171,11 @@ export class Session {
     return { ...this.#usage };
   }
 
+  /** Accrued cost in USD for this session (incl. folded-in subagent cost). */
+  get costUSD(): number {
+    return this.#costUSD;
+  }
+
   /** The current working task list (live reference; treat as read-only). */
   get tasks(): Task[] {
     return this.#tasks;
@@ -278,6 +283,17 @@ export class Session {
           prompt,
         });
         await child.run(prompt);
+        // Fold the child's tokens + cost into the parent so `/cost` and the
+        // spend guard account for delegated work (the child runs on an isolated
+        // bus, so its own usage events never reach the parent UI).
+        addUsage(this.#usage, child.usage);
+        this.#costUSD += child.costUSD;
+        this.#deps.bus.emit({
+          type: "usage-updated",
+          sessionId: this.id,
+          usage: this.#usageSnapshot(),
+        });
+        this.#enforceBudget();
         const result = child.lastAssistantText() || "(subagent produced no output)";
         this.#deps.bus.emit({
           type: "subagent-finished",
@@ -453,9 +469,31 @@ export class Session {
         },
       });
 
-      await this.#consume(result);
-      const response = await result.response;
-      this.#modelMessages.push(...response.messages);
+      // Build the assistant message from the stream, then commit it to BOTH the
+      // model context and the UI history together. On abort/error mid-turn,
+      // `result.response` rejects, so we record the partial assistant text in
+      // the model context too — keeping `#history` and `#modelMessages` in
+      // lockstep (otherwise the next turn's context would be missing this turn).
+      const assistant = await this.#consume(result);
+      let responseOk = false;
+      try {
+        const response = await result.response;
+        this.#modelMessages.push(...response.messages);
+        responseOk = true;
+      } finally {
+        if (assistant) {
+          this.#history.push(assistant);
+          // On failure the authoritative model messages never arrived; record
+          // the partial assistant text so model context matches UI history.
+          if (!responseOk) {
+            const text = assistant.parts
+              .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
+              .map((p) => p.text)
+              .join("");
+            if (text) this.#modelMessages.push({ role: "assistant", content: text });
+          }
+        }
+      }
     } catch (err) {
       bus.emit({
         type: "engine-error",
@@ -613,7 +651,9 @@ export class Session {
   }
 
   /** Translate AI-SDK stream parts into UIEvents and accumulate the message. */
-  async #consume(result: { fullStream: AsyncIterable<unknown> }): Promise<void> {
+  async #consume(
+    result: { fullStream: AsyncIterable<unknown> },
+  ): Promise<Message | null> {
     const bus = this.#deps.bus;
     let assistant: Message | null = null;
     const ensure = (): Message => {
@@ -699,7 +739,7 @@ export class Session {
           break;
       }
     }
-    if (assistant) this.#history.push(assistant);
+    return assistant;
   }
 }
 

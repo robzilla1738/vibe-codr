@@ -37,6 +37,19 @@ test("single edit replaces a unique match and emits a file-changed diff", async 
   expect(changed && changed.type === "file-changed" && changed.added).toBe(1);
 });
 
+test("replacement text containing $ sequences is inserted literally", async () => {
+  // `$&`, `$1`, `$$` are special in String.replace's string form — they must
+  // be preserved verbatim when the model edits regex/shell/jQuery code.
+  const { cwd, path } = await seed("const re = OLD;\n");
+  const events: UIEvent[] = [];
+  const r = await editTool.execute(
+    { path, oldString: "OLD", newString: "/foo$1$&bar$$/" },
+    ctx(cwd, events),
+  );
+  expect(r.isError).toBeUndefined();
+  expect(await Bun.file(join(cwd, path)).text()).toBe("const re = /foo$1$&bar$$/;\n");
+});
+
 test("non-unique match errors unless replaceAll is set", async () => {
   const { cwd, path } = await seed("x x x\n");
   const events: UIEvent[] = [];

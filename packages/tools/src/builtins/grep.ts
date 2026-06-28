@@ -17,7 +17,9 @@ export const grepTool: ToolDefinition<z.infer<typeof Input>> = {
   async execute({ pattern, path, glob }, ctx) {
     const args = ["rg", "--line-number", "--no-heading", "--color", "never"];
     if (glob) args.push("--glob", glob);
-    args.push(pattern, path ?? ".");
+    // `--` terminates option parsing so a pattern/path beginning with `-`
+    // (e.g. "-->", "--foo") is treated as a search term, not a ripgrep flag.
+    args.push("--", pattern, path ?? ".");
     try {
       const proc = Bun.spawn(args, {
         cwd: ctx.cwd,

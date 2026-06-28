@@ -25,6 +25,12 @@ interface BuiltinSpec {
   baseURL: string;
   baseURLEnv?: string;
   keyless?: boolean;
+  /**
+   * Hosted endpoint used automatically when an API key is present and no base
+   * URL override is set — lets a single provider serve both a local keyless
+   * daemon and its cloud service (e.g. Ollama local vs. ollama.com).
+   */
+  cloudBaseURL?: string;
   /** Default credential file (e.g. a subscription/OAuth token from another CLI). */
   tokenFile?: string;
   tokenPath?: string;
@@ -115,12 +121,16 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // Ollama: local models via its OpenAI-compatible endpoint (keyless).
-    // `ollama serve` listens on 11434; override the host with OLLAMA_BASE_URL.
+    // Ollama: local models via its OpenAI-compatible endpoint (keyless), and
+    // Ollama Cloud (ollama.com) when an OLLAMA_API_KEY is set. `ollama serve`
+    // listens on 11434; override the host with OLLAMA_BASE_URL. With a key and
+    // no override we target the cloud `/v1` endpoint automatically; cloud model
+    // ids carry a `:cloud` suffix (e.g. `ollama/gpt-oss:120b-cloud`).
     id: "ollama",
-    env: [],
+    env: ["OLLAMA_API_KEY"],
     baseURL: "http://localhost:11434/v1",
     baseURLEnv: "OLLAMA_BASE_URL",
+    cloudBaseURL: "https://ollama.com/v1",
     keyless: true,
     module: "@ai-sdk/openai-compatible",
     factory: "createOpenAICompatible",
@@ -131,6 +141,9 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
   const baseURL = (opts: ProviderCreateOptions) =>
     opts.baseURL ??
     (spec.baseURLEnv ? process.env[spec.baseURLEnv] : undefined) ??
+    // With a key and no explicit override, prefer the hosted cloud endpoint
+    // (e.g. Ollama Cloud) over the local default.
+    (spec.cloudBaseURL && opts.apiKey ? spec.cloudBaseURL : undefined) ??
     spec.baseURL;
 
   return {

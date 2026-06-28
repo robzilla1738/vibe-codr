@@ -55,11 +55,22 @@ export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";
 export { runVerify, type VerifyResult } from "./verify.ts";
 export {
   loadProjectMemory,
+  loadMemorySources,
+  formatMemory,
   globalMemoryPath,
   MEMORY_FILES,
+  type MemorySource,
 } from "./memory.ts";
 export {
+  searchSessions,
+  formatRecall,
+  hasSavedSessions,
+  type RecallHit,
+  type RecallOptions,
+} from "./recall.ts";
+export {
   formatStatus,
+  formatContextUsage,
   formatCost,
   formatConfig,
   formatTools,

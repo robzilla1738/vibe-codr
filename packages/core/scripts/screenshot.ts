@@ -106,6 +106,7 @@ interface Reduced {
   tasks?: Task[];
   queued?: QueuedItem[];
   usage?: SessionUsage;
+  context?: { usedTokens: number; contextWindow: number };
 }
 
 // ── Event -> display-line reducer (mirrors app.tsx onMount handler) ─────────
@@ -115,6 +116,7 @@ function reduce(events: UIEvent[]): Reduced {
   let tasks: Task[] | undefined;
   let queued: QueuedItem[] = [];
   let usage: SessionUsage | undefined;
+  let context: { usedTokens: number; contextWindow: number } | undefined;
   let assistant: Line | null = null;
   // edit/write return their diff as text too; skip that echo since the
   // file-changed event already rendered it.
@@ -193,6 +195,9 @@ function reduce(events: UIEvent[]): Reduced {
       case "usage-updated":
         usage = e.usage;
         break;
+      case "context-updated":
+        context = { usedTokens: e.usedTokens, contextWindow: e.contextWindow };
+        break;
       case "queue-changed":
         if (e.pending.length >= queued.length) queued = e.pending;
         break;
@@ -209,6 +214,7 @@ function reduce(events: UIEvent[]): Reduced {
     ...(tasks && tasks.length ? { tasks } : {}),
     ...(queued.length ? { queued } : {}),
     ...(usage ? { usage } : {}),
+    ...(context ? { context } : {}),
   };
 }
 
@@ -532,13 +538,20 @@ async function buildScenes(): Promise<Scene[]> {
     }),
   ];
 
+  // Append a live "· ctx N%" indicator when context fill is meaningful (≥1%).
+  const ctx = (r: Reduced): string => {
+    if (!r.context || r.context.contextWindow <= 0) return "";
+    const pct = Math.min(100, Math.round((r.context.usedTokens / r.context.contextWindow) * 100));
+    return pct >= 1 ? ` · ctx ${pct}%` : "";
+  };
+
   return [
-    { name: "01-chat", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", lines: a.lines, ...(a.usage ? { usage: a.usage } : {}), input: "" },
-    { name: "02-diff", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/app", lines: diff.lines, ...(diff.usage ? { usage: diff.usage } : {}), input: "" },
-    { name: "03-plan", status: "anthropic/claude-opus-4-8 · plan", cwd: "~/vibe-codr", lines: plan.lines, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
-    { name: "04-tasks", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", lines: tasks.lines, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), input: "" },
+    { name: "01-chat", status: `anthropic/claude-opus-4-8 · execute${ctx(a)}`, cwd: "~/vibe-codr", lines: a.lines, ...(a.usage ? { usage: a.usage } : {}), input: "" },
+    { name: "02-diff", status: `anthropic/claude-opus-4-8 · execute${ctx(diff)}`, cwd: "~/app", lines: diff.lines, ...(diff.usage ? { usage: diff.usage } : {}), input: "" },
+    { name: "03-plan", status: `anthropic/claude-opus-4-8 · plan${ctx(plan)}`, cwd: "~/vibe-codr", lines: plan.lines, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
+    { name: "04-tasks", status: `anthropic/claude-opus-4-8 · execute${ctx(tasks)}`, cwd: "~/vibe-codr", lines: tasks.lines, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), input: "" },
     { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", lines: modelLines, input: "/model codex/gpt-5.1-codex" },
-    { name: "06-git", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/service", lines: gitScene.lines, ...(gitScene.usage ? { usage: gitScene.usage } : {}), input: "" },
+    { name: "06-git", status: `anthropic/claude-opus-4-8 · execute${ctx(gitScene)}`, cwd: "~/service", lines: gitScene.lines, ...(gitScene.usage ? { usage: gitScene.usage } : {}), input: "" },
     { name: "07-permission", status: "anthropic/claude-opus-4-8 · execute · ask", cwd: "~/vibe-codr", lines: perm.lines, input: "y", inputHint: "approve once" },
     { name: "08-sessions", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", lines: sessLines, input: "vibecodr --resume ses_k3p9qz" },
   ];

@@ -42,16 +42,17 @@ function App(props: { engine: EngineClient }) {
   let approvals = snap.approvalMode;
   let goal = snap.goal;
   let usage: SessionUsage = snap.usage;
+  let ctx: { usedTokens: number; contextWindow: number } | null = null;
   const pendingPerms: string[] = []; // FIFO of unanswered permission ids
   const [palette, setPalette] = createSignal<Palette>(getTheme(snap.theme));
   const [status, setStatus] = createSignal(
-    statusLine(model, mode, approvals, goal, 0, usage),
+    statusLine(model, mode, approvals, goal, 0, usage, ctx),
   );
   const [footer, setFooter] = createSignal(footerLine(usage));
 
   const append = (line: Line) => setLines((prev) => [...prev, line]);
   const refreshStatus = () => {
-    setStatus(statusLine(model, mode, approvals, goal, queued(), usage));
+    setStatus(statusLine(model, mode, approvals, goal, queued(), usage, ctx));
     setFooter(footerLine(usage));
   };
 
@@ -120,6 +121,10 @@ function App(props: { engine: EngineClient }) {
             break;
           case "usage-updated":
             usage = event.usage;
+            refreshStatus();
+            break;
+          case "context-updated":
+            ctx = { usedTokens: event.usedTokens, contextWindow: event.contextWindow };
             refreshStatus();
             break;
           case "permission-request":
@@ -230,7 +235,9 @@ function App(props: { engine: EngineClient }) {
           </For>
         </box>
       </Show>
-      <box border title={status()} marginTop={1}>
+      {/* Horizontal padding keeps the prompt off the border; a bordered
+          single-row input is already vertically centered between the frame. */}
+      <box border title={status()} marginTop={1} paddingLeft={1} paddingRight={1}>
         <input
           value={draft()}
           onInput={(v: string) => setDraft(v)}
@@ -257,11 +264,19 @@ function statusLine(
   goal: string | null,
   queued: number,
   usage: SessionUsage,
+  ctx: { usedTokens: number; contextWindow: number } | null,
 ): string {
   const g = goal ? ` · ★ ${truncate(goal, 32)}` : "";
   const q = queued > 0 ? ` · ${queued} queued` : "";
   const u = usage.totalTokens > 0 ? ` · ${formatUsage(usage)}` : "";
-  return `${model} · ${mode} · ${approvals}${g}${q}${u}`;
+  const pct =
+    ctx && ctx.contextWindow > 0
+      ? Math.min(100, Math.round((ctx.usedTokens / ctx.contextWindow) * 100))
+      : 0;
+  // Only surface context fill once it's meaningful (≥1%); avoids "ctx 0%" noise
+  // at the very start of a session.
+  const c = pct >= 1 ? ` · ctx ${pct}%` : "";
+  return `${model} · ${mode} · ${approvals}${g}${q}${c}${u}`;
 }
 
 function truncate(s: string, n: number): string {

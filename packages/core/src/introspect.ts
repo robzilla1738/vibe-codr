@@ -23,6 +23,29 @@ export interface StatusInfo {
   commandCount: number;
   agentCount: number;
   usage: SessionUsage;
+  /** Estimated tokens currently in the model context. */
+  contextTokens?: number;
+  /** The active model's context window, when known from the catalog. */
+  contextWindow?: number;
+}
+
+/** Compact "k"-scaled token count, e.g. 90_000 -> "90k". */
+function ktok(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : `${n}`;
+}
+
+/**
+ * Render a context-window fill line: "45% · 90k / 200k" when the window is
+ * known, else just the used estimate. Shared by `/status` and `/context`.
+ */
+export function formatContextUsage(
+  used: number | undefined,
+  window: number | undefined,
+): string {
+  if (used === undefined) return "—";
+  if (!window) return `~${ktok(used)} tokens (window unknown)`;
+  const pct = Math.min(100, Math.round((used / window) * 100));
+  return `${pct}% · ~${ktok(used)} / ${ktok(window)}`;
 }
 
 /** `/status` — a compact, aligned overview of the live session. */
@@ -44,6 +67,7 @@ export function formatStatus(info: StatusInfo): string {
     ["skills", `${info.skillCount}`],
     ["commands", `${info.commandCount}`],
     ["agents", `${info.agentCount}`],
+    ["context", formatContextUsage(info.contextTokens, info.contextWindow)],
     ["tokens", tokens],
     ["cost", cost],
   ])}`;

@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadProjectMemory } from "./memory.ts";
+import { loadProjectMemory, loadMemorySources, formatMemory } from "./memory.ts";
 
 async function freshDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "vibe-mem-"));
@@ -36,4 +36,27 @@ test("ignores empty/whitespace-only memory files", async () => {
   const dir = await freshDir();
   await writeFile(join(dir, "VIBE.md"), "   \n\n  ");
   expect(await loadProjectMemory(dir)).toBeUndefined();
+});
+
+test("loadMemorySources reports scope, path, and content per file", async () => {
+  const dir = await freshDir();
+  await writeFile(join(dir, "VIBE.md"), "project conventions");
+  const sources = await loadMemorySources(dir);
+  expect(sources).toHaveLength(1);
+  expect(sources[0]).toMatchObject({ scope: "project", path: "VIBE.md" });
+  expect(sources[0]!.text).toContain("project conventions");
+});
+
+test("formatMemory lists loaded files and explains precedence", async () => {
+  const dir = await freshDir();
+  await writeFile(join(dir, "AGENTS.md"), "use bun");
+  const out = formatMemory(await loadMemorySources(dir));
+  expect(out).toContain("AGENTS.md");
+  expect(out).toContain("precedence");
+});
+
+test("formatMemory explains how to add memory when none exists", () => {
+  const out = formatMemory([]);
+  expect(out).toContain("No memory files found");
+  expect(out).toContain("VIBE.md");
 });

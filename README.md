@@ -96,8 +96,10 @@ vibecodr --resume <id>        # resume a specific session
 
 Type `/help` for the full, grouped list. Highlights:
 
-- **Session** — `/status` (model, mode, cwd, tokens, cost), `/cost`, `/clear`
-  (alias `/new`), `/compact`, `/resume`, `/export [path]`, `/init`, `/exit`.
+- **Session** — `/status` (model, mode, cwd, context %, tokens, cost), `/cost`,
+  `/context` (window usage + compaction threshold), `/clear` (alias `/new`),
+  `/compact`, `/resume`, `/recall <text>` (search past sessions), `/export [path]`,
+  `/init`, `/exit`.
 - **Model & mode** — `/model <id>`, `/models`, `/plan`, `/execute`,
   `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`, `/theme <name>`.
 - **Steering** — `/goal <text>`,
@@ -105,8 +107,8 @@ Type `/help` for the full, grouped list. Highlights:
   `/queue` (`/queue clear`).
 - **Code & safety** — `/diff`, `/review`, `/verify`, `/undo`, `/checkpoints`.
 - **Extensions & config** — `/config` (effective settings, secrets masked),
-  `/permissions`, `/tools`, `/agents`, `/skills`, `/commands`, `/mcp`, `/doctor`
-  (environment health check).
+  `/memory` (loaded project/global notes), `/permissions`, `/tools`, `/agents`,
+  `/skills`, `/commands`, `/mcp`, `/doctor` (environment health check).
 
 Custom commands live in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`,
 named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
@@ -183,12 +185,24 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 - **Persistence & compaction** — every turn is saved to
   `.vibe/sessions/<id>/`; long conversations auto-compact against the active
   model's context window (from the catalog), preserving the system prompt, goal,
-  and most recent turns.
-- **Project memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` in the project
-  root (plus a user-global `~/.config/vibe-codr/VIBE.md`) are injected into every
-  system prompt, so the agent follows your stack and conventions out of the box.
-  Drop-in compatible with repos already carrying Codex's `AGENTS.md` or Claude
-  Code's `CLAUDE.md`.
+  and most recent turns. The status bar shows live context fill (`ctx 45%`) and
+  `/context` reports the window plus the compaction threshold so you always know
+  how close you are to the limit.
+- **Session memory (recall)** — past sessions become searchable long-term
+  memory. `/recall <text>` does a fast, offline lexical search across every saved
+  session and shows the matching turns (with session id, date, and goal); the
+  agent can do the same mid-task via the `recall_memory` tool when you reference
+  earlier work or ask "what did we decide?". No embeddings or vector store
+  required — it just works on the session files already on disk.
+- **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` in the
+  project root (plus a user-global `~/.config/vibe-codr/VIBE.md`) are injected
+  into every system prompt, so the agent follows your stack and conventions out
+  of the box. Precedence is explicit and simple: the **global** file applies to
+  every project (lowest priority), and **project** files override it when
+  guidance conflicts. Each block is labelled with its source so the model can
+  tell them apart, and `/memory` shows exactly which files are loaded. Drop-in
+  compatible with repos already carrying Codex's `AGENTS.md` or Claude Code's
+  `CLAUDE.md`.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,
@@ -204,7 +218,7 @@ Model strings are `<provider>/<model-id>` (split on the first slash):
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
 | `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
 | `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
-| `ollama` | none (keyless) | local; run `ollama serve`. `OLLAMA_BASE_URL` (default `:11434`). Models: `ollama/llama3.1`, `ollama/qwen2.5-coder`, … |
+| `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — use `:cloud` model ids, e.g. `ollama/gpt-oss:120b-cloud`. Override the host with `OLLAMA_BASE_URL`. |
 
 **Any** provider can authenticate from a credential file or with extra headers —
 useful for subscription/OAuth tokens another CLI obtained:

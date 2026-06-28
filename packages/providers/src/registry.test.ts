@@ -25,6 +25,27 @@ test("keyless local providers (ollama, lmstudio) are configured without a key", 
   expect(reg.isConfigured("lmstudio", defaultConfig())).toBe(true);
 });
 
+test("ollama stays keyless for local use but accepts a cloud key", () => {
+  const reg = new ProviderRegistry();
+  // Local: no key needed, no apiKey resolved.
+  expect(reg.resolveAuth("ollama", defaultConfig()).apiKey).toBeUndefined();
+  // Cloud: a configured key flows through for ollama.com auth.
+  const auth = reg.resolveAuth("ollama", withProvider("ollama", { apiKey: "ol-key" }));
+  expect(auth.apiKey).toBe("ol-key");
+});
+
+test("OLLAMA_API_KEY env enables Ollama Cloud auth", () => {
+  const reg = new ProviderRegistry();
+  const prev = process.env.OLLAMA_API_KEY;
+  process.env.OLLAMA_API_KEY = "ol-env-key";
+  try {
+    expect(reg.resolveAuth("ollama", defaultConfig()).apiKey).toBe("ol-env-key");
+  } finally {
+    if (prev === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = prev;
+  }
+});
+
 test("config apiKey is used when no env var is set", () => {
   const reg = new ProviderRegistry();
   const auth = reg.resolveAuth("minimax", withProvider("minimax", { apiKey: "mm-key" }));

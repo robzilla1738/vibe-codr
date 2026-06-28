@@ -31,6 +31,7 @@ import { Session } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
 import {
   formatStatus,
+  formatContextUsage,
   formatCost,
   formatConfig,
   formatTools,
@@ -46,6 +47,9 @@ import { loadAgents, type NamedAgent } from "./agents.ts";
 import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
+import { searchSessions, formatRecall } from "./recall.ts";
+import { loadMemorySources, formatMemory } from "./memory.ts";
+import { reasoningSupported } from "./model-tuning.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
 import { runVerify } from "./verify.ts";
@@ -501,8 +505,23 @@ export class Engine implements EngineClient {
         this.#notice("Conversation cleared.");
         break;
       case "status":
-        this.#notice(this.#statusText());
+        this.#notice(await this.#statusText());
         break;
+      case "context": {
+        const window = await this.catalog.contextWindow(this.#session.model);
+        const used = this.#session.contextTokens;
+        const threshold = this.#config.compaction.threshold;
+        const lines = [
+          `Context window for ${this.#session.model}:`,
+          `  ${formatContextUsage(used, window)}`,
+          `  messages: ${this.#session.messageCount}`,
+          window
+            ? `  auto-compaction triggers at ${Math.round(threshold * 100)}% (~${Math.round((threshold * window) / 1000)}k tokens). Run /compact to do it now.`
+            : "  context window unknown for this model; using a 128k default for compaction.",
+        ];
+        this.#notice(lines.join("\n"));
+        break;
+      }
       case "cost":
         this.#notice(
           formatCost(
@@ -602,6 +621,20 @@ export class Engine implements EngineClient {
         break;
       case "compact":
         this.send({ type: "compact" });
+        break;
+      case "recall": {
+        if (!args.trim()) {
+          this.#notice("Usage: /recall <text to find in past sessions>", "warn");
+          break;
+        }
+        const hits = await searchSessions(this.#cwd, args, {
+          excludeId: this.#session.id,
+        });
+        this.#notice(formatRecall(args.trim(), hits));
+        break;
+      }
+      case "memory":
+        this.#notice(formatMemory(await loadMemorySources(this.#cwd)));
         break;
       case "init": {
         const created = await initProject(this.#cwd);
@@ -810,9 +843,12 @@ export class Engine implements EngineClient {
   }
 
   /** `/status` — render the live session overview. */
-  #statusText(): string {
+  async #statusText(): Promise<string> {
     const tools = this.toolset.all();
+    const contextWindow = await this.catalog.contextWindow(this.#session.model);
     return formatStatus({
+      contextTokens: this.#session.contextTokens,
+      ...(contextWindow ? { contextWindow } : {}),
       sessionId: this.#session.id,
       model: this.#session.model,
       mode: this.#session.mode,
@@ -870,7 +906,14 @@ export class Engine implements EngineClient {
       return;
     }
     this.#config.reasoning.effort = next;
-    this.#notice(`Reasoning effort: ${next}.`);
+    if (reasoningSupported(this.#session.model)) {
+      this.#notice(`Reasoning effort: ${next}.`);
+    } else {
+      this.#notice(
+        `Reasoning effort: ${next}. Note: ${this.#session.model} likely ignores it (local/non-reasoning model).`,
+        "warn",
+      );
+    }
   }
 
   /** `/theme [name]` — show or set the UI theme. */

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { defaultConfig } from "@vibe/config";
-import { buildModelTuning } from "./model-tuning.ts";
+import { buildModelTuning, reasoningSupported } from "./model-tuning.ts";
 
 function cfg(overrides: Record<string, unknown> = {}) {
   return { ...defaultConfig(), ...overrides } as ReturnType<typeof defaultConfig>;
@@ -47,4 +47,23 @@ test("OpenRouter gets a unified reasoning block", () => {
 
 test("no reasoning config yields no providerOptions", () => {
   expect(buildModelTuning("openai/gpt-x", cfg()).providerOptions).toBeUndefined();
+});
+
+test("Anthropic effort tier derives a thinking budget", () => {
+  const t = buildModelTuning("anthropic/claude-opus-4-8", cfg({ reasoning: { effort: "medium" } }));
+  expect(t.providerOptions?.anthropic).toEqual({
+    thinking: { type: "enabled", budgetTokens: 8192 },
+  });
+});
+
+test("xAI/Grok effort maps to reasoningEffort", () => {
+  const t = buildModelTuning("xai/grok-4", cfg({ reasoning: { effort: "low" } }));
+  expect(t.providerOptions?.xai).toEqual({ reasoningEffort: "low" });
+});
+
+test("reasoningSupported is true for reasoning providers, false for local models", () => {
+  expect(reasoningSupported("anthropic/claude-opus-4-8")).toBe(true);
+  expect(reasoningSupported("xai/grok-4")).toBe(true);
+  expect(reasoningSupported("ollama/llama3.1")).toBe(false);
+  expect(reasoningSupported("lmstudio/qwen")).toBe(false);
 });

@@ -44,6 +44,14 @@ export type UIEvent =
     }
   | { type: "step-finished"; sessionId: string; usage?: Usage }
   | { type: "usage-updated"; sessionId: string; usage: SessionUsage }
+  | {
+      /** Live context-window fill: estimated tokens in the model context vs. the
+       * model's window. Emitted each turn so the UI can show "45% of 200k". */
+      type: "context-updated";
+      sessionId: string;
+      usedTokens: number;
+      contextWindow: number;
+    }
   | { type: "mode-changed"; sessionId: string; mode: Mode }
   | { type: "model-changed"; sessionId: string; model: string }
   | { type: "goal-changed"; sessionId: string; goal: string | null }

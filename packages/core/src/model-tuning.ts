@@ -26,6 +26,37 @@ function providerOf(modelString: string): string {
   }
 }
 
+/**
+ * Providers whose models reason — either because vibe-codr forwards an effort/
+ * budget hint (anthropic, openai, xai, openrouter) or because the model reasons
+ * natively (codex, deepseek-reasoner). Used only to decide whether to warn that
+ * `/reasoning` will be ignored (e.g. on local Ollama / LM Studio models).
+ */
+export const REASONING_PROVIDERS = new Set([
+  "anthropic",
+  "openai",
+  "codex",
+  "xai",
+  "openrouter",
+  "deepseek",
+]);
+
+/** Map an effort tier to an Anthropic thinking budget (tokens). */
+const EFFORT_BUDGET: Record<"low" | "medium" | "high", number> = {
+  low: 2_048,
+  medium: 8_192,
+  high: 16_384,
+};
+
+/**
+ * Whether setting reasoning effort has any effect for this model's provider.
+ * Used to warn the user when `/reasoning` is set on a model that ignores it
+ * (e.g. local Ollama / LM Studio models).
+ */
+export function reasoningSupported(modelString: string): boolean {
+  return REASONING_PROVIDERS.has(providerOf(modelString));
+}
+
 export function buildModelTuning(modelString: string, config: Config): ModelTuning {
   const provider = providerOf(modelString);
   const { effort, budgetTokens } = config.reasoning;
@@ -33,14 +64,20 @@ export function buildModelTuning(modelString: string, config: Config): ModelTuni
 
   switch (provider) {
     case "anthropic": {
-      // Anthropic uses an explicit thinking budget (tokens), not an effort tier.
-      if (budgetTokens) {
-        opts.anthropic = { thinking: { type: "enabled", budgetTokens } };
+      // Anthropic uses an explicit thinking budget (tokens). Honor an explicit
+      // budget, else derive one from the effort tier so `/reasoning <tier>`
+      // works uniformly across providers.
+      const budget = budgetTokens ?? (effort ? EFFORT_BUDGET[effort] : undefined);
+      if (budget) {
+        opts.anthropic = { thinking: { type: "enabled", budgetTokens: budget } };
       }
       break;
     }
-    case "openai": {
-      if (effort) opts.openai = { reasoningEffort: effort };
+    // OpenAI and xAI/Grok take an effort tier directly. (Codex/DeepSeek
+    // reasoning models reason natively, so no provider option is needed.)
+    case "openai":
+    case "xai": {
+      if (effort) opts[provider] = { reasoningEffort: effort };
       break;
     }
     case "openrouter": {

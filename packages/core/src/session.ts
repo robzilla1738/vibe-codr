@@ -27,8 +27,9 @@ import { EventBus as EventBusImpl } from "./event-bus.ts";
 import { composeSystemPrompt } from "./system-prompt.ts";
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
-import { compactMessages } from "./compaction.ts";
+import { compactMessages, estimateTokens } from "./compaction.ts";
 import type { SessionStore } from "./store.ts";
+import { searchSessions, formatRecall } from "./recall.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
 import type { ImageAttachment } from "./mentions.ts";
@@ -223,6 +224,11 @@ export class Session {
     return this.#modelMessages.length;
   }
 
+  /** Estimated tokens currently held in the model context (for /status, /context). */
+  get contextTokens(): number {
+    return estimateTokens(this.#modelMessages);
+  }
+
   /** Subagent recursion depth (0 = root). */
   get depth(): number {
     return this.#deps.depth ?? 0;
@@ -409,6 +415,8 @@ export class Session {
       if (skills?.list().length) {
         tools.use_skill = toAISDKTool(this.#useSkillTool(), base);
       }
+      // Long-term memory: let the model search prior sessions on demand.
+      tools.recall_memory = toAISDKTool(this.#recallTool(), base);
 
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
       // the stable system prefix so repeated turns don't re-bill the full prompt.
@@ -522,6 +530,14 @@ export class Session {
     const contextWindow =
       (await this.#deps.getContextWindow?.(this.model)) ??
       DEFAULT_CONTEXT_WINDOW;
+    // Surface live context-window fill so the UI can show how close we are to
+    // the limit (and when auto-compaction is about to kick in).
+    this.#deps.bus.emit({
+      type: "context-updated",
+      sessionId: this.id,
+      usedTokens: estimateTokens(this.#modelMessages),
+      contextWindow,
+    });
     const result = await compactMessages(this.#modelMessages, {
       contextWindow,
       threshold: this.#deps.config.compaction.threshold,
@@ -621,6 +637,30 @@ export class Session {
         }
         const body = await skill.load();
         return { output: `# Skill: ${skill.name}\n\n${body}` };
+      },
+    };
+  }
+
+  /** Build the read-only `recall_memory` tool: search past sessions' history. */
+  #recallTool(): ToolDefinition<{ query: string; limit?: number }> {
+    const cwd = this.#deps.cwd;
+    const selfId = this.id;
+    return {
+      name: "recall_memory",
+      description:
+        "Search the user's past vibe-codr sessions (long-term memory) for relevant prior context, decisions, or code discussion. Use this when the user references earlier work, asks 'what did we decide', or you need history beyond the current conversation.",
+      inputSchema: z.object({
+        query: z.string().describe("What to look for in past sessions."),
+        limit: z.number().int().positive().max(20).optional().describe("Max matches (default 8)."),
+      }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ query, limit }) => {
+        const hits = await searchSessions(cwd, query, {
+          excludeId: selfId,
+          ...(limit ? { limit } : {}),
+        });
+        return { output: formatRecall(query, hits) };
       },
     };
   }

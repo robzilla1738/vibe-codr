@@ -60,6 +60,23 @@ export interface HeadlessOptions {
   showReasoning?: boolean;
   /** Print tool activity to stderr (default true). */
   showTools?: boolean;
+  /** Output format for one-shot mode: streamed text (default) or a JSON object. */
+  outputFormat?: "text" | "json";
+}
+
+/** The machine-readable result of a one-shot run (`--output-format json`). */
+export interface OneShotResult {
+  sessionId: string;
+  model: string;
+  mode: string;
+  text: string;
+  usage: SessionUsage;
+  error?: string;
+}
+
+/** Serialize a one-shot result as a stable, pretty JSON document. */
+export function formatJsonResult(result: OneShotResult): string {
+  return JSON.stringify(result, null, 2);
 }
 
 /** Render a single event. Assistant text -> stdout; meta -> stderr. */
@@ -185,18 +202,46 @@ export async function runOneShot(
   prompt: string,
   opts: HeadlessOptions = {},
 ): Promise<void> {
+  const json = opts.outputFormat === "json";
   const events = engine.events();
   engine.send({ type: "submit-prompt", text: prompt });
   let usage: SessionUsage | undefined;
+  let text = "";
+  let error: string | undefined;
   for await (const event of events) {
     if (event.type === "usage-updated") usage = event.usage;
-    render(event, opts);
+    // In JSON mode, accumulate the answer silently instead of streaming it; in
+    // text mode, render events as they arrive (the existing behaviour).
+    if (event.type === "assistant-text-delta") text += event.delta;
+    if (event.type === "engine-error") error = event.message;
+    if (!json) render(event, opts);
     if (event.type === "session-idle") break;
   }
-  process.stdout.write("\n");
-  if (usage && usage.totalTokens > 0) {
-    process.stderr.write(`${ansi.dim(formatUsage(usage))}\n`);
+
+  const finalUsage = usage ?? emptyUsage();
+  if (json) {
+    const snap = engine.snapshot();
+    process.stdout.write(
+      `${formatJsonResult({
+        sessionId: snap.sessionId,
+        model: snap.model,
+        mode: snap.mode,
+        text: text.trim(),
+        usage: finalUsage,
+        ...(error ? { error } : {}),
+      })}\n`,
+    );
+    return;
   }
+
+  process.stdout.write("\n");
+  if (finalUsage.totalTokens > 0) {
+    process.stderr.write(`${ansi.dim(formatUsage(finalUsage))}\n`);
+  }
+}
+
+function emptyUsage(): SessionUsage {
+  return { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 };
 }
 
 /** Continuously print events (used by the REPL). Never resolves. */

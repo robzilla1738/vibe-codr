@@ -57,6 +57,10 @@ vibecodr
 vibecodr -p "list the TS files and read package.json" \
   --model anthropic/claude-opus-4-8
 
+# machine-readable output (for scripting) and prompt-from-stdin
+vibecodr -p "summarize this" --output-format json
+cat task.md | vibecodr -p -            # read the prompt from stdin
+
 # other entry points
 vibecodr models               # list models for configured providers
 vibecodr --continue           # resume the most recent session

@@ -22,10 +22,11 @@ USAGE
   vibecodr sessions                  list saved sessions (resume with --resume <id>)
 
 OPTIONS
-  -p, --prompt <text>   run a single prompt (headless / pipeable)
+  -p, --prompt <text>   run a single prompt (headless / pipeable); use - for stdin
   -m, --model <id>      model string, e.g. anthropic/claude-opus-4-8, lmstudio/<id>
       --mode <mode>     start mode: plan | execute  (default: execute)
       --cwd <dir>       working directory (default: current)
+      --output-format   one-shot output: text (default) | json
       --reasoning       print model reasoning to stderr
   -c, --continue        resume the most recent session
       --resume <id>     resume a specific session by id
@@ -51,6 +52,7 @@ export async function run(argv: string[]): Promise<number> {
       model: { type: "string", short: "m" },
       mode: { type: "string" },
       cwd: { type: "string" },
+      "output-format": { type: "string" },
       reasoning: { type: "boolean" },
       continue: { type: "boolean", short: "c" },
       resume: { type: "string" },
@@ -124,8 +126,18 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
-  if (values.prompt) {
-    await runOneShot(engine, values.prompt, { showReasoning: values.reasoning });
+  if (values.prompt !== undefined) {
+    const outputFormat = values["output-format"] === "json" ? "json" : "text";
+    // `-p -` (or an empty `-p` with piped input) reads the prompt from stdin,
+    // so `cat task.md | vibecodr -p -` works for scripting.
+    const prompt =
+      values.prompt === "-" || values.prompt === ""
+        ? (await Bun.stdin.text()).trim()
+        : values.prompt;
+    await runOneShot(engine, prompt, {
+      showReasoning: values.reasoning,
+      outputFormat,
+    });
     return 0;
   }
 

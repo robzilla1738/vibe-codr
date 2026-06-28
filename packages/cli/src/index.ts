@@ -20,6 +20,7 @@ USAGE
   vibecodr -p "<prompt>" [options]   run one prompt headlessly and print the result
   vibecodr models [options]          list available models for configured providers
   vibecodr sessions                  list saved sessions (resume with --resume <id>)
+  vibecodr setup                     run the guided provider/model setup (alias: login)
 
 OPTIONS
   -p, --prompt <text>   run a single prompt (headless / pipeable); use - for stdin
@@ -84,6 +85,14 @@ export async function run(argv: string[]): Promise<number> {
   }
 
   let config = await loadConfig({ cwd, overrides });
+
+  // `vibecodr setup` (alias `login`) — (re)run the guided setup on demand, e.g.
+  // to switch providers or add an Ollama Cloud key, then exit.
+  if (positionals[0] === "setup" || positionals[0] === "login") {
+    const ok = await runOnboarding(config, new ProviderRegistry());
+    if (!ok) process.stderr.write("Setup needs an interactive terminal.\n");
+    return ok ? 0 : 1;
+  }
 
   // First-run setup: if the interactive user has no key for their model's
   // provider, capture keys and reload config before starting. Skipped for

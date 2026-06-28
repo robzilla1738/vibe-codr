@@ -125,7 +125,7 @@ const BUILTINS: BuiltinSpec[] = [
     // Ollama Cloud (ollama.com) when an OLLAMA_API_KEY is set. `ollama serve`
     // listens on 11434; override the host with OLLAMA_BASE_URL. With a key and
     // no override we target the cloud `/v1` endpoint automatically; cloud model
-    // ids carry a `:cloud` suffix (e.g. `ollama/gpt-oss:120b-cloud`).
+    // ids are plain (e.g. `ollama/gpt-oss:120b`) — list them with `vibe models`.
     id: "ollama",
     env: ["OLLAMA_API_KEY"],
     baseURL: "http://localhost:11434/v1",

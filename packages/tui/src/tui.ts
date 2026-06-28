@@ -12,8 +12,14 @@ import { lineToCommand, parsePermissionDecision } from "./slash.ts";
  */
 export async function startTui(engine: EngineClient): Promise<void> {
   try {
-    // Non-literal specifier so tsc does not pull the OpenTUI app (an optional
-    // native peer dep) into the type program. Resolved by Bun at runtime.
+    // app.tsx is Solid JSX. Register OpenTUI's Solid transform plugin before
+    // importing it, otherwise Bun compiles the JSX with its default (React)
+    // runtime — which isn't installed — and the import throws. Registering at
+    // runtime (rather than via bunfig `preload`) keeps the rich UI working no
+    // matter which directory `vibecodr` is launched from. Non-literal
+    // specifiers keep these optional native peer deps out of the tsc program.
+    const preloadModule = "@opentui/solid/preload";
+    await import(preloadModule);
     const appModule = "./app.tsx";
     const mod = (await import(appModule)) as {
       mountApp: (engine: EngineClient) => Promise<void>;

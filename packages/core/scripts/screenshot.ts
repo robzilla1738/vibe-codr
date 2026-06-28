@@ -624,12 +624,38 @@ function renderLines(scene: Scene): string {
   return rows.join("\n");
 }
 
+/**
+ * Project a scene's `status` ("model · mode[ · approvals][ · ctx N%]") into the
+ * header pieces the app shows — mirrors `deriveUiMode` in packages/tui/modes.ts.
+ */
+function headerFromStatus(scene: Scene): {
+  model: string;
+  uiMode: "plan" | "execute" | "yolo";
+  detail: string;
+} {
+  const segs = scene.status.split(" · ").map((s) => s.trim());
+  const model = segs[0] ?? "";
+  const mode = segs[1] ?? "execute";
+  const approvals = segs.includes("auto") ? "auto" : "ask";
+  const uiMode = mode === "plan" ? "plan" : approvals === "auto" ? "yolo" : "execute";
+  const detail = segs.find((s) => s.startsWith("ctx ")) ?? "";
+  return { model, uiMode, detail };
+}
+const ssModeLabel = (m: string) =>
+  m === "plan" ? "◑ PLAN" : m === "execute" ? "▶ EXECUTE" : "⚡ YOLO";
+const ssModeColor = (m: string) =>
+  m === "plan" ? COLORS.cyan : m === "yolo" ? COLORS.red : "#8b5cf6";
+
 function renderFrame(scene: Scene): string {
-  const footer = scene.usage
-    ? `${esc(formatUsage(scene.usage))} · /help for commands`
-    : `/help for commands · /plan to plan · ctrl-c to quit`;
+  const { model, uiMode, detail } = headerFromStatus(scene);
+  const label = ssModeLabel(uiMode);
+  const mc = ssModeColor(uiMode);
+  const usageStr = scene.usage ? esc(formatUsage(scene.usage)) : "";
+  const info = [detail && esc(detail), usageStr].filter(Boolean).join(" · ");
+  const headRight = info ? `${esc(model)}&nbsp;&nbsp;·&nbsp;&nbsp;${info}` : esc(model);
+  const footer = "shift+tab mode · @file attach · /help commands · ctrl-c quit";
   const placeholder =
-    "Ask vibe-codr…  @file to attach · /help · /plan · /model &lt;id&gt; · /undo";
+    "Ask vibe-codr…  @file to attach · /help · /model &lt;id&gt; · /undo";
   return `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #0d0d12; padding: 28px; }
@@ -644,12 +670,17 @@ function renderFrame(scene: Scene): string {
   .dot { width:12px; height:12px; border-radius:50%; }
   .title { color:${COLORS.dim}; margin-left:8px; font-size:12px; }
   .body { padding:16px 18px 14px; min-height: 380px; display:flex; flex-direction:column; }
+  .appheader { border:1px solid #3b4261; border-radius:6px; padding:7px 12px; margin-bottom:12px; }
+  .hrow { display:flex; justify-content:space-between; align-items:center; }
+  .hrow + .hrow { margin-top:2px; }
+  .brand { color:${COLORS.blue}; font-weight:700; }
+  .dim { color:${COLORS.dim}; font-size:12px; }
   .transcript { flex:1; }
   .row { white-space:pre-wrap; word-break:break-word; }
   .planbox { border:1px solid ${COLORS.magenta}; border-radius:6px; padding:8px 12px; margin:8px 0; }
   .tasksbox { border:1px solid ${COLORS.cyan}; border-radius:6px; padding:8px 12px; margin:8px 0; }
-  .inputwrap { margin-top:14px; border:1px solid #3b4261; border-radius:6px; padding:8px 12px; position:relative; }
-  .inputwrap .label { position:absolute; top:-9px; left:10px; background:${COLORS.bg}; padding:0 6px; font-size:11px; color:${COLORS.dim}; }
+  .inputwrap { margin-top:14px; border:1px solid ${mc}; border-radius:6px; padding:8px 12px; position:relative; }
+  .inputwrap .label { position:absolute; top:-9px; left:10px; background:${COLORS.bg}; padding:0 6px; font-size:11px; font-weight:700; color:${mc}; }
   .prompt { color:${COLORS.green}; }
   .placeholder { color:${COLORS.dim}; }
   .typed { color:${COLORS.fg}; }
@@ -664,11 +695,15 @@ function renderFrame(scene: Scene): string {
       <div class="title">vibe-codr — ${esc(scene.cwd)}</div>
     </div>
     <div class="body">
+      <div class="appheader">
+        <div class="hrow"><span class="brand">◆ vibe-codr</span><span class="dim">${esc(scene.cwd)}</span></div>
+        <div class="hrow"><span style="color:${mc};font-weight:700">${label}</span><span class="dim">${headRight}</span></div>
+      </div>
       <div class="transcript">
 ${renderLines(scene)}
       </div>
       <div class="inputwrap">
-        <span class="label">${esc(scene.status)}</span>
+        <span class="label">${label}</span>
         <span class="prompt">› </span>${
           scene.input
             ? `<span class="typed">${esc(scene.input)}</span><span class="cursor">&nbsp;</span>`
@@ -685,7 +720,11 @@ ${renderLines(scene)}
 const outDir = process.argv[2] ?? "./screenshots";
 const scenes = await buildScenes();
 
-const browser = await chromium.launch({ executablePath: CHROME });
+// Use the pinned CI Chromium when present; otherwise fall back to Playwright's
+// own managed install (so the script also runs on dev machines / macOS).
+const browser = await chromium.launch(
+  existsSync(CHROME) ? { executablePath: CHROME } : {},
+);
 const page = await browser.newPage({ deviceScaleFactor: 2 });
 for (const scene of scenes) {
   await page.setContent(renderFrame(scene), { waitUntil: "networkidle" });

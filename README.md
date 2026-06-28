@@ -7,21 +7,23 @@ tasks on *any* model: local models via **Ollama** and **LM Studio**, aggregators
 Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 
 > Status: **feature-complete.** Multi-provider agent loop, live model catalog,
-> plan/execute modes with a permission layer, a live **task list**, an observable
-> **prompt queue**, subagents, slash commands / skills / plugins, `/goal` +
-> `/loop`, MCP client, web search, checkpoints/undo, self-verify, cost tracking,
-> and session persistence with context-aware compaction. A full slash-command
-> surface (`/status` `/cost` `/config` `/diff` `/review` `/doctor` `/export` …)
-> makes every setting and bit of session state reachable. All covered by 189
-> tests (including mock-model integration tests of the agent loop with zero
-> network).
+> **plan / execute / yolo** modes (Shift+Tab to cycle) with a permission layer, a
+> live **task list**, an observable **prompt queue**, subagents, an interactive
+> **slash-command menu**, skills / plugins, `/goal` + `/loop`, MCP client, web
+> search, checkpoints/undo, self-verify, cost tracking, and session persistence
+> with context-aware compaction. A full slash-command surface (`/status` `/cost`
+> `/config` `/diff` `/review` `/doctor` `/export` …) makes every setting and bit
+> of session state reachable. All covered by 222 tests (including mock-model
+> integration tests of the agent loop with zero network) plus a TUI render
+> smoke test.
 >
 > The terminal command is **`vibecodr`** (`vibe` works as an alias).
 
 ## Screenshots
 
-The interactive TUI — a live transcript with Markdown, surgical diffs, a pinned
-plan/task panel, a status bar, and a usage/cost footer.
+The interactive TUI — a header with a color-coded mode pill (plan/execute/yolo),
+a live transcript with Markdown and surgical diffs, a pinned plan/task panel, a
+slash-command menu, and live context/usage in the header.
 
 | Chat + tool calls | Live diff |
 |---|---|
@@ -69,11 +71,14 @@ the engine is fully testable headless.
 
 ```bash
 bun install
-bun link                      # makes `vibecodr` available on your PATH
+# Install the providers you'll use + the rich TUI (optional peer deps):
+bun add -D @ai-sdk/anthropic @ai-sdk/openai @opentui/core @opentui/solid solid-js
+bun link                      # makes `vibecodr`/`vibe` available on your PATH
 
-# interactive — on first run, vibecodr walks you through entering your
-# provider key and an (optional, free) TinyFish web-search key, saved to
-# ~/.config/vibe-codr/config.json. Or set keys yourself: cp .env.example .env
+# interactive — on first run, a guided setup lets you pick a provider
+# (Anthropic, OpenAI, Ollama Cloud, …), keys you already have in your env are
+# auto-detected, and it fetches the live model list so you just pick one.
+# Saved to ~/.config/vibe-codr/config.json. Re-run it anytime with `vibe setup`.
 vibecodr
 
 # one-shot (headless / pipeable)
@@ -85,6 +90,7 @@ vibecodr -p "summarize this" --output-format json
 cat task.md | vibecodr -p -            # read the prompt from stdin
 
 # other entry points
+vibecodr setup                # (re)run the guided provider/model setup (alias: login)
 vibecodr models               # list models for configured providers
 vibecodr --continue           # resume the most recent session
 vibecodr --resume <id>        # resume a specific session
@@ -92,9 +98,28 @@ vibecodr --resume <id>        # resume a specific session
 # (without linking, run from source: `bun packages/cli/bin/vibecodr.ts ...`)
 ```
 
+### Ollama Cloud (subscription)
+
+Run big open models on ollama.com with your subscription — no local GPU:
+
+```bash
+export OLLAMA_API_KEY=...      # from https://ollama.com/settings/keys
+vibecodr setup                 # pick "Ollama Cloud" (it's preselected when the key is set)
+# or skip setup and go straight in:
+vibecodr --model ollama/gpt-oss:120b
+```
+
+With a key set, vibecodr automatically targets `https://ollama.com/v1`. Run
+`vibecodr models` to list the exact ids your subscription exposes (e.g.
+`ollama/gpt-oss:120b`, `ollama/qwen3-coder:480b`, `ollama/deepseek-v3.1:671b`).
+
 ### In-session commands
 
-Type `/help` for the full, grouped list. Highlights:
+Type `/` to open the **command menu** — it filters as you type, `↑`/`↓` to
+highlight, `Tab` to complete, `Enter` to run, `Esc` to dismiss. Commands with a
+fixed set of values (`/approvals`, `/reasoning`, `/theme`) drill into a second
+menu so you can pick the value. Or type `/help` for the full, grouped list.
+Highlights:
 
 - **Session** — `/status` (model, mode, cwd, context %, tokens, cost), `/cost`,
   `/context` (window usage + compaction threshold), `/clear` (alias `/new`),
@@ -102,6 +127,7 @@ Type `/help` for the full, grouped list. Highlights:
   `/init`, `/exit`.
 - **Model & mode** — `/model <id>`, `/models`, `/plan`, `/execute`,
   `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`, `/theme <name>`.
+  Press **Shift+Tab** to cycle the mode pill: **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>`,
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
   `/queue` (`/queue clear`).
@@ -115,10 +141,12 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 
 ### Features
 
-- **Plan vs execute** — plan mode exposes only read-only tools (it cannot edit
-  or run commands); the model calls `present_plan`, and you approve via
-  `/execute`. A glob-based allow/deny/ask **permission layer** gates
-  side-effecting tools.
+- **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
+  `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools
+  (the model calls `present_plan`; you approve to proceed). **Execute** allows
+  edits/commands, each gated by a glob-based allow/deny/ask **permission layer**.
+  **Yolo** runs side-effecting tools without prompting. The header pill and the
+  input border are color-coded so the active mode is unmistakable.
 - **Resilience & git/process tools** — provider calls retry transient failures
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a
   notice instead of failing silently. Structured `git_status` / `git_diff` /
@@ -218,7 +246,7 @@ Model strings are `<provider>/<model-id>` (split on the first slash):
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
 | `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
 | `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
-| `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — use `:cloud` model ids, e.g. `ollama/gpt-oss:120b-cloud`. Override the host with `OLLAMA_BASE_URL`. |
+| `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — model ids are plain (no suffix), e.g. `ollama/gpt-oss:120b`; run `vibecodr models` to list yours. Override the host with `OLLAMA_BASE_URL`. |
 
 **Any** provider can authenticate from a credential file or with extra headers —
 useful for subscription/OAuth tokens another CLI obtained:
@@ -285,10 +313,13 @@ bun run lint          # biome lint across packages
 bun run format        # biome format --write
 bun run typecheck     # tsc across all packages
 bun test              # unit tests
+bun run smoke:tui     # drive the real OpenTUI app (mock engine) — input, streamed
+                      # output, and the command menu — via the test renderer
 bun run build:binary  # standalone binary -> dist/vibecodr (bun --compile)
 ```
 
 `vibecodr sessions` lists saved sessions (resume one with `--resume <id>`).
+`vibecodr setup` re-runs the guided provider/model setup at any time.
 
 ## Status
 
@@ -305,6 +336,9 @@ All planned phases are implemented and tested:
 8. ✅ Parity & polish — full introspection/settings command surface, project
    memory (VIBE.md/AGENTS.md/CLAUDE.md), JSON headless output + stdin, themes,
    `/doctor`, `/export`, Ollama + structured `git_log`/`git_push` for GitHub.
+9. ✅ TUI UX — header with color-coded plan/execute/yolo mode pill (Shift+Tab to
+   cycle), an interactive slash-command menu, first-class Ollama Cloud, and a
+   guided `vibecodr setup`; the OpenTUI app is covered by `bun run smoke:tui`.
 
 To run interactively against real models, install the provider SDKs you use
 (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`), OpenTUI for the rich UI

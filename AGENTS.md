@@ -33,8 +33,13 @@ bun run format        # biome format --write
 bun run build:binary  # standalone binary -> dist/vibecodr
 bun packages/cli/bin/vibecodr.ts --help   # run from source
 
+# Smoke-test the OpenTUI app's render + input + command-menu paths by driving the
+# REAL App component with a mock engine via OpenTUI's deterministic test renderer
+# (the only way to exercise app.tsx outside a terminal). Run after app.tsx edits.
+bun run smoke:tui
+
 # Regenerate the README screenshots (drives the real engine with a mock model
-# + bundled Playwright Chromium). Re-run after any TUI/output change.
+# + Playwright Chromium). Re-run after any TUI/output change.
 bun packages/core/scripts/screenshot.ts docs/screenshots
 ```
 
@@ -50,10 +55,15 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
 - Every behavior change ships with a test. Prefer mock-model integration tests
   (`ai/test`'s `MockLanguageModelV2`) over hitting the network.
 - `packages/tui/src/app.tsx` is excluded from `tsc` (OpenTUI is an optional
-  native dep) and can't run in CI, so it's verified visually through
-  `screenshot.ts`, which mirrors its render logic. Keep the two in lockstep:
-  any visible app.tsx change gets the matching change in the screenshot reducer,
-  and never use an OpenTUI prop you can't confirm exists.
+  native dep) and can't run in CI. Verify it two ways: `bun run smoke:tui` drives
+  the real `App` with a mock engine through OpenTUI's test renderer (asserts
+  input/submit, streamed output, and the command menu actually work), and
+  `screenshot.ts` mirrors its render logic for the README shots. Keep all three
+  in lockstep: any visible app.tsx change gets the matching change in the
+  screenshot reducer and, where behavioral, a smoke assertion — and never use an
+  OpenTUI prop you can't confirm exists (the input once silently dropped every
+  keystroke because it lacked `focused`, and streamed replies never repainted
+  because `<For>` is reference-keyed; both are now covered by the smoke test).
 - Match the surrounding code's style; comments explain *why*, not *what*.
 
 ## Before you finish

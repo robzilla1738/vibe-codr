@@ -9,6 +9,7 @@ export type EngineCommand =
   | { type: "submit-prompt"; text: string }
   | { type: "run-slash"; name: string; args: string }
   | { type: "set-mode"; mode: Mode }
+  | { type: "set-approvals"; mode: "ask" | "auto" }
   | { type: "set-model"; model: string }
   | { type: "set-goal"; goal: string | null }
   | { type: "abort" }

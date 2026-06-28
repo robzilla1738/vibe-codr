@@ -258,6 +258,11 @@ export class Engine implements EngineClient {
       case "set-mode":
         this.#session.setMode(command.mode);
         break;
+      case "set-approvals":
+        // Immediate (not queued), mirroring set-mode — the mode toggle must
+        // take effect at once so the next turn sees the new approval policy.
+        this.#handleApprovals(command.mode);
+        break;
       case "set-model":
         this.#session.setModel(command.model);
         break;

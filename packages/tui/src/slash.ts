@@ -20,6 +20,12 @@ export function lineToCommand(line: string): EngineCommand {
       return { type: "set-mode", mode: "plan" };
     case "execute":
       return { type: "set-mode", mode: "execute" };
+    case "approvals":
+      // Route a valid ask|auto straight to the immediate command; bare/unknown
+      // args fall through to the slash handler, which prints current state/usage.
+      return args === "ask" || args === "auto"
+        ? { type: "set-approvals", mode: args }
+        : { type: "run-slash", name, args };
     case "model":
       return args
         ? { type: "set-model", model: args }

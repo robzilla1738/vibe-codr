@@ -18,6 +18,10 @@ export interface Palette {
   taskPending: string;
   /** Accent for the status/footer bar. */
   accent: string;
+  /** Box borders (task panel, plan box, input). */
+  border: string;
+  /** Secondary text: footer hint, placeholder, tool-result lines. */
+  muted: string;
 }
 
 /** Tokyo-Night-ish dark palette (the default). */
@@ -35,6 +39,8 @@ const DEFAULT: Palette = {
   taskActive: "#7dcfff",
   taskPending: "#c0caf5",
   accent: "#7aa2f7",
+  border: "#3b4261",
+  muted: "#565f89",
 };
 
 /** Light palette for bright terminals. */
@@ -52,6 +58,8 @@ const LIGHT: Palette = {
   taskActive: "#0f7b9c",
   taskPending: "#343b58",
   accent: "#2959aa",
+  border: "#c4c8d4",
+  muted: "#9699a3",
 };
 
 /** High-contrast palette for accessibility. */
@@ -69,6 +77,8 @@ const CONTRAST: Palette = {
   taskActive: "#00ffff",
   taskPending: "#ffffff",
   accent: "#00d7ff",
+  border: "#5f5f5f",
+  muted: "#a8a8a8",
 };
 
 export const THEMES: Record<string, Palette> = {

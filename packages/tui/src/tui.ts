@@ -1,6 +1,7 @@
 import * as readline from "node:readline";
 import type { EngineClient } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
+import { GLYPH } from "./glyphs.ts";
 import { renderHeadless } from "./headless.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 
@@ -31,7 +32,7 @@ async function startRepl(engine: EngineClient): Promise<void> {
   process.stdout.write(
     `${ansi.bold("◆ vibecodr")} ${ansi.dim(`— ${snap.model} · ${snap.mode} mode`)}\n` +
       ansi.dim(
-        "Type a prompt to begin. /help for commands · @file to attach · /exit to quit.\n\n",
+        "Type a prompt to begin · /help for commands · @file to attach · /exit to quit\n\n",
       ),
   );
 
@@ -46,7 +47,7 @@ async function startRepl(engine: EngineClient): Promise<void> {
       if (event.type === "permission-request") {
         pendingPerms.push(event.id);
         process.stdout.write(
-          `\n${ansi.yellow("⚠ permission")} ${ansi.bold(event.toolName)} wants to run ` +
+          `\n${ansi.yellow(`${GLYPH.warn} permission`)} ${ansi.bold(event.toolName)} wants to run ` +
             `${ansi.dim(truncate(JSON.stringify(event.input ?? {}), 100))}\n` +
             ansi.dim("  Allow? [y]es · [a]lways · [n]o\n"),
         );

@@ -12,6 +12,7 @@ import { createSignal, onMount, For, Show } from "solid-js";
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { TASK_GLYPH, formatUsage } from "./headless.ts";
+import { GLYPH } from "./glyphs.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { getTheme, type Palette } from "./themes.ts";
 
@@ -20,8 +21,8 @@ interface Line {
     | "user"
     | "assistant"
     | "tool"
+    | "toolresult"
     | "notice"
-    | "plan"
     | "subagent"
     | "add"
     | "del"
@@ -34,6 +35,7 @@ function App(props: { engine: EngineClient }) {
   const [lines, setLines] = createSignal<Line[]>([]);
   const [draft, setDraft] = createSignal("");
   const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
+  const [plan, setPlan] = createSignal<string | null>(null);
   const [queued, setQueued] = createSignal(0);
   let model = snap.model;
   let mode = snap.mode;
@@ -45,14 +47,20 @@ function App(props: { engine: EngineClient }) {
   const [status, setStatus] = createSignal(
     statusLine(model, mode, approvals, goal, 0, usage),
   );
+  const [footer, setFooter] = createSignal(footerLine(usage));
 
   const append = (line: Line) => setLines((prev) => [...prev, line]);
-  const refreshStatus = () =>
+  const refreshStatus = () => {
     setStatus(statusLine(model, mode, approvals, goal, queued(), usage));
+    setFooter(footerLine(usage));
+  };
 
   onMount(() => {
     void (async () => {
       let streaming: Line | null = null;
+      // edit/write echo their diff as a tool result too; the file-changed event
+      // already rendered it, so skip the next tool-call-finished output.
+      let suppressResult = false;
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
         switch (event.type) {
           case "user-message":
@@ -68,14 +76,33 @@ function App(props: { engine: EngineClient }) {
             setLines((prev) => [...prev]);
             break;
           case "tool-call-started":
-            append({ kind: "tool", text: `⚒ ${event.toolName}` });
+            append({
+              kind: "tool",
+              text: `${GLYPH.tool} ${event.toolName} ${truncate(
+                JSON.stringify(event.input ?? {}),
+                64,
+              )}`,
+            });
             streaming = null;
             break;
+          case "tool-call-finished": {
+            if (suppressResult) {
+              suppressResult = false;
+              break;
+            }
+            const out =
+              typeof event.output === "string" ? event.output : JSON.stringify(event.output);
+            for (const t of out.split("\n").filter((l) => l.length).slice(0, 4)) {
+              append({ kind: "toolresult", text: `  ${GLYPH.result} ${truncate(t, 72)}` });
+            }
+            break;
+          }
           case "file-changed": {
+            suppressResult = true;
             const verb = event.action === "write" ? "wrote" : "edited";
             append({
               kind: "tool",
-              text: `✎ ${verb} ${event.path}  +${event.added} -${event.removed}`,
+              text: `${GLYPH.file} ${verb} ${event.path}  +${event.added} -${event.removed}`,
             });
             for (const dl of event.diff ? event.diff.split("\n") : []) {
               const kind = dl.startsWith("+") ? "add" : dl.startsWith("-") ? "del" : "ctx";
@@ -99,18 +126,18 @@ function App(props: { engine: EngineClient }) {
             pendingPerms.push(event.id);
             append({
               kind: "notice",
-              text: `⚠ allow ${event.toolName}? [y]es · [a]lways · [n]o`,
+              text: `${GLYPH.warn} allow ${event.toolName}? [y]es · [a]lways · [n]o`,
             });
             break;
           case "plan-presented":
-            append({ kind: "plan", text: `${event.plan}\n— run /execute to proceed` });
+            setPlan(event.plan);
             streaming = null;
             break;
           case "subagent-started":
-            append({ kind: "subagent", text: `⤷ subagent: ${event.prompt}` });
+            append({ kind: "subagent", text: `${GLYPH.subagentIn} subagent: ${event.prompt}` });
             break;
           case "subagent-finished":
-            append({ kind: "subagent", text: `⤶ subagent done` });
+            append({ kind: "subagent", text: `${GLYPH.subagentOut} subagent done` });
             break;
           case "mode-changed":
             mode = event.mode;
@@ -179,8 +206,21 @@ function App(props: { engine: EngineClient }) {
           )}
         </For>
       </box>
+      <Show when={plan()}>
+        <box border title="Plan" flexDirection="column" marginTop={1}>
+          <For each={(plan() ?? "").split("\n")}>
+            {(row) => <text fg={palette().assistant}>{row || " "}</text>}
+          </For>
+          <text fg={palette().muted}>Run /execute to proceed.</text>
+        </box>
+      </Show>
       <Show when={tasks().length > 0}>
-        <box border title="Tasks" flexDirection="column">
+        <box
+          border
+          title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
+          flexDirection="column"
+          marginTop={1}
+        >
           <For each={tasks()}>
             {(task) => (
               <text fg={taskColor(task.status, palette())}>
@@ -190,16 +230,24 @@ function App(props: { engine: EngineClient }) {
           </For>
         </box>
       </Show>
-      <box border title={status()}>
+      <box border title={status()} marginTop={1}>
         <input
           value={draft()}
           onInput={(v: string) => setDraft(v)}
           onSubmit={submit}
-          placeholder="Ask vibe-codr…  /help for commands · @file to attach · /plan · /status · /exit"
+          placeholder="Ask vibe-codr…  @file to attach · /help · /plan · /model <id> · /undo"
         />
       </box>
+      <text fg={palette().muted}>{footer()}</text>
     </box>
   );
+}
+
+/** The dim hint under the input: usage when present, else key shortcuts. */
+function footerLine(usage: SessionUsage): string {
+  return usage.totalTokens > 0
+    ? `${formatUsage(usage)} · /help for commands`
+    : "/help for commands · /plan to plan · ctrl-c to quit";
 }
 
 function statusLine(
@@ -226,10 +274,10 @@ function colorFor(kind: Line["kind"], p: Palette): string {
       return p.user;
     case "tool":
       return p.tool;
+    case "toolresult":
+      return p.muted;
     case "notice":
       return p.notice;
-    case "plan":
-      return p.plan;
     case "subagent":
       return p.subagent;
     case "add":

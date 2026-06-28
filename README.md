@@ -18,6 +18,26 @@ Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 >
 > The terminal command is **`vibecodr`** (`vibe` works as an alias).
 
+## Screenshots
+
+The interactive TUI — a live transcript with Markdown, surgical diffs, a pinned
+plan/task panel, a status bar, and a usage/cost footer.
+
+| Chat + tool calls | Live diff |
+|---|---|
+| ![chat](docs/screenshots/01-chat.png) | ![diff](docs/screenshots/02-diff.png) |
+
+| Plan mode | Live task list |
+|---|---|
+| ![plan](docs/screenshots/03-plan.png) | ![tasks](docs/screenshots/04-tasks.png) |
+
+| Permission prompt | Saved sessions |
+|---|---|
+| ![permission](docs/screenshots/07-permission.png) | ![sessions](docs/screenshots/08-sessions.png) |
+
+<sub>Regenerate with `bun packages/core/scripts/screenshot.ts docs/screenshots`
+(drives the real engine with a mock model; bundled Playwright Chromium).</sub>
+
 ## Stack
 
 - **Runtime:** TypeScript + [Bun](https://bun.sh) (workspaces + Turbo).

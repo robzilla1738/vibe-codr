@@ -181,7 +181,7 @@ function reduce(events: UIEvent[]): Reduced {
         break;
       case "plan-presented":
         plan = {
-          title: "── Plan ──",
+          title: "Plan",
           body: e.plan.split("\n"),
           hint: "Run /execute to proceed.",
         };
@@ -517,13 +517,18 @@ async function buildScenes(): Promise<Scene[]> {
     [],
   );
   const metas = await store.list();
+  const idW = Math.max(...metas.map((m) => m.id.length));
+  const modelW = Math.max(...metas.map((m) => m.model.length));
   const sessLines: Line[] = [
     { kind: "user", text: "vibecodr sessions" },
     ...metas.map((m): Line => {
       const when = new Date(m.updatedAt).toISOString().replace("T", " ").slice(0, 16);
-      const cost = m.usage?.costUSD ? ` $${m.usage.costUSD.toFixed(4)}` : "";
-      const goal = m.goal ? ` — ${m.goal}` : "";
-      return { kind: "plain", text: `${m.id}  ${when}  ${m.model}${cost}${goal}` };
+      const cost = m.usage?.costUSD ? `$${m.usage.costUSD.toFixed(4)}` : "";
+      const goal = m.goal ? `  — ${m.goal}` : "";
+      return {
+        kind: "plain",
+        text: `${m.id.padEnd(idW)}  ${when}  ${m.model.padEnd(modelW)}  ${cost.padEnd(9)}${goal}`.trimEnd(),
+      };
     }),
   ];
 
@@ -608,7 +613,7 @@ function renderLines(scene: Scene): string {
 
 function renderFrame(scene: Scene): string {
   const footer = scene.usage
-    ? `${esc(formatUsage(scene.usage))} &nbsp;·&nbsp; /help for commands`
+    ? `${esc(formatUsage(scene.usage))} · /help for commands`
     : `/help for commands · /plan to plan · ctrl-c to quit`;
   const placeholder =
     "Ask vibe-codr…  @file to attach · /help · /plan · /model &lt;id&gt; · /undo";

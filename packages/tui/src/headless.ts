@@ -1,5 +1,6 @@
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
+import { GLYPH } from "./glyphs.ts";
 
 /** Compact "12.3k tok · $0.0421" usage label (cost omitted when unpriced). */
 export function formatUsage(u: SessionUsage): string {
@@ -38,7 +39,7 @@ export function formatTasks(tasks: Task[]): string {
     return `  ${color(glyph)} ${title}`;
   });
   const done = tasks.filter((t) => t.status === "completed").length;
-  return `${ansi.dim(`Tasks (${done}/${tasks.length})`)}\n${lines.join("\n")}`;
+  return `${ansi.dim(`Tasks · ${done}/${tasks.length}`)}\n${lines.join("\n")}`;
 }
 
 /** Colorize a unified diff: green additions, red deletions, dim context. */
@@ -91,7 +92,7 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
     case "tool-call-started":
       if (opts.showTools !== false) {
         process.stderr.write(
-          `\n${ansi.cyan("⚒")} ${ansi.bold(event.toolName)} ${ansi.dim(
+          `\n${ansi.cyan(GLYPH.tool)} ${ansi.bold(event.toolName)} ${ansi.dim(
             truncate(JSON.stringify(event.input ?? {}), 120),
           )}\n`,
         );
@@ -107,7 +108,7 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
         const verb = event.action === "write" ? "wrote" : "edited";
         const summary = `${ansi.green(`+${event.added}`)} ${ansi.red(`-${event.removed}`)}`;
         process.stderr.write(
-          `${ansi.cyan("✎")} ${ansi.bold(`${verb} ${event.path}`)} ${summary}\n`,
+          `${ansi.cyan(GLYPH.file)} ${ansi.bold(`${verb} ${event.path}`)} ${summary}\n`,
         );
         if (event.diff) process.stderr.write(`${formatDiff(event.diff)}\n`);
       }
@@ -118,10 +119,14 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       );
       break;
     case "checkpoint-restored":
-      process.stderr.write(`${ansi.green("⟲")} ${ansi.dim(`reverted: ${event.label}`)}\n`);
+      process.stderr.write(
+        `${ansi.green(GLYPH.revert)} ${ansi.dim(`reverted: ${event.label}`)}\n`,
+      );
       break;
     case "verify-started":
-      process.stderr.write(`\n${ansi.cyan("✓")} ${ansi.dim(`verifying: ${event.command}`)}\n`);
+      process.stderr.write(
+        `\n${ansi.cyan(GLYPH.check)} ${ansi.dim(`verifying: ${event.command}`)}\n`,
+      );
       break;
     case "verify-finished":
       process.stderr.write(
@@ -132,20 +137,20 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       break;
     case "loop-tick":
       process.stderr.write(
-        `\n${ansi.cyan("↻")} ${ansi.dim(`loop iteration ${event.iteration}`)}\n`,
+        `\n${ansi.cyan(GLYPH.loopTick)} ${ansi.dim(`loop iteration ${event.iteration}`)}\n`,
       );
       break;
     case "loop-stopped":
-      process.stderr.write(`${ansi.cyan("■")} ${ansi.dim(`loop ${event.reason}`)}\n`);
+      process.stderr.write(`${ansi.cyan(GLYPH.loopStop)} ${ansi.dim(`loop ${event.reason}`)}\n`);
       break;
     case "subagent-started":
       process.stderr.write(
-        `\n${ansi.magenta("⤷")} ${ansi.dim(`subagent ${event.subagentId.slice(-6)}: ${truncate(event.prompt, 80)}`)}\n`,
+        `\n${ansi.magenta(GLYPH.subagentIn)} ${ansi.dim(`subagent ${event.subagentId.slice(-6)}: ${truncate(event.prompt, 80)}`)}\n`,
       );
       break;
     case "subagent-finished":
       process.stderr.write(
-        `${ansi.magenta("⤶")} ${ansi.dim(`subagent ${event.subagentId.slice(-6)} done`)}\n`,
+        `${ansi.magenta(GLYPH.subagentOut)} ${ansi.dim(`subagent ${event.subagentId.slice(-6)} done`)}\n`,
       );
       break;
     case "plan-presented":
@@ -163,7 +168,7 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       if (event.pending.length) {
         process.stderr.write(
           `${ansi.dim(
-            `↳ ${event.pending.length} queued: ${event.pending
+            `${GLYPH.queue} ${event.pending.length} queued: ${event.pending
               .map((p) => p.label)
               .join(", ")}`,
           )}\n`,

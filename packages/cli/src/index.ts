@@ -149,11 +149,14 @@ export async function run(argv: string[]): Promise<number> {
 export async function formatSessions(cwd: string): Promise<string> {
   const metas = await new SessionStore(cwd).list();
   if (!metas.length) return "No saved sessions.\n";
+  // Align the id and model columns so timestamps, costs, and goals line up.
+  const idWidth = Math.max(...metas.map((m) => m.id.length));
+  const modelWidth = Math.max(...metas.map((m) => m.model.length));
   const lines = metas.map((m) => {
     const when = new Date(m.updatedAt).toISOString().replace("T", " ").slice(0, 16);
-    const cost = m.usage?.costUSD ? ` $${m.usage.costUSD.toFixed(4)}` : "";
-    const goal = m.goal ? ` — ${m.goal.slice(0, 60)}` : "";
-    return `${m.id}  ${when}  ${m.model}${cost}${goal}`;
+    const cost = m.usage?.costUSD ? `$${m.usage.costUSD.toFixed(4)}` : "";
+    const goal = m.goal ? `  — ${m.goal.slice(0, 60)}` : "";
+    return `${m.id.padEnd(idWidth)}  ${when}  ${m.model.padEnd(modelWidth)}  ${cost.padEnd(9)}${goal}`.trimEnd();
   });
   return `${lines.join("\n")}\n`;
 }

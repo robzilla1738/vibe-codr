@@ -7,10 +7,12 @@ export {
 } from "./system-prompt.ts";
 export {
   BUILTIN_COMMANDS,
+  COMMAND_GROUPS,
   helpText,
   formatModelList,
   initProject,
   type BuiltinCommandMeta,
+  type CommandGroup,
 } from "./commands.ts";
 export {
   PermissionChecker,
@@ -52,10 +54,26 @@ export { withRetry, isTransientError, type RetryOptions } from "./retry.ts";
 export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";
 export { runVerify, type VerifyResult } from "./verify.ts";
 export {
+  loadProjectMemory,
+  globalMemoryPath,
+  MEMORY_FILES,
+} from "./memory.ts";
+export {
+  formatStatus,
+  formatCost,
+  formatConfig,
+  formatTools,
+  formatMcp,
+  formatPermissions,
+  formatNamedList,
+  type StatusInfo,
+} from "./introspect.ts";
+export {
   McpHub,
   toToolDefinition,
   renderContent,
   type McpClient,
   type McpConnect,
   type McpHubDeps,
+  type McpServerStatus,
 } from "./mcp.ts";

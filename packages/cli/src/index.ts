@@ -1,6 +1,12 @@
 import { parseArgs } from "node:util";
 import { loadConfig, type Config } from "@vibe/config";
-import { Engine, formatModelList, SessionStore, type PersistedSession } from "@vibe/core";
+import {
+  Engine,
+  formatModelList,
+  loadProjectMemory,
+  SessionStore,
+  type PersistedSession,
+} from "@vibe/core";
 import { ProviderRegistry } from "@vibe/providers";
 import { runOneShot, startTui } from "@vibe/tui";
 import { needsOnboarding, runOnboarding } from "./onboarding.ts";
@@ -27,8 +33,13 @@ OPTIONS
   -h, --help            show this help
 
 MODEL STRINGS
-  <provider>/<model-id>   anthropic, openai, deepseek, xai, fireworks,
-                          baseten, openrouter, lmstudio
+  <provider>/<model-id>   anthropic, openai, deepseek, xai, minimax, codex,
+                          fireworks, baseten, openrouter, lmstudio
+
+IN-SESSION
+  Type /help for slash commands (/model /plan /status /config /diff /review …),
+  @file to attach file contents, and /exit to quit. Project notes in VIBE.md,
+  AGENTS.md or CLAUDE.md are injected into every prompt.
 `;
 
 export async function run(argv: string[]): Promise<number> {
@@ -94,10 +105,15 @@ export async function run(argv: string[]): Promise<number> {
     else process.stderr.write("No session to resume; starting fresh.\n");
   }
 
+  // Inject project memory (VIBE.md / AGENTS.md / CLAUDE.md + user-global notes)
+  // into every system prompt so the agent knows the project's conventions.
+  const projectMemory = await loadProjectMemory(cwd);
+
   const engine = new Engine({
     config,
     cwd,
     interactive,
+    ...(projectMemory ? { projectMemory } : {}),
     ...(resume ? { resume } : {}),
   });
   await engine.bootstrap();

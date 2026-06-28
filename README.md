@@ -10,7 +10,7 @@ xAI/Grok**).
 > live model catalog, plan/execute modes with a permission layer, a live
 > **task list**, an observable **prompt queue**, subagents, slash commands /
 > skills / plugins, `/goal` + `/loop`, and session persistence with
-> context-aware compaction — all covered by 55+ tests (including mock-model
+> context-aware compaction — all covered by 170+ tests (including mock-model
 > integration tests of the agent loop with zero network).
 >
 > The terminal command is **`vibecodr`** (`vibe` works as an alias).
@@ -67,12 +67,21 @@ vibecodr --resume <id>        # resume a specific session
 
 ### In-session commands
 
-`/help` · `/model <id>` · `/models` · `/plan` · `/execute` · `/goal <text>` ·
-`/agents` · `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`) ·
-`/queue` (`/queue clear`) · `/undo` · `/checkpoints` · `/verify` · `/compact` ·
-`/clear` · `/init`. Custom commands live in `.vibe/commands/*.md`, skills in
-`.vibe/skills/*/SKILL.md`, named subagents in `.vibe/agents/*.md`, and plugins
-are listed in config.
+Type `/help` for the full, grouped list. Highlights:
+
+- **Session** — `/status` (model, mode, cwd, tokens, cost), `/cost`, `/clear`
+  (alias `/new`), `/compact`, `/resume`, `/init`, `/exit`.
+- **Model & mode** — `/model <id>`, `/models`, `/plan`, `/execute`,
+  `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`, `/theme <name>`.
+- **Steering** — `/goal <text>`,
+  `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
+  `/queue` (`/queue clear`).
+- **Code & safety** — `/diff`, `/review`, `/verify`, `/undo`, `/checkpoints`.
+- **Extensions & config** — `/config` (effective settings, secrets masked),
+  `/permissions`, `/tools`, `/agents`, `/skills`, `/commands`, `/mcp`.
+
+Custom commands live in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`,
+named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 
 ### Features
 
@@ -143,6 +152,11 @@ are listed in config.
   `.vibe/sessions/<id>/`; long conversations auto-compact against the active
   model's context window (from the catalog), preserving the system prompt, goal,
   and most recent turns.
+- **Project memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` in the project
+  root (plus a user-global `~/.config/vibe-codr/VIBE.md`) are injected into every
+  system prompt, so the agent follows your stack and conventions out of the box.
+  Drop-in compatible with repos already carrying Codex's `AGENTS.md` or Claude
+  Code's `CLAUDE.md`.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,

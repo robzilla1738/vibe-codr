@@ -28,6 +28,15 @@ import {
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
+import {
+  formatStatus,
+  formatCost,
+  formatConfig,
+  formatTools,
+  formatMcp,
+  formatPermissions,
+  formatNamedList,
+} from "./introspect.ts";
 import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, type NamedAgent } from "./agents.ts";
 import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
@@ -480,7 +489,82 @@ export class Engine implements EngineClient {
         this.#notice(args ? `Goal set: ${args}` : "Goal cleared.");
         break;
       case "clear":
+      case "new":
         this.#session.clear();
+        this.#notice("Conversation cleared.");
+        break;
+      case "status":
+        this.#notice(this.#statusText());
+        break;
+      case "cost":
+        this.#notice(
+          formatCost(
+            this.#session.snapshot().usage,
+            this.#session.model,
+            await this.#resolvePricing(this.#session.model),
+          ),
+        );
+        break;
+      case "config":
+        this.#notice(formatConfig(this.#config));
+        break;
+      case "tools":
+        this.#notice(
+          formatTools(this.toolset.forMode(this.#session.mode), this.#session.mode),
+        );
+        break;
+      case "skills":
+        this.#notice(
+          formatNamedList(
+            "Skills (call /<name> or the model uses use_skill):",
+            this.skills.list().map((s) => ({ name: s.name, description: s.description })),
+            "No skills. Add .vibe/skills/<name>/SKILL.md to define one.",
+          ),
+        );
+        break;
+      case "commands":
+        this.#notice(
+          formatNamedList(
+            "Custom commands:",
+            this.commands.list().map((c) => ({
+              name: c.name,
+              description: `${c.description} (${c.source})`,
+            })),
+            "No custom commands. Add .vibe/commands/<name>.md to define one.",
+          ),
+        );
+        break;
+      case "mcp":
+        this.#notice(
+          formatMcp(this.#mcp.status(), Object.keys(this.#config.mcp.servers)),
+        );
+        break;
+      case "permissions":
+        this.#notice(
+          formatPermissions(this.#config.permissions, this.#config.approvalMode),
+        );
+        break;
+      case "approvals":
+        this.#handleApprovals(args);
+        break;
+      case "reasoning":
+        this.#handleReasoning(args);
+        break;
+      case "theme":
+        this.#handleTheme(args);
+        break;
+      case "diff":
+        await this.#handleDiff();
+        break;
+      case "review":
+        await this.#handleReview();
+        break;
+      case "resume":
+        await this.#handleResume();
+        break;
+      case "exit":
+      case "quit":
+        this.#notice("Press Ctrl-C (or Ctrl-D) to exit.");
         break;
       case "agents":
         this.#notice(
@@ -710,6 +794,152 @@ export class Engine implements EngineClient {
         ? `Checkpoints (newest last):\n${list.map((c) => `  ${c.label}`).join("\n")}`
         : "No checkpoints yet. One is taken before each edit turn (git repos).",
     );
+  }
+
+  /** `/status` — render the live session overview. */
+  #statusText(): string {
+    const tools = this.toolset.all();
+    return formatStatus({
+      sessionId: this.#session.id,
+      model: this.#session.model,
+      mode: this.#session.mode,
+      approvalMode: this.#config.approvalMode,
+      goal: this.#session.goal,
+      cwd: this.#cwd,
+      toolCount: tools.length,
+      readOnlyCount: tools.filter((t) => t.readOnly).length,
+      mcpServerCount: Object.keys(this.#config.mcp.servers).length,
+      skillCount: this.skills.list().length,
+      commandCount: this.commands.list().length,
+      agentCount: this.#agents.size,
+      usage: this.#session.snapshot().usage,
+    });
+  }
+
+  /** `/approvals [ask|auto]` — show or switch the default approval mode. */
+  #handleApprovals(args: string): void {
+    const next = args.trim().toLowerCase();
+    if (!next) {
+      this.#notice(`Approval mode: ${this.#config.approvalMode}. Use /approvals <ask|auto>.`);
+      return;
+    }
+    if (next !== "ask" && next !== "auto") {
+      this.#notice("Usage: /approvals <ask|auto>", "warn");
+      return;
+    }
+    // Mutating the shared config object is picked up on the next turn, where the
+    // PermissionChecker's default action is derived from approvalMode.
+    this.#config.approvalMode = next;
+    this.#notice(
+      next === "auto"
+        ? "Approval mode: auto — side-effecting tools run without prompting."
+        : "Approval mode: ask — side-effecting tools prompt for approval.",
+    );
+  }
+
+  /** `/reasoning [low|medium|high|off]` — show or set the reasoning effort. */
+  #handleReasoning(args: string): void {
+    const next = args.trim().toLowerCase();
+    if (!next) {
+      this.#notice(
+        `Reasoning effort: ${this.#config.reasoning.effort ?? "default"}. Use /reasoning <low|medium|high|off>.`,
+      );
+      return;
+    }
+    if (next === "off" || next === "none") {
+      delete this.#config.reasoning.effort;
+      this.#notice("Reasoning effort cleared (provider default).");
+      return;
+    }
+    if (next !== "low" && next !== "medium" && next !== "high") {
+      this.#notice("Usage: /reasoning <low|medium|high|off>", "warn");
+      return;
+    }
+    this.#config.reasoning.effort = next;
+    this.#notice(`Reasoning effort: ${next}.`);
+  }
+
+  /** `/theme [name]` — show or set the UI theme. */
+  #handleTheme(args: string): void {
+    const next = args.trim();
+    if (!next) {
+      this.#notice(`Theme: ${this.#config.theme}. Use /theme <name> to change it.`);
+      return;
+    }
+    this.#config.theme = next;
+    this.#notice(`Theme set to "${next}".`);
+  }
+
+  /** `/diff` — show the working-tree diff (git). */
+  async #handleDiff(): Promise<void> {
+    if (!(await this.#checkpoints.isGitRepo())) {
+      this.#notice("Not a git repository; nothing to diff.", "warn");
+      return;
+    }
+    const out = await this.#git(["--no-pager", "diff", "--stat", "HEAD"]);
+    const full = await this.#git(["--no-pager", "diff", "HEAD"]);
+    const body = full.stdout.trim();
+    if (!body) {
+      this.#notice("No changes in the working tree.");
+      return;
+    }
+    const capped =
+      body.length > 8000 ? `${body.slice(0, 8000)}\n…(diff truncated)` : body;
+    this.#notice(`${out.stdout.trim()}\n\n${capped}`);
+  }
+
+  /** `/review` — ask the model to review the current working-tree changes. */
+  async #handleReview(): Promise<void> {
+    if (!(await this.#checkpoints.isGitRepo())) {
+      this.#notice("Not a git repository; nothing to review.", "warn");
+      return;
+    }
+    const diff = (await this.#git(["--no-pager", "diff", "HEAD"])).stdout.trim();
+    if (!diff) {
+      this.#notice("No changes in the working tree to review.");
+      return;
+    }
+    this.#verifyAttempts = 0;
+    await this.#handlePrompt(
+      "Review the current working-tree changes for correctness, bugs, missed edge " +
+        "cases, and style consistency with the surrounding code. Be concrete and " +
+        "cite file/line where possible. Here is the diff:\n\n```diff\n" +
+        diff +
+        "\n```",
+    );
+  }
+
+  /** `/resume` — list saved sessions (resume one with `--resume <id>`). */
+  async #handleResume(): Promise<void> {
+    const metas = await this.#store.list();
+    if (!metas.length) {
+      this.#notice("No saved sessions yet.");
+      return;
+    }
+    const lines = metas.slice(0, 20).map((m) => {
+      const when = new Date(m.updatedAt).toISOString().replace("T", " ").slice(0, 16);
+      const goal = m.goal ? ` — ${m.goal.slice(0, 50)}` : "";
+      return `  ${m.id}  ${when}  ${m.model}${goal}`;
+    });
+    this.#notice(
+      `Saved sessions (restart with \`vibecodr --resume <id>\`):\n${lines.join("\n")}`,
+    );
+  }
+
+  /** Run a git command in the workspace, returning trimmed stdout/stderr. */
+  async #git(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+    const proc = Bun.spawn(["git", ...args], {
+      cwd: this.#cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { ok: code === 0, stdout, stderr };
   }
 }
 

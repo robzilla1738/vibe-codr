@@ -130,6 +130,10 @@ function App(props: { engine: EngineClient }) {
     const text = draft().trim();
     if (!text) return;
     setDraft("");
+    if (text === "/exit" || text === "/quit") {
+      props.engine.send({ type: "shutdown" });
+      process.exit(0);
+    }
     // While permission prompts are pending, each input answers the oldest.
     const permId = pendingPerms.shift();
     if (permId) {
@@ -173,7 +177,7 @@ function App(props: { engine: EngineClient }) {
           value={draft()}
           onInput={(v: string) => setDraft(v)}
           onSubmit={submit}
-          placeholder="Ask vibe-codr…  @file to attach · /help · /plan · /execute · /model <id> · /undo"
+          placeholder="Ask vibe-codr…  /help for commands · @file to attach · /plan · /status · /exit"
         />
       </box>
     </box>

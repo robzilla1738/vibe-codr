@@ -3,7 +3,7 @@ import type { Mode } from "@vibe/shared";
 export interface SystemPromptInputs {
   mode: Mode;
   goal: string | null;
-  /** Project memory (VIBE.md) contents, if present. */
+  /** Project memory (VIBE.md / AGENTS.md / CLAUDE.md) contents, if present. */
   projectMemory?: string;
   /** Skill name/description lines for progressive disclosure. */
   skillDescriptions?: string[];
@@ -32,7 +32,7 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
     );
   }
   if (inputs.projectMemory) {
-    sections.push(`PROJECT NOTES (VIBE.md):\n${inputs.projectMemory}`);
+    sections.push(`PROJECT NOTES:\n${inputs.projectMemory}`);
   }
   if (inputs.skillDescriptions?.length) {
     sections.push(

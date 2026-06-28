@@ -7,34 +7,95 @@ export interface BuiltinCommandMeta {
   description: string;
 }
 
-/** Metadata for the built-in slash commands (used by /help and completion). */
+/** A named group of related commands, for a readable `/help`. */
+export interface CommandGroup {
+  title: string;
+  commands: BuiltinCommandMeta[];
+}
+
+/** Built-in slash commands, organised into groups (used by /help). */
+export const COMMAND_GROUPS: CommandGroup[] = [
+  {
+    title: "Session",
+    commands: [
+      { name: "help", description: "Show available commands" },
+      { name: "status", description: "Show model, mode, cwd, tokens, cost and more" },
+      { name: "cost", description: "Show token usage and estimated cost" },
+      { name: "clear", description: "Clear the conversation history (alias /new)" },
+      { name: "compact", description: "Compact the conversation to free context" },
+      { name: "resume", description: "List saved sessions to resume" },
+      { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
+    ],
+  },
+  {
+    title: "Model & mode",
+    commands: [
+      { name: "model", description: "Show or switch the active model (/model <id>)" },
+      { name: "models", description: "List available models for configured providers" },
+      { name: "plan", description: "Switch to read-only plan mode" },
+      { name: "execute", description: "Switch to execute mode" },
+      { name: "approvals", description: "Show or set approval mode (/approvals ask|auto)" },
+      { name: "reasoning", description: "Show or set reasoning effort (/reasoning low|medium|high|off)" },
+      { name: "theme", description: "Show or set the UI theme (/theme <name>)" },
+    ],
+  },
+  {
+    title: "Steering",
+    commands: [
+      { name: "goal", description: "Set or clear the north-star goal (/goal <text>)" },
+      { name: "loop", description: "Run a prompt on a loop (/loop <interval> <prompt>)" },
+      { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
+    ],
+  },
+  {
+    title: "Code & safety",
+    commands: [
+      { name: "diff", description: "Show the working-tree diff" },
+      { name: "review", description: "Have the agent review the working-tree changes" },
+      { name: "verify", description: "Run the configured verify command (typecheck/tests)" },
+      { name: "undo", description: "Revert the workspace to the last checkpoint" },
+      { name: "checkpoints", description: "List workspace checkpoints" },
+    ],
+  },
+  {
+    title: "Extensions & config",
+    commands: [
+      { name: "config", description: "Show the effective config (secrets masked)" },
+      { name: "permissions", description: "Show the tool permission rules" },
+      { name: "tools", description: "List tools available in the current mode" },
+      { name: "agents", description: "List named subagents" },
+      { name: "skills", description: "List available skills" },
+      { name: "commands", description: "List custom slash commands" },
+      { name: "mcp", description: "Show connected MCP servers" },
+    ],
+  },
+];
+
+/** Flat list of every built-in command (used for completion). */
 export const BUILTIN_COMMANDS: BuiltinCommandMeta[] = [
-  { name: "help", description: "Show available commands" },
-  { name: "model", description: "Show or switch the active model (/model <id>)" },
-  { name: "models", description: "List available models for configured providers" },
-  { name: "plan", description: "Switch to read-only plan mode" },
-  { name: "execute", description: "Switch to execute mode" },
-  { name: "goal", description: "Set or clear the north-star goal (/goal <text>)" },
-  { name: "agents", description: "List named subagents" },
-  { name: "loop", description: "Run a prompt on a loop (/loop <interval> <prompt>)" },
-  { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
-  { name: "undo", description: "Revert the workspace to the last checkpoint" },
-  { name: "checkpoints", description: "List workspace checkpoints" },
-  { name: "verify", description: "Run the configured verify command (typecheck/tests)" },
-  { name: "compact", description: "Compact the conversation history" },
-  { name: "clear", description: "Clear the conversation history" },
-  { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
+  ...COMMAND_GROUPS.flatMap((g) => g.commands),
+  { name: "new", description: "Start a fresh conversation (alias of /clear)" },
+  { name: "exit", description: "Exit vibe-codr (alias /quit)" },
 ];
 
 /** Render the /help text, including any plugin/file commands. */
 export function helpText(extra: SlashCommand[] = []): string {
-  const lines = ["Commands:"];
-  for (const c of BUILTIN_COMMANDS) {
-    lines.push(`  /${c.name.padEnd(10)} ${c.description}`);
+  const pad = 12;
+  const lines: string[] = ["Commands"];
+  for (const group of COMMAND_GROUPS) {
+    lines.push(`\n${group.title}`);
+    for (const c of group.commands) {
+      lines.push(`  /${c.name.padEnd(pad)} ${c.description}`);
+    }
   }
-  for (const c of extra) {
-    lines.push(`  /${c.name.padEnd(10)} ${c.description} (${c.source})`);
+  if (extra.length) {
+    lines.push("\nCustom");
+    for (const c of extra) {
+      lines.push(`  /${c.name.padEnd(pad)} ${c.description} (${c.source})`);
+    }
   }
+  lines.push(`\n  /${"exit".padEnd(pad)} Exit vibe-codr (alias /quit)`);
+  lines.push("\nTip: @file mentions attach file contents; end a line with \\ for multi-line input.");
   return lines.join("\n");
 }
 

@@ -33,11 +33,20 @@ export interface McpHubDeps {
  * mode/permission gate (treated as side-effecting). Connection or per-tool
  * failures are logged and skipped — never fatal.
  */
+/** Connection outcome for one configured MCP server (for `/mcp`). */
+export interface McpServerStatus {
+  name: string;
+  connected: boolean;
+  toolCount: number;
+  error?: string;
+}
+
 export class McpHub {
   #deps: McpHubDeps;
   #connect: McpConnect;
   #log: Logger;
   #clients: McpClient[] = [];
+  #status: McpServerStatus[] = [];
 
   constructor(deps: McpHubDeps) {
     this.#deps = deps;
@@ -55,13 +64,19 @@ export class McpHub {
         for (const spec of tools) {
           this.#deps.registerTool(toToolDefinition(name, spec, client));
         }
+        this.#status.push({ name, connected: true, toolCount: tools.length });
         this.#log.info(`connected MCP server "${name}" (${tools.length} tools)`);
       } catch (err) {
-        this.#log.error(
-          `MCP server "${name}" failed: ${(err as Error).message}`,
-        );
+        const message = (err as Error).message;
+        this.#status.push({ name, connected: false, toolCount: 0, error: message });
+        this.#log.error(`MCP server "${name}" failed: ${message}`);
       }
     }
+  }
+
+  /** Connection status for every configured server (for `/mcp`). */
+  status(): McpServerStatus[] {
+    return this.#status.map((s) => ({ ...s }));
   }
 
   /** Close all connected clients. */

@@ -10,3 +10,4 @@ export { ProviderRegistry } from "./registry.ts";
 export { builtinProviders } from "./defs.ts";
 export { CatalogService, parseModelsDev } from "./catalog.ts";
 export { listOpenAICompatibleModels } from "./openai-compat.ts";
+export { readTokenFile, expandHome } from "./auth-file.ts";

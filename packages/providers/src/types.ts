@@ -23,6 +23,8 @@ export interface ModelInfo {
 export interface ProviderCreateOptions {
   apiKey?: string;
   baseURL?: string;
+  /** Extra HTTP headers (e.g. a gateway account id for subscription auth). */
+  headers?: Record<string, string>;
 }
 
 /** How a provider authenticates (env var names + optional base-URL env). */
@@ -31,6 +33,10 @@ export interface ProviderAuth {
   baseURLEnv?: string;
   /** True for providers that need no key (e.g. LM Studio on localhost). */
   keyless?: boolean;
+  /** Default credential file to read a token from (e.g. Codex's auth.json). */
+  tokenFile?: string;
+  /** Default dot-path into a JSON token file. */
+  tokenPath?: string;
 }
 
 /** A registered provider: how to create models and list what's available. */

@@ -146,8 +146,33 @@ are listed in config.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,
-`openrouter/anthropic/claude-...`, `fireworks/...`, `baseten/...`,
-`lmstudio/<id>`.
+`minimax/MiniMax-M1`, `codex/gpt-...`, `openrouter/anthropic/claude-...`,
+`fireworks/...`, `baseten/...`, `lmstudio/<id>`.
+
+#### Providers & subscription auth
+
+| Provider | Auth | Notes |
+|---|---|---|
+| `anthropic` `openai` `deepseek` `fireworks` `baseten` `openrouter` | `*_API_KEY` env or `providers.<id>.apiKey` | first-party + aggregators |
+| `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | premium/Grok models via an xAI API key; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
+| `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
+| `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
+| `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` |
+
+**Any** provider can authenticate from a credential file or with extra headers —
+useful for subscription/OAuth tokens another CLI obtained:
+
+```jsonc
+"providers": {
+  "codex":   { "tokenFile": "~/.codex/auth.json", "headers": { "chatgpt-account-id": "acct_…" } },
+  "minimax": { "apiKey": "mm-…" },
+  "xai":     { "baseURL": "https://your-grok-gateway/v1", "tokenFile": "~/.grok/token" }
+}
+```
+
+A JSON `tokenFile` is searched for common fields (`OPENAI_API_KEY`,
+`tokens.access_token`, `api_key`, …) or a `tokenPath` you specify; a plain-text
+file is used verbatim. Resolution order is **env → `apiKey` → `tokenFile`**.
 
 Provider SDKs (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`) and OpenTUI are
 **optional** peer deps — install the ones you use; a missing one yields a clear

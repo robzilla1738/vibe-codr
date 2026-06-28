@@ -1,9 +1,20 @@
 import { z } from "zod";
 
-/** Per-provider overrides (api key + base URL). */
+/** Per-provider overrides (api key + base URL + subscription/OAuth token file). */
 export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
   baseURL: z.string().url().optional(),
+  /**
+   * Path to a credential file to read the key/token from (supports `~`). Used to
+   * reuse a subscription/OAuth token another CLI already obtained — e.g. Codex's
+   * `~/.codex/auth.json`. A JSON file is searched for common key fields (or use
+   * `tokenPath`); a plain-text file is used verbatim.
+   */
+  tokenFile: z.string().optional(),
+  /** Dot-path into a JSON token file (e.g. "tokens.access_token"). */
+  tokenPath: z.string().optional(),
+  /** Extra HTTP headers sent with every request (e.g. an account id for a gateway). */
+  headers: z.record(z.string(), z.string()).optional(),
 });
 
 /** allow/deny/ask policy for a tool, matched by glob on the tool name. */

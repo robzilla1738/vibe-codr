@@ -4,6 +4,7 @@ import type { Config } from "@vibe/config";
 import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
 import { parseModelString } from "./resolve.ts";
 import { builtinProviders } from "./defs.ts";
+import { readTokenFile } from "./auth-file.ts";
 
 /**
  * Holds provider definitions and turns a model string + config into a live
@@ -39,14 +40,30 @@ export class ProviderRegistry {
   resolveAuth(id: string, config: Config): ProviderCreateOptions {
     const def = this.#providers.get(id);
     if (!def) throw new ModelResolutionError(id, "unknown provider");
-    const apiKey =
-      def.auth.env.map((e) => process.env[e]).find(Boolean) ??
-      config.providers[id]?.apiKey;
+    const apiKey = this.#resolveKey(def, config.providers[id]);
     const baseURL = config.providers[id]?.baseURL;
+    const headers = config.providers[id]?.headers;
     if (!apiKey && !def.auth.keyless) {
       throw new ProviderAuthError(id, def.auth.env);
     }
-    return apiKey === undefined ? { baseURL } : { apiKey, baseURL };
+    const opts: ProviderCreateOptions = {};
+    if (apiKey !== undefined) opts.apiKey = apiKey;
+    if (baseURL !== undefined) opts.baseURL = baseURL;
+    if (headers !== undefined) opts.headers = headers;
+    return opts;
+  }
+
+  /**
+   * Resolve a credential: env vars win, then config `apiKey`, then a token file
+   * (config override or the provider's default, e.g. Codex's `~/.codex/auth.json`).
+   */
+  #resolveKey(def: ProviderDef, cfg: Config["providers"][string] | undefined): string | undefined {
+    const fromEnv = def.auth.env.map((e) => process.env[e]).find(Boolean);
+    if (fromEnv) return fromEnv;
+    if (cfg?.apiKey) return cfg.apiKey;
+    const tokenFile = cfg?.tokenFile ?? def.auth.tokenFile;
+    if (tokenFile) return readTokenFile(tokenFile, cfg?.tokenPath ?? def.auth.tokenPath);
+    return undefined;
   }
 
   /** Whether a provider has usable credentials (or is keyless). */
@@ -54,10 +71,7 @@ export class ProviderRegistry {
     const def = this.#providers.get(id);
     if (!def) return false;
     if (def.auth.keyless) return true;
-    return (
-      def.auth.env.some((e) => Boolean(process.env[e])) ||
-      Boolean(config.providers[id]?.apiKey)
-    );
+    return Boolean(this.#resolveKey(def, config.providers[id]));
   }
 
   /** Resolve a full model string to a live `LanguageModel`. */

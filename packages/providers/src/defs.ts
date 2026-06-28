@@ -25,6 +25,9 @@ interface BuiltinSpec {
   baseURL: string;
   baseURLEnv?: string;
   keyless?: boolean;
+  /** Default credential file (e.g. a subscription/OAuth token from another CLI). */
+  tokenFile?: string;
+  tokenPath?: string;
   /** SDK package + factory export name. */
   module?: string;
   factory?: string;
@@ -56,8 +59,30 @@ const BUILTINS: BuiltinSpec[] = [
     id: "xai",
     env: ["XAI_API_KEY"],
     baseURL: "https://api.x.ai/v1",
+    baseURLEnv: "XAI_BASE_URL",
     module: "@ai-sdk/xai",
     factory: "createXai",
+  },
+  {
+    // MiniMax: OpenAI-compatible API, token (subscription) auth.
+    id: "minimax",
+    env: ["MINIMAX_API_KEY"],
+    baseURL: "https://api.minimax.io/v1",
+    baseURLEnv: "MINIMAX_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Codex: reuse the token the Codex CLI stored at ~/.codex/auth.json (API key
+    // or ChatGPT OAuth access token). Point CODEX_BASE_URL at the right backend
+    // for OAuth-subscription use; an API key works against OpenAI directly.
+    id: "codex",
+    env: ["CODEX_API_KEY", "OPENAI_API_KEY"],
+    baseURL: "https://api.openai.com/v1",
+    baseURLEnv: "CODEX_BASE_URL",
+    tokenFile: "~/.codex/auth.json",
+    module: "@ai-sdk/openai",
+    factory: "createOpenAI",
   },
   {
     id: "fireworks",
@@ -99,7 +124,13 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
 
   return {
     id: spec.id,
-    auth: { env: spec.env, baseURLEnv: spec.baseURLEnv, keyless: spec.keyless },
+    auth: {
+      env: spec.env,
+      baseURLEnv: spec.baseURLEnv,
+      keyless: spec.keyless,
+      tokenFile: spec.tokenFile,
+      tokenPath: spec.tokenPath,
+    },
 
     async create(modelId, opts): Promise<LanguageModel> {
       const mod = await loadProviderModule(spec.module!);
@@ -114,6 +145,7 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
         name: spec.id,
         apiKey: opts.apiKey ?? "not-needed",
         baseURL: baseURL(opts),
+        ...(opts.headers ? { headers: opts.headers } : {}),
       });
       // Provider instances are callable: provider(modelId) -> LanguageModel.
       return provider(modelId) as LanguageModel;

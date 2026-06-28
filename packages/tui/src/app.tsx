@@ -12,6 +12,7 @@ import { createSignal, onMount, For, Show } from "solid-js";
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { TASK_GLYPH, formatUsage } from "./headless.ts";
+import { renderMarkdown } from "./markdown.ts";
 
 interface Line {
   kind:
@@ -151,7 +152,7 @@ function App(props: { engine: EngineClient }) {
           {(line) => (
             <text fg={colorFor(line.kind)}>
               {prefixFor(line.kind)}
-              {line.text}
+              {line.kind === "assistant" ? renderMarkdown(line.text) : line.text}
             </text>
           )}
         </For>
@@ -172,7 +173,7 @@ function App(props: { engine: EngineClient }) {
           value={draft()}
           onInput={(v: string) => setDraft(v)}
           onSubmit={submit}
-          placeholder="Ask vibe-codr…  (/plan, /execute, /model <id>, /goal <text>, /queue)"
+          placeholder="Ask vibe-codr…  @file to attach · /help · /plan · /execute · /model <id> · /undo"
         />
       </box>
     </box>

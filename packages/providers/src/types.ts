@@ -14,6 +14,8 @@ export interface ModelInfo {
     toolCall?: boolean;
     reasoning?: boolean;
     structuredOutput?: boolean;
+    /** Accepts image input (vision). */
+    vision?: boolean;
   };
 }
 

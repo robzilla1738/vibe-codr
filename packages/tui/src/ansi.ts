@@ -8,6 +8,7 @@ function wrap(code: string, text: string): string {
 export const ansi = {
   dim: (t: string) => wrap("2", t),
   bold: (t: string) => wrap("1", t),
+  italic: (t: string) => wrap("3", t),
   cyan: (t: string) => wrap("36", t),
   green: (t: string) => wrap("32", t),
   yellow: (t: string) => wrap("33", t),

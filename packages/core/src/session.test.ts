@@ -271,6 +271,50 @@ test("cost accrues at the price in effect per step, across a model switch", asyn
   expect(session.snapshot().usage.costUSD).toBeCloseTo(0.000165, 9);
 });
 
+test("image attachments reach the model as multimodal content", async () => {
+  let captured: { prompt?: unknown[] } | null = null;
+  const model = new MockLanguageModelV2({
+    doStream: async (opts: { prompt?: unknown[] }) => {
+      captured = opts;
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never;
+    },
+  });
+
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  await collect(bus, () =>
+    session.run("look at this", [
+      { path: "pic.png", mediaType: "image/png", data: new Uint8Array([1, 2, 3]) },
+    ]),
+  );
+
+  const prompt = (captured as { prompt?: unknown[] } | null)?.prompt ?? [];
+  const userMsg = prompt.find(
+    (m): m is { role: string; content: unknown } =>
+      typeof m === "object" && m !== null && (m as { role?: string }).role === "user",
+  );
+  const content = (userMsg?.content ?? []) as Array<{ type?: string }>;
+  // The AI SDK lowers an image part to a provider "file"/"image" content part.
+  expect(
+    Array.isArray(content) && content.some((p) => p.type === "file" || p.type === "image"),
+  ).toBe(true);
+});
+
 test("spend guard with onExceed=stop aborts after the budget is crossed", async () => {
   // Step 1 is a tool call (reports usage); the huge price trips a tiny budget,
   // so the turn must abort before the final-text step 2 runs.

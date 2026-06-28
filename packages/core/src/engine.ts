@@ -36,6 +36,7 @@ import { SessionStore, type PersistedSession } from "./store.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
 import { runVerify } from "./verify.ts";
+import { expandMentions } from "./mentions.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -422,6 +423,11 @@ export class Engine implements EngineClient {
     };
   }
 
+  /** Whether the model accepts image input (undefined if unknown). */
+  #supportsImages(model: string): Promise<boolean | undefined> {
+    return this.catalog.supportsImages(model);
+  }
+
   /** List models for configured providers, enriched with models.dev metadata. */
   async listModels(): Promise<ModelInfo[]> {
     const live = await this.registry.listConfiguredModels(this.#config);
@@ -609,7 +615,20 @@ export class Engine implements EngineClient {
       }
     }
     const hooked = await this.hooks.run("user.prompt.submit", { text });
-    await this.#session.run(hooked.text);
+    // Expand `@file` mentions: text files become context blocks, images become
+    // attachments for vision models. Unresolvable mentions pass through.
+    const expanded = await expandMentions(hooked.text, this.#cwd);
+    for (const note of expanded.notices) this.#notice(note, "info");
+    if (expanded.images.length) {
+      const ok = await this.#supportsImages(this.#session.model);
+      if (ok === false) {
+        this.#notice(
+          `${this.#session.model} may not accept image input; sending anyway.`,
+          "warn",
+        );
+      }
+    }
+    await this.#session.run(expanded.text, expanded.images);
     await this.#maybeVerify();
   }
 

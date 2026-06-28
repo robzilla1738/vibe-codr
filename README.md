@@ -80,6 +80,12 @@ are listed in config.
   or run commands); the model calls `present_plan`, and you approve via
   `/execute`. A glob-based allow/deny/ask **permission layer** gates
   side-effecting tools.
+- **`@file` mentions & images** — reference files inline (`summarize @src/app.ts`)
+  and their contents are injected as context; image mentions (`@shot.png`) are
+  attached for vision models (with a notice when the model lacks vision). The
+  REPL supports multi-line input (end a line with `\`) and **Ctrl-C aborts the
+  current turn** instead of killing the process. Assistant text renders Markdown
+  (headings, bold/italic, code, lists) in the interactive UI.
 - **Surgical edits with live diffs** — the `edit` tool replaces exact text
   (`replaceAll` for non-unique matches) and accepts an `edits` array applied
   **atomically** (all-or-nothing); every `edit`/`write` returns a unified diff and

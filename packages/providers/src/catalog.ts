@@ -59,6 +59,16 @@ export class CatalogService {
     return undefined;
   }
 
+  /**
+   * Whether a model accepts image input. NON-BLOCKING: returns undefined until
+   * the catalog has loaded (and for models it doesn't know about).
+   */
+  async supportsImages(modelString: string): Promise<boolean | undefined> {
+    if (this.#metadata) return this.#metadata.get(modelString)?.capabilities?.vision;
+    void this.#load();
+    return undefined;
+  }
+
   /** Enrich live models with models.dev metadata (best-effort, awaits load). */
   async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
     const meta = await this.#load();
@@ -139,6 +149,9 @@ export function parseModelsDev(raw: unknown): Map<string, Partial<ModelInfo>> {
           toolCall: m?.tool_call,
           reasoning: m?.reasoning,
           structuredOutput: m?.structured_output,
+          vision: Array.isArray(m?.modalities?.input)
+            ? m.modalities.input.includes("image")
+            : undefined,
         },
       });
     }

@@ -55,19 +55,42 @@ async function startRepl(engine: EngineClient): Promise<void> {
   })();
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  // Ctrl-C aborts the active turn (instead of killing the process); pressing it
+  // again at an idle prompt exits.
+  rl.on("SIGINT", () => {
+    if (engine.snapshot().busy) {
+      engine.send({ type: "abort" });
+      process.stdout.write(ansi.dim("\n^C — aborting current turn\n"));
+      rl.prompt();
+    } else {
+      rl.close();
+    }
+  });
+
+  // Accumulates lines for multi-line input (each non-final line ends with `\`).
+  let buffer: string[] = [];
   const ask = () =>
-    rl.question(ansi.green("› "), (line) => {
-      const trimmed = line.trim();
+    rl.question(buffer.length ? ansi.dim("… ") : ansi.green("› "), (line) => {
       const permId = pendingPerms.shift();
       if (permId) {
         engine.send({
           type: "resolve-permission",
           id: permId,
-          decision: parsePermissionDecision(trimmed),
+          decision: parsePermissionDecision(line.trim()),
         });
         ask();
         return;
       }
+      // A trailing backslash continues onto the next line.
+      if (line.endsWith("\\")) {
+        buffer.push(line.slice(0, -1));
+        ask();
+        return;
+      }
+      const full = (buffer.length ? `${buffer.join("\n")}\n` : "") + line;
+      buffer = [];
+      const trimmed = full.trim();
       if (trimmed === "/exit" || trimmed === "/quit") {
         rl.close();
         return;

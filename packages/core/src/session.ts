@@ -31,6 +31,7 @@ import { compactMessages } from "./compaction.ts";
 import type { SessionStore } from "./store.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
+import type { ImageAttachment } from "./mentions.ts";
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -335,11 +336,11 @@ export class Session {
   }
 
   /** Execute one agentic turn for `input`. Resolves when the turn ends. */
-  async run(input: string): Promise<void> {
+  async run(input: string, images: ImageAttachment[] = []): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;
     this.busy = true;
     this.#turnMutated = false;
-    this.#pushUser(input);
+    this.#pushUser(input, images);
 
     try {
       // If a prior turn already blew the spend limit under `stop`, don't start
@@ -572,12 +573,26 @@ export class Session {
     };
   }
 
-  #pushUser(input: string): void {
-    this.#modelMessages.push({ role: "user", content: input });
+  #pushUser(input: string, images: ImageAttachment[] = []): void {
+    // Multimodal user turn when images are attached; plain string otherwise so
+    // existing text-only behaviour and persistence are unchanged.
+    const content = images.length
+      ? [
+          { type: "text" as const, text: input },
+          ...images.map((img) => ({
+            type: "image" as const,
+            image: img.data,
+            mediaType: img.mediaType,
+          })),
+        ]
+      : input;
+    this.#modelMessages.push({ role: "user", content });
+    const parts: Part[] = [{ type: "text", text: input }];
+    for (const img of images) parts.push({ type: "text", text: `[image: ${img.path}]` });
     this.#history.push({
       id: createId("msg"),
       role: "user",
-      parts: [{ type: "text", text: input }],
+      parts,
       createdAt: Date.now(),
     });
     this.#deps.bus.emit({ type: "user-message", sessionId: this.id, text: input });

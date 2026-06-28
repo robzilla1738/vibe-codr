@@ -42,6 +42,12 @@ export {
   type PersistedSession,
 } from "./store.ts";
 export { addUsage, computeCost, type TokenTotals } from "./usage.ts";
+export {
+  expandMentions,
+  parseMentions,
+  type ImageAttachment,
+  type ExpandedPrompt,
+} from "./mentions.ts";
 export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";
 export { runVerify, type VerifyResult } from "./verify.ts";
 export {

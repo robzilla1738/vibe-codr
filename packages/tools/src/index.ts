@@ -13,3 +13,4 @@ export {
   webSearchTool,
 } from "./builtins/index.ts";
 export { type WebSearchOptions } from "./builtins/web-search.ts";
+export { unifiedDiff, type DiffResult } from "./diff.ts";

@@ -80,6 +80,11 @@ are listed in config.
   or run commands); the model calls `present_plan`, and you approve via
   `/execute`. A glob-based allow/deny/ask **permission layer** gates
   side-effecting tools.
+- **Surgical edits with live diffs** — the `edit` tool replaces exact text
+  (`replaceAll` for non-unique matches) and accepts an `edits` array applied
+  **atomically** (all-or-nothing); every `edit`/`write` returns a unified diff and
+  emits a `file-changed` event, so the UI shows what changed in green/red as it
+  happens.
 - **Task list** — for any multi-step request the agent maintains a live
   checklist via the `update_tasks` tool (pending / in-progress / completed),
   rendered in the UI and persisted with the session so it survives `--resume`.

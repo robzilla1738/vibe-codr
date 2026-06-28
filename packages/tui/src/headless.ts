@@ -37,6 +37,20 @@ export function formatTasks(tasks: Task[]): string {
   return `${ansi.dim(`Tasks (${done}/${tasks.length})`)}\n${lines.join("\n")}`;
 }
 
+/** Colorize a unified diff: green additions, red deletions, dim context. */
+export function formatDiff(diff: string): string {
+  if (!diff) return "";
+  return diff
+    .split("\n")
+    .map((line) => {
+      if (line.startsWith("+")) return ansi.green(line);
+      if (line.startsWith("-")) return ansi.red(line);
+      if (line === "…") return ansi.dim(line);
+      return ansi.dim(line);
+    })
+    .join("\n");
+}
+
 export interface HeadlessOptions {
   /** Print reasoning deltas (default false). */
   showReasoning?: boolean;
@@ -65,6 +79,16 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
     case "tool-call-finished":
       if (opts.showTools !== false && event.isError) {
         process.stderr.write(`${ansi.red("✗ tool error")}\n`);
+      }
+      break;
+    case "file-changed":
+      if (opts.showTools !== false) {
+        const verb = event.action === "write" ? "wrote" : "edited";
+        const summary = `${ansi.green(`+${event.added}`)} ${ansi.red(`-${event.removed}`)}`;
+        process.stderr.write(
+          `${ansi.cyan("✎")} ${ansi.bold(`${verb} ${event.path}`)} ${summary}\n`,
+        );
+        if (event.diff) process.stderr.write(`${formatDiff(event.diff)}\n`);
       }
       break;
     case "compacted":

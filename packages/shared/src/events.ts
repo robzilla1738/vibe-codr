@@ -63,6 +63,18 @@ export type UIEvent =
       /** Items waiting to run, in order. */
       pending: QueuedItem[];
     }
+  | {
+      type: "file-changed";
+      sessionId: string;
+      /** Path relative to cwd. */
+      path: string;
+      /** "edit" replaced text in place; "write" created/overwrote the file. */
+      action: "edit" | "write";
+      /** Unified-diff text (` `/`+`/`-` prefixes); "" when nothing changed. */
+      diff: string;
+      added: number;
+      removed: number;
+    }
   | { type: "checkpoint-created"; id: string; label: string }
   | { type: "checkpoint-restored"; id: string; label: string }
   | { type: "verify-started"; command: string }

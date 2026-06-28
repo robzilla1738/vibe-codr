@@ -14,7 +14,16 @@ import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { TASK_GLYPH, formatUsage } from "./headless.ts";
 
 interface Line {
-  kind: "user" | "assistant" | "tool" | "notice" | "plan" | "subagent";
+  kind:
+    | "user"
+    | "assistant"
+    | "tool"
+    | "notice"
+    | "plan"
+    | "subagent"
+    | "add"
+    | "del"
+    | "ctx";
   text: string;
 }
 
@@ -54,6 +63,19 @@ function App(props: { engine: EngineClient }) {
             append({ kind: "tool", text: `⚒ ${event.toolName}` });
             streaming = null;
             break;
+          case "file-changed": {
+            const verb = event.action === "write" ? "wrote" : "edited";
+            append({
+              kind: "tool",
+              text: `✎ ${verb} ${event.path}  +${event.added} -${event.removed}`,
+            });
+            for (const dl of event.diff ? event.diff.split("\n") : []) {
+              const kind = dl.startsWith("+") ? "add" : dl.startsWith("-") ? "del" : "ctx";
+              append({ kind, text: dl });
+            }
+            streaming = null;
+            break;
+          }
           case "tasks-updated":
             setTasks(event.tasks);
             break;
@@ -180,6 +202,12 @@ function colorFor(kind: Line["kind"]): string {
       return "#bb9af7";
     case "subagent":
       return "#9ece6a";
+    case "add":
+      return "#9ece6a";
+    case "del":
+      return "#f7768e";
+    case "ctx":
+      return "#565f89";
     default:
       return "#c0caf5";
   }

@@ -63,15 +63,27 @@ test("formatCost explains a zero cost", () => {
   expect(out).toContain("no pricing");
 });
 
-test("formatConfig masks secrets", () => {
+test("formatConfig masks secrets, including MCP env and HTTP headers", () => {
   const config = ConfigSchema.parse({
-    providers: { anthropic: { apiKey: "sk-secret-123" } },
+    providers: {
+      anthropic: { apiKey: "sk-secret-123" },
+      codex: { headers: { Authorization: "Bearer header-secret" } },
+    },
     search: { enabled: true, apiKey: "tf-secret" },
+    mcp: {
+      servers: {
+        gh: { command: "npx", args: ["x"], env: { GITHUB_TOKEN: "ghp-secret" } },
+      },
+    },
   });
   const out = formatConfig(config);
   expect(out).not.toContain("sk-secret-123");
   expect(out).not.toContain("tf-secret");
+  expect(out).not.toContain("header-secret");
+  expect(out).not.toContain("ghp-secret");
   expect(out).toContain("***");
+  // Non-secret structure is preserved.
+  expect(out).toContain("npx");
 });
 
 test("formatTools groups read-only vs side-effecting", () => {

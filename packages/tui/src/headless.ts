@@ -215,7 +215,11 @@ export async function runOneShot(
     if (event.type === "assistant-text-delta") text += event.delta;
     if (event.type === "engine-error") error = event.message;
     if (!json) render(event, opts);
-    if (event.type === "session-idle") break;
+    // `session-idle` ends a normal turn. Also stop on `engine-error`: a failure
+    // before the session's run loop starts (e.g. an unreadable @mention or a
+    // corrupt checkpoint file) emits engine-error without a trailing
+    // session-idle, which would otherwise hang the one-shot forever.
+    if (event.type === "session-idle" || event.type === "engine-error") break;
   }
 
   const finalUsage = usage ?? emptyUsage();

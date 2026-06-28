@@ -89,6 +89,7 @@ export class Engine implements EngineClient {
   #bus = new EventBus();
   #config: Config;
   #cwd: string;
+  #projectMemory: string | undefined;
   #session: Session;
   #log: Logger;
   #pending: { id: string; label: string; run: () => Promise<void> }[] = [];
@@ -109,6 +110,7 @@ export class Engine implements EngineClient {
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
     this.#cwd = opts.cwd ?? process.cwd();
+    this.#projectMemory = opts.projectMemory;
     this.#interactive = opts.interactive ?? false;
     // Use the caller's resolver if given (tests); otherwise bridge `ask`
     // decisions to the UI via permission-request / resolve-permission.
@@ -376,6 +378,7 @@ export class Engine implements EngineClient {
       model: this.#session.model,
       mode: this.#session.mode,
       goal: this.#session.goal,
+      projectMemory: this.#projectMemory,
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       skills: this.skills,
@@ -879,6 +882,16 @@ export class Engine implements EngineClient {
       );
       return;
     }
+    // Validate before confirming so we don't report success for a name that
+    // silently falls back to the default palette. (Mirrors tui's THEME_NAMES;
+    // core can't import the UI package, so the known set is kept in sync here.)
+    if (!KNOWN_THEMES.has(next)) {
+      this.#notice(
+        `Unknown theme "${next}". Available: default, light, contrast.`,
+        "warn",
+      );
+      return;
+    }
     this.#config.theme = next;
     this.#bus.emit({ type: "theme-changed", theme: next });
     this.#notice(`Theme set to "${next}".`);
@@ -1047,6 +1060,9 @@ export class Engine implements EngineClient {
     return { ok: code === 0, stdout, stderr };
   }
 }
+
+/** Selectable UI theme names (kept in sync with `@vibe/tui`'s THEME_NAMES). */
+const KNOWN_THEMES = new Set(["default", "dark", "light", "contrast"]);
 
 /** A short one-line label for a queued prompt. */
 function queueLabel(text: string): string {

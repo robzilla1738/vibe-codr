@@ -80,6 +80,9 @@ export function formatCost(
 }
 
 const SECRET_KEYS = new Set(["apiKey", "tokenFile", "tokenPath"]);
+/** Whole maps whose *values* are sensitive: MCP `env`, and HTTP `headers`
+ * (Authorization, account ids, etc). Every value under these is masked. */
+const MASK_VALUES_UNDER = new Set(["env", "headers"]);
 
 /** Deep-clone a config value, masking any secret-bearing fields. */
 function redact(value: unknown): unknown {
@@ -87,7 +90,13 @@ function redact(value: unknown): unknown {
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = SECRET_KEYS.has(k) && typeof v === "string" ? "***" : redact(v);
+      if (SECRET_KEYS.has(k) && typeof v === "string") {
+        out[k] = "***";
+      } else if (MASK_VALUES_UNDER.has(k) && v && typeof v === "object" && !Array.isArray(v)) {
+        out[k] = Object.fromEntries(Object.keys(v).map((kk) => [kk, "***"]));
+      } else {
+        out[k] = redact(v);
+      }
     }
     return out;
   }

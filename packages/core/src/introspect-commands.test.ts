@@ -56,6 +56,18 @@ test("/reasoning sets and clears the effort", async () => {
   expect(out).toContain("cleared");
 });
 
+test("/theme accepts known names and rejects unknown ones", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "theme", args: "light" });
+  await engine.whenIdle();
+  expect(events.some((e) => e.type === "theme-changed")).toBe(true);
+
+  engine.send({ type: "run-slash", name: "theme", args: "bogus" });
+  await engine.whenIdle();
+  expect(notices(events)).toContain('Unknown theme "bogus"');
+});
+
 test("/new clears the conversation", async () => {
   const engine = new Engine({ config: defaultConfig() });
   const events = collect(engine);

@@ -1,17 +1,20 @@
 # vibe-codr
 
 A cutting-edge, **model-agnostic** CLI coding agent for the terminal — in the
-class of Claude Code / opencode, but able to drive coding and agentic tasks on
-*any* model: local models via **LM Studio**, aggregators (**OpenRouter,
-Fireworks, Baseten**), and first-party providers (**OpenAI, Anthropic, DeepSeek,
-xAI/Grok**).
+class of Claude Code / Codex / opencode, but able to drive coding and agentic
+tasks on *any* model: local models via **Ollama** and **LM Studio**, aggregators
+(**OpenRouter, Fireworks, Baseten**), and first-party providers (**OpenAI,
+Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 
-> Status: **feature-complete core (Phases 0–7).** Multi-provider agent loop,
-> live model catalog, plan/execute modes with a permission layer, a live
-> **task list**, an observable **prompt queue**, subagents, slash commands /
-> skills / plugins, `/goal` + `/loop`, and session persistence with
-> context-aware compaction — all covered by 170+ tests (including mock-model
-> integration tests of the agent loop with zero network).
+> Status: **feature-complete.** Multi-provider agent loop, live model catalog,
+> plan/execute modes with a permission layer, a live **task list**, an observable
+> **prompt queue**, subagents, slash commands / skills / plugins, `/goal` +
+> `/loop`, MCP client, web search, checkpoints/undo, self-verify, cost tracking,
+> and session persistence with context-aware compaction. A full slash-command
+> surface (`/status` `/cost` `/config` `/diff` `/review` `/doctor` `/export` …)
+> makes every setting and bit of session state reachable. All covered by 189
+> tests (including mock-model integration tests of the agent loop with zero
+> network).
 >
 > The terminal command is **`vibecodr`** (`vibe` works as an alias).
 
@@ -265,7 +268,12 @@ All planned phases are implemented and tested:
 5. ✅ Slash command files, skills (progressive disclosure), plugins
 6. ✅ `/goal` steering + `/loop` (interval, `--until`, `--max`)
 7. ✅ Session persistence (`--continue`/`--resume`) + context-aware compaction
+8. ✅ Parity & polish — full introspection/settings command surface, project
+   memory (VIBE.md/AGENTS.md/CLAUDE.md), JSON headless output + stdin, themes,
+   `/doctor`, `/export`, Ollama + structured `git_log`/`git_push` for GitHub.
 
-Next: install the provider SDKs you use (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`)
-and OpenTUI (`@opentui/core`, `@opentui/solid`, `solid-js`) for the full
-interactive experience; wire up CI.
+To run interactively against real models, install the provider SDKs you use
+(`@ai-sdk/*`, `@openrouter/ai-sdk-provider`), OpenTUI for the rich UI
+(`@opentui/core`, `@opentui/solid`, `solid-js`), and `@modelcontextprotocol/sdk`
+for MCP servers. Each is an optional peer dep — a missing one yields a clear,
+actionable error (and the readline REPL fallback) rather than blocking startup.

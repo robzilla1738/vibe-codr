@@ -2,25 +2,53 @@
  * Dev-only: generate faithful PNG screenshots of the vibe-codr TUI.
  *
  * Drives the REAL engine/session with a scripted MockLanguageModelV2 to produce
- * genuine UIEvent streams, reduces them into display lines (mirroring the
- * OpenTUI app in packages/tui/src/app.tsx), renders a terminal-styled HTML
- * frame, and screenshots it with the bundled Playwright Chromium.
+ * genuine UIEvent streams (real tools run for real — edits in temp dirs, real
+ * git in a temp repo), reduces them into display lines (mirroring the OpenTUI
+ * app in packages/tui/src/app.tsx), renders a terminal-styled HTML frame, and
+ * screenshots it with the bundled Playwright Chromium.
  *
  * Run: bun packages/core/scripts/screenshot.ts <outDir>
  */
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium } from "playwright";
 import type { LanguageModel } from "ai";
-import type { UIEvent, ToolDefinition, Task, QueuedItem } from "@vibe/shared";
+import type {
+  UIEvent,
+  ToolDefinition,
+  Task,
+  QueuedItem,
+  SessionUsage,
+} from "@vibe/shared";
 import { ProviderRegistry, type ModelInfo } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
-import { defaultConfig } from "@vibe/config";
+import { defaultConfig, type Config } from "@vibe/config";
 import { Session } from "../src/session.ts";
 import { Engine } from "../src/engine.ts";
 import { EventBus } from "../src/event-bus.ts";
+import { SessionStore } from "../src/store.ts";
 import { formatModelList } from "../src/commands.ts";
 
-const CHROME = "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
-const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
+/** Resolve the bundled Chromium, tolerating a different build number. */
+function resolveChrome(): string {
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH ?? "/opt/pw-browsers";
+  const hard = join(root, "chromium-1194", "chrome-linux", "chrome");
+  if (existsSync(hard)) return hard;
+  try {
+    const dir = readdirSync(root).find(
+      (d) => d.startsWith("chromium-") && !d.includes("headless"),
+    );
+    if (dir) {
+      const p = join(root, dir, "chrome-linux", "chrome");
+      if (existsSync(p)) return p;
+    }
+  } catch {
+    /* fall through */
+  }
+  return hard;
+}
+const CHROME = resolveChrome();
 
 // ── Tokyo-night palette (matches packages/tui colors) ──────────────────────
 const COLORS = {
@@ -43,6 +71,9 @@ type LineKind =
   | "toolresult"
   | "notice"
   | "subagent"
+  | "add"
+  | "del"
+  | "ctx"
   | "plain";
 
 interface Line {
@@ -64,21 +95,30 @@ interface Scene {
   plan?: PlanBlock;
   tasks?: Task[];
   queued?: QueuedItem[];
+  usage?: SessionUsage;
   input: string;
+  inputHint?: string;
 }
 
-// ── Event -> display-line reducer (mirrors app.tsx onMount handler) ─────────
-function reduce(events: UIEvent[]): {
+interface Reduced {
   lines: Line[];
   plan?: PlanBlock;
   tasks?: Task[];
   queued?: QueuedItem[];
-} {
+  usage?: SessionUsage;
+}
+
+// ── Event -> display-line reducer (mirrors app.tsx onMount handler) ─────────
+function reduce(events: UIEvent[]): Reduced {
   const lines: Line[] = [];
   let plan: PlanBlock | undefined;
   let tasks: Task[] | undefined;
   let queued: QueuedItem[] = [];
+  let usage: SessionUsage | undefined;
   let assistant: Line | null = null;
+  // edit/write return their diff as text too; skip that echo since the
+  // file-changed event already rendered it.
+  let suppressResult = false;
   const pushText = (delta: string) => {
     if (!assistant) {
       assistant = { kind: "assistant", text: "" };
@@ -103,14 +143,35 @@ function reduce(events: UIEvent[]): {
         assistant = null;
         break;
       case "tool-call-finished": {
+        if (suppressResult) {
+          suppressResult = false;
+          break;
+        }
         const out =
           typeof e.output === "string" ? e.output : JSON.stringify(e.output);
-        lines.push({
-          kind: "toolresult",
-          text: `  ↳ ${truncate(firstLines(out, 1), 70)}`,
-        });
+        for (const t of firstLines(out, 4)) {
+          lines.push({ kind: "toolresult", text: `  ↳ ${truncate(t, 72)}` });
+        }
         break;
       }
+      case "file-changed": {
+        suppressResult = true;
+        const verb = e.action === "write" ? "wrote" : "edited";
+        lines.push({ kind: "tool", text: `✎ ${verb} ${e.path}  +${e.added} -${e.removed}` });
+        for (const dl of e.diff ? e.diff.split("\n") : []) {
+          const kind: LineKind = dl.startsWith("+") ? "add" : dl.startsWith("-") ? "del" : "ctx";
+          lines.push({ kind, text: dl });
+        }
+        assistant = null;
+        break;
+      }
+      case "permission-request":
+        lines.push({
+          kind: "notice",
+          text: `⚠ allow ${e.toolName}? ${truncate(JSON.stringify(e.input ?? {}), 52)}`,
+        });
+        lines.push({ kind: "notice", text: "  [y]es · [a]lways · [n]o" });
+        break;
       case "subagent-started":
         lines.push({ kind: "subagent", text: `⤷ subagent: ${truncate(e.prompt, 60)}` });
         assistant = null;
@@ -129,8 +190,10 @@ function reduce(events: UIEvent[]): {
       case "tasks-updated":
         tasks = e.tasks;
         break;
+      case "usage-updated":
+        usage = e.usage;
+        break;
       case "queue-changed":
-        // Keep the deepest backlog observed, so a transient queue is visible.
         if (e.pending.length >= queued.length) queued = e.pending;
         break;
       case "notice":
@@ -140,12 +203,12 @@ function reduce(events: UIEvent[]): {
         break;
     }
   }
-  // Expand multi-line assistant text into separate display lines.
   return {
     lines: lines.flatMap(splitMultiline),
     ...(plan ? { plan } : {}),
     ...(tasks && tasks.length ? { tasks } : {}),
     ...(queued.length ? { queued } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 
@@ -157,13 +220,30 @@ function splitMultiline(line: Line): Line[] {
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
-function firstLines(s: string, n: number): string {
-  return s.split("\n").slice(0, n).join(" ");
+function firstLines(s: string, n: number): string[] {
+  return s.split("\n").filter((l) => l.length).slice(0, n);
+}
+
+/** Local copy of headless.formatUsage (core must not import @vibe/tui). */
+function formatUsage(u: SessionUsage): string {
+  const tok =
+    u.totalTokens >= 1000 ? `${(u.totalTokens / 1000).toFixed(1)}k` : `${u.totalTokens}`;
+  const cost = u.costUSD > 0 ? ` · $${u.costUSD.toFixed(u.costUSD < 1 ? 4 : 2)}` : "";
+  const cached =
+    u.cachedInputTokens && u.cachedInputTokens > 0 ? ` · ${u.cachedInputTokens} cached` : "";
+  return `${tok} tok${cost}${cached}`;
 }
 
 // ── Minimal inline LanguageModelV2 mock (avoids the ai/test -> vitest dep) ───
 type Step = unknown[];
 const USAGE = { inputTokens: 1240, outputTokens: 320, totalTokens: 1560 };
+const USAGE_CACHED = {
+  inputTokens: 1240,
+  outputTokens: 320,
+  totalTokens: 1560,
+  cachedInputTokens: 1100,
+};
+const PRICE = async () => ({ input: 3, output: 15 }); // USD / 1M tokens
 
 function partsStream(parts: unknown[]): ReadableStream<unknown> {
   return new ReadableStream({
@@ -195,10 +275,18 @@ function mockModel(steps: Step[]): LanguageModel {
   } as unknown as LanguageModel;
 }
 
+interface RunOpts {
+  mode: "plan" | "execute";
+  modelString: string;
+  prompt: string;
+  cwd?: string;
+  config?: Config;
+}
+
 async function runSession(
   model: LanguageModel,
   tools: ToolDefinition[],
-  opts: { mode: "plan" | "execute"; modelString: string; prompt: string },
+  opts: RunOpts,
 ): Promise<UIEvent[]> {
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -206,19 +294,18 @@ async function runSession(
   const collector = (async () => {
     for await (const ev of sub) events.push(ev);
   })();
-  // Register the mock under the model string's provider id so resolution works
-  // while the status bar still shows a realistic name (e.g. anthropic/...).
   const providerId = opts.modelString.split("/")[0]!;
   const session = new Session({
-    config: defaultConfig(),
+    config: opts.config ?? defaultConfig(),
     registry: new ProviderRegistry([
       { id: providerId, auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
     ]),
     toolset: new Toolset(tools),
     bus,
-    cwd: REPO_ROOT,
+    cwd: opts.cwd ?? REPO_ROOT,
     model: opts.modelString,
     mode: opts.mode,
+    getPricing: PRICE,
   });
   await session.run(opts.prompt);
   bus.close();
@@ -226,117 +313,104 @@ async function runSession(
   return events;
 }
 
-/** Drive a real Engine (with a mock provider) and collect its event stream. */
-async function runEngine(
-  model: LanguageModel,
-  modelString: string,
-  prompts: string[],
-): Promise<UIEvent[]> {
-  const providerId = modelString.split("/")[0]!;
-  const engine = new Engine({
-    config: { ...defaultConfig(), model: modelString },
-    cwd: REPO_ROOT,
-    registry: new ProviderRegistry([
-      { id: providerId, auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
-    ]),
-    toolset: new Toolset([]),
-  });
-  const events: UIEvent[] = [];
-  const collector = (async () => {
-    for await (const ev of engine.events()) events.push(ev);
-  })();
-  for (const p of prompts) engine.send({ type: "submit-prompt", text: p });
-  await engine.whenIdle();
-  engine.send({ type: "shutdown" });
-  await collector;
-  return events;
+const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
+
+/** Make a throwaway working dir seeded with files. */
+function seedDir(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-shot-"));
+  for (const [name, content] of Object.entries(files)) {
+    writeFileSync(join(dir, name), content);
+  }
+  return dir;
 }
 
+// ── Scenes ──────────────────────────────────────────────────────────────────
 async function buildScenes(): Promise<Scene[]> {
-  // A — chat with a real glob tool call against this repo.
-  const ts = new Toolset(); // built-in tools (glob/read/etc.)
-  const aEvents = await runSession(
-    mockModel([
-      [
-        { type: "stream-start", warnings: [] },
-        { type: "text-start", id: "a" },
-        {
-          type: "text-delta",
-          id: "a",
-          delta:
-            "I'll locate the package entry points and read the manifest.\n",
-        },
-        { type: "text-end", id: "a" },
-        {
-          type: "tool-call",
-          toolCallId: "t1",
-          toolName: "glob",
-          input: JSON.stringify({ pattern: "packages/*/src/index.ts" }),
-        },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
-      ],
-      [
-        { type: "stream-start", warnings: [] },
-        { type: "text-start", id: "b" },
-        {
-          type: "text-delta",
-          id: "b",
-          delta:
-            "Found 7 package entry points. The CLI is wired in\n`packages/cli/bin/vibecodr.ts`: it loads config, builds the Engine,\nand hands off to the TUI (or headless `-p`). The agent loop lives in\n`packages/core/src/session.ts`.",
-        },
-        { type: "text-end", id: "b" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
-      ],
-    ]),
-    ts.all(),
-    { mode: "execute", modelString: "anthropic/claude-opus-4-8", prompt: "Where are the package entry points and how is the CLI wired?" },
-  );
-  const a = reduce(aEvents);
+  const exec = (overrides: Partial<Config> = {}): Config => ({
+    ...defaultConfig(),
+    approvalMode: "auto",
+    ...overrides,
+  });
 
-  // B — plan mode with a present_plan call.
+  // A — chat with a real glob tool call against this repo.
+  const a = reduce(
+    await runSession(
+      mockModel([
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "a" },
+          { type: "text-delta", id: "a", delta: "I'll locate the package entry points and read the manifest.\n" },
+          { type: "text-end", id: "a" },
+          { type: "tool-call", toolCallId: "t1", toolName: "glob", input: JSON.stringify({ pattern: "packages/*/src/index.ts" }) },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ],
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "b" },
+          { type: "text-delta", id: "b", delta: "Found 8 package entry points. The CLI is wired in\n`packages/cli/bin/vibecodr.ts`: it loads config, builds the Engine,\nand hands off to the TUI (or headless `-p`). The agent loop lives in\n`packages/core/src/session.ts`." },
+          { type: "text-end", id: "b" },
+          { type: "finish", finishReason: "stop", usage: USAGE },
+        ],
+      ]),
+      new Toolset().all(),
+      { mode: "execute", modelString: "anthropic/claude-opus-4-8", prompt: "Where are the package entry points and how is the CLI wired?" },
+    ),
+  );
+
+  // B — live diff: the real `edit` tool runs in a temp dir -> file-changed event.
+  const diffDir = seedDir({
+    "greeting.ts": [
+      "export function greet(name: string): string {",
+      "  return `Hello, ${name}`;",
+      "}",
+      "",
+      "console.log(greet(\"world\"));",
+      "",
+    ].join("\n"),
+  });
+  const diff = reduce(
+    await runSession(
+      mockModel([
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "e" },
+          { type: "text-delta", id: "e", delta: "I'll make the greeting friendlier and add a punctuation mark.\n" },
+          { type: "text-end", id: "e" },
+          { type: "tool-call", toolCallId: "t2", toolName: "edit", input: JSON.stringify({ path: "greeting.ts", edits: [{ oldString: "return `Hello, ${name}`;", newString: "return `Hey there, ${name}! 👋`;" }, { oldString: 'greet("world")', newString: 'greet("vibecodr")' }] }) },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ],
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "e2" },
+          { type: "text-delta", id: "e2", delta: "Done — two edits applied atomically and the diff is above." },
+          { type: "text-end", id: "e2" },
+          { type: "finish", finishReason: "stop", usage: USAGE_CACHED },
+        ],
+      ]),
+      new Toolset().all(),
+      { mode: "execute", modelString: "anthropic/claude-opus-4-8", prompt: "Make the greeting friendlier", cwd: diffDir, config: exec() },
+    ),
+  );
+
+  // C — plan mode with a present_plan call.
   const planText =
     "Add a usage/cost footer to the TUI:\n1. Track cumulative usage on the session from step-finished events.\n2. Resolve per-token pricing from the models.dev catalog.\n3. Render `tokens · $cost` in the status bar, right-aligned.";
-  const bEvents = await runSession(
-    mockModel([
-      [
-        { type: "stream-start", warnings: [] },
-        { type: "text-start", id: "p" },
-        {
-          type: "text-delta",
-          id: "p",
-          delta: "Here is my plan — I won't change any files yet.\n",
-        },
-        { type: "text-end", id: "p" },
-        {
-          type: "tool-call",
-          toolCallId: "t2",
-          toolName: "present_plan",
-          input: JSON.stringify({ plan: planText }),
-        },
-        { type: "finish", finishReason: "stop", usage: USAGE },
-      ],
-    ]),
-    new Toolset().all(),
-    { mode: "plan", modelString: "anthropic/claude-opus-4-8", prompt: "Plan a usage/cost footer for the status bar" },
+  const plan = reduce(
+    await runSession(
+      mockModel([
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "p" },
+          { type: "text-delta", id: "p", delta: "Here is my plan — I won't change any files yet.\n" },
+          { type: "text-end", id: "p" },
+          { type: "tool-call", toolCallId: "t3", toolName: "present_plan", input: JSON.stringify({ plan: planText }) },
+          { type: "finish", finishReason: "stop", usage: USAGE },
+        ],
+      ]),
+      new Toolset().all(),
+      { mode: "plan", modelString: "anthropic/claude-opus-4-8", prompt: "Plan a usage/cost footer for the status bar" },
+    ),
   );
-  const b = reduce(bEvents);
-
-  // C — /models picker (rendered from the real formatter).
-  const sampleModels: ModelInfo[] = [
-    { id: "claude-opus-4-8", providerId: "anthropic", contextWindow: 1_000_000 },
-    { id: "claude-sonnet-4-6", providerId: "anthropic", contextWindow: 1_000_000 },
-    { id: "gpt-5.1", providerId: "openai", contextWindow: 400_000 },
-    { id: "deepseek-chat", providerId: "deepseek", contextWindow: 128_000 },
-    { id: "grok-4", providerId: "xai", contextWindow: 256_000 },
-    { id: "qwen2.5-coder-32b", providerId: "lmstudio", contextWindow: 32_000 },
-  ];
-  const cLines: Line[] = [
-    { kind: "user", text: "/models" },
-    { kind: "notice", text: "Available models for configured providers:" },
-    ...formatModelList(sampleModels)
-      .split("\n")
-      .map((t): Line => ({ kind: "plain", text: t })),
-  ];
 
   // D — execute mode with a live task list (real update_tasks tool call).
   const taskList = [
@@ -345,117 +419,129 @@ async function buildScenes(): Promise<Scene[]> {
     { title: "Render `tokens · $cost` in the status bar", status: "pending" },
     { title: "Add a test for the footer formatter", status: "pending" },
   ];
-  const dEvents = await runSession(
-    mockModel([
-      [
-        { type: "stream-start", warnings: [] },
-        { type: "text-start", id: "d" },
-        {
-          type: "text-delta",
-          id: "d",
-          delta: "I'll implement this in steps and track progress as I go.\n",
-        },
-        { type: "text-end", id: "d" },
-        {
-          type: "tool-call",
-          toolCallId: "t4",
-          toolName: "update_tasks",
-          input: JSON.stringify({ tasks: taskList }),
-        },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
-      ],
-      [
-        { type: "stream-start", warnings: [] },
-        { type: "text-start", id: "d2" },
-        {
-          type: "text-delta",
-          id: "d2",
-          delta:
-            "Usage now accumulates on the session. Wiring the catalog pricing\nlookup next, then the status-bar render.",
-        },
-        { type: "text-end", id: "d2" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
-      ],
-    ]),
-    new Toolset().all(),
-    { mode: "execute", modelString: "anthropic/claude-opus-4-8", prompt: "Implement the usage/cost footer" },
+  const tasks = reduce(
+    await runSession(
+      mockModel([
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "d" },
+          { type: "text-delta", id: "d", delta: "I'll implement this in steps and track progress as I go.\n" },
+          { type: "text-end", id: "d" },
+          { type: "tool-call", toolCallId: "t4", toolName: "update_tasks", input: JSON.stringify({ tasks: taskList }) },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ],
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "d2" },
+          { type: "text-delta", id: "d2", delta: "Usage now accumulates on the session. Wiring the catalog pricing\nlookup next, then the status-bar render." },
+          { type: "text-end", id: "d2" },
+          { type: "finish", finishReason: "stop", usage: USAGE_CACHED },
+        ],
+      ]),
+      new Toolset().all(),
+      { mode: "execute", modelString: "anthropic/claude-opus-4-8", prompt: "Implement the usage/cost footer" },
+    ),
   );
-  const d = reduce(dEvents);
 
-  // E — prompt queue: a second prompt typed while the first is running.
-  const reply = (id: string, text: string): unknown[] => [
-    { type: "stream-start", warnings: [] },
-    { type: "text-start", id },
-    { type: "text-delta", id, delta: text },
-    { type: "text-end", id },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+  // E — /models picker (rendered from the real formatter, incl. new providers).
+  const sampleModels: ModelInfo[] = [
+    { id: "claude-opus-4-8", providerId: "anthropic", contextWindow: 1_000_000 },
+    { id: "claude-sonnet-4-6", providerId: "anthropic", contextWindow: 1_000_000 },
+    { id: "gpt-5.1-codex", providerId: "codex", contextWindow: 400_000 },
+    { id: "gpt-5.1", providerId: "openai", contextWindow: 400_000 },
+    { id: "MiniMax-M1", providerId: "minimax", contextWindow: 1_000_000 },
+    { id: "grok-4", providerId: "xai", contextWindow: 256_000 },
+    { id: "deepseek-chat", providerId: "deepseek", contextWindow: 128_000 },
+    { id: "qwen2.5-coder-32b", providerId: "lmstudio", contextWindow: 32_000 },
   ];
-  const eEvents = await runEngine(
-    mockModel([
-      reply("q1", "Refactoring the config loader to accept JSONC and merge\nlayers in precedence order…"),
-      reply("q2", "done"),
-    ]),
-    "anthropic/claude-opus-4-8",
-    ["Refactor the config loader to support JSONC", "Then add tests for the new parser"],
+  const modelLines: Line[] = [
+    { kind: "user", text: "/models" },
+    { kind: "notice", text: "Available models for configured providers:" },
+    ...formatModelList(sampleModels).split("\n").map((t): Line => ({ kind: "plain", text: t })),
+  ];
+
+  // F — git tool: real git_status against a seeded temp repo.
+  const gitDir = seedDir({});
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: gitDir });
+  git(["init", "-q"]);
+  git(["config", "user.email", "dev@vibecodr.sh"]);
+  git(["config", "user.name", "vibecodr"]);
+  writeFileSync(join(gitDir, "config.ts"), "export const port = 3000;\n");
+  git(["add", "-A"]);
+  git(["commit", "-qm", "initial"]);
+  writeFileSync(join(gitDir, "config.ts"), "export const port = 8080;\n");
+  writeFileSync(join(gitDir, "README.md"), "# service\n");
+  const gitScene = reduce(
+    await runSession(
+      mockModel([
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "g" },
+          { type: "text-delta", id: "g", delta: "Let me check the working tree before committing.\n" },
+          { type: "text-end", id: "g" },
+          { type: "tool-call", toolCallId: "t5", toolName: "git_status", input: "{}" },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ],
+        [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "g2" },
+          { type: "text-delta", id: "g2", delta: "One modified file and one new file. I'll stage and commit them with git_commit." },
+          { type: "text-end", id: "g2" },
+          { type: "finish", finishReason: "stop", usage: USAGE },
+        ],
+      ]),
+      new Toolset().all(),
+      { mode: "execute", modelString: "anthropic/claude-opus-4-8", prompt: "What changed in the repo?", cwd: gitDir, config: exec() },
+    ),
   );
-  const eReduced = reduce(eEvents);
-  // Show the moment the backlog existed: transcript up to the second prompt.
-  const userIdxs = eReduced.lines
-    .map((l, i) => (l.kind === "user" ? i : -1))
-    .filter((i) => i >= 0);
-  const eLines =
-    userIdxs.length > 1 ? eReduced.lines.slice(0, userIdxs[1]) : eReduced.lines;
-  const eQueued = eReduced.queued ?? [];
+
+  // G — permission prompt (interactive approval). Built from real UIEvent shapes.
+  const perm = reduce([
+    { type: "user-message", sessionId: "s", text: "format the codebase" },
+    { type: "assistant-text-delta", sessionId: "s", delta: "I'll run the formatter across the packages.\n" },
+    { type: "permission-request", sessionId: "s", id: "p1", toolName: "bash", input: { command: "biome format --write packages" } },
+  ]);
+
+  // H — sessions browser: real SessionStore round-trip, formatted like the CLI.
+  const sessDir = mkdtempSync(join(tmpdir(), "vibe-shot-sess-"));
+  const store = new SessionStore(sessDir);
+  const now = Date.now();
+  await store.save(
+    { id: "ses_k3p9qz", model: "anthropic/claude-opus-4-8", mode: "execute", goal: "ship the usage/cost footer", usage: { inputTokens: 18400, outputTokens: 5200, costUSD: 0.1342 }, createdAt: now - 9e6, updatedAt: now - 6e5 },
+    [],
+    [],
+  );
+  await store.save(
+    { id: "ses_m1x7ab", model: "minimax/MiniMax-M1", mode: "plan", goal: "evaluate MiniMax for refactors", usage: { inputTokens: 9100, outputTokens: 2300, costUSD: 0.0211 }, createdAt: now - 2e7, updatedAt: now - 8e6 },
+    [],
+    [],
+  );
+  const metas = await store.list();
+  const sessLines: Line[] = [
+    { kind: "user", text: "vibecodr sessions" },
+    ...metas.map((m): Line => {
+      const when = new Date(m.updatedAt).toISOString().replace("T", " ").slice(0, 16);
+      const cost = m.usage?.costUSD ? ` $${m.usage.costUSD.toFixed(4)}` : "";
+      const goal = m.goal ? ` — ${m.goal}` : "";
+      return { kind: "plain", text: `${m.id}  ${when}  ${m.model}${cost}${goal}` };
+    }),
+  ];
 
   return [
-    {
-      name: "01-chat",
-      status: "anthropic/claude-opus-4-8 · execute",
-      cwd: "~/vibe-codr",
-      lines: a.lines,
-      ...(a.plan ? { plan: a.plan } : {}),
-      input: "",
-    },
-    {
-      name: "02-plan",
-      status: "anthropic/claude-opus-4-8 · plan",
-      cwd: "~/vibe-codr",
-      lines: b.lines,
-      ...(b.plan ? { plan: b.plan } : {}),
-      input: "/execute",
-    },
-    {
-      name: "03-models",
-      status: "anthropic/claude-opus-4-8 · execute",
-      cwd: "~/vibe-codr",
-      lines: cLines,
-      input: "",
-    },
-    {
-      name: "04-tasks",
-      status: "anthropic/claude-opus-4-8 · execute",
-      cwd: "~/vibe-codr",
-      lines: d.lines,
-      ...(d.tasks ? { tasks: d.tasks } : {}),
-      input: "",
-    },
-    {
-      name: "05-queue",
-      status: `anthropic/claude-opus-4-8 · execute${eQueued.length ? ` · ${eQueued.length} queued` : ""}`,
-      cwd: "~/vibe-codr",
-      lines: eLines,
-      ...(eQueued.length ? { queued: eQueued } : {}),
-      input: "Then add tests for the new parser",
-    },
+    { name: "01-chat", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", lines: a.lines, ...(a.usage ? { usage: a.usage } : {}), input: "" },
+    { name: "02-diff", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/app", lines: diff.lines, ...(diff.usage ? { usage: diff.usage } : {}), input: "" },
+    { name: "03-plan", status: "anthropic/claude-opus-4-8 · plan", cwd: "~/vibe-codr", lines: plan.lines, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
+    { name: "04-tasks", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", lines: tasks.lines, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), input: "" },
+    { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", lines: modelLines, input: "/model codex/gpt-5.1-codex" },
+    { name: "06-git", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/service", lines: gitScene.lines, ...(gitScene.usage ? { usage: gitScene.usage } : {}), input: "" },
+    { name: "07-permission", status: "anthropic/claude-opus-4-8 · execute · ask", cwd: "~/vibe-codr", lines: perm.lines, input: "y", inputHint: "approve once" },
+    { name: "08-sessions", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", lines: sessLines, input: "vibecodr --resume ses_k3p9qz" },
   ];
 }
 
 // ── HTML rendering ──────────────────────────────────────────────────────────
 function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function lineColor(kind: LineKind): string {
@@ -470,6 +556,12 @@ function lineColor(kind: LineKind): string {
       return COLORS.yellow;
     case "subagent":
       return COLORS.magenta;
+    case "add":
+      return COLORS.green;
+    case "del":
+      return COLORS.red;
+    case "ctx":
+      return COLORS.dim;
     case "plain":
       return COLORS.fg;
     default:
@@ -495,39 +587,31 @@ function renderLines(scene: Scene): string {
     rows.push(`</div>`);
   }
   if (scene.tasks?.length) {
-    // Glyphs mirror @vibe/tui's TASK_GLYPH; kept local because this dev script
-    // lives in @vibe/core, which must not import @vibe/tui (core→tui boundary).
     const done = scene.tasks.filter((t) => t.status === "completed").length;
     rows.push(`<div class="tasksbox">`);
-    rows.push(
-      `<div class="row" style="color:${COLORS.dim};font-weight:700">Tasks · ${done}/${scene.tasks.length}</div>`,
-    );
+    rows.push(`<div class="row" style="color:${COLORS.dim};font-weight:700">Tasks · ${done}/${scene.tasks.length}</div>`);
     for (const t of scene.tasks) {
       const glyph = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "○";
-      const color =
-        t.status === "completed"
-          ? COLORS.dim
-          : t.status === "in_progress"
-            ? COLORS.cyan
-            : COLORS.fg;
+      const color = t.status === "completed" ? COLORS.dim : t.status === "in_progress" ? COLORS.cyan : COLORS.fg;
       const deco = t.status === "completed" ? "text-decoration:line-through" : "";
-      rows.push(
-        `<div class="row" style="color:${color};${deco}">${glyph} ${esc(t.title)}</div>`,
-      );
+      rows.push(`<div class="row" style="color:${color};${deco}">${glyph} ${esc(t.title)}</div>`);
     }
     rows.push(`</div>`);
   }
   if (scene.queued?.length) {
     rows.push(
-      `<div class="row" style="color:${COLORS.dim}">↳ ${scene.queued.length} queued: ${esc(
-        scene.queued.map((q) => q.label).join(", "),
-      )}</div>`,
+      `<div class="row" style="color:${COLORS.dim}">↳ ${scene.queued.length} queued: ${esc(scene.queued.map((q) => q.label).join(", "))}</div>`,
     );
   }
   return rows.join("\n");
 }
 
 function renderFrame(scene: Scene): string {
+  const footer = scene.usage
+    ? `${esc(formatUsage(scene.usage))} &nbsp;·&nbsp; /help for commands`
+    : `/help for commands · /plan to plan · ctrl-c to quit`;
+  const placeholder =
+    "Ask vibe-codr…  @file to attach · /help · /plan · /model &lt;id&gt; · /undo";
   return `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #0d0d12; padding: 28px; }
@@ -538,32 +622,16 @@ function renderFrame(scene: Scene): string {
     font-family: "DejaVu Sans Mono","Liberation Mono",Menlo,Consolas,monospace;
     font-size: 14px; line-height: 1.55; color: ${COLORS.fg};
   }
-  .titlebar {
-    display:flex; align-items:center; gap:8px;
-    background:${COLORS.bgDim}; padding:10px 14px;
-    border-bottom:1px solid #292e42;
-  }
+  .titlebar { display:flex; align-items:center; gap:8px; background:${COLORS.bgDim}; padding:10px 14px; border-bottom:1px solid #292e42; }
   .dot { width:12px; height:12px; border-radius:50%; }
   .title { color:${COLORS.dim}; margin-left:8px; font-size:12px; }
   .body { padding:16px 18px 14px; min-height: 380px; display:flex; flex-direction:column; }
   .transcript { flex:1; }
   .row { white-space:pre-wrap; word-break:break-word; }
-  .planbox {
-    border:1px solid ${COLORS.magenta}; border-radius:6px;
-    padding:8px 12px; margin:8px 0;
-  }
-  .tasksbox {
-    border:1px solid ${COLORS.cyan}; border-radius:6px;
-    padding:8px 12px; margin:8px 0;
-  }
-  .inputwrap {
-    margin-top:14px; border:1px solid #3b4261; border-radius:6px;
-    padding:8px 12px; position:relative;
-  }
-  .inputwrap .label {
-    position:absolute; top:-9px; left:10px; background:${COLORS.bg};
-    padding:0 6px; font-size:11px; color:${COLORS.dim};
-  }
+  .planbox { border:1px solid ${COLORS.magenta}; border-radius:6px; padding:8px 12px; margin:8px 0; }
+  .tasksbox { border:1px solid ${COLORS.cyan}; border-radius:6px; padding:8px 12px; margin:8px 0; }
+  .inputwrap { margin-top:14px; border:1px solid #3b4261; border-radius:6px; padding:8px 12px; position:relative; }
+  .inputwrap .label { position:absolute; top:-9px; left:10px; background:${COLORS.bg}; padding:0 6px; font-size:11px; color:${COLORS.dim}; }
   .prompt { color:${COLORS.green}; }
   .placeholder { color:${COLORS.dim}; }
   .typed { color:${COLORS.fg}; }
@@ -586,10 +654,10 @@ ${renderLines(scene)}
         <span class="prompt">› </span>${
           scene.input
             ? `<span class="typed">${esc(scene.input)}</span><span class="cursor">&nbsp;</span>`
-            : `<span class="placeholder">Ask vibe-codr…  (/plan, /execute, /model &lt;id&gt;, /goal &lt;text&gt;, /queue)</span>`
+            : `<span class="placeholder">${placeholder}</span>`
         }
       </div>
-      <div class="footer">/help for commands · /plan to plan · ctrl-c to quit</div>
+      <div class="footer">${footer}</div>
     </div>
   </div>
   </body></html>`;
@@ -609,4 +677,3 @@ for (const scene of scenes) {
   console.log(`wrote ${path}`);
 }
 await browser.close();
-

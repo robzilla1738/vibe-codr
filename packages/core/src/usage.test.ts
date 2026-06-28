@@ -9,6 +9,14 @@ test("addUsage folds step usage, treating missing fields as zero", () => {
   expect(total).toEqual({ inputTokens: 100, outputTokens: 25 });
 });
 
+test("addUsage accumulates cached input tokens when reported", () => {
+  const total: TokenTotals = { inputTokens: 0, outputTokens: 0 };
+  addUsage(total, { inputTokens: 100, outputTokens: 10, cachedInputTokens: 80 });
+  addUsage(total, { inputTokens: 50, outputTokens: 5 }); // no cache field
+  addUsage(total, { inputTokens: 50, outputTokens: 5, cachedInputTokens: 40 });
+  expect(total.cachedInputTokens).toBe(120);
+});
+
 test("computeCost prices input and output per million tokens", () => {
   // $3 / 1M input, $15 / 1M output.
   const cost = computeCost(1_000_000, 1_000_000, { input: 3, output: 15 });

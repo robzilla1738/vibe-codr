@@ -101,6 +101,33 @@ export const ConfigSchema = z.object({
    * catalog or you want to pin a negotiated rate. Overrides catalog pricing.
    */
   pricing: z.record(z.string(), ModelPriceSchema).default({}),
+  /**
+   * Extended-thinking / reasoning controls, passed to the provider when the
+   * model supports them. `effort` maps to OpenAI `reasoningEffort` (and
+   * OpenRouter); `budgetTokens` maps to Anthropic extended-thinking budget.
+   */
+  reasoning: z
+    .object({
+      effort: z.enum(["low", "medium", "high"]).optional(),
+      budgetTokens: z.number().int().positive().optional(),
+    })
+    .default({}),
+  /**
+   * Prompt caching. When enabled (default), the stable system prefix is sent
+   * with provider cache markers (Anthropic) so repeated turns reuse it instead
+   * of re-billing the full prompt each step.
+   */
+  caching: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
+  /**
+   * Spend guard. When cumulative session cost crosses `limitUSD`, `warn` emits a
+   * notice; `stop` also aborts the turn. No limit set = unbounded.
+   */
+  budget: z
+    .object({
+      limitUSD: z.number().positive().optional(),
+      onExceed: z.enum(["warn", "stop"]).default("warn"),
+    })
+    .default({ onExceed: "warn" }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

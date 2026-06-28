@@ -114,7 +114,13 @@ are listed in config.
 - **Live token & cost tracking** — cumulative input/output tokens and an
   estimated USD cost are tracked every step and shown in the status bar / footer.
   Prices come from the live catalog (models.dev); override or pin a rate per
-  model in config under `pricing` (USD per 1M tokens).
+  model in config under `pricing` (USD per 1M tokens). Cached input tokens are
+  surfaced when the provider reports them.
+- **Prompt caching, reasoning & spend guard** — the stable system prefix is sent
+  with Anthropic cache markers by default (`caching.enabled`) so repeated turns
+  reuse it; `reasoning.budgetTokens` / `reasoning.effort` drive extended thinking
+  per provider; `budget.limitUSD` warns (or, with `onExceed: "stop"`, halts the
+  turn) when a session's cost crosses the cap.
 - **Subagents** — `spawn_subagent` forks an isolated child with its own context
   that returns only its final answer; depth-capped and parallel-safe. Set a
   default subagent model with `subagent.model` (named agents in `.vibe/agents/`
@@ -151,6 +157,9 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
     "anthropic/claude-opus-4-8": { "input": 5, "output": 25 }
   },
   "approvalMode": "ask",                                // ask | auto
+  "caching": { "enabled": true },                       // Anthropic prompt caching
+  "reasoning": { "effort": "high", "budgetTokens": 8000 }, // thinking controls
+  "budget": { "limitUSD": 5, "onExceed": "warn" },      // spend guard: warn | stop
   "checkpoints": { "enabled": true },
   "verify": { "command": "bun run typecheck && bun test", "auto": true, "maxRetries": 2 },
   "mcp": {

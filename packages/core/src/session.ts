@@ -30,6 +30,7 @@ import type { NamedAgent } from "./agents.ts";
 import { compactMessages } from "./compaction.ts";
 import type { SessionStore } from "./store.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
+import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -93,6 +94,8 @@ export class Session {
   #costUSD: number;
   #price: ModelPrice | undefined;
   #turnMutated = false;
+  /** Set once the session's cumulative cost crosses the configured budget. */
+  #budgetTripped = false;
   #createdAt: number;
   #abort = new AbortController();
 
@@ -133,7 +136,30 @@ export class Session {
       outputTokens: this.#usage.outputTokens,
       totalTokens: this.#usage.inputTokens + this.#usage.outputTokens,
       costUSD: this.#costUSD,
+      ...(this.#usage.cachedInputTokens
+        ? { cachedInputTokens: this.#usage.cachedInputTokens }
+        : {}),
     };
+  }
+
+  /**
+   * Enforce the configured spend guard against cumulative cost. Warns once per
+   * crossing; under `stop`, also aborts the active turn. Returns true if the
+   * budget is exceeded.
+   */
+  #enforceBudget(): boolean {
+    const budget = this.#deps.config.budget;
+    if (!budget.limitUSD || this.#costUSD < budget.limitUSD) return false;
+    if (!this.#budgetTripped) {
+      this.#budgetTripped = true;
+      this.#deps.bus.emit({
+        type: "notice",
+        level: "warn",
+        message: `Spend limit reached: $${this.#costUSD.toFixed(4)} ≥ $${budget.limitUSD} (${budget.onExceed}).`,
+      });
+      if (budget.onExceed === "stop") this.#abort.abort();
+    }
+    return true;
   }
 
   /** Cumulative token totals for this session (for persistence/diagnostics). */
@@ -316,6 +342,10 @@ export class Session {
     this.#pushUser(input);
 
     try {
+      // If a prior turn already blew the spend limit under `stop`, don't start
+      // another one — warn and end the turn immediately.
+      if (this.#enforceBudget() && config.budget.onExceed === "stop") return;
+
       const model = await registry.resolveModel(this.model, config);
       // Resolve the active model's price once per turn for live cost tracking.
       this.#price = await this.#deps.getPricing?.(this.model);
@@ -357,14 +387,33 @@ export class Session {
         tools["use_skill"] = toAISDKTool(this.#useSkillTool(), base);
       }
 
+      // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
+      // the stable system prefix so repeated turns don't re-bill the full prompt.
+      const tuning = buildModelTuning(this.model, config);
+      const messages: ModelMessage[] = tuning.cacheSystem
+        ? [
+            { role: "system", content: system, providerOptions: ANTHROPIC_CACHE_CONTROL },
+            ...this.#modelMessages,
+          ]
+        : this.#modelMessages;
+
       const result = streamText({
         model,
-        system,
-        messages: this.#modelMessages,
+        // When caching, the system prompt rides in `messages` with a cache
+        // marker; otherwise it's passed plainly.
+        ...(tuning.cacheSystem ? {} : { system }),
+        messages,
         tools,
         toolChoice: "auto",
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: this.#abort.signal,
+        ...(tuning.providerOptions
+          ? {
+              providerOptions: tuning.providerOptions as NonNullable<
+                Parameters<typeof streamText>[0]["providerOptions"]
+              >,
+            }
+          : {}),
         onStepFinish: ({ usage }) => {
           const stepUsage = normalizeUsage(usage);
           bus.emit({
@@ -385,6 +434,7 @@ export class Session {
             sessionId: this.id,
             usage: this.#usageSnapshot(),
           });
+          this.#enforceBudget();
         },
       });
 
@@ -640,5 +690,6 @@ function normalizeUsage(usage: unknown): Usage | undefined {
     inputTokens: u.inputTokens ?? u.promptTokens,
     outputTokens: u.outputTokens ?? u.completionTokens,
     totalTokens: u.totalTokens,
+    cachedInputTokens: u.cachedInputTokens ?? u.cachedPromptTokens,
   };
 }

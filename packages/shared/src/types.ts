@@ -48,6 +48,8 @@ export interface Usage {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  /** Input tokens served from the provider's prompt cache (subset of input). */
+  cachedInputTokens?: number;
 }
 
 /** Cumulative token usage and estimated cost for a session. */
@@ -57,6 +59,8 @@ export interface SessionUsage {
   totalTokens: number;
   /** Estimated cost in USD (0 when no price is known for the model). */
   costUSD: number;
+  /** Cumulative input tokens served from the prompt cache, if reported. */
+  cachedInputTokens?: number;
 }
 
 /** A persisted conversation message. */

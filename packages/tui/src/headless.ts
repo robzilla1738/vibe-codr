@@ -9,7 +9,11 @@ export function formatUsage(u: SessionUsage): string {
       : `${u.totalTokens}`;
   const cost =
     u.costUSD > 0 ? ` · $${u.costUSD.toFixed(u.costUSD < 1 ? 4 : 2)}` : "";
-  return `${tok} tok${cost}`;
+  const cached =
+    u.cachedInputTokens && u.cachedInputTokens > 0
+      ? ` · ${u.cachedInputTokens} cached`
+      : "";
+  return `${tok} tok${cost}${cached}`;
 }
 
 /** Status → checklist glyph, shared by the headless printer and the OpenTUI app. */

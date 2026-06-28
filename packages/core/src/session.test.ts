@@ -271,6 +271,98 @@ test("cost accrues at the price in effect per step, across a model switch", asyn
   expect(session.snapshot().usage.costUSD).toBeCloseTo(0.000165, 9);
 });
 
+test("spend guard with onExceed=stop aborts after the budget is crossed", async () => {
+  // Step 1 is a tool call (reports usage); the huge price trips a tiny budget,
+  // so the turn must abort before the final-text step 2 runs.
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "c1", toolName: "echo", input: JSON.stringify({ text: "x" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "SHOULD-NOT-APPEAR" },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+
+  const config = {
+    ...defaultConfig(),
+    budget: { limitUSD: 0.0001, onExceed: "stop" as const },
+  };
+  const bus = new EventBus();
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([echoTool]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    getPricing: async () => ({ input: 1000, output: 1000 }),
+  });
+
+  const events = await collect(bus, () => session.run("go"));
+  expect(
+    events.some((e) => e.type === "notice" && e.message.includes("Spend limit")),
+  ).toBe(true);
+  const text = events
+    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+      e.type === "assistant-text-delta",
+    )
+    .map((e) => e.delta)
+    .join("");
+  expect(text).not.toContain("SHOULD-NOT-APPEAR");
+});
+
+test("spend guard with onExceed=warn notifies once but completes the turn", async () => {
+  const reply = () =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "done" },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]);
+  let call = 0;
+  const replies = [reply()];
+  const model = new MockLanguageModelV2({ doStream: async () => replies[call++] as never });
+
+  const config = {
+    ...defaultConfig(),
+    budget: { limitUSD: 0.0001, onExceed: "warn" as const },
+  };
+  const bus = new EventBus();
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    getPricing: async () => ({ input: 1000, output: 1000 }),
+  });
+
+  const events = await collect(bus, () => session.run("go"));
+  const notices = events.filter(
+    (e) => e.type === "notice" && e.message.includes("Spend limit"),
+  );
+  expect(notices.length).toBe(1); // warned exactly once
+  const text = events
+    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+      e.type === "assistant-text-delta",
+    )
+    .map((e) => e.delta)
+    .join("");
+  expect(text).toBe("done"); // turn still completed
+});
+
 test("a deny permission rule blocks a side-effecting tool", async () => {
   const dangerTool: ToolDefinition<{ x: string }> = {
     name: "danger",

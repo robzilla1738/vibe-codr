@@ -128,6 +128,8 @@ export class Session {
       tasks: this.#tasks,
       usage: this.#usageSnapshot(),
       busy: this.busy,
+      theme: this.#deps.config.theme,
+      approvalMode: this.#deps.config.approvalMode,
     };
   }
 

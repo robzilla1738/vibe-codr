@@ -830,6 +830,7 @@ export class Engine implements EngineClient {
     // Mutating the shared config object is picked up on the next turn, where the
     // PermissionChecker's default action is derived from approvalMode.
     this.#config.approvalMode = next;
+    this.#bus.emit({ type: "approvals-changed", mode: next });
     this.#notice(
       next === "auto"
         ? "Approval mode: auto — side-effecting tools run without prompting."
@@ -863,10 +864,13 @@ export class Engine implements EngineClient {
   #handleTheme(args: string): void {
     const next = args.trim();
     if (!next) {
-      this.#notice(`Theme: ${this.#config.theme}. Use /theme <name> to change it.`);
+      this.#notice(
+        `Theme: ${this.#config.theme}. Available: default, light, contrast. Use /theme <name>.`,
+      );
       return;
     }
     this.#config.theme = next;
+    this.#bus.emit({ type: "theme-changed", theme: next });
     this.#notice(`Theme set to "${next}".`);
   }
 

@@ -211,6 +211,7 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
     "anthropic/claude-opus-4-8": { "input": 5, "output": 25 }
   },
   "approvalMode": "ask",                                // ask | auto
+  "theme": "default",                                   // default | light | contrast
   "caching": { "enabled": true },                       // Anthropic prompt caching
   "reasoning": { "effort": "high", "budgetTokens": 8000 }, // thinking controls
   "budget": { "limitUSD": 5, "onExceed": "warn" },      // spend guard: warn | stop

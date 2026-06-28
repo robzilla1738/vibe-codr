@@ -88,4 +88,8 @@ export interface EngineSnapshot {
   usage: SessionUsage;
   /** True while a turn is in flight. */
   busy: boolean;
+  /** Active UI theme name. */
+  theme: string;
+  /** Default approval handling for side-effecting tools. */
+  approvalMode: "ask" | "auto";
 }

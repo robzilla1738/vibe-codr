@@ -13,6 +13,7 @@ import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { TASK_GLYPH, formatUsage } from "./headless.ts";
 import { renderMarkdown } from "./markdown.ts";
+import { getTheme, type Palette } from "./themes.ts";
 
 interface Line {
   kind:
@@ -36,12 +37,18 @@ function App(props: { engine: EngineClient }) {
   const [queued, setQueued] = createSignal(0);
   let model = snap.model;
   let mode = snap.mode;
+  let approvals = snap.approvalMode;
+  let goal = snap.goal;
   let usage: SessionUsage = snap.usage;
   const pendingPerms: string[] = []; // FIFO of unanswered permission ids
-  const [status, setStatus] = createSignal(statusLine(model, mode, 0, usage));
+  const [palette, setPalette] = createSignal<Palette>(getTheme(snap.theme));
+  const [status, setStatus] = createSignal(
+    statusLine(model, mode, approvals, goal, 0, usage),
+  );
 
   const append = (line: Line) => setLines((prev) => [...prev, line]);
-  const refreshStatus = () => setStatus(statusLine(model, mode, queued(), usage));
+  const refreshStatus = () =>
+    setStatus(statusLine(model, mode, approvals, goal, queued(), usage));
 
   onMount(() => {
     void (async () => {
@@ -113,6 +120,17 @@ function App(props: { engine: EngineClient }) {
             model = event.model;
             refreshStatus();
             break;
+          case "goal-changed":
+            goal = event.goal;
+            refreshStatus();
+            break;
+          case "approvals-changed":
+            approvals = event.mode;
+            refreshStatus();
+            break;
+          case "theme-changed":
+            setPalette(getTheme(event.theme));
+            break;
           case "notice":
             append({ kind: "notice", text: event.message });
             break;
@@ -154,7 +172,7 @@ function App(props: { engine: EngineClient }) {
       <box flexGrow={1} flexDirection="column">
         <For each={lines()}>
           {(line) => (
-            <text fg={colorFor(line.kind)}>
+            <text fg={colorFor(line.kind, palette())}>
               {prefixFor(line.kind)}
               {line.kind === "assistant" ? renderMarkdown(line.text) : line.text}
             </text>
@@ -165,7 +183,7 @@ function App(props: { engine: EngineClient }) {
         <box border title="Tasks" flexDirection="column">
           <For each={tasks()}>
             {(task) => (
-              <text fg={taskColor(task.status)}>
+              <text fg={taskColor(task.status, palette())}>
                 {`${TASK_GLYPH[task.status]} ${task.title}`}
               </text>
             )}
@@ -187,43 +205,50 @@ function App(props: { engine: EngineClient }) {
 function statusLine(
   model: string,
   mode: string,
+  approvals: string,
+  goal: string | null,
   queued: number,
   usage: SessionUsage,
 ): string {
+  const g = goal ? ` · ★ ${truncate(goal, 32)}` : "";
   const q = queued > 0 ? ` · ${queued} queued` : "";
   const u = usage.totalTokens > 0 ? ` · ${formatUsage(usage)}` : "";
-  return `${model} · ${mode}${q}${u}`;
+  return `${model} · ${mode} · ${approvals}${g}${q}${u}`;
 }
 
-function colorFor(kind: Line["kind"]): string {
+function truncate(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+function colorFor(kind: Line["kind"], p: Palette): string {
   switch (kind) {
     case "user":
-      return "#7aa2f7";
+      return p.user;
     case "tool":
-      return "#7dcfff";
+      return p.tool;
     case "notice":
-      return "#e0af68";
+      return p.notice;
     case "plan":
-      return "#bb9af7";
+      return p.plan;
     case "subagent":
-      return "#9ece6a";
+      return p.subagent;
     case "add":
-      return "#9ece6a";
+      return p.add;
     case "del":
-      return "#f7768e";
+      return p.del;
     case "ctx":
-      return "#565f89";
+      return p.ctx;
     default:
-      return "#c0caf5";
+      return p.assistant;
   }
 }
 
-function taskColor(status: Task["status"]): string {
+function taskColor(status: Task["status"], p: Palette): string {
   return status === "completed"
-    ? "#565f89"
+    ? p.taskDone
     : status === "in_progress"
-      ? "#7dcfff"
-      : "#c0caf5";
+      ? p.taskActive
+      : p.taskPending;
 }
 
 function prefixFor(kind: Line["kind"]): string {

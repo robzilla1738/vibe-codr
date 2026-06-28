@@ -47,6 +47,8 @@ export type UIEvent =
   | { type: "mode-changed"; sessionId: string; mode: Mode }
   | { type: "model-changed"; sessionId: string; model: string }
   | { type: "goal-changed"; sessionId: string; goal: string | null }
+  | { type: "theme-changed"; theme: string }
+  | { type: "approvals-changed"; mode: "ask" | "auto" }
   | { type: "plan-presented"; sessionId: string; plan: string }
   | {
       type: "permission-request";

@@ -4,13 +4,30 @@ import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
 
 /**
- * Dynamically import a provider SDK package. The packages are optional peer
- * deps so a user only installs the providers they use; the import failure
- * surfaces a clear, actionable error at call time rather than at startup.
+ * Static loader map for the provider SDKs. The specifiers are LITERAL `import()`
+ * calls (not `import(variable)`) for one critical reason: `bun build --compile`
+ * — the `build:binary` "standalone" target — only bundles modules it can see
+ * statically. A variable specifier is invisible to the bundler, which left the
+ * shipped binary unable to load ANY provider ("Cannot find module …"). Listing
+ * them here makes the standalone binary genuinely self-contained while keeping
+ * the import lazy (only the selected provider's SDK is evaluated at runtime).
+ */
+const PROVIDER_MODULES: Record<string, () => Promise<unknown>> = {
+  "@ai-sdk/anthropic": () => import("@ai-sdk/anthropic"),
+  "@ai-sdk/openai": () => import("@ai-sdk/openai"),
+  "@ai-sdk/deepseek": () => import("@ai-sdk/deepseek"),
+  "@ai-sdk/openai-compatible": () => import("@ai-sdk/openai-compatible"),
+};
+
+/**
+ * Load a provider SDK package. Falls back to a variable `import()` for any
+ * specifier not in the static map (e.g. a plugin-registered provider); the
+ * failure surfaces a clear, actionable error at call time rather than startup.
  */
 async function loadProviderModule(spec: string): Promise<any> {
   try {
-    return await import(spec);
+    const loader = PROVIDER_MODULES[spec];
+    return loader ? await loader() : await import(spec);
   } catch (err) {
     throw new ProviderAuthError(
       spec,

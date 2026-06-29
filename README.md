@@ -35,8 +35,10 @@ left-gutter panel block; assistant replies render real Markdown; tool calls read
 as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
 `◈` websearch, `±` git…) and **condense to one line you click to expand**, while
 edits fold into a single diff row with the hunk shown beneath it; a braille
-spinner shows live work; the slash-command menu highlights the selection; and the
-text input is a raised field with a `❯` caret.
+spinner shows live work; the slash-command menu highlights the selection; and your
+sent messages share the input's exact raised frame (heavy accent gutter, `❯`
+caret) so they read as one element. A footer keeps live **context-window fill,
+token usage, and cost** in view whenever there's something to report.
 
 | Chat + tool calls | Live diff |
 |---|---|
@@ -170,10 +172,11 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   **condense to one line you click to expand**, while edits fold into a single
   diff row (tinted add/remove backgrounds) with the hunk shown beneath it. A
   braille spinner with elapsed time shows live work (**Esc** interrupts the turn);
-  the slash menu draws a full-row selection highlight; the text input is a raised
-  field with a `❯` caret; and permission prompts surface as a bordered `△` card
-  answerable with `y`/`a`/`n`. Four themes ship — `default` (Tokyo Night),
-  `light`, `contrast`, and `opencode` (warm peach).
+  the slash menu draws a full-row selection highlight; your sent messages share
+  the input's exact raised frame (heavy accent gutter, `❯` caret); a footer keeps
+  live **context-window fill, token usage, and cost** in view; and permission
+  prompts surface as a bordered `△` card answerable with `y`/`a`/`n`. Four themes
+  ship — `default` (Tokyo Night), `light`, `contrast`, and `opencode` (warm peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
   `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools
   (the model calls `present_plan`; you approve to proceed). **Execute** allows

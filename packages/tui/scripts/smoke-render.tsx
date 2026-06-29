@@ -173,6 +173,14 @@ check("rail shows a running subagent", frame.includes("explore the repo"));
 check("rail shows the Changed-files section", frame.includes("Changed"));
 check("rail shows the pinned Session footer", frame.includes("Session"));
 
+// 6b) Context-window fill + token usage/cost surface in the footer once known.
+push({ type: "usage-updated", usage: { inputTokens: 1200, outputTokens: 300, totalTokens: 1500, costUSD: 0.0123 } } as UIEvent);
+push({ type: "context-updated", usedTokens: 24000, contextWindow: 200000 } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("footer shows context-window fill", frame.includes("ctx 12%"));
+check("footer shows token usage + cost", frame.includes("tok") && frame.includes("$0.0123"));
+
 // The turn ends → the working spinner clears.
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
 await settle();

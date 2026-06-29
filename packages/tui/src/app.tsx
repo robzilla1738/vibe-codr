@@ -116,7 +116,8 @@ export function App(props: { engine: EngineClient }) {
   const [palette, setPalette] = createSignal<Palette>(getTheme(snap.theme));
   const [uiMode, setUiMode] = createSignal(deriveUiMode(mode, approvals));
   const [headModel, setHeadModel] = createSignal(model);
-  const [headInfo, setHeadInfo] = createSignal(headerInfo(0, usage, ctx, goal));
+  // Live "ctx N% · tokens · $cost · N queued" — shown in the footer when relevant.
+  const [metrics, setMetrics] = createSignal(metricsLine(0, usage, ctx));
   // Rail-only projections of the live status (the header stays minimal).
   const [ctxInfo, setCtxInfo] = createSignal(ctxSummary(ctx));
   const [usageInfo, setUsageInfo] = createSignal(usage.totalTokens > 0 ? formatUsage(usage) : "");
@@ -210,7 +211,7 @@ export function App(props: { engine: EngineClient }) {
   const refreshStatus = () => {
     setUiMode(deriveUiMode(mode, approvals));
     setHeadModel(model);
-    setHeadInfo(headerInfo(queued(), usage, ctx, goal));
+    setMetrics(metricsLine(queued(), usage, ctx));
     setCtxInfo(ctxSummary(ctx));
     setUsageInfo(usage.totalTokens > 0 ? formatUsage(usage) : "");
     setGoalInfo(goal);
@@ -592,7 +593,9 @@ export function App(props: { engine: EngineClient }) {
         <Show when={!showRail()}>
           <box flexDirection="row" justifyContent="space-between">
             <text fg={palette().assistant}>{headModel()}</text>
-            <text fg={palette().muted}>{headInfo()}</text>
+            <Show when={goalInfo()}>
+              <text fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", 32)}`}</text>
+            </Show>
           </box>
         </Show>
       </box>
@@ -633,17 +636,25 @@ export function App(props: { engine: EngineClient }) {
               <Show
                 when={block().kind !== "user"}
                 fallback={
-                  // Signature user turn: a heavy left-gutter panel block.
+                  // Signature user turn: the SAME raised frame as the input bar
+                  // (heavy accent gutter, elevated surface, prompt caret) so your
+                  // sent messages and the place you type read as one element.
                   <box
                     border={["left"]}
                     borderStyle="heavy"
                     borderColor={accent()}
-                    backgroundColor={palette().panel}
+                    backgroundColor={palette().elevated}
+                    flexDirection="row"
+                    marginTop={1}
                     paddingLeft={1}
                     paddingRight={1}
-                    marginTop={1}
+                    paddingTop={1}
+                    paddingBottom={1}
                   >
-                    <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
+                    <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>
+                      {"❯ "}
+                    </text>
+                    <text flexGrow={1} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
                       {block().text}
                     </text>
                   </box>
@@ -940,9 +951,16 @@ export function App(props: { engine: EngineClient }) {
           cursorColor={accent()}
         />
       </box>
-      <text fg={palette().muted} flexShrink={0}>
-        {"shift+tab mode · / commands · @file attach · click ▸ to expand · esc interrupt"}
-      </text>
+      {/* Footer — key bindings on the left, live context/usage/cost on the right
+          (shown only once there's something to report). */}
+      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
+        <text fg={palette().muted}>
+          {"shift+tab mode · / commands · @file · click ▸ expand · esc interrupt"}
+        </text>
+        <Show when={metrics()}>
+          <text flexShrink={0} fg={palette().muted}>{metrics()}</text>
+        </Show>
+      </box>
     </box>
   );
 }
@@ -1046,11 +1064,10 @@ function diffBg(line: string, p: Palette): string | undefined {
 }
 
 /** The dim header detail (narrow mode): context fill, usage, queue, and goal. */
-function headerInfo(
+function metricsLine(
   queued: number,
   usage: SessionUsage,
   ctx: { usedTokens: number; contextWindow: number } | null,
-  goal: string | null,
 ): string {
   const parts: string[] = [];
   const pct =
@@ -1061,8 +1078,7 @@ function headerInfo(
   if (pct >= 1) parts.push(`ctx ${pct}%`);
   if (usage.totalTokens > 0) parts.push(formatUsage(usage));
   if (queued > 0) parts.push(`${queued} queued`);
-  if (goal) parts.push(`★ ${truncate(goal, 28)}`);
-  return parts.join(" · ");
+  return parts.join("  ·  ");
 }
 
 /** Rail context line: "12% · 24k/200k", or "" when not meaningful yet. */

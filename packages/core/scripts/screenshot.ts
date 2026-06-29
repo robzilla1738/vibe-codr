@@ -343,6 +343,18 @@ function formatUsage(u: SessionUsage): string {
   return `${tok} tok${cost}${cached}`;
 }
 
+/** Footer metrics "ctx N% · Xk tok · $cost" (mirror app.tsx metricsLine). */
+function ssMetrics(scene: Scene): string {
+  const parts: string[] = [];
+  const c = scene.context;
+  if (c && c.contextWindow > 0) {
+    const pct = Math.min(100, Math.round((c.usedTokens / c.contextWindow) * 100));
+    if (pct >= 1) parts.push(`ctx ${pct}%`);
+  }
+  if (scene.usage) parts.push(formatUsage(scene.usage));
+  return parts.join("  ·  ");
+}
+
 /** Rail context line "12% · 24k/200k" (mirror app.tsx ctxSummary). */
 function ctxSummary(ctx: { usedTokens: number; contextWindow: number } | undefined): string {
   if (!ctx || ctx.contextWindow <= 0) return "";
@@ -677,7 +689,7 @@ async function buildScenes(): Promise<Scene[]> {
     { name: "01-chat", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: a.blocks, ...(a.usage ? { usage: a.usage } : {}), ...(a.context ? { context: a.context } : {}), input: "" },
     { name: "02-diff", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/app", blocks: diff.blocks, ...(diff.usage ? { usage: diff.usage } : {}), ...(diff.context ? { context: diff.context } : {}), ...(diff.changed ? { changed: diff.changed } : {}), input: "" },
     { name: "03-plan", status: "anthropic/claude-opus-4-8 · plan", cwd: "~/vibe-codr", blocks: plan.blocks, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
-    { name: "04-tasks", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: tasks.blocks, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), ...(tasks.context ? { context: tasks.context } : {}), subagents: [{ id: "sa1", prompt: "audit catalog pricing", status: "running" }], goal: "ship the usage/cost footer", working: "⠹ Working… 2.4s  ·  esc to interrupt", input: "" },
+    { name: "04-tasks", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: tasks.blocks, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), context: { usedTokens: 84000, contextWindow: 200000 }, subagents: [{ id: "sa1", prompt: "audit catalog pricing", status: "running" }], goal: "ship the usage/cost footer", working: "⠹ Working… 2.4s  ·  esc to interrupt", input: "" },
     { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", blocks: modelBlocks, input: "/model codex/gpt-5.1-codex", noRail: true },
     { name: "06-git", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/service", blocks: gitScene.blocks, ...(gitScene.usage ? { usage: gitScene.usage } : {}), ...(gitScene.context ? { context: gitScene.context } : {}), input: "" },
     { name: "07-permission", status: "anthropic/claude-opus-4-8 · execute · ask", cwd: "~/vibe-codr", blocks: perm.blocks, ...(perm.perm ? { perm: perm.perm } : {}), input: "y", inputHint: "approve once" },
@@ -790,7 +802,7 @@ function renderBlocks(scene: Scene, mc: string): string {
     switch (block.kind) {
       case "user":
         rows.push(
-          `<div class="userblock" style="border-left:3px solid ${mc}"><div class="row" style="color:${COLORS.fg};font-weight:700">${esc(block.text) || "&nbsp;"}</div></div>`,
+          `<div class="userblock" style="border-left:3px solid ${mc}"><span class="prompt">❯ </span><span class="utext">${esc(block.text) || "&nbsp;"}</span></div>`,
         );
         break;
       case "assistant":
@@ -888,13 +900,13 @@ function renderFrame(scene: Scene): string {
   const { model, uiMode } = headerFromStatus(scene);
   const label = ssModeLabel(uiMode);
   const mc = ssModeColor(uiMode);
-  const usageStr = scene.usage ? esc(formatUsage(scene.usage)) : "";
   const showRail = !scene.noRail;
-  // Narrow / listing layouts keep the model + usage in a second header row.
+  // Listing layouts (no rail) keep model + goal in a second header row.
   const headSecond = !showRail
-    ? `<div class="hrow"><span style="color:${COLORS.fg}">${esc(model)}</span><span class="dim">${usageStr}</span></div>`
+    ? `<div class="hrow"><span style="color:${COLORS.fg}">${esc(model)}</span>${scene.goal ? `<span class="dim">★ ${esc(scene.goal)}</span>` : ""}</div>`
     : "";
-  const footer = "shift+tab mode · / commands · @file attach · click ▸ to expand · esc interrupt";
+  const metrics = ssMetrics(scene);
+  const hints = "shift+tab mode · / commands · @file · click ▸ expand · esc interrupt";
   const placeholder = "Ask vibe-codr…   @file · /help · /model &lt;id&gt; · /undo";
   const body = showRail
     ? `<div class="bodyrow">
@@ -949,7 +961,8 @@ ${renderBlocks(scene, mc)}
   .plain { color:${COLORS.fg}; }
   .toolrow { color:${COLORS.dim}; white-space:pre-wrap; margin-top:9px; }
   .diffline { white-space:pre-wrap; word-break:break-word; }
-  .userblock { background:${COLORS.panel}; padding:5px 10px; margin:10px 0 2px; }
+  .userblock { background:${COLORS.elevated}; border-radius:0 6px 6px 0; padding:10px 12px; margin:10px 0 2px; display:flex; align-items:flex-start; }
+  .utext { color:${COLORS.fg}; font-weight:700; white-space:pre-wrap; word-break:break-word; flex:1; }
   .working { color:${mc}; margin:8px 0 2px; }
   .planbox { border:1px solid ${mc}; border-radius:6px; padding:8px 12px; margin:10px 0; }
   .permcard { border-left:3px solid ${COLORS.yellow}; background:${COLORS.panel}; padding:8px 12px; margin:10px 0; }
@@ -959,11 +972,12 @@ ${renderBlocks(scene, mc)}
   .menurow.active { color:${mc}; background:${COLORS.selBg}; font-weight:700; }
   .menumore { color:${COLORS.dim}; padding:2px 6px 0; }
   .inputwrap { margin-top:14px; border-left:3px solid ${mc}; background:${COLORS.elevated}; border-radius:0 6px 6px 0; padding:10px 12px; position:relative; display:flex; align-items:center; }
-  .prompt { color:${mc}; font-weight:700; }
+  .prompt { color:${mc}; font-weight:700; flex-shrink:0; }
   .placeholder { color:${COLORS.dim}; }
   .typed { color:${COLORS.fg}; }
   .cursor { background:${mc}; color:${COLORS.bg}; }
-  .footer { margin-top:8px; font-size:11px; color:${COLORS.dim}; }
+  .footer { margin-top:8px; font-size:11px; color:${COLORS.dim}; display:flex; justify-content:space-between; gap:16px; }
+  .metrics { color:${COLORS.dim}; flex-shrink:0; }
   </style></head><body>
   <div class="term">
     <div class="titlebar">
@@ -1019,7 +1033,7 @@ ${scene.menu.rows
             : `<span class="placeholder">${placeholder}</span>`
         }
       </div>
-      <div class="footer">${footer}</div>
+      <div class="footer"><span>${hints}</span>${metrics ? `<span class="metrics">${esc(metrics)}</span>` : ""}</div>
     </div>
   </div>
   </body></html>`;

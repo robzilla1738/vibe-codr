@@ -77,6 +77,40 @@ test("snapshot in a repo with no commits leaves the index empty", async () => {
   expect(out).not.toContain("A  a.txt");
 });
 
+test("undo preserves the user's pre-existing untracked files and staged changes", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+
+  // The user already has an untracked file and a staged change before the agent runs.
+  await Bun.write(join(dir, "user-notes.txt"), "my notes\n");
+  await Bun.write(join(dir, "a.txt"), "user staged\n");
+  await git(dir, ["add", "a.txt"]);
+
+  const snap = await cp.snapshot("before agent edits");
+  expect(snap).not.toBeNull();
+
+  // The agent then edits a tracked file and creates a new one.
+  await Bun.write(join(dir, "a.txt"), "AGENT EDIT\n");
+  await Bun.write(join(dir, "agent-new.txt"), "agent created\n");
+
+  await cp.undo();
+
+  // The agent's new file is removed; the user's untracked file SURVIVES.
+  expect(await Bun.file(join(dir, "agent-new.txt")).exists()).toBe(false);
+  expect(await Bun.file(join(dir, "user-notes.txt")).exists()).toBe(true);
+  // a.txt is restored to the snapshot (the user's staged content at snapshot time).
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("user staged\n");
+});
+
+test("a checkpoint records the conversation mark for history rollback", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  const snap = await cp.snapshot("turn", { messages: 4, history: 3 });
+  expect(snap!.conversation).toEqual({ messages: 4, history: 3 });
+  const restored = await cp.undo();
+  expect(restored!.conversation).toEqual({ messages: 4, history: 3 });
+});
+
 test("non-git directories are a safe no-op", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-nogit-"));
   const cp = new CheckpointManager(dir);

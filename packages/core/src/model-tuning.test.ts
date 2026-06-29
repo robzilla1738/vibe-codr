@@ -35,14 +35,14 @@ test("OpenAI effort maps to reasoningEffort", () => {
   expect(t.providerOptions?.openai).toEqual({ reasoningEffort: "high" });
 });
 
-test("OpenRouter gets a unified reasoning block", () => {
+test("OpenRouter routes via openai-compatible, so it forwards no native reasoning block", () => {
+  // openrouter is driven through @ai-sdk/openai-compatible (it doesn't accept the
+  // native unified reasoning options); the model reasons at its default effort.
   const t = buildModelTuning(
     "openrouter/anthropic/claude",
     cfg({ reasoning: { effort: "low", budgetTokens: 1000 } }),
   );
-  expect(t.providerOptions?.openrouter).toEqual({
-    reasoning: { effort: "low", max_tokens: 1000 },
-  });
+  expect(t.providerOptions?.openrouter).toBeUndefined();
 });
 
 test("no reasoning config yields no providerOptions", () => {
@@ -56,9 +56,11 @@ test("Anthropic effort tier derives a thinking budget", () => {
   });
 });
 
-test("xAI/Grok effort maps to reasoningEffort", () => {
+test("xAI/Grok routes via openai-compatible, so no native reasoningEffort is forwarded", () => {
+  // grok reasons natively; xai is driven through openai-compatible which doesn't
+  // take the reasoningEffort option, so we don't emit it.
   const t = buildModelTuning("xai/grok-4", cfg({ reasoning: { effort: "low" } }));
-  expect(t.providerOptions?.xai).toEqual({ reasoningEffort: "low" });
+  expect(t.providerOptions?.xai).toBeUndefined();
 });
 
 test("reasoningSupported is true for reasoning providers, false for local models", () => {

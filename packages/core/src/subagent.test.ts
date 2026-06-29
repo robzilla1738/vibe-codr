@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -6,6 +9,13 @@ import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
+import { SessionStore } from "./store.ts";
+
+function mockRegistry(model: MockLanguageModelV2) {
+  return new ProviderRegistry([
+    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+  ]);
+}
 
 function stream(chunks: unknown[]) {
   return {
@@ -102,4 +112,47 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
   // The child's tokens are folded into the parent so /cost and the spend guard
   // account for delegated work: parent's own 2 steps (2+2) + child's 1 step (2).
   expect(session.snapshot().usage.totalTokens).toBe(6);
+});
+
+test("fork() gives a subagent a fresh context — no inherited history/usage/cost/store", async () => {
+  // Regression for the resume+subagent leak: a resumed parent carries
+  // initial*/store in its deps; a forked subagent must NOT inherit any of it.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-fork-"));
+  const store = new SessionStore(dir);
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "c" },
+        { type: "text-delta", id: "c", delta: "child" },
+        { type: "text-end", id: "c" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never,
+  });
+  const parent = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    store,
+    // Simulate a resumed parent with prior history / usage / cost.
+    initialUsage: { inputTokens: 100, outputTokens: 100 },
+    initialCostUSD: 5,
+    initialModelMessages: [{ role: "user", content: "old history" }],
+  });
+
+  const child = parent.fork({ bus: new EventBus(), depth: 1 });
+  // The child starts clean — none of the parent's seeded totals carry over.
+  expect(child.snapshot().usage.totalTokens).toBe(0);
+  expect(child.costUSD).toBe(0);
+
+  await child.run("do the subtask");
+  // Only the child's own single step is counted (2 tokens), not 200 + 2.
+  expect(child.snapshot().usage.totalTokens).toBe(2);
+  // The child is ephemeral: it must not persist itself into the parent's store
+  // (which would pollute /resume and hijack --continue).
+  expect(await store.list()).toHaveLength(0);
 });

@@ -8,57 +8,130 @@
  * typechecked, only use OpenTUI props/events confirmed to exist in the installed
  * version, and keep `packages/core/scripts/screenshot.ts` in lockstep with any
  * visible change here (that script mirrors this render for the README shots).
+ *
+ * Layout: a slim status bar on top, a two-column body (scrolling transcript +
+ * a right "context rail" with tasks/subagents/usage), and the input affordances
+ * below. Assistant text renders through OpenTUI's native <markdown> renderable
+ * (NOT a hand-rolled ANSI string — embedding raw escape codes in a <text> made
+ * the renderer miscount widths and garble long streamed replies). Tool and diff
+ * output is condensed to one line and expands on click.
  */
-import { render, useKeyboard } from "@opentui/solid";
-import { createSignal, createEffect, onMount, For, Index, Show } from "solid-js";
-import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
-import { lineToCommand, parsePermissionDecision } from "./slash.ts";
-import { TASK_GLYPH, formatUsage } from "./headless.ts";
-import { GLYPH } from "./glyphs.ts";
-import { renderMarkdown } from "./markdown.ts";
-import { getTheme, type Palette } from "./themes.ts";
-import {
-  deriveUiMode,
-  nextUiMode,
-  commandsForUiMode,
-  modeLabel,
-  modeColor,
-} from "./modes.ts";
-import { paletteState, applyPalette } from "./commands-catalog.ts";
 
-interface Line {
-  kind:
-    | "user"
-    | "assistant"
-    | "tool"
-    | "toolresult"
-    | "notice"
-    | "subagent"
-    | "add"
-    | "del"
-    | "ctx";
-  text: string;
+import { SyntaxStyle, TextAttributes } from "@opentui/core";
+import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
+import { createEffect, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
+import { applyPalette, paletteState } from "./commands-catalog.ts";
+import { GLYPH } from "./glyphs.ts";
+import { formatUsage, TASK_GLYPH } from "./headless.ts";
+import { commandsForUiMode, deriveUiMode, modeColor, modeLabel, nextUiMode } from "./modes.ts";
+import { lineToCommand, parsePermissionDecision } from "./slash.ts";
+import { spinnerFrame, workingLabel } from "./spinner.ts";
+import { getTheme, type Palette } from "./themes.ts";
+import { toolLabel } from "./tool-icons.ts";
+
+/** Width of the right context rail and the terminal width it needs to appear. */
+const RAIL_WIDTH = 30;
+const RAIL_MIN_COLS = 80;
+/** Cap rail rows so a long plan can't push the SESSION block off-screen. */
+const RAIL_MAX_TASKS = 9;
+const RAIL_MAX_SUBAGENTS = 6;
+/** Cap how many output lines an expanded tool/diff block renders. */
+const MAX_OUTPUT_LINES = 160;
+
+/**
+ * One block in the transcript. The transcript is append-only: positions never
+ * move, so we render it with <Index> (stable per-position rows) and only the
+ * block currently being mutated (the streaming reply, or a toggled tool block)
+ * re-renders. `id` is a stable handle for click-to-toggle.
+ */
+type Block =
+  | { kind: "user"; id: number; text: string }
+  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean }
+  | {
+      kind: "tool";
+      id: number;
+      /** Header label ("→ read x" or, after a file change, "✎ edited x +n -m"). */
+      label: string;
+      /** Full captured output / diff hunk, shown only when expanded. */
+      output: string[];
+      collapsed: boolean;
+      /** Output is a unified diff → color +/- lines when expanded. */
+      isDiff: boolean;
+      isError: boolean;
+    }
+  | { kind: "notice"; id: number; text: string };
+
+/** A subagent shown in the context rail while it runs and after it finishes. */
+interface Subagent {
+  id: string;
+  prompt: string;
+  status: "running" | "done";
+}
+
+interface PendingPerm {
+  id: string;
+  toolName: string;
+  input: unknown;
 }
 
 export function App(props: { engine: EngineClient }) {
   const snap = props.engine.snapshot();
-  const [lines, setLines] = createSignal<Line[]>([]);
+  const [blocks, setBlocks] = createSignal<Block[]>([]);
   const [draft, setDraft] = createSignal("");
   const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
+  const [subagents, setSubagents] = createSignal<Subagent[]>([]);
   const [plan, setPlan] = createSignal<string | null>(null);
   const [queued, setQueued] = createSignal(0);
+  // Pending permission requests, oldest first; the head is shown as a card and
+  // answered by y/a/n or a typed reply.
+  const [perms, setPerms] = createSignal<PendingPerm[]>([]);
+  // Live working indicator: true between a submitted prompt and turn end. `tick`
+  // is bumped by an interval only while working, so the spinner animates and the
+  // elapsed time updates without re-rendering an idle screen.
+  const [working, setWorking] = createSignal(false);
+  const [tick, setTick] = createSignal(0);
+  let turnStartedAt = 0;
   let model = snap.model;
   let mode = snap.mode;
   let approvals = snap.approvalMode;
   let goal = snap.goal;
   let usage: SessionUsage = snap.usage;
   let ctx: { usedTokens: number; contextWindow: number } | null = null;
-  const pendingPerms: string[] = []; // FIFO of unanswered permission ids
+  // A handle to the text input so we can restore focus after a mouse click — a
+  // click on any renderable blurs the input, which would otherwise leave the
+  // user unable to type until they click the field again.
+  let inputEl: { focus: () => void } | undefined;
+  // Defer past the renderer's own post-click focus handling (which would
+  // otherwise blur the input right after our synchronous focus() call).
+  const refocusInput = () => queueMicrotask(() => inputEl?.focus());
   const [palette, setPalette] = createSignal<Palette>(getTheme(snap.theme));
   const [uiMode, setUiMode] = createSignal(deriveUiMode(mode, approvals));
   const [headModel, setHeadModel] = createSignal(model);
   const [headInfo, setHeadInfo] = createSignal(headerInfo(0, usage, ctx, goal));
+  // Rail-only projections of the live status (the header stays minimal).
+  const [ctxInfo, setCtxInfo] = createSignal(ctxSummary(ctx));
+  const [usageInfo, setUsageInfo] = createSignal(usage.totalTokens > 0 ? formatUsage(usage) : "");
+  const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
   const cwd = shortCwd();
+  // The single accent hue shown at a time: the current mode's color. Everything
+  // else is neutral text/muted; green/red appear only on diffs, amber only on
+  // warnings — so the UI reads as one tasteful color, not a rainbow.
+  const accent = () => modeColor(uiMode(), palette());
+
+  // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
+  // Created once; if the native lib can't build one we fall back to plain text.
+  let mdStyle: SyntaxStyle | undefined;
+  try {
+    mdStyle = SyntaxStyle.create();
+  } catch {
+    mdStyle = undefined;
+  }
+
+  // The context rail only appears when the terminal is wide enough to keep the
+  // transcript readable; otherwise tasks fall back to a bottom panel.
+  const dims = useTerminalDimensions();
+  const showRail = () => dims().width >= RAIL_MIN_COLS;
 
   // Slash-command menu: derives from the draft, so it opens/filters as you type.
   const menu = () => paletteState(draft());
@@ -76,26 +149,70 @@ export function App(props: { engine: EngineClient }) {
     const sel = Math.min(Math.max(0, selIdx()), st.items.length - 1);
     const WINDOW = 8;
     const start = Math.min(Math.max(0, sel - 4), Math.max(0, st.items.length - WINDOW));
+    // Pad command names so descriptions line up in a column (opencode-style).
+    const nameW =
+      st.mode === "command"
+        ? Math.min(14, Math.max(...st.items.map((c) => (c as { name: string }).name.length + 1)))
+        : 0;
     const rows = st.items.slice(start, start + WINDOW).map((it, i) => {
       const active = start + i === sel;
       if (st.mode === "command") {
         const c = it as { name: string; description: string; values?: string[]; arg?: string };
         const hint = c.values ? ` (${c.values.join("|")})` : c.arg ? ` ${c.arg}` : "";
-        return { active, text: `/${c.name}  —  ${c.description}${hint}` };
+        return { active, text: `${`/${c.name}`.padEnd(nameW + 1)}  ${c.description}${hint}` };
       }
       return { active, text: `${st.command.name} → ${it as string}` };
     });
     const title = st.mode === "command" ? "commands" : `/${st.command.name}`;
-    const more = st.items.length > WINDOW ? `+${st.items.length - WINDOW} more · type to filter` : "";
+    const more =
+      st.items.length > WINDOW ? `+${st.items.length - WINDOW} more · type to filter` : "";
     return { rows, title, more };
   };
 
-  const append = (line: Line) => setLines((prev) => [...prev, line]);
-  // Refresh the header chrome whenever model/mode/usage/context/goal changes.
+  // ── Transcript reducer state ───────────────────────────────────────────────
+  // Positions are stable (append-only), so we track the streaming reply and each
+  // tool call by index rather than searching the array on every delta.
+  let nextId = 0;
+  const newId = () => nextId++;
+  let activeAssistant = -1; // index of the in-flight assistant block, or -1
+  const toolByCallId = new Map<string, number>();
+
+  // Finalize the streaming reply (flip `streaming` off so <markdown> closes any
+  // trailing fence/table) and stop appending deltas to it.
+  const finalizeAssistant = () => {
+    if (activeAssistant >= 0) {
+      setBlocks((prev) => {
+        const b = prev[activeAssistant];
+        if (b?.kind !== "assistant" || !b.streaming) return prev;
+        const copy = prev.slice();
+        copy[activeAssistant] = { ...b, streaming: false };
+        return copy;
+      });
+    }
+    activeAssistant = -1;
+  };
+
+  // Toggle a tool/diff block's collapsed state (the click-to-expand handler).
+  const toggle = (id: number) =>
+    setBlocks((prev) =>
+      prev.map((b) => (b.id === id && b.kind === "tool" ? { ...b, collapsed: !b.collapsed } : b)),
+    );
+
+  // Refresh the header chrome + rail projections whenever live status changes.
   const refreshStatus = () => {
     setUiMode(deriveUiMode(mode, approvals));
     setHeadModel(model);
     setHeadInfo(headerInfo(queued(), usage, ctx, goal));
+    setCtxInfo(ctxSummary(ctx));
+    setUsageInfo(usage.totalTokens > 0 ? formatUsage(usage) : "");
+    setGoalInfo(goal);
+  };
+  // Resolve the oldest pending permission and drop it from the queue.
+  const answerPerm = (decision: "once" | "always" | "deny") => {
+    const head = perms()[0];
+    if (!head) return;
+    props.engine.send({ type: "resolve-permission", id: head.id, decision });
+    setPerms((p) => p.slice(1));
   };
 
   // Shift+Tab cycles plan → execute → yolo. `useKeyboard` is a global handler,
@@ -121,6 +238,26 @@ export function App(props: { engine: EngineClient }) {
       return;
     }
     const st = menu();
+    // Permission shortcuts: while a request is pending and you're not mid-typing,
+    // y/a/n answers it directly and Esc rejects it.
+    if (perms().length > 0 && !st.open && !draft().trim()) {
+      if (key.name === "y" || key.name === "a" || key.name === "n") {
+        key.preventDefault?.();
+        answerPerm(key.name === "y" ? "once" : key.name === "a" ? "always" : "deny");
+        return;
+      }
+      if (key.name === "escape") {
+        key.preventDefault?.();
+        answerPerm("deny");
+        return;
+      }
+    }
+    // Esc interrupts an in-flight turn when nothing else claims the key.
+    if (key.name === "escape" && !st.open && working() && perms().length === 0) {
+      key.preventDefault?.();
+      props.engine.send({ type: "abort" });
+      return;
+    }
     if (!st.open) return; // menu closed → let the input handle keys normally
     const n = st.items.length;
     switch (key.name) {
@@ -151,68 +288,146 @@ export function App(props: { engine: EngineClient }) {
   });
 
   onMount(() => {
+    // Animate the working spinner / elapsed clock, but only while a turn runs.
+    const timer = setInterval(() => {
+      if (working()) setTick((t) => t + 1);
+    }, 90);
+    onCleanup(() => clearInterval(timer));
+
     void (async () => {
-      let streaming: Line | null = null;
-      // edit/write echo their diff as a tool result too; the file-changed event
-      // already rendered it, so skip the next tool-call-finished output.
-      let suppressResult = false;
+      // edit/write also echo their diff as the tool result; the file-changed
+      // event already folded it into a diff block, so we skip that one
+      // tool-call-finished echo — keyed by tool call id so an interleaved result
+      // from a parallel read can never be swallowed by mistake.
+      const suppressCallIds = new Set<string>();
+      // Per-turn maps are cleared on each turn boundary so they can't leak.
+      const endTurn = () => {
+        finalizeAssistant();
+        toolByCallId.clear();
+        suppressCallIds.clear();
+        setWorking(false);
+      };
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
         switch (event.type) {
           case "user-message":
-            append({ kind: "user", text: event.text });
-            streaming = null;
+            finalizeAssistant();
+            toolByCallId.clear();
+            suppressCallIds.clear();
+            // Subagents are per-turn activity (tasks persist, they don't) — start
+            // each turn with a clean SUBAGENTS section. The plan box is a transient
+            // affordance too: a new turn means it was acted on or abandoned.
+            setSubagents([]);
+            setPlan(null);
+            setBlocks((prev) => [...prev, { kind: "user", id: newId(), text: event.text }]);
+            // A new turn begins: start the working clock/spinner.
+            turnStartedAt = Date.now();
+            setTick(0);
+            setWorking(true);
             break;
           case "assistant-text-delta":
-            // Update the streaming line IMMUTABLY: replace its object (and the
-            // array) so Solid's <Index> sees a changed value and re-renders the
-            // row. Mutating in place would never repaint — that was the
-            // long-standing "assistant reply never appears" bug.
-            setLines((prev) => {
-              const idx = streaming ? prev.lastIndexOf(streaming) : -1;
-              if (idx >= 0 && streaming) {
-                streaming = { kind: "assistant", text: streaming.text + event.delta };
+            // Subagent deltas (they carry a subagentId) are summarized in the rail,
+            // not streamed into the parent transcript; empty deltas are no-ops.
+            if (event.subagentId || !event.delta) break;
+            // Append to the in-flight reply IMMUTABLY: replace its block object so
+            // <Index> sees a changed value and re-renders just that row. The first
+            // delta of a turn opens a new block with a blank line above it.
+            setBlocks((prev) => {
+              const cur = prev[activeAssistant];
+              if (activeAssistant >= 0 && cur && cur.kind === "assistant") {
                 const copy = prev.slice();
-                copy[idx] = streaming;
+                copy[activeAssistant] = { ...cur, text: cur.text + event.delta };
                 return copy;
               }
-              streaming = { kind: "assistant", text: event.delta };
-              return [...prev, streaming];
+              const next = [
+                ...prev,
+                {
+                  kind: "assistant" as const,
+                  id: newId(),
+                  text: event.delta,
+                  streaming: true,
+                  gap: true,
+                },
+              ];
+              activeAssistant = next.length - 1;
+              return next;
             });
             break;
           case "tool-call-started":
-            append({
-              kind: "tool",
-              text: `${GLYPH.tool} ${event.toolName} ${truncate(
-                JSON.stringify(event.input ?? {}),
-                64,
-              )}`,
+            if (event.subagentId) break; // subagent tools don't enter the transcript
+            finalizeAssistant();
+            setBlocks((prev) => {
+              const next = [
+                ...prev,
+                {
+                  kind: "tool" as const,
+                  id: newId(),
+                  label: toolLabel(event.toolName, event.input),
+                  output: [] as string[],
+                  collapsed: true,
+                  isDiff: false,
+                  isError: false,
+                },
+              ];
+              toolByCallId.set(event.toolCallId, next.length - 1);
+              return next;
             });
-            streaming = null;
             break;
           case "tool-call-finished": {
-            if (suppressResult) {
-              suppressResult = false;
+            if (event.subagentId) break;
+            // Skip only the echo for the exact call whose diff we already folded.
+            if (suppressCallIds.has(event.toolCallId)) {
+              suppressCallIds.delete(event.toolCallId);
               break;
             }
+            const idx = toolByCallId.get(event.toolCallId);
+            toolByCallId.delete(event.toolCallId); // call ids are single-use
             const out =
-              typeof event.output === "string" ? event.output : JSON.stringify(event.output);
-            for (const t of out.split("\n").filter((l) => l.length).slice(0, 4)) {
-              append({ kind: "toolresult", text: `  ${GLYPH.result} ${truncate(t, 72)}` });
-            }
+              typeof event.output === "string"
+                ? event.output
+                : JSON.stringify(event.output, null, 2);
+            const lines = out.split("\n").filter((l, i, a) => l.length || i < a.length - 1);
+            setBlocks((prev) => {
+              if (idx == null) return prev;
+              const b = prev[idx];
+              if (b?.kind !== "tool") return prev;
+              const copy = prev.slice();
+              copy[idx] = { ...b, output: lines, isError: event.isError };
+              return copy;
+            });
             break;
           }
           case "file-changed": {
-            suppressResult = true;
+            // Fold the diff into the EXACT tool block that produced it (by call
+            // id — no positional guessing), so an edit reads as one row with the
+            // hunk shown beneath it. Diffs are the signature output, so they're
+            // expanded by default (click the row to collapse).
+            suppressCallIds.add(event.toolCallId);
             const verb = event.action === "write" ? "wrote" : "edited";
-            append({
-              kind: "tool",
-              text: `${GLYPH.file} ${verb} ${event.path}  +${event.added} -${event.removed}`,
+            const header = `${GLYPH.file} ${verb} ${event.path}  +${event.added} -${event.removed}`;
+            const lines = event.diff ? event.diff.split("\n") : [];
+            finalizeAssistant();
+            setBlocks((prev) => {
+              const idx = toolByCallId.get(event.toolCallId);
+              const target = idx == null ? undefined : prev[idx];
+              const canFold = !!target && target.kind === "tool" && !target.isDiff;
+              const folded = {
+                kind: "tool" as const,
+                id: canFold ? (target as { id: number }).id : newId(),
+                label: header,
+                output: lines,
+                collapsed: false,
+                isDiff: true,
+                isError: false,
+              };
+              if (canFold && idx != null) {
+                const copy = prev.slice();
+                copy[idx] = folded;
+                return copy;
+              }
+              // No matching block, or this call already produced a diff (a second
+              // changed file) → append a standalone diff row.
+              return [...prev, folded];
             });
-            for (const dl of event.diff ? event.diff.split("\n") : []) {
-              const kind = dl.startsWith("+") ? "add" : dl.startsWith("-") ? "del" : "ctx";
-              append({ kind, text: dl });
-            }
-            streaming = null;
             break;
           }
           case "tasks-updated":
@@ -231,21 +446,22 @@ export function App(props: { engine: EngineClient }) {
             refreshStatus();
             break;
           case "permission-request":
-            pendingPerms.push(event.id);
-            append({
-              kind: "notice",
-              text: `${GLYPH.warn} allow ${event.toolName}? [y]es · [a]lways · [n]o`,
-            });
+            setPerms((p) => [...p, { id: event.id, toolName: event.toolName, input: event.input }]);
             break;
           case "plan-presented":
+            finalizeAssistant();
             setPlan(event.plan);
-            streaming = null;
             break;
           case "subagent-started":
-            append({ kind: "subagent", text: `${GLYPH.subagentIn} subagent: ${event.prompt}` });
+            setSubagents((prev) => [
+              ...prev,
+              { id: event.subagentId, prompt: event.prompt, status: "running" },
+            ]);
             break;
           case "subagent-finished":
-            append({ kind: "subagent", text: `${GLYPH.subagentOut} subagent done` });
+            setSubagents((prev) =>
+              prev.map((s) => (s.id === event.subagentId ? { ...s, status: "done" } : s)),
+            );
             break;
           case "mode-changed":
             mode = event.mode;
@@ -266,11 +482,22 @@ export function App(props: { engine: EngineClient }) {
           case "theme-changed":
             setPalette(getTheme(event.theme));
             break;
+          case "turn-finished":
+          case "session-idle":
+            // The turn ended — finalize the reply, drop per-turn maps, stop the
+            // spinner.
+            endTurn();
+            break;
           case "notice":
-            append({ kind: "notice", text: event.message });
+            finalizeAssistant();
+            setBlocks((prev) => [...prev, { kind: "notice", id: newId(), text: event.message }]);
             break;
           case "engine-error":
-            append({ kind: "notice", text: `error: ${event.message}` });
+            endTurn();
+            setBlocks((prev) => [
+              ...prev,
+              { kind: "notice", id: newId(), text: `error: ${event.message}` },
+            ]);
             break;
           default:
             break;
@@ -287,15 +514,25 @@ export function App(props: { engine: EngineClient }) {
       props.engine.send({ type: "shutdown" });
       process.exit(0);
     }
-    // While permission prompts are pending, each input answers the oldest.
-    const permId = pendingPerms.shift();
-    if (permId) {
-      props.engine.send({
-        type: "resolve-permission",
-        id: permId,
-        decision: parsePermissionDecision(text),
-      });
+    // While permission prompts are pending, a typed reply answers the oldest.
+    if (perms().length > 0) {
+      answerPerm(parsePermissionDecision(text));
       return;
+    }
+    // `/clear` (and `/new`) reset the conversation — wipe the visible transcript
+    // AND every piece of live turn state so nothing dangles (a stale spinner,
+    // an orphaned permission card, a half-streamed reply). Abort first if a turn
+    // is in flight so the engine stops streaming into the cleared screen.
+    if (text === "/clear" || text === "/new") {
+      if (working()) props.engine.send({ type: "abort" });
+      setBlocks([]);
+      setPlan(null);
+      setSubagents([]);
+      setPerms([]);
+      setQueued(0);
+      setWorking(false);
+      activeAssistant = -1;
+      toolByCallId.clear();
     }
     // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.
     // keep their arguments (the same logic the REPL uses).
@@ -307,89 +544,301 @@ export function App(props: { engine: EngineClient }) {
   const submit = (value?: string) => runText(value ?? draft());
 
   return (
-    <box flexDirection="column" padding={1} style={{ height: "100%" }}>
-      {/* Header — branding, working dir, mode pill, model, and live context. */}
+    <box flexDirection="column" padding={1} style={{ height: "100%" }} onMouseDown={refocusInput}>
+      {/* Header — a slim status bar with a single underline rule. Brand + mode
+          pill on the left, cwd on the right. The model/usage detail moves to the
+          rail when it's shown; on narrow terminals it stays in a second row. */}
       <box
-        border
-        borderColor={palette().border}
         flexDirection="column"
-        paddingLeft={1}
-        paddingRight={1}
+        flexShrink={0}
+        border={["bottom"]}
+        borderColor={palette().border}
+        paddingBottom={1}
       >
         <box flexDirection="row" justifyContent="space-between">
-          <text fg={palette().accent}>{"◆ vibe-codr"}</text>
+          <box flexDirection="row">
+            <text fg={accent()} attributes={TextAttributes.BOLD}>
+              {"◆ vibe-codr"}
+            </text>
+            <text fg={palette().muted}>{"   "}</text>
+            <text
+              fg={accent()}
+              bg={palette().elevated}
+              attributes={TextAttributes.BOLD}
+            >{` ${modeLabel(uiMode())} `}</text>
+          </box>
           <text fg={palette().muted}>{cwd}</text>
         </box>
-        <box flexDirection="row" justifyContent="space-between">
-          <text fg={modeColor(uiMode(), palette())}>{modeLabel(uiMode())}</text>
-          <text fg={palette().muted}>{`${headModel()}${headInfo() ? `  ·  ${headInfo()}` : ""}`}</text>
-        </box>
+        <Show when={!showRail()}>
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={palette().assistant}>{headModel()}</text>
+            <text fg={palette().muted}>{headInfo()}</text>
+          </box>
+        </Show>
       </box>
 
-      <box flexGrow={1} flexDirection="column" marginTop={1}>
-        <Show when={lines().length === 0}>
-          <text fg={palette().muted}>
-            {"  Ask anything to begin.  Shift+Tab switches mode · @file attaches · /help lists commands."}
-          </text>
-        </Show>
-        <Index each={lines()}>
-          {(line) => (
-            <text fg={colorFor(line().kind, palette())}>
-              {prefixFor(line().kind)}
-              {line().kind === "assistant" ? renderMarkdown(line().text) : line().text}
+      {/* Body — a scrolling transcript beside the context rail. */}
+      <box flexDirection="row" flexGrow={1} marginTop={1}>
+        <scrollbox
+          flexGrow={1}
+          flexShrink={1}
+          stickyScroll
+          stickyStart="bottom"
+          scrollY
+          contentOptions={{ flexDirection: "column" }}
+          scrollbarOptions={{ visible: false }}
+        >
+          <Show when={blocks().length === 0}>
+            <box flexDirection="column" paddingLeft={1}>
+              <text fg={accent()} attributes={TextAttributes.BOLD}>
+                {"◆ vibe-codr"}
+              </text>
+              <text fg={palette().muted}>
+                {"Your model-agnostic coding agent — plan, execute, or yolo."}
+              </text>
+              <text fg={palette().muted}>
+                {"Try:  explain this codebase  ·  fix the failing test  ·  add a --json flag"}
+              </text>
+              <text fg={palette().muted}>
+                {"Shift+Tab switches mode · @file attaches · / opens commands"}
+              </text>
+            </box>
+          </Show>
+          {/* <Index> keys by position (stable, append-only). A block's `kind`
+              is immutable for its lifetime — the file-changed fold mutates a
+              tool block in place (tool→tool) but never changes kind — so the
+              per-kind <Show> branches below never need to swap a row's element. */}
+          <Index each={blocks()}>
+            {(block) => (
+              <Show
+                when={block().kind !== "user"}
+                fallback={
+                  // Signature user turn: a heavy left-gutter panel block.
+                  <box
+                    border={["left"]}
+                    borderStyle="heavy"
+                    borderColor={accent()}
+                    backgroundColor={palette().panel}
+                    paddingLeft={1}
+                    paddingRight={1}
+                    marginTop={1}
+                  >
+                    <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
+                      {block().text}
+                    </text>
+                  </box>
+                }
+              >
+                {/* assistant / tool / notice */}
+                <Show when={block().kind === "assistant"}>
+                  <box marginTop={(block() as { gap: boolean }).gap ? 1 : 0} paddingLeft={1}>
+                    <AssistantText
+                      text={(block() as { text: string }).text}
+                      streaming={(block() as { streaming: boolean }).streaming}
+                      style={mdStyle}
+                      fg={palette().assistant}
+                    />
+                  </box>
+                </Show>
+                <Show when={block().kind === "tool"}>
+                  <ToolBlockView
+                    block={block as () => Extract<Block, { kind: "tool" }>}
+                    palette={palette()}
+                    onToggle={(id) => {
+                      toggle(id);
+                      refocusInput();
+                    }}
+                  />
+                </Show>
+                <Show when={block().kind === "notice"}>
+                  <text fg={palette().notice} marginTop={1} paddingLeft={1}>
+                    {(block() as { text: string }).text}
+                  </text>
+                </Show>
+              </Show>
+            )}
+          </Index>
+        </scrollbox>
+
+        {/* Context rail — main tasks, live subagents, and session info. */}
+        <Show when={showRail()}>
+          <box
+            width={RAIL_WIDTH}
+            flexShrink={0}
+            overflow="hidden"
+            marginLeft={1}
+            paddingLeft={2}
+            border={["left"]}
+            borderColor={palette().border}
+            flexDirection="column"
+          >
+            <Show when={tasks().length > 0}>
+              <text fg={accent()} attributes={TextAttributes.BOLD}>
+                {`TASKS  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
+              </text>
+              <For each={tasks().slice(0, RAIL_MAX_TASKS)}>
+                {(task) => (
+                  <text
+                    fg={
+                      task.status === "completed"
+                        ? palette().muted
+                        : task.status === "in_progress"
+                          ? accent()
+                          : palette().assistant
+                    }
+                  >
+                    {`${TASK_GLYPH[task.status]} ${truncate(task.title, RAIL_WIDTH - 4)}`}
+                  </text>
+                )}
+              </For>
+              <Show when={tasks().length > RAIL_MAX_TASKS}>
+                <text fg={palette().muted}>{`  +${tasks().length - RAIL_MAX_TASKS} more`}</text>
+              </Show>
+            </Show>
+
+            <Show when={subagents().length > 0}>
+              <text
+                fg={palette().muted}
+                attributes={TextAttributes.BOLD}
+                marginTop={tasks().length ? 1 : 0}
+              >
+                {"SUBAGENTS"}
+              </text>
+              <For each={subagents().slice(-RAIL_MAX_SUBAGENTS)}>
+                {(s) => (
+                  <text fg={s.status === "running" ? accent() : palette().muted}>
+                    {`${s.status === "running" ? spinnerFrame(tick()) : GLYPH.check} ${truncate(s.prompt, RAIL_WIDTH - 4)}`}
+                  </text>
+                )}
+              </For>
+            </Show>
+
+            <text
+              fg={palette().muted}
+              attributes={TextAttributes.BOLD}
+              marginTop={tasks().length || subagents().length ? 1 : 0}
+            >
+              {"SESSION"}
             </text>
-          )}
-        </Index>
+            <text fg={palette().assistant}>{truncate(headModel(), RAIL_WIDTH - 2)}</text>
+            <Show when={ctxInfo()}>
+              <text fg={palette().muted}>{`ctx ${ctxInfo()}`}</text>
+            </Show>
+            <Show when={usageInfo()}>
+              <text fg={palette().muted}>{usageInfo()}</text>
+            </Show>
+            <Show when={goalInfo()}>
+              <text fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", RAIL_WIDTH - 4)}`}</text>
+            </Show>
+          </box>
+        </Show>
       </box>
+
+      {/* Live working indicator — braille spinner + elapsed, hidden while a
+          permission card is up (the card is the active affordance then). */}
+      <Show when={working() && perms().length === 0}>
+        <text fg={accent()} flexShrink={0}>
+          {`${spinnerFrame(tick())} ${workingLabel(Date.now() - turnStartedAt)}  ·  esc to interrupt`}
+        </text>
+      </Show>
       <Show when={plan()}>
         <box
           border
-          borderColor={palette().plan}
+          borderColor={accent()}
           title="Plan"
-          titleColor={palette().plan}
+          titleColor={accent()}
           flexDirection="column"
+          flexShrink={0}
           marginTop={1}
+          paddingLeft={1}
+          paddingRight={1}
         >
-          <For each={(plan() ?? "").split("\n")}>
-            {(row) => <text fg={palette().assistant}>{row || " "}</text>}
-          </For>
+          <AssistantText
+            text={plan() ?? ""}
+            streaming={false}
+            style={mdStyle}
+            fg={palette().assistant}
+          />
           <text fg={palette().muted}>Shift+Tab to execute, or /execute to proceed.</text>
         </box>
       </Show>
-      <Show when={tasks().length > 0}>
+      {/* Tasks fallback for narrow terminals (no rail). */}
+      <Show when={!showRail() && tasks().length > 0}>
         <box
           border
           borderColor={palette().border}
           title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-          titleColor={palette().accent}
+          titleColor={accent()}
           flexDirection="column"
+          flexShrink={0}
           marginTop={1}
+          paddingLeft={1}
+          paddingRight={1}
         >
           <For each={tasks()}>
             {(task) => (
-              <text fg={taskColor(task.status, palette())}>
+              <text
+                fg={
+                  task.status === "completed"
+                    ? palette().muted
+                    : task.status === "in_progress"
+                      ? accent()
+                      : palette().assistant
+                }
+              >
                 {`${TASK_GLYPH[task.status]} ${task.title}`}
               </text>
             )}
           </For>
         </box>
       </Show>
+      {/* Permission card — a bordered warning with the tool action and y/a/n. */}
+      <Show when={perms()[0]}>
+        {(p) => (
+          <box
+            border={["left"]}
+            borderStyle="heavy"
+            borderColor={palette().notice}
+            backgroundColor={palette().panel}
+            flexDirection="column"
+            flexShrink={0}
+            marginTop={1}
+            paddingLeft={1}
+            paddingRight={1}
+          >
+            <text fg={palette().notice} attributes={TextAttributes.BOLD}>
+              {`${GLYPH.warn} permission required · ${p().toolName}`}
+            </text>
+            <text fg={palette().assistant}>{`  ${toolLabel(p().toolName, p().input)}`}</text>
+            <text fg={palette().muted}>{"  [y]es once  ·  [a]lways  ·  [n]o"}</text>
+            <Show when={perms().length > 1}>
+              <text fg={palette().muted}>{`  +${perms().length - 1} more pending`}</text>
+            </Show>
+          </box>
+        )}
+      </Show>
       {/* Slash-command menu — opens while typing a `/command`. ↑/↓ to highlight,
           Tab to complete, Enter to run, Esc to dismiss. */}
       <Show when={menu().open}>
         <box
           border
-          borderColor={palette().accent}
+          borderColor={accent()}
           title={menuView()?.title}
-          titleColor={palette().accent}
+          titleColor={accent()}
+          backgroundColor={palette().panel}
           flexDirection="column"
+          flexShrink={0}
           marginTop={1}
           paddingLeft={1}
           paddingRight={1}
         >
           <For each={menuView()?.rows ?? []}>
             {(row) => (
-              <text fg={row.active ? palette().accent : palette().muted}>
+              <text
+                fg={row.active ? accent() : palette().muted}
+                bg={row.active ? palette().selBg : undefined}
+                attributes={row.active ? TextAttributes.BOLD : undefined}
+              >
                 {`${row.active ? "❯ " : "  "}${row.text}`}
               </text>
             )}
@@ -399,33 +848,147 @@ export function App(props: { engine: EngineClient }) {
           </Show>
         </box>
       </Show>
-      {/* The input border is tinted by mode so plan/execute/yolo is unmistakable
-          right where you type; horizontal padding keeps the prompt off the frame. */}
+      {/* Text input — a raised, clearly-bounded field. The heavy left bar and the
+          prompt caret are the only accent here; the surface is one elevated tone
+          so it reads as "type here" without a bright highlight bar. */}
       <box
-        border
-        borderColor={modeColor(uiMode(), palette())}
-        title={modeLabel(uiMode())}
-        titleColor={modeColor(uiMode(), palette())}
+        border={["left"]}
+        borderStyle="heavy"
+        borderColor={accent()}
+        backgroundColor={palette().elevated}
+        flexDirection="row"
+        flexShrink={0}
         marginTop={1}
         paddingLeft={1}
         paddingRight={1}
+        paddingTop={1}
+        paddingBottom={1}
       >
+        <text fg={accent()} attributes={TextAttributes.BOLD}>
+          {"❯ "}
+        </text>
         <input
+          ref={(el: { focus: () => void }) => (inputEl = el)}
           focused
+          flexGrow={1}
           value={draft()}
           onInput={(v: string) => setDraft(v)}
           onSubmit={submit}
-          placeholder="Ask vibe-codr…  @file to attach · /help · /model <id> · /undo"
+          placeholder="Ask vibe-codr…   @file · /help · /model <id> · /undo"
+          backgroundColor={palette().elevated}
+          focusedBackgroundColor={palette().elevated}
+          textColor={palette().assistant}
+          focusedTextColor={palette().assistant}
+          placeholderColor={palette().muted}
+          cursorColor={accent()}
         />
       </box>
-      <text fg={palette().muted}>
-        {"shift+tab mode · @file attach · /help commands · ctrl-c quit"}
+      <text fg={palette().muted} flexShrink={0}>
+        {"shift+tab mode · / commands · @file attach · click ▸ to expand · esc interrupt"}
       </text>
     </box>
   );
 }
 
-/** The dim header detail: context fill, token/cost usage, queue, and goal. */
+/**
+ * Assistant / plan prose. Renders through OpenTUI's native <markdown> renderable
+ * (proper wrapping, bold/italic/code, fenced blocks) — never a pre-styled ANSI
+ * string, which the buffer would miscount and garble. Falls back to plain
+ * per-line <text> if a SyntaxStyle couldn't be created.
+ */
+function AssistantText(props: {
+  text: string;
+  streaming: boolean;
+  style: SyntaxStyle | undefined;
+  fg: string;
+}) {
+  return (
+    <Show
+      when={props.style}
+      fallback={
+        <For each={props.text.split("\n")}>{(l) => <text fg={props.fg}>{l || " "}</text>}</For>
+      }
+    >
+      <markdown
+        content={props.text}
+        streaming={props.streaming}
+        syntaxStyle={props.style!}
+        fg={props.fg}
+      />
+    </Show>
+  );
+}
+
+/**
+ * A tool call / file edit: a single clickable header that expands to show the
+ * captured output or the colored diff hunk. Condensed by default so the
+ * transcript stays scannable.
+ */
+function ToolBlockView(props: {
+  block: () => Extract<Block, { kind: "tool" }>;
+  palette: Palette;
+  onToggle: (id: number) => void;
+}) {
+  const b = props.block;
+  const p = props.palette;
+  const expandable = () => b().output.length > 0;
+  const head = () => {
+    const t = b();
+    const chevron = expandable() ? (t.collapsed ? "▸ " : "▾ ") : "  ";
+    const hint =
+      t.collapsed && expandable()
+        ? t.isDiff
+          ? "  ·  diff"
+          : `  ·  ${t.output.length} line${t.output.length === 1 ? "" : "s"}`
+        : "";
+    return `${chevron}${t.label}${hint}`;
+  };
+  const visible = () => b().output.slice(0, MAX_OUTPUT_LINES);
+  const overflow = () => Math.max(0, b().output.length - MAX_OUTPUT_LINES);
+  return (
+    <box
+      flexDirection="column"
+      flexShrink={0}
+      marginTop={1}
+      paddingLeft={1}
+      onMouseDown={() => {
+        if (expandable()) props.onToggle(b().id);
+      }}
+    >
+      <text fg={b().isError ? p.del : p.muted}>{head()}</text>
+      <Show when={!b().collapsed && expandable()}>
+        <For each={visible()}>
+          {(line) =>
+            b().isDiff ? (
+              <text fg={diffColor(line, p)} bg={diffBg(line, p)}>
+                {line || " "}
+              </text>
+            ) : (
+              <text fg={p.muted}>{`  ${line}`}</text>
+            )
+          }
+        </For>
+        <Show when={overflow() > 0}>
+          <text fg={p.muted}>{`  … ${overflow()} more line${overflow() === 1 ? "" : "s"}`}</text>
+        </Show>
+      </Show>
+    </box>
+  );
+}
+
+/** Green additions / red deletions / dim context on an expanded diff. */
+function diffColor(line: string, p: Palette): string {
+  if (line.startsWith("+")) return p.add;
+  if (line.startsWith("-")) return p.del;
+  return p.muted;
+}
+function diffBg(line: string, p: Palette): string | undefined {
+  if (line.startsWith("+")) return p.addBg;
+  if (line.startsWith("-")) return p.delBg;
+  return undefined;
+}
+
+/** The dim header detail (narrow mode): context fill, usage, queue, and goal. */
 function headerInfo(
   queued: number,
   usage: SessionUsage,
@@ -445,6 +1008,17 @@ function headerInfo(
   return parts.join(" · ");
 }
 
+/** Rail context line: "12% · 24k/200k", or "" when not meaningful yet. */
+function ctxSummary(ctx: { usedTokens: number; contextWindow: number } | null): string {
+  if (!ctx || ctx.contextWindow <= 0) return "";
+  const pct = Math.min(100, Math.round((ctx.usedTokens / ctx.contextWindow) * 100));
+  if (pct < 1) return "";
+  return `${pct}% · ${ktok(ctx.usedTokens)}/${ktok(ctx.contextWindow)}`;
+}
+function ktok(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
+}
+
 /** Current working directory with $HOME collapsed to `~`. */
 function shortCwd(): string {
   const cwd = process.cwd();
@@ -455,41 +1029,6 @@ function shortCwd(): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
-
-function colorFor(kind: Line["kind"], p: Palette): string {
-  switch (kind) {
-    case "user":
-      return p.user;
-    case "tool":
-      return p.tool;
-    case "toolresult":
-      return p.muted;
-    case "notice":
-      return p.notice;
-    case "subagent":
-      return p.subagent;
-    case "add":
-      return p.add;
-    case "del":
-      return p.del;
-    case "ctx":
-      return p.ctx;
-    default:
-      return p.assistant;
-  }
-}
-
-function taskColor(status: Task["status"], p: Palette): string {
-  return status === "completed"
-    ? p.taskDone
-    : status === "in_progress"
-      ? p.taskActive
-      : p.taskPending;
-}
-
-function prefixFor(kind: Line["kind"]): string {
-  return kind === "user" ? "› " : "";
 }
 
 export async function mountApp(engine: EngineClient): Promise<void> {

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import type { ToolDefinition } from "@vibe/shared";
-import { McpHub, toToolDefinition, renderContent, type McpClient } from "./mcp.ts";
+import { McpHub, toToolDefinition, mcpToolName, renderContent, type McpClient } from "./mcp.ts";
 
 /** A fake MCP server exposing one echo tool. */
 function fakeClient(calls: { name: string; args: unknown }[]): McpClient {
@@ -39,6 +39,39 @@ test("hub registers MCP tools as gated mcp__<server>__<tool> definitions", async
   expect(tool.name).toBe("mcp__demo__echo");
   expect(tool.readOnly).toBe(false); // side-effecting → permission-gated, execute-only
   expect(tool.inputSchema).toMatchObject({ type: "object" });
+});
+
+test("mcpToolName sanitizes disallowed chars and caps length for hosted providers", () => {
+  const NAME = /^[A-Za-z0-9_-]+$/;
+  // Clean names pass through unchanged.
+  expect(mcpToolName("demo", "echo")).toBe("mcp__demo__echo");
+  // Dots (and other illegal chars) become underscores.
+  expect(mcpToolName("gh", "github.search")).toBe("mcp__gh__github_search");
+  expect(mcpToolName("a b", "x/y:z")).toBe("mcp__a_b__x_y_z");
+  // Over-long names are truncated to ≤64 chars but stay unique + valid.
+  const long = mcpToolName("server", "a".repeat(120));
+  expect(long.length).toBeLessThanOrEqual(64);
+  expect(long).toMatch(NAME);
+  const longB = mcpToolName("server", `${"a".repeat(119)}b`);
+  expect(longB).not.toBe(long); // different source → different hash suffix
+  for (const n of [mcpToolName("gh", "github.search"), long])
+    expect(n).toMatch(NAME);
+});
+
+test("a sanitized MCP tool still calls the server with its real name", async () => {
+  const calls: { name: string; args: unknown }[] = [];
+  const client: McpClient = {
+    listTools: async () => [{ name: "github.search" }],
+    callTool: async (name, args) => {
+      calls.push({ name, args });
+      return { content: "ok", isError: false };
+    },
+    close: async () => {},
+  };
+  const def = toToolDefinition("gh", (await client.listTools())[0]!, client);
+  expect(def.name).toBe("mcp__gh__github_search"); // sanitized for the model
+  await def.execute({ q: "x" }, {} as never);
+  expect(calls).toEqual([{ name: "github.search", args: { q: "x" } }]); // real name to server
 });
 
 test("an adapted tool calls through to the MCP client and renders text", async () => {

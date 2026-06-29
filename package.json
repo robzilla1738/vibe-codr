@@ -24,7 +24,6 @@
   },
   "devDependencies": {
     "@ai-sdk/anthropic": "^2.0.0",
-    "@ai-sdk/baseten": "^1.0.0",
     "@ai-sdk/deepseek": "^1.0.0",
     "@ai-sdk/openai": "^2.0.0",
     "@ai-sdk/openai-compatible": "^1.0.0",

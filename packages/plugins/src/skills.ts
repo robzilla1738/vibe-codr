@@ -27,9 +27,15 @@ export class SkillRegistry {
     return [...this.#skills.values()];
   }
 
-  /** One-line summaries for the system prompt (progressive disclosure). */
+  /** One-line summaries for the system prompt (progressive disclosure). The
+   * `whenToUse` trigger guidance (if the author provided it) is included so the
+   * model knows when to reach for the skill. */
   descriptions(): string[] {
-    return this.list().map((s) => `- ${s.name}: ${s.description}`);
+    return this.list().map((s) =>
+      s.whenToUse
+        ? `- ${s.name}: ${s.description} (use when: ${s.whenToUse})`
+        : `- ${s.name}: ${s.description}`,
+    );
   }
 }
 

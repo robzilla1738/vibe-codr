@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { loadConfig, type Config } from "@vibe/config";
+import { loadConfig, defaultConfig, type Config } from "@vibe/config";
 import {
   Engine,
   formatModelList,
@@ -36,7 +36,7 @@ OPTIONS
 
 MODEL STRINGS
   <provider>/<model-id>   anthropic, openai, deepseek, xai, minimax, codex,
-                          fireworks, baseten, openrouter, lmstudio
+                          fireworks, baseten, openrouter, ollama, lmstudio
 
 IN-SESSION
   Type /help for slash commands (/model /plan /status /config /diff /review …),
@@ -84,11 +84,23 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
-  let config = await loadConfig({ cwd, overrides });
+  const isSetup = positionals[0] === "setup" || positionals[0] === "login";
+  let config: Config;
+  try {
+    config = await loadConfig({ cwd, overrides });
+  } catch (err) {
+    // `setup` must stay reachable even when the on-disk config is invalid —
+    // that's the command meant to repair it. Fall back to defaults.
+    if (!isSetup) throw err;
+    process.stderr.write(
+      `Existing config is invalid (${(err as Error).message}); starting setup from defaults.\n`,
+    );
+    config = defaultConfig();
+  }
 
   // `vibecodr setup` (alias `login`) — (re)run the guided setup on demand, e.g.
   // to switch providers or add an Ollama Cloud key, then exit.
-  if (positionals[0] === "setup" || positionals[0] === "login") {
+  if (isSetup) {
     const ok = await runOnboarding(config, new ProviderRegistry());
     if (!ok) process.stderr.write("Setup needs an interactive terminal.\n");
     return ok ? 0 : 1;
@@ -96,8 +108,10 @@ export async function run(argv: string[]): Promise<number> {
 
   // First-run setup: if the interactive user has no key for their model's
   // provider, capture keys and reload config before starting. Skipped for
-  // headless (-p) and `models`, which surface the normal auth error instead.
-  const interactive = !values.prompt && positionals[0] !== "models";
+  // headless (-p, including `-p ""`/`-p -` stdin forms) and `models`, which
+  // surface the normal auth error instead. Gate on `=== undefined` so an empty
+  // `-p ""` (pipe form) doesn't fall into interactive onboarding.
+  const interactive = values.prompt === undefined && positionals[0] !== "models";
   if (interactive) {
     const registry = new ProviderRegistry();
     if (needsOnboarding(config, registry)) {
@@ -126,6 +140,9 @@ export async function run(argv: string[]): Promise<number> {
     interactive,
     ...(projectMemory ? { projectMemory } : {}),
     ...(resume ? { resume } : {}),
+    // Explicit flags override a resumed session's saved model/mode.
+    ...(values.model ? { modelOverride: values.model } : {}),
+    ...(overrides.mode ? { modeOverride: overrides.mode } : {}),
   });
   await engine.bootstrap();
 
@@ -143,11 +160,12 @@ export async function run(argv: string[]): Promise<number> {
       values.prompt === "-" || values.prompt === ""
         ? (await Bun.stdin.text()).trim()
         : values.prompt;
-    await runOneShot(engine, prompt, {
+    const ok = await runOneShot(engine, prompt, {
       showReasoning: values.reasoning,
       outputFormat,
     });
-    return 0;
+    // Propagate failure so `vibecodr -p … && next` and CI behave correctly.
+    return ok ? 0 : 1;
   }
 
   await startTui(engine);

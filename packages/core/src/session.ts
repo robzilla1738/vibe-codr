@@ -21,7 +21,7 @@ import {
 import type { Config, ModelPrice } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
 import { type Toolset, toAISDKTool, type ToolRuntimeBase } from "@vibe/tools";
-import type { SkillRegistry } from "@vibe/plugins";
+import type { HookBus, SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
 import { EventBus as EventBusImpl } from "./event-bus.ts";
 import { composeSystemPrompt } from "./system-prompt.ts";
@@ -56,6 +56,8 @@ export interface SessionDeps {
   agents?: Map<string, NamedAgent>;
   /** Skills available for progressive disclosure via `use_skill`. */
   skills?: SkillRegistry;
+  /** Plugin hook bus for tool.before/after.execute and assistant.message. */
+  hooks?: HookBus;
   /** Subagent recursion depth (0 = root). */
   depth?: number;
   id?: string;
@@ -101,6 +103,10 @@ export class Session {
   #budgetTripped = false;
   #createdAt: number;
   #abort = new AbortController();
+  /** The last turn's fatal error message, if any (null on success). Lets a
+   * parent detect a failed subagent — the child runs on an isolated bus so its
+   * `engine-error` never reaches the parent UI. */
+  #lastError: string | null = null;
 
   constructor(deps: SessionDeps) {
     this.#deps = deps;
@@ -177,6 +183,11 @@ export class Session {
     return this.#costUSD;
   }
 
+  /** The last turn's fatal error message, or null if it succeeded. */
+  get lastError(): string | null {
+    return this.#lastError;
+  }
+
   /** The current working task list (live reference; treat as read-only). */
   get tasks(): Task[] {
     return this.#tasks;
@@ -205,6 +216,24 @@ export class Session {
   abort(): void {
     this.#abort.abort();
     this.#abort = new AbortController();
+  }
+
+  /** A marker of the current conversation length (for checkpoint rollback). */
+  conversationMark(): { messages: number; history: number } {
+    return { messages: this.#modelMessages.length, history: this.#history.length };
+  }
+
+  /**
+   * Roll the conversation back to a previous mark (after `/undo` reverts files),
+   * so the model context no longer claims edits that were just undone.
+   */
+  rewindConversation(mark: { messages: number; history: number }): void {
+    if (mark.messages < this.#modelMessages.length) {
+      this.#modelMessages = this.#modelMessages.slice(0, mark.messages);
+    }
+    if (mark.history < this.#history.length) {
+      this.#history = this.#history.slice(0, mark.history);
+    }
   }
 
   /** Reset conversation history (model context and UI history). */
@@ -268,7 +297,7 @@ export class Session {
       inputSchema: Input,
       readOnly: false,
       concurrencySafe: true,
-      execute: async ({ prompt, agent, model, mode }) => {
+      execute: async ({ prompt, agent, model, mode }, ctx) => {
         const named = agent ? this.#deps.agents?.get(agent) : undefined;
         if (agent && !named) {
           return { output: `Unknown agent "${agent}". Run /agents to list them.`, isError: true };
@@ -282,13 +311,20 @@ export class Session {
           depth: this.depth + 1,
           ...(named?.system ? { extraSystem: [named.system] } : {}),
         });
+        // Aborting the parent turn (e.g. /abort, spend stop) cancels the child.
+        const onAbort = () => child.abort();
+        ctx.abortSignal?.addEventListener("abort", onAbort, { once: true });
         this.#deps.bus.emit({
           type: "subagent-started",
           sessionId: this.id,
           subagentId: child.id,
           prompt,
         });
-        await child.run(prompt);
+        try {
+          await child.run(prompt);
+        } finally {
+          ctx.abortSignal?.removeEventListener("abort", onAbort);
+        }
         // Fold the child's tokens + cost into the parent so `/cost` and the
         // spend guard account for delegated work (the child runs on an isolated
         // bus, so its own usage events never reach the parent UI).
@@ -300,6 +336,20 @@ export class Session {
           usage: this.#usageSnapshot(),
         });
         this.#enforceBudget();
+        // Surface a child failure to the parent model (and as a notice) instead
+        // of masking it as "no output".
+        if (child.lastError) {
+          this.#deps.bus.emit({
+            type: "subagent-finished",
+            sessionId: this.id,
+            subagentId: child.id,
+            result: `failed: ${child.lastError}`,
+          });
+          return {
+            output: `Subagent failed: ${child.lastError}`,
+            isError: true,
+          };
+        }
         const result = child.lastAssistantText() || "(subagent produced no output)";
         this.#deps.bus.emit({
           type: "subagent-finished",
@@ -365,6 +415,7 @@ export class Session {
     const { bus, registry, toolset, config } = this.#deps;
     this.busy = true;
     this.#turnMutated = false;
+    this.#lastError = null;
     this.#pushUser(input, images);
 
     try {
@@ -394,12 +445,23 @@ export class Session {
         this.#deps.permissionResolver,
         config.approvalMode === "auto" ? "allow" : "ask",
       );
+      const hooks = this.#deps.hooks;
       const base: ToolRuntimeBase = {
         cwd: this.#deps.cwd,
         sessionId: this.id,
         emit: (e: UIEvent) => bus.emit(e),
         checkPermission: (name: string, input: unknown) =>
           checker.check(name, input),
+        ...(hooks
+          ? {
+              beforeTool: async (toolName: string, input: unknown) => {
+                const r = await hooks.run("tool.before.execute", { toolName, input });
+                return { deny: r.deny, reason: r.reason };
+              },
+              afterTool: (toolName: string, output: unknown) =>
+                void hooks.run("tool.after.execute", { toolName, output }),
+            }
+          : {}),
       };
 
       const tools = toolset.aiTools(this.mode, base);
@@ -502,7 +564,16 @@ export class Session {
           }
         }
       }
+      // Notify plugins of the completed assistant message (best-effort).
+      if (this.#deps.hooks && assistant) {
+        const text = assistant.parts
+          .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
+          .map((p) => p.text)
+          .join("");
+        if (text) await this.#deps.hooks.run("assistant.message", { sessionId: this.id, text });
+      }
     } catch (err) {
+      this.#lastError = (err as Error).message;
       bus.emit({
         type: "engine-error",
         sessionId: this.id,
@@ -611,6 +682,21 @@ export class Session {
   fork(overrides: Partial<SessionDeps> & { model?: string }): Session {
     return new Session({
       ...this.#deps,
+      // A subagent is a FRESH conversation with its own context window. Never
+      // inherit the parent's seeded/resumed history, usage, cost, or tasks
+      // (that would corrupt isolation and double-count cost on `--resume`), its
+      // persistence store (subagents are ephemeral — persisting them pollutes
+      // `/resume` and can hijack `--continue`), or its system extras/identity.
+      // `...overrides` below re-applies any the caller intends (e.g. extraSystem
+      // for a named agent, depth).
+      initialModelMessages: undefined,
+      initialHistory: undefined,
+      initialTasks: undefined,
+      initialUsage: undefined,
+      initialCostUSD: undefined,
+      store: undefined,
+      extraSystem: undefined,
+      createdAt: undefined,
       id: createId("sub"),
       model: overrides.model ?? this.model,
       mode: overrides.mode ?? this.mode,

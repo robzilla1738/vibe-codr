@@ -50,10 +50,13 @@ export function modeLabel(m: UiMode): string {
   return m === "plan" ? "◑ PLAN" : m === "execute" ? "▶ EXECUTE" : "⚡ YOLO";
 }
 
-/** The signature dark purple for execute mode (distinct from plan's hue). */
-export const EXECUTE_PURPLE = "#8b5cf6";
-
-/** Mode accent color: plan = calm cyan, execute = core purple, yolo = danger. */
+/**
+ * The single accent color for the current mode — this is the *only* hue the UI
+ * shows at a time (everything else is neutral text/muted). It's theme-driven so
+ * each theme stays cohesive: execute = the theme's primary (the default theme's
+ * primary is the signature dark purple), plan = the calm secondary, yolo = the
+ * danger color.
+ */
 export function modeColor(m: UiMode, p: Palette): string {
-  return m === "plan" ? p.tool : m === "yolo" ? p.del : EXECUTE_PURPLE;
+  return m === "plan" ? p.tool : m === "yolo" ? p.del : p.primary;
 }

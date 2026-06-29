@@ -18,10 +18,22 @@ export interface Palette {
   taskPending: string;
   /** Accent for the status/footer bar. */
   accent: string;
+  /** Brand/primary accent — the heavy left-gutter on user message blocks. */
+  primary: string;
   /** Box borders (task panel, plan box, input). */
   border: string;
   /** Secondary text: footer hint, placeholder, tool-result lines. */
   muted: string;
+  /** Inset panel background (user message block, menu surface). */
+  panel: string;
+  /** Raised surface for the text input field (lighter than panel). */
+  elevated: string;
+  /** Selected-row background + foreground in the slash-command menu. */
+  selBg: string;
+  selFg: string;
+  /** Subtle background tints behind diff added/removed lines. */
+  addBg: string;
+  delBg: string;
 }
 
 /** Tokyo-Night-ish dark palette (the default). */
@@ -38,9 +50,17 @@ const DEFAULT: Palette = {
   taskDone: "#565f89",
   taskActive: "#7dcfff",
   taskPending: "#c0caf5",
-  accent: "#7aa2f7",
-  border: "#3b4261",
+  accent: "#8b5cf6",
+  // The single accent: execute mode's signature dark purple (see modeColor).
+  primary: "#8b5cf6",
+  border: "#2c3047",
   muted: "#565f89",
+  panel: "#1a1c28",
+  elevated: "#242736",
+  selBg: "#2e3346",
+  selFg: "#c0caf5",
+  addBg: "#1b2b25",
+  delBg: "#2d2030",
 };
 
 /** Light palette for bright terminals. */
@@ -58,8 +78,15 @@ const LIGHT: Palette = {
   taskActive: "#0f7b9c",
   taskPending: "#343b58",
   accent: "#2959aa",
-  border: "#c4c8d4",
+  primary: "#2959aa",
+  border: "#d0d4de",
   muted: "#9699a3",
+  panel: "#eef1f8",
+  elevated: "#e3e8f3",
+  selBg: "#d3dcef",
+  selFg: "#1a2540",
+  addBg: "#e4f0e0",
+  delBg: "#f6e0e6",
 };
 
 /** High-contrast palette for accessibility. */
@@ -77,8 +104,45 @@ const CONTRAST: Palette = {
   taskActive: "#00ffff",
   taskPending: "#ffffff",
   accent: "#00d7ff",
+  primary: "#00d7ff",
   border: "#5f5f5f",
   muted: "#a8a8a8",
+  panel: "#161616",
+  elevated: "#242424",
+  selBg: "#343434",
+  selFg: "#ffffff",
+  addBg: "#003000",
+  delBg: "#3a0000",
+};
+
+/**
+ * The opencode palette — a warm "peach on neutral graphite" scheme ported from
+ * opencode's default theme. Its signature is the `#fab283` primary used for the
+ * user-message gutter and menu selection.
+ */
+const OPENCODE: Palette = {
+  user: "#5c9cf5",
+  assistant: "#eeeeee",
+  tool: "#56b6c2",
+  notice: "#f5a742",
+  plan: "#9d7cd8",
+  subagent: "#7fd88f",
+  add: "#4fd6be",
+  del: "#c53b53",
+  ctx: "#828bb8",
+  taskDone: "#808080",
+  taskActive: "#56b6c2",
+  taskPending: "#eeeeee",
+  accent: "#fab283",
+  primary: "#fab283",
+  border: "#3c3c3c",
+  muted: "#808080",
+  panel: "#141414",
+  elevated: "#1e1e1e",
+  selBg: "#2a2a2a",
+  selFg: "#eeeeee",
+  addBg: "#20303b",
+  delBg: "#37222c",
 };
 
 export const THEMES: Record<string, Palette> = {
@@ -86,6 +150,7 @@ export const THEMES: Record<string, Palette> = {
   dark: DEFAULT,
   light: LIGHT,
   contrast: CONTRAST,
+  opencode: OPENCODE,
 };
 
 /** All selectable theme names. */

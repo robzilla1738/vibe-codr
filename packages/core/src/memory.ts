@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, parse, relative, resolve } from "node:path";
 
 /**
  * Project-memory file names, in load order. We support the conventions of the
@@ -9,6 +10,42 @@ import { join } from "node:path";
  * heading so the model can tell them apart.
  */
 export const MEMORY_FILES = ["VIBE.md", "AGENTS.md", "CLAUDE.md"] as const;
+
+/** Per-file soft cap so a giant memory file can't bloat (and cache) every turn. */
+export const MAX_MEMORY_BYTES = 32 * 1024;
+
+/**
+ * Directories to search for memory, lowest precedence first: from the git root
+ * down to `cwd`. We only walk up when a `.git` ancestor is found — otherwise we
+ * read just `cwd`, so running outside a repo never silently slurps `~/AGENTS.md`.
+ */
+function memoryDirs(cwd: string): string[] {
+  const start = resolve(cwd);
+  const fsRoot = parse(start).root;
+  const home = homedir();
+  const chain: string[] = [];
+  let dir = start;
+  let foundGit = false;
+  while (true) {
+    chain.push(dir);
+    if (existsSync(join(dir, ".git"))) {
+      foundGit = true;
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir || dir === fsRoot || dir === home) break;
+    dir = parent;
+  }
+  // chain is [cwd, …, gitRoot]; reverse → [gitRoot, …, cwd] (cwd wins).
+  return foundGit ? chain.reverse() : [start];
+}
+
+/** Soft-cap a memory file's content, appending a visible truncation marker. */
+function capMemory(text: string): string {
+  if (Buffer.byteLength(text, "utf8") <= MAX_MEMORY_BYTES) return text;
+  const kept = text.slice(0, MAX_MEMORY_BYTES).trimEnd();
+  return `${kept}\n\n…[memory truncated to ${Math.floor(MAX_MEMORY_BYTES / 1024)} KB]`;
+}
 
 /** Path to the user-global notes file (applies across all projects). */
 export function globalMemoryPath(): string {
@@ -35,21 +72,34 @@ async function readTrimmed(path: string): Promise<string | undefined> {
 /**
  * Discover every memory file that exists, in precedence order (lowest first):
  *   1. global  `~/.config/vibe-codr/VIBE.md`
- *   2. project `./VIBE.md`, then `./AGENTS.md`, then `./CLAUDE.md`
- * Later files win when guidance conflicts. Returns the raw sources so callers
- * can both inject them (system prompt) and list them (`/memory`).
+ *   2. project — walking from the git root down to `cwd`, at each directory
+ *      `VIBE.md`, then `AGENTS.md`, then `CLAUDE.md`.
+ * Later sources win when guidance conflicts (so `cwd` overrides the repo root,
+ * which overrides global). Returns the raw sources so callers can both inject
+ * them (system prompt) and list them (`/memory`). Each file is byte-capped.
  */
 export async function loadMemorySources(cwd: string): Promise<MemorySource[]> {
   const sources: MemorySource[] = [];
 
   const global = await readTrimmed(globalMemoryPath());
   if (global) {
-    sources.push({ scope: "global", path: "~/.config/vibe-codr/VIBE.md", text: global });
+    sources.push({ scope: "global", path: "~/.config/vibe-codr/VIBE.md", text: capMemory(global) });
   }
 
-  for (const name of MEMORY_FILES) {
-    const text = await readTrimmed(join(cwd, name));
-    if (text) sources.push({ scope: "project", path: name, text });
+  const here = resolve(cwd);
+  const seen = new Set<string>();
+  for (const dir of memoryDirs(cwd)) {
+    for (const name of MEMORY_FILES) {
+      const abs = join(dir, name);
+      if (seen.has(abs)) continue;
+      seen.add(abs);
+      const text = await readTrimmed(abs);
+      if (!text) continue;
+      // Show repo-root/ancestor files by their path relative to cwd; the cwd's
+      // own files stay bare (e.g. "AGENTS.md").
+      const rel = dir === here ? name : `${relative(here, dir) || "."}/${name}`;
+      sources.push({ scope: "project", path: rel, text: capMemory(text) });
+    }
   }
 
   return sources;
@@ -85,10 +135,11 @@ export function formatMemory(sources: MemorySource[]): string {
       "your stack and conventions. Project files override the global one.",
     ].join("\n");
   }
+  const width = Math.max(...sources.map((s) => s.path.length));
   const lines = sources.map((s) => {
     const bytes = Buffer.byteLength(s.text, "utf8");
     const size = bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`;
-    return `  ${s.scope === "global" ? "○" : "●"} ${s.path.padEnd(28)} ${size}`;
+    return `  ${s.scope === "global" ? "○" : "●"} ${s.path.padEnd(width)} ${size}`;
   });
   return [
     "Memory loaded into every system prompt (lowest precedence first):",

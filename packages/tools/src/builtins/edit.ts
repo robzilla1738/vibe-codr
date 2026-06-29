@@ -120,6 +120,7 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
     ctx.emit({
       type: "file-changed",
       sessionId: ctx.sessionId,
+      toolCallId: ctx.toolCallId,
       path,
       action: "edit",
       diff: diff.text,

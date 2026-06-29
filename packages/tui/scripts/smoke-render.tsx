@@ -4,9 +4,10 @@
  * app.tsx can't run under `bun test` (OpenTUI is an optional native peer dep and
  * needs the Solid JSX transform), so this drives the REAL `App` component with a
  * mock engine via OpenTUI's deterministic test renderer and asserts the things
- * that have actually broken before: the prompt input submits, and the streamed
- * assistant reply renders. Run via `bun run smoke:tui` (entry wires the Solid
- * preload first). Exits non-zero on failure.
+ * that have actually broken before: the prompt input submits, the streamed
+ * assistant reply renders (via the native <markdown> renderable), tool output is
+ * condensed and expands on click, and the context rail shows tasks/subagents.
+ * Run via `bun run smoke:tui`. Exits non-zero on failure.
  */
 import { testRender } from "@opentui/solid";
 import type { EngineClient, EngineCommand, UIEvent } from "@vibe/shared";
@@ -56,11 +57,12 @@ const engine: EngineClient = {
   },
 };
 
-const t = await testRender(() => <App engine={engine} />, { width: 72, height: 18 });
+// Wide enough (≥80 cols) that the context rail renders alongside the transcript.
+const t = await testRender(() => <App engine={engine} />, { width: 104, height: 30 });
 await t.renderOnce();
 const settle = async () => {
   await t.flush();
-  await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 25));
   await t.waitForVisualIdle().catch(() => {});
   await t.flush();
 };
@@ -69,7 +71,7 @@ const settle = async () => {
 let frame = t.captureCharFrame();
 check("header shows branding", frame.includes("vibe-codr"));
 check("header shows EXECUTE mode", frame.includes("EXECUTE"));
-check("header shows model", frame.includes("ollama/glm-5.2"));
+check("header/rail shows model", frame.includes("ollama/glm-5.2"));
 
 // 2) Typing + Enter submits a prompt command (the focus/submit path).
 await t.mockInput.typeText("hello there");
@@ -81,31 +83,106 @@ check(
   sent.some((c) => c.type === "submit-prompt" && c.text === "hello there"),
 );
 
-// 3) A streamed assistant reply renders (the regression that showed no output).
+// 3) A streamed assistant reply renders through the markdown renderable.
 push({ type: "user-message", text: "What is 6 times 7?" });
 push({ type: "assistant-text-delta", id: "d", delta: "The answer is " } as UIEvent);
-push({ type: "assistant-text-delta", id: "d", delta: "42." } as UIEvent);
+push({ type: "assistant-text-delta", id: "d", delta: "**42**." } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
 check("user message renders", frame.includes("What is 6 times 7?"));
-check("streamed assistant reply renders", frame.includes("42."));
+check("streamed assistant reply renders", frame.includes("42"));
+// A turn is in flight (no turn-finished yet) → the working spinner shows.
+check("working indicator renders while a turn runs", frame.includes("Working"));
 
-// 4) A tool call renders.
+// 4) A tool call renders with its icon + summary, and its output is condensed.
 push({ type: "tool-call-started", toolCallId: "t1", toolName: "read", input: { path: "x" } } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
-check("tool call renders", frame.includes("read"));
+check("tool call renders with icon + summary", frame.includes("→ read x"));
+push({
+  type: "tool-call-finished",
+  toolCallId: "t1",
+  toolName: "read",
+  output: "ALPHA_BODY\nBETA_BODY\nGAMMA_BODY",
+  isError: false,
+} as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("tool output is condensed by default", frame.includes("lines") && !frame.includes("ALPHA_BODY"));
 
-// 5) The slash-command menu opens, drills into values, and runs the selection.
+// 5) Clicking the tool row expands its output (click-to-expand).
+const rowOf = (needle: string) =>
+  t.captureCharFrame().split("\n").findIndex((l) => l.includes(needle));
+const toolRow = rowOf("read x");
+check("located the tool row to click", toolRow >= 0);
+if (toolRow >= 0) {
+  await t.mockMouse.click(5, toolRow);
+  await settle();
+  frame = t.captureCharFrame();
+  check("clicking a tool row expands its output", frame.includes("ALPHA_BODY"));
+}
+
+// 5b) A file edit folds its diff into ONE row, attributed by tool call id, and
+// the diff is shown expanded by default (no click needed). The edit also echoes
+// the diff back as its tool-result; that echo must be suppressed so it doesn't
+// clobber the rendered hunk. The echo text is deliberately disjoint from the
+// diff content so the assertions actually catch a suppression regression.
+push({ type: "tool-call-started", toolCallId: "t2", toolName: "edit", input: { path: "g.ts" } } as UIEvent);
+push({
+  type: "file-changed",
+  sessionId: "smoke",
+  toolCallId: "t2",
+  path: "g.ts",
+  action: "edit",
+  diff: " ctx unchanged\n-OLD_LINE\n+NEW_LINE",
+  added: 1,
+  removed: 1,
+} as UIEvent);
+push({ type: "tool-call-finished", toolCallId: "t2", toolName: "edit", output: "ECHO_SHOULD_BE_HIDDEN", isError: false } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("file edit folds into one diff row", frame.includes("edited g.ts"));
+check("diff is expanded by default", frame.includes("NEW_LINE") && frame.includes("OLD_LINE"));
+check(
+  "the edit's tool-result echo is suppressed (diff not clobbered)",
+  !frame.includes("ECHO_SHOULD_BE_HIDDEN"),
+);
+
+// 5c) Subagent assistant text must NOT leak into the parent transcript.
+push({ type: "assistant-text-delta", sessionId: "smoke", subagentId: "sa_x", delta: "SUBAGENT_LEAK" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("subagent text does not leak into the transcript", !frame.includes("SUBAGENT_LEAK"));
+
+// 6) The context rail shows the task list and live subagents.
+push({
+  type: "tasks-updated",
+  tasks: [
+    { id: "k1", title: "Wire the catalog pricing", status: "completed" },
+    { id: "k2", title: "Render the cost footer", status: "in_progress" },
+  ],
+} as UIEvent);
+push({ type: "subagent-started", subagentId: "sa_42", prompt: "explore the repo" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("rail shows the TASKS section", frame.includes("TASKS"));
+check("rail shows a task title", frame.includes("Render the cost footer"));
+check("rail shows the SUBAGENTS section", frame.includes("SUBAGENTS"));
+check("rail shows a running subagent", frame.includes("explore the repo"));
+check("rail shows the SESSION section", frame.includes("SESSION"));
+
+// The turn ends → the working spinner clears.
+push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("working indicator clears when the turn finishes", !frame.includes("Working"));
+
+// 7) The slash-command menu opens, drills into values, and runs the selection.
 sent.length = 0;
 await t.mockInput.typeText("/appr");
 await settle();
 frame = t.captureCharFrame();
 check("menu opens on slash", frame.includes("approvals"));
-// Enter drills into the value list ("/approvals "), Down highlights "auto",
-// Enter runs it. Reaching set-approvals:auto proves the whole drill+select path
-// (the value list can't be navigated unless it opened). Frame-text of the value
-// rows is asserted by the paletteState unit tests, not the headless capture.
 t.mockInput.pressEnter();
 await settle();
 t.mockInput.pressArrow("down");
@@ -115,6 +192,27 @@ await settle();
 check(
   "menu drills into values and runs the selection",
   sent.some((c) => c.type === "set-approvals" && c.mode === "auto"),
+);
+
+// 8) A permission request renders as a card and a typed y/a/n answers it.
+sent.length = 0;
+push({
+  type: "permission-request",
+  id: "perm1",
+  toolName: "bash",
+  input: { command: "rm -rf build" },
+} as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("permission request renders as a card", frame.includes("[y]es once"));
+check("permission card identifies the tool", frame.includes("bash"));
+await t.mockInput.typeText("y");
+await settle();
+t.mockInput.pressEnter();
+await settle();
+check(
+  "answering the permission resolves it (allow once)",
+  sent.some((c) => c.type === "resolve-permission" && c.decision === "once"),
 );
 
 if (failures.length) {

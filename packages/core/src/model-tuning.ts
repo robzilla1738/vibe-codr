@@ -73,21 +73,11 @@ export function buildModelTuning(modelString: string, config: Config): ModelTuni
       }
       break;
     }
-    // OpenAI and xAI/Grok take an effort tier directly. (Codex/DeepSeek
-    // reasoning models reason natively, so no provider option is needed.)
-    case "openai":
-    case "xai": {
+    // OpenAI takes an effort tier directly. (Codex/DeepSeek reason natively, and
+    // xai/openrouter now route through openai-compatible, which doesn't accept the
+    // native reasoning options — so for those the model reasons at its default.)
+    case "openai": {
       if (effort) opts[provider] = { reasoningEffort: effort };
-      break;
-    }
-    case "openrouter": {
-      // OpenRouter accepts a unified reasoning block.
-      if (effort || budgetTokens) {
-        const reasoning: Record<string, unknown> = {};
-        if (effort) reasoning.effort = effort;
-        if (budgetTokens) reasoning.max_tokens = budgetTokens;
-        opts.openrouter = { reasoning };
-      }
       break;
     }
     default:

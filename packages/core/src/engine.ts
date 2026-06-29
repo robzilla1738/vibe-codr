@@ -8,6 +8,7 @@ import {
   type EngineCommand,
   type EngineSnapshot,
   type Logger,
+  type Mode,
   type QueuedItem,
   type UIEvent,
 } from "@vibe/shared";
@@ -75,6 +76,10 @@ export interface EngineOptions {
   interactive?: boolean;
   /** Persisted session to resume (from SessionStore.load). */
   resume?: PersistedSession;
+  /** Explicit `--model` / `--mode` flags that should override a resumed session's
+   * saved values (an explicit user flag beats the persisted meta). */
+  modelOverride?: string;
+  modeOverride?: Mode;
   logger?: Logger;
 }
 
@@ -102,6 +107,8 @@ export class Engine implements EngineClient {
   #idleResolvers: (() => void)[] = [];
   #agents = new Map<string, NamedAgent>();
   #loop: LoopController | undefined;
+  /** The session running the current loop iteration, so a stop can abort it. */
+  #loopSession: Session | undefined;
   #permissionResolver: PermissionResolver | undefined;
   #interactive: boolean;
   #alwaysAllow = new Set<string>();
@@ -141,7 +148,15 @@ export class Engine implements EngineClient {
           },
         }),
       );
-    this.hooks = opts.hooks ?? new HookBus();
+    // Surface tool-name collisions (MCP/plugin tools shadowing a built-in, or a
+    // duplicate registration) as a user-visible notice instead of silently
+    // last-write-wins.
+    this.toolset.onConflict = (message) => this.#notice(message, "warn");
+    this.hooks =
+      opts.hooks ??
+      new HookBus((name, err) =>
+        this.#notice(`Plugin hook "${name}" failed: ${err.message}`, "warn"),
+      );
     this.commands = opts.commands ?? new CommandRegistry();
     this.skills = opts.skills ?? new SkillRegistry();
     this.catalog = opts.catalog ?? new CatalogService();
@@ -153,13 +168,16 @@ export class Engine implements EngineClient {
       toolset: this.toolset,
       bus: this.#bus,
       cwd: this.#cwd,
-      model: resume?.meta.model ?? opts.config.model,
-      mode: resume?.meta.mode ?? opts.config.mode,
+      // An explicit CLI --model/--mode wins over the resumed session's saved
+      // value; otherwise the resumed value wins, falling back to config.
+      model: opts.modelOverride ?? resume?.meta.model ?? opts.config.model,
+      mode: opts.modeOverride ?? resume?.meta.mode ?? opts.config.mode,
       goal: resume?.meta.goal ?? null,
       projectMemory: opts.projectMemory,
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       skills: this.skills,
+      hooks: this.hooks,
       store: this.#store,
       getContextWindow: (model) => this.catalog.contextWindow(model),
       getPricing: (model) => this.#resolvePricing(model),
@@ -244,6 +262,7 @@ export class Engine implements EngineClient {
       model: this.#session.model,
       mode: this.#session.mode,
     });
+    void this.hooks.run("session.start", { sessionId: this.#session.id });
   }
 
   send(command: EngineCommand): void {
@@ -261,7 +280,9 @@ export class Engine implements EngineClient {
       case "set-approvals":
         // Immediate (not queued), mirroring set-mode — the mode toggle must
         // take effect at once so the next turn sees the new approval policy.
-        this.#handleApprovals(command.mode);
+        // Quiet: the Shift+Tab toggle is reflected by the header pill, so it
+        // shouldn't flood the transcript with approval-mode notices.
+        this.#handleApprovals(command.mode, true);
         break;
       case "set-model":
         this.#session.setModel(command.model);
@@ -298,6 +319,7 @@ export class Engine implements EngineClient {
         break;
       }
       case "shutdown":
+        void this.hooks.run("session.end", { sessionId: this.#session.id });
         this.#loop?.stop("shutdown");
         // Unblock any in-flight permission prompts so nothing hangs.
         for (const resolve of this.#pendingPermissions.values()) resolve("deny");
@@ -391,6 +413,7 @@ export class Engine implements EngineClient {
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       skills: this.skills,
+      hooks: this.hooks,
       getContextWindow: (model) => this.catalog.contextWindow(model),
       getPricing: (model) => this.#resolvePricing(model),
     });
@@ -407,9 +430,22 @@ export class Engine implements EngineClient {
         if (r.kind === "prompt") text = r.text;
       }
     }
-    const session = this.#buildSession();
-    await session.run(text);
-    return session.lastAssistantText();
+    // Route the iteration through the same FIFO queue as user turns so a loop
+    // tick never executes concurrently with a user prompt (which would race
+    // file writes and interleave output). `#loopSession` is exposed so `/loop
+    // stop` / shutdown can abort the turn that's actually in flight.
+    return new Promise<string>((resolve) => {
+      this.#enqueue(`loop: ${queueLabel(text)}`, async () => {
+        const session = this.#buildSession();
+        this.#loopSession = session;
+        try {
+          await session.run(text);
+          resolve(session.lastAssistantText());
+        } finally {
+          this.#loopSession = undefined;
+        }
+      });
+    });
   }
 
   /** Evaluate a loop's --until condition with a cheap structured call. */
@@ -467,8 +503,13 @@ export class Engine implements EngineClient {
 
   /** Handle a built-in or plugin/file slash command. */
   async #handleSlash(name: string, args: string): Promise<void> {
-    // Plugin/file commands take precedence over built-ins of the same name.
-    const custom = this.commands.get(name);
+    // Plugin/file commands take precedence over built-ins of the same name —
+    // except a small set of safety-critical built-ins, which can't be shadowed
+    // (a stray `.vibe/commands/undo.md` must not disable real `/undo`).
+    if (RESERVED_SLASH.has(name) && this.commands.get(name)) {
+      this.#notice(`Ignoring custom /${name}: it shadows a protected built-in.`, "warn");
+    }
+    const custom = RESERVED_SLASH.has(name) ? undefined : this.commands.get(name);
     if (custom) {
       const result = custom.run(args);
       if (result.kind === "prompt") {
@@ -684,6 +725,7 @@ export class Engine implements EngineClient {
       ...(parsed.until
         ? { evaluate: (r: string, c: string) => this.#evaluateCondition(r, c) }
         : {}),
+      onStop: () => this.#loopSession?.abort(),
       emit: (e) => this.#bus.emit(e),
     });
     this.#loop = loop;
@@ -740,13 +782,19 @@ export class Engine implements EngineClient {
       await new Promise((resolve) => setTimeout(resolve, 0));
     } while (this.#pending.length);
     this.#draining = false;
+    void this.hooks.run("session.idle", { sessionId: this.#session.id });
     for (const resolve of this.#idleResolvers.splice(0)) resolve();
   }
 
   async #handlePrompt(text: string): Promise<void> {
     // Snapshot the workspace before an edit turn so /undo can roll it back.
     if (this.#config.checkpoints.enabled && this.#session.mode === "execute") {
-      const cp = await this.#checkpoints.snapshot(queueLabel(text));
+      // Capture the conversation length too, so /undo can rewind history to
+      // before this turn (otherwise the model still "remembers" undone edits).
+      const cp = await this.#checkpoints.snapshot(
+        queueLabel(text),
+        this.#session.conversationMark(),
+      );
       if (cp) {
         this.#bus.emit({ type: "checkpoint-created", id: cp.id, label: cp.label });
       }
@@ -833,6 +881,9 @@ export class Engine implements EngineClient {
       this.#notice("No checkpoint to undo.");
       return;
     }
+    // Roll the conversation back to match the restored files so the model no
+    // longer believes the undone edits exist.
+    if (cp.conversation) this.#session.rewindConversation(cp.conversation);
     this.#bus.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
     this.#notice(`Reverted to checkpoint: ${cp.label}`);
   }
@@ -871,7 +922,7 @@ export class Engine implements EngineClient {
   }
 
   /** `/approvals [ask|auto]` — show or switch the default approval mode. */
-  #handleApprovals(args: string): void {
+  #handleApprovals(args: string, quiet = false): void {
     const next = args.trim().toLowerCase();
     if (!next) {
       this.#notice(`Approval mode: ${this.#config.approvalMode}. Use /approvals <ask|auto>.`);
@@ -881,15 +932,16 @@ export class Engine implements EngineClient {
       this.#notice("Usage: /approvals <ask|auto>", "warn");
       return;
     }
+    // No-op if unchanged — avoids spamming the transcript when Shift+Tab cycles
+    // through modes that resolve to the same approval setting.
+    if (next === this.#config.approvalMode) return;
     // Mutating the shared config object is picked up on the next turn, where the
     // PermissionChecker's default action is derived from approvalMode.
     this.#config.approvalMode = next;
     this.#bus.emit({ type: "approvals-changed", mode: next });
-    this.#notice(
-      next === "auto"
-        ? "Approval mode: auto — side-effecting tools run without prompting."
-        : "Approval mode: ask — side-effecting tools prompt for approval.",
-    );
+    // `quiet` (the Shift+Tab mode toggle) relies on the header pill + input
+    // border for feedback; an explicit `/approvals <v>` gets a one-line confirm.
+    if (!quiet) this.#notice(`Approvals: ${next}`);
   }
 
   /** `/reasoning [low|medium|high|off]` — show or set the reasoning effort. */
@@ -926,7 +978,7 @@ export class Engine implements EngineClient {
     const next = args.trim();
     if (!next) {
       this.#notice(
-        `Theme: ${this.#config.theme}. Available: default, light, contrast. Use /theme <name>.`,
+        `Theme: ${this.#config.theme}. Available: default, light, contrast, opencode. Use /theme <name>.`,
       );
       return;
     }
@@ -935,7 +987,7 @@ export class Engine implements EngineClient {
     // core can't import the UI package, so the known set is kept in sync here.)
     if (!KNOWN_THEMES.has(next)) {
       this.#notice(
-        `Unknown theme "${next}". Available: default, light, contrast.`,
+        `Unknown theme "${next}". Available: default, light, contrast, opencode.`,
         "warn",
       );
       return;
@@ -1029,14 +1081,32 @@ export class Engine implements EngineClient {
     const checks: DoctorCheck[] = [];
 
     const providerId = this.#session.model.split("/")[0] ?? "";
+    const def = this.registry.get(providerId);
     const configured = this.registry.isConfigured(providerId, this.#config);
+    const envHint =
+      def?.auth.env.length ? def.auth.env.join(" or ") : `${providerId.toUpperCase()}_API_KEY`;
     checks.push({
       label: "provider",
       ok: configured,
       detail: configured
         ? `${providerId}: credentials found`
-        : `${providerId}: no API key (set ${providerId.toUpperCase()}_API_KEY or providers.${providerId}.apiKey)`,
+        : `${providerId}: no API key (set ${envHint} or providers.${providerId}.apiKey)`,
     });
+
+    // The provider SDKs are optional peer deps that only fail at first call.
+    // Probe that the active provider's SDK actually resolves so /doctor doesn't
+    // show all-green and then throw "install @ai-sdk/…" on the first turn.
+    if (def) {
+      let sdkOk = true;
+      let sdkDetail = `${providerId} SDK loaded`;
+      try {
+        await def.create("__doctor_probe__", { apiKey: "probe" });
+      } catch (err) {
+        sdkOk = false;
+        sdkDetail = (err as Error).message;
+      }
+      checks.push({ label: "provider sdk", ok: sdkOk, detail: sdkDetail });
+    }
 
     const configuredProviders = this.registry
       .list()
@@ -1110,7 +1180,10 @@ export class Engine implements EngineClient {
 }
 
 /** Selectable UI theme names (kept in sync with `@vibe/tui`'s THEME_NAMES). */
-const KNOWN_THEMES = new Set(["default", "dark", "light", "contrast"]);
+const KNOWN_THEMES = new Set(["default", "dark", "light", "contrast", "opencode"]);
+
+/** Safety-critical built-in slash commands a custom command must not shadow. */
+const RESERVED_SLASH = new Set(["undo", "redo", "clear", "new", "compact", "exit", "quit"]);
 
 /** A short one-line label for a queued prompt. */
 function queueLabel(text: string): string {

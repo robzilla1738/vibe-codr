@@ -37,6 +37,7 @@ export type UIEvent =
   | {
       type: "tool-call-finished";
       sessionId: string;
+      subagentId?: string;
       toolCallId: string;
       toolName: string;
       output: unknown;
@@ -76,6 +77,9 @@ export type UIEvent =
   | {
       type: "file-changed";
       sessionId: string;
+      /** The tool call that produced this change, so the UI can attribute the
+       * diff to the exact tool block (no positional guessing). */
+      toolCallId: string;
       /** Path relative to cwd. */
       path: string;
       /** "edit" replaced text in place; "write" created/overwrote the file. */

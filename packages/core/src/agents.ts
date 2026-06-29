@@ -27,7 +27,11 @@ export async function loadAgents(cwd: string): Promise<Map<string, NamedAgent>> 
       const raw = await Bun.file(file).text();
       const { frontmatter, body } = parseSkillMarkdown(raw);
       const name = frontmatter.name ?? basename(file, ".md");
-      const mode = frontmatter.mode === "plan" ? "plan" : undefined;
+      // Honor an explicit plan|execute; ignore (and don't crash on) anything else.
+      const mode =
+        frontmatter.mode === "plan" || frontmatter.mode === "execute"
+          ? frontmatter.mode
+          : undefined;
       agents.set(name, {
         name,
         description: frontmatter.description ?? name,

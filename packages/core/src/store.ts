@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import type { Message, Mode, Task } from "@vibe/shared";
@@ -44,22 +44,30 @@ export class SessionStore {
     history: Message[],
   ): Promise<void> {
     const dir = this.#dir(meta.id);
-    await Bun.write(join(dir, "meta.json"), JSON.stringify(meta, null, 2));
-    await Bun.write(
-      join(dir, "messages.jsonl"),
-      modelMessages.map((m) => JSON.stringify(m)).join("\n"),
-    );
-    await Bun.write(
-      join(dir, "history.jsonl"),
-      history.map((m) => JSON.stringify(m)).join("\n"),
-    );
+    const files: [string, string][] = [
+      [join(dir, "meta.json"), JSON.stringify(meta, null, 2)],
+      [join(dir, "messages.jsonl"), modelMessages.map((m) => JSON.stringify(m)).join("\n")],
+      [join(dir, "history.jsonl"), history.map((m) => JSON.stringify(m)).join("\n")],
+    ];
+    // Atomic-ish save: write all temp files first, then rename each into place
+    // (rename is atomic on POSIX). A crash mid-save leaves the previous good
+    // files intact instead of a half-written, mutually-inconsistent set.
+    await Promise.all(files.map(([path, content]) => Bun.write(`${path}.tmp`, content)));
+    await Promise.all(files.map(([path]) => rename(`${path}.tmp`, path)));
   }
 
   async load(id: string): Promise<PersistedSession | null> {
     const dir = this.#dir(id);
     const metaFile = Bun.file(join(dir, "meta.json"));
     if (!(await metaFile.exists())) return null;
-    const meta = (await metaFile.json()) as SessionMeta;
+    let meta: SessionMeta;
+    try {
+      meta = (await metaFile.json()) as SessionMeta;
+    } catch {
+      // A corrupt/partial meta.json means the session is unusable — treat it as
+      // absent so callers fall back to "start fresh" rather than crashing.
+      return null;
+    }
     const modelMessages = await this.#readJsonl<ModelMessage>(
       join(dir, "messages.jsonl"),
     );
@@ -71,10 +79,17 @@ export class SessionStore {
     const file = Bun.file(path);
     if (!(await file.exists())) return [];
     const text = await file.text();
-    return text
-      .split("\n")
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as T);
+    const out: T[] = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      // Skip an unparseable (truncated) trailing line rather than failing load.
+      try {
+        out.push(JSON.parse(line) as T);
+      } catch {
+        /* skip corrupt line */
+      }
+    }
+    return out;
   }
 
   /** All persisted sessions, newest first. */
@@ -88,7 +103,12 @@ export class SessionStore {
     const metas: SessionMeta[] = [];
     for (const id of ids) {
       const file = Bun.file(join(this.#dir(id), "meta.json"));
-      if (await file.exists()) metas.push((await file.json()) as SessionMeta);
+      // One corrupt session must not break listing/resume for all the others.
+      try {
+        if (await file.exists()) metas.push((await file.json()) as SessionMeta);
+      } catch {
+        /* skip corrupt session */
+      }
     }
     return metas.sort((a, b) => b.updatedAt - a.updatedAt);
   }

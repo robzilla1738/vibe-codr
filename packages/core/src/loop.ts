@@ -63,6 +63,8 @@ export interface LoopOptions extends ParsedLoop {
     result: string,
     condition: string,
   ) => Promise<{ done: boolean; reason: string }>;
+  /** Called when the loop is stopped — lets the host abort an in-flight turn. */
+  onStop?: () => void;
   emit: (event: UIEvent) => void;
 }
 
@@ -99,6 +101,9 @@ export class LoopController {
     if (this.#stopped) return;
     this.#stopped = true;
     if (this.#timer) clearTimeout(this.#timer);
+    // Cancel an iteration that's mid-flight (otherwise the model turn — and its
+    // side-effecting tools — would keep running after the user stopped the loop).
+    this.#opts.onStop?.();
     this.#opts.emit({ type: "loop-stopped", loopId: this.#opts.id, reason });
     this.#resolveDone();
   }

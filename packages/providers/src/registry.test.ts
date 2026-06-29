@@ -126,6 +126,21 @@ test("ollama hits the cloud endpoint with a key and localhost without one", asyn
   expect(calls[1]).toBe("https://ollama.com/v1/models");
 });
 
+test("openai-compatible-routed providers create ai@5 (spec v2) models", async () => {
+  // baseten/xai/openrouter/fireworks are OpenAI-compatible endpoints driven
+  // through @ai-sdk/openai-compatible. Their dedicated packages moved to spec v3+
+  // (AI SDK v6) and would be rejected by ai@5 ("unsupported model version"), so
+  // this locks in that each still produces a spec-"v2" model.
+  for (const id of ["baseten", "xai", "openrouter", "fireworks", "minimax"]) {
+    const def = builtinProviders().find((d) => d.id === id);
+    if (!def) throw new Error(`${id} provider missing`);
+    const model = (await def.create("some-model", { apiKey: "test-key" })) as {
+      specificationVersion?: string;
+    };
+    expect(model.specificationVersion).toBe("v2");
+  }
+});
+
 test("an unconfigured non-keyless provider is not configured", () => {
   const reg = new ProviderRegistry();
   const prev = process.env.MINIMAX_API_KEY;

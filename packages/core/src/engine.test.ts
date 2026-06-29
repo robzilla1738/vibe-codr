@@ -1,7 +1,17 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, expect } from "bun:test";
 import type { UIEvent } from "@vibe/shared";
-import { defaultConfig } from "@vibe/config";
+import { defaultConfig, type Config } from "@vibe/config";
 import { Engine } from "./engine.ts";
+
+// Each Engine gets an isolated temp cwd so `/recall`, `/memory`, checkpoints and
+// session persistence never read or write the developer's real `.vibe/` — that
+// made `/recall` flaky (it matched leftover sessions from prior runs).
+function makeEngine(config: Config = defaultConfig()): Engine {
+  return new Engine({ config, cwd: mkdtempSync(join(tmpdir(), "vibe-engine-test-")) });
+}
 
 function collect(engine: Engine): { events: UIEvent[]; stop: () => void } {
   const events: UIEvent[] = [];
@@ -17,7 +27,7 @@ function collect(engine: Engine): { events: UIEvent[]; stop: () => void } {
 }
 
 test("/help lists commands, /model switches, /clear clears", async () => {
-  const engine = new Engine({ config: defaultConfig() });
+  const engine = makeEngine();
   const { events, stop } = collect(engine);
 
   engine.send({ type: "run-slash", name: "help", args: "" });
@@ -39,7 +49,7 @@ test("/help lists commands, /model switches, /clear clears", async () => {
 });
 
 test("/plan and /execute toggle mode", async () => {
-  const engine = new Engine({ config: defaultConfig() });
+  const engine = makeEngine();
   collect(engine);
   engine.send({ type: "run-slash", name: "plan", args: "" });
   await engine.whenIdle();
@@ -50,7 +60,7 @@ test("/plan and /execute toggle mode", async () => {
 });
 
 test("/goal sets and clears the goal", async () => {
-  const engine = new Engine({ config: defaultConfig() });
+  const engine = makeEngine();
   collect(engine);
   engine.send({ type: "run-slash", name: "goal", args: "ship it" });
   await engine.whenIdle();
@@ -61,7 +71,7 @@ test("/goal sets and clears the goal", async () => {
 });
 
 test("/status, /context, /memory, /recall run and emit notices", async () => {
-  const engine = new Engine({ config: defaultConfig() });
+  const engine = makeEngine();
   const { events, stop } = collect(engine);
 
   engine.send({ type: "run-slash", name: "status", args: "" });
@@ -82,7 +92,7 @@ test("/status, /context, /memory, /recall run and emit notices", async () => {
 });
 
 test("/reasoning warns on a non-reasoning (local) model", async () => {
-  const engine = new Engine({ config: defaultConfig() });
+  const engine = makeEngine();
   const { events, stop } = collect(engine);
   engine.send({ type: "run-slash", name: "model", args: "ollama/llama3.1" });
   engine.send({ type: "run-slash", name: "reasoning", args: "high" });

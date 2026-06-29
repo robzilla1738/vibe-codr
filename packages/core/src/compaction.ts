@@ -41,13 +41,22 @@ export async function compactMessages(
   const older = messages.slice(0, messages.length - opts.keep);
   const recent = messages.slice(messages.length - opts.keep);
   const summary = await opts.summarize(older);
+  const note = `[Summary of earlier conversation]\n${summary}`;
 
-  const next: ModelMessage[] = [
-    {
-      role: "user",
-      content: `[Summary of earlier conversation]\n${summary}`,
-    },
-    ...recent,
-  ];
+  // Keep strict user/assistant alternation with a leading user turn — Anthropic
+  // (and others) 400 on two consecutive same-role messages and require the first
+  // message to be a user turn. If the recent window already starts with a user
+  // message, fold the summary into it; otherwise prepend it as its own user turn.
+  const first = recent[0];
+  let next: ModelMessage[];
+  if (first && first.role === "user") {
+    const folded: ModelMessage =
+      typeof first.content === "string"
+        ? { role: "user", content: `${note}\n\n${first.content}` }
+        : { role: "user", content: [{ type: "text", text: note }, ...first.content] };
+    next = [folded, ...recent.slice(1)];
+  } else {
+    next = [{ role: "user", content: note }, ...recent];
+  }
   return { messages: next, freed: Math.max(0, before - estimateTokens(next)) };
 }

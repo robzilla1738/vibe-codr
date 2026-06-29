@@ -19,23 +19,15 @@
     "ai": "^5.0.0"
   },
   "peerDependencies": {
-    "@ai-sdk/anthropic": "*",
-    "@ai-sdk/baseten": "*",
-    "@ai-sdk/deepseek": "*",
-    "@ai-sdk/fireworks": "*",
-    "@ai-sdk/openai": "*",
-    "@ai-sdk/openai-compatible": "*",
-    "@ai-sdk/xai": "*",
-    "@openrouter/ai-sdk-provider": "*"
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/deepseek": "^1.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "@ai-sdk/openai-compatible": "^1.0.0"
   },
   "peerDependenciesMeta": {
     "@ai-sdk/anthropic": { "optional": true },
-    "@ai-sdk/baseten": { "optional": true },
     "@ai-sdk/deepseek": { "optional": true },
-    "@ai-sdk/fireworks": { "optional": true },
     "@ai-sdk/openai": { "optional": true },
-    "@ai-sdk/openai-compatible": { "optional": true },
-    "@ai-sdk/xai": { "optional": true },
-    "@openrouter/ai-sdk-provider": { "optional": true }
+    "@ai-sdk/openai-compatible": { "optional": true }
   }
 }

@@ -9,6 +9,8 @@ export interface Checkpoint {
   /** Commit object capturing the full working tree at snapshot time. */
   commit: string;
   createdAt: number;
+  /** Conversation length at snapshot time, so `/undo` can rewind history too. */
+  conversation?: { messages: number; history: number };
 }
 
 interface GitResult {
@@ -83,7 +85,10 @@ export class CheckpointManager {
   }
 
   /** Snapshot the working tree. Returns the checkpoint, or null when not a repo. */
-  async snapshot(label: string): Promise<Checkpoint | null> {
+  async snapshot(
+    label: string,
+    conversation?: { messages: number; history: number },
+  ): Promise<Checkpoint | null> {
     if (!(await this.isGitRepo())) return null;
     await this.#ensureLoaded();
 
@@ -111,7 +116,13 @@ export class CheckpointManager {
 
     await this.#git(["update-ref", `refs/vibecodr/${id}`, commit]);
 
-    const cp: Checkpoint = { id, label, commit, createdAt: Date.now() };
+    const cp: Checkpoint = {
+      id,
+      label,
+      commit,
+      createdAt: Date.now(),
+      ...(conversation ? { conversation } : {}),
+    };
     this.#list.push(cp);
     // Prune the oldest checkpoints so refs don't grow without bound.
     while (this.#list.length > MAX_CHECKPOINTS) {
@@ -129,14 +140,40 @@ export class CheckpointManager {
     const cp = this.#list.pop();
     if (!cp) return null;
 
-    // index := snapshot tree; write it to the working tree; drop files created
-    // since (untracked, not ignored); then restore the index to HEAD.
-    await this.#git(["read-tree", cp.commit]);
-    await this.#git(["checkout-index", "-a", "-f"]);
-    await this.#git(["clean", "-fdq"]);
-    if ((await this.#git(["rev-parse", "HEAD"])).ok) {
-      await this.#git(["reset", "-q"]);
+    // Restore the working tree from the snapshot via a THROWAWAY index, so the
+    // user's real staging area is never disturbed (the old code did `read-tree`
+    // + `reset` on the live index, wiping the user's staged changes).
+    const indexFile = join(tmpdir(), `vibecodr-undo-${cp.id}`);
+    const env = { GIT_INDEX_FILE: indexFile };
+    try {
+      await this.#git(["read-tree", cp.commit], env);
+      await this.#git(["checkout-index", "-a", "-f"], env);
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => undefined);
     }
+
+    // Remove only files created since the snapshot — untracked now and absent
+    // from the snapshot tree. The snapshot `add -A`'d everything, so any file the
+    // user already had is in the tree and is preserved; this never deletes the
+    // user's pre-existing untracked files (the old `clean -fdq` did).
+    const untracked = (await this.#git(["ls-files", "--others", "--exclude-standard"])).stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (untracked.length) {
+      const inSnapshot = new Set(
+        (await this.#git(["ls-tree", "-r", "--name-only", cp.commit])).stdout
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
+      for (const file of untracked) {
+        if (!inSnapshot.has(file)) {
+          await rm(join(this.#cwd, file), { force: true }).catch(() => undefined);
+        }
+      }
+    }
+
     await this.#git(["update-ref", "-d", `refs/vibecodr/${cp.id}`]);
 
     await this.#save();

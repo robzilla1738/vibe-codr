@@ -62,12 +62,15 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createDeepSeek",
   },
   {
+    // xAI (Grok) serves an OpenAI-compatible API; the dedicated `@ai-sdk/xai`
+    // package has no `ai@5` (spec v2) release, so we drive it through
+    // `@ai-sdk/openai-compatible`.
     id: "xai",
     env: ["XAI_API_KEY"],
     baseURL: "https://api.x.ai/v1",
     baseURLEnv: "XAI_BASE_URL",
-    module: "@ai-sdk/xai",
-    factory: "createXai",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
   },
   {
     // MiniMax: OpenAI-compatible API, token (subscription) auth.
@@ -91,25 +94,35 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAI",
   },
   {
+    // Fireworks serves an OpenAI-compatible API; use openai-compatible so it
+    // works under `ai@5` without the dedicated (spec v3+) package.
     id: "fireworks",
     env: ["FIREWORKS_API_KEY"],
     baseURL: "https://api.fireworks.ai/inference/v1",
-    module: "@ai-sdk/fireworks",
-    factory: "createFireworks",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
   },
   {
+    // Baseten exposes an OpenAI-compatible Model API, so we drive it through
+    // `@ai-sdk/openai-compatible` (AI-SDK spec v2). The dedicated `@ai-sdk/baseten`
+    // package tracks AI-SDK v6 (spec v3) and is incompatible with our pinned
+    // `ai@5`, so it would reject every request with an "unsupported version".
     id: "baseten",
     env: ["BASETEN_API_KEY"],
     baseURL: "https://inference.baseten.co/v1",
-    module: "@ai-sdk/baseten",
-    factory: "createBaseten",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
   },
   {
+    // OpenRouter is OpenAI-compatible; the dedicated `@openrouter/ai-sdk-provider`
+    // now peers `ai@^6`, so we route through `@ai-sdk/openai-compatible` to stay
+    // on the pinned `ai@5`. (Unified reasoning options are not forwarded — the
+    // model still reasons natively.)
     id: "openrouter",
     env: ["OPENROUTER_API_KEY"],
     baseURL: "https://openrouter.ai/api/v1",
-    module: "@openrouter/ai-sdk-provider",
-    factory: "createOpenRouter",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
   },
   {
     id: "lmstudio",

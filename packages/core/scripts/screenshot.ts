@@ -3,9 +3,13 @@
  *
  * Drives the REAL engine/session with a scripted MockLanguageModelV2 to produce
  * genuine UIEvent streams (real tools run for real — edits in temp dirs, real
- * git in a temp repo), reduces them into display lines (mirroring the OpenTUI
+ * git in a temp repo), reduces them into display blocks (mirroring the OpenTUI
  * app in packages/tui/src/app.tsx), renders a terminal-styled HTML frame, and
  * screenshots it with the bundled Playwright Chromium.
+ *
+ * Keep this in lockstep with app.tsx: the block reducer, the markdown rendering,
+ * the condensed/expandable tool output, the context rail, and the header all
+ * mirror the live app.
  *
  * Run: bun packages/core/scripts/screenshot.ts <outDir>
  */
@@ -18,14 +22,12 @@ import type {
   UIEvent,
   ToolDefinition,
   Task,
-  QueuedItem,
   SessionUsage,
 } from "@vibe/shared";
 import { ProviderRegistry, type ModelInfo } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
 import { defaultConfig, type Config } from "@vibe/config";
 import { Session } from "../src/session.ts";
-import { Engine } from "../src/engine.ts";
 import { EventBus } from "../src/event-bus.ts";
 import { SessionStore } from "../src/store.ts";
 import { formatModelList } from "../src/commands.ts";
@@ -62,132 +64,219 @@ const COLORS = {
   yellow: "#e0af68",
   magenta: "#bb9af7",
   red: "#f7768e",
+  // Block surfaces + diff tints (mirror packages/tui/src/themes.ts DEFAULT).
+  panel: "#1a1c28",
+  elevated: "#242736",
+  primary: "#8b5cf6", // the single accent (execute mode); = mode color `mc` below
+  border: "#2c3047",
+  addBg: "#1b2b25",
+  delBg: "#2d2030",
+  // Slash-menu selection highlight (neutral bg; the accent is the text color).
+  selBg: "#2e3346",
+  selFg: "#c0caf5",
 };
 
-type LineKind =
-  | "user"
-  | "assistant"
-  | "tool"
-  | "toolresult"
-  | "notice"
-  | "subagent"
-  | "add"
-  | "del"
-  | "ctx"
-  | "plain";
+/**
+ * Local copy of packages/tui/src/tool-icons.ts (core must not import @vibe/tui).
+ * Keep the icons + summaries identical so the shots match the live app.
+ */
+const TOOL_ICONS: Record<string, string> = {
+  bash: "$", shell: "$", read: "→", write: "←", edit: "←", multiedit: "←",
+  apply_patch: "%", glob: "✱", grep: "✱", list: "☰", ls: "☰",
+  webfetch: "%", web_fetch: "%", websearch: "◈", web_search: "◈",
+  task: "✦", subagent: "✦", update_tasks: "☑", todowrite: "☑", todo_write: "☑",
+  present_plan: "◑", recall: "⌕", memory: "❖",
+};
+function ssToolIcon(name: string): string {
+  const k = name.toLowerCase();
+  if (TOOL_ICONS[k]) return TOOL_ICONS[k] as string;
+  if (k.startsWith("git")) return "±";
+  if (k.startsWith("mcp")) return "⊕";
+  return "⚒";
+}
+function ssToolLabel(name: string, input: unknown): string {
+  const a: Record<string, unknown> =
+    input && typeof input === "object"
+      ? (input as Record<string, unknown>)
+      : typeof input === "string" && input.trim().startsWith("{")
+        ? JSON.parse(input)
+        : {};
+  const s = (v: unknown) => (typeof v === "string" ? v : v == null ? "" : String(v));
+  const q = (v: unknown) => (s(v) ? `"${s(v)}"` : "");
+  const path = s(a.path || a.file || a.filePath || a.file_path);
+  const k = name.toLowerCase();
+  let body: string;
+  switch (k) {
+    case "bash": case "shell": body = truncate(s(a.command || a.cmd), 72); break;
+    case "read": body = `read ${path}`; break;
+    case "write": body = `write ${path}`; break;
+    case "edit": case "multiedit": body = `edit ${path}`; break;
+    case "apply_patch": body = `patch ${path}`; break;
+    case "list": case "ls": body = `list ${s(a.path) || "."}`; break;
+    case "glob": body = `glob ${q(a.pattern || a.glob)}${a.path ? ` in ${s(a.path)}` : ""}`.trim(); break;
+    case "grep": body = `grep ${q(a.pattern || a.query)}${a.path ? ` in ${s(a.path)}` : ""}`.trim(); break;
+    case "webfetch": case "web_fetch": body = `fetch ${truncate(s(a.url), 64)}`; break;
+    case "websearch": case "web_search": body = `search ${q(a.query || a.q)}`.trim(); break;
+    case "task": case "subagent": body = `task ${truncate(s(a.prompt || a.description || a.title), 56)}`.trim(); break;
+    case "update_tasks": case "todowrite": case "todo_write": body = "update tasks"; break;
+    case "present_plan": body = "present plan"; break;
+    default: {
+      const kv = Object.entries(a)
+        .filter(([, v]) => v != null && v !== "")
+        .slice(0, k.startsWith("git") ? 2 : 3)
+        .map(([kk, v]) => `${kk}=${truncate(s(v), 24)}`);
+      body = `${name}${kv.length ? ` [${kv.join(", ")}]` : ""}`;
+    }
+  }
+  return `${ssToolIcon(name)} ${body}`;
+}
 
-interface Line {
-  kind: LineKind;
-  text: string;
+/** One transcript block (mirrors the Block union in app.tsx). */
+type Block =
+  | { kind: "user"; text: string }
+  | { kind: "assistant"; text: string }
+  | { kind: "tool"; label: string; output: string[]; collapsed: boolean; isDiff: boolean }
+  | { kind: "notice"; text: string }
+  | { kind: "plain"; text: string };
+
+interface Subagent {
+  id: string;
+  prompt: string;
+  status: "running" | "done";
 }
 
 interface PlanBlock {
+  body: string;
+}
+
+interface PermCard {
+  toolName: string;
+  input: unknown;
+}
+
+interface MenuBlock {
   title: string;
-  body: string[];
-  hint: string;
+  rows: { active: boolean; text: string }[];
+  more?: string;
 }
 
 interface Scene {
   name: string;
   status: string;
   cwd: string;
-  lines: Line[];
-  plan?: PlanBlock;
+  blocks: Block[];
   tasks?: Task[];
-  queued?: QueuedItem[];
+  subagents?: Subagent[];
   usage?: SessionUsage;
+  context?: { usedTokens: number; contextWindow: number };
+  goal?: string;
+  plan?: PlanBlock;
+  perm?: PermCard;
+  menu?: MenuBlock;
+  /** A live "⠹ Working… 2.4s" indicator row, when the turn is in flight. */
+  working?: string;
   input: string;
   inputHint?: string;
+  /** Listing views (models, sessions) render without the live-TUI rail. */
+  noRail?: boolean;
 }
 
 interface Reduced {
-  lines: Line[];
-  plan?: PlanBlock;
+  blocks: Block[];
   tasks?: Task[];
-  queued?: QueuedItem[];
+  subagents?: Subagent[];
   usage?: SessionUsage;
   context?: { usedTokens: number; contextWindow: number };
+  plan?: PlanBlock;
+  perm?: PermCard;
 }
 
-// ── Event -> display-line reducer (mirrors app.tsx onMount handler) ─────────
+// ── Event -> display-block reducer (mirrors app.tsx onMount handler) ─────────
 function reduce(events: UIEvent[]): Reduced {
-  const lines: Line[] = [];
-  let plan: PlanBlock | undefined;
+  const blocks: Block[] = [];
   let tasks: Task[] | undefined;
-  let queued: QueuedItem[] = [];
+  const subagents: Subagent[] = [];
   let usage: SessionUsage | undefined;
   let context: { usedTokens: number; contextWindow: number } | undefined;
-  let assistant: Line | null = null;
-  // edit/write return their diff as text too; skip that echo since the
-  // file-changed event already rendered it.
-  let suppressResult = false;
-  const pushText = (delta: string) => {
-    if (!assistant) {
-      assistant = { kind: "assistant", text: "" };
-      lines.push(assistant);
-    }
-    assistant.text += delta;
-  };
+  let plan: PlanBlock | undefined;
+  let perm: PermCard | undefined;
+  let assistant: Extract<Block, { kind: "assistant" }> | null = null;
+  const toolByCall = new Map<string, Extract<Block, { kind: "tool" }>>();
+  // edit/write return their diff as text too; skip that echo (keyed by call id)
+  // since the file-changed event already folded it into the diff block.
+  const suppressCallIds = new Set<string>();
   for (const e of events) {
     switch (e.type) {
       case "user-message":
-        lines.push({ kind: "user", text: e.text });
         assistant = null;
+        blocks.push({ kind: "user", text: e.text });
         break;
       case "assistant-text-delta":
-        pushText(e.delta);
+        if (!assistant) {
+          assistant = { kind: "assistant", text: "" };
+          blocks.push(assistant);
+        }
+        assistant.text += e.delta;
         break;
-      case "tool-call-started":
-        lines.push({
-          kind: "tool",
-          text: `⚒ ${e.toolName} ${truncate(JSON.stringify(e.input ?? {}), 64)}`,
-        });
+      case "tool-call-started": {
         assistant = null;
+        const b: Extract<Block, { kind: "tool" }> = {
+          kind: "tool",
+          label: ssToolLabel(e.toolName, e.input),
+          output: [],
+          collapsed: true,
+          isDiff: false,
+        };
+        blocks.push(b);
+        toolByCall.set(e.toolCallId, b);
         break;
+      }
       case "tool-call-finished": {
-        if (suppressResult) {
-          suppressResult = false;
+        // Skip only the echo for the exact call whose diff we already folded.
+        if (suppressCallIds.has(e.toolCallId)) {
+          suppressCallIds.delete(e.toolCallId);
           break;
         }
-        const out =
-          typeof e.output === "string" ? e.output : JSON.stringify(e.output);
-        for (const t of firstLines(out, 4)) {
-          lines.push({ kind: "toolresult", text: `  ↳ ${truncate(t, 72)}` });
+        const b = toolByCall.get(e.toolCallId);
+        if (b) {
+          const out = typeof e.output === "string" ? e.output : JSON.stringify(e.output, null, 2);
+          b.output = out.split("\n").filter((l, i, arr) => l.length || i < arr.length - 1);
         }
         break;
       }
       case "file-changed": {
-        suppressResult = true;
-        const verb = e.action === "write" ? "wrote" : "edited";
-        lines.push({ kind: "tool", text: `✎ ${verb} ${e.path}  +${e.added} -${e.removed}` });
-        for (const dl of e.diff ? e.diff.split("\n") : []) {
-          const kind: LineKind = dl.startsWith("+") ? "add" : dl.startsWith("-") ? "del" : "ctx";
-          lines.push({ kind, text: dl });
-        }
+        // Fold the diff into the EXACT tool block that produced it (by call id —
+        // mirrors app.tsx). Diffs render expanded (the README highlight).
+        suppressCallIds.add(e.toolCallId);
         assistant = null;
+        const verb = e.action === "write" ? "wrote" : "edited";
+        const header = `✎ ${verb} ${e.path}  +${e.added} -${e.removed}`;
+        const lines = e.diff ? e.diff.split("\n") : [];
+        const target = toolByCall.get(e.toolCallId);
+        if (target && !target.isDiff) {
+          target.label = header;
+          target.output = lines;
+          target.isDiff = true;
+          target.collapsed = false;
+        } else {
+          blocks.push({ kind: "tool", label: header, output: lines, collapsed: false, isDiff: true });
+        }
         break;
       }
       case "permission-request":
-        lines.push({
-          kind: "notice",
-          text: `⚠ allow ${e.toolName}? ${truncate(JSON.stringify(e.input ?? {}), 52)}`,
-        });
-        lines.push({ kind: "notice", text: "  [y]es · [a]lways · [n]o" });
+        perm = { toolName: e.toolName, input: e.input };
         break;
       case "subagent-started":
-        lines.push({ kind: "subagent", text: `⤷ subagent: ${truncate(e.prompt, 60)}` });
-        assistant = null;
+        subagents.push({ id: e.subagentId, prompt: e.prompt, status: "running" });
         break;
-      case "subagent-finished":
-        lines.push({ kind: "subagent", text: `⤶ subagent done` });
+      case "subagent-finished": {
+        const s = subagents.find((x) => x.id === e.subagentId);
+        if (s) s.status = "done";
         break;
+      }
       case "plan-presented":
-        plan = {
-          title: "Plan",
-          body: e.plan.split("\n"),
-          hint: "Run /execute to proceed.",
-        };
         assistant = null;
+        plan = { body: e.plan };
         break;
       case "tasks-updated":
         tasks = e.tasks;
@@ -198,36 +287,27 @@ function reduce(events: UIEvent[]): Reduced {
       case "context-updated":
         context = { usedTokens: e.usedTokens, contextWindow: e.contextWindow };
         break;
-      case "queue-changed":
-        if (e.pending.length >= queued.length) queued = e.pending;
-        break;
       case "notice":
-        lines.push({ kind: "notice", text: e.message });
+        blocks.push({ kind: "notice", text: e.message });
         break;
       default:
         break;
     }
   }
   return {
-    lines: lines.flatMap(splitMultiline),
-    ...(plan ? { plan } : {}),
+    blocks,
     ...(tasks && tasks.length ? { tasks } : {}),
-    ...(queued.length ? { queued } : {}),
+    ...(subagents.length ? { subagents } : {}),
     ...(usage ? { usage } : {}),
     ...(context ? { context } : {}),
+    ...(plan ? { plan } : {}),
+    ...(perm ? { perm } : {}),
   };
 }
 
-function splitMultiline(line: Line): Line[] {
-  if (!line.text.includes("\n")) return [line];
-  return line.text.split("\n").map((t) => ({ kind: line.kind, text: t }));
-}
-
+/** Identical to app.tsx's truncate so README widths match the live app. */
 function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s;
-}
-function firstLines(s: string, n: number): string[] {
-  return s.split("\n").filter((l) => l.length).slice(0, n);
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
 /** Local copy of headless.formatUsage (core must not import @vibe/tui). */
@@ -238,6 +318,17 @@ function formatUsage(u: SessionUsage): string {
   const cached =
     u.cachedInputTokens && u.cachedInputTokens > 0 ? ` · ${u.cachedInputTokens} cached` : "";
   return `${tok} tok${cost}${cached}`;
+}
+
+/** Rail context line "12% · 24k/200k" (mirror app.tsx ctxSummary). */
+function ctxSummary(ctx: { usedTokens: number; contextWindow: number } | undefined): string {
+  if (!ctx || ctx.contextWindow <= 0) return "";
+  const pct = Math.min(100, Math.round((ctx.usedTokens / ctx.contextWindow) * 100));
+  if (pct < 1) return "";
+  return `${pct}% · ${ktok(ctx.usedTokens)}/${ktok(ctx.contextWindow)}`;
+}
+function ktok(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
 }
 
 // ── Minimal inline LanguageModelV2 mock (avoids the ai/test -> vitest dep) ───
@@ -353,7 +444,7 @@ async function buildScenes(): Promise<Scene[]> {
         [
           { type: "stream-start", warnings: [] },
           { type: "text-start", id: "b" },
-          { type: "text-delta", id: "b", delta: "Found 8 package entry points. The CLI is wired in\n`packages/cli/bin/vibecodr.ts`: it loads config, builds the Engine,\nand hands off to the TUI (or headless `-p`). The agent loop lives in\n`packages/core/src/session.ts`." },
+          { type: "text-delta", id: "b", delta: "Found **8 package entry points**. The CLI is wired in\n`packages/cli/bin/vibecodr.ts`: it loads config, builds the Engine,\nand hands off to the TUI (or headless `-p`). The agent loop lives in\n`packages/core/src/session.ts`." },
           { type: "text-end", id: "b" },
           { type: "finish", finishReason: "stop", usage: USAGE },
         ],
@@ -460,10 +551,10 @@ async function buildScenes(): Promise<Scene[]> {
     { id: "deepseek-chat", providerId: "deepseek", contextWindow: 128_000 },
     { id: "qwen2.5-coder-32b", providerId: "lmstudio", contextWindow: 32_000 },
   ];
-  const modelLines: Line[] = [
+  const modelBlocks: Block[] = [
     { kind: "user", text: "/models" },
     { kind: "notice", text: "Available models for configured providers:" },
-    ...formatModelList(sampleModels).split("\n").map((t): Line => ({ kind: "plain", text: t })),
+    ...formatModelList(sampleModels).split("\n").map((t): Block => ({ kind: "plain", text: t })),
   ];
 
   // F — git tool: real git_status against a seeded temp repo.
@@ -491,7 +582,7 @@ async function buildScenes(): Promise<Scene[]> {
         [
           { type: "stream-start", warnings: [] },
           { type: "text-start", id: "g2" },
-          { type: "text-delta", id: "g2", delta: "One modified file and one new file. I'll stage and commit them with git_commit." },
+          { type: "text-delta", id: "g2", delta: "One modified file and one new file. I'll stage and commit them with `git_commit`." },
           { type: "text-end", id: "g2" },
           { type: "finish", finishReason: "stop", usage: USAGE },
         ],
@@ -525,9 +616,9 @@ async function buildScenes(): Promise<Scene[]> {
   const metas = await store.list();
   const idW = Math.max(...metas.map((m) => m.id.length));
   const modelW = Math.max(...metas.map((m) => m.model.length));
-  const sessLines: Line[] = [
+  const sessBlocks: Block[] = [
     { kind: "user", text: "vibecodr sessions" },
-    ...metas.map((m): Line => {
+    ...metas.map((m): Block => {
       const when = new Date(m.updatedAt).toISOString().replace("T", " ").slice(0, 16);
       const cost = m.usage?.costUSD ? `$${m.usage.costUSD.toFixed(4)}` : "";
       const goal = m.goal ? `  — ${m.goal}` : "";
@@ -538,22 +629,37 @@ async function buildScenes(): Promise<Scene[]> {
     }),
   ];
 
-  // Append a live "· ctx N%" indicator when context fill is meaningful (≥1%).
-  const ctx = (r: Reduced): string => {
-    if (!r.context || r.context.contextWindow <= 0) return "";
-    const pct = Math.min(100, Math.round((r.context.usedTokens / r.context.contextWindow) * 100));
-    return pct >= 1 ? ` · ctx ${pct}%` : "";
+  // I — the slash-command menu open (mirrors menuView in packages/tui/app.tsx).
+  const menuCmds: [string, string][] = [
+    ["help", "Show available commands"],
+    ["status", "Model, mode, cwd, tokens, cost"],
+    ["cost", "Token usage and estimated cost"],
+    ["context", "Context-window usage"],
+    ["clear", "Clear the conversation (alias /new)"],
+    ["compact", "Compact the conversation to free context"],
+    ["resume", "List saved sessions to resume"],
+    ["recall", "Search past sessions <text>"],
+  ];
+  const menuNameW = Math.min(14, Math.max(...menuCmds.map(([n]) => n.length + 1)));
+  const menuBlock: MenuBlock = {
+    title: "commands",
+    rows: menuCmds.map(([n, d], i) => ({
+      active: i === 0,
+      text: `${`/${n}`.padEnd(menuNameW + 1)}  ${d}`,
+    })),
+    more: "+27 more · type to filter",
   };
 
   return [
-    { name: "01-chat", status: `anthropic/claude-opus-4-8 · execute${ctx(a)}`, cwd: "~/vibe-codr", lines: a.lines, ...(a.usage ? { usage: a.usage } : {}), input: "" },
-    { name: "02-diff", status: `anthropic/claude-opus-4-8 · execute${ctx(diff)}`, cwd: "~/app", lines: diff.lines, ...(diff.usage ? { usage: diff.usage } : {}), input: "" },
-    { name: "03-plan", status: `anthropic/claude-opus-4-8 · plan${ctx(plan)}`, cwd: "~/vibe-codr", lines: plan.lines, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
-    { name: "04-tasks", status: `anthropic/claude-opus-4-8 · execute${ctx(tasks)}`, cwd: "~/vibe-codr", lines: tasks.lines, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), input: "" },
-    { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", lines: modelLines, input: "/model codex/gpt-5.1-codex" },
-    { name: "06-git", status: `anthropic/claude-opus-4-8 · execute${ctx(gitScene)}`, cwd: "~/service", lines: gitScene.lines, ...(gitScene.usage ? { usage: gitScene.usage } : {}), input: "" },
-    { name: "07-permission", status: "anthropic/claude-opus-4-8 · execute · ask", cwd: "~/vibe-codr", lines: perm.lines, input: "y", inputHint: "approve once" },
-    { name: "08-sessions", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", lines: sessLines, input: "vibecodr --resume ses_k3p9qz" },
+    { name: "01-chat", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: a.blocks, ...(a.usage ? { usage: a.usage } : {}), ...(a.context ? { context: a.context } : {}), input: "" },
+    { name: "02-diff", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/app", blocks: diff.blocks, ...(diff.usage ? { usage: diff.usage } : {}), ...(diff.context ? { context: diff.context } : {}), input: "" },
+    { name: "03-plan", status: "anthropic/claude-opus-4-8 · plan", cwd: "~/vibe-codr", blocks: plan.blocks, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
+    { name: "04-tasks", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: tasks.blocks, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), ...(tasks.context ? { context: tasks.context } : {}), subagents: [{ id: "sa1", prompt: "audit catalog pricing", status: "running" }], goal: "ship the usage/cost footer", working: "⠹ Working… 2.4s  ·  esc to interrupt", input: "" },
+    { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", blocks: modelBlocks, input: "/model codex/gpt-5.1-codex", noRail: true },
+    { name: "06-git", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/service", blocks: gitScene.blocks, ...(gitScene.usage ? { usage: gitScene.usage } : {}), ...(gitScene.context ? { context: gitScene.context } : {}), input: "" },
+    { name: "07-permission", status: "anthropic/claude-opus-4-8 · execute · ask", cwd: "~/vibe-codr", blocks: perm.blocks, ...(perm.perm ? { perm: perm.perm } : {}), input: "y", inputHint: "approve once" },
+    { name: "08-sessions", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: sessBlocks, input: "vibecodr --resume ses_k3p9qz", noRail: true },
+    { name: "09-menu", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: a.blocks, menu: menuBlock, input: "/" },
   ];
 }
 
@@ -562,129 +668,251 @@ function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function lineColor(kind: LineKind): string {
-  switch (kind) {
-    case "user":
-      return COLORS.blue;
-    case "tool":
-      return COLORS.cyan;
-    case "toolresult":
-      return COLORS.dim;
-    case "notice":
-      return COLORS.yellow;
-    case "subagent":
-      return COLORS.magenta;
-    case "add":
-      return COLORS.green;
-    case "del":
-      return COLORS.red;
-    case "ctx":
-      return COLORS.dim;
-    case "plain":
-      return COLORS.fg;
-    default:
-      return COLORS.fg;
-  }
+/** Inline markdown spans (escape first, then apply markup). */
+function mdInline(text: string): string {
+  return esc(text)
+    .replace(/`([^`]+)`/g, (_, c: string) => `<span class="code">${c}</span>`)
+    .replace(/\*\*([^*]+)\*\*/g, (_, c: string) => `<b>${c}</b>`)
+    .replace(/__([^_]+)__/g, (_, c: string) => `<b>${c}</b>`)
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, (_, p: string, c: string) => `${p}<i>${c}</i>`);
 }
 
-function renderLines(scene: Scene): string {
-  const rows: string[] = [];
-  for (const line of scene.lines) {
-    const prefix = line.kind === "user" ? "› " : "";
-    rows.push(
-      `<div class="row" style="color:${lineColor(line.kind)}">${esc(prefix + line.text) || "&nbsp;"}</div>`,
-    );
-  }
-  if (scene.plan) {
-    rows.push(`<div class="planbox">`);
-    rows.push(`<div class="row" style="color:${COLORS.magenta};font-weight:700">${esc(scene.plan.title)}</div>`);
-    for (const b of scene.plan.body) {
-      rows.push(`<div class="row" style="color:${COLORS.fg}">${esc(b) || "&nbsp;"}</div>`);
+/** A focused subset of Markdown -> HTML (mirrors the native <markdown> render). */
+function mdToHtml(src: string): string {
+  const lines = src.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+  let fence: string[] = [];
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      if (!inFence) {
+        inFence = true;
+        fence = [];
+      } else {
+        inFence = false;
+        out.push(`<pre class="codeblk">${esc(fence.join("\n"))}</pre>`);
+      }
+      continue;
     }
-    rows.push(`<div class="row" style="color:${COLORS.dim}">${esc(scene.plan.hint)}</div>`);
-    rows.push(`</div>`);
-  }
-  if (scene.tasks?.length) {
-    const done = scene.tasks.filter((t) => t.status === "completed").length;
-    rows.push(`<div class="tasksbox">`);
-    rows.push(`<div class="row" style="color:${COLORS.dim};font-weight:700">Tasks · ${done}/${scene.tasks.length}</div>`);
-    for (const t of scene.tasks) {
-      const glyph = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "○";
-      const color = t.status === "completed" ? COLORS.dim : t.status === "in_progress" ? COLORS.cyan : COLORS.fg;
-      const deco = t.status === "completed" ? "text-decoration:line-through" : "";
-      rows.push(`<div class="row" style="color:${color};${deco}">${glyph} ${esc(t.title)}</div>`);
+    if (inFence) {
+      fence.push(line);
+      continue;
     }
-    rows.push(`</div>`);
+    const h = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      out.push(`<div class="mdh">${mdInline(h[2] as string)}</div>`);
+      continue;
+    }
+    const b = /^(\s*)[-*]\s+(.*)$/.exec(line);
+    if (b) {
+      out.push(`<div class="mdli">${b[1]}<span class="bullet">•</span> ${mdInline(b[2] as string)}</div>`);
+      continue;
+    }
+    const n = /^(\s*)(\d+)\.\s+(.*)$/.exec(line);
+    if (n) {
+      out.push(`<div class="mdli">${n[1]}${n[2]}. ${mdInline(n[3] as string)}</div>`);
+      continue;
+    }
+    if (line.trim() === "") {
+      out.push(`<div class="row">&nbsp;</div>`);
+      continue;
+    }
+    out.push(`<div class="row">${mdInline(line)}</div>`);
   }
-  if (scene.queued?.length) {
-    rows.push(
-      `<div class="row" style="color:${COLORS.dim}">↳ ${scene.queued.length} queued: ${esc(scene.queued.map((q) => q.label).join(", "))}</div>`,
-    );
+  if (inFence) out.push(`<pre class="codeblk">${esc(fence.join("\n"))}</pre>`);
+  return out.join("\n");
+}
+
+/** Green additions / red deletions / dim context on a diff line. */
+function diffColor(line: string): string {
+  if (line.startsWith("+")) return COLORS.green;
+  if (line.startsWith("-")) return COLORS.red;
+  return COLORS.dim;
+}
+function diffBgFor(line: string): string {
+  if (line.startsWith("+")) return `background:${COLORS.addBg};`;
+  if (line.startsWith("-")) return `background:${COLORS.delBg};`;
+  return "";
+}
+
+function renderTool(b: Extract<Block, { kind: "tool" }>): string {
+  const expandable = b.output.length > 0;
+  if (b.collapsed) {
+    const chevron = expandable ? "▸ " : "&nbsp;&nbsp;";
+    const hint = expandable
+      ? b.isDiff
+        ? "  ·  diff"
+        : `  ·  ${b.output.length} line${b.output.length === 1 ? "" : "s"}`
+      : "";
+    return `<div class="toolrow">${chevron}${esc(b.label)}${esc(hint)}</div>`;
+  }
+  const rows = [`<div class="toolrow">▾ ${esc(b.label)}</div>`];
+  if (b.isDiff) {
+    for (const line of b.output) {
+      rows.push(
+        `<div class="row diffline" style="color:${diffColor(line)};${diffBgFor(line)}">${esc(line) || "&nbsp;"}</div>`,
+      );
+    }
+  } else {
+    for (const line of b.output) {
+      rows.push(`<div class="row" style="color:${COLORS.dim}">&nbsp;&nbsp;${esc(line) || "&nbsp;"}</div>`);
+    }
   }
   return rows.join("\n");
 }
 
+function renderBlocks(scene: Scene, mc: string): string {
+  const rows: string[] = [];
+  for (const block of scene.blocks) {
+    switch (block.kind) {
+      case "user":
+        rows.push(
+          `<div class="userblock" style="border-left:3px solid ${mc}"><div class="row" style="color:${COLORS.fg};font-weight:700">${esc(block.text) || "&nbsp;"}</div></div>`,
+        );
+        break;
+      case "assistant":
+        rows.push(`<div class="assistant">${mdToHtml(block.text)}</div>`);
+        break;
+      case "tool":
+        rows.push(renderTool(block));
+        break;
+      case "notice":
+        rows.push(`<div class="row notice">${esc(block.text) || "&nbsp;"}</div>`);
+        break;
+      case "plain":
+        rows.push(`<div class="row plain">${esc(block.text) || "&nbsp;"}</div>`);
+        break;
+    }
+  }
+  return rows.join("\n");
+}
+
+/** The context rail — main tasks, live subagents, and session info. */
+function renderRail(scene: Scene, mc: string): string {
+  const { model } = headerFromStatus(scene);
+  const out: string[] = [`<div class="rail">`];
+  if (scene.tasks?.length) {
+    const done = scene.tasks.filter((t) => t.status === "completed").length;
+    out.push(`<div class="railhead" style="color:${mc}">TASKS  ${done}/${scene.tasks.length}</div>`);
+    for (const t of scene.tasks) {
+      const glyph = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "○";
+      const color = t.status === "completed" ? COLORS.dim : t.status === "in_progress" ? mc : COLORS.fg;
+      out.push(`<div class="railitem" style="color:${color}">${glyph} ${esc(truncate(t.title, 26))}</div>`);
+    }
+  }
+  if (scene.subagents?.length) {
+    out.push(`<div class="railhead" style="color:${COLORS.dim}">SUBAGENTS</div>`);
+    for (const s of scene.subagents) {
+      const glyph = s.status === "running" ? "⠹" : "✔";
+      const color = s.status === "running" ? mc : COLORS.dim;
+      out.push(`<div class="railitem" style="color:${color}">${glyph} ${esc(truncate(s.prompt, 26))}</div>`);
+    }
+  }
+  out.push(`<div class="railhead" style="color:${COLORS.dim}">SESSION</div>`);
+  out.push(`<div class="railitem" style="color:${COLORS.fg}">${esc(truncate(model, 28))}</div>`);
+  const ctx = ctxSummary(scene.context);
+  if (ctx) out.push(`<div class="railitem" style="color:${COLORS.dim}">ctx ${esc(ctx)}</div>`);
+  if (scene.usage) out.push(`<div class="railitem" style="color:${COLORS.dim}">${esc(formatUsage(scene.usage))}</div>`);
+  if (scene.goal) out.push(`<div class="railitem" style="color:${COLORS.dim}">★ ${esc(truncate(scene.goal, 24))}</div>`);
+  out.push(`</div>`);
+  return out.join("\n");
+}
+
 /**
- * Project a scene's `status` ("model · mode[ · approvals][ · ctx N%]") into the
- * header pieces the app shows — mirrors `deriveUiMode` in packages/tui/modes.ts.
+ * Project a scene's `status` ("model · mode[ · approvals]") into the header
+ * pieces the app shows — mirrors `deriveUiMode` in packages/tui/modes.ts.
  */
 function headerFromStatus(scene: Scene): {
   model: string;
   uiMode: "plan" | "execute" | "yolo";
-  detail: string;
 } {
   const segs = scene.status.split(" · ").map((s) => s.trim());
   const model = segs[0] ?? "";
   const mode = segs[1] ?? "execute";
   const approvals = segs.includes("auto") ? "auto" : "ask";
   const uiMode = mode === "plan" ? "plan" : approvals === "auto" ? "yolo" : "execute";
-  const detail = segs.find((s) => s.startsWith("ctx ")) ?? "";
-  return { model, uiMode, detail };
+  return { model, uiMode };
 }
 const ssModeLabel = (m: string) =>
   m === "plan" ? "◑ PLAN" : m === "execute" ? "▶ EXECUTE" : "⚡ YOLO";
 const ssModeColor = (m: string) =>
-  m === "plan" ? COLORS.cyan : m === "yolo" ? COLORS.red : "#8b5cf6";
+  m === "plan" ? COLORS.cyan : m === "yolo" ? COLORS.red : COLORS.primary;
 
 function renderFrame(scene: Scene): string {
-  const { model, uiMode, detail } = headerFromStatus(scene);
+  const { model, uiMode } = headerFromStatus(scene);
   const label = ssModeLabel(uiMode);
   const mc = ssModeColor(uiMode);
   const usageStr = scene.usage ? esc(formatUsage(scene.usage)) : "";
-  const info = [detail && esc(detail), usageStr].filter(Boolean).join(" · ");
-  const headRight = info ? `${esc(model)}&nbsp;&nbsp;·&nbsp;&nbsp;${info}` : esc(model);
-  const footer = "shift+tab mode · @file attach · /help commands · ctrl-c quit";
-  const placeholder =
-    "Ask vibe-codr…  @file to attach · /help · /model &lt;id&gt; · /undo";
+  const showRail = !scene.noRail;
+  // Narrow / listing layouts keep the model + usage in a second header row.
+  const headSecond = !showRail
+    ? `<div class="hrow"><span style="color:${COLORS.fg}">${esc(model)}</span><span class="dim">${usageStr}</span></div>`
+    : "";
+  const footer = "shift+tab mode · / commands · @file attach · click ▸ to expand · esc interrupt";
+  const placeholder = "Ask vibe-codr…   @file · /help · /model &lt;id&gt; · /undo";
+  const body = showRail
+    ? `<div class="bodyrow">
+        <div class="transcript">
+${renderBlocks(scene, mc)}
+        </div>
+${renderRail(scene, mc)}
+      </div>`
+    : `<div class="transcript">
+${renderBlocks(scene, mc)}
+      </div>`;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #0d0d12; padding: 28px; }
   .term {
-    width: 880px; background: ${COLORS.bg};
+    width: 940px; background: ${COLORS.bg};
     border-radius: 10px; overflow: hidden;
     box-shadow: 0 24px 60px rgba(0,0,0,.55);
     font-family: "DejaVu Sans Mono","Liberation Mono",Menlo,Consolas,monospace;
     font-size: 14px; line-height: 1.55; color: ${COLORS.fg};
   }
-  .titlebar { display:flex; align-items:center; gap:8px; background:${COLORS.bgDim}; padding:10px 14px; border-bottom:1px solid #292e42; }
+  .titlebar { display:flex; align-items:center; gap:8px; background:${COLORS.bgDim}; padding:10px 14px; border-bottom:1px solid ${COLORS.border}; }
   .dot { width:12px; height:12px; border-radius:50%; }
   .title { color:${COLORS.dim}; margin-left:8px; font-size:12px; }
-  .body { padding:16px 18px 14px; min-height: 380px; display:flex; flex-direction:column; }
-  .appheader { border:1px solid #3b4261; border-radius:6px; padding:7px 12px; margin-bottom:12px; }
+  .body { padding:16px 18px 14px; min-height: 400px; display:flex; flex-direction:column; }
+  .appheader { border-bottom:1px solid ${COLORS.border}; padding:2px 2px 12px; margin-bottom:14px; }
   .hrow { display:flex; justify-content:space-between; align-items:center; }
-  .hrow + .hrow { margin-top:2px; }
-  .brand { color:${COLORS.blue}; font-weight:700; }
+  .hrow + .hrow { margin-top:4px; }
+  .brandwrap { display:flex; align-items:center; }
+  .brand { color:${mc}; font-weight:700; }
+  .pill { background:${COLORS.elevated}; color:${mc}; font-weight:700; font-size:12px; padding:1px 9px; border-radius:5px; margin-left:12px; }
   .dim { color:${COLORS.dim}; font-size:12px; }
-  .transcript { flex:1; }
+  .cwd { color:${COLORS.dim}; font-size:12px; }
+  .bodyrow { display:flex; flex:1; }
+  .transcript { flex:1; min-width:0; }
+  .rail { width:240px; flex-shrink:0; margin-left:16px; padding-left:16px; border-left:1px solid ${COLORS.border}; }
+  .railhead { font-weight:700; font-size:11px; letter-spacing:0.08em; margin-top:14px; }
+  .railhead:first-child { margin-top:0; }
+  .railitem { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .row { white-space:pre-wrap; word-break:break-word; }
-  .planbox { border:1px solid ${COLORS.magenta}; border-radius:6px; padding:8px 12px; margin:8px 0; }
-  .tasksbox { border:1px solid ${COLORS.cyan}; border-radius:6px; padding:8px 12px; margin:8px 0; }
-  .inputwrap { margin-top:14px; border:1px solid ${mc}; border-radius:6px; padding:8px 12px; position:relative; }
-  .inputwrap .label { position:absolute; top:-9px; left:10px; background:${COLORS.bg}; padding:0 6px; font-size:11px; font-weight:700; color:${mc}; }
-  .prompt { color:${COLORS.green}; }
+  .assistant { margin-top:10px; }
+  .mdh { font-weight:700; white-space:pre-wrap; }
+  .mdli { white-space:pre-wrap; word-break:break-word; }
+  .bullet { color:${COLORS.dim}; }
+  .code { color:${COLORS.cyan}; }
+  .codeblk { color:${COLORS.cyan}; background:${COLORS.bgDim}; padding:6px 10px; border-radius:6px; white-space:pre-wrap; margin:6px 0; font-size:13px; }
+  .notice { color:${COLORS.yellow}; }
+  .plain { color:${COLORS.fg}; }
+  .toolrow { color:${COLORS.dim}; white-space:pre-wrap; margin-top:9px; }
+  .diffline { white-space:pre-wrap; word-break:break-word; }
+  .userblock { background:${COLORS.panel}; padding:5px 10px; margin:10px 0 2px; }
+  .working { color:${mc}; margin:8px 0 2px; }
+  .planbox { border:1px solid ${mc}; border-radius:6px; padding:8px 12px; margin:10px 0; }
+  .permcard { border-left:3px solid ${COLORS.yellow}; background:${COLORS.panel}; padding:8px 12px; margin:10px 0; }
+  .menubox { border:1px solid ${mc}; border-radius:6px; background:${COLORS.panel}; padding:6px 10px; margin:10px 0; position:relative; }
+  .menubox .label { position:absolute; top:-9px; left:10px; background:${COLORS.bg}; padding:0 6px; font-size:11px; font-weight:700; color:${mc}; }
+  .menurow { color:${COLORS.dim}; padding:0 6px; }
+  .menurow.active { color:${mc}; background:${COLORS.selBg}; font-weight:700; }
+  .menumore { color:${COLORS.dim}; padding:2px 6px 0; }
+  .inputwrap { margin-top:14px; border-left:3px solid ${mc}; background:${COLORS.elevated}; border-radius:0 6px 6px 0; padding:10px 12px; position:relative; display:flex; align-items:center; }
+  .prompt { color:${mc}; font-weight:700; }
   .placeholder { color:${COLORS.dim}; }
   .typed { color:${COLORS.fg}; }
-  .cursor { background:${COLORS.fg}; color:${COLORS.bg}; }
+  .cursor { background:${mc}; color:${COLORS.bg}; }
   .footer { margin-top:8px; font-size:11px; color:${COLORS.dim}; }
   </style></head><body>
   <div class="term">
@@ -696,15 +924,46 @@ function renderFrame(scene: Scene): string {
     </div>
     <div class="body">
       <div class="appheader">
-        <div class="hrow"><span class="brand">◆ vibe-codr</span><span class="dim">${esc(scene.cwd)}</span></div>
-        <div class="hrow"><span style="color:${mc};font-weight:700">${label}</span><span class="dim">${headRight}</span></div>
+        <div class="hrow">
+          <span class="brandwrap"><span class="brand">◆ vibe-codr</span><span class="pill">${label}</span></span>
+          <span class="cwd">${esc(scene.cwd)}</span>
+        </div>
+        ${headSecond}
       </div>
-      <div class="transcript">
-${renderLines(scene)}
-      </div>
+      ${body}${
+        scene.working
+          ? `\n      <div class="working">${esc(scene.working)}</div>`
+          : ""
+      }${
+        scene.plan
+          ? `\n      <div class="planbox" style="border-color:${mc}">
+        <div class="assistant" style="margin-top:0">${mdToHtml(scene.plan.body)}</div>
+        <div class="row" style="color:${COLORS.dim};margin-top:6px">Shift+Tab to execute, or /execute to proceed.</div>
+      </div>`
+          : ""
+      }${
+        scene.perm
+          ? `\n      <div class="permcard">
+        <div class="row" style="color:${COLORS.yellow};font-weight:700">⚠ permission required · ${esc(scene.perm.toolName)}</div>
+        <div class="row" style="color:${COLORS.fg}">  ${esc(ssToolLabel(scene.perm.toolName, scene.perm.input))}</div>
+        <div class="row" style="color:${COLORS.dim}">  [y]es once  ·  [a]lways  ·  [n]o</div>
+      </div>`
+          : ""
+      }${
+        scene.menu
+          ? `\n      <div class="menubox">
+        <span class="label">${esc(scene.menu.title)}</span>
+${scene.menu.rows
+  .map(
+    (r) =>
+      `        <div class="menurow${r.active ? " active" : ""}">${r.active ? "❯ " : "&nbsp;&nbsp;"}${esc(r.text)}</div>`,
+  )
+  .join("\n")}${scene.menu.more ? `\n        <div class="menumore">&nbsp;&nbsp;${esc(scene.menu.more)}</div>` : ""}
+      </div>`
+          : ""
+      }
       <div class="inputwrap">
-        <span class="label">${label}</span>
-        <span class="prompt">› </span>${
+        <span class="prompt">❯ </span>${
           scene.input
             ? `<span class="typed">${esc(scene.input)}</span><span class="cursor">&nbsp;</span>`
             : `<span class="placeholder">${placeholder}</span>`

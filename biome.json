@@ -29,6 +29,10 @@
         "noNonNullAssertion": "off",
         "useNodejsImportProtocol": "off"
       },
+      "a11y": {
+        "noStaticElementInteractions": "off",
+        "useKeyWithClickEvents": "off"
+      },
       "complexity": {
         "noForEach": "off"
       }

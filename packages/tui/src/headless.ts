@@ -1,6 +1,7 @@
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
+import { toolLabel } from "./tool-icons.ts";
 
 /** Compact "12.3k tok · $0.0421" usage label (cost omitted when unpriced). */
 export function formatUsage(u: SessionUsage): string {
@@ -91,11 +92,7 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       break;
     case "tool-call-started":
       if (opts.showTools !== false) {
-        process.stderr.write(
-          `\n${ansi.cyan(GLYPH.tool)} ${ansi.bold(event.toolName)} ${ansi.dim(
-            truncate(JSON.stringify(event.input ?? {}), 120),
-          )}\n`,
-        );
+        process.stderr.write(`\n${ansi.cyan(toolLabel(event.toolName, event.input))}\n`);
       }
       break;
     case "tool-call-finished":
@@ -206,7 +203,7 @@ export async function runOneShot(
   engine: EngineClient,
   prompt: string,
   opts: HeadlessOptions = {},
-): Promise<void> {
+): Promise<boolean> {
   const json = opts.outputFormat === "json";
   const events = engine.events();
   engine.send({ type: "submit-prompt", text: prompt });
@@ -240,13 +237,15 @@ export async function runOneShot(
         ...(error ? { error } : {}),
       })}\n`,
     );
-    return;
+    return error === undefined;
   }
 
   process.stdout.write("\n");
   if (finalUsage.totalTokens > 0) {
     process.stderr.write(`${ansi.dim(formatUsage(finalUsage))}\n`);
   }
+  // false → the caller exits non-zero (scripting/CI correctness).
+  return error === undefined;
 }
 
 function emptyUsage(): SessionUsage {

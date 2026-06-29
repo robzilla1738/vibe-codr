@@ -23,6 +23,16 @@ test("does not compact below the threshold", async () => {
   expect(result).toBeNull();
 });
 
+/** Assert the contract every compaction result must satisfy. */
+function expectValidContext(messages: ModelMessage[]): void {
+  // First message must be a user turn (Anthropic requires this).
+  expect(messages[0]!.role).toBe("user");
+  // No two consecutive same-role messages (strict alternation).
+  for (let i = 1; i < messages.length; i++) {
+    expect(messages[i]!.role).not.toBe(messages[i - 1]!.role);
+  }
+}
+
 test("compacts when forced, preserving the most recent messages", async () => {
   const messages = msgs(20);
   const result = await compactMessages(messages, {
@@ -33,11 +43,14 @@ test("compacts when forced, preserving the most recent messages", async () => {
     summarize: async () => "CONDENSED",
   });
   expect(result).not.toBeNull();
-  // 1 summary message + the 6 preserved recent messages.
-  expect(result!.messages).toHaveLength(7);
+  // The summary is folded into the leading user turn (recent[0] is a user
+  // message here), so the result is the 6 preserved messages — not 7 — and stays
+  // alternation-safe.
+  expect(result!.messages).toHaveLength(6);
   expect(result!.messages[0]!.content).toContain("CONDENSED");
   expect(result!.messages.at(-1)).toEqual(messages.at(-1)!);
   expect(result!.freed).toBeGreaterThan(0);
+  expectValidContext(result!.messages);
 });
 
 test("compacts when over the threshold", async () => {
@@ -50,5 +63,22 @@ test("compacts when over the threshold", async () => {
     summarize: async () => "S",
   });
   expect(result).not.toBeNull();
-  expect(result!.messages).toHaveLength(5);
+  expectValidContext(result!.messages);
+});
+
+test("the summary never creates two consecutive user turns", async () => {
+  // recent window starts on a user message → summary must fold in, not stack.
+  const messages = msgs(11); // [0..10], slice keep:4 → [7,8,9,10] = a/u/a/u → starts assistant
+  const startsUser = msgs(12); // slice keep:4 → [8,9,10,11] = u/a/u/a → starts user
+  for (const m of [messages, startsUser]) {
+    const result = await compactMessages(m, {
+      contextWindow: 10,
+      threshold: 0,
+      keep: 4,
+      force: true,
+      summarize: async () => "SUM",
+    });
+    expect(result!.messages[0]!.content).toContain("SUM");
+    expectValidContext(result!.messages);
+  }
 });

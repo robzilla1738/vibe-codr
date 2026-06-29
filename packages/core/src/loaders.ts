@@ -2,15 +2,19 @@ import { Glob } from "bun";
 import { basename, dirname } from "node:path";
 import { parseSkillMarkdown, type SlashCommand, type Skill } from "@vibe/plugins";
 
-/** Substitute $ARGUMENTS (all args) and $1..$9 (positional) in a template. */
+/**
+ * Substitute `$ARGUMENTS` (all args) and `$1`..`$99` (positional) in a template.
+ * Single-pass so a value containing `$N` isn't re-substituted and `$10` isn't
+ * mangled by an earlier `$1` match. Unknown placeholders are left verbatim.
+ */
 export function applyArgs(body: string, args: string): string {
   const trimmed = args.trim();
   const parts = trimmed ? trimmed.split(/\s+/) : [];
-  let out = body.replaceAll("$ARGUMENTS", trimmed);
-  parts.forEach((p, i) => {
-    out = out.replaceAll(`$${i + 1}`, p);
+  return body.replace(/\$(ARGUMENTS|\d{1,2})/g, (match, key: string) => {
+    if (key === "ARGUMENTS") return trimmed;
+    const value = parts[Number(key) - 1];
+    return value ?? match;
   });
-  return out;
 }
 
 /**

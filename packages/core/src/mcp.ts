@@ -88,6 +88,31 @@ export class McpHub {
   }
 }
 
+/**
+ * Build the function name exposed to the model for an MCP tool. Hosted providers
+ * (OpenAI, DeepSeek, xAI, Anthropic, …) require tool names to match
+ * `^[a-zA-Z0-9_-]+$` and be ≤ 64 chars, but MCP server keys and tool names are
+ * arbitrary (e.g. `github.search`). So we sanitize disallowed characters to `_`
+ * and, when the result is too long, truncate with a short stable hash to keep it
+ * unique. The *real* MCP tool name is kept separately for `callTool`.
+ */
+export function mcpToolName(server: string, toolName: string): string {
+  const raw = `mcp__${server}__${toolName}`;
+  const sanitized = raw.replace(/[^A-Za-z0-9_-]/g, "_");
+  if (sanitized.length <= 64) return sanitized;
+  // Full 32-bit hash in base36 (≤7 chars) — keep all entropy so truncated names
+  // that share a prefix stay distinct.
+  const hash = djb2(raw).toString(36);
+  return `${sanitized.slice(0, 64 - hash.length - 1)}_${hash}`;
+}
+
+/** Tiny deterministic string hash (djb2) — for unique truncation suffixes. */
+function djb2(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
 /** Adapt one MCP tool spec into a gated ToolDefinition bound to its client. */
 export function toToolDefinition(
   server: string,
@@ -95,7 +120,9 @@ export function toToolDefinition(
   client: McpClient,
 ): ToolDefinition {
   return {
-    name: `mcp__${server}__${spec.name}`,
+    // Exposed name is sanitized for provider compatibility; `spec.name` (the real
+    // MCP tool name) is what we hand back to the server in `callTool`.
+    name: mcpToolName(server, spec.name),
     description: spec.description ?? `MCP tool "${spec.name}" from "${server}".`,
     inputSchema: spec.inputSchema ?? { type: "object", properties: {} },
     readOnly: false,
@@ -143,13 +170,18 @@ const defaultConnect: McpConnect = async (_name, config) => {
         new stdioMod.StdioClientTransport({
           command: config.command,
           args: config.args ?? [],
-          env: config.env,
+          // Merge over the inherited environment so the server still gets PATH /
+          // HOME etc.; `config.env` only adds/overrides specific vars.
+          env: { ...process.env, ...(config.env ?? {}) },
         });
     } else {
       const sseMod = (await import(`${sdk}/sse.js`)) as {
         SSEClientTransport: new (url: URL, o?: unknown) => unknown;
       };
-      makeTransport = async () => new sseMod.SSEClientTransport(new URL(config.url));
+      // Forward configured headers (Authorization / API keys) so authenticated
+      // remote MCP servers can connect.
+      const options = config.headers ? { requestInit: { headers: config.headers } } : undefined;
+      makeTransport = async () => new sseMod.SSEClientTransport(new URL(config.url), options);
     }
   } catch (err) {
     throw new Error(

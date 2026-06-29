@@ -21,21 +21,32 @@ Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 
 ## Screenshots
 
-The interactive TUI — a header with a color-coded mode pill (plan/execute/yolo),
-a live transcript with Markdown and surgical diffs, a pinned plan/task panel, a
-slash-command menu, and live context/usage in the header.
+An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberately
+restrained palette: **one accent at a time** (the current mode's color — purple
+for execute, cyan for plan, red for yolo) carries all the chrome (brand, mode
+pill, user gutter, spinner, input bar, menu selection, rail headers), everything
+else is neutral text/muted, and the only other colors are functional — green/red
+on diffs, amber on warnings. The layout is two columns: a scrolling **transcript**
+beside a **context rail** that tracks the plan's task list, live subagents, and
+session info (model, context %, token/cost). Each user turn sits in a heavy
+left-gutter panel block; assistant replies render real Markdown; tool calls read
+as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
+`◈` websearch, `±` git…) and **condense to one line you click to expand**, while
+edits fold into a single diff row with the hunk shown beneath it; a braille
+spinner shows live work; the slash-command menu highlights the selection; and the
+text input is a raised field with a `❯` caret.
 
 | Chat + tool calls | Live diff |
 |---|---|
 | ![chat](docs/screenshots/01-chat.png) | ![diff](docs/screenshots/02-diff.png) |
 
-| Plan mode | Live task list |
+| Plan mode | Context rail: tasks, subagents, session |
 |---|---|
 | ![plan](docs/screenshots/03-plan.png) | ![tasks](docs/screenshots/04-tasks.png) |
 
-| Permission prompt | Saved sessions |
+| Permission card | Slash-command menu |
 |---|---|
-| ![permission](docs/screenshots/07-permission.png) | ![sessions](docs/screenshots/08-sessions.png) |
+| ![permission](docs/screenshots/07-permission.png) | ![menu](docs/screenshots/09-menu.png) |
 
 <sub>Regenerate with `bun packages/core/scripts/screenshot.ts docs/screenshots`
 (drives the real engine with a mock model; bundled Playwright Chromium).</sub>
@@ -88,6 +99,8 @@ vibecodr -p "list the TS files and read package.json" \
 # machine-readable output (for scripting) and prompt-from-stdin
 vibecodr -p "summarize this" --output-format json
 cat task.md | vibecodr -p -            # read the prompt from stdin
+cat task.md | vibecodr -p ""           # empty -p also reads stdin (no onboarding)
+# Headless exits non-zero on engine error, so `vibecodr -p … && next` is safe in CI.
 
 # other entry points
 vibecodr setup                # (re)run the guided provider/model setup (alias: login)
@@ -126,7 +139,8 @@ Highlights:
   `/compact`, `/resume`, `/recall <text>` (search past sessions), `/export [path]`,
   `/init`, `/exit`.
 - **Model & mode** — `/model <id>`, `/models`, `/plan`, `/execute`,
-  `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`, `/theme <name>`.
+  `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
+  `/theme <default|light|contrast|opencode>`.
   Press **Shift+Tab** to cycle the mode pill: **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>`,
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
@@ -141,6 +155,22 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 
 ### Features
 
+- **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
+  disciplined palette: a **single accent** (the active mode's color) is the only
+  hue on screen at a time; content is neutral and green/red/amber are reserved for
+  diffs and warnings. A two-column layout pairs a scrolling transcript with a
+  **context rail** that tracks the plan's task list, live subagents, and session
+  info (model, context %, token/cost). User turns render in a heavy left-gutter
+  panel block; assistant replies render real Markdown via OpenTUI's native
+  renderer; tool calls read as a distinct icon + action label (`$` bash, `→` read,
+  `←` edit/write, `✱` glob/grep, `◈` websearch, `±` git, `✦` subagent…) and
+  **condense to one line you click to expand**, while edits fold into a single
+  diff row (tinted add/remove backgrounds) with the hunk shown beneath it. A
+  braille spinner with elapsed time shows live work (**Esc** interrupts the turn);
+  the slash menu draws a full-row selection highlight; the text input is a raised
+  field with a `❯` caret; and permission prompts surface as a bordered `△` card
+  answerable with `y`/`a`/`n`. Four themes ship — `default` (Tokyo Night),
+  `light`, `contrast`, and `opencode` (warm peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
   `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools
   (the model calls `present_plan`; you approve to proceed). **Execute** allows
@@ -166,7 +196,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   (`replaceAll` for non-unique matches) and accepts an `edits` array applied
   **atomically** (all-or-nothing); every `edit`/`write` returns a unified diff and
   emits a `file-changed` event, so the UI shows what changed in green/red as it
-  happens.
+  happens. Mutating tools are **serialized within a step** — when a model emits
+  parallel tool calls (most do), edits/writes/bash to the same files can't race;
+  read-only tools still run concurrently.
 - **Task list** — for any multi-step request the agent maintains a live
   checklist via the `update_tasks` tool (pending / in-progress / completed),
   rendered in the UI and persisted with the session so it survives `--resume`.
@@ -222,15 +254,15 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   agent can do the same mid-task via the `recall_memory` tool when you reference
   earlier work or ask "what did we decide?". No embeddings or vector store
   required — it just works on the session files already on disk.
-- **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` in the
-  project root (plus a user-global `~/.config/vibe-codr/VIBE.md`) are injected
-  into every system prompt, so the agent follows your stack and conventions out
-  of the box. Precedence is explicit and simple: the **global** file applies to
-  every project (lowest priority), and **project** files override it when
-  guidance conflicts. Each block is labelled with its source so the model can
-  tell them apart, and `/memory` shows exactly which files are loaded. Drop-in
-  compatible with repos already carrying Codex's `AGENTS.md` or Claude Code's
-  `CLAUDE.md`.
+- **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` are
+  injected into every system prompt, so the agent follows your stack and
+  conventions out of the box. Discovery **walks up from the working directory to
+  the git root**, so running from a subdirectory still picks up the repo-root
+  notes; a user-global `~/.config/vibe-codr/VIBE.md` applies everywhere. Precedence
+  is explicit (global < repo-root < closer dirs; closest wins), each block is
+  labelled with its source, files are byte-capped so a huge note can't bloat every
+  request, and `/memory` shows exactly what's loaded. Drop-in compatible with
+  repos already carrying Codex's `AGENTS.md` or Claude Code's `CLAUDE.md`.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,
@@ -239,10 +271,15 @@ Model strings are `<provider>/<model-id>` (split on the first slash):
 
 #### Providers & subscription auth
 
+All providers run on **AI SDK v5**. anthropic/openai/deepseek use their dedicated
+v5 SDKs; every other provider (xai, openrouter, fireworks, baseten, minimax,
+ollama, lmstudio) is driven through `@ai-sdk/openai-compatible` so it works out of
+the box without chasing incompatible SDK majors.
+
 | Provider | Auth | Notes |
 |---|---|---|
-| `anthropic` `openai` `deepseek` `fireworks` `baseten` `openrouter` | `*_API_KEY` env or `providers.<id>.apiKey` | first-party + aggregators |
-| `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | premium/Grok models via an xAI API key; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
+| `anthropic` `openai` `deepseek` `fireworks` `baseten` `openrouter` | `*_API_KEY` env or `providers.<id>.apiKey` | first-party + aggregators (the OpenAI-compatible ones via the shared compat driver) |
+| `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | OpenAI-compatible; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
 | `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
 | `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
@@ -282,7 +319,7 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
     "anthropic/claude-opus-4-8": { "input": 5, "output": 25 }
   },
   "approvalMode": "ask",                                // ask | auto
-  "theme": "default",                                   // default | light | contrast
+  "theme": "default",                                   // default | light | contrast | opencode
   "caching": { "enabled": true },                       // Anthropic prompt caching
   "reasoning": { "effort": "high", "budgetTokens": 8000 }, // thinking controls
   "budget": { "limitUSD": 5, "onExceed": "warn" },      // spend guard: warn | stop
@@ -314,7 +351,9 @@ bun run format        # biome format --write
 bun run typecheck     # tsc across all packages
 bun test              # unit tests
 bun run smoke:tui     # drive the real OpenTUI app (mock engine) — input, streamed
-                      # output, and the command menu — via the test renderer
+                      # output, tool icons, working spinner, the command menu, and
+                      # the permission card — via the test renderer
+bun packages/core/scripts/screenshot.ts docs/screenshots  # regenerate README shots
 bun run build:binary  # standalone binary -> dist/vibecodr (bun --compile)
 ```
 
@@ -339,6 +378,19 @@ All planned phases are implemented and tested:
 9. ✅ TUI UX — header with color-coded plan/execute/yolo mode pill (Shift+Tab to
    cycle), an interactive slash-command menu, first-class Ollama Cloud, and a
    guided `vibecodr setup`; the OpenTUI app is covered by `bun run smoke:tui`.
+10. ✅ opencode-inspired UI — two-column layout (transcript + a context rail for
+    tasks/subagents/session), left-gutter message blocks, native Markdown replies,
+    per-tool icons + action labels, condensed tool output that expands on click,
+    edits folded into one diff row (tinted backgrounds), a braille working spinner
+    (Esc to interrupt), a bordered permission card, full-row menu highlight, and
+    the `opencode` theme.
+11. ✅ Hardening audit — every provider runs on AI SDK v5 (OpenAI-compatible
+    routing); parallel tool calls serialized; subagent isolation on `--resume`;
+    memory walks to the git root (byte-capped); atomic, corruption-tolerant
+    session store; loop runs serialized + abortable; alternation-safe compaction;
+    plugin hooks wired (incl. a working `deny` gate) and isolated; MCP auth
+    headers; tool-name/safety-command shadow guards; `/undo` rewinds files +
+    history without touching your git index; non-zero headless exit on error.
 
 To run interactively against real models, install the provider SDKs you use
 (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`), OpenTUI for the rich UI

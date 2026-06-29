@@ -31,6 +31,12 @@ type AnyHandler = (payload: unknown) => unknown | Promise<unknown>;
 
 export class HookBus {
   #handlers = new Map<HookName, AnyHandler[]>();
+  /** Notified when a handler throws (engine wires it to a UI notice/log). */
+  #onError?: (name: HookName, err: Error) => void;
+
+  constructor(onError?: (name: HookName, err: Error) => void) {
+    this.#onError = onError;
+  }
 
   on<N extends HookName>(name: N, handler: HookHandler<N>): void {
     const list = this.#handlers.get(name) ?? [];
@@ -44,8 +50,14 @@ export class HookBus {
   ): Promise<HookPayloads[N]> {
     let current = payload;
     for (const handler of this.#handlers.get(name) ?? []) {
-      const next = await handler(current);
-      if (next) current = next as HookPayloads[N];
+      // Isolate each handler: one throwing plugin must not abort the turn or
+      // skip the remaining handlers in the chain.
+      try {
+        const next = await handler(current);
+        if (next) current = next as HookPayloads[N];
+      } catch (err) {
+        this.#onError?.(name, err as Error);
+      }
     }
     return current;
   }

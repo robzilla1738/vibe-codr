@@ -35,6 +35,9 @@ test("single edit replaces a unique match and emits a file-changed diff", async 
   const changed = events.find((e) => e.type === "file-changed");
   expect(changed && changed.type === "file-changed" && changed.action).toBe("edit");
   expect(changed && changed.type === "file-changed" && changed.added).toBe(1);
+  // The diff is attributed to the originating tool call so the UI can fold it
+  // into the exact tool block (no positional guessing).
+  expect(changed && changed.type === "file-changed" && changed.toolCallId).toBe("call_1");
 });
 
 test("replacement text containing $ sequences is inserted literally", async () => {

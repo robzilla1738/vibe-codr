@@ -16,7 +16,17 @@ test("getTheme falls back to default for unknown or missing names", () => {
 test("isKnownTheme reflects the registry", () => {
   expect(isKnownTheme("default")).toBe(true);
   expect(isKnownTheme("light")).toBe(true);
+  expect(isKnownTheme("opencode")).toBe(true);
   expect(isKnownTheme("nope")).toBe(false);
+});
+
+test("the opencode theme ships with its signature warm primary", () => {
+  const oc = getTheme("opencode");
+  expect(oc).not.toBe(getTheme("default"));
+  expect(oc.primary).toBe("#fab283");
+  // The diff backgrounds are real tints, distinct from the panel surface.
+  expect(oc.addBg).not.toBe(oc.panel);
+  expect(oc.delBg).not.toBe(oc.panel);
 });
 
 test("every theme defines a full palette of color strings", () => {

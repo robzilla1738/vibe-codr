@@ -75,3 +75,39 @@ test("load returns null for an unknown session", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
   expect(await new SessionStore(cwd).load("missing")).toBeNull();
 });
+
+test("a corrupt meta.json yields null on load and is skipped by list", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
+  const store = new SessionStore(cwd);
+  const a = fixture();
+  await store.save({ ...a.meta, id: "good", updatedAt: 5 }, a.model, a.history);
+  // Corrupt a second session's meta.json (simulates a crash mid-write).
+  await Bun.write(join(cwd, ".vibe", "sessions", "bad", "meta.json"), "{ not json");
+
+  expect(await store.load("bad")).toBeNull(); // doesn't throw
+  const list = await store.list(); // skips the corrupt one, keeps the good one
+  expect(list.map((m) => m.id)).toEqual(["good"]);
+  expect(await store.latestId()).toBe("good");
+});
+
+test("load tolerates a truncated trailing line in messages.jsonl", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
+  const store = new SessionStore(cwd);
+  const a = fixture();
+  await store.save(a.meta, a.model, a.history);
+  // Append a half-written line (a crash mid-append) — load should skip it.
+  const path = join(cwd, ".vibe", "sessions", a.meta.id, "messages.jsonl");
+  await Bun.write(path, `${await Bun.file(path).text()}\n{"role":"assistant","cont`);
+  const loaded = await store.load(a.meta.id);
+  expect(loaded!.modelMessages).toEqual(a.model); // the good lines survive
+});
+
+test("save leaves no .tmp files behind", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
+  const store = new SessionStore(cwd);
+  const a = fixture();
+  await store.save(a.meta, a.model, a.history);
+  const { readdirSync } = await import("node:fs");
+  const files = readdirSync(join(cwd, ".vibe", "sessions", a.meta.id));
+  expect(files.some((f) => f.endsWith(".tmp"))).toBe(false);
+});

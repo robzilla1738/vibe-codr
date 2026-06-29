@@ -50,11 +50,13 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
         proc.kill();
       }, timeoutMs ?? DEFAULT_TIMEOUT);
 
-      const decoder = new TextDecoder();
       let out = "";
       const pump = async (stream: ReadableStream<Uint8Array>) => {
-        for await (const chunk of stream) {
-          const text = decoder.decode(chunk);
+        // One decoder per stream with streaming mode so a multibyte UTF-8
+        // character split across chunk boundaries isn't corrupted into `�`.
+        const decoder = new TextDecoder();
+        const emit = (text: string) => {
+          if (!text) return;
           out += text;
           ctx.emit({
             type: "tool-call-progress",
@@ -62,7 +64,9 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
             toolCallId: ctx.toolCallId,
             chunk: text,
           });
-        }
+        };
+        for await (const chunk of stream) emit(decoder.decode(chunk, { stream: true }));
+        emit(decoder.decode()); // flush any buffered trailing bytes
       };
 
       await Promise.all([pump(proc.stdout), pump(proc.stderr)]);

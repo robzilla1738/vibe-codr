@@ -21,6 +21,15 @@ test("a background job runs and transitions to exited with captured output", asy
   expect(after?.output).toContain("hello-bg");
 });
 
+test("multibyte UTF-8 output is captured intact", async () => {
+  const jobs = new BackgroundJobs();
+  const job = jobs.start("printf 'café — déjà vu 🚀\\n'", cwd());
+  await job.proc.exited;
+  await new Promise((r) => setTimeout(r, 20));
+  // Streaming decode must not corrupt multibyte characters into `�`.
+  expect(jobs.get(job.id)?.output).toContain("café — déjà vu 🚀");
+});
+
 test("a long job can be killed", async () => {
   const jobs = new BackgroundJobs();
   const job = jobs.start("sleep 30", cwd());

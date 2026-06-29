@@ -16,14 +16,21 @@ export const globTool: ToolDefinition<z.infer<typeof Input>> = {
   concurrencySafe: true,
   async execute({ pattern, cwd }, ctx) {
     const searchDir = cwd ? `${ctx.cwd}/${cwd}` : ctx.cwd;
+    const LIMIT = 1000;
     const glob = new Glob(pattern);
     const matches: string[] = [];
+    let truncated = false;
     for await (const file of glob.scan({ cwd: searchDir, dot: false })) {
       matches.push(file);
-      if (matches.length >= 1000) break;
+      if (matches.length >= LIMIT) {
+        truncated = true;
+        break;
+      }
     }
-    return {
-      output: matches.length ? matches.join("\n") : "(no matches)",
-    };
+    if (!matches.length) return { output: "(no matches)" };
+    const note = truncated
+      ? `\n…(truncated at ${LIMIT} matches; narrow the pattern)`
+      : "";
+    return { output: matches.join("\n") + note };
   },
 };

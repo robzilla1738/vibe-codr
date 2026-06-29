@@ -34,8 +34,17 @@ export const grepTool: ToolDefinition<z.infer<typeof Input>> = {
         const err = await new Response(proc.stderr).text();
         return { output: `ripgrep error: ${err}`, isError: true };
       }
-      const capped = out.split("\n").slice(0, 500).join("\n");
-      return { output: capped || "(no matches)" };
+      const LIMIT = 500;
+      // ripgrep output ends with a trailing newline; drop the empty tail so the
+      // count reflects real match lines before deciding whether we truncated.
+      const lines = out.split("\n");
+      if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+      const truncated = lines.length > LIMIT;
+      const capped = lines.slice(0, LIMIT).join("\n");
+      if (!capped) return { output: "(no matches)" };
+      return {
+        output: truncated ? `${capped}\n…(truncated at ${LIMIT} matches)` : capped,
+      };
     } catch (err) {
       return {
         output: `grep unavailable (is ripgrep installed?): ${(err as Error).message}`,

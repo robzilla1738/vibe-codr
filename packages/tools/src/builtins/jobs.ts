@@ -35,18 +35,31 @@ export class BackgroundJobs {
     };
     this.#jobs.set(job.id, job);
 
-    const decoder = new TextDecoder();
     const pump = async (stream: ReadableStream<Uint8Array>) => {
-      for await (const chunk of stream) {
-        job.output += decoder.decode(chunk);
+      // One decoder per stream with streaming mode so multibyte UTF-8 split
+      // across chunk boundaries isn't corrupted into `�`.
+      const decoder = new TextDecoder();
+      const append = (text: string) => {
+        if (!text) return;
+        job.output += text;
         if (job.output.length > 100_000) job.output = job.output.slice(-100_000);
-      }
+      };
+      for await (const chunk of stream) append(decoder.decode(chunk, { stream: true }));
+      append(decoder.decode()); // flush trailing bytes
     };
-    void Promise.all([pump(proc.stdout), pump(proc.stderr)]);
-    void proc.exited.then((code) => {
-      if (job.status === "running") job.status = "exited";
-      job.exitCode = code;
+    // Fire-and-forget pumps: a stream error (e.g. broken pipe) must not become
+    // an unhandled rejection — record it in the job's output instead.
+    Promise.all([pump(proc.stdout), pump(proc.stderr)]).catch((err) => {
+      job.output += `\n[stream error: ${(err as Error).message}]`;
     });
+    proc.exited
+      .then((code) => {
+        if (job.status === "running") job.status = "exited";
+        job.exitCode = code;
+      })
+      .catch(() => {
+        if (job.status === "running") job.status = "exited";
+      });
     return job;
   }
 

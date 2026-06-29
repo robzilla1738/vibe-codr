@@ -144,7 +144,12 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   top); each section hides when empty, the task list also hides once every task
   is `completed`, and item text uses `wrapMode="word"` (filenames `truncateLeft`)
   so nothing is silently cut — no row caps needed since it scrolls. Modeled on
-  opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`.
+  opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`. User
+  message blocks reuse the input bar's EXACT frame (heavy accent gutter,
+  `elevated` bg, `❯` caret, matching padding) so a sent message and the input
+  read as one element. The footer is a flex row: key-binding hints on the left,
+  `metricsLine()` (context-window %, token usage, cost — `metrics()` signal) on
+  the right, shown only when there's data; goal lives in the rail / narrow header.
 - **Color discipline (keep it tasteful):** exactly one accent is on screen at a
   time — `modeColor(uiMode, palette)` (execute = the theme's `primary`, plan =
   `tool`, yolo = `del`). All chrome (brand, mode pill, user gutter, spinner, rail

@@ -20,7 +20,7 @@
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
-import { createEffect, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { applyPalette, isExactCommand, paletteState } from "./commands-catalog.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH } from "./headless.ts";
@@ -48,7 +48,7 @@ const MAX_ACTIVITY = 6;
  */
 type Block =
   | { kind: "user"; id: number; text: string }
-  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean; turn: number }
+  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean }
   | {
       kind: "tool";
       id: number;
@@ -60,10 +60,8 @@ type Block =
       /** Output is a unified diff → color +/- lines when expanded. */
       isDiff: boolean;
       isError: boolean;
-      /** Owning turn (the assistant block this followed) for message-fold. */
-      turn: number;
     }
-  | { kind: "notice"; id: number; text: string; turn: number };
+  | { kind: "notice"; id: number; text: string };
 
 /** A subagent shown in the context rail while it runs and after it finishes. */
 interface Subagent {
@@ -111,22 +109,35 @@ export function App(props: { engine: EngineClient }) {
       next.has(turn) ? next.delete(turn) : next.add(turn);
       return next;
     });
-  // How many tool/notice blocks fold under a given turn (drives the clickable
-  // "N steps hidden" affordance and whether a message is collapsible at all).
-  const turnChildCount = (turn: number) =>
-    blocks().filter(
-      (b) => (b.kind === "tool" || b.kind === "notice") && (b as { turn: number }).turn === turn,
-    ).length;
+  // Owning assistant turn for each tool/notice block, computed by POSITION (the
+  // nearest preceding assistant message in the transcript) rather than emission
+  // order — so clicking a message always folds the work shown beneath it, even
+  // when a tool was emitted before the assistant's first text. Tools before any
+  // assistant text in a turn stay unowned (nothing above to fold them under).
+  const grouping = createMemo(() => {
+    const owner = new Map<number, number>(); // block id → owning assistant id
+    const counts = new Map<number, number>(); // assistant id → foldable child count
+    let cur = -1;
+    for (const b of blocks()) {
+      if (b.kind === "user") cur = -1;
+      else if (b.kind === "assistant") cur = b.id;
+      else if ((b.kind === "tool" || b.kind === "notice") && cur >= 0) {
+        owner.set(b.id, cur);
+        counts.set(cur, (counts.get(cur) ?? 0) + 1);
+      }
+    }
+    return { owner, counts };
+  });
+  const turnChildCount = (assistantId: number) => grouping().counts.get(assistantId) ?? 0;
+  // A tool/notice block is hidden when its owning message's turn is folded.
+  const isHidden = (blockId: number) => {
+    const o = grouping().owner.get(blockId);
+    return o !== undefined && collapsedTurns().has(o);
+  };
   // Ctrl+O: fold every turn that has foldable work, or unfold all if any is folded.
   const toggleAllTurns = () =>
     setCollapsedTurns((prev) =>
-      prev.size > 0
-        ? new Set()
-        : new Set(
-            blocks()
-              .filter((b) => b.kind === "tool" || b.kind === "notice")
-              .map((b) => (b as { turn: number }).turn),
-          ),
+      prev.size > 0 ? new Set() : new Set(grouping().counts.keys()),
     );
   // Files touched this session (path → cumulative line delta), shown in the rail.
   const [changedFiles, setChangedFiles] = createSignal<ChangedFile[]>([]);
@@ -154,21 +165,26 @@ export function App(props: { engine: EngineClient }) {
   // Defer past the renderer's own post-click focus handling (which would
   // otherwise blur the input right after our synchronous focus() call).
   const refocusInput = () => queueMicrotask(() => inputEl?.focus());
-  // The transcript scrollbox, captured so expand/collapse can anchor on the
-  // clicked row instead of letting sticky-scroll snap to the bottom.
-  let scrollEl:
-    | { scrollTop: number; scrollChildIntoView: (id: string) => void }
-    | undefined;
-  // Toggle a block's collapse state while keeping the clicked row visually
-  // fixed: freeze scrollTop across the re-layout, then nudge the row into view
-  // if it fell outside the viewport. Without this, expanding a tall block makes
-  // OpenTUI re-anchor to the bottom, which reads as "jumped to the middle".
-  const anchoredToggle = (domId: string, mutate: () => void) => {
+  // The transcript scrollbox, captured so expand/collapse can hold the clicked
+  // row in place instead of letting sticky-scroll snap to the bottom.
+  let scrollEl: { scrollTop: number; stickyScroll: boolean } | undefined;
+  // Expand/collapse a row while keeping the clicked line visually fixed. When the
+  // turn is idle, clicking is "I'm reading now": disengage auto-follow (otherwise
+  // the taller content snaps to the bottom and reads as a jump) and freeze
+  // scrollTop across the re-layout — auto-follow re-engages on the next turn (see
+  // `runText`). While a turn is still streaming, leave sticky alone so new output
+  // keeps following.
+  const anchoredToggle = (mutate: () => void) => {
+    if (working()) {
+      mutate();
+      refocusInput();
+      return;
+    }
     const top = scrollEl?.scrollTop ?? 0;
+    if (scrollEl) scrollEl.stickyScroll = false;
     mutate();
     queueMicrotask(() => {
       if (scrollEl) scrollEl.scrollTop = top;
-      queueMicrotask(() => scrollEl?.scrollChildIntoView(domId));
     });
     refocusInput();
   };
@@ -251,9 +267,6 @@ export function App(props: { engine: EngineClient }) {
   let nextId = 0;
   const newId = () => nextId++;
   let activeAssistant = -1; // index of the in-flight assistant block, or -1
-  // The turn (assistant block id) that following tool/notice blocks belong to,
-  // so a message and its work can be folded together. Seeded per user turn.
-  let currentTurn = -1;
   const toolByCallId = new Map<string, number>();
 
   // Finalize the streaming reply (flip `streaming` off so <markdown> closes any
@@ -404,14 +417,7 @@ export function App(props: { engine: EngineClient }) {
             // affordance too: a new turn means it was acted on or abandoned.
             setSubagents([]);
             setPlan(null);
-            {
-              const uid = newId();
-              // Seed the turn with the user block id so any tools emitted before
-              // the first assistant text still group under this turn (foldable
-              // via Ctrl+O even without a clickable message header).
-              currentTurn = uid;
-              setBlocks((prev) => [...prev, { kind: "user", id: uid, text: event.text }]);
-            }
+            setBlocks((prev) => [...prev, { kind: "user", id: newId(), text: event.text }]);
             // A new turn begins: start the working clock/spinner.
             turnStartedAt = Date.now();
             setTick(0);
@@ -431,19 +437,14 @@ export function App(props: { engine: EngineClient }) {
                 copy[activeAssistant] = { ...cur, text: cur.text + event.delta };
                 return copy;
               }
-              const id = newId();
-              // This assistant block owns the turn: tools/notices that follow
-              // fold under it when its message is clicked.
-              currentTurn = id;
               const next = [
                 ...prev,
                 {
                   kind: "assistant" as const,
-                  id,
+                  id: newId(),
                   text: event.delta,
                   streaming: true,
                   gap: true,
-                  turn: id,
                 },
               ];
               activeAssistant = next.length - 1;
@@ -471,7 +472,6 @@ export function App(props: { engine: EngineClient }) {
                   collapsed: true,
                   isDiff: false,
                   isError: false,
-                  turn: currentTurn,
                 },
               ];
               toolByCallId.set(event.toolCallId, next.length - 1);
@@ -543,7 +543,6 @@ export function App(props: { engine: EngineClient }) {
                 collapsed: false,
                 isDiff: true,
                 isError: false,
-                turn: canFold ? (target as { turn: number }).turn : currentTurn,
               };
               if (canFold && idx != null) {
                 const copy = prev.slice();
@@ -622,14 +621,14 @@ export function App(props: { engine: EngineClient }) {
             finalizeAssistant();
             setBlocks((prev) => [
               ...prev,
-              { kind: "notice", id: newId(), text: event.message, turn: currentTurn },
+              { kind: "notice", id: newId(), text: event.message },
             ]);
             break;
           case "engine-error":
             endTurn();
             setBlocks((prev) => [
               ...prev,
-              { kind: "notice", id: newId(), text: `error: ${event.message}`, turn: currentTurn },
+              { kind: "notice", id: newId(), text: `error: ${event.message}` },
             ]);
             break;
           default:
@@ -643,6 +642,9 @@ export function App(props: { engine: EngineClient }) {
     const text = raw.trim();
     if (!text) return;
     setDraft("");
+    // A new turn: re-engage auto-follow so the streamed reply scrolls into view
+    // (a prior expand/collapse may have disengaged it — see `anchoredToggle`).
+    if (scrollEl) scrollEl.stickyScroll = true;
     if (text === "/exit" || text === "/quit") {
       props.engine.send({ type: "shutdown" });
       process.exit(0);
@@ -663,7 +665,6 @@ export function App(props: { engine: EngineClient }) {
       setSubagents([]);
       setActivity([]);
       setCollapsedTurns(new Set());
-      currentTurn = -1;
       setChangedFiles([]);
       setPerms([]);
       setQueued(0);
@@ -788,8 +789,7 @@ export function App(props: { engine: EngineClient }) {
                     paddingLeft={1}
                     onMouseDown={() => {
                       const id = (block() as { id: number }).id;
-                      if (turnChildCount(id) > 0)
-                        anchoredToggle(`msg-${id}`, () => toggleTurn(id));
+                      if (turnChildCount(id) > 0) anchoredToggle(() => toggleTurn(id));
                     }}
                   >
                     <AssistantText
@@ -807,18 +807,14 @@ export function App(props: { engine: EngineClient }) {
                     </Show>
                   </box>
                 </Show>
-                <Show
-                  when={block().kind === "tool" && !collapsedTurns().has((block() as { turn: number }).turn)}
-                >
+                <Show when={block().kind === "tool" && !isHidden((block() as { id: number }).id)}>
                   <ToolBlockView
                     block={block as () => Extract<Block, { kind: "tool" }>}
                     palette={palette()}
-                    onToggle={(id) => anchoredToggle(`tool-${id}`, () => toggle(id))}
+                    onToggle={(id) => anchoredToggle(() => toggle(id))}
                   />
                 </Show>
-                <Show
-                  when={block().kind === "notice" && !collapsedTurns().has((block() as { turn: number }).turn)}
-                >
+                <Show when={block().kind === "notice" && !isHidden((block() as { id: number }).id)}>
                   <text fg={palette().notice} marginTop={1} paddingLeft={1}>
                     {(block() as { text: string }).text}
                   </text>

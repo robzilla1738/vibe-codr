@@ -146,13 +146,18 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   scroll inside the box, never overflow onto the input. The transcript is a list
   of `Block`s rendered with `<Index>` (stable per position, append-only); tool
   output is condensed to one clickable row and expands in place. Expand/collapse
-  goes through `anchoredToggle` (it freezes the scrollbox `scrollTop` across the
-  re-layout, then `scrollChildIntoView`) so the clicked row stays put and content
-  reveals *below* it — don't toggle a block without anchoring or it jumps.
-  **Turn folding:** assistant/tool/notice blocks carry a `turn` (the owning
-  assistant block id, seeded per user turn); clicking an assistant message folds
-  its turn's tool/notice work (`collapsedTurns` set, "N steps hidden" affordance),
-  and **Ctrl+O** (`toggleAllTurns`) folds/unfolds every turn — leaving just prose.
+  goes through `anchoredToggle`: when the turn is **idle** it disengages the
+  scrollbox's `stickyScroll` (so growing content doesn't snap to the bottom) and
+  freezes `scrollTop`, so the clicked row stays put and content reveals *below* it;
+  while a turn is **streaming** it leaves sticky alone so new output keeps
+  following. Auto-follow re-engages next turn (`runText` sets `stickyScroll=true`).
+  Don't toggle a block outside `anchoredToggle` or it jumps.
+  **Turn folding:** an assistant message owns the tool/notice blocks that follow
+  it, computed by POSITION (nearest preceding assistant) via the `grouping` memo —
+  robust to a tool emitted before the assistant's first text; do NOT reintroduce
+  an emission-time `turn` field on blocks. Clicking a message folds its work
+  (`collapsedTurns` + `isHidden`, "N steps hidden" affordance); **Ctrl+O**
+  (`toggleAllTurns`) folds/unfolds every turn — leaving just prose.
   The rail itself is an `elevated`-bg panel with its OWN `<scrollbox>` of stacked
   sections: **Activity** (live tool feed, shown only while `working()` so it never
   duplicates the transcript when idle) → **Subagents** (prompt + running/done +

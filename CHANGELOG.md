@@ -5,6 +5,14 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **Expanding a tool/diff row no longer jumps to the bottom.** On an idle turn,
+  expand/collapse now disengages the scrollbox's sticky auto-follow and freezes
+  the scroll position, so the clicked row stays put and revealed content drops in
+  below it (auto-follow re-engages on the next prompt).
+- **Clicking a message to fold its work now works reliably.** Turn ownership is
+  computed by transcript position (nearest preceding assistant message) instead of
+  a fragile emission-time turn id, so a tool emitted before the assistant's first
+  text no longer escapes the fold.
 - **Standalone binary could not load any provider.** Provider SDKs were imported
   with a dynamic `import(variableSpecifier)` that `bun build --compile` can't
   bundle, so the "standalone" binary failed on every provider with

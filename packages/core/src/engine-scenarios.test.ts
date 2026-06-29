@@ -88,6 +88,32 @@ test("plan mode: present_plan emits a plan and no file is mutated", async () => 
   expect(events.some((e) => e.type === "file-changed")).toBe(false);
 });
 
+test("subagent: the parent delegates, gets the child's answer, and folds its cost", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-sub-"));
+  // Parent spawns a subagent; the child answers; the parent reports back. The
+  // shared mock counter feeds: parent tool-call -> child final -> parent final.
+  const { engine, events, collector } = mockEngine(
+    [
+      toolStep("c1", "spawn_subagent", { prompt: "count the files" }),
+      textStep("There are 3 files."), // child's answer
+      textStep("The subagent found 3 files."), // parent's final summary
+    ],
+    cwd,
+    defaultConfig(),
+  );
+  await engine.bootstrap();
+  engine.send({ type: "submit-prompt", text: "delegate a count" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  expect(events.some((e) => e.type === "subagent-started")).toBe(true);
+  const done = events.find((e) => e.type === "subagent-finished");
+  expect(done && done.type === "subagent-finished" && done.result).toContain("3 files");
+  // Cost is folded into the parent: a usage-updated reflects the child's tokens.
+  expect(events.some((e) => e.type === "usage-updated")).toBe(true);
+});
+
 test("auto-verify: a failing check feeds back and the agent self-corrects", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-verify-"));
   writeFileSync(join(cwd, "seed.txt"), "start\n");

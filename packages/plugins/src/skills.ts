@@ -40,10 +40,14 @@ export class SkillRegistry {
 }
 
 /** Parse a SKILL.md into frontmatter + body (lightweight YAML subset). */
-export function parseSkillMarkdown(raw: string): {
+export function parseSkillMarkdown(rawInput: string): {
   frontmatter: Record<string, string>;
   body: string;
 } {
+  // Normalize CRLF/CR so a Windows- or editor-authored SKILL.md, agent, or
+  // command file still has its `---` frontmatter recognized (the fence match is
+  // LF-anchored). Without this, such files silently lose all frontmatter.
+  const raw = rawInput.replace(/\r\n?/g, "\n");
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) return { frontmatter: {}, body: raw };
   const frontmatter: Record<string, string> = {};

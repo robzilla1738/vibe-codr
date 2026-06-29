@@ -15,7 +15,7 @@ export async function listOpenAICompatibleModels(
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     const res = await fetch(`${baseURL.replace(/\/$/, "")}/models`, {
       headers,
-      signal: signal ?? null,
+      ...(signal ? { signal } : {}),
     });
     if (!res.ok) return [];
     const json = (await res.json()) as { data?: Array<{ id?: string }> };

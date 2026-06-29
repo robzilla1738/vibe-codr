@@ -145,20 +145,30 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   is `completed`, and item text uses `wrapMode="word"` (filenames `truncateLeft`)
   so nothing is silently cut — no row caps needed since it scrolls. Modeled on
   opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`. User
-  message blocks reuse the input bar's EXACT frame (heavy accent gutter,
+  message blocks reuse the input bar's EXACT frame (heavy `brand` gutter,
   `elevated` bg, `❯` caret, matching padding) so a sent message and the input
   read as one element. The footer is a flex row: key-binding hints on the left,
   `metricsLine()` (context-window %, token usage, cost — `metrics()` signal) on
   the right, shown only when there's data; goal lives in the rail / narrow header.
-- **Color discipline (keep it tasteful):** exactly one accent is on screen at a
-  time — `modeColor(uiMode, palette)` (execute = the theme's `primary`, plan =
-  `tool`, yolo = `del`). All chrome (brand, mode pill, user gutter, spinner, rail
-  headers/active items, menu selection, input bar/caret) uses that one accent;
-  transcript prose is the neutral `assistant` fg (markdown), tool rows are
-  `muted`. The only saturated colors are functional: `add`/`del` on expanded
-  diff lines and `notice` (amber) on warnings/permissions.
+- **Spacing (uniform rhythm):** the body row sets `gap={2}` so the transcript
+  never butts against the rail surface. Every region stacked below the body
+  (working spinner, plan, tasks fallback, permission card, menu, input, footer)
+  carries `marginTop={1}` — one blank row between every area, top to bottom. Keep
+  that single-row rhythm; don't special-case a region to 0 or 2.
+- **Color discipline (keep it tasteful):** one fixed **brand** hue —
+  `brand()` = `palette().primary` (the light lavender `#bb9af7` in the default
+  theme) — paints ALL chrome: brand mark, mode pill, user gutter, spinner, rail
+  headers/active items, plan box, menu selection. The **text-input area is the
+  only thing that tracks the active mode**: its left bar, `❯` caret, and cursor
+  use `accent()` = `modeColor(uiMode, palette)` (execute = `primary`/lavender,
+  plan = `tool`/cyan, yolo = `del`/salmon). So switching mode recolors the input
+  field and nothing else. Transcript prose is the neutral `assistant` fg
+  (markdown), tool rows are `muted`. The only other saturated colors are
+  functional: `add`/`del` on expanded diff lines and `notice` (amber) on
+  warnings/permissions.
   Don't reintroduce per-kind hues (blue user, cyan tools, green dots) — that's
-  the rainbow we deliberately removed. `border={["left"]}` boxes can't host a
+  the rainbow we deliberately removed, and don't re-spread `accent()` back across
+  the chrome (use `brand()` there). `border={["left"]}` boxes can't host a
   `title` (no top edge), so don't put one there.
 - Match the surrounding code's style; comments explain *why*, not *what*.
 

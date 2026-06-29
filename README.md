@@ -22,11 +22,13 @@ Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 ## Screenshots
 
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberately
-restrained palette: **one accent at a time** (the current mode's color — purple
-for execute, cyan for plan, red for yolo) carries all the chrome (brand, mode
-pill, user gutter, spinner, input bar, menu selection, rail headers), everything
-else is neutral text/muted, and the only other colors are functional — green/red
-on diffs, amber on warnings. The layout is two columns: a scrolling **transcript**
+restrained palette: **one fixed brand hue** (a light lavender) carries all the
+chrome — brand mark, mode pill, user gutter, spinner, menu selection, rail
+headers — while the **text-input area is the only thing that recolors with the
+mode** (lavender for execute, cyan for plan, salmon for yolo), so switching mode
+is unmistakable without repainting the whole screen. Everything else is neutral
+text/muted, and the only other colors are functional — green/red on diffs, amber
+on warnings. The layout is two columns: a scrolling **transcript**
 beside a **context rail** (a panel of stacked, scrolling sections) that tracks
 the plan's task list, live subagents, the files changed this session (with line
 deltas), and session info (model, context %, token/cost) — sections hide when
@@ -36,7 +38,7 @@ as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
 `◈` websearch, `±` git…) and **condense to one line you click to expand**, while
 edits fold into a single diff row with the hunk shown beneath it; a braille
 spinner shows live work; the slash-command menu highlights the selection; and your
-sent messages share the input's exact raised frame (heavy accent gutter, `❯`
+sent messages share the input's exact raised frame (heavy brand gutter, `❯`
 caret) so they read as one element. A footer keeps live **context-window fill,
 token usage, and cost** in view whenever there's something to report.
 
@@ -160,9 +162,10 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
-  disciplined palette: a **single accent** (the active mode's color) is the only
-  hue on screen at a time; content is neutral and green/red/amber are reserved for
-  diffs and warnings. A two-column layout pairs a scrolling transcript with a
+  disciplined palette: a **single fixed brand hue** (light lavender) carries the
+  chrome and the **text-input area alone recolors with the mode**; content is
+  neutral and green/red/amber are reserved for diffs and warnings. A two-column
+  layout pairs a scrolling transcript with a
   **context rail** that tracks the plan's task list, live subagents, the files
   changed this session, and session info (model, context %, token/cost); sections
   hide when empty and the task list clears once it's done. User turns render in a heavy left-gutter
@@ -173,7 +176,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   diff row (tinted add/remove backgrounds) with the hunk shown beneath it. A
   braille spinner with elapsed time shows live work (**Esc** interrupts the turn);
   the slash menu draws a full-row selection highlight; your sent messages share
-  the input's exact raised frame (heavy accent gutter, `❯` caret); a footer keeps
+  the input's exact raised frame (heavy brand gutter, `❯` caret); a footer keeps
   live **context-window fill, token usage, and cost** in view; and permission
   prompts surface as a bordered `△` card answerable with `y`/`a`/`n`. Four themes
   ship — `default` (Tokyo Night), `light`, `contrast`, and `opencode` (warm peach).
@@ -181,8 +184,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools
   (the model calls `present_plan`; you approve to proceed). **Execute** allows
   edits/commands, each gated by a glob-based allow/deny/ask **permission layer**.
-  **Yolo** runs side-effecting tools without prompting. The header pill and the
-  input border are color-coded so the active mode is unmistakable.
+  **Yolo** runs side-effecting tools without prompting. The input border, caret,
+  and cursor are color-coded so the active mode is unmistakable (the rest of the
+  UI stays on the fixed brand hue).
 - **Resilience & git/process tools** — provider calls retry transient failures
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a
   notice instead of failing silently. Structured `git_status` / `git_diff` /

@@ -123,9 +123,13 @@ export function App(props: { engine: EngineClient }) {
   const [usageInfo, setUsageInfo] = createSignal(usage.totalTokens > 0 ? formatUsage(usage) : "");
   const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
   const cwd = shortCwd();
-  // The single accent hue shown at a time: the current mode's color. Everything
-  // else is neutral text/muted; green/red appear only on diffs, amber only on
-  // warnings — so the UI reads as one tasteful color, not a rainbow.
+  // One fixed brand hue (light lavender) is shown across the whole UI — header,
+  // rail, working line, user bars, plan box, menu. Everything else is neutral
+  // text/muted; green/red appear only on diffs, amber only on warnings, so the
+  // UI reads as one tasteful color, not a rainbow.
+  const brand = () => palette().primary;
+  // The text-input area is the ONLY region that tracks the active mode — its
+  // left bar, caret, and cursor recolor on plan/execute/yolo; nothing else does.
   const accent = () => modeColor(uiMode(), palette());
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
@@ -578,12 +582,12 @@ export function App(props: { engine: EngineClient }) {
       >
         <box flexDirection="row" justifyContent="space-between">
           <box flexDirection="row">
-            <text fg={accent()} attributes={TextAttributes.BOLD}>
+            <text fg={brand()} attributes={TextAttributes.BOLD}>
               {"◆ vibe-codr"}
             </text>
             <text fg={palette().muted}>{"   "}</text>
             <text
-              fg={accent()}
+              fg={brand()}
               bg={palette().elevated}
               attributes={TextAttributes.BOLD}
             >{` ${modeLabel(uiMode())} `}</text>
@@ -601,7 +605,7 @@ export function App(props: { engine: EngineClient }) {
       </box>
 
       {/* Body — a scrolling transcript beside the context rail. */}
-      <box flexDirection="row" flexGrow={1} marginTop={1}>
+      <box flexDirection="row" flexGrow={1} marginTop={1} gap={2}>
         <scrollbox
           flexGrow={1}
           flexShrink={1}
@@ -613,7 +617,7 @@ export function App(props: { engine: EngineClient }) {
         >
           <Show when={blocks().length === 0}>
             <box flexDirection="column" paddingLeft={1}>
-              <text fg={accent()} attributes={TextAttributes.BOLD}>
+              <text fg={brand()} attributes={TextAttributes.BOLD}>
                 {"◆ vibe-codr"}
               </text>
               <text fg={palette().muted}>
@@ -642,7 +646,7 @@ export function App(props: { engine: EngineClient }) {
                   <box
                     border={["left"]}
                     borderStyle="heavy"
-                    borderColor={accent()}
+                    borderColor={brand()}
                     backgroundColor={palette().elevated}
                     flexDirection="row"
                     marginTop={1}
@@ -651,7 +655,7 @@ export function App(props: { engine: EngineClient }) {
                     paddingTop={1}
                     paddingBottom={1}
                   >
-                    <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>
+                    <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
                       {"❯ "}
                     </text>
                     <text flexGrow={1} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
@@ -724,7 +728,7 @@ export function App(props: { engine: EngineClient }) {
                         task.status === "completed"
                           ? palette().muted
                           : task.status === "in_progress"
-                            ? accent()
+                            ? brand()
                             : palette().assistant;
                       return (
                         <box flexDirection="row" gap={1}>
@@ -743,13 +747,13 @@ export function App(props: { engine: EngineClient }) {
                   <For each={subagents()}>
                     {(s) => (
                       <box flexDirection="row" gap={1}>
-                        <text flexShrink={0} fg={s.status === "running" ? accent() : palette().muted}>
+                        <text flexShrink={0} fg={s.status === "running" ? brand() : palette().muted}>
                           {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
                         </text>
                         <text
                           flexGrow={1}
                           wrapMode="word"
-                          fg={s.status === "running" ? accent() : palette().muted}
+                          fg={s.status === "running" ? brand() : palette().muted}
                         >
                           {s.prompt}
                         </text>
@@ -805,16 +809,16 @@ export function App(props: { engine: EngineClient }) {
       {/* Live working indicator — braille spinner + elapsed, hidden while a
           permission card is up (the card is the active affordance then). */}
       <Show when={working() && perms().length === 0}>
-        <text fg={accent()} flexShrink={0}>
+        <text fg={brand()} flexShrink={0} marginTop={1}>
           {`${spinnerFrame(tick())} ${workingLabel(Date.now() - turnStartedAt)}  ·  esc to interrupt`}
         </text>
       </Show>
       <Show when={plan()}>
         <box
           border
-          borderColor={accent()}
+          borderColor={brand()}
           title="Plan"
-          titleColor={accent()}
+          titleColor={brand()}
           flexDirection="column"
           flexShrink={0}
           marginTop={1}
@@ -836,7 +840,7 @@ export function App(props: { engine: EngineClient }) {
           border
           borderColor={palette().border}
           title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-          titleColor={accent()}
+          titleColor={brand()}
           flexDirection="column"
           flexShrink={0}
           marginTop={1}
@@ -850,7 +854,7 @@ export function App(props: { engine: EngineClient }) {
                   task.status === "completed"
                     ? palette().muted
                     : task.status === "in_progress"
-                      ? accent()
+                      ? brand()
                       : palette().assistant
                 }
               >
@@ -890,9 +894,9 @@ export function App(props: { engine: EngineClient }) {
       <Show when={menu().open}>
         <box
           border
-          borderColor={accent()}
+          borderColor={brand()}
           title={menuView()?.title}
-          titleColor={accent()}
+          titleColor={brand()}
           backgroundColor={palette().panel}
           flexDirection="column"
           flexShrink={0}
@@ -903,7 +907,7 @@ export function App(props: { engine: EngineClient }) {
           <For each={menuView()?.rows ?? []}>
             {(row) => (
               <text
-                fg={row.active ? accent() : palette().muted}
+                fg={row.active ? brand() : palette().muted}
                 bg={row.active ? palette().selBg : undefined}
                 attributes={row.active ? TextAttributes.BOLD : undefined}
               >
@@ -953,7 +957,7 @@ export function App(props: { engine: EngineClient }) {
       </box>
       {/* Footer — key bindings on the left, live context/usage/cost on the right
           (shown only once there's something to report). */}
-      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
+      <box flexDirection="row" justifyContent="space-between" flexShrink={0} marginTop={1}>
         <text fg={palette().muted}>
           {"shift+tab mode · / commands · @file · click ▸ expand · esc interrupt"}
         </text>

@@ -50,9 +50,10 @@ const DEFAULT: Palette = {
   taskDone: "#565f89",
   taskActive: "#7dcfff",
   taskPending: "#c0caf5",
-  accent: "#8b5cf6",
-  // The single accent: execute mode's signature dark purple (see modeColor).
-  primary: "#8b5cf6",
+  accent: "#bb9af7",
+  // The fixed brand hue: a light lavender shown across the whole UI. Mode only
+  // recolors the text-input area (see modeColor); execute mode reuses this shade.
+  primary: "#bb9af7",
   border: "#2c3047",
   muted: "#565f89",
   panel: "#1a1c28",

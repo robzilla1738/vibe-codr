@@ -26,6 +26,13 @@ All notable changes to vibe-codr are documented here.
   truncation marker instead of silently dropping results.
 
 ### Improved
+- **TUI palette & spacing.** The light lavender `#bb9af7` is now the single fixed
+  brand hue across all chrome (header, rail, spinner, user gutter, plan box,
+  menu); the **text-input area is the only region that recolors with the mode**
+  (plan/execute/yolo) — switching mode no longer repaints the whole screen. Added
+  a `gap={2}` gutter between the transcript and the context rail (message blocks
+  no longer touch the rail) and a uniform `marginTop={1}` rhythm below the body,
+  so the working line and footer no longer hug their neighbors.
 - **System prompt** strengthened on the dimensions that drive output quality on
   real codebases: convention-matching, scope discipline, verification rigor, and
   concise terminal-appropriate communication.

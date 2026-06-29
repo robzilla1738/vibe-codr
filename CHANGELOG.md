@@ -26,6 +26,22 @@ All notable changes to vibe-codr are documented here.
   truncation marker instead of silently dropping results.
 
 ### Improved
+- **TUI interaction overhaul.** A recognized `/command` now turns the input bar
+  green as a "registered" cue. Expanding a tool row keeps the clicked row in place
+  (anchored scroll) instead of jumping to the middle. Clicking an assistant message
+  folds its tool/output work away (just the prose remains), and **Ctrl+O** folds/
+  unfolds every turn at once. Search rows truncate the query and show `N results`
+  instead of a raw line count, and the system prompt now tells the model to search
+  deliberately (no redundant reworded queries). The context rail is rebuilt as a
+  clean live summary — **Activity** (in-progress tool feed, hidden when idle),
+  **Subagents** (with one-line results), Tasks, Changed, then a compact Session —
+  instead of a mostly-empty box.
+- **Real context window & cost for any model.** Context window now resolves via a
+  `config.contextWindow` override → a live Ollama `/api/show` probe (local + cloud)
+  → the catalog → a 128k default, so local/cloud models report a real window. Cost
+  is always shown: `$0.00` for free/local, and a `~$` estimate for models priced by
+  a base-model catalog match (e.g. Ollama Cloud `glm-5.2`), with a per-model
+  `config.pricing`/`contextWindow` pin taking precedence.
 - **TUI palette & spacing.** The light lavender `#bb9af7` is now the single fixed
   brand hue across all chrome (header, rail, spinner, user gutter, plan box,
   menu); the **text-input area is the only region that recolors with the mode**

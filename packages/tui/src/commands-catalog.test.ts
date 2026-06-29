@@ -1,5 +1,20 @@
 import { test, expect } from "bun:test";
-import { paletteState, applyPalette, PALETTE_COMMANDS } from "./commands-catalog.ts";
+import {
+  paletteState,
+  applyPalette,
+  isExactCommand,
+  PALETTE_COMMANDS,
+} from "./commands-catalog.ts";
+
+test("isExactCommand recognizes a full command word, with or without args", () => {
+  expect(isExactCommand("/goal")).toBe(true);
+  expect(isExactCommand("/goal ship it")).toBe(true);
+  expect(isExactCommand("/MODEL")).toBe(true); // case-insensitive
+  expect(isExactCommand("/goa")).toBe(false); // partial prefix is not exact
+  expect(isExactCommand("/nope")).toBe(false);
+  expect(isExactCommand("/")).toBe(false);
+  expect(isExactCommand("hello")).toBe(false);
+});
 
 test("a plain prompt keeps the menu closed", () => {
   expect(paletteState("hello world")).toEqual({ open: false });

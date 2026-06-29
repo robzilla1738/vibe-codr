@@ -113,6 +113,13 @@ export const ConfigSchema = z.object({
    */
   pricing: z.record(z.string(), ModelPriceSchema).default({}),
   /**
+   * Per-model context-window overrides keyed by model string (`provider/model`),
+   * in tokens. Used to pin the real window for a model the catalog doesn't know
+   * (e.g. a custom Ollama tag), driving accurate context-fill % and compaction.
+   * Wins over the live Ollama probe and the catalog.
+   */
+  contextWindow: z.record(z.string(), z.number().int().positive()).default({}),
+  /**
    * Extended-thinking / reasoning controls, passed to the provider when the
    * model supports them. `effort` maps to OpenAI `reasoningEffort` (and
    * OpenRouter); `budgetTokens` maps to Anthropic extended-thinking budget.

@@ -15,13 +15,25 @@ test("formatDiff returns empty string for an empty diff", () => {
   expect(formatDiff("")).toBe("");
 });
 
-test("formatUsage shows tokens and omits cost when unpriced", () => {
+test("formatUsage always shows cost: $0.00 for free, $ for real, ~$ for estimates", () => {
+  // Free/local model → an explicit $0.00 rather than a hidden cost.
   expect(formatUsage({ inputTokens: 10, outputTokens: 5, totalTokens: 15, costUSD: 0 })).toBe(
-    "15 tok",
+    "15 tok · $0.00",
   );
+  // Real price.
   expect(
     formatUsage({ inputTokens: 0, outputTokens: 0, totalTokens: 1500, costUSD: 0.042 }),
   ).toContain("$0.0420");
+  // Estimated price (base-model fallback) → ~$ prefix.
+  expect(
+    formatUsage({
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 1500,
+      costUSD: 0.042,
+      costEstimated: true,
+    }),
+  ).toContain("~$0.0420");
 });
 
 test("formatJsonResult emits a parseable result with the expected fields", () => {

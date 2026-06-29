@@ -94,6 +94,13 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
     `assistant.message` (session). Safety builtins (`RESERVED_SLASH`) can't be
     shadowed by `.vibe/commands/*.md`, and `Toolset.register` refuses to let an
     extension tool shadow a built-in.
+  - **Cost/context are real for any model.** `Engine.#resolveContextWindow` tries
+    `config.contextWindow[model]` → an Ollama `/api/show` probe (local + cloud) →
+    the models.dev catalog → the 128k default. `#resolvePricing` tries a full
+    `config.pricing` pin → `CatalogService.pricing`, which falls back to a
+    **base-model match** (`ollama/glm-5.2` inherits a `glm-5.2` price) flagged
+    `estimated`. The flag rides `SessionUsage.costEstimated` so `formatUsage` shows
+    `~$` for estimates, `$0.00` for genuinely free/local — cost is never hidden.
 - Every behavior change ships with a test. Prefer mock-model integration tests
   (`ai/test`'s `MockLanguageModelV2`) over hitting the network.
 - `packages/tui/src/app.tsx` is excluded from `tsc` (OpenTUI is an optional
@@ -138,13 +145,22 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   permission card did exactly this before the fix). Long conversations must
   scroll inside the box, never overflow onto the input. The transcript is a list
   of `Block`s rendered with `<Index>` (stable per position, append-only); tool
-  output is condensed to one clickable row and expands in place. The rail itself
-  is an `elevated`-bg panel containing its OWN `<scrollbox>` of stacked sections
-  (tasks → subagents → changed files → session, session last so work stays up
-  top); each section hides when empty, the task list also hides once every task
-  is `completed`, and item text uses `wrapMode="word"` (filenames `truncateLeft`)
-  so nothing is silently cut — no row caps needed since it scrolls. Modeled on
-  opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`. User
+  output is condensed to one clickable row and expands in place. Expand/collapse
+  goes through `anchoredToggle` (it freezes the scrollbox `scrollTop` across the
+  re-layout, then `scrollChildIntoView`) so the clicked row stays put and content
+  reveals *below* it — don't toggle a block without anchoring or it jumps.
+  **Turn folding:** assistant/tool/notice blocks carry a `turn` (the owning
+  assistant block id, seeded per user turn); clicking an assistant message folds
+  its turn's tool/notice work (`collapsedTurns` set, "N steps hidden" affordance),
+  and **Ctrl+O** (`toggleAllTurns`) folds/unfolds every turn — leaving just prose.
+  The rail itself is an `elevated`-bg panel with its OWN `<scrollbox>` of stacked
+  sections: **Activity** (live tool feed, shown only while `working()` so it never
+  duplicates the transcript when idle) → **Subagents** (prompt + running/done +
+  one-line `result`) → **Tasks** → **Changed** → **Session** (model · ctx% · usage
+  · goal, last). Each section hides when empty, the task list also hides once every
+  task is `completed`, and item text uses `wrapMode="word"` (filenames
+  `truncateLeft`) so nothing is silently cut — no row caps needed since it scrolls.
+  Modeled on opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`. User
   message blocks reuse the input bar's EXACT frame (heavy `brand` gutter,
   `elevated` bg, `❯` caret, matching padding) so a sent message and the input
   read as one element. The footer is a flex row: key-binding hints on the left,
@@ -160,9 +176,11 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   theme) — paints ALL chrome: brand mark, mode pill, user gutter, spinner, rail
   headers/active items, plan box, menu selection. The **text-input area is the
   only thing that tracks the active mode**: its left bar, `❯` caret, and cursor
-  use `accent()` = `modeColor(uiMode, palette)` (execute = `primary`/lavender,
-  plan = `tool`/cyan, yolo = `del`/salmon). So switching mode recolors the input
-  field and nothing else. Transcript prose is the neutral `assistant` fg
+  use `inputAccent()` = `modeColor(uiMode, palette)` (execute = `primary`/lavender,
+  plan = `tool`/cyan, yolo = `del`/salmon), EXCEPT it flips to the green `subagent`
+  hue while the draft is a recognized `/command` (`isExactCommand`) as a "command
+  registered" cue. So switching mode recolors the input field and nothing else.
+  Transcript prose is the neutral `assistant` fg
   (markdown), tool rows are `muted`. The only other saturated colors are
   functional: `add`/`del` on expanded diff lines and `notice` (amber) on
   warnings/permissions.

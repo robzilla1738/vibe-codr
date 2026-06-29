@@ -36,6 +36,8 @@ test("summaries read like actions, parsing object or JSON-string input", () => {
   );
   expect(toolSummary("grep", { pattern: "TODO" })).toBe('grep "TODO"');
   expect(toolSummary("websearch", { query: "opentui solid" })).toBe('search "opentui solid"');
+  // A long search query is truncated like other long args.
+  expect(toolSummary("web_search", { query: "x".repeat(80) })).toMatch(/^search "x+…"$/);
 });
 
 test("a long bash command is truncated with an ellipsis", () => {

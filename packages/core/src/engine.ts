@@ -16,6 +16,7 @@ import type { Config } from "@vibe/config";
 import {
   ProviderRegistry,
   CatalogService,
+  probeOllamaContextWindow,
   type ModelInfo,
 } from "@vibe/providers";
 import { Toolset, builtinTools } from "@vibe/tools";
@@ -179,7 +180,7 @@ export class Engine implements EngineClient {
       skills: this.skills,
       hooks: this.hooks,
       store: this.#store,
-      getContextWindow: (model) => this.catalog.contextWindow(model),
+      getContextWindow: (model) => this.#resolveContextWindow(model),
       getPricing: (model) => this.#resolvePricing(model),
       ...(resume
         ? {
@@ -414,7 +415,7 @@ export class Engine implements EngineClient {
       agents: this.#agents,
       skills: this.skills,
       hooks: this.hooks,
-      getContextWindow: (model) => this.catalog.contextWindow(model),
+      getContextWindow: (model) => this.#resolveContextWindow(model),
       getPricing: (model) => this.#resolvePricing(model),
     });
   }
@@ -473,17 +474,40 @@ export class Engine implements EngineClient {
    * override wins; otherwise fall back to the live catalog. A partial override
    * (e.g. only `input`) is completed from the catalog.
    */
-  async #resolvePricing(model: string): Promise<ModelPrice | undefined> {
+  async #resolvePricing(
+    model: string,
+  ): Promise<(ModelPrice & { estimated?: boolean }) | undefined> {
     const override = this.#config.pricing[model];
+    // A full config pin is authoritative (a real negotiated rate, not estimated).
     if (override?.input !== undefined && override?.output !== undefined) {
       return override;
     }
     const catalog = await this.catalog.pricing(model);
-    if (!override) return catalog;
+    if (!override) return catalog; // may carry `estimated` from a base-model match
     return {
       input: override.input ?? catalog?.input,
       output: override.output ?? catalog?.output,
+      estimated: catalog?.estimated,
     };
+  }
+
+  /**
+   * Resolve a model's real context window (tokens): a config `contextWindow`
+   * override wins, then a live Ollama `/api/show` probe (covers local + cloud
+   * Ollama models the catalog doesn't list), then the models.dev catalog. Falls
+   * through to undefined, where the session applies its 128k default.
+   */
+  async #resolveContextWindow(model: string): Promise<number | undefined> {
+    const override = this.#config.contextWindow[model];
+    if (override) return override;
+    if (model.startsWith("ollama/")) {
+      const probed = await probeOllamaContextWindow(
+        model,
+        this.#config.providers?.ollama?.baseURL,
+      );
+      if (probed) return probed;
+    }
+    return this.catalog.contextWindow(model);
   }
 
   /** Whether the model accepts image input (undefined if unknown). */
@@ -554,7 +578,7 @@ export class Engine implements EngineClient {
         this.#notice(await this.#statusText());
         break;
       case "context": {
-        const window = await this.catalog.contextWindow(this.#session.model);
+        const window = await this.#resolveContextWindow(this.#session.model);
         const used = this.#session.contextTokens;
         const threshold = this.#config.compaction.threshold;
         const lines = [
@@ -901,7 +925,7 @@ export class Engine implements EngineClient {
   /** `/status` — render the live session overview. */
   async #statusText(): Promise<string> {
     const tools = this.toolset.all();
-    const contextWindow = await this.catalog.contextWindow(this.#session.model);
+    const contextWindow = await this.#resolveContextWindow(this.#session.model);
     return formatStatus({
       contextTokens: this.#session.contextTokens,
       ...(contextWindow ? { contextWindow } : {}),

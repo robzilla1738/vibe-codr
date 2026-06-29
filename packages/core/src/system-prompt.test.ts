@@ -16,6 +16,8 @@ test("the base prompt sets the quality bar: conventions, verification, concision
   // Verification rigor and terminal-appropriate communication.
   expect(out).toMatch(/run the project's checks|don't claim something works/i);
   expect(out).toMatch(/concise|skimmable/i);
+  // Search discipline (avoid redundant reworded web searches).
+  expect(out).toMatch(/Search deliberately|reworded variations/i);
 });
 
 test("the goal is injected as a north-star block", () => {

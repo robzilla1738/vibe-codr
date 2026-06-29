@@ -59,6 +59,8 @@ export interface SessionUsage {
   totalTokens: number;
   /** Estimated cost in USD (0 when no price is known for the model). */
   costUSD: number;
+  /** True when `costUSD` is based on an estimated (base-model fallback) price. */
+  costEstimated?: boolean;
   /** Cumulative input tokens served from the prompt cache, if reported. */
   cachedInputTokens?: number;
 }

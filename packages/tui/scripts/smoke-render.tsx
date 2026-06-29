@@ -110,10 +110,15 @@ await settle();
 frame = t.captureCharFrame();
 check("tool output is condensed by default", frame.includes("lines") && !frame.includes("ALPHA_BODY"));
 
-// 5) Clicking the tool row expands its output (click-to-expand).
+// 5) Clicking the tool row expands its output (click-to-expand). Target the
+// TRANSCRIPT tool row specifically (it carries the "▸ … N lines" collapse hint);
+// the rail's live Activity feed also shows "read x" but without that hint.
 const rowOf = (needle: string) =>
   t.captureCharFrame().split("\n").findIndex((l) => l.includes(needle));
-const toolRow = rowOf("read x");
+const toolRow = t
+  .captureCharFrame()
+  .split("\n")
+  .findIndex((l) => l.includes("read x") && l.includes("line"));
 check("located the tool row to click", toolRow >= 0);
 if (toolRow >= 0) {
   await t.mockMouse.click(5, toolRow);
@@ -171,7 +176,8 @@ check("rail shows the Subagents section", frame.includes("Subagents"));
 check("rail shows a running subagent", frame.includes("explore the repo"));
 // The edit in 5b touched g.ts → it appears in the rail's Changed-files section.
 check("rail shows the Changed-files section", frame.includes("Changed"));
-check("rail shows the pinned Session footer", frame.includes("Session"));
+// While the turn runs, the rail's live Activity feed surfaces tool calls.
+check("rail shows the live Activity feed", frame.includes("Activity"));
 
 // 6b) Context-window fill + token usage/cost surface in the footer once known.
 push({ type: "usage-updated", usage: { inputTokens: 1200, outputTokens: 300, totalTokens: 1500, costUSD: 0.0123 } } as UIEvent);
@@ -186,6 +192,28 @@ push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
 check("working indicator clears when the turn finishes", !frame.includes("Working"));
+// Idle now: the Activity feed hides (no transcript duplication) and the rail's
+// Session block — model/ctx/cost/goal — is visible.
+check("rail Activity hides when idle", !frame.includes("Activity"));
+check("rail shows the Session block when idle", frame.includes("Session"));
+
+// 6c) Clicking an assistant message folds its turn's tool work away (just the
+// prose remains), and clicking again unfolds it. The "What is 6 times 7?" turn
+// owns the read/edit tool rows above.
+const msgRow = t
+  .captureCharFrame()
+  .split("\n")
+  .findIndex((l) => l.includes("42"));
+if (msgRow >= 0) {
+  await t.mockMouse.click(5, msgRow);
+  await settle();
+  frame = t.captureCharFrame();
+  check("clicking a message folds its tool work", frame.includes("hidden") && !frame.includes("edited g.ts"));
+  await t.mockMouse.click(5, msgRow);
+  await settle();
+  frame = t.captureCharFrame();
+  check("clicking again unfolds the message", frame.includes("edited g.ts"));
+}
 
 // 7) The slash-command menu opens, drills into values, and runs the selection.
 sent.length = 0;

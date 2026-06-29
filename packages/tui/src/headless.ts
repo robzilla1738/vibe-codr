@@ -3,14 +3,19 @@ import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
 import { toolLabel } from "./tool-icons.ts";
 
-/** Compact "12.3k tok · $0.0421" usage label (cost omitted when unpriced). */
+/**
+ * Compact "12.3k tok · $0.0421" usage label. Cost is always shown so any
+ * provider/model reports something real: `$0.00` for a free/local model, and a
+ * `~$` prefix when the price is an estimate (a base-model catalog fallback).
+ */
 export function formatUsage(u: SessionUsage): string {
   const tok =
     u.totalTokens >= 1000
       ? `${(u.totalTokens / 1000).toFixed(1)}k`
       : `${u.totalTokens}`;
-  const cost =
-    u.costUSD > 0 ? ` · $${u.costUSD.toFixed(u.costUSD < 1 ? 4 : 2)}` : "";
+  const prefix = u.costEstimated ? "~$" : "$";
+  const digits = u.costUSD === 0 ? 2 : u.costUSD < 1 ? 4 : 2;
+  const cost = ` · ${prefix}${u.costUSD.toFixed(digits)}`;
   const cached =
     u.cachedInputTokens && u.cachedInputTokens > 0
       ? ` · ${u.cachedInputTokens} cached`

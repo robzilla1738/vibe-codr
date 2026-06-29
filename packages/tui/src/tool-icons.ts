@@ -115,7 +115,7 @@ export function toolSummary(name: string, input: unknown): string {
       return `fetch ${truncate(str(a.url), 64)}`;
     case "websearch":
     case "web_search":
-      return `search ${quote(a.query || a.q)}`.trim();
+      return `search ${quote(truncate(str(a.query || a.q), 56))}`.trim();
     case "task":
     case "subagent":
       return `task ${truncate(str(a.prompt || a.description || a.title), 56)}`.trim();

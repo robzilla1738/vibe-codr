@@ -56,6 +56,19 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "exit", description: "Exit vibe-codr (alias /quit)" },
 ];
 
+/**
+ * True when the draft is a slash line whose command word exactly matches a known
+ * command (with or without trailing args). Drives the input's "command
+ * registered" color cue — distinct from `paletteState`, which stays open on
+ * partial prefixes too.
+ */
+export function isExactCommand(draft: string): boolean {
+  if (!draft.startsWith("/")) return false;
+  const space = draft.indexOf(" ");
+  const name = (space === -1 ? draft.slice(1) : draft.slice(1, space)).toLowerCase();
+  return name.length > 0 && PALETTE_COMMANDS.some((c) => c.name === name);
+}
+
 export type PaletteState =
   | { open: false }
   | { open: true; mode: "command"; query: string; items: PaletteCommand[] }

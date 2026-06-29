@@ -21,7 +21,7 @@ import { SyntaxStyle, TextAttributes } from "@opentui/core";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { createEffect, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
-import { applyPalette, paletteState } from "./commands-catalog.ts";
+import { applyPalette, isExactCommand, paletteState } from "./commands-catalog.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, modeLabel, nextUiMode } from "./modes.ts";
@@ -37,6 +37,8 @@ const RAIL_WIDTH = 34;
 const RAIL_MIN_COLS = 96;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
+/** How many recent tool calls the rail's "Activity" feed keeps. */
+const MAX_ACTIVITY = 6;
 
 /**
  * One block in the transcript. The transcript is append-only: positions never
@@ -46,7 +48,7 @@ const MAX_OUTPUT_LINES = 160;
  */
 type Block =
   | { kind: "user"; id: number; text: string }
-  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean }
+  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean; turn: number }
   | {
       kind: "tool";
       id: number;
@@ -58,14 +60,25 @@ type Block =
       /** Output is a unified diff → color +/- lines when expanded. */
       isDiff: boolean;
       isError: boolean;
+      /** Owning turn (the assistant block this followed) for message-fold. */
+      turn: number;
     }
-  | { kind: "notice"; id: number; text: string };
+  | { kind: "notice"; id: number; text: string; turn: number };
 
 /** A subagent shown in the context rail while it runs and after it finishes. */
 interface Subagent {
   id: string;
   prompt: string;
   status: "running" | "done";
+  /** One-line result summary, surfaced once the subagent finishes. */
+  result?: string;
+}
+
+/** A recent tool call for the rail's live "Activity" feed. */
+interface Activity {
+  callId: string;
+  label: string;
+  status: "running" | "done" | "error";
 }
 
 /** A file edited this session, with its cumulative line delta (rail "Changed"). */
@@ -87,6 +100,34 @@ export function App(props: { engine: EngineClient }) {
   const [draft, setDraft] = createSignal("");
   const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
   const [subagents, setSubagents] = createSignal<Subagent[]>([]);
+  // Recent tool calls (newest first, capped), the rail's live activity feed.
+  const [activity, setActivity] = createSignal<Activity[]>([]);
+  // Turns (assistant block ids) whose tool/notice output is folded away — click
+  // a message to fold its work, or Ctrl+O to fold/unfold every turn at once.
+  const [collapsedTurns, setCollapsedTurns] = createSignal<Set<number>>(new Set());
+  const toggleTurn = (turn: number) =>
+    setCollapsedTurns((prev) => {
+      const next = new Set(prev);
+      next.has(turn) ? next.delete(turn) : next.add(turn);
+      return next;
+    });
+  // How many tool/notice blocks fold under a given turn (drives the clickable
+  // "N steps hidden" affordance and whether a message is collapsible at all).
+  const turnChildCount = (turn: number) =>
+    blocks().filter(
+      (b) => (b.kind === "tool" || b.kind === "notice") && (b as { turn: number }).turn === turn,
+    ).length;
+  // Ctrl+O: fold every turn that has foldable work, or unfold all if any is folded.
+  const toggleAllTurns = () =>
+    setCollapsedTurns((prev) =>
+      prev.size > 0
+        ? new Set()
+        : new Set(
+            blocks()
+              .filter((b) => b.kind === "tool" || b.kind === "notice")
+              .map((b) => (b as { turn: number }).turn),
+          ),
+    );
   // Files touched this session (path → cumulative line delta), shown in the rail.
   const [changedFiles, setChangedFiles] = createSignal<ChangedFile[]>([]);
   const [plan, setPlan] = createSignal<string | null>(null);
@@ -113,6 +154,24 @@ export function App(props: { engine: EngineClient }) {
   // Defer past the renderer's own post-click focus handling (which would
   // otherwise blur the input right after our synchronous focus() call).
   const refocusInput = () => queueMicrotask(() => inputEl?.focus());
+  // The transcript scrollbox, captured so expand/collapse can anchor on the
+  // clicked row instead of letting sticky-scroll snap to the bottom.
+  let scrollEl:
+    | { scrollTop: number; scrollChildIntoView: (id: string) => void }
+    | undefined;
+  // Toggle a block's collapse state while keeping the clicked row visually
+  // fixed: freeze scrollTop across the re-layout, then nudge the row into view
+  // if it fell outside the viewport. Without this, expanding a tall block makes
+  // OpenTUI re-anchor to the bottom, which reads as "jumped to the middle".
+  const anchoredToggle = (domId: string, mutate: () => void) => {
+    const top = scrollEl?.scrollTop ?? 0;
+    mutate();
+    queueMicrotask(() => {
+      if (scrollEl) scrollEl.scrollTop = top;
+      queueMicrotask(() => scrollEl?.scrollChildIntoView(domId));
+    });
+    refocusInput();
+  };
   const [palette, setPalette] = createSignal<Palette>(getTheme(snap.theme));
   const [uiMode, setUiMode] = createSignal(deriveUiMode(mode, approvals));
   const [headModel, setHeadModel] = createSignal(model);
@@ -131,6 +190,10 @@ export function App(props: { engine: EngineClient }) {
   // The text-input area is the ONLY region that tracks the active mode — its
   // left bar, caret, and cursor recolor on plan/execute/yolo; nothing else does.
   const accent = () => modeColor(uiMode(), palette());
+  // When the draft is a recognized `/command`, the input shifts to the green
+  // "recognized" hue as an instant registered cue (a timed pulse could layer on
+  // top later via `tick()`); otherwise it stays the mode accent.
+  const inputAccent = () => (isExactCommand(draft()) ? palette().subagent : accent());
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -188,6 +251,9 @@ export function App(props: { engine: EngineClient }) {
   let nextId = 0;
   const newId = () => nextId++;
   let activeAssistant = -1; // index of the in-flight assistant block, or -1
+  // The turn (assistant block id) that following tool/notice blocks belong to,
+  // so a message and its work can be folded together. Seeded per user turn.
+  let currentTurn = -1;
   const toolByCallId = new Map<string, number>();
 
   // Finalize the streaming reply (flip `streaming` off so <markdown> closes any
@@ -243,11 +309,18 @@ export function App(props: { engine: EngineClient }) {
     setDraft(res.draft);
     if (run && res.done) runText(res.draft);
   };
-  useKeyboard((key: { name?: string; shift?: boolean; preventDefault?: () => void }) => {
+  useKeyboard(
+    (key: { name?: string; shift?: boolean; ctrl?: boolean; preventDefault?: () => void }) => {
     // Shift+Tab cycles plan → execute → yolo, menu open or not.
     if (key.name === "tab" && key.shift) {
       key.preventDefault?.();
       cycleMode();
+      return;
+    }
+    // Ctrl+O folds/unfolds every turn's tool work at once (just the prose left).
+    if (key.ctrl && key.name === "o") {
+      key.preventDefault?.();
+      toggleAllTurns();
       return;
     }
     const st = menu();
@@ -331,7 +404,14 @@ export function App(props: { engine: EngineClient }) {
             // affordance too: a new turn means it was acted on or abandoned.
             setSubagents([]);
             setPlan(null);
-            setBlocks((prev) => [...prev, { kind: "user", id: newId(), text: event.text }]);
+            {
+              const uid = newId();
+              // Seed the turn with the user block id so any tools emitted before
+              // the first assistant text still group under this turn (foldable
+              // via Ctrl+O even without a clickable message header).
+              currentTurn = uid;
+              setBlocks((prev) => [...prev, { kind: "user", id: uid, text: event.text }]);
+            }
             // A new turn begins: start the working clock/spinner.
             turnStartedAt = Date.now();
             setTick(0);
@@ -351,42 +431,63 @@ export function App(props: { engine: EngineClient }) {
                 copy[activeAssistant] = { ...cur, text: cur.text + event.delta };
                 return copy;
               }
+              const id = newId();
+              // This assistant block owns the turn: tools/notices that follow
+              // fold under it when its message is clicked.
+              currentTurn = id;
               const next = [
                 ...prev,
                 {
                   kind: "assistant" as const,
-                  id: newId(),
+                  id,
                   text: event.delta,
                   streaming: true,
                   gap: true,
+                  turn: id,
                 },
               ];
               activeAssistant = next.length - 1;
               return next;
             });
             break;
-          case "tool-call-started":
+          case "tool-call-started": {
             if (event.subagentId) break; // subagent tools don't enter the transcript
             finalizeAssistant();
+            const label = toolLabel(event.toolName, event.input);
+            setActivity((prev) =>
+              [{ callId: event.toolCallId, label, status: "running" as const }, ...prev].slice(
+                0,
+                MAX_ACTIVITY,
+              ),
+            );
             setBlocks((prev) => {
               const next = [
                 ...prev,
                 {
                   kind: "tool" as const,
                   id: newId(),
-                  label: toolLabel(event.toolName, event.input),
+                  label,
                   output: [] as string[],
                   collapsed: true,
                   isDiff: false,
                   isError: false,
+                  turn: currentTurn,
                 },
               ];
               toolByCallId.set(event.toolCallId, next.length - 1);
               return next;
             });
             break;
+          }
           case "tool-call-finished": {
             if (event.subagentId) break;
+            setActivity((prev) =>
+              prev.map((a) =>
+                a.callId === event.toolCallId
+                  ? { ...a, status: event.isError ? "error" : "done" }
+                  : a,
+              ),
+            );
             // Skip only the echo for the exact call whose diff we already folded.
             if (suppressCallIds.has(event.toolCallId)) {
               suppressCallIds.delete(event.toolCallId);
@@ -442,6 +543,7 @@ export function App(props: { engine: EngineClient }) {
                 collapsed: false,
                 isDiff: true,
                 isError: false,
+                turn: canFold ? (target as { turn: number }).turn : currentTurn,
               };
               if (canFold && idx != null) {
                 const copy = prev.slice();
@@ -484,7 +586,11 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "subagent-finished":
             setSubagents((prev) =>
-              prev.map((s) => (s.id === event.subagentId ? { ...s, status: "done" } : s)),
+              prev.map((s) =>
+                s.id === event.subagentId
+                  ? { ...s, status: "done", result: firstLine(event.result) }
+                  : s,
+              ),
             );
             break;
           case "mode-changed":
@@ -514,13 +620,16 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "notice":
             finalizeAssistant();
-            setBlocks((prev) => [...prev, { kind: "notice", id: newId(), text: event.message }]);
+            setBlocks((prev) => [
+              ...prev,
+              { kind: "notice", id: newId(), text: event.message, turn: currentTurn },
+            ]);
             break;
           case "engine-error":
             endTurn();
             setBlocks((prev) => [
               ...prev,
-              { kind: "notice", id: newId(), text: `error: ${event.message}` },
+              { kind: "notice", id: newId(), text: `error: ${event.message}`, turn: currentTurn },
             ]);
             break;
           default:
@@ -552,6 +661,9 @@ export function App(props: { engine: EngineClient }) {
       setBlocks([]);
       setPlan(null);
       setSubagents([]);
+      setActivity([]);
+      setCollapsedTurns(new Set());
+      currentTurn = -1;
       setChangedFiles([]);
       setPerms([]);
       setQueued(0);
@@ -607,6 +719,7 @@ export function App(props: { engine: EngineClient }) {
       {/* Body — a scrolling transcript beside the context rail. */}
       <box flexDirection="row" flexGrow={1} marginTop={1} gap={2}>
         <scrollbox
+          ref={(el: typeof scrollEl) => (scrollEl = el)}
           flexGrow={1}
           flexShrink={1}
           stickyScroll
@@ -664,28 +777,48 @@ export function App(props: { engine: EngineClient }) {
                   </box>
                 }
               >
-                {/* assistant / tool / notice */}
+                {/* assistant / tool / notice. An assistant message is a click
+                    target: clicking folds its turn's tool/notice work away
+                    (leaving just the prose), with a "N steps hidden" affordance. */}
                 <Show when={block().kind === "assistant"}>
-                  <box marginTop={(block() as { gap: boolean }).gap ? 1 : 0} paddingLeft={1}>
+                  <box
+                    id={`msg-${(block() as { id: number }).id}`}
+                    flexDirection="column"
+                    marginTop={(block() as { gap: boolean }).gap ? 1 : 0}
+                    paddingLeft={1}
+                    onMouseDown={() => {
+                      const id = (block() as { id: number }).id;
+                      if (turnChildCount(id) > 0)
+                        anchoredToggle(`msg-${id}`, () => toggleTurn(id));
+                    }}
+                  >
                     <AssistantText
                       text={(block() as { text: string }).text}
                       streaming={(block() as { streaming: boolean }).streaming}
                       style={mdStyle}
                       fg={palette().assistant}
                     />
+                    <Show when={turnChildCount((block() as { id: number }).id) > 0}>
+                      <text fg={palette().muted}>
+                        {collapsedTurns().has((block() as { id: number }).id)
+                          ? `▸ ${turnChildCount((block() as { id: number }).id)} step${turnChildCount((block() as { id: number }).id) === 1 ? "" : "s"} hidden`
+                          : "▾"}
+                      </text>
+                    </Show>
                   </box>
                 </Show>
-                <Show when={block().kind === "tool"}>
+                <Show
+                  when={block().kind === "tool" && !collapsedTurns().has((block() as { turn: number }).turn)}
+                >
                   <ToolBlockView
                     block={block as () => Extract<Block, { kind: "tool" }>}
                     palette={palette()}
-                    onToggle={(id) => {
-                      toggle(id);
-                      refocusInput();
-                    }}
+                    onToggle={(id) => anchoredToggle(`tool-${id}`, () => toggle(id))}
                   />
                 </Show>
-                <Show when={block().kind === "notice"}>
+                <Show
+                  when={block().kind === "notice" && !collapsedTurns().has((block() as { turn: number }).turn)}
+                >
                   <text fg={palette().notice} marginTop={1} paddingLeft={1}>
                     {(block() as { text: string }).text}
                   </text>
@@ -717,6 +850,69 @@ export function App(props: { engine: EngineClient }) {
               contentOptions={{ flexDirection: "column", gap: 1 }}
               scrollbarOptions={{ visible: false }}
             >
+              {/* Activity — the last few tool calls (newest first): a live feed
+                  of what the agent is doing right now. Shown only while a turn is
+                  running so it never duplicates the transcript when you're idle;
+                  the running row animates, errors show red. */}
+              <Show when={working() && activity().length > 0}>
+                <box flexDirection="column">
+                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Activity"}</text>
+                  <For each={activity()}>
+                    {(a) => {
+                      const c =
+                        a.status === "error"
+                          ? palette().del
+                          : a.status === "running"
+                            ? brand()
+                            : palette().muted;
+                      const glyph =
+                        a.status === "running"
+                          ? spinnerFrame(tick())
+                          : a.status === "error"
+                            ? "✗"
+                            : GLYPH.check;
+                      return (
+                        <box flexDirection="row" gap={1}>
+                          <text flexShrink={0} fg={c}>{glyph}</text>
+                          <text flexGrow={1} wrapMode="none" fg={c}>
+                            {truncate(a.label, RAIL_WIDTH - 4)}
+                          </text>
+                        </box>
+                      );
+                    }}
+                  </For>
+                </box>
+              </Show>
+
+              <Show when={subagents().length > 0}>
+                <box flexDirection="column">
+                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Subagents"}</text>
+                  <For each={subagents()}>
+                    {(s) => (
+                      <box flexDirection="column">
+                        <box flexDirection="row" gap={1}>
+                          <text flexShrink={0} fg={s.status === "running" ? brand() : palette().muted}>
+                            {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
+                          </text>
+                          <text
+                            flexGrow={1}
+                            wrapMode="word"
+                            fg={s.status === "running" ? brand() : palette().muted}
+                          >
+                            {s.prompt}
+                          </text>
+                        </box>
+                        <Show when={s.result}>
+                          <text fg={palette().muted} wrapMode="word">
+                            {`   ${GLYPH.result} ${s.result}`}
+                          </text>
+                        </Show>
+                      </box>
+                    )}
+                  </For>
+                </box>
+              </Show>
+
               <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
                 <box flexDirection="column">
                   <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
@@ -737,28 +933,6 @@ export function App(props: { engine: EngineClient }) {
                         </box>
                       );
                     }}
-                  </For>
-                </box>
-              </Show>
-
-              <Show when={subagents().length > 0}>
-                <box flexDirection="column">
-                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Subagents"}</text>
-                  <For each={subagents()}>
-                    {(s) => (
-                      <box flexDirection="row" gap={1}>
-                        <text flexShrink={0} fg={s.status === "running" ? brand() : palette().muted}>
-                          {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
-                        </text>
-                        <text
-                          flexGrow={1}
-                          wrapMode="word"
-                          fg={s.status === "running" ? brand() : palette().muted}
-                        >
-                          {s.prompt}
-                        </text>
-                      </box>
-                    )}
                   </For>
                 </box>
               </Show>
@@ -926,7 +1100,7 @@ export function App(props: { engine: EngineClient }) {
       <box
         border={["left"]}
         borderStyle="heavy"
-        borderColor={accent()}
+        borderColor={inputAccent()}
         backgroundColor={palette().elevated}
         flexDirection="row"
         flexShrink={0}
@@ -936,7 +1110,7 @@ export function App(props: { engine: EngineClient }) {
         paddingTop={1}
         paddingBottom={1}
       >
-        <text fg={accent()} attributes={TextAttributes.BOLD}>
+        <text fg={inputAccent()} attributes={TextAttributes.BOLD}>
           {"❯ "}
         </text>
         <input
@@ -952,14 +1126,14 @@ export function App(props: { engine: EngineClient }) {
           textColor={palette().assistant}
           focusedTextColor={palette().assistant}
           placeholderColor={palette().muted}
-          cursorColor={accent()}
+          cursorColor={inputAccent()}
         />
       </box>
       {/* Footer — key bindings on the left, live context/usage/cost on the right
           (shown only once there's something to report). */}
       <box flexDirection="row" justifyContent="space-between" flexShrink={0} marginTop={1}>
         <text fg={palette().muted}>
-          {"shift+tab mode · / commands · @file · click ▸ expand · esc interrupt"}
+          {"shift+tab mode · / commands · click ▸ expand · ^O fold all · esc interrupt"}
         </text>
         <Show when={metrics()}>
           <text flexShrink={0} fg={palette().muted}>{metrics()}</text>
@@ -1014,18 +1188,14 @@ function ToolBlockView(props: {
   const head = () => {
     const t = b();
     const chevron = expandable() ? (t.collapsed ? "▸ " : "▾ ") : "  ";
-    const hint =
-      t.collapsed && expandable()
-        ? t.isDiff
-          ? "  ·  diff"
-          : `  ·  ${t.output.length} line${t.output.length === 1 ? "" : "s"}`
-        : "";
+    const hint = t.collapsed && expandable() ? `  ·  ${collapsedHint(t)}` : "";
     return `${chevron}${t.label}${hint}`;
   };
   const visible = () => b().output.slice(0, MAX_OUTPUT_LINES);
   const overflow = () => Math.max(0, b().output.length - MAX_OUTPUT_LINES);
   return (
     <box
+      id={`tool-${b().id}`}
       flexDirection="column"
       flexShrink={0}
       marginTop={1}
@@ -1053,6 +1223,21 @@ function ToolBlockView(props: {
       </Show>
     </box>
   );
+}
+
+/**
+ * The collapsed-row detail after a tool label: `diff` for edits, `N results`
+ * for a web search (counting the numbered result entries the search tool emits),
+ * else the raw `N lines`. The result-count reads far better than "33 lines" of
+ * payload for a search.
+ */
+function collapsedHint(t: Extract<Block, { kind: "tool" }>): string {
+  if (t.isDiff) return "diff";
+  if (t.label.startsWith("◈")) {
+    const results = t.output.filter((l) => /^\d+\.\s/.test(l)).length;
+    if (results > 0) return `${results} result${results === 1 ? "" : "s"}`;
+  }
+  return `${t.output.length} line${t.output.length === 1 ? "" : "s"}`;
 }
 
 /** Green additions / red deletions / dim context on an expanded diff. */
@@ -1106,6 +1291,12 @@ function shortCwd(): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/** The first non-empty line of a (possibly multi-line) string, for one-line summaries. */
+function firstLine(s: string | undefined): string | undefined {
+  const line = s?.split("\n").find((l) => l.trim().length > 0)?.trim();
+  return line || undefined;
 }
 
 /** Truncate from the LEFT (keep the tail/basename), e.g. `…core/src/engine.ts`. */

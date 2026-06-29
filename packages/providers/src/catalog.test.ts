@@ -1,5 +1,22 @@
 import { test, expect } from "bun:test";
-import { parseModelsDev } from "./catalog.ts";
+import { parseModelsDev, resolveCatalogPrice } from "./catalog.ts";
+
+test("resolveCatalogPrice: exact match is real, base-model match is estimated", () => {
+  const meta = parseModelsDev({
+    zhipuai: { models: { "glm-5.2": { cost: { input: 0.6, output: 2.2 } } } },
+    anthropic: { models: { "claude-opus-4-8": { cost: { input: 5, output: 25 } } } },
+  });
+  // Exact provider/model hit → real price (no estimated flag).
+  expect(resolveCatalogPrice(meta, "zhipuai/glm-5.2")).toEqual({ input: 0.6, output: 2.2 });
+  // A different provider's tag for the same base model → estimated fallback.
+  expect(resolveCatalogPrice(meta, "ollama/glm-5.2")).toEqual({
+    input: 0.6,
+    output: 2.2,
+    estimated: true,
+  });
+  // Truly unknown model → undefined.
+  expect(resolveCatalogPrice(meta, "ollama/nonesuch")).toBeUndefined();
+});
 
 test("parseModelsDev flattens provider/model metadata", () => {
   const raw = {

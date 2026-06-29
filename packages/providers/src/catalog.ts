@@ -12,6 +12,53 @@ interface CacheFile {
   data: unknown;
 }
 
+/** Price (USD per 1M tokens), with `estimated` set for a base-model fallback. */
+export interface PricingResult {
+  input?: number;
+  output?: number;
+  estimated?: boolean;
+}
+
+function hasPrice(c: { input?: number; output?: number } | undefined): c is {
+  input?: number;
+  output?: number;
+} {
+  return !!c && (c.input !== undefined || c.output !== undefined);
+}
+
+/**
+ * The bare model id/family for fuzzy matching: drop the provider prefix and any
+ * `:tag` suffix, lowercased. `ollama/glm-5.2` and `zhipuai/glm-5.2` both → `glm-5.2`;
+ * `ollama/gpt-oss:120b` → `gpt-oss`.
+ */
+function baseModelId(modelString: string): string {
+  const afterProvider = modelString.includes("/")
+    ? modelString.slice(modelString.indexOf("/") + 1)
+    : modelString;
+  return afterProvider.split(":")[0]!.toLowerCase();
+}
+
+/**
+ * Resolve a model's price from a loaded catalog map: an exact `provider/model`
+ * hit (real), else a base-model match across providers flagged `estimated`.
+ */
+export function resolveCatalogPrice(
+  metadata: Map<string, Partial<ModelInfo>>,
+  modelString: string,
+): PricingResult | undefined {
+  const exact = metadata.get(modelString)?.cost;
+  if (hasPrice(exact)) return exact;
+  const bare = baseModelId(modelString);
+  if (bare) {
+    for (const [key, meta] of metadata) {
+      if (hasPrice(meta.cost) && baseModelId(key) === bare) {
+        return { ...meta.cost, estimated: true };
+      }
+    }
+  }
+  return exact;
+}
+
 /**
  * Fetches the models.dev catalog (capabilities, context window, pricing) and
  * uses it to ENRICH live `/v1/models` results. Live ids are the source of
@@ -50,13 +97,18 @@ export class CatalogService {
    * Best-effort price (USD per 1M tokens) for a `provider/model` string.
    * NON-BLOCKING, like {@link contextWindow}: returns undefined until the
    * catalog has loaded in the background.
+   *
+   * Falls back to a base-model match when the exact `provider/model` key is
+   * missing: a custom or cloud tag (e.g. `ollama/glm-5.2`) inherits a known
+   * model's price as an ESTIMATE (`estimated: true`), so cost is still shown for
+   * models the catalog doesn't list verbatim.
    */
-  async pricing(
-    modelString: string,
-  ): Promise<{ input?: number; output?: number } | undefined> {
-    if (this.#metadata) return this.#metadata.get(modelString)?.cost;
-    void this.#load();
-    return undefined;
+  async pricing(modelString: string): Promise<PricingResult | undefined> {
+    if (!this.#metadata) {
+      void this.#load();
+      return undefined;
+    }
+    return resolveCatalogPrice(this.#metadata, modelString);
   }
 
   /**

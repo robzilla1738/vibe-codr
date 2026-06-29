@@ -76,7 +76,7 @@ export interface SessionDeps {
   /** Resolve the active model's context window (for compaction). */
   getContextWindow?: (model: string) => Promise<number | undefined>;
   /** Resolve the active model's price (USD per 1M tokens) for cost tracking. */
-  getPricing?: (model: string) => Promise<ModelPrice | undefined>;
+  getPricing?: (model: string) => Promise<(ModelPrice & { estimated?: boolean }) | undefined>;
 }
 
 /**
@@ -97,7 +97,7 @@ export class Session {
   #usage: TokenTotals;
   /** Cost accrued per step at the price in effect then (correct across model switches). */
   #costUSD: number;
-  #price: ModelPrice | undefined;
+  #price: (ModelPrice & { estimated?: boolean }) | undefined;
   #turnMutated = false;
   /** Set once the session's cumulative cost crosses the configured budget. */
   #budgetTripped = false;
@@ -147,6 +147,9 @@ export class Session {
       outputTokens: this.#usage.outputTokens,
       totalTokens: this.#usage.inputTokens + this.#usage.outputTokens,
       costUSD: this.#costUSD,
+      // The cost is an estimate when the active price came from a base-model
+      // catalog fallback (e.g. an Ollama Cloud tag) rather than an exact entry.
+      ...(this.#price?.estimated && this.#costUSD > 0 ? { costEstimated: true } : {}),
       ...(this.#usage.cachedInputTokens
         ? { cachedInputTokens: this.#usage.cachedInputTokens }
         : {}),

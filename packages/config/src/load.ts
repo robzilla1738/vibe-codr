@@ -25,11 +25,62 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** Strip `//` and `/* *\/` comments so config files may use JSONC. */
+/**
+ * Strip `//` line and `/* *\/` block comments so config files may use JSONC.
+ * String-aware single pass: a `//` or `/*` inside a JSON string value (e.g. a
+ * URL "http://…", a path "a//b", or a regex) is preserved verbatim — only
+ * comments outside string literals are removed.
+ */
 function stripJsonComments(input: string): string {
-  return input
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  let out = "";
+  let inString = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (inLine) {
+      if (ch === "\n") {
+        inLine = false;
+        out += ch; // keep the newline so line/column reporting stays sane
+      }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === "*" && next === "/") {
+        inBlock = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (ch === "\\") {
+        // Escape sequence: copy the escaped char verbatim so a `\"` doesn't end
+        // the string and a `\\` is handled correctly.
+        if (next !== undefined) {
+          out += next;
+          i++;
+        }
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+    } else if (ch === "/" && next === "/") {
+      inLine = true;
+      i++;
+    } else if (ch === "/" && next === "*") {
+      inBlock = true;
+      i++;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
 }
 
 async function readConfigFile(

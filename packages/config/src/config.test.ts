@@ -66,3 +66,25 @@ test("loadConfig strips JSONC comments and applies CLI overrides last (highest p
   expect(overridden.model).toBe("openai/gpt-x");
   expect(overridden.maxSteps).toBe(10); // untouched project value preserved
 });
+
+test("comment-stripping preserves // and /* */ inside string values", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-"));
+  await mkdir(join(cwd, ".vibe"), { recursive: true });
+  await writeFile(
+    join(cwd, ".vibe", "config.json"),
+    `{
+      // a real comment is stripped
+      "providers": {
+        "custom": { "baseURL": "https://api.example.com/v1" }
+      },
+      "theme": "a/*not a comment*/b",
+      "model": "openai/gpt-x" /* trailing block comment */
+    }`,
+  );
+  const cfg = await loadConfig({ cwd });
+  // The // in the URL and the /* */ inside the theme string must survive; only
+  // the genuine comments are removed.
+  expect(cfg.providers.custom?.baseURL).toBe("https://api.example.com/v1");
+  expect(cfg.theme).toBe("a/*not a comment*/b");
+  expect(cfg.model).toBe("openai/gpt-x");
+});

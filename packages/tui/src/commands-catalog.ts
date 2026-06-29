@@ -58,15 +58,16 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
 
 /**
  * True when the draft is a slash line whose command word exactly matches a known
- * command (with or without trailing args). Drives the input's "command
- * registered" color cue — distinct from `paletteState`, which stays open on
- * partial prefixes too.
+ * invocable name (with or without trailing args). `names` is the authoritative
+ * set from the engine snapshot (built-ins + custom commands + skills), lowercased.
+ * Drives the input's "command registered" color cue — distinct from
+ * `paletteState`, which stays open on partial prefixes too.
  */
-export function isExactCommand(draft: string): boolean {
+export function isExactCommand(draft: string, names: ReadonlySet<string>): boolean {
   if (!draft.startsWith("/")) return false;
   const space = draft.indexOf(" ");
   const name = (space === -1 ? draft.slice(1) : draft.slice(1, space)).toLowerCase();
-  return name.length > 0 && PALETTE_COMMANDS.some((c) => c.name === name);
+  return name.length > 0 && names.has(name);
 }
 
 export type PaletteState =

@@ -137,6 +137,8 @@ export class Session {
       busy: this.busy,
       theme: this.#deps.config.theme,
       approvalMode: this.#deps.config.approvalMode,
+      // Filled by the engine, which owns the command/skill registries.
+      commandNames: [],
     };
   }
 

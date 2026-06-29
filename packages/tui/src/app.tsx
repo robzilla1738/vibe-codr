@@ -21,7 +21,7 @@ import { SyntaxStyle, TextAttributes } from "@opentui/core";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
-import { applyPalette, isExactCommand, paletteState } from "./commands-catalog.ts";
+import { applyPalette, isExactCommand, PALETTE_COMMANDS, paletteState } from "./commands-catalog.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, modeLabel, nextUiMode } from "./modes.ts";
@@ -206,10 +206,18 @@ export function App(props: { engine: EngineClient }) {
   // The text-input area is the ONLY region that tracks the active mode — its
   // left bar, caret, and cursor recolor on plan/execute/yolo; nothing else does.
   const accent = () => modeColor(uiMode(), palette());
-  // When the draft is a recognized `/command`, the input shifts to the green
-  // "recognized" hue as an instant registered cue (a timed pulse could layer on
-  // top later via `tick()`); otherwise it stays the mode accent.
-  const inputAccent = () => (isExactCommand(draft()) ? palette().subagent : accent());
+  // Every invocable slash name (built-ins + custom commands + skills) from the
+  // engine snapshot, plus the static palette as a floor. When the draft matches
+  // one exactly, the input shifts to the green "recognized" hue as an instant
+  // registered cue (a timed pulse could layer on later via `tick()`); otherwise
+  // it stays the mode accent.
+  const commandNames = new Set(
+    [...PALETTE_COMMANDS.map((c) => c.name), ...(snap.commandNames ?? [])].map((n) =>
+      n.toLowerCase(),
+    ),
+  );
+  const inputAccent = () =>
+    isExactCommand(draft(), commandNames) ? palette().subagent : accent();
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.

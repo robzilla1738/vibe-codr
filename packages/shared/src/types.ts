@@ -94,4 +94,7 @@ export interface EngineSnapshot {
   theme: string;
   /** Default approval handling for side-effecting tools. */
   approvalMode: "ask" | "auto";
+  /** All invocable slash names (built-in + custom commands + skills), for the
+   * input's "recognized command" cue. */
+  commandNames: string[];
 }

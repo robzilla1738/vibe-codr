@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "bun:test";
@@ -46,6 +46,25 @@ test("/help lists commands, /model switches, /clear clears", async () => {
   expect(
     events.some((e) => e.type === "notice" && e.message.includes("cleared")),
   ).toBe(true);
+});
+
+test("snapshot.commandNames exposes built-ins, custom commands, and skills", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-cmds-"));
+  mkdirSync(join(cwd, ".vibe", "commands"), { recursive: true });
+  writeFileSync(join(cwd, ".vibe", "commands", "shipit.md"), "Ship the feature: $ARGS");
+  mkdirSync(join(cwd, ".vibe", "skills", "polish"), { recursive: true });
+  writeFileSync(
+    join(cwd, ".vibe", "skills", "polish", "SKILL.md"),
+    "---\nname: polish\ndescription: Polish the UI\n---\nDo the polish.",
+  );
+  const engine = new Engine({ config: defaultConfig(), cwd });
+  await engine.bootstrap();
+
+  const names = engine.snapshot().commandNames;
+  expect(names).toContain("help"); // built-in
+  expect(names).toContain("cost"); // built-in
+  expect(names).toContain("shipit"); // custom command
+  expect(names).toContain("polish"); // skill (invocable as /polish)
 });
 
 test("/plan and /execute toggle mode", async () => {

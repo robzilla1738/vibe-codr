@@ -33,7 +33,16 @@ All notable changes to vibe-codr are documented here.
 - `glob` (1000-file) and `grep` (500-line) output caps now show an explicit
   truncation marker instead of silently dropping results.
 
+### Added
+- **Skills are now invocable as `/skillname [task]`** (the user-initiated analogue
+  of the model's `use_skill`): the engine loads the skill body and runs it like a
+  prompt. Built-ins and custom commands still take precedence.
+
 ### Improved
+- **The `/command` "registered" cue now covers everything invocable.** It matches
+  the authoritative name set from the engine snapshot (`commandNames` = built-ins +
+  custom `.vibe/commands` + skills), not just the static built-in list — so a
+  custom command or skill turns the input bar green too.
 - **TUI interaction overhaul.** A recognized `/command` now turns the input bar
   green as a "registered" cue. Expanding a tool row keeps the clicked row in place
   (anchored scroll) instead of jumping to the middle. Clicking an assistant message

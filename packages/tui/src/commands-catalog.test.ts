@@ -7,13 +7,16 @@ import {
 } from "./commands-catalog.ts";
 
 test("isExactCommand recognizes a full command word, with or without args", () => {
-  expect(isExactCommand("/goal")).toBe(true);
-  expect(isExactCommand("/goal ship it")).toBe(true);
-  expect(isExactCommand("/MODEL")).toBe(true); // case-insensitive
-  expect(isExactCommand("/goa")).toBe(false); // partial prefix is not exact
-  expect(isExactCommand("/nope")).toBe(false);
-  expect(isExactCommand("/")).toBe(false);
-  expect(isExactCommand("hello")).toBe(false);
+  // Names come from the engine snapshot (built-ins + custom commands + skills).
+  const names = new Set(["goal", "model", "myskill"]);
+  expect(isExactCommand("/goal", names)).toBe(true);
+  expect(isExactCommand("/goal ship it", names)).toBe(true);
+  expect(isExactCommand("/MODEL", names)).toBe(true); // case-insensitive
+  expect(isExactCommand("/myskill", names)).toBe(true); // skills/custom names too
+  expect(isExactCommand("/goa", names)).toBe(false); // partial prefix is not exact
+  expect(isExactCommand("/nope", names)).toBe(false);
+  expect(isExactCommand("/", names)).toBe(false);
+  expect(isExactCommand("hello", names)).toBe(false);
 });
 
 test("a plain prompt keeps the menu closed", () => {

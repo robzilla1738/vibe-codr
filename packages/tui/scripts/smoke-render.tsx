@@ -39,6 +39,7 @@ const engine: EngineClient = {
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
     tasks: [],
     theme: "default",
+    commandNames: ["help", "cost", "model", "myskill"],
   }),
   send: (cmd) => {
     sent.push(cmd);

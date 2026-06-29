@@ -183,8 +183,11 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   only thing that tracks the active mode**: its left bar, `❯` caret, and cursor
   use `inputAccent()` = `modeColor(uiMode, palette)` (execute = `primary`/lavender,
   plan = `tool`/cyan, yolo = `del`/salmon), EXCEPT it flips to the green `subagent`
-  hue while the draft is a recognized `/command` (`isExactCommand`) as a "command
-  registered" cue. So switching mode recolors the input field and nothing else.
+  hue while the draft exactly matches an invocable `/name` (`isExactCommand`
+  against `snapshot().commandNames` — built-ins + custom commands + skills) as a
+  "command registered" cue. (Skills run as `/skillname`, dispatched in the
+  engine's `#handleSlash` default case after built-ins/custom commands.) So
+  switching mode recolors the input field and nothing else.
   Transcript prose is the neutral `assistant` fg
   (markdown), tool rows are `muted`. The only other saturated colors are
   functional: `add`/`del` on expanded diff lines and `notice` (amber) on

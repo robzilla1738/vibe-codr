@@ -30,7 +30,7 @@ import {
 } from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
-import { helpText, formatModelList, initProject } from "./commands.ts";
+import { helpText, formatModelList, initProject, BUILTIN_COMMANDS } from "./commands.ts";
 import {
   formatStatus,
   formatContextUsage,
@@ -246,7 +246,17 @@ export class Engine implements EngineClient {
   }
 
   snapshot(): EngineSnapshot {
-    return this.#session.snapshot();
+    return { ...this.#session.snapshot(), commandNames: this.#commandNames() };
+  }
+
+  /** Every invocable slash name — built-ins, custom/plugin commands, and skills
+   * (which run as `/skillname`) — for the input's "recognized command" cue. */
+  #commandNames(): string[] {
+    return [
+      ...BUILTIN_COMMANDS.map((c) => c.name),
+      ...this.commands.list().map((c) => c.name),
+      ...this.skills.list().map((s) => s.name),
+    ];
   }
 
   /** Resolves when the queue (running + pending work) has fully drained. */
@@ -715,8 +725,23 @@ export class Engine implements EngineClient {
         );
         break;
       }
-      default:
+      default: {
+        // A skill can be invoked directly as `/skillname [task]`: load its full
+        // body and run it like a prompt (the user-initiated analogue of the
+        // model's `use_skill`). Built-ins and custom commands above take
+        // precedence, so a skill can't shadow them.
+        const skill = this.skills.get(name);
+        if (skill) {
+          const body = await skill.load();
+          const task = args.trim() ? `\n\nTask: ${args.trim()}` : "";
+          this.#verifyAttempts = 0;
+          await this.#handlePrompt(
+            `Use the "${skill.name}" skill.${task}\n\n# Skill: ${skill.name}\n\n${body}`,
+          );
+          break;
+        }
         this.#notice(`Unknown command: /${name}`, "warn");
+      }
     }
   }
 

@@ -27,8 +27,10 @@ for execute, cyan for plan, red for yolo) carries all the chrome (brand, mode
 pill, user gutter, spinner, input bar, menu selection, rail headers), everything
 else is neutral text/muted, and the only other colors are functional — green/red
 on diffs, amber on warnings. The layout is two columns: a scrolling **transcript**
-beside a **context rail** that tracks the plan's task list, live subagents, and
-session info (model, context %, token/cost). Each user turn sits in a heavy
+beside a **context rail** (a panel of stacked, scrolling sections) that tracks
+the plan's task list, live subagents, the files changed this session (with line
+deltas), and session info (model, context %, token/cost) — sections hide when
+empty and the task list clears once everything's done. Each user turn sits in a heavy
 left-gutter panel block; assistant replies render real Markdown; tool calls read
 as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
 `◈` websearch, `±` git…) and **condense to one line you click to expand**, while
@@ -159,8 +161,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   disciplined palette: a **single accent** (the active mode's color) is the only
   hue on screen at a time; content is neutral and green/red/amber are reserved for
   diffs and warnings. A two-column layout pairs a scrolling transcript with a
-  **context rail** that tracks the plan's task list, live subagents, and session
-  info (model, context %, token/cost). User turns render in a heavy left-gutter
+  **context rail** that tracks the plan's task list, live subagents, the files
+  changed this session, and session info (model, context %, token/cost); sections
+  hide when empty and the task list clears once it's done. User turns render in a heavy left-gutter
   panel block; assistant replies render real Markdown via OpenTUI's native
   renderer; tool calls read as a distinct icon + action label (`$` bash, `→` read,
   `←` edit/write, `✱` glob/grep, `◈` websearch, `±` git, `✦` subagent…) and
@@ -379,7 +382,7 @@ All planned phases are implemented and tested:
    cycle), an interactive slash-command menu, first-class Ollama Cloud, and a
    guided `vibecodr setup`; the OpenTUI app is covered by `bun run smoke:tui`.
 10. ✅ opencode-inspired UI — two-column layout (transcript + a context rail for
-    tasks/subagents/session), left-gutter message blocks, native Markdown replies,
+    tasks/subagents/changed-files/session), left-gutter message blocks, native Markdown replies,
     per-tool icons + action labels, condensed tool output that expands on click,
     edits folded into one diff row (tinted backgrounds), a braille working spinner
     (Esc to interrupt), a bordered permission card, full-row menu highlight, and

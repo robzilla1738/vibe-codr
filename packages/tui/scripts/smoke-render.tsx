@@ -165,11 +165,13 @@ push({
 push({ type: "subagent-started", subagentId: "sa_42", prompt: "explore the repo" } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
-check("rail shows the TASKS section", frame.includes("TASKS"));
-check("rail shows a task title", frame.includes("Render the cost footer"));
-check("rail shows the SUBAGENTS section", frame.includes("SUBAGENTS"));
+check("rail shows the Tasks section", frame.includes("Tasks"));
+check("rail shows a task title", frame.includes("cost footer"));
+check("rail shows the Subagents section", frame.includes("Subagents"));
 check("rail shows a running subagent", frame.includes("explore the repo"));
-check("rail shows the SESSION section", frame.includes("SESSION"));
+// The edit in 5b touched g.ts → it appears in the rail's Changed-files section.
+check("rail shows the Changed-files section", frame.includes("Changed"));
+check("rail shows the pinned Session footer", frame.includes("Session"));
 
 // The turn ends → the working spinner clears.
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);

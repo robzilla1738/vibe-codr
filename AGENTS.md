@@ -138,7 +138,13 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   permission card did exactly this before the fix). Long conversations must
   scroll inside the box, never overflow onto the input. The transcript is a list
   of `Block`s rendered with `<Index>` (stable per position, append-only); tool
-  output is condensed to one clickable row and expands in place.
+  output is condensed to one clickable row and expands in place. The rail itself
+  is an `elevated`-bg panel containing its OWN `<scrollbox>` of stacked sections
+  (tasks → subagents → changed files → session, session last so work stays up
+  top); each section hides when empty, the task list also hides once every task
+  is `completed`, and item text uses `wrapMode="word"` (filenames `truncateLeft`)
+  so nothing is silently cut — no row caps needed since it scrolls. Modeled on
+  opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`.
 - **Color discipline (keep it tasteful):** exactly one accent is on screen at a
   time — `modeColor(uiMode, palette)` (execute = the theme's `primary`, plan =
   `tool`, yolo = `del`). All chrome (brand, mode pill, user gutter, spinner, rail

@@ -145,6 +145,12 @@ interface Subagent {
   status: "running" | "done";
 }
 
+interface ChangedFile {
+  path: string;
+  added: number;
+  removed: number;
+}
+
 interface PlanBlock {
   body: string;
 }
@@ -167,6 +173,7 @@ interface Scene {
   blocks: Block[];
   tasks?: Task[];
   subagents?: Subagent[];
+  changed?: ChangedFile[];
   usage?: SessionUsage;
   context?: { usedTokens: number; contextWindow: number };
   goal?: string;
@@ -185,6 +192,7 @@ interface Reduced {
   blocks: Block[];
   tasks?: Task[];
   subagents?: Subagent[];
+  changed?: ChangedFile[];
   usage?: SessionUsage;
   context?: { usedTokens: number; contextWindow: number };
   plan?: PlanBlock;
@@ -196,6 +204,7 @@ function reduce(events: UIEvent[]): Reduced {
   const blocks: Block[] = [];
   let tasks: Task[] | undefined;
   const subagents: Subagent[] = [];
+  const changed: ChangedFile[] = [];
   let usage: SessionUsage | undefined;
   let context: { usedTokens: number; contextWindow: number } | undefined;
   let plan: PlanBlock | undefined;
@@ -252,6 +261,13 @@ function reduce(events: UIEvent[]): Reduced {
         const verb = e.action === "write" ? "wrote" : "edited";
         const header = `✎ ${verb} ${e.path}  +${e.added} -${e.removed}`;
         const lines = e.diff ? e.diff.split("\n") : [];
+        const ci = changed.findIndex((f) => f.path === e.path);
+        if (ci >= 0) {
+          const f = changed[ci]!;
+          changed[ci] = { path: f.path, added: f.added + e.added, removed: f.removed + e.removed };
+        } else {
+          changed.push({ path: e.path, added: e.added, removed: e.removed });
+        }
         const target = toolByCall.get(e.toolCallId);
         if (target && !target.isDiff) {
           target.label = header;
@@ -298,6 +314,7 @@ function reduce(events: UIEvent[]): Reduced {
     blocks,
     ...(tasks && tasks.length ? { tasks } : {}),
     ...(subagents.length ? { subagents } : {}),
+    ...(changed.length ? { changed } : {}),
     ...(usage ? { usage } : {}),
     ...(context ? { context } : {}),
     ...(plan ? { plan } : {}),
@@ -308,6 +325,12 @@ function reduce(events: UIEvent[]): Reduced {
 /** Identical to app.tsx's truncate so README widths match the live app. */
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/** Truncate from the LEFT (keep the tail/basename); mirrors app.tsx. */
+function truncateLeft(s: string, n: number): string {
+  if (n <= 1) return s.slice(-1);
+  return s.length > n ? `…${s.slice(-(n - 1))}` : s;
 }
 
 /** Local copy of headless.formatUsage (core must not import @vibe/tui). */
@@ -652,7 +675,7 @@ async function buildScenes(): Promise<Scene[]> {
 
   return [
     { name: "01-chat", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: a.blocks, ...(a.usage ? { usage: a.usage } : {}), ...(a.context ? { context: a.context } : {}), input: "" },
-    { name: "02-diff", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/app", blocks: diff.blocks, ...(diff.usage ? { usage: diff.usage } : {}), ...(diff.context ? { context: diff.context } : {}), input: "" },
+    { name: "02-diff", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/app", blocks: diff.blocks, ...(diff.usage ? { usage: diff.usage } : {}), ...(diff.context ? { context: diff.context } : {}), ...(diff.changed ? { changed: diff.changed } : {}), input: "" },
     { name: "03-plan", status: "anthropic/claude-opus-4-8 · plan", cwd: "~/vibe-codr", blocks: plan.blocks, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
     { name: "04-tasks", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: tasks.blocks, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), ...(tasks.context ? { context: tasks.context } : {}), subagents: [{ id: "sa1", prompt: "audit catalog pricing", status: "running" }], goal: "ship the usage/cost footer", working: "⠹ Working… 2.4s  ·  esc to interrupt", input: "" },
     { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", blocks: modelBlocks, input: "/model codex/gpt-5.1-codex", noRail: true },
@@ -787,34 +810,57 @@ function renderBlocks(scene: Scene, mc: string): string {
   return rows.join("\n");
 }
 
-/** The context rail — main tasks, live subagents, and session info. */
+/**
+ * The context rail — stacked sections (tasks, subagents, changed files, then
+ * session info last). Mirrors app.tsx: sections hide when empty, the task list
+ * hides once everything's done, item text wraps, only the active item gets the
+ * accent, and session info comes last so the work stays prominent up top.
+ */
 function renderRail(scene: Scene, mc: string): string {
   const { model } = headerFromStatus(scene);
   const out: string[] = [`<div class="rail">`];
-  if (scene.tasks?.length) {
-    const done = scene.tasks.filter((t) => t.status === "completed").length;
-    out.push(`<div class="railhead" style="color:${mc}">TASKS  ${done}/${scene.tasks.length}</div>`);
-    for (const t of scene.tasks) {
+  const tasksActive = scene.tasks?.length && scene.tasks.some((t) => t.status !== "completed");
+  if (tasksActive) {
+    const done = scene.tasks!.filter((t) => t.status === "completed").length;
+    out.push(`<div class="railsec"><div class="railhead">Tasks  ${done}/${scene.tasks!.length}</div>`);
+    for (const t of scene.tasks!) {
       const glyph = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "○";
       const color = t.status === "completed" ? COLORS.dim : t.status === "in_progress" ? mc : COLORS.fg;
-      out.push(`<div class="railitem" style="color:${color}">${glyph} ${esc(truncate(t.title, 26))}</div>`);
+      out.push(`<div class="railitem wrap" style="color:${color}">${glyph} ${esc(t.title)}</div>`);
     }
+    out.push(`</div>`);
   }
   if (scene.subagents?.length) {
-    out.push(`<div class="railhead" style="color:${COLORS.dim}">SUBAGENTS</div>`);
+    out.push(`<div class="railsec"><div class="railhead">Subagents</div>`);
     for (const s of scene.subagents) {
       const glyph = s.status === "running" ? "⠹" : "✔";
       const color = s.status === "running" ? mc : COLORS.dim;
-      out.push(`<div class="railitem" style="color:${color}">${glyph} ${esc(truncate(s.prompt, 26))}</div>`);
+      out.push(`<div class="railitem wrap" style="color:${color}">${glyph} ${esc(s.prompt)}</div>`);
     }
+    out.push(`</div>`);
   }
-  out.push(`<div class="railhead" style="color:${COLORS.dim}">SESSION</div>`);
-  out.push(`<div class="railitem" style="color:${COLORS.fg}">${esc(truncate(model, 28))}</div>`);
+  if (scene.changed?.length) {
+    out.push(`<div class="railsec"><div class="railhead">Changed</div>`);
+    for (const f of scene.changed) {
+      const counts = [
+        f.added ? `<span style="color:${COLORS.green}">+${f.added}</span>` : "",
+        f.removed ? `<span style="color:${COLORS.red}">-${f.removed}</span>` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      out.push(
+        `<div class="railfile"><span class="railpath">${esc(truncateLeft(f.path, 24))}</span><span class="railcounts">${counts}</span></div>`,
+      );
+    }
+    out.push(`</div>`);
+  }
+  out.push(`<div class="railsec"><div class="railhead">Session</div>`);
+  out.push(`<div class="railitem wrap" style="color:${COLORS.dim}">${esc(model)}</div>`);
   const ctx = ctxSummary(scene.context);
   if (ctx) out.push(`<div class="railitem" style="color:${COLORS.dim}">ctx ${esc(ctx)}</div>`);
   if (scene.usage) out.push(`<div class="railitem" style="color:${COLORS.dim}">${esc(formatUsage(scene.usage))}</div>`);
-  if (scene.goal) out.push(`<div class="railitem" style="color:${COLORS.dim}">★ ${esc(truncate(scene.goal, 24))}</div>`);
-  out.push(`</div>`);
+  if (scene.goal) out.push(`<div class="railitem wrap" style="color:${COLORS.dim}">★ ${esc(scene.goal)}</div>`);
+  out.push(`</div></div>`); // .railsec, .rail
   return out.join("\n");
 }
 
@@ -884,10 +930,14 @@ ${renderBlocks(scene, mc)}
   .cwd { color:${COLORS.dim}; font-size:12px; }
   .bodyrow { display:flex; flex:1; }
   .transcript { flex:1; min-width:0; }
-  .rail { width:240px; flex-shrink:0; margin-left:16px; padding-left:16px; border-left:1px solid ${COLORS.border}; }
-  .railhead { font-weight:700; font-size:11px; letter-spacing:0.08em; margin-top:14px; }
-  .railhead:first-child { margin-top:0; }
-  .railitem { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rail { width:250px; flex-shrink:0; margin-left:16px; background:${COLORS.elevated}; border-radius:8px; padding:12px 14px; display:flex; flex-direction:column; gap:14px; align-self:flex-start; }
+  .railsec { display:flex; flex-direction:column; }
+  .railhead { color:${COLORS.fg}; font-weight:700; font-size:12px; margin-bottom:3px; }
+  .railitem { font-size:13px; }
+  .railitem.wrap { white-space:pre-wrap; word-break:break-word; }
+  .railfile { display:flex; justify-content:space-between; gap:8px; font-size:13px; }
+  .railpath { color:${COLORS.dim}; white-space:nowrap; overflow:hidden; }
+  .railcounts { flex-shrink:0; white-space:nowrap; }
   .row { white-space:pre-wrap; word-break:break-word; }
   .assistant { margin-top:10px; }
   .mdh { font-weight:700; white-space:pre-wrap; }

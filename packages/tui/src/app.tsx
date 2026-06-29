@@ -30,12 +30,11 @@ import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
 import { toolLabel } from "./tool-icons.ts";
 
-/** Width of the right context rail and the terminal width it needs to appear. */
-const RAIL_WIDTH = 30;
-const RAIL_MIN_COLS = 80;
-/** Cap rail rows so a long plan can't push the SESSION block off-screen. */
-const RAIL_MAX_TASKS = 9;
-const RAIL_MAX_SUBAGENTS = 6;
+/** Width of the right context rail and the terminal width it needs to appear.
+ * The rail scrolls and pins the session footer, so it never overflows — no row
+ * caps needed (cf. opencode's sidebar). */
+const RAIL_WIDTH = 34;
+const RAIL_MIN_COLS = 96;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
 
@@ -69,6 +68,13 @@ interface Subagent {
   status: "running" | "done";
 }
 
+/** A file edited this session, with its cumulative line delta (rail "Changed"). */
+interface ChangedFile {
+  path: string;
+  added: number;
+  removed: number;
+}
+
 interface PendingPerm {
   id: string;
   toolName: string;
@@ -81,6 +87,8 @@ export function App(props: { engine: EngineClient }) {
   const [draft, setDraft] = createSignal("");
   const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
   const [subagents, setSubagents] = createSignal<Subagent[]>([]);
+  // Files touched this session (path → cumulative line delta), shown in the rail.
+  const [changedFiles, setChangedFiles] = createSignal<ChangedFile[]>([]);
   const [plan, setPlan] = createSignal<string | null>(null);
   const [queued, setQueued] = createSignal(0);
   // Pending permission requests, oldest first; the head is shown as a card and
@@ -405,6 +413,17 @@ export function App(props: { engine: EngineClient }) {
             const verb = event.action === "write" ? "wrote" : "edited";
             const header = `${GLYPH.file} ${verb} ${event.path}  +${event.added} -${event.removed}`;
             const lines = event.diff ? event.diff.split("\n") : [];
+            // Track the file in the rail's "Changed" section (cumulative delta).
+            setChangedFiles((prev) => {
+              const i = prev.findIndex((f) => f.path === event.path);
+              if (i >= 0) {
+                const copy = prev.slice();
+                const f = copy[i] as ChangedFile;
+                copy[i] = { path: f.path, added: f.added + event.added, removed: f.removed + event.removed };
+                return copy;
+              }
+              return [...prev, { path: event.path, added: event.added, removed: event.removed }];
+            });
             finalizeAssistant();
             setBlocks((prev) => {
               const idx = toolByCallId.get(event.toolCallId);
@@ -528,6 +547,7 @@ export function App(props: { engine: EngineClient }) {
       setBlocks([]);
       setPlan(null);
       setSubagents([]);
+      setChangedFiles([]);
       setPerms([]);
       setQueued(0);
       setWorking(false);
@@ -660,76 +680,113 @@ export function App(props: { engine: EngineClient }) {
           </Index>
         </scrollbox>
 
-        {/* Context rail — main tasks, live subagents, and session info. */}
+        {/* Context rail — a panel surface with stacked, scrolling sections:
+            tasks, subagents, changed files, then session info (last so the work
+            stays prominent up top). Sections hide when empty; the task list also
+            hides once everything's done (the transcript keeps the record). Item
+            text wraps rather than truncating, so nothing is silently cut off. */}
         <Show when={showRail()}>
           <box
             width={RAIL_WIDTH}
             flexShrink={0}
-            overflow="hidden"
-            marginLeft={1}
-            paddingLeft={2}
-            border={["left"]}
-            borderColor={palette().border}
+            backgroundColor={palette().elevated}
             flexDirection="column"
+            paddingTop={1}
+            paddingBottom={1}
+            paddingLeft={2}
+            paddingRight={2}
           >
-            <Show when={tasks().length > 0}>
-              <text fg={accent()} attributes={TextAttributes.BOLD}>
-                {`TASKS  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-              </text>
-              <For each={tasks().slice(0, RAIL_MAX_TASKS)}>
-                {(task) => (
-                  <text
-                    fg={
-                      task.status === "completed"
-                        ? palette().muted
-                        : task.status === "in_progress"
-                          ? accent()
-                          : palette().assistant
-                    }
-                  >
-                    {`${TASK_GLYPH[task.status]} ${truncate(task.title, RAIL_WIDTH - 4)}`}
-                  </text>
-                )}
-              </For>
-              <Show when={tasks().length > RAIL_MAX_TASKS}>
-                <text fg={palette().muted}>{`  +${tasks().length - RAIL_MAX_TASKS} more`}</text>
-              </Show>
-            </Show>
-
-            <Show when={subagents().length > 0}>
-              <text
-                fg={palette().muted}
-                attributes={TextAttributes.BOLD}
-                marginTop={tasks().length ? 1 : 0}
-              >
-                {"SUBAGENTS"}
-              </text>
-              <For each={subagents().slice(-RAIL_MAX_SUBAGENTS)}>
-                {(s) => (
-                  <text fg={s.status === "running" ? accent() : palette().muted}>
-                    {`${s.status === "running" ? spinnerFrame(tick()) : GLYPH.check} ${truncate(s.prompt, RAIL_WIDTH - 4)}`}
-                  </text>
-                )}
-              </For>
-            </Show>
-
-            <text
-              fg={palette().muted}
-              attributes={TextAttributes.BOLD}
-              marginTop={tasks().length || subagents().length ? 1 : 0}
+            <scrollbox
+              flexGrow={1}
+              scrollY
+              contentOptions={{ flexDirection: "column", gap: 1 }}
+              scrollbarOptions={{ visible: false }}
             >
-              {"SESSION"}
-            </text>
-            <text fg={palette().assistant}>{truncate(headModel(), RAIL_WIDTH - 2)}</text>
-            <Show when={ctxInfo()}>
-              <text fg={palette().muted}>{`ctx ${ctxInfo()}`}</text>
-            </Show>
-            <Show when={usageInfo()}>
-              <text fg={palette().muted}>{usageInfo()}</text>
-            </Show>
-            <Show when={goalInfo()}>
-              <text fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", RAIL_WIDTH - 4)}`}</text>
-            </Show>
+              <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
+                <box flexDirection="column">
+                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
+                    {`Tasks  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
+                  </text>
+                  <For each={tasks()}>
+                    {(task) => {
+                      const c = () =>
+                        task.status === "completed"
+                          ? palette().muted
+                          : task.status === "in_progress"
+                            ? accent()
+                            : palette().assistant;
+                      return (
+                        <box flexDirection="row" gap={1}>
+                          <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
+                          <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
+                        </box>
+                      );
+                    }}
+                  </For>
+                </box>
+              </Show>
+
+              <Show when={subagents().length > 0}>
+                <box flexDirection="column">
+                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Subagents"}</text>
+                  <For each={subagents()}>
+                    {(s) => (
+                      <box flexDirection="row" gap={1}>
+                        <text flexShrink={0} fg={s.status === "running" ? accent() : palette().muted}>
+                          {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
+                        </text>
+                        <text
+                          flexGrow={1}
+                          wrapMode="word"
+                          fg={s.status === "running" ? accent() : palette().muted}
+                        >
+                          {s.prompt}
+                        </text>
+                      </box>
+                    )}
+                  </For>
+                </box>
+              </Show>
+
+              <Show when={changedFiles().length > 0}>
+                <box flexDirection="column">
+                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Changed"}</text>
+                  <For each={changedFiles()}>
+                    {(f) => (
+                      <box flexDirection="row" gap={1} justifyContent="space-between">
+                        <text flexGrow={1} wrapMode="none" fg={palette().muted}>
+                          {truncateLeft(f.path, RAIL_WIDTH - 5 - changeWidth(f))}
+                        </text>
+                        <box flexDirection="row" gap={1} flexShrink={0}>
+                          <Show when={f.added > 0}>
+                            <text fg={palette().add}>{`+${f.added}`}</text>
+                          </Show>
+                          <Show when={f.removed > 0}>
+                            <text fg={palette().del}>{`-${f.removed}`}</text>
+                          </Show>
+                        </box>
+                      </box>
+                    )}
+                  </For>
+                </box>
+              </Show>
+
+              {/* Session — always shown, last so tasks/subagents stay prominent
+                  up top; on a fresh chat it's the only section and sits at the top. */}
+              <box flexDirection="column">
+                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Session"}</text>
+                <text fg={palette().muted} wrapMode="word">{headModel()}</text>
+                <Show when={ctxInfo()}>
+                  <text fg={palette().muted}>{`ctx ${ctxInfo()}`}</text>
+                </Show>
+                <Show when={usageInfo()}>
+                  <text fg={palette().muted}>{usageInfo()}</text>
+                </Show>
+                <Show when={goalInfo()}>
+                  <text fg={palette().muted} wrapMode="word">{`★ ${goalInfo()}`}</text>
+                </Show>
+              </box>
+            </scrollbox>
           </box>
         </Show>
       </box>
@@ -1029,6 +1086,19 @@ function shortCwd(): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/** Truncate from the LEFT (keep the tail/basename), e.g. `…core/src/engine.ts`. */
+function truncateLeft(s: string, n: number): string {
+  if (n <= 1) return s.slice(-1);
+  return s.length > n ? `…${s.slice(-(n - 1))}` : s;
+}
+
+/** Display width of a changed-file's "+a -b" delta, for laying out the row. */
+function changeWidth(f: ChangedFile): number {
+  const a = f.added > 0 ? `+${f.added}` : "";
+  const r = f.removed > 0 ? `-${f.removed}` : "";
+  return [a, r].filter(Boolean).join(" ").length;
 }
 
 export async function mountApp(engine: EngineClient): Promise<void> {

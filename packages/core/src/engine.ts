@@ -7,6 +7,7 @@ import {
   type EngineClient,
   type EngineCommand,
   type EngineSnapshot,
+  type GitInfo,
   type Logger,
   type Mode,
   type QueuedItem,
@@ -97,6 +98,8 @@ export class Engine implements EngineClient {
   readonly catalog: CatalogService;
 
   #bus = new EventBus();
+  /** Last computed working-tree git state, seeded into the snapshot. */
+  #gitState: GitInfo | undefined;
   #config: Config;
   #cwd: string;
   #projectMemory: string | undefined;
@@ -239,6 +242,10 @@ export class Engine implements EngineClient {
 
     // Connect MCP servers last so their tools join the same registry.
     await this.#mcp.start(this.#config.mcp.servers);
+
+    // Seed the rail's git section (branch/dirty/ahead-behind/worktree) so it's
+    // in the first snapshot; cheap, and only at startup.
+    await this.#emitGit();
   }
 
   events(): AsyncIterable<UIEvent> {
@@ -246,7 +253,11 @@ export class Engine implements EngineClient {
   }
 
   snapshot(): EngineSnapshot {
-    return { ...this.#session.snapshot(), commandNames: this.#commandNames() };
+    return {
+      ...this.#session.snapshot(),
+      commandNames: this.#commandNames(),
+      ...(this.#gitState ? { git: this.#gitState } : {}),
+    };
   }
 
   /** Every invocable slash name — built-ins, custom/plugin commands, and skills
@@ -659,6 +670,9 @@ export class Engine implements EngineClient {
       case "theme":
         this.#handleTheme(args);
         break;
+      case "accent":
+        this.#handleAccent(args);
+        break;
       case "diff":
         await this.#handleDiff();
         break;
@@ -864,6 +878,8 @@ export class Engine implements EngineClient {
     }
     await this.#session.run(expanded.text, expanded.images);
     await this.#maybeVerify();
+    // The turn may have touched the working tree — refresh the rail's git state.
+    void this.#emitGit();
   }
 
   /**
@@ -1046,6 +1062,23 @@ export class Engine implements EngineClient {
     this.#notice(`Theme set to "${next}".`);
   }
 
+  /** `/accent [hex]` — show or set the UI accent color. */
+  #handleAccent(args: string): void {
+    const next = args.trim();
+    if (!next) {
+      this.#notice(`Accent: ${this.#config.accentColor}. Use /accent <hex>, e.g. /accent #bb9af7.`);
+      return;
+    }
+    if (!/^#?[0-9a-fA-F]{6}$/.test(next)) {
+      this.#notice(`Invalid color "${next}". Use a 6-digit hex, e.g. #bb9af7.`, "warn");
+      return;
+    }
+    const hex = next.startsWith("#") ? next : `#${next}`;
+    this.#config.accentColor = hex;
+    this.#bus.emit({ type: "accent-changed", accent: hex });
+    this.#notice(`Accent set to ${hex}.`);
+  }
+
   /** `/diff` — show the working-tree diff (git). */
   async #handleDiff(): Promise<void> {
     if (!(await this.#checkpoints.isGitRepo())) {
@@ -1225,6 +1258,42 @@ export class Engine implements EngineClient {
     ]);
     const code = await proc.exited;
     return { ok: code === 0, stdout, stderr };
+  }
+
+  /** Best-effort working-tree git state for the rail (undefined outside a repo). */
+  async #gitInfo(): Promise<GitInfo | undefined> {
+    const branchRes = await this.#git(["rev-parse", "--abbrev-ref", "HEAD"]);
+    if (!branchRes.ok) return undefined; // not a repo
+    const branch = branchRes.stdout.trim() || "HEAD";
+    const [status, counts, gitDir, commonDir] = await Promise.all([
+      this.#git(["status", "--porcelain"]),
+      this.#git(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]),
+      this.#git(["rev-parse", "--git-dir"]),
+      this.#git(["rev-parse", "--git-common-dir"]),
+    ]);
+    const dirty = status.ok
+      ? status.stdout.split("\n").filter((l) => l.trim().length > 0).length
+      : 0;
+    // `@{upstream}` fails with no upstream — treat as 0/0.
+    const [behind, ahead] = counts.ok
+      ? counts.stdout.trim().split(/\s+/).map((n) => Number(n) || 0)
+      : [0, 0];
+    // Inside a linked worktree the per-worktree git-dir differs from the common dir.
+    const worktree = gitDir.ok && commonDir.ok && gitDir.stdout.trim() !== commonDir.stdout.trim();
+    return { branch, dirty, ahead: ahead ?? 0, behind: behind ?? 0, worktree };
+  }
+
+  /** Recompute git state, cache it for the snapshot, and broadcast to the UI. */
+  async #emitGit(): Promise<void> {
+    try {
+      const git = await this.#gitInfo();
+      if (git) {
+        this.#gitState = git;
+        this.#bus.emit({ type: "git-updated", sessionId: this.#session.id, git });
+      }
+    } catch {
+      // Git unavailable — the rail simply omits the section.
+    }
   }
 }
 

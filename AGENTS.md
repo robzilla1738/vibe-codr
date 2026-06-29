@@ -158,13 +158,16 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   an emission-time `turn` field on blocks. Clicking a message folds its work
   (`collapsedTurns` + `isHidden`, "N steps hidden" affordance); **Ctrl+O**
   (`toggleAllTurns`) folds/unfolds every turn — leaving just prose.
-  The rail itself is an `elevated`-bg panel with its OWN `<scrollbox>` of stacked
-  sections: **Activity** (live tool feed, shown only while `working()` so it never
-  duplicates the transcript when idle) → **Subagents** (prompt + running/done +
-  one-line `result`) → **Tasks** → **Changed** → **Session** (model · ctx% · usage
-  · goal, last). Each section hides when empty, the task list also hides once every
-  task is `completed`, and item text uses `wrapMode="word"` (filenames
-  `truncateLeft`) so nothing is silently cut — no row caps needed since it scrolls.
+  The rail itself is an `elevated`-bg (charcoal) panel with its OWN `<scrollbox>`
+  of stacked, adaptive sections: **Tasks** (the to-do list, hides once all done) →
+  **Subagents** (prompt + running/done + one-line `result`) → **Changed** (session
+  edits) → **Git** (branch · dirty · ↑ahead ↓behind · worktree marker) →
+  **Session** (model · ctx% · usage · goal, last). Each hides when empty so the
+  rail only shows what's relevant — do NOT add a tool-call "Activity" feed back; it
+  duplicated the transcript and was deliberately removed. Git state comes from
+  `Engine.#gitInfo()` (the `#git` runner) via the `git-updated` event + the
+  snapshot `git` field, recomputed at bootstrap and turn end. Item text uses
+  `wrapMode="word"` (filenames `truncateLeft`) so nothing is silently cut.
   Modeled on opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`. User
   message blocks reuse the input bar's EXACT frame (heavy `brand` gutter,
   `elevated` bg, `❯` caret, matching padding) so a sent message and the input
@@ -176,26 +179,27 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   (working spinner, plan, tasks fallback, permission card, menu, input, footer)
   carries `marginTop={1}` — one blank row between every area, top to bottom. Keep
   that single-row rhythm; don't special-case a region to 0 or 2.
-- **Color discipline (keep it tasteful):** one fixed **brand** hue —
-  `brand()` = `palette().primary` (the light lavender `#bb9af7` in the default
-  theme) — paints ALL chrome: brand mark, mode pill, user gutter, spinner, rail
-  headers/active items, plan box, menu selection. The **text-input area is the
-  only thing that tracks the active mode**: its left bar, `❯` caret, and cursor
-  use `inputAccent()` = `modeColor(uiMode, palette)` (execute = `primary`/lavender,
-  plan = `tool`/cyan, yolo = `del`/salmon), EXCEPT it flips to the green `subagent`
-  hue while the draft exactly matches an invocable `/name` (`isExactCommand`
-  against `snapshot().commandNames` — built-ins + custom commands + skills) as a
-  "command registered" cue. (Skills run as `/skillname`, dispatched in the
-  engine's `#handleSlash` default case after built-ins/custom commands.) So
-  switching mode recolors the input field and nothing else.
-  Transcript prose is the neutral `assistant` fg
-  (markdown), tool rows are `muted`. The only other saturated colors are
+- **Color discipline (charcoal + monochrome + one accent):** the `DEFAULT` theme
+  is neutral **charcoal** surfaces (`panel`/`elevated`/`selBg`/`border`) and
+  **monochrome** text (`assistant` near-white, `muted` grey). One **configurable
+  accent** — `brand()` = `accentColor() || palette().primary` (lavender `#bb9af7`
+  by default, set live with `/accent <hex>` or the `accentColor` config) — paints
+  ALL chrome: brand mark, user gutter, `❯` carets, spinner, rail headers/active
+  items, plan box, menu selection. **Mode color (`accent()` = `modeColor`) is
+  scoped to exactly two spots:** the input's left **border line** and the header
+  **mode pill** (text+icon) — plan `tool`/cyan, execute `primary`/lavender, yolo
+  `del`/salmon. The input caret/cursor stay the accent (NOT the mode). The input
+  border line also flips to the green `subagent` hue while the draft exactly
+  matches an invocable `/name` (`isExactCommand` against `snapshot().commandNames`
+  — built-ins + custom commands + skills) as a "command registered" cue. (Skills
+  run as `/skillname`, dispatched in the engine's `#handleSlash` default case.)
+  Transcript prose is `assistant`, tool rows `muted`. The only other colors are
   functional: `add`/`del` on expanded diff lines and `notice` (amber) on
   warnings/permissions.
-  Don't reintroduce per-kind hues (blue user, cyan tools, green dots) — that's
-  the rainbow we deliberately removed, and don't re-spread `accent()` back across
-  the chrome (use `brand()` there). `border={["left"]}` boxes can't host a
-  `title` (no top edge), so don't put one there.
+  Don't reintroduce per-kind hues (blue user, cyan tools, green dots) — that's the
+  rainbow we removed; don't widen mode color beyond the input line + pill (use
+  `brand()` for chrome). `border={["left"]}` boxes can't host a `title` (no top
+  edge), so don't put one there.
 - Match the surrounding code's style; comments explain *why*, not *what*.
 
 ## Before you finish

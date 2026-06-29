@@ -37,31 +37,36 @@ export interface Palette {
 }
 
 /** Tokyo-Night-ish dark palette (the default). */
+// Charcoal + monochrome + a single lavender accent. Neutral grey surfaces (no
+// blue cast), near-white/grey text, and one accent hue (`primary`/`accent`,
+// configurable via `accentColor`). The only other colors are functional: green/
+// red on diffs, amber on warnings, and the plan/yolo mode hues (cyan/red) which
+// appear only on the input line + mode pill.
 const DEFAULT: Palette = {
-  user: "#7aa2f7",
-  assistant: "#c0caf5",
+  user: "#e6e6e6",
+  assistant: "#e6e6e6",
   tool: "#7dcfff",
   notice: "#e0af68",
   plan: "#bb9af7",
   subagent: "#9ece6a",
   add: "#9ece6a",
   del: "#f7768e",
-  ctx: "#565f89",
-  taskDone: "#565f89",
-  taskActive: "#7dcfff",
-  taskPending: "#c0caf5",
+  ctx: "#8a8a92",
+  taskDone: "#6a6a72",
+  taskActive: "#bb9af7",
+  taskPending: "#e6e6e6",
   accent: "#bb9af7",
-  // The fixed brand hue: a light lavender shown across the whole UI. Mode only
-  // recolors the text-input area (see modeColor); execute mode reuses this shade.
+  // The fixed brand hue: a lavender accent shown across the whole UI. Mode only
+  // recolors the input line + mode pill (see modeColor). Override via accentColor.
   primary: "#bb9af7",
-  border: "#2c3047",
-  muted: "#565f89",
-  panel: "#1a1c28",
-  elevated: "#242736",
-  selBg: "#2e3346",
-  selFg: "#c0caf5",
-  addBg: "#1b2b25",
-  delBg: "#2d2030",
+  border: "#34343a",
+  muted: "#8a8a92",
+  panel: "#161618",
+  elevated: "#1e1e22",
+  selBg: "#2a2a30",
+  selFg: "#e6e6e6",
+  addBg: "#15231a",
+  delBg: "#26171c",
 };
 
 /** Light palette for bright terminals. */

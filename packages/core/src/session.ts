@@ -136,8 +136,9 @@ export class Session {
       usage: this.#usageSnapshot(),
       busy: this.busy,
       theme: this.#deps.config.theme,
+      accentColor: this.#deps.config.accentColor,
       approvalMode: this.#deps.config.approvalMode,
-      // Filled by the engine, which owns the command/skill registries.
+      // Filled by the engine, which owns the command/skill registries + git.
       commandNames: [],
     };
   }

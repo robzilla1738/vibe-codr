@@ -34,9 +34,23 @@ All notable changes to vibe-codr are documented here.
   truncation marker instead of silently dropping results.
 
 ### Added
+- **Context rail "Git" section** — branch, dirty count, ahead/behind, and a
+  worktree marker, from a new `Engine.#gitInfo()` + `git-updated` event (refreshed
+  at startup and after each turn). The rail is now adaptive: **Tasks → Subagents →
+  Changed → Git → Session**, each shown only when relevant. The redundant tool-call
+  "Activity" feed (a duplicate of the transcript) was removed.
+- **Configurable accent color** — `/accent <hex>` (live) and an `accentColor`
+  config field set the single UI accent (lavender `#bb9af7` by default).
 - **Skills are now invocable as `/skillname [task]`** (the user-initiated analogue
   of the model's `use_skill`): the engine loads the skill body and runs it like a
   prompt. Built-ins and custom commands still take precedence.
+
+### Changed
+- **Charcoal + monochrome theme.** The default theme now uses neutral charcoal
+  surfaces and monochrome white/grey text with a single purple accent (the old
+  blue-tinted palette is gone). Mode (plan/execute/yolo) color is now scoped to
+  exactly the input border line and the header mode pill (text+icon) — the caret,
+  cursor, and the rest of the chrome stay on the fixed accent.
 
 ### Improved
 - **The `/command` "registered" cue now covers everything invocable.** It matches

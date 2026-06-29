@@ -77,6 +77,18 @@ export interface Message {
   metadata?: Record<string, unknown>;
 }
 
+/** Working-tree git state surfaced in the context rail. */
+export interface GitInfo {
+  branch: string;
+  /** Number of changed working-tree entries (`git status --porcelain`). */
+  dirty: number;
+  /** Commits ahead/behind the upstream (0 when none/no upstream). */
+  ahead: number;
+  behind: number;
+  /** True when running inside a linked worktree (not the main checkout). */
+  worktree: boolean;
+}
+
 /** Static, read-only snapshot of engine state for the UI to render. */
 export interface EngineSnapshot {
   sessionId: string;
@@ -92,9 +104,13 @@ export interface EngineSnapshot {
   busy: boolean;
   /** Active UI theme name. */
   theme: string;
+  /** Accent hue (hex) for UI chrome. */
+  accentColor: string;
   /** Default approval handling for side-effecting tools. */
   approvalMode: "ask" | "auto";
   /** All invocable slash names (built-in + custom commands + skills), for the
    * input's "recognized command" cue. */
   commandNames: string[];
+  /** Working-tree git state, when in a repo. */
+  git?: GitInfo;
 }

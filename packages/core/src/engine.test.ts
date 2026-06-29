@@ -67,6 +67,37 @@ test("snapshot.commandNames exposes built-ins, custom commands, and skills", asy
   expect(names).toContain("polish"); // skill (invocable as /polish)
 });
 
+test("/accent sets the accent color and emits accent-changed", async () => {
+  const engine = makeEngine();
+  const { events, stop } = collect(engine);
+  engine.send({ type: "run-slash", name: "accent", args: "#abcdef" });
+  await engine.whenIdle();
+  stop();
+  expect(engine.snapshot().accentColor).toBe("#abcdef");
+  expect(events.some((e) => e.type === "accent-changed" && e.accent === "#abcdef")).toBe(true);
+});
+
+test("snapshot.git reports branch and dirty count inside a repo", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-git-"));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd });
+  git(["init", "-q"]);
+  git(["config", "user.email", "t@t.t"]);
+  git(["config", "user.name", "t"]);
+  writeFileSync(join(cwd, "a.txt"), "hello");
+  git(["add", "."]);
+  git(["commit", "-q", "-m", "init"]);
+  writeFileSync(join(cwd, "b.txt"), "dirty"); // untracked → counts as dirty
+
+  const engine = new Engine({ config: defaultConfig(), cwd });
+  await engine.bootstrap();
+  const g = engine.snapshot().git;
+  expect(g).toBeDefined();
+  expect(typeof g?.branch).toBe("string");
+  expect(g?.branch.length).toBeGreaterThan(0);
+  expect(g?.dirty).toBeGreaterThanOrEqual(1);
+  expect(g?.worktree).toBe(false);
+});
+
 test("/plan and /execute toggle mode", async () => {
   const engine = makeEngine();
   collect(engine);

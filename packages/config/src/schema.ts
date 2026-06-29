@@ -69,6 +69,8 @@ export const ConfigSchema = z.object({
   approvalMode: z.enum(["ask", "auto"]).default("ask"),
   /** UI theme name. */
   theme: z.string().default("default"),
+  /** Accent hue (hex) for UI chrome, overriding the theme's primary. */
+  accentColor: z.string().default("#bb9af7"),
   /** Plugin module specifiers (npm names or local paths). */
   plugins: z.array(z.string()).default([]),
   subagent: z

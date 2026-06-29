@@ -22,17 +22,18 @@ Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 ## Screenshots
 
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberately
-restrained palette: **one fixed brand hue** (a light lavender) carries all the
-chrome — brand mark, mode pill, user gutter, spinner, menu selection, rail
-headers — while the **text-input area is the only thing that recolors with the
-mode** (lavender for execute, cyan for plan, salmon for yolo), so switching mode
-is unmistakable without repainting the whole screen. Everything else is neutral
-text/muted, and the only other colors are functional — green/red on diffs, amber
-on warnings. The layout is two columns: a scrolling **transcript**
-beside a **context rail** (a panel of stacked, scrolling sections) that tracks
-the plan's task list, live subagents, the files changed this session (with line
-deltas), and session info (model, context %, token/cost) — sections hide when
-empty and the task list clears once everything's done. Each user turn sits in a heavy
+restrained palette: **charcoal surfaces, monochrome text, and one configurable
+accent** (lavender by default — `/accent <hex>`). The accent carries the chrome
+(brand mark, user gutter, carets, spinner, menu, rail headers), while **mode color
+is scoped to just the input border line and the header mode pill** (lavender for
+execute, cyan for plan, salmon for yolo), so switching mode is unmistakable
+without repainting the screen. The only other colors are functional — green/red on
+diffs, amber on warnings. The layout is two columns: a scrolling **transcript**
+beside a **context rail** of adaptive sections (each shown only when relevant)
+that tracks the plan's task list, live subagents, the files changed this session
+(with line deltas), **git branch/status**, and session info (model, context %,
+token/cost) — sections hide when empty and the task list clears once everything's
+done. Each user turn sits in a heavy
 left-gutter panel block; assistant replies render real Markdown; tool calls read
 as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
 `◈` websearch, `±` git…) and **condense to one line you click to expand**, while
@@ -162,13 +163,13 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
-  disciplined palette: a **single fixed brand hue** (light lavender) carries the
-  chrome and the **text-input area alone recolors with the mode**; content is
-  neutral and green/red/amber are reserved for diffs and warnings. A two-column
-  layout pairs a scrolling transcript with a
+  disciplined palette: **charcoal surfaces, monochrome text, and one configurable
+  accent** (lavender by default, `/accent <hex>`); **mode color is scoped to the
+  input border line + the mode pill**; green/red/amber are reserved for diffs and
+  warnings. A two-column layout pairs a scrolling transcript with an adaptive
   **context rail** that tracks the plan's task list, live subagents, the files
-  changed this session, and session info (model, context %, token/cost); sections
-  hide when empty and the task list clears once it's done. User turns render in a heavy left-gutter
+  changed this session, **git branch/status**, and session info (model, context %,
+  token/cost); sections hide when empty and the task list clears once it's done. User turns render in a heavy left-gutter
   panel block; assistant replies render real Markdown via OpenTUI's native
   renderer; tool calls read as a distinct icon + action label (`$` bash, `→` read,
   `←` edit/write, `✱` glob/grep, `◈` websearch, `±` git, `✦` subagent…) and

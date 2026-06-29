@@ -19,7 +19,7 @@
 
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
-import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
+import type { EngineClient, GitInfo, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { applyPalette, isExactCommand, PALETTE_COMMANDS, paletteState } from "./commands-catalog.ts";
 import { GLYPH } from "./glyphs.ts";
@@ -37,8 +37,6 @@ const RAIL_WIDTH = 34;
 const RAIL_MIN_COLS = 96;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
-/** How many recent tool calls the rail's "Activity" feed keeps. */
-const MAX_ACTIVITY = 6;
 
 /**
  * One block in the transcript. The transcript is append-only: positions never
@@ -72,13 +70,6 @@ interface Subagent {
   result?: string;
 }
 
-/** A recent tool call for the rail's live "Activity" feed. */
-interface Activity {
-  callId: string;
-  label: string;
-  status: "running" | "done" | "error";
-}
-
 /** A file edited this session, with its cumulative line delta (rail "Changed"). */
 interface ChangedFile {
   path: string;
@@ -98,8 +89,8 @@ export function App(props: { engine: EngineClient }) {
   const [draft, setDraft] = createSignal("");
   const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
   const [subagents, setSubagents] = createSignal<Subagent[]>([]);
-  // Recent tool calls (newest first, capped), the rail's live activity feed.
-  const [activity, setActivity] = createSignal<Activity[]>([]);
+  // Working-tree git state for the rail's "Git" section (undefined outside a repo).
+  const [git, setGit] = createSignal<GitInfo | undefined>(snap.git);
   // Turns (assistant block ids) whose tool/notice output is folded away — click
   // a message to fold its work, or Ctrl+O to fold/unfold every turn at once.
   const [collapsedTurns, setCollapsedTurns] = createSignal<Set<number>>(new Set());
@@ -198,13 +189,14 @@ export function App(props: { engine: EngineClient }) {
   const [usageInfo, setUsageInfo] = createSignal(usage.totalTokens > 0 ? formatUsage(usage) : "");
   const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
   const cwd = shortCwd();
-  // One fixed brand hue (light lavender) is shown across the whole UI — header,
-  // rail, working line, user bars, plan box, menu. Everything else is neutral
-  // text/muted; green/red appear only on diffs, amber only on warnings, so the
-  // UI reads as one tasteful color, not a rainbow.
-  const brand = () => palette().primary;
-  // The text-input area is the ONLY region that tracks the active mode — its
-  // left bar, caret, and cursor recolor on plan/execute/yolo; nothing else does.
+  // One configurable accent hue (lavender by default, set via `/accent` or the
+  // `accentColor` config) is shown across the whole UI — header, rail, working
+  // line, user bars, plan box, menu. Surfaces are charcoal and text monochrome;
+  // green/red appear only on diffs, amber only on warnings.
+  const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
+  const brand = () => accentColor() || palette().primary;
+  // The active mode recolors ONLY the input border line and the header mode pill
+  // (plan cyan / execute lavender / yolo red); nothing else tracks the mode.
   const accent = () => modeColor(uiMode(), palette());
   // Every invocable slash name (built-ins + custom commands + skills) from the
   // engine snapshot, plus the static palette as a floor. When the draft matches
@@ -463,12 +455,6 @@ export function App(props: { engine: EngineClient }) {
             if (event.subagentId) break; // subagent tools don't enter the transcript
             finalizeAssistant();
             const label = toolLabel(event.toolName, event.input);
-            setActivity((prev) =>
-              [{ callId: event.toolCallId, label, status: "running" as const }, ...prev].slice(
-                0,
-                MAX_ACTIVITY,
-              ),
-            );
             setBlocks((prev) => {
               const next = [
                 ...prev,
@@ -489,13 +475,6 @@ export function App(props: { engine: EngineClient }) {
           }
           case "tool-call-finished": {
             if (event.subagentId) break;
-            setActivity((prev) =>
-              prev.map((a) =>
-                a.callId === event.toolCallId
-                  ? { ...a, status: event.isError ? "error" : "done" }
-                  : a,
-              ),
-            );
             // Skip only the echo for the exact call whose diff we already folded.
             if (suppressCallIds.has(event.toolCallId)) {
               suppressCallIds.delete(event.toolCallId);
@@ -619,6 +598,12 @@ export function App(props: { engine: EngineClient }) {
           case "theme-changed":
             setPalette(getTheme(event.theme));
             break;
+          case "accent-changed":
+            setAccentColor(event.accent);
+            break;
+          case "git-updated":
+            setGit(event.git);
+            break;
           case "turn-finished":
           case "session-idle":
             // The turn ended — finalize the reply, drop per-turn maps, stop the
@@ -671,7 +656,6 @@ export function App(props: { engine: EngineClient }) {
       setBlocks([]);
       setPlan(null);
       setSubagents([]);
-      setActivity([]);
       setCollapsedTurns(new Set());
       setChangedFiles([]);
       setPerms([]);
@@ -708,7 +692,7 @@ export function App(props: { engine: EngineClient }) {
             </text>
             <text fg={palette().muted}>{"   "}</text>
             <text
-              fg={brand()}
+              fg={accent()}
               bg={palette().elevated}
               attributes={TextAttributes.BOLD}
             >{` ${modeLabel(uiMode())} `}</text>
@@ -854,33 +838,24 @@ export function App(props: { engine: EngineClient }) {
               contentOptions={{ flexDirection: "column", gap: 1 }}
               scrollbarOptions={{ visible: false }}
             >
-              {/* Activity — the last few tool calls (newest first): a live feed
-                  of what the agent is doing right now. Shown only while a turn is
-                  running so it never duplicates the transcript when you're idle;
-                  the running row animates, errors show red. */}
-              <Show when={working() && activity().length > 0}>
+              {/* Tasks — the to-do list, prominent up top; hides once all done. */}
+              <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
                 <box flexDirection="column">
-                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Activity"}</text>
-                  <For each={activity()}>
-                    {(a) => {
-                      const c =
-                        a.status === "error"
-                          ? palette().del
-                          : a.status === "running"
+                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
+                    {`Tasks  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
+                  </text>
+                  <For each={tasks()}>
+                    {(task) => {
+                      const c = () =>
+                        task.status === "completed"
+                          ? palette().muted
+                          : task.status === "in_progress"
                             ? brand()
-                            : palette().muted;
-                      const glyph =
-                        a.status === "running"
-                          ? spinnerFrame(tick())
-                          : a.status === "error"
-                            ? "✗"
-                            : GLYPH.check;
+                            : palette().assistant;
                       return (
                         <box flexDirection="row" gap={1}>
-                          <text flexShrink={0} fg={c}>{glyph}</text>
-                          <text flexGrow={1} wrapMode="none" fg={c}>
-                            {truncate(a.label, RAIL_WIDTH - 4)}
-                          </text>
+                          <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
+                          <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
                         </box>
                       );
                     }}
@@ -917,30 +892,6 @@ export function App(props: { engine: EngineClient }) {
                 </box>
               </Show>
 
-              <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
-                <box flexDirection="column">
-                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
-                    {`Tasks  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-                  </text>
-                  <For each={tasks()}>
-                    {(task) => {
-                      const c = () =>
-                        task.status === "completed"
-                          ? palette().muted
-                          : task.status === "in_progress"
-                            ? brand()
-                            : palette().assistant;
-                      return (
-                        <box flexDirection="row" gap={1}>
-                          <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
-                          <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
-                        </box>
-                      );
-                    }}
-                  </For>
-                </box>
-              </Show>
-
               <Show when={changedFiles().length > 0}>
                 <box flexDirection="column">
                   <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Changed"}</text>
@@ -962,6 +913,32 @@ export function App(props: { engine: EngineClient }) {
                     )}
                   </For>
                 </box>
+              </Show>
+
+              {/* Git — branch, dirty count, ahead/behind, and a worktree marker;
+                  shown only inside a repo. */}
+              <Show when={git()}>
+                {(g) => (
+                  <box flexDirection="column">
+                    <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Git"}</text>
+                    <box flexDirection="row" gap={1}>
+                      <text fg={palette().muted}>{`⎇ ${g().branch}`}</text>
+                      <Show when={g().dirty > 0}>
+                        <text fg={palette().muted}>{`·  ${g().dirty} dirty`}</text>
+                      </Show>
+                    </box>
+                    <Show when={g().ahead > 0 || g().behind > 0 || g().worktree}>
+                      <box flexDirection="row" gap={1}>
+                        <Show when={g().ahead > 0 || g().behind > 0}>
+                          <text fg={palette().muted}>{`↑${g().ahead} ↓${g().behind}`}</text>
+                        </Show>
+                        <Show when={g().worktree}>
+                          <text fg={palette().muted}>{g().ahead > 0 || g().behind > 0 ? "·  worktree" : "worktree"}</text>
+                        </Show>
+                      </box>
+                    </Show>
+                  </box>
+                )}
               </Show>
 
               {/* Session — always shown, last so tasks/subagents stay prominent
@@ -1114,7 +1091,7 @@ export function App(props: { engine: EngineClient }) {
         paddingTop={1}
         paddingBottom={1}
       >
-        <text fg={inputAccent()} attributes={TextAttributes.BOLD}>
+        <text fg={brand()} attributes={TextAttributes.BOLD}>
           {"❯ "}
         </text>
         <input
@@ -1130,7 +1107,7 @@ export function App(props: { engine: EngineClient }) {
           textColor={palette().assistant}
           focusedTextColor={palette().assistant}
           placeholderColor={palette().muted}
-          cursorColor={inputAccent()}
+          cursorColor={brand()}
         />
       </box>
       {/* Footer — key bindings on the left, live context/usage/cost on the right

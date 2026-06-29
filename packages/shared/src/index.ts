@@ -10,6 +10,7 @@ export type {
   QueuedItem,
   SessionUsage,
   EngineSnapshot,
+  GitInfo,
 } from "./types.ts";
 
 // UI events (engine -> UI)

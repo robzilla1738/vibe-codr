@@ -39,7 +39,9 @@ const engine: EngineClient = {
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
     tasks: [],
     theme: "default",
+    accentColor: "#bb9af7",
     commandNames: ["help", "cost", "model", "myskill"],
+    git: { branch: "main", dirty: 3, ahead: 1, behind: 0, worktree: false },
   }),
   send: (cmd) => {
     sent.push(cmd);
@@ -112,8 +114,7 @@ frame = t.captureCharFrame();
 check("tool output is condensed by default", frame.includes("lines") && !frame.includes("ALPHA_BODY"));
 
 // 5) Clicking the tool row expands its output (click-to-expand). Target the
-// TRANSCRIPT tool row specifically (it carries the "▸ … N lines" collapse hint);
-// the rail's live Activity feed also shows "read x" but without that hint.
+// TRANSCRIPT tool row specifically (it carries the "▸ … N lines" collapse hint).
 const rowOf = (needle: string) =>
   t.captureCharFrame().split("\n").findIndex((l) => l.includes(needle));
 const toolRow = t
@@ -177,8 +178,8 @@ check("rail shows the Subagents section", frame.includes("Subagents"));
 check("rail shows a running subagent", frame.includes("explore the repo"));
 // The edit in 5b touched g.ts → it appears in the rail's Changed-files section.
 check("rail shows the Changed-files section", frame.includes("Changed"));
-// While the turn runs, the rail's live Activity feed surfaces tool calls.
-check("rail shows the live Activity feed", frame.includes("Activity"));
+// The rail's Git section surfaces branch + dirty count from the snapshot.
+check("rail shows the Git section", frame.includes("Git") && frame.includes("main"));
 
 // 6b) Context-window fill + token usage/cost surface in the footer once known.
 push({ type: "usage-updated", usage: { inputTokens: 1200, outputTokens: 300, totalTokens: 1500, costUSD: 0.0123 } } as UIEvent);
@@ -193,9 +194,7 @@ push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
 check("working indicator clears when the turn finishes", !frame.includes("Working"));
-// Idle now: the Activity feed hides (no transcript duplication) and the rail's
-// Session block — model/ctx/cost/goal — is visible.
-check("rail Activity hides when idle", !frame.includes("Activity"));
+// Idle: the rail's Session block — model/ctx/cost/goal — is visible.
 check("rail shows the Session block when idle", frame.includes("Session"));
 
 // 6c) Clicking an assistant message folds its turn's tool work away (just the

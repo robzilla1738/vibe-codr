@@ -33,6 +33,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "approvals", description: "Set approval mode", values: ["ask", "auto"] },
   { name: "reasoning", description: "Set reasoning effort", values: ["low", "medium", "high", "off"] },
   { name: "theme", description: "Set the UI theme", values: ["default", "light", "contrast", "opencode"] },
+  { name: "accent", description: "Set the accent color", arg: "<hex>" },
   // Steering
   { name: "goal", description: "Set or clear the north-star goal", arg: "<text>" },
   { name: "loop", description: "Run a prompt on a loop", arg: "<interval> <prompt>" },

@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { HookBus } from "@vibe/plugins";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -171,6 +172,37 @@ test("setProjectMemory is reflected in the next turn's system prompt", async () 
   session.setProjectMemory("PROJECT-MEMORY-MARKER-XYZ");
   await session.run("hi");
   expect(systems[0]).toContain("PROJECT-MEMORY-MARKER-XYZ");
+});
+
+test("the step.finish hook fires at each step boundary", async () => {
+  const fires: string[] = [];
+  const hooks = new HookBus();
+  hooks.on("step.finish", (p) => {
+    fires.push(p.sessionId);
+  });
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "p" },
+        { type: "text-delta", id: "p", delta: "done" },
+        { type: "text-end", id: "p" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never,
+  });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    hooks,
+  });
+  await session.run("hi");
+  expect(fires.length).toBeGreaterThanOrEqual(1);
+  expect(fires[0]).toBe(session.id);
 });
 
 test("a user cancel is not surfaced as an engine error", async () => {

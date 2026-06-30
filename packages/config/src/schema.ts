@@ -47,6 +47,11 @@ export const WebfetchConfigSchema = z.object({
 export const ModelPriceSchema = z.object({
   input: z.number().nonnegative().optional(),
   output: z.number().nonnegative().optional(),
+  /** Price of a cached-input (prompt-cache read) token. Defaults to `input` when
+   * unset, so cost is never understated for a model without a known cache rate. */
+  cacheRead: z.number().nonnegative().optional(),
+  /** Price of writing the prompt cache (reserved; not yet billed separately). */
+  cacheWrite: z.number().nonnegative().optional(),
 });
 
 /** An MCP server: a local stdio process or a remote SSE/HTTP URL. */

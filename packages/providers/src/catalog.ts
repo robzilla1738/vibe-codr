@@ -37,6 +37,10 @@ interface CacheFile {
 export interface PricingResult {
   input?: number;
   output?: number;
+  /** Per-1M price of a cached-input (prompt-cache read) token, when known. */
+  cacheRead?: number;
+  /** Per-1M price of writing the prompt cache, when known. */
+  cacheWrite?: number;
   estimated?: boolean;
 }
 
@@ -229,7 +233,12 @@ export function parseModelsDev(raw: unknown): Map<string, Partial<ModelInfo>> {
         name: m?.name,
         contextWindow: m?.limit?.context,
         maxOutput: m?.limit?.output,
-        cost: { input: m?.cost?.input, output: m?.cost?.output },
+        cost: {
+          input: m?.cost?.input,
+          output: m?.cost?.output,
+          cacheRead: m?.cost?.cache_read,
+          cacheWrite: m?.cost?.cache_write,
+        },
         capabilities: {
           toolCall: m?.tool_call,
           reasoning: m?.reasoning,

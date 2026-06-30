@@ -718,6 +718,9 @@ export class Session {
             sessionId: this.id,
             usage: stepUsage,
           });
+          // Fire the plugin step boundary hook (was declared but never dispatched,
+          // so registered handlers silently never ran). Best-effort, errors isolated.
+          void this.#deps.hooks?.run("step.finish", { sessionId: this.id });
           addUsage(this.#usage, stepUsage);
           // Track the provider's real prompt size (the true context fill) and
           // surface it live — the JSON estimate omitted the system prompt + tool
@@ -737,6 +740,7 @@ export class Session {
             stepUsage?.inputTokens ?? 0,
             stepUsage?.outputTokens ?? 0,
             this.#price,
+            stepUsage?.cachedInputTokens ?? 0,
           );
           bus.emit({
             type: "usage-updated",

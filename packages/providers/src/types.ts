@@ -9,7 +9,7 @@ export interface ModelInfo {
   name?: string;
   contextWindow?: number;
   maxOutput?: number;
-  cost?: { input?: number; output?: number };
+  cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
   capabilities?: {
     toolCall?: boolean;
     reasoning?: boolean;

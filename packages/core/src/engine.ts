@@ -561,6 +561,8 @@ export class Engine implements EngineClient {
     return {
       input: override.input ?? catalog?.input,
       output: override.output ?? catalog?.output,
+      cacheRead: override.cacheRead ?? catalog?.cacheRead,
+      cacheWrite: override.cacheWrite ?? catalog?.cacheWrite,
       estimated: catalog?.estimated,
     };
   }

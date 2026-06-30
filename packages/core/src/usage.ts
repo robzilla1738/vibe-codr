@@ -19,14 +19,27 @@ export function addUsage(total: TokenTotals, step: Usage | undefined): void {
   }
 }
 
-/** Cost in USD for token counts at a per-1M-token price (0 when unpriced). */
+/**
+ * Cost in USD for a step's tokens at a per-1M-token price (0 when unpriced).
+ * Cache-aware: `cachedInputTokens` (a subset of `inputTokens`) is billed at the
+ * cache-read rate (~0.1× on Anthropic), which the prior flat-input pricing
+ * overstated several-fold — enough to mis-trip a `budget.onExceed=stop` guard.
+ * Falls back to the full input rate when no cache rate is known, so cost is
+ * never understated.
+ */
 export function computeCost(
   inputTokens: number,
   outputTokens: number,
   price: ModelPrice | undefined,
+  cachedInputTokens = 0,
 ): number {
   if (!price) return 0;
-  const inCost = price.input ? (inputTokens / 1_000_000) * price.input : 0;
+  const cached = Math.min(Math.max(0, cachedInputTokens), inputTokens);
+  const uncached = inputTokens - cached;
+  const inCost = price.input ? (uncached / 1_000_000) * price.input : 0;
+  // Cached reads bill at the cache-read rate; fall back to the full input rate.
+  const cacheRate = price.cacheRead ?? price.input;
+  const cacheCost = cacheRate ? (cached / 1_000_000) * cacheRate : 0;
   const outCost = price.output ? (outputTokens / 1_000_000) * price.output : 0;
-  return inCost + outCost;
+  return inCost + cacheCost + outCost;
 }

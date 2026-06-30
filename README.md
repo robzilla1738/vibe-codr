@@ -22,33 +22,32 @@ Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 ## Screenshots
 
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberately
-restrained palette: a **solid-black canvas**, **monochrome text**, and one
-**configurable accent** (lavender by default — `/accent <hex>`). The accent carries
-the chrome (brand mark, user gutter, carets, spinner, menu, rail headers), while
-**mode color is scoped to just the input border line and the mode pill** (lavender
-for execute, cyan for plan, salmon for yolo), so switching mode is unmistakable
-without repainting the screen. The only other colors are functional — green/red on
-diffs, amber on warnings. The layout is two columns: a scrolling **transcript** on
-the black, beside a **full-height grey context rail** that opens with the identity
-block (brand · mode · cwd) and then adaptive sections (each shown only when relevant)
-that tracks the plan's task list, live subagents, the files changed this session
-(with line deltas), **git branch/status**, and session info (model, context %,
-token/cost) — sections hide when empty and the task list clears once everything's
-done. Each user turn sits in a heavy
-left-gutter panel block; assistant replies render real Markdown; tool calls read
-as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
+restrained look: a **black background**, **monochrome white/grey text**, and one
+**vivid `#ff3503` brand accent** (configurable — `/accent <hex>`) on a sleek ASCII
+wordmark, the input frame, and the gutters. The **mode shows on the input's top
+border** — colored per mode (plan cyan · yolo salmon) — so switching mode is
+unmistakable without
+repainting the screen. The other colors are purely functional — green/red on
+diffs, amber on warnings. The layout is a **single, centered chat column**
+(ChatGPT-style): it fills a narrow terminal and centers on a wide one, with **no
+sidebar and no top header**. A fresh screen shows a **centered VIBE CODR wordmark**;
+once you start, the column is the scrolling **transcript**, the live status — the
+plan's **task list** and live **subagents** (one tidy line each, tap to expand) — in
+panels above the input, and the input itself: a **clean closed box whose top border
+is the mode break** (`┏━ EXECUTE ━┓`). **All the details sit under the input** —
+cwd · git, then model · changed-files · context · cost, plus key hints and the goal.
+Each user turn sits in a heavy left-gutter panel block (**tap your message to fold
+the whole exchange** under it); assistant replies render real Markdown; tool calls
+read as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
 `◈` websearch, `±` git…) and **condense to one line you click to expand**, while
-edits fold into a single diff row with the hunk shown beneath it; a braille
-spinner shows live work; the slash-command menu highlights the selection; and your
-sent messages share the input's exact raised frame (heavy brand gutter, `❯`
-caret) so they read as one element. A footer keeps live **context-window fill,
-token usage, and cost** in view whenever there's something to report.
+edits fold into a single diff row with the hunk shown beneath it; a braille spinner
+shows live work; the slash-command menu highlights the selection.
 
 | Chat + tool calls | Live diff |
 |---|---|
 | ![chat](docs/screenshots/01-chat.png) | ![diff](docs/screenshots/02-diff.png) |
 
-| Plan mode | Context rail: tasks, subagents, session |
+| Plan mode | Task list + subagents panels |
 |---|---|
 | ![plan](docs/screenshots/03-plan.png) | ![tasks](docs/screenshots/04-tasks.png) |
 
@@ -149,7 +148,8 @@ Highlights:
 - **Model & mode** — `/model <id>`, `/models`, `/plan`, `/execute`,
   `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
   `/theme <default|light|contrast|opencode>`.
-  Press **Shift+Tab** to cycle the mode pill: **plan → execute → yolo → plan**.
+  Press **Shift+Tab** to cycle the mode (shown on the input's top border):
+  **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>`,
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
   `/queue` (`/queue clear`).
@@ -164,25 +164,26 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
-  disciplined palette: a **solid-black canvas, monochrome text, and one
-  configurable accent** (lavender by default, `/accent <hex>`); **mode color is
-  scoped to the input border line + the mode pill**; green/red/amber are reserved
-  for diffs and warnings. A two-column layout pairs a scrolling transcript on the
-  black with a **full-height grey context rail** — identity block (brand · mode ·
-  cwd) up top, then adaptive sections tracking the task list, live subagents, the
-  files changed this session, **git branch/status**, and session info (model,
-  context %, token/cost); sections hide when empty and the task list clears once it's done. User turns render in a heavy left-gutter
-  panel block; assistant replies render real Markdown via OpenTUI's native
-  renderer; tool calls read as a distinct icon + action label (`$` bash, `→` read,
-  `←` edit/write, `✱` glob/grep, `◈` websearch, `±` git, `✦` subagent…) and
-  **condense to one line you click to expand**, while edits fold into a single
-  diff row (tinted add/remove backgrounds) with the hunk shown beneath it. A
-  braille spinner with elapsed time shows live work (**Esc** interrupts the turn);
-  the slash menu draws a full-row selection highlight; your sent messages share
-  the input's exact raised frame (heavy brand gutter, `❯` caret); a footer keeps
-  live **context-window fill, token usage, and cost** in view; and permission
-  prompts surface as a bordered `△` card answerable with `y`/`a`/`n`. Four themes
-  ship — `default` (Tokyo Night), `light`, `contrast`, and `opencode` (warm peach).
+  disciplined look: a **black background**, **monochrome white/grey text, and one
+  vivid `#ff3503` brand accent** (configurable, `/accent <hex>`); the **mode shows
+  on the input's top border**, colored per mode (cyan plan / salmon yolo / neutral
+  execute); green/red/amber are reserved for diffs and warnings. A **single,
+  centered chat column** (ChatGPT-style — no sidebar, **no top header**) fills a
+  narrow terminal and centers on a wide one: a fresh screen shows a **centered VIBE
+  CODR wordmark**, then the scrolling transcript, the **task list** and live
+  **subagents** (one line each, tap to expand) in panels above the input, the input
+  as a **clean closed box whose top border is the mode break** (`┏━ EXECUTE ━┓`),
+  and **all the details under it** (cwd · git / model · changed · ctx · cost, plus
+  hints + goal). User turns render in a heavy left-gutter panel block (**tap your
+  message to fold the whole exchange**); assistant replies render real Markdown via
+  OpenTUI's native renderer; tool calls read as a distinct icon + action label
+  (`$` bash, `→` read, `←` edit/write, `✱` glob/grep, `◈` websearch, `±` git, `✦`
+  subagent…) and **condense to one line you click to expand**, while edits fold into
+  a single diff row (tinted add/remove backgrounds) with the hunk shown beneath it.
+  A braille spinner with elapsed time shows live work (**Esc** interrupts the turn);
+  the slash menu draws a full-row selection highlight; and permission prompts
+  surface as a bordered `△` card answerable with `y`/`a`/`n`. Four themes ship —
+  `default` (black), `light`, `contrast`, and `opencode` (warm peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
   `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools
   (the model calls `present_plan`; you approve to proceed). **Execute** allows
@@ -408,12 +409,15 @@ All planned phases are implemented and tested:
 8. ✅ Parity & polish — full introspection/settings command surface, project
    memory (VIBE.md/AGENTS.md/CLAUDE.md), JSON headless output + stdin, themes,
    `/doctor`, `/export`, Ollama + structured `git_log`/`git_push` for GitHub.
-9. ✅ TUI UX — header with color-coded plan/execute/yolo mode pill (Shift+Tab to
-   cycle), an interactive slash-command menu, first-class Ollama Cloud, and a
+9. ✅ TUI UX — the plan/execute/yolo mode shown (and color-coded) on the input's
+   top border (Shift+Tab to cycle), an interactive slash-command menu, first-class Ollama Cloud, and a
    guided `vibecodr setup`; the OpenTUI app is covered by `bun run smoke:tui`.
-10. ✅ opencode-inspired UI — two-column layout (transcript + a context rail for
-    tasks/subagents/changed-files/session), left-gutter message blocks, native Markdown replies,
-    per-tool icons + action labels, condensed tool output that expands on click,
+10. ✅ opencode-inspired UI — black, centered single-column chat (no top header:
+    a VIBE CODR wordmark splash, the transcript, tasks/subagents panels above the
+    input, the mode break on the input's top border, and all details under it),
+    tap-your-message-to-fold, a **`/jobs` sub-view** (running shell commands +
+    auto-detected localhost servers), left-gutter message blocks, native Markdown
+    replies (incl. tables), per-tool icons + action labels, condensed tool output that expands on click,
     edits folded into one diff row (tinted backgrounds), a braille working spinner
     (Esc to interrupt), a bordered permission card, full-row menu highlight, and
     the `opencode` theme.

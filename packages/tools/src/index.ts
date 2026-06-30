@@ -8,6 +8,7 @@ export {
 export {
   builtinTools,
   type BuiltinToolOptions,
+  BackgroundJobs,
   readTool,
   globTool,
   lsTool,

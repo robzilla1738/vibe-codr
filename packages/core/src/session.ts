@@ -104,6 +104,12 @@ export class Session {
   #history: Message[];
   #tasks: Task[];
   #usage: TokenTotals;
+  /** The provider's real input-token count for the last step — the TRUE current
+   * context size (system prompt + tool schemas + messages + cache), far more
+   * accurate than the JSON estimate. 0 until the first step reports usage. */
+  #lastInputTokens = 0;
+  /** Context window resolved for the current model (cached per turn). */
+  #contextWindow = DEFAULT_CONTEXT_WINDOW;
   /** Cost accrued per step at the price in effect then (correct across model switches). */
   #costUSD: number;
   #price: (ModelPrice & { estimated?: boolean }) | undefined;
@@ -273,9 +279,10 @@ export class Session {
     return this.#modelMessages.length;
   }
 
-  /** Estimated tokens currently held in the model context (for /status, /context). */
+  /** Tokens currently held in the model context (for /status, /context): the
+   * provider's real last-step input count when known, else a JSON estimate. */
   get contextTokens(): number {
-    return estimateTokens(this.#modelMessages);
+    return this.#lastInputTokens || estimateTokens(this.#modelMessages);
   }
 
   /** Subagent recursion depth (0 = root). */
@@ -585,6 +592,18 @@ export class Session {
             usage: stepUsage,
           });
           addUsage(this.#usage, stepUsage);
+          // Track the provider's real prompt size (the true context fill) and
+          // surface it live — the JSON estimate omitted the system prompt + tool
+          // schemas, so it read far too low.
+          if (stepUsage?.inputTokens) {
+            this.#lastInputTokens = stepUsage.inputTokens;
+            bus.emit({
+              type: "context-updated",
+              sessionId: this.id,
+              usedTokens: this.#lastInputTokens,
+              contextWindow: this.#contextWindow,
+            });
+          }
           // Accrue cost at the price in effect for this step, so a mid-session
           // model/price change doesn't retroactively reprice earlier tokens.
           this.#costUSD += computeCost(
@@ -663,12 +682,16 @@ export class Session {
     const contextWindow =
       (await this.#deps.getContextWindow?.(this.model)) ??
       DEFAULT_CONTEXT_WINDOW;
-    // Surface live context-window fill so the UI can show how close we are to
-    // the limit (and when auto-compaction is about to kick in).
+    this.#contextWindow = contextWindow;
+    // Surface live context-window fill so the UI can show how close we are to the
+    // limit (and when auto-compaction is about to kick in). Prefer the provider's
+    // real input-token count (the true context size) over the estimate, which
+    // omits the system prompt + tool schemas; the estimate is just a pre-first-step
+    // fallback.
     this.#deps.bus.emit({
       type: "context-updated",
       sessionId: this.id,
-      usedTokens: estimateTokens(this.#modelMessages),
+      usedTokens: this.#lastInputTokens || estimateTokens(this.#modelMessages),
       contextWindow,
     });
     const result = await compactMessages(this.#modelMessages, {

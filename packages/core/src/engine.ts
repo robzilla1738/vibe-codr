@@ -20,7 +20,7 @@ import {
   probeOllamaContextWindow,
   type ModelInfo,
 } from "@vibe/providers";
-import { Toolset, builtinTools, createFileLock } from "@vibe/tools";
+import { Toolset, builtinTools, createFileLock, BackgroundJobs } from "@vibe/tools";
 import type { ModelPrice } from "@vibe/config";
 import {
   HookBus,
@@ -98,6 +98,10 @@ export class Engine implements EngineClient {
   readonly catalog: CatalogService;
 
   #bus = new EventBus();
+  /** Background shell jobs (+ detected localhost servers), owned here so the
+   * registry is reachable from the engine (the toolset would otherwise create its
+   * own hidden one). `onChange` pushes a `jobs-changed` event to the TUI. */
+  #jobs = new BackgroundJobs({ onChange: () => this.#emitJobs() });
   /** Last computed working-tree git state, seeded into the snapshot. */
   #gitState: GitInfo | undefined;
   #config: Config;
@@ -153,6 +157,7 @@ export class Engine implements EngineClient {
               ? { apiKey: opts.config.search.apiKey }
               : {}),
           },
+          jobs: this.#jobs,
         }),
       );
     // Surface tool-name collisions (MCP/plugin tools shadowing a built-in, or a
@@ -247,7 +252,7 @@ export class Engine implements EngineClient {
     // Connect MCP servers last so their tools join the same registry.
     await this.#mcp.start(this.#config.mcp.servers);
 
-    // Seed the rail's git section (branch/dirty/ahead-behind/worktree) so it's
+    // Seed the header's git context (branch/dirty/ahead-behind/worktree) so it's
     // in the first snapshot; cheap, and only at startup.
     await this.#emitGit();
   }
@@ -883,7 +888,7 @@ export class Engine implements EngineClient {
     }
     await this.#session.run(expanded.text, expanded.images);
     await this.#maybeVerify();
-    // The turn may have touched the working tree — refresh the rail's git state.
+    // The turn may have touched the working tree — refresh the header's git state.
     void this.#emitGit();
   }
 
@@ -1071,7 +1076,8 @@ export class Engine implements EngineClient {
   #handleAccent(args: string): void {
     const next = args.trim();
     if (!next) {
-      this.#notice(`Accent: ${this.#config.accentColor}. Use /accent <hex>, e.g. /accent #bb9af7.`);
+      const cur = this.#config.accentColor || "theme default (#ff3503)";
+      this.#notice(`Accent: ${cur}. Use /accent <hex>, e.g. /accent #ff3503.`);
       return;
     }
     if (!/^#?[0-9a-fA-F]{6}$/.test(next)) {
@@ -1265,7 +1271,7 @@ export class Engine implements EngineClient {
     return { ok: code === 0, stdout, stderr };
   }
 
-  /** Best-effort working-tree git state for the rail (undefined outside a repo). */
+  /** Best-effort working-tree git state for the header (undefined outside a repo). */
   async #gitInfo(): Promise<GitInfo | undefined> {
     const branchRes = await this.#git(["rev-parse", "--abbrev-ref", "HEAD"]);
     if (!branchRes.ok) return undefined; // not a repo
@@ -1297,8 +1303,20 @@ export class Engine implements EngineClient {
         this.#bus.emit({ type: "git-updated", sessionId: this.#session.id, git });
       }
     } catch {
-      // Git unavailable — the rail simply omits the section.
+      // Git unavailable — the header simply omits the git context.
     }
+  }
+
+  /** Push the current background-job list (commands + localhost servers) to the
+   * UI's `/jobs` sub-view. Fired whenever a job starts, exits, is killed, or
+   * first binds a localhost server. */
+  #emitJobs(): void {
+    if (!this.#session) return;
+    this.#bus.emit({
+      type: "jobs-changed",
+      sessionId: this.#session.id,
+      jobs: this.#jobs.snapshot(),
+    });
   }
 }
 

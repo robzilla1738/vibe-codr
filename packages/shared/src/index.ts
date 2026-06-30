@@ -11,6 +11,7 @@ export type {
   SessionUsage,
   EngineSnapshot,
   GitInfo,
+  JobInfo,
 } from "./types.ts";
 
 // UI events (engine -> UI)

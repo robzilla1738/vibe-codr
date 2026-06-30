@@ -1,4 +1,4 @@
-import type { GitInfo, Mode, QueuedItem, SessionUsage, Task, Usage } from "./types.ts";
+import type { GitInfo, JobInfo, Mode, QueuedItem, SessionUsage, Task, Usage } from "./types.ts";
 
 /**
  * Events emitted by the engine and consumed by any UI (TUI, headless printer).
@@ -59,6 +59,13 @@ export type UIEvent =
   | { type: "theme-changed"; theme: string }
   | { type: "accent-changed"; accent: string }
   | { type: "git-updated"; sessionId: string; git: GitInfo }
+  | {
+      /** Background shell jobs (and any localhost servers detected in their
+       * output) changed — started, exited, or killed. Drives the `/jobs` view. */
+      type: "jobs-changed";
+      sessionId: string;
+      jobs: JobInfo[];
+    }
   | { type: "approvals-changed"; mode: "ask" | "auto" }
   | { type: "plan-presented"; sessionId: string; plan: string }
   | {

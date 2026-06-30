@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ToolDefinition } from "@vibe/shared";
+import type { JobInfo, ToolDefinition } from "@vibe/shared";
 
 interface Job {
   id: string;
@@ -8,16 +8,38 @@ interface Job {
   output: string;
   status: "running" | "exited" | "killed";
   exitCode: number | null;
+  pid?: number;
+  /** Localhost server URLs detected in the output so far (deduped). */
+  servers: string[];
+}
+
+/** Extract localhost server URLs printed by dev servers (vite/next/etc.). */
+function detectServers(output: string): string[] {
+  const urls = new Set<string>();
+  const full =
+    /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):\d{2,5}[^\s)'"<>]*/gi;
+  for (const m of output.matchAll(full)) urls.add(m[0].replace(/[.,]+$/, ""));
+  // Bare "localhost:3000" / "127.0.0.1:8080" → assume http.
+  const bare = /(?:^|\s)((?:localhost|127\.0\.0\.1):\d{2,5})\b/gi;
+  for (const m of output.matchAll(bare)) urls.add(`http://${m[1]}`);
+  return [...urls];
 }
 
 /**
  * Process-wide registry of background shell jobs. Lets the agent start a
  * long-running command (build, watcher, server) and keep working, polling with
- * `job_status` and stopping with `job_kill`.
+ * `job_status` and stopping with `job_kill`. `onChange` fires when a job starts,
+ * exits, is killed, or first exposes a localhost server — so the engine can push
+ * a `jobs-changed` event to the TUI's `/jobs` sub-view.
  */
 export class BackgroundJobs {
   #jobs = new Map<string, Job>();
   #seq = 0;
+  #onChange?: () => void;
+
+  constructor(opts?: { onChange?: () => void }) {
+    this.#onChange = opts?.onChange;
+  }
 
   start(command: string, cwd: string): Job {
     const proc = Bun.spawn(["bash", "-lc", command], {
@@ -32,8 +54,11 @@ export class BackgroundJobs {
       output: "",
       status: "running",
       exitCode: null,
+      pid: proc.pid,
+      servers: [],
     };
     this.#jobs.set(job.id, job);
+    this.#onChange?.();
 
     const pump = async (stream: ReadableStream<Uint8Array>) => {
       // One decoder per stream with streaming mode so multibyte UTF-8 split
@@ -43,6 +68,10 @@ export class BackgroundJobs {
         if (!text) return;
         job.output += text;
         if (job.output.length > 100_000) job.output = job.output.slice(-100_000);
+        // Surface a newly-bound dev-server URL as soon as it's printed.
+        const before = job.servers.length;
+        job.servers = detectServers(job.output);
+        if (job.servers.length > before) this.#onChange?.();
       };
       for await (const chunk of stream) append(decoder.decode(chunk, { stream: true }));
       append(decoder.decode()); // flush trailing bytes
@@ -56,9 +85,11 @@ export class BackgroundJobs {
       .then((code) => {
         if (job.status === "running") job.status = "exited";
         job.exitCode = code;
+        this.#onChange?.();
       })
       .catch(() => {
         if (job.status === "running") job.status = "exited";
+        this.#onChange?.();
       });
     return job;
   }
@@ -71,12 +102,26 @@ export class BackgroundJobs {
     return [...this.#jobs.values()];
   }
 
+  /** UI-facing snapshot of every job (id, command, status, pid, servers, tail). */
+  snapshot(): JobInfo[] {
+    return this.list().map((j) => ({
+      id: j.id,
+      command: j.command,
+      status: j.status,
+      exitCode: j.exitCode,
+      ...(j.pid ? { pid: j.pid } : {}),
+      servers: j.servers,
+      outputTail: tail(j.output, 2000),
+    }));
+  }
+
   kill(id: string): boolean {
     const job = this.#jobs.get(id);
     if (!job) return false;
     if (job.status === "running") {
       job.proc.kill();
       job.status = "killed";
+      this.#onChange?.();
     }
     return true;
   }

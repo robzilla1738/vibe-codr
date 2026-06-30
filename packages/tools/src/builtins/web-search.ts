@@ -110,11 +110,13 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<
   };
 }
 
-/** Render results as a compact, model-friendly numbered list. */
+/** Render results as a markdown numbered list (title / URL / snippet) — clean for
+ * the model AND nicely indented when the TUI renders it as markdown (the list
+ * structure keeps each result's URL + snippet aligned, even when wrapped). */
 export function formatResults(query: string, results: SearchResult[]): string {
-  const lines = results.map(
+  const items = results.map(
     (r, i) =>
       `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet.replace(/\s+/g, " ").trim()}`,
   );
-  return `Search results for "${query}":\n\n${lines.join("\n\n")}`;
+  return `Search results for "${query}"\n\n${items.join("\n\n")}`;
 }

@@ -166,7 +166,8 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   width and garbles wrapped/streamed replies (that was the corruption bug).
   `<code>`/`<diff>` intrinsics also exist; all renderables accept `onMouseDown`
   (used for click-to-expand of tool output), and `useTerminalDimensions()` drives
-  the responsive rail. A mouse click blurs the focused input, so any click
+  the responsive `contentWidth()` (the centered column reflows on resize). A mouse
+  click blurs the focused input, so any click
   handler must restore it via a **deferred** `inputEl.focus()` (queueMicrotask —
   a synchronous call runs before the renderer's own post-click focus pass and is
   immediately undone); the smoke test clicks a tool row then opens the menu to
@@ -177,87 +178,107 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `commands-catalog.ts`. `screenshot.ts` can't import `@vibe/tui`, so it carries
   a **local copy of the tool-icon/summary logic** — keep it identical to
   `tool-icons.ts` (it has a comment pointing here).
-- **Layout invariant (don't regress scrolling):** the ROOT is a flex *row* on a
-  solid-black backdrop (`palette().background`): a **LEFT column**
-  (`flexDirection="column" flexGrow={1}`) holding the transcript and every input
-  affordance, and a **full-height grey context rail** (`flexShrink={0}`, fixed
-  `RAIL_WIDTH`, `backgroundColor={palette().elevated}`) as its right sibling — so
-  the rail spans top-to-bottom and the input bar shrinks to the LEFT column's
-  width instead of spanning the whole terminal. On wide terminals there is **no
-  top header bar**: the brand mark, mode pill, and cwd live in the rail's
-  **identity block** (the first thing in its scrollbox); the dedicated header
-  (`<Show when={!showRail()}>`) renders only on narrow terminals where the rail is
-  hidden. The rail shows only when `dims().width >= RAIL_MIN_COLS`; below that,
-  tasks fall back to a bottom panel. Inside the LEFT column the transcript is a
-  `<scrollbox flexGrow={1} flexShrink={1} stickyScroll stickyStart="bottom">`.
-  Every panel *below* the transcript (working spinner, plan, tasks fallback,
-  permission card, menu, input, footer) must set `flexShrink={0}`, or the
-  scrollbox steals their space and they collapse to one overlapping row (the
-  permission card did exactly this before the fix). Long conversations must
-  scroll inside the box, never overflow onto the input. The transcript is a list
-  of `Block`s rendered with `<Index>` (stable per position, append-only); tool
-  output is condensed to one clickable row and expands in place. Expand/collapse
-  goes through `anchoredToggle`: when the turn is **idle** it disengages the
-  scrollbox's `stickyScroll` (so growing content doesn't snap to the bottom) and
-  freezes `scrollTop`, so the clicked row stays put and content reveals *below* it;
-  while a turn is **streaming** it leaves sticky alone so new output keeps
-  following. Auto-follow re-engages next turn (`runText` sets `stickyScroll=true`).
-  Don't toggle a block outside `anchoredToggle` or it jumps.
-  **Turn folding:** an assistant message owns the tool/notice blocks that follow
-  it, computed by POSITION (nearest preceding assistant) via the `grouping` memo —
-  robust to a tool emitted before the assistant's first text; do NOT reintroduce
-  an emission-time `turn` field on blocks. Clicking a message folds its work
-  (`collapsedTurns` + `isHidden`, "N steps hidden" affordance); **Ctrl+O**
-  (`toggleAllTurns`) folds/unfolds every turn — leaving just prose.
-  The rail is a **solid grey panel** (`backgroundColor={palette().elevated}`, full
-  height) with its OWN `<scrollbox>`. It opens with the **identity block** (brand ·
-  mode pill · cwd) and then stacked, adaptive sections — plain text on the grey,
-  separated by the scrollbox `gap`, no per-section background (the whole rail is
-  the surface). The sections: **Tasks** (the to-do list, hides once all done) →
-  **Subagents** (prompt + running/done + one-line `result`) → **Changed** (session
-  edits) → **Git** (branch · dirty · ↑ahead ↓behind · worktree marker) →
-  **Session** (model · ctx% · usage · goal, last). Each hides when empty so the
-  rail only shows what's relevant — do NOT add a tool-call "Activity" feed back; it
-  duplicated the transcript and was deliberately removed. Git state comes from
-  `Engine.#gitInfo()` (the `#git` runner) via the `git-updated` event + the
-  snapshot `git` field, recomputed at bootstrap and turn end. Item text uses
-  `wrapMode="word"` (filenames `truncateLeft`) so nothing is silently cut.
-  Modeled on opencode's `routes/session/sidebar.tsx` + `feature-plugins/sidebar/*`. User
-  message blocks reuse the input bar's EXACT frame (heavy `brand` gutter,
-  `elevated` bg, `❯` caret, matching padding) so a sent message and the input
-  read as one element. The footer is a flex row: key-binding hints on the left,
-  `metricsLine()` (context-window %, token usage, cost — `metrics()` signal) on
-  the right, shown only when there's data; goal lives in the rail / narrow header.
-- **Spacing (uniform rhythm):** the LEFT column carries `padding={1}` and the rail
-  carries `paddingLeft={1}`, so the transcript and the grey rail panel never butt
-  together (a ~2-col channel of black between them). Every region stacked below the
-  transcript (working spinner, plan, tasks fallback, permission card, menu, input,
-  footer) carries `marginTop={1}` — one blank row between every area, top to
-  bottom. Keep that single-row rhythm; don't special-case a region to 0 or 2.
-- **Color discipline (black backdrop + charcoal surfaces + monochrome + one
-  accent):** the `DEFAULT` theme paints the whole app on a solid-black
-  `background` (`#000000`), with neutral **charcoal** surfaces raised on top
-  (`panel`/`elevated`/`selBg`/`border` — rail section cards, input field, user
-  blocks, menus) and **monochrome** text (`assistant` near-white, `muted` grey).
-  One **configurable
-  accent** — `brand()` = `accentColor() || palette().primary` (lavender `#bb9af7`
-  by default, set live with `/accent <hex>` or the `accentColor` config) — paints
-  ALL chrome: brand mark, user gutter, `❯` carets, spinner, rail headers/active
-  items, plan box, menu selection. **Mode color (`accent()` = `modeColor`) is
-  scoped to exactly two spots:** the input's left **border line** and the header
-  **mode pill** (text+icon) — plan `tool`/cyan, execute `primary`/lavender, yolo
-  `del`/salmon. The input caret/cursor stay the accent (NOT the mode). The input
-  border line also flips to the green `subagent` hue while the draft exactly
-  matches an invocable `/name` (`isExactCommand` against `snapshot().commandNames`
-  — built-ins + custom commands + skills) as a "command registered" cue. (Skills
-  run as `/skillname`, dispatched in the engine's `#handleSlash` default case.)
+- **Layout invariant (centered single column; don't regress scrolling):** the
+  ROOT is a flex *row* on a **black background** (`backgroundColor={palette().
+  background}`): a `flexGrow` **left gutter**, the **chat column**
+  (`flexDirection="column"`, `width={contentWidth()}`, `flexShrink={0}`,
+  `padding={1}`), and a `flexGrow` **right gutter**. The two gutters center the
+  column ChatGPT-style; `contentWidth()` = `min(CONTENT_MAX, dims().width - 2)`.
+  **There is NO top header and no sidebar/rail.** Inside the column, top to bottom:
+  the **body** (`flexGrow={1}`) — when `showJobs()` it's the **`/jobs` sub-view**
+  (background shell jobs + detected localhost servers, a scrollbox replacing the
+  transcript; Esc or `/jobs` closes it). Otherwise a `<Show>` renders the scrolling
+  transcript when there are blocks, else a **centered VIBE CODR wordmark splash** — OpenTUI's
+  native `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (a sleek
+  rounded face in the brand color; `<ascii_font>` is the runtime tag, supports a
+  gradient `color` array). The wordmark and the tips are EACH in their own
+  flex-grow-centered row, so the wordmark is centered to the screen — NOT
+  left-aligned against the wider tips, which reads as off-center; a width+height
+  guard swaps in a compact `◆ VIBE CODR`
+  on small terminals) — then the stacked status surfaces, the input, and the
+  under-input status block. The transcript is `<scrollbox flexGrow={1}
+  flexShrink={1} stickyScroll stickyStart="bottom">`. Every surface *below* the
+  transcript (working spinner, plan box, **Tasks** panel, **Subagents** panel,
+  permission card, command menu, input, the two status lines) must set
+  `flexShrink={0}`, or the scrollbox steals their space and they collapse to one
+  overlapping row. Long conversations must scroll inside the box, never overflow
+  onto the input. The transcript is a list of `Block`s rendered with `<Index>`
+  (stable per position, append-only); tool output is condensed to one clickable
+  row and expands in place. A **`spawn_subagent` block is flagged `isMarkdown`** —
+  it opens expanded and renders its reply through `<markdown>` (headers, bold,
+  lists, code, and **tables**, which OpenTUI renders natively) instead of raw text
+  lines; `ToolBlockView` takes the `SyntaxStyle` for this. Expand/collapse goes
+  through `anchoredToggle`: when the
+  turn is **idle** it disengages the scrollbox's `stickyScroll` and freezes
+  `scrollTop` so the clicked row stays put; while **streaming** it leaves sticky
+  alone. Auto-follow re-engages next turn (`runText` sets `stickyScroll=true`).
+  **Turn folding is anchored on the USER message:** a turn is keyed by its user
+  message id; every following block (until the next user message) belongs to it
+  (`grouping` memo → `turnKey`/`counts`). **Tapping your message** folds the whole
+  exchange under it (`toggleTurn` → `collapsedTurns`; `isHidden` hides every
+  non-user block of that turn) down to a `▸ N items hidden · tap to expand`
+  affordance; tap again to reopen; **Ctrl+O** (`toggleAllTurns`) folds/unfolds
+  every turn. Assistant/tool/notice blocks are NOT click targets — folding is
+  driven from the user message only; do NOT reintroduce an emission-time `turn`
+  field on blocks.
+  **The input is a clean closed box** (`border` all sides, default light style) that
+  **matches the command-menu box**: its `borderColor` is `inputAccent()` = `brand()`
+  (the purple/accent — NOT the mode), flipping to green (`subagent`) while the draft
+  exactly matches an invocable `/name` (`isExactCommand`). Its top border carries the
+  **mode word** as the title via `modeWord()` (` ASK `/` PLAN `/` YOLO ` — no glyph;
+  **execute reads "ASK"** because every action is gated by an approval prompt, vs
+  YOLO = no prompts), and ONLY the title is mode-colored: `uiMode() === "execute" ?
+  brand() : accent()` (execute brand · plan cyan · yolo red). There is **no `❯`
+  prompt glyph inside** the input; the placeholder is "Send a message or type / to
+  start". The input has **no background fill at all** — just the bordered frame and
+  the text on the black backdrop: the box sets no `backgroundColor` and the
+  `<input>`'s `backgroundColor`/`focusedBackgroundColor` are **`"transparent"`** (an
+  OpenTUI Textarea otherwise paints its whole row, which bled a grey surface past
+  the frame; don't reintroduce an `elevated` fill here). **All status
+  details live UNDER the input**, not in a
+  header: line 1 is `detailsLeft()` / `detailsRight()` = `cwd · git  /  model ·
+  changed · ctx · usage · cost`; line 2 is the key hints (left) and the goal `★ …`
+  (right). Git state comes from `Engine.#gitInfo()` (the `#git` runner) via the
+  `git-updated` event + the snapshot `git` field; `changedSummary()` condenses the
+  session's edits (`✎ N files +a -b` — the detail is the inline diff rows). Do NOT
+  add a tool-call "Activity" feed — it duplicated the transcript and was removed.
+  **Subagents** render ONE truncated line each by default (a big fan-out used to
+  dump every full multi-line prompt and flood the screen); tap a row
+  (`toggleSub`/`expandedSubs`) to expand its full prompt + result, bounded by
+  `truncate(…, 700)` so an expanded row can't run off-screen. User message blocks
+  reuse the input's heavy `brand` left-gutter frame (`elevated` bg, `❯` caret) so a
+  sent message reads as a quoted echo of where you type.
+- **Spacing (uniform rhythm):** the chat column carries `padding={1}` (a one-cell
+  inset on every side) and is centered by the two `flexGrow` gutters. Every region
+  stacked below the transcript (working spinner, plan, Tasks panel, Subagents
+  panel, permission card, menu, input, the details status line) carries
+  `marginTop={1}` — one blank row between every area; the second status line (hints
+  / goal) hugs the details line with no margin so the two read as one block. Keep
+  that rhythm; don't special-case a region to 2.
+- **Color discipline (black background + monochrome + minimal accent):** the app
+  paints a **black background** (`backgroundColor={palette().background}`, `#000`
+  on the default theme), with neutral **charcoal** surfaces raised on top
+  (`panel`/`elevated`/`selBg`/`border` — the input box, user blocks, menus, and the
+  Tasks/Subagents panel borders) and **monochrome white/grey** text (`assistant`
+  near-white, `muted` grey). The brand hue `brand()` = `accentColor() ||
+  palette().primary` is a **vivid orange-red** by default (`#ff3503`; set live with
+  `/accent <hex>` or the `accentColor` config) — the single signature accent — and
+  paints ALL chrome: the wordmark, user gutter, `❯` carets, spinner, panel titles, plan
+  box, menu selection, **and the input box border** (so the input matches the
+  command-menu box). **Mode color** (`accent()` = `modeColor`) appears ONLY on the
+  input's **top-border title** (the mode word): plan `tool`/cyan, yolo `del`/salmon,
+  execute = `brand()` (the accent itself). The input caret/cursor stay `brand()`.
+  The input border flips to the green `subagent` hue while the draft exactly matches
+  an invocable `/name` (`isExactCommand` against `snapshot().commandNames` —
+  built-ins + custom commands + skills) as a "command registered" cue. (Skills run
+  as `/skillname`, dispatched in the engine's `#handleSlash` default case.)
   Transcript prose is `assistant`, tool rows `muted`. The only other colors are
   functional: `add`/`del` on expanded diff lines and `notice` (amber) on
   warnings/permissions.
   Don't reintroduce per-kind hues (blue user, cyan tools, green dots) — that's the
-  rainbow we removed; don't widen mode color beyond the input line + pill (use
-  `brand()` for chrome). `border={["left"]}` boxes can't host a `title` (no top
-  edge), so don't put one there.
+  rainbow we removed; don't widen mode color beyond the input's top-border title
+  (use `brand()` for chrome). A `title` needs a top edge, so the input uses a full
+  `border` (all sides) — `border={["left"]}` alone can't host one.
 - Match the surrounding code's style; comments explain *why*, not *what*.
 
 ## Before you finish

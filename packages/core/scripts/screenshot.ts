@@ -8,8 +8,8 @@
  * screenshots it with the bundled Playwright Chromium.
  *
  * Keep this in lockstep with app.tsx: the block reducer, the markdown rendering,
- * the condensed/expandable tool output, the context rail, and the header all
- * mirror the live app.
+ * the condensed/expandable tool output, the centered single chat column, the
+ * status panels (tasks/subagents), and the header/footer all mirror the live app.
  *
  * Run: bun packages/core/scripts/screenshot.ts <outDir>
  */
@@ -52,28 +52,28 @@ function resolveChrome(): string {
 }
 const CHROME = resolveChrome();
 
-// ── Tokyo-night palette (matches packages/tui colors) ──────────────────────
+// ── Black + monochrome palette (mirror packages/tui/src/themes.ts DEFAULT) ──
 const COLORS = {
-  bg: "#1a1b26",
-  bgDim: "#16161e",
-  fg: "#c0caf5",
-  dim: "#565f89",
+  bg: "#000000",
+  bgDim: "#0a0a0c",
+  fg: "#e6e6e6",
+  dim: "#8a8a92",
   blue: "#7aa2f7",
   cyan: "#7dcfff",
   green: "#9ece6a",
   yellow: "#e0af68",
   magenta: "#bb9af7",
   red: "#f7768e",
-  // Block surfaces + diff tints (mirror packages/tui/src/themes.ts DEFAULT).
-  panel: "#1a1c28",
-  elevated: "#242736",
-  primary: "#8b5cf6", // the single accent (execute mode); = mode color `mc` below
-  border: "#2c3047",
-  addBg: "#1b2b25",
-  delBg: "#2d2030",
+  // Block surfaces + diff tints.
+  panel: "#161618",
+  elevated: "#1e1e22",
+  primary: "#ff3503", // the orange-red brand; = execute-mode color `mc` below
+  border: "#34343a",
+  addBg: "#15231a",
+  delBg: "#26171c",
   // Slash-menu selection highlight (neutral bg; the accent is the text color).
-  selBg: "#2e3346",
-  selFg: "#c0caf5",
+  selBg: "#2a2a30",
+  selFg: "#e6e6e6",
 };
 
 /**
@@ -184,8 +184,6 @@ interface Scene {
   working?: string;
   input: string;
   inputHint?: string;
-  /** Listing views (models, sessions) render without the live-TUI rail. */
-  noRail?: boolean;
 }
 
 interface Reduced {
@@ -327,12 +325,6 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-/** Truncate from the LEFT (keep the tail/basename); mirrors app.tsx. */
-function truncateLeft(s: string, n: number): string {
-  if (n <= 1) return s.slice(-1);
-  return s.length > n ? `…${s.slice(-(n - 1))}` : s;
-}
-
 /** Local copy of headless.formatUsage (core must not import @vibe/tui). */
 function formatUsage(u: SessionUsage): string {
   const tok =
@@ -355,15 +347,16 @@ function ssMetrics(scene: Scene): string {
   return parts.join("  ·  ");
 }
 
-/** Rail context line "12% · 24k/200k" (mirror app.tsx ctxSummary). */
-function ctxSummary(ctx: { usedTokens: number; contextWindow: number } | undefined): string {
-  if (!ctx || ctx.contextWindow <= 0) return "";
-  const pct = Math.min(100, Math.round((ctx.usedTokens / ctx.contextWindow) * 100));
-  if (pct < 1) return "";
-  return `${pct}% · ${ktok(ctx.usedTokens)}/${ktok(ctx.contextWindow)}`;
-}
-function ktok(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
+/** Footer "files changed" summary "✎ N files +a -b" (mirror app.tsx changedSummary). */
+function ssChangedSummary(scene: Scene): string {
+  const fs = scene.changed;
+  if (!fs || fs.length === 0) return "";
+  const added = fs.reduce((s, f) => s + f.added, 0);
+  const removed = fs.reduce((s, f) => s + f.removed, 0);
+  const delta = [added > 0 ? `+${added}` : "", removed > 0 ? `-${removed}` : ""]
+    .filter(Boolean)
+    .join(" ");
+  return `✎ ${fs.length} file${fs.length === 1 ? "" : "s"}${delta ? ` ${delta}` : ""}`;
 }
 
 // ── Minimal inline LanguageModelV2 mock (avoids the ai/test -> vitest dep) ───
@@ -690,10 +683,10 @@ async function buildScenes(): Promise<Scene[]> {
     { name: "02-diff", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/app", blocks: diff.blocks, ...(diff.usage ? { usage: diff.usage } : {}), ...(diff.context ? { context: diff.context } : {}), ...(diff.changed ? { changed: diff.changed } : {}), input: "" },
     { name: "03-plan", status: "anthropic/claude-opus-4-8 · plan", cwd: "~/vibe-codr", blocks: plan.blocks, ...(plan.plan ? { plan: plan.plan } : {}), input: "/execute" },
     { name: "04-tasks", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: tasks.blocks, ...(tasks.tasks ? { tasks: tasks.tasks } : {}), ...(tasks.usage ? { usage: tasks.usage } : {}), context: { usedTokens: 84000, contextWindow: 200000 }, subagents: [{ id: "sa1", prompt: "audit catalog pricing", status: "running" }], goal: "ship the usage/cost footer", working: "⠹ Working… 2.4s  ·  esc to interrupt", input: "" },
-    { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", blocks: modelBlocks, input: "/model codex/gpt-5.1-codex", noRail: true },
+    { name: "05-models", status: "minimax/MiniMax-M1 · execute", cwd: "~/vibe-codr", blocks: modelBlocks, input: "/model codex/gpt-5.1-codex" },
     { name: "06-git", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/service", blocks: gitScene.blocks, ...(gitScene.usage ? { usage: gitScene.usage } : {}), ...(gitScene.context ? { context: gitScene.context } : {}), input: "" },
     { name: "07-permission", status: "anthropic/claude-opus-4-8 · execute · ask", cwd: "~/vibe-codr", blocks: perm.blocks, ...(perm.perm ? { perm: perm.perm } : {}), input: "y", inputHint: "approve once" },
-    { name: "08-sessions", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: sessBlocks, input: "vibecodr --resume ses_k3p9qz", noRail: true },
+    { name: "08-sessions", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: sessBlocks, input: "vibecodr --resume ses_k3p9qz" },
     { name: "09-menu", status: "anthropic/claude-opus-4-8 · execute", cwd: "~/vibe-codr", blocks: a.blocks, menu: menuBlock, input: "/" },
   ];
 }
@@ -802,7 +795,7 @@ function renderBlocks(scene: Scene, mc: string): string {
     switch (block.kind) {
       case "user":
         rows.push(
-          `<div class="userblock" style="border-left:3px solid ${mc}"><span class="prompt">❯ </span><span class="utext">${esc(block.text) || "&nbsp;"}</span></div>`,
+          `<div class="userblock" style="border-left:3px solid ${COLORS.primary}"><span class="prompt">❯ </span><span class="utext">${esc(block.text) || "&nbsp;"}</span></div>`,
         );
         break;
       case "assistant":
@@ -823,56 +816,39 @@ function renderBlocks(scene: Scene, mc: string): string {
 }
 
 /**
- * The context rail — stacked sections (tasks, subagents, changed files, then
- * session info last). Mirrors app.tsx: sections hide when empty, the task list
- * hides once everything's done, item text wraps, only the active item gets the
- * accent, and session info comes last so the work stays prominent up top.
+ * The status panels shown just above the input — the live task list, then any
+ * subagents. Mirrors app.tsx: each is a bordered panel, both hide when empty,
+ * the task panel hides once everything is done, only the in-progress item gets
+ * the accent, and item text wraps.
  */
-function renderRail(scene: Scene, mc: string): string {
-  const { model } = headerFromStatus(scene);
-  const out: string[] = [`<div class="rail">`];
+function renderPanels(scene: Scene, mc: string): string {
+  const out: string[] = [];
   const tasksActive = scene.tasks?.length && scene.tasks.some((t) => t.status !== "completed");
   if (tasksActive) {
     const done = scene.tasks!.filter((t) => t.status === "completed").length;
-    out.push(`<div class="railsec"><div class="railhead">Tasks  ${done}/${scene.tasks!.length}</div>`);
+    out.push(
+      `<div class="panel"><span class="panellabel" style="color:${mc}">Tasks · ${done}/${scene.tasks!.length}</span>`,
+    );
     for (const t of scene.tasks!) {
       const glyph = t.status === "completed" ? "✔" : t.status === "in_progress" ? "▶" : "○";
       const color = t.status === "completed" ? COLORS.dim : t.status === "in_progress" ? mc : COLORS.fg;
-      out.push(`<div class="railitem wrap" style="color:${color}">${glyph} ${esc(t.title)}</div>`);
+      out.push(`<div class="row wrap" style="color:${color}">${glyph} ${esc(t.title)}</div>`);
     }
     out.push(`</div>`);
   }
   if (scene.subagents?.length) {
-    out.push(`<div class="railsec"><div class="railhead">Subagents</div>`);
+    out.push(
+      `<div class="panel"><span class="panellabel" style="color:${mc}">Subagents · ${scene.subagents.length}</span>`,
+    );
     for (const s of scene.subagents) {
+      // ONE truncated line each (tap-to-expand in the live app); never wraps.
       const glyph = s.status === "running" ? "⠹" : "✔";
       const color = s.status === "running" ? mc : COLORS.dim;
-      out.push(`<div class="railitem wrap" style="color:${color}">${glyph} ${esc(s.prompt)}</div>`);
+      const oneLine = truncate(s.prompt.split("\n").find((l) => l.trim()) ?? s.prompt, 76);
+      out.push(`<div class="row nowrap" style="color:${color}">▸ ${glyph} ${esc(oneLine)}</div>`);
     }
     out.push(`</div>`);
   }
-  if (scene.changed?.length) {
-    out.push(`<div class="railsec"><div class="railhead">Changed</div>`);
-    for (const f of scene.changed) {
-      const counts = [
-        f.added ? `<span style="color:${COLORS.green}">+${f.added}</span>` : "",
-        f.removed ? `<span style="color:${COLORS.red}">-${f.removed}</span>` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      out.push(
-        `<div class="railfile"><span class="railpath">${esc(truncateLeft(f.path, 24))}</span><span class="railcounts">${counts}</span></div>`,
-      );
-    }
-    out.push(`</div>`);
-  }
-  out.push(`<div class="railsec"><div class="railhead">Session</div>`);
-  out.push(`<div class="railitem wrap" style="color:${COLORS.dim}">${esc(model)}</div>`);
-  const ctx = ctxSummary(scene.context);
-  if (ctx) out.push(`<div class="railitem" style="color:${COLORS.dim}">ctx ${esc(ctx)}</div>`);
-  if (scene.usage) out.push(`<div class="railitem" style="color:${COLORS.dim}">${esc(formatUsage(scene.usage))}</div>`);
-  if (scene.goal) out.push(`<div class="railitem wrap" style="color:${COLORS.dim}">★ ${esc(scene.goal)}</div>`);
-  out.push(`</div></div>`); // .railsec, .rail
   return out.join("\n");
 }
 
@@ -891,33 +867,20 @@ function headerFromStatus(scene: Scene): {
   const uiMode = mode === "plan" ? "plan" : approvals === "auto" ? "yolo" : "execute";
   return { model, uiMode };
 }
-const ssModeLabel = (m: string) =>
-  m === "plan" ? "◑ PLAN" : m === "execute" ? "▶ EXECUTE" : "⚡ YOLO";
 const ssModeColor = (m: string) =>
   m === "plan" ? COLORS.cyan : m === "yolo" ? COLORS.red : COLORS.primary;
 
 function renderFrame(scene: Scene): string {
   const { model, uiMode } = headerFromStatus(scene);
-  const label = ssModeLabel(uiMode);
   const mc = ssModeColor(uiMode);
-  const showRail = !scene.noRail;
-  // Listing layouts (no rail) keep model + goal in a second header row.
-  const headSecond = !showRail
-    ? `<div class="hrow"><span style="color:${COLORS.fg}">${esc(model)}</span>${scene.goal ? `<span class="dim">★ ${esc(scene.goal)}</span>` : ""}</div>`
-    : "";
-  const metrics = ssMetrics(scene);
-  const hints = "shift+tab mode · / commands · @file · click ▸ expand · esc interrupt";
-  const placeholder = "Ask vibe-codr…   @file · /help · /model &lt;id&gt; · /undo";
-  const body = showRail
-    ? `<div class="bodyrow">
-        <div class="transcript">
-${renderBlocks(scene, mc)}
-        </div>
-${renderRail(scene, mc)}
-      </div>`
-    : `<div class="transcript">
-${renderBlocks(scene, mc)}
-      </div>`;
+  const modeWord = uiMode === "execute" ? "ASK" : uiMode.toUpperCase();
+  const panels = renderPanels(scene, mc);
+  // Under-input status: left = cwd (· git); right = model · changed · ctx/cost.
+  const detailsRight = [model, ssChangedSummary(scene), ssMetrics(scene)]
+    .filter(Boolean)
+    .join("  ·  ");
+  const hints = "shift+tab mode · / commands · click ▸ expand";
+  const placeholder = "Send a message or type / to start";
   return `<!doctype html><html><head><meta charset="utf-8"><style>
   * { box-sizing: border-box; }
   body { margin: 0; background: #0d0d12; padding: 28px; }
@@ -932,25 +895,11 @@ ${renderBlocks(scene, mc)}
   .dot { width:12px; height:12px; border-radius:50%; }
   .title { color:${COLORS.dim}; margin-left:8px; font-size:12px; }
   .body { padding:16px 18px 14px; min-height: 400px; display:flex; flex-direction:column; }
-  .appheader { border-bottom:1px solid ${COLORS.border}; padding:2px 2px 12px; margin-bottom:14px; }
-  .hrow { display:flex; justify-content:space-between; align-items:center; }
-  .hrow + .hrow { margin-top:4px; }
-  .brandwrap { display:flex; align-items:center; }
-  .brand { color:${mc}; font-weight:700; }
-  .pill { background:${COLORS.elevated}; color:${mc}; font-weight:700; font-size:12px; padding:1px 9px; border-radius:5px; margin-left:12px; }
-  .dim { color:${COLORS.dim}; font-size:12px; }
-  .cwd { color:${COLORS.dim}; font-size:12px; }
-  .bodyrow { display:flex; flex:1; }
-  .transcript { flex:1; min-width:0; }
-  .rail { width:250px; flex-shrink:0; margin-left:16px; background:${COLORS.elevated}; border-radius:8px; padding:12px 14px; display:flex; flex-direction:column; gap:14px; align-self:flex-start; }
-  .railsec { display:flex; flex-direction:column; }
-  .railhead { color:${COLORS.fg}; font-weight:700; font-size:12px; margin-bottom:3px; }
-  .railitem { font-size:13px; }
-  .railitem.wrap { white-space:pre-wrap; word-break:break-word; }
-  .railfile { display:flex; justify-content:space-between; gap:8px; font-size:13px; }
-  .railpath { color:${COLORS.dim}; white-space:nowrap; overflow:hidden; }
-  .railcounts { flex-shrink:0; white-space:nowrap; }
+  .col { max-width:800px; width:100%; margin:0 auto; flex:1; display:flex; flex-direction:column; }
+  .transcript { flex:1; min-width:0; padding-top:4px; }
   .row { white-space:pre-wrap; word-break:break-word; }
+  .row.wrap { white-space:pre-wrap; word-break:break-word; }
+  .row.nowrap { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .assistant { margin-top:10px; }
   .mdh { font-weight:700; white-space:pre-wrap; }
   .mdli { white-space:pre-wrap; word-break:break-word; }
@@ -965,18 +914,22 @@ ${renderBlocks(scene, mc)}
   .utext { color:${COLORS.fg}; font-weight:700; white-space:pre-wrap; word-break:break-word; flex:1; }
   .working { color:${mc}; margin:8px 0 2px; }
   .planbox { border:1px solid ${mc}; border-radius:6px; padding:8px 12px; margin:10px 0; }
+  .panel { border:1px solid ${COLORS.border}; border-radius:6px; padding:8px 12px; margin:10px 0; position:relative; }
+  .panellabel { position:absolute; top:-9px; left:10px; background:${COLORS.bg}; padding:0 6px; font-size:11px; font-weight:700; }
   .permcard { border-left:3px solid ${COLORS.yellow}; background:${COLORS.panel}; padding:8px 12px; margin:10px 0; }
   .menubox { border:1px solid ${mc}; border-radius:6px; background:${COLORS.panel}; padding:6px 10px; margin:10px 0; position:relative; }
   .menubox .label { position:absolute; top:-9px; left:10px; background:${COLORS.bg}; padding:0 6px; font-size:11px; font-weight:700; color:${mc}; }
   .menurow { color:${COLORS.dim}; padding:0 6px; }
   .menurow.active { color:${mc}; background:${COLORS.selBg}; font-weight:700; }
   .menumore { color:${COLORS.dim}; padding:2px 6px 0; }
-  .inputwrap { margin-top:14px; border-left:3px solid ${mc}; background:${COLORS.elevated}; border-radius:0 6px 6px 0; padding:10px 12px; position:relative; display:flex; align-items:center; }
-  .prompt { color:${mc}; font-weight:700; flex-shrink:0; }
+  .inputbox { margin-top:14px; border:1px solid ${COLORS.primary}; border-radius:8px; padding:9px 12px; position:relative; display:flex; align-items:center; }
+  .modelabel { position:absolute; top:-9px; left:12px; background:${COLORS.bg}; padding:0 7px; font-size:11px; font-weight:700; letter-spacing:0.5px; }
+  .prompt { color:${COLORS.primary}; font-weight:700; flex-shrink:0; }
   .placeholder { color:${COLORS.dim}; }
   .typed { color:${COLORS.fg}; }
-  .cursor { background:${mc}; color:${COLORS.bg}; }
-  .footer { margin-top:8px; font-size:11px; color:${COLORS.dim}; display:flex; justify-content:space-between; gap:16px; }
+  .cursor { background:${COLORS.primary}; color:${COLORS.bg}; }
+  .status { margin-top:8px; font-size:11px; color:${COLORS.dim}; display:flex; justify-content:space-between; gap:16px; }
+  .status + .status { margin-top:2px; }
   .metrics { color:${COLORS.dim}; flex-shrink:0; }
   </style></head><body>
   <div class="term">
@@ -987,14 +940,10 @@ ${renderBlocks(scene, mc)}
       <div class="title">vibe-codr — ${esc(scene.cwd)}</div>
     </div>
     <div class="body">
-      <div class="appheader">
-        <div class="hrow">
-          <span class="brandwrap"><span class="brand">◆ vibe-codr</span><span class="pill">${label}</span></span>
-          <span class="cwd">${esc(scene.cwd)}</span>
-        </div>
-        ${headSecond}
-      </div>
-      ${body}${
+      <div class="col">
+      <div class="transcript">
+${renderBlocks(scene, mc)}
+      </div>${
         scene.working
           ? `\n      <div class="working">${esc(scene.working)}</div>`
           : ""
@@ -1005,7 +954,7 @@ ${renderBlocks(scene, mc)}
         <div class="row" style="color:${COLORS.dim};margin-top:6px">Shift+Tab to execute, or /execute to proceed.</div>
       </div>`
           : ""
-      }${
+      }${panels ? `\n      ${panels}` : ""}${
         scene.perm
           ? `\n      <div class="permcard">
         <div class="row" style="color:${COLORS.yellow};font-weight:700">⚠ permission required · ${esc(scene.perm.toolName)}</div>
@@ -1026,14 +975,17 @@ ${scene.menu.rows
       </div>`
           : ""
       }
-      <div class="inputwrap">
-        <span class="prompt">❯ </span>${
+      <div class="inputbox" style="border-color:${COLORS.primary}">
+        <span class="modelabel" style="color:${mc}">${modeWord}</span>
+        ${
           scene.input
             ? `<span class="typed">${esc(scene.input)}</span><span class="cursor">&nbsp;</span>`
             : `<span class="placeholder">${placeholder}</span>`
         }
       </div>
-      <div class="footer"><span>${hints}</span>${metrics ? `<span class="metrics">${esc(metrics)}</span>` : ""}</div>
+      <div class="status"><span>${esc(scene.cwd)}</span>${detailsRight ? `<span class="metrics">${esc(detailsRight)}</span>` : ""}</div>
+      <div class="status"><span>${hints}</span>${scene.goal ? `<span class="metrics">★ ${esc(scene.goal)}</span>` : ""}</div>
+      </div>
     </div>
   </div>
   </body></html>`;

@@ -9,34 +9,44 @@
  * version, and keep `packages/core/scripts/screenshot.ts` in lockstep with any
  * visible change here (that script mirrors this render for the README shots).
  *
- * Layout: a slim status bar on top, a two-column body (scrolling transcript +
- * a right "context rail" with tasks/subagents/usage), and the input affordances
- * below. Assistant text renders through OpenTUI's native <markdown> renderable
- * (NOT a hand-rolled ANSI string — embedding raw escape codes in a <text> made
- * the renderer miscount widths and garble long streamed replies). Tool and diff
- * output is condensed to one line and expands on click.
+ * Layout: a single, centered, capped-width chat column (ChatGPT-style, no
+ * sidebar) on a black background. There is NO top header — a fresh screen shows a
+ * centered VIBE CODR wordmark; once you start, the column is: the scrolling
+ * transcript, the live status panels (working · plan · tasks · subagents ·
+ * permission · command-menu), the input (whose top border doubles as the mode
+ * break, e.g. `━━ ▶ EXECUTE ━━`), and a two-line status block UNDER the input
+ * (cwd · git / model · changed · ctx · cost — plus hints + goal). The column is
+ * centered by two flex-grow gutter boxes, so it fills a narrow terminal and gets
+ * quiet side margins on a wide one. Assistant text renders through OpenTUI's
+ * native <markdown> renderable (NOT a hand-rolled ANSI string — embedding raw
+ * escape codes in a <text> made the renderer miscount widths and garble long
+ * streamed replies). Tool and diff output is condensed to one line and expands on
+ * click; tapping your own message folds the whole turn under it.
  */
 
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
-import type { EngineClient, GitInfo, SessionUsage, Task, UIEvent } from "@vibe/shared";
+import type { EngineClient, GitInfo, JobInfo, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
 import { applyPalette, isExactCommand, PALETTE_COMMANDS, paletteState } from "./commands-catalog.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH } from "./headless.ts";
-import { commandsForUiMode, deriveUiMode, modeColor, modeLabel, nextUiMode } from "./modes.ts";
+import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
 import { toolLabel } from "./tool-icons.ts";
 
-/** Width of the right context rail and the terminal width it needs to appear.
- * The rail scrolls and pins the session footer, so it never overflows — no row
- * caps needed (cf. opencode's sidebar). */
-const RAIL_WIDTH = 34;
-const RAIL_MIN_COLS = 96;
+/** The chat column's maximum width. At or below this the column fills the
+ * terminal; above it the column stays centered with quiet side gutters
+ * (ChatGPT-style — a readable, bounded conversation measure). */
+const CONTENT_MAX = 96;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
+/** The wordmark is rendered with OpenTUI's native ASCII-font renderable
+ * (`<ascii_font font="slick">`) in the brand color — see the empty-state splash. */
+/** Min column width to show the big wordmark (else a compact brand line). */
+const LOGO_MIN_COLS = 56;
 
 /**
  * One block in the transcript. The transcript is append-only: positions never
@@ -57,11 +67,13 @@ type Block =
       collapsed: boolean;
       /** Output is a unified diff → color +/- lines when expanded. */
       isDiff: boolean;
+      /** Output is markdown prose (a subagent's reply) → render via <markdown>. */
+      isMarkdown?: boolean;
       isError: boolean;
     }
   | { kind: "notice"; id: number; text: string };
 
-/** A subagent shown in the context rail while it runs and after it finishes. */
+/** A subagent shown in the Subagents panel while it runs and after it finishes. */
 interface Subagent {
   id: string;
   prompt: string;
@@ -70,7 +82,7 @@ interface Subagent {
   result?: string;
 }
 
-/** A file edited this session, with its cumulative line delta (rail "Changed"). */
+/** A file edited this session, with its cumulative line delta (footer summary). */
 interface ChangedFile {
   path: string;
   added: number;
@@ -89,10 +101,15 @@ export function App(props: { engine: EngineClient }) {
   const [draft, setDraft] = createSignal("");
   const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
   const [subagents, setSubagents] = createSignal<Subagent[]>([]);
-  // Working-tree git state for the rail's "Git" section (undefined outside a repo).
+  // Working-tree git state for the header's git context (undefined outside a repo).
   const [git, setGit] = createSignal<GitInfo | undefined>(snap.git);
-  // Turns (assistant block ids) whose tool/notice output is folded away — click
-  // a message to fold its work, or Ctrl+O to fold/unfold every turn at once.
+  // Background shell jobs (+ detected localhost servers); the `/jobs` sub-view
+  // toggles `showJobs` to display them.
+  const [jobs, setJobs] = createSignal<JobInfo[]>([]);
+  const [showJobs, setShowJobs] = createSignal(false);
+  // Turns (keyed by the user message that starts them) whose work is folded away
+  // — tap your message to collapse the whole exchange under it (assistant reply +
+  // tool work), or Ctrl+O to fold/unfold every turn at once.
   const [collapsedTurns, setCollapsedTurns] = createSignal<Set<number>>(new Set());
   const toggleTurn = (turn: number) =>
     setCollapsedTurns((prev) => {
@@ -100,37 +117,46 @@ export function App(props: { engine: EngineClient }) {
       next.has(turn) ? next.delete(turn) : next.add(turn);
       return next;
     });
-  // Owning assistant turn for each tool/notice block, computed by POSITION (the
-  // nearest preceding assistant message in the transcript) rather than emission
-  // order — so clicking a message always folds the work shown beneath it, even
-  // when a tool was emitted before the assistant's first text. Tools before any
-  // assistant text in a turn stay unowned (nothing above to fold them under).
+  // A turn is anchored by its user message; every block after it (until the next
+  // user message) belongs to that turn. `turnKey` maps any block id → its turn's
+  // user-message id, and `counts` is how many non-user blocks each turn has — so
+  // tapping a user message can fold (and count) its whole exchange.
   const grouping = createMemo(() => {
-    const owner = new Map<number, number>(); // block id → owning assistant id
-    const counts = new Map<number, number>(); // assistant id → foldable child count
+    const turnKey = new Map<number, number>(); // block id → turn's user-message id
+    const counts = new Map<number, number>(); // user id → # of non-user blocks
     let cur = -1;
     for (const b of blocks()) {
-      if (b.kind === "user") cur = -1;
-      else if (b.kind === "assistant") cur = b.id;
-      else if ((b.kind === "tool" || b.kind === "notice") && cur >= 0) {
-        owner.set(b.id, cur);
+      if (b.kind === "user") {
+        cur = b.id;
+        turnKey.set(b.id, b.id);
+      } else if (cur >= 0) {
+        turnKey.set(b.id, cur);
         counts.set(cur, (counts.get(cur) ?? 0) + 1);
       }
     }
-    return { owner, counts };
+    return { turnKey, counts };
   });
-  const turnChildCount = (assistantId: number) => grouping().counts.get(assistantId) ?? 0;
-  // A tool/notice block is hidden when its owning message's turn is folded.
+  const turnItemCount = (userId: number) => grouping().counts.get(userId) ?? 0;
+  // A non-user block is hidden when its turn (its user message) is folded.
   const isHidden = (blockId: number) => {
-    const o = grouping().owner.get(blockId);
-    return o !== undefined && collapsedTurns().has(o);
+    const k = grouping().turnKey.get(blockId);
+    return k !== undefined && collapsedTurns().has(k);
   };
-  // Ctrl+O: fold every turn that has foldable work, or unfold all if any is folded.
+  // Ctrl+O: fold every turn that has work, or unfold all if any is folded.
   const toggleAllTurns = () =>
     setCollapsedTurns((prev) =>
       prev.size > 0 ? new Set() : new Set(grouping().counts.keys()),
     );
-  // Files touched this session (path → cumulative line delta), shown in the rail.
+  // Subagent rows the user has expanded (one truncated line each by default, so a
+  // big fan-out stays tidy unless you open a row).
+  const [expandedSubs, setExpandedSubs] = createSignal<Set<string>>(new Set());
+  const toggleSub = (id: string) =>
+    setExpandedSubs((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  // Files touched this session (path → cumulative line delta), summarized in the footer.
   const [changedFiles, setChangedFiles] = createSignal<ChangedFile[]>([]);
   const [plan, setPlan] = createSignal<string | null>(null);
   const [queued, setQueued] = createSignal(0);
@@ -184,32 +210,34 @@ export function App(props: { engine: EngineClient }) {
   const [headModel, setHeadModel] = createSignal(model);
   // Live "ctx N% · tokens · $cost · N queued" — shown in the footer when relevant.
   const [metrics, setMetrics] = createSignal(metricsLine(0, usage, ctx));
-  // Rail-only projections of the live status (the header stays minimal).
-  const [ctxInfo, setCtxInfo] = createSignal(ctxSummary(ctx));
-  const [usageInfo, setUsageInfo] = createSignal(usage.totalTokens > 0 ? formatUsage(usage) : "");
+  // The goal (★) shown in the header's second row; updated via /goal.
   const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
   const cwd = shortCwd();
-  // One configurable accent hue (lavender by default, set via `/accent` or the
-  // `accentColor` config) is shown across the whole UI — header, rail, working
-  // line, user bars, plan box, menu. Surfaces are charcoal and text monochrome;
+  // One configurable accent hue (orange-red `#ff3503` by default, set via `/accent`
+  // or the `accentColor` config) is shown across the chrome — wordmark, input
+  // frame, working line, user gutter, plan box, menu. Surfaces are charcoal, text
+  // monochrome;
   // green/red appear only on diffs, amber only on warnings.
   const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
   const brand = () => accentColor() || palette().primary;
-  // The active mode recolors ONLY the input border line and the header mode pill
-  // (plan cyan / execute lavender / yolo red); nothing else tracks the mode.
+  // The active mode recolors ONLY the input's top-border TITLE (the mode word):
+  // plan cyan / execute brand / yolo red. The input border itself stays brand
+  // (purple), matching the command-menu box and the rest of the chrome.
   const accent = () => modeColor(uiMode(), palette());
   // Every invocable slash name (built-ins + custom commands + skills) from the
   // engine snapshot, plus the static palette as a floor. When the draft matches
-  // one exactly, the input shifts to the green "recognized" hue as an instant
-  // registered cue (a timed pulse could layer on later via `tick()`); otherwise
-  // it stays the mode accent.
+  // one exactly, the input border shifts to the green "recognized" hue as an
+  // instant registered cue; otherwise it stays the brand (purple).
   const commandNames = new Set(
     [...PALETTE_COMMANDS.map((c) => c.name), ...(snap.commandNames ?? [])].map((n) =>
       n.toLowerCase(),
     ),
   );
   const inputAccent = () =>
-    isExactCommand(draft(), commandNames) ? palette().subagent : accent();
+    isExactCommand(draft(), commandNames) ? palette().subagent : brand();
+  // The mode word shown on the input's top border. "execute" means "every action
+  // is gated by an approval prompt", so it reads as ASK (vs YOLO = no prompts).
+  const modeWord = () => (uiMode() === "execute" ? "ASK" : uiMode().toUpperCase());
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -220,10 +248,11 @@ export function App(props: { engine: EngineClient }) {
     mdStyle = undefined;
   }
 
-  // The context rail only appears when the terminal is wide enough to keep the
-  // transcript readable; otherwise tasks fall back to a bottom panel.
+  // The chat column is centered with a capped width (ChatGPT-style): it fills a
+  // narrow terminal and gets quiet side gutters on a wide one. Reads the live
+  // terminal width so the column reflows on resize.
   const dims = useTerminalDimensions();
-  const showRail = () => dims().width >= RAIL_MIN_COLS;
+  const contentWidth = () => Math.min(CONTENT_MAX, Math.max(1, dims().width - 2));
 
   // Slash-command menu: derives from the draft, so it opens/filters as you type.
   const menu = () => paletteState(draft());
@@ -295,8 +324,6 @@ export function App(props: { engine: EngineClient }) {
     setUiMode(deriveUiMode(mode, approvals));
     setHeadModel(model);
     setMetrics(metricsLine(queued(), usage, ctx));
-    setCtxInfo(ctxSummary(ctx));
-    setUsageInfo(usage.totalTokens > 0 ? formatUsage(usage) : "");
     setGoalInfo(goal);
   };
   // Resolve the oldest pending permission and drop it from the queue.
@@ -334,6 +361,12 @@ export function App(props: { engine: EngineClient }) {
     if (key.ctrl && key.name === "o") {
       key.preventDefault?.();
       toggleAllTurns();
+      return;
+    }
+    // Esc closes the /jobs sub-view first (before it interrupts a turn).
+    if (key.name === "escape" && showJobs()) {
+      key.preventDefault?.();
+      setShowJobs(false);
       return;
     }
     const st = menu();
@@ -424,8 +457,9 @@ export function App(props: { engine: EngineClient }) {
             setWorking(true);
             break;
           case "assistant-text-delta":
-            // Subagent deltas (they carry a subagentId) are summarized in the rail,
-            // not streamed into the parent transcript; empty deltas are no-ops.
+            // Subagent deltas (they carry a subagentId) are summarized in the
+            // Subagents panel, not streamed into the parent transcript; empty
+            // deltas are no-ops.
             if (event.subagentId || !event.delta) break;
             // Append to the in-flight reply IMMUTABLY: replace its block object so
             // <Index> sees a changed value and re-renders just that row. The first
@@ -455,6 +489,10 @@ export function App(props: { engine: EngineClient }) {
             if (event.subagentId) break; // subagent tools don't enter the transcript
             finalizeAssistant();
             const label = toolLabel(event.toolName, event.input);
+            // Subagent replies and web-search results are markdown — render them
+            // (headers, bold, lists, tables) when expanded instead of raw lines.
+            const isMarkdown =
+              event.toolName === "spawn_subagent" || event.toolName === "web_search";
             setBlocks((prev) => {
               const next = [
                 ...prev,
@@ -463,8 +501,11 @@ export function App(props: { engine: EngineClient }) {
                   id: newId(),
                   label,
                   output: [] as string[],
-                  collapsed: true,
+                  // A subagent reply opens expanded (it's the answer); other tools
+                  // (incl. web_search) stay condensed to one line until clicked.
+                  collapsed: event.toolName !== "spawn_subagent",
                   isDiff: false,
+                  isMarkdown,
                   isError: false,
                 },
               ];
@@ -506,7 +547,7 @@ export function App(props: { engine: EngineClient }) {
             const verb = event.action === "write" ? "wrote" : "edited";
             const header = `${GLYPH.file} ${verb} ${event.path}  +${event.added} -${event.removed}`;
             const lines = event.diff ? event.diff.split("\n") : [];
-            // Track the file in the rail's "Changed" section (cumulative delta).
+            // Track the file for the footer's changed-file summary (cumulative delta).
             setChangedFiles((prev) => {
               const i = prev.findIndex((f) => f.path === event.path);
               if (i >= 0) {
@@ -604,6 +645,9 @@ export function App(props: { engine: EngineClient }) {
           case "git-updated":
             setGit(event.git);
             break;
+          case "jobs-changed":
+            setJobs(event.jobs);
+            break;
           case "turn-finished":
           case "session-idle":
             // The turn ended — finalize the reply, drop per-turn maps, stop the
@@ -642,6 +686,12 @@ export function App(props: { engine: EngineClient }) {
       props.engine.send({ type: "shutdown" });
       process.exit(0);
     }
+    // `/jobs` toggles the background-jobs sub-view (running shell commands +
+    // detected localhost servers). Handled locally — no engine round-trip.
+    if (text === "/jobs") {
+      setShowJobs((v) => !v);
+      return;
+    }
     // While permission prompts are pending, a typed reply answers the oldest.
     if (perms().length > 0) {
       answerPerm(parsePermissionDecision(text));
@@ -673,6 +723,38 @@ export function App(props: { engine: EngineClient }) {
   // intercepts Enter instead, so this runs only for prompts / typed commands.
   const submit = (value?: string) => runText(value ?? draft());
 
+  // The status details sit UNDER the input now (ChatGPT-style), cleanly split:
+  // left = cwd · git; right = model · changed-files · ctx/usage/cost.
+  const gitSummary = () => {
+    const g = git();
+    if (!g) return "";
+    let s = `⎇ ${g.branch}`;
+    if (g.dirty > 0) s += ` ${g.dirty}●`;
+    if (g.ahead > 0 || g.behind > 0) s += ` ↑${g.ahead} ↓${g.behind}`;
+    if (g.worktree) s += " ⌂";
+    return s;
+  };
+  const changedSummary = () => {
+    const fs = changedFiles();
+    if (fs.length === 0) return "";
+    const added = fs.reduce((s, f) => s + f.added, 0);
+    const removed = fs.reduce((s, f) => s + f.removed, 0);
+    const delta = [added > 0 ? `+${added}` : "", removed > 0 ? `-${removed}` : ""]
+      .filter(Boolean)
+      .join(" ");
+    return `${GLYPH.file} ${fs.length} file${fs.length === 1 ? "" : "s"}${delta ? ` ${delta}` : ""}`;
+  };
+  const detailsLeft = () => [cwd, gitSummary()].filter(Boolean).join("  ·  ");
+  const detailsRight = () =>
+    [headModel(), changedSummary(), metrics()].filter(Boolean).join("  ·  ");
+  const runningJobs = () => jobs().filter((j) => j.status === "running").length;
+  // Key hints; advertise `/jobs` only while background jobs are actually running.
+  const hintsText = () => {
+    const base = "shift+tab mode · / commands · click ▸ expand";
+    const n = runningJobs();
+    return n > 0 ? `${base} · ${n} job${n === 1 ? "" : "s"} running (/jobs)` : base;
+  };
+
   return (
     <box
       flexDirection="row"
@@ -680,49 +762,131 @@ export function App(props: { engine: EngineClient }) {
       style={{ height: "100%" }}
       onMouseDown={refocusInput}
     >
-      {/* LEFT column — header, the scrolling transcript, and every input
-          affordance. The context rail is a full-height sibling to the right, so
-          the input bar shrinks to this column's width instead of spanning the
-          whole terminal. */}
-      <box flexDirection="column" flexGrow={1} padding={1}>
-      {/* Header — only on NARROW terminals, where the rail is hidden. When the
-          rail is shown, the brand, mode pill, cwd, model and goal all live in the
-          rail's identity block instead, so there's no black header strip here. */}
-      <Show when={!showRail()}>
-        <box
-          flexDirection="column"
-          flexShrink={0}
-          border={["bottom"]}
-          borderColor={palette().border}
-          paddingBottom={1}
-        >
-          <box flexDirection="row" justifyContent="space-between">
-            <box flexDirection="row">
-              <text fg={brand()} attributes={TextAttributes.BOLD}>
-                {"◆ vibe-codr"}
-              </text>
-              <text fg={palette().muted}>{"   "}</text>
-              <text
-                fg={accent()}
-                bg={palette().elevated}
-                attributes={TextAttributes.BOLD}
-              >{` ${modeLabel(uiMode())} `}</text>
-            </box>
-            <text fg={palette().muted}>{cwd}</text>
-          </box>
-          <box flexDirection="row" justifyContent="space-between">
-            <text fg={palette().assistant}>{headModel()}</text>
-            <Show when={goalInfo()}>
-              <text fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", 32)}`}</text>
-            </Show>
-          </box>
-        </box>
-      </Show>
+      {/* Left gutter — black backdrop that centers the chat column. */}
+      <box flexGrow={1} flexShrink={1} />
 
-      {/* Body — the scrolling transcript. The context rail is a sibling of this
-          whole column (see below), not of the transcript, so it runs full-height.
-          No top margin when the rail carries the header (transcript starts at top). */}
-      <box flexDirection="column" flexGrow={1} marginTop={showRail() ? 0 : 1}>
+      {/* The chat column — one centered, capped-width conversation column. No top
+          bar: the brand is the centered splash, and the live details sit under the
+          input. Everything else (transcript, status panels, input) lives here. */}
+      <box flexDirection="column" width={contentWidth()} flexShrink={0} padding={1}>
+      {/* Body — the /jobs sub-view when open; otherwise a centered VIBE CODR splash
+          on a fresh screen, or the scrolling transcript once the chat starts. */}
+      <box flexDirection="column" flexGrow={1}>
+        {/* /jobs sub-view: running shell commands + detected localhost servers, in
+            place of the transcript. Esc or /jobs closes it. */}
+        <Show when={showJobs()}>
+          <box flexDirection="column" flexGrow={1}>
+            <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+              {`Background jobs · ${jobs().length}`}
+            </text>
+            <text flexShrink={0} fg={palette().muted}>
+              {"running shell commands + any localhost servers · esc or /jobs to close"}
+            </text>
+            <scrollbox
+              flexGrow={1}
+              flexShrink={1}
+              scrollY
+              contentOptions={{ flexDirection: "column", gap: 1 }}
+              scrollbarOptions={{ visible: false }}
+            >
+              <Show
+                when={jobs().length > 0}
+                fallback={
+                  <text fg={palette().muted} wrapMode="word" marginTop={1}>
+                    {"No background jobs yet — start a long-running command (a dev server, watcher, or build) with the bash tool's background mode and it'll appear here with any localhost URL it prints."}
+                  </text>
+                }
+              >
+                <For each={jobs()}>
+                  {(j) => {
+                    const c = () =>
+                      j.status === "running"
+                        ? brand()
+                        : j.status === "killed"
+                          ? palette().del
+                          : palette().muted;
+                    return (
+                      <box flexDirection="column">
+                        <box flexDirection="row" gap={1}>
+                          <text flexShrink={0} fg={c()}>
+                            {j.status === "running"
+                              ? spinnerFrame(tick())
+                              : j.status === "killed"
+                                ? GLYPH.warn
+                                : GLYPH.check}
+                          </text>
+                          <text flexGrow={1} wrapMode="word" fg={palette().assistant}>{j.command}</text>
+                          <text flexShrink={0} fg={palette().muted}>
+                            {j.status === "running"
+                              ? j.pid
+                                ? `pid ${j.pid}`
+                                : "running"
+                              : `${j.status} ${j.exitCode ?? ""}`.trim()}
+                          </text>
+                        </box>
+                        <For each={j.servers}>
+                          {(url) => <text fg={palette().tool}>{`    → ${url}`}</text>}
+                        </For>
+                        <For each={j.outputTail.split("\n").filter(Boolean).slice(-4)}>
+                          {(line) => (
+                            <text fg={palette().muted} wrapMode="none">
+                              {`    ${truncate(line, Math.max(20, contentWidth() - 8))}`}
+                            </text>
+                          )}
+                        </For>
+                      </box>
+                    );
+                  }}
+                </For>
+              </Show>
+            </scrollbox>
+          </box>
+        </Show>
+        <Show when={!showJobs()}>
+        <Show
+          when={blocks().length > 0}
+          fallback={
+            // Vertically centered by the top/bottom flex-grow spacers. The
+            // wordmark and the tips are EACH in their own horizontally-centered
+            // row, so the wordmark is centered to the screen (not left-aligned
+            // against the wider tip lines, which read as off-center).
+            <box flexDirection="column" flexGrow={1}>
+              <box flexGrow={1} />
+              <box flexDirection="row">
+                <box flexGrow={1} />
+                <box flexDirection="column" flexShrink={0}>
+                  <Show
+                    when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 16}
+                    fallback={
+                      <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ VIBE CODR"}</text>
+                    }
+                  >
+                    {/* Native ASCII-font wordmark — a sleek rounded face in the
+                        brand color (orange-red by default; tracks /accent). */}
+                    <ascii_font text="VIBE CODR" font="slick" color={brand()} />
+                  </Show>
+                </box>
+                <box flexGrow={1} />
+              </box>
+              <box flexDirection="row" marginTop={1}>
+                <box flexGrow={1} />
+                <box flexDirection="column" flexShrink={0}>
+                  <text fg={palette().muted}>
+                    {"Your model-agnostic coding agent — plan · execute · yolo."}
+                  </text>
+                  <text fg={palette().muted} marginTop={1}>
+                    {"Try:  explain this codebase  ·  fix the failing test  ·  add a --json flag"}
+                  </text>
+                  <text fg={palette().muted}>
+                    {"Shift+Tab switches mode · @file attaches · / opens commands"}
+                  </text>
+                </box>
+                <box flexGrow={1} />
+              </box>
+              <box flexGrow={1} />
+            </box>
+          }
+        >
         <scrollbox
           ref={(el: typeof scrollEl) => (scrollEl = el)}
           flexGrow={1}
@@ -733,22 +897,6 @@ export function App(props: { engine: EngineClient }) {
           contentOptions={{ flexDirection: "column" }}
           scrollbarOptions={{ visible: false }}
         >
-          <Show when={blocks().length === 0}>
-            <box flexDirection="column" paddingLeft={1}>
-              <text fg={brand()} attributes={TextAttributes.BOLD}>
-                {"◆ vibe-codr"}
-              </text>
-              <text fg={palette().muted}>
-                {"Your model-agnostic coding agent — plan, execute, or yolo."}
-              </text>
-              <text fg={palette().muted}>
-                {"Try:  explain this codebase  ·  fix the failing test  ·  add a --json flag"}
-              </text>
-              <text fg={palette().muted}>
-                {"Shift+Tab switches mode · @file attaches · / opens commands"}
-              </text>
-            </box>
-          </Show>
           {/* <Index> keys by position (stable, append-only). A block's `kind`
               is immutable for its lifetime — the file-changed fold mutates a
               tool block in place (tool→tool) but never changes kind — so the
@@ -758,43 +906,57 @@ export function App(props: { engine: EngineClient }) {
               <Show
                 when={block().kind !== "user"}
                 fallback={
-                  // Signature user turn: the SAME raised frame as the input bar
-                  // (heavy accent gutter, elevated surface, prompt caret) so your
-                  // sent messages and the place you type read as one element.
+                  // Your turn: the SAME raised frame as the input bar. TAP it to
+                  // fold the whole exchange under it (reply + tool work), leaving
+                  // just your message + an expand affordance. Tap again to reopen.
                   <box
-                    border={["left"]}
-                    borderStyle="heavy"
-                    borderColor={brand()}
-                    backgroundColor={palette().elevated}
-                    flexDirection="row"
+                    flexDirection="column"
                     marginTop={1}
-                    paddingLeft={1}
-                    paddingRight={1}
-                    paddingTop={1}
-                    paddingBottom={1}
+                    onMouseDown={() => {
+                      const id = (block() as { id: number }).id;
+                      if (turnItemCount(id) > 0) anchoredToggle(() => toggleTurn(id));
+                    }}
                   >
-                    <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                      {"❯ "}
-                    </text>
-                    <text flexGrow={1} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
-                      {block().text}
-                    </text>
+                    <box
+                      border={["left"]}
+                      borderStyle="heavy"
+                      borderColor={brand()}
+                      backgroundColor={palette().elevated}
+                      flexDirection="row"
+                      paddingLeft={1}
+                      paddingRight={1}
+                      paddingTop={1}
+                      paddingBottom={1}
+                    >
+                      <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                        {"❯ "}
+                      </text>
+                      <text flexGrow={1} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
+                        {block().text}
+                      </text>
+                    </box>
+                    <Show
+                      when={
+                        turnItemCount((block() as { id: number }).id) > 0 &&
+                        collapsedTurns().has((block() as { id: number }).id)
+                      }
+                    >
+                      <text fg={palette().muted} paddingLeft={1}>
+                        {`▸ ${turnItemCount((block() as { id: number }).id)} item${turnItemCount((block() as { id: number }).id) === 1 ? "" : "s"} hidden · tap to expand`}
+                      </text>
+                    </Show>
                   </box>
                 }
               >
-                {/* assistant / tool / notice. An assistant message is a click
-                    target: clicking folds its turn's tool/notice work away
-                    (leaving just the prose), with a "N steps hidden" affordance. */}
-                <Show when={block().kind === "assistant"}>
+                {/* assistant / tool / notice — all hidden when their turn (the
+                    user message above) is folded. Folding is driven from the user
+                    message, so these are not themselves click targets. */}
+                <Show when={block().kind === "assistant" && !isHidden((block() as { id: number }).id)}>
                   <box
                     id={`msg-${(block() as { id: number }).id}`}
                     flexDirection="column"
                     marginTop={(block() as { gap: boolean }).gap ? 1 : 0}
                     paddingLeft={1}
-                    onMouseDown={() => {
-                      const id = (block() as { id: number }).id;
-                      if (turnChildCount(id) > 0) anchoredToggle(() => toggleTurn(id));
-                    }}
                   >
                     <AssistantText
                       text={(block() as { text: string }).text}
@@ -802,19 +964,13 @@ export function App(props: { engine: EngineClient }) {
                       style={mdStyle}
                       fg={palette().assistant}
                     />
-                    <Show when={turnChildCount((block() as { id: number }).id) > 0}>
-                      <text fg={palette().muted}>
-                        {collapsedTurns().has((block() as { id: number }).id)
-                          ? `▸ ${turnChildCount((block() as { id: number }).id)} step${turnChildCount((block() as { id: number }).id) === 1 ? "" : "s"} hidden`
-                          : "▾"}
-                      </text>
-                    </Show>
                   </box>
                 </Show>
                 <Show when={block().kind === "tool" && !isHidden((block() as { id: number }).id)}>
                   <ToolBlockView
                     block={block as () => Extract<Block, { kind: "tool" }>}
                     palette={palette()}
+                    style={mdStyle}
                     onToggle={(id) => anchoredToggle(() => toggle(id))}
                   />
                 </Show>
@@ -827,6 +983,8 @@ export function App(props: { engine: EngineClient }) {
             )}
           </Index>
         </scrollbox>
+        </Show>
+        </Show>
       </box>
 
       {/* Live working indicator — braille spinner + elapsed, hidden while a
@@ -857,8 +1015,9 @@ export function App(props: { engine: EngineClient }) {
           <text fg={palette().muted}>Shift+Tab to execute, or /execute to proceed.</text>
         </box>
       </Show>
-      {/* Tasks fallback for narrow terminals (no rail). */}
-      <Show when={!showRail() && tasks().length > 0}>
+      {/* Tasks — the live to-do list, just above the input; hides once everything
+          is done so a finished list doesn't linger. */}
+      <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
         <box
           border
           borderColor={palette().border}
@@ -871,19 +1030,67 @@ export function App(props: { engine: EngineClient }) {
           paddingRight={1}
         >
           <For each={tasks()}>
-            {(task) => (
-              <text
-                fg={
-                  task.status === "completed"
-                    ? palette().muted
-                    : task.status === "in_progress"
-                      ? brand()
-                      : palette().assistant
-                }
-              >
-                {`${TASK_GLYPH[task.status]} ${task.title}`}
-              </text>
-            )}
+            {(task) => {
+              const c = () =>
+                task.status === "completed"
+                  ? palette().muted
+                  : task.status === "in_progress"
+                    ? brand()
+                    : palette().assistant;
+              return (
+                <box flexDirection="row" gap={1}>
+                  <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
+                  <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
+                </box>
+              );
+            }}
+          </For>
+        </box>
+      </Show>
+      {/* Subagents — live fan-out. ONE truncated line each by default (so a big
+          fan-out stays tidy and never fills the screen); tap a row to expand its
+          full prompt + result (bounded), tap again to collapse. Cleared per turn. */}
+      <Show when={subagents().length > 0}>
+        <box
+          border
+          borderColor={palette().border}
+          title={`Subagents · ${subagents().length}`}
+          titleColor={brand()}
+          flexDirection="column"
+          flexShrink={0}
+          marginTop={1}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <For each={subagents()}>
+            {(s) => {
+              const open = () => expandedSubs().has(s.id);
+              const fg = () => (s.status === "running" ? brand() : palette().muted);
+              const oneLine = () =>
+                truncate(firstLine(s.prompt) ?? s.prompt, Math.max(24, contentWidth() - 14));
+              return (
+                <box flexDirection="column" onMouseDown={() => toggleSub(s.id)}>
+                  <box flexDirection="row" gap={1}>
+                    <text flexShrink={0} fg={palette().muted}>{open() ? "▾" : "▸"}</text>
+                    <text flexShrink={0} fg={fg()}>
+                      {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
+                    </text>
+                    <Show
+                      when={open()}
+                      fallback={<text flexGrow={1} wrapMode="none" fg={fg()}>{oneLine()}</text>}
+                    >
+                      {/* Bounded so an expanded row can't run off the screen. */}
+                      <text flexGrow={1} wrapMode="word" fg={fg()}>{truncate(s.prompt, 700)}</text>
+                    </Show>
+                  </box>
+                  <Show when={open() && s.result}>
+                    <text fg={palette().muted} wrapMode="word">
+                      {`    ${GLYPH.result} ${truncate(s.result ?? "", 300)}`}
+                    </text>
+                  </Show>
+                </box>
+              );
+            }}
           </For>
         </box>
       </Show>
@@ -943,25 +1150,22 @@ export function App(props: { engine: EngineClient }) {
           </Show>
         </box>
       </Show>
-      {/* Text input — a raised, clearly-bounded field. The heavy left bar and the
-          prompt caret are the only accent here; the surface is one elevated tone
-          so it reads as "type here" without a bright highlight bar. */}
+      {/* Text input — just the brand border with the mode word on the top edge and
+          the text inside, on the black backdrop (NO fill): the box sets no
+          background and the input is transparent, so there's no grey surface at all.
+          The border flips green while a recognized /command is drafted; the mode word
+          carries the mode color (execute brand · plan cyan · yolo red). */}
       <box
-        border={["left"]}
-        borderStyle="heavy"
+        border
         borderColor={inputAccent()}
-        backgroundColor={palette().elevated}
+        title={` ${modeWord()} `}
+        titleColor={uiMode() === "execute" ? brand() : accent()}
         flexDirection="row"
         flexShrink={0}
         marginTop={1}
         paddingLeft={1}
         paddingRight={1}
-        paddingTop={1}
-        paddingBottom={1}
       >
-        <text fg={brand()} attributes={TextAttributes.BOLD}>
-          {"❯ "}
-        </text>
         <input
           ref={(el: { focus: () => void }) => (inputEl = el)}
           focused
@@ -969,179 +1173,34 @@ export function App(props: { engine: EngineClient }) {
           value={draft()}
           onInput={(v: string) => setDraft(v)}
           onSubmit={submit}
-          placeholder="Ask vibe-codr…   @file · /help · /model <id> · /undo"
-          backgroundColor={palette().elevated}
-          focusedBackgroundColor={palette().elevated}
+          placeholder="Send a message or type / to start"
+          // Transparent — no fill, just the bordered frame + text on black.
+          backgroundColor="transparent"
+          focusedBackgroundColor="transparent"
           textColor={palette().assistant}
           focusedTextColor={palette().assistant}
           placeholderColor={palette().muted}
           cursorColor={brand()}
         />
       </box>
-      {/* Footer — key bindings on the left, live context/usage/cost on the right
-          (shown only once there's something to report). */}
+      {/* Status details + hints, directly UNDER the input (the old top header
+          lives here now). Line 1: cwd · git  /  model · changed · ctx · cost.
+          Line 2: key hints  /  the session goal. Only relevant parts show. */}
       <box flexDirection="row" justifyContent="space-between" flexShrink={0} marginTop={1}>
-        <text fg={palette().muted}>
-          {"shift+tab mode · / commands · click ▸ expand · ^O fold all · esc interrupt"}
-        </text>
-        <Show when={metrics()}>
-          <text flexShrink={0} fg={palette().muted}>{metrics()}</text>
+        <text fg={palette().muted}>{detailsLeft()}</text>
+        <Show when={detailsRight()}>
+          <text flexShrink={0} fg={palette().muted}>{detailsRight()}</text>
+        </Show>
+      </box>
+      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
+        <text fg={palette().muted}>{hintsText()}</text>
+        <Show when={goalInfo()}>
+          <text flexShrink={0} fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", 40)}`}</text>
         </Show>
       </box>
       </box>
-      {/* Context rail — a full-height GREY panel on the right edge. It opens with
-          the identity block (brand · mode · cwd · model · goal, moved out of the
-          old black header bar) and then the live sections: tasks, subagents,
-          changed files, git, session. Sections hide when empty; the task list also
-          hides once everything's done. Item text wraps rather than truncating. */}
-      <Show when={showRail()}>
-        <box
-          width={RAIL_WIDTH}
-          flexShrink={0}
-          backgroundColor={palette().elevated}
-          flexDirection="column"
-          paddingTop={1}
-          paddingBottom={1}
-          paddingLeft={1}
-          paddingRight={1}
-        >
-          <scrollbox
-            flexGrow={1}
-            scrollY
-            contentOptions={{ flexDirection: "column", gap: 1 }}
-            scrollbarOptions={{ visible: false }}
-          >
-            {/* Identity — brand mark, mode (colored + bg pill), cwd. Model/goal
-                live in the Session section below, so they're not repeated here. */}
-            <box flexDirection="column">
-              <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ vibe-codr"}</text>
-              <text fg={accent()} bg={palette().selBg} attributes={TextAttributes.BOLD}>
-                {` ${modeLabel(uiMode())} `}
-              </text>
-              <text fg={palette().muted} wrapMode="word">{cwd}</text>
-            </box>
-
-            {/* Tasks — the to-do list, prominent up top; hides once all done. */}
-            <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
-              <box flexDirection="column">
-                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
-                  {`Tasks  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-                </text>
-                <For each={tasks()}>
-                  {(task) => {
-                    const c = () =>
-                      task.status === "completed"
-                        ? palette().muted
-                        : task.status === "in_progress"
-                          ? brand()
-                          : palette().assistant;
-                    return (
-                      <box flexDirection="row" gap={1}>
-                        <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
-                        <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
-                      </box>
-                    );
-                  }}
-                </For>
-              </box>
-            </Show>
-
-            <Show when={subagents().length > 0}>
-              <box flexDirection="column">
-                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Subagents"}</text>
-                <For each={subagents()}>
-                  {(s) => (
-                    <box flexDirection="column">
-                      <box flexDirection="row" gap={1}>
-                        <text flexShrink={0} fg={s.status === "running" ? brand() : palette().muted}>
-                          {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
-                        </text>
-                        <text
-                          flexGrow={1}
-                          wrapMode="word"
-                          fg={s.status === "running" ? brand() : palette().muted}
-                        >
-                          {s.prompt}
-                        </text>
-                      </box>
-                      <Show when={s.result}>
-                        <text fg={palette().muted} wrapMode="word">
-                          {`   ${GLYPH.result} ${s.result}`}
-                        </text>
-                      </Show>
-                    </box>
-                  )}
-                </For>
-              </box>
-            </Show>
-
-            <Show when={changedFiles().length > 0}>
-              <box flexDirection="column">
-                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Changed"}</text>
-                <For each={changedFiles()}>
-                  {(f) => (
-                    <box flexDirection="row" gap={1} justifyContent="space-between">
-                      <text flexGrow={1} wrapMode="none" fg={palette().muted}>
-                        {truncateLeft(f.path, RAIL_WIDTH - 5 - changeWidth(f))}
-                      </text>
-                      <box flexDirection="row" gap={1} flexShrink={0}>
-                        <Show when={f.added > 0}>
-                          <text fg={palette().add}>{`+${f.added}`}</text>
-                        </Show>
-                        <Show when={f.removed > 0}>
-                          <text fg={palette().del}>{`-${f.removed}`}</text>
-                        </Show>
-                      </box>
-                    </box>
-                  )}
-                </For>
-              </box>
-            </Show>
-
-            {/* Git — branch, dirty count, ahead/behind, and a worktree marker;
-                shown only inside a repo. */}
-            <Show when={git()}>
-              {(g) => (
-                <box flexDirection="column">
-                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Git"}</text>
-                  <box flexDirection="row" gap={1}>
-                    <text fg={palette().muted}>{`⎇ ${g().branch}`}</text>
-                    <Show when={g().dirty > 0}>
-                      <text fg={palette().muted}>{`·  ${g().dirty} dirty`}</text>
-                    </Show>
-                  </box>
-                  <Show when={g().ahead > 0 || g().behind > 0 || g().worktree}>
-                    <box flexDirection="row" gap={1}>
-                      <Show when={g().ahead > 0 || g().behind > 0}>
-                        <text fg={palette().muted}>{`↑${g().ahead} ↓${g().behind}`}</text>
-                      </Show>
-                      <Show when={g().worktree}>
-                        <text fg={palette().muted}>{g().ahead > 0 || g().behind > 0 ? "·  worktree" : "worktree"}</text>
-                      </Show>
-                    </box>
-                  </Show>
-                </box>
-              )}
-            </Show>
-
-            {/* Session — always shown, last so tasks/subagents stay prominent up
-                top; on a fresh chat it's the only section and sits at the top. */}
-            <box flexDirection="column">
-              <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Session"}</text>
-              <text fg={palette().muted} wrapMode="word">{headModel()}</text>
-              <Show when={ctxInfo()}>
-                <text fg={palette().muted}>{`ctx ${ctxInfo()}`}</text>
-              </Show>
-              <Show when={usageInfo()}>
-                <text fg={palette().muted}>{usageInfo()}</text>
-              </Show>
-              <Show when={goalInfo()}>
-                <text fg={palette().muted} wrapMode="word">{`★ ${goalInfo()}`}</text>
-              </Show>
-            </box>
-          </scrollbox>
-        </box>
-      </Show>
+      {/* Right gutter — mirrors the left, centering the chat column. */}
+      <box flexGrow={1} flexShrink={1} />
     </box>
   );
 }
@@ -1183,6 +1242,7 @@ function AssistantText(props: {
 function ToolBlockView(props: {
   block: () => Extract<Block, { kind: "tool" }>;
   palette: Palette;
+  style: SyntaxStyle | undefined;
   onToggle: (id: number) => void;
 }) {
   const b = props.block;
@@ -1209,19 +1269,37 @@ function ToolBlockView(props: {
     >
       <text fg={b().isError ? p.del : p.muted}>{head()}</text>
       <Show when={!b().collapsed && expandable()}>
-        <For each={visible()}>
-          {(line) =>
-            b().isDiff ? (
-              <text fg={diffColor(line, p)} bg={diffBg(line, p)}>
-                {line || " "}
-              </text>
-            ) : (
-              <text fg={p.muted}>{`  ${line}`}</text>
-            )
+        <Show
+          when={b().isMarkdown}
+          fallback={
+            <box flexDirection="column">
+              <For each={visible()}>
+                {(line) =>
+                  b().isDiff ? (
+                    <text fg={diffColor(line, p)} bg={diffBg(line, p)}>
+                      {line || " "}
+                    </text>
+                  ) : (
+                    <text fg={p.muted}>{`  ${line}`}</text>
+                  )
+                }
+              </For>
+              <Show when={overflow() > 0}>
+                <text fg={p.muted}>{`  … ${overflow()} more line${overflow() === 1 ? "" : "s"}`}</text>
+              </Show>
+            </box>
           }
-        </For>
-        <Show when={overflow() > 0}>
-          <text fg={p.muted}>{`  … ${overflow()} more line${overflow() === 1 ? "" : "s"}`}</text>
+        >
+          {/* A subagent's reply is markdown prose — render headers/bold/lists/code
+              (and tables where supported) instead of raw text. */}
+          <box flexDirection="column" paddingLeft={1} paddingRight={1}>
+            <AssistantText
+              text={b().output.join("\n")}
+              streaming={false}
+              style={props.style}
+              fg={p.assistant}
+            />
+          </box>
         </Show>
       </Show>
     </box>
@@ -1255,7 +1333,7 @@ function diffBg(line: string, p: Palette): string | undefined {
   return undefined;
 }
 
-/** The dim header detail (narrow mode): context fill, usage, queue, and goal. */
+/** The dim footer metrics: context fill, token usage/cost, and queue depth. */
 function metricsLine(
   queued: number,
   usage: SessionUsage,
@@ -1271,17 +1349,6 @@ function metricsLine(
   if (usage.totalTokens > 0) parts.push(formatUsage(usage));
   if (queued > 0) parts.push(`${queued} queued`);
   return parts.join("  ·  ");
-}
-
-/** Rail context line: "12% · 24k/200k", or "" when not meaningful yet. */
-function ctxSummary(ctx: { usedTokens: number; contextWindow: number } | null): string {
-  if (!ctx || ctx.contextWindow <= 0) return "";
-  const pct = Math.min(100, Math.round((ctx.usedTokens / ctx.contextWindow) * 100));
-  if (pct < 1) return "";
-  return `${pct}% · ${ktok(ctx.usedTokens)}/${ktok(ctx.contextWindow)}`;
-}
-function ktok(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
 }
 
 /** Current working directory with $HOME collapsed to `~`. */
@@ -1300,19 +1367,6 @@ function truncate(s: string, n: number): string {
 function firstLine(s: string | undefined): string | undefined {
   const line = s?.split("\n").find((l) => l.trim().length > 0)?.trim();
   return line || undefined;
-}
-
-/** Truncate from the LEFT (keep the tail/basename), e.g. `…core/src/engine.ts`. */
-function truncateLeft(s: string, n: number): string {
-  if (n <= 1) return s.slice(-1);
-  return s.length > n ? `…${s.slice(-(n - 1))}` : s;
-}
-
-/** Display width of a changed-file's "+a -b" delta, for laying out the row. */
-function changeWidth(f: ChangedFile): number {
-  const a = f.added > 0 ? `+${f.added}` : "";
-  const r = f.removed > 0 ? `-${f.removed}` : "";
-  return [a, r].filter(Boolean).join(" ").length;
 }
 
 export async function mountApp(engine: EngineClient): Promise<void> {

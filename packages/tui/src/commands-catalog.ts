@@ -20,6 +20,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "cost", description: "Token usage and estimated cost" },
   { name: "context", description: "Context-window usage" },
   { name: "clear", description: "Clear the conversation (alias /new)" },
+  { name: "jobs", description: "Show background shell jobs + localhost servers" },
   { name: "compact", description: "Compact the conversation to free context" },
   { name: "resume", description: "List saved sessions to resume" },
   { name: "recall", description: "Search past sessions", arg: "<text>" },

@@ -5,6 +5,20 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **The accent color was stuck on lavender regardless of the theme.** The config
+  schema *defaulted* `accentColor` to `#bb9af7`, so `brand() = accentColor() ||
+  primary` always resolved to that lavender even when you never set it — the theme's
+  own `primary` (and any new default) could never show. `accentColor` now defaults
+  to **empty**, so the active theme's `primary` is the brand and `accentColor` only
+  applies when you explicitly set it (config or `/accent <hex>`).
+- **Context-window % read far too low.** `ctx N%` (and `/status`/`/context`)
+  estimated usage by `JSON.stringify`-ing the message array and dividing by 4 —
+  which **excluded the system prompt and tool schemas** (routinely thousands of
+  tokens) entirely. It now uses the **provider's real `inputTokens`** from the last
+  step (the true prompt size, including system prompt, tools, and cache), surfaced
+  live after every step via `context-updated`; the old estimate remains only as a
+  pre-first-step fallback. The window denominator chain is unchanged
+  (`config.contextWindow` → Ollama `/api/show` probe → models.dev catalog → 128k).
 - **Parallel subagents could corrupt a shared file.** The mutating-tool serial
   lock was created per session, so two concurrent subagents editing the same file
   got different locks and raced. A **tree-wide per-file write lock**
@@ -43,6 +57,14 @@ All notable changes to vibe-codr are documented here.
   truncation marker instead of silently dropping results.
 
 ### Added
+- **`/jobs` sub-view — running shell commands + localhost servers.** Background
+  bash jobs (started with the bash tool's `background` mode) are now visible: the
+  Engine owns the `BackgroundJobs` registry and pushes a `jobs-changed` event, and
+  `/jobs` opens a full sub-view (in place of the transcript) listing each job's
+  command, pid/exit status, **auto-detected localhost URLs** (scanned from the
+  job's output — e.g. a Vite/Next dev server's `http://localhost:5173`), and a few
+  lines of recent output. Esc or `/jobs` closes it; the footer hint advertises it
+  while any job is running.
 - **`package_info` tool** — authoritative latest-version + metadata lookup from
   npm or PyPI (no key required). The fast, reliable way to check dependency
   currency: read the manifest, then compare against the real latest instead of
@@ -71,35 +93,59 @@ All notable changes to vibe-codr are documented here.
   coerced to plan mode so they can never write. `spawn_subagent` no longer prompts
   for permission for the orchestration itself (the child's own tools still gate
   every side effect).
-- **Context rail "Git" section** — branch, dirty count, ahead/behind, and a
-  worktree marker, from a new `Engine.#gitInfo()` + `git-updated` event (refreshed
-  at startup and after each turn). The rail is now adaptive: **Tasks → Subagents →
-  Changed → Git → Session**, each shown only when relevant. The redundant tool-call
-  "Activity" feed (a duplicate of the transcript) was removed.
+- **Working-tree git status** — branch, dirty count, ahead/behind, and a worktree
+  marker, from a new `Engine.#gitInfo()` + `git-updated` event (refreshed at startup
+  and after each turn), surfaced in the header's live context line. The redundant
+  tool-call "Activity" feed (a duplicate of the transcript) was removed.
 - **Configurable accent color** — `/accent <hex>` (live) and an `accentColor`
-  config field set the single UI accent (lavender `#bb9af7` by default).
+  config field set the single UI accent (vivid orange-red `#ff3503` by default).
 - **Skills are now invocable as `/skillname [task]`** (the user-initiated analogue
   of the model's `use_skill`): the engine loads the skill body and runs it like a
   prompt. Built-ins and custom commands still take precedence.
 
 ### Changed
-- **Black canvas + full-height grey sidebar.** The TUI sits on a pure-black
-  backdrop (new `background` palette field) with a **full-height grey sidebar**
-  (`elevated`) pinned to the right edge, top-to-bottom. The brand mark, mode pill,
-  and cwd moved out of the old black header bar into the sidebar's **identity
-  block** (so there's no header strip on wide terminals; it falls back to a top bar
-  only on narrow terminals where the sidebar is hidden). The layout root became a
-  flex *row* — transcript and input affordances live in a left column, so the
-  **input bar shrinks** to that column's width instead of spanning under the
-  sidebar. Sidebar sections (Tasks/Subagents/Changed/Git/Session) are plain text on
-  the one grey surface.
-- **Charcoal + monochrome theme.** The default theme now uses neutral charcoal
-  surfaces and monochrome white/grey text with a single purple accent (the old
-  blue-tinted palette is gone). Mode (plan/execute/yolo) color is now scoped to
-  exactly the input border line and the header mode pill (text+icon) — the caret,
-  cursor, and the rest of the chrome stay on the fixed accent.
+- **Centered, single-column chat UI (ChatGPT-style) on black.** The TUI is one
+  capped-width conversation column centered in the terminal — it fills a narrow
+  terminal and gets quiet side gutters on a wide one (two `flexGrow` gutters do the
+  centering; `contentWidth()` = `min(96, width − 2)`), with **no sidebar/rail and no
+  top header**. A fresh screen shows a **centered VIBE CODR wordmark** (OpenTUI's
+  native `<ascii_font>`, the sleek `slick` face, in the brand color); once you
+  start, the column is just the scrolling transcript, the live
+  status panels (working · plan · **Tasks** · **Subagents** · permission · command
+  menu), the input, and a two-line status block. The input is a **border-only field
+  (no fill — just the frame + text on black)** with the **mode word on the top
+  border** (`┌─ ASK ─┐`; **execute reads "ASK"** since it prompts before each
+  action, vs YOLO), colored by mode (execute brand · plan cyan · yolo red); no
+  prompt glyph inside; placeholder "Send a message or type / to start". **All the
+  details moved UNDER the input** — line 1 `cwd · git  /  model ·
+  changed · ctx · cost`, line 2 `hints / goal`. The empty-state wordmark and the
+  tips are each centered independently (a height guard swaps in a compact brand on
+  short terminals).
+- **Tap your message to fold the whole turn.** Folding is now anchored on the user
+  message: tap it to collapse the entire exchange beneath it (reply + tool work) to
+  a `▸ N items hidden · tap to expand` affordance; tap again to reopen. **Ctrl+O**
+  still folds/unfolds every turn at once.
+- **Tidy subagents panel.** A fan-out now renders **one truncated line per
+  subagent** (it used to dump every subagent's full multi-line prompt and flood the
+  screen); tap a row to expand its full prompt + result (bounded so it can never run
+  off-screen), tap again to collapse.
+- **Black + monochrome theme with one vivid accent.** The default theme is **black
+  background + white/grey text** with a single signature accent — **`#ff3503`
+  (orange-red)** — on the wordmark, the input frame, the gutters, and carets;
+  everything else stays monochrome. The mode word on the input border carries the
+  mode hue (plan cyan · yolo salmon · execute the accent). Green/red/amber remain
+  reserved for diffs and warnings.
 
 ### Improved
+- **Subagent replies + web-search results render as rich markdown.** A
+  `spawn_subagent` result used to print as raw text (literal `##`, `**bold**`,
+  `|table|`); it now opens expanded and renders through the native `<markdown>`
+  renderable — real headers, bold, lists, fenced code, and **tables** (OpenTUI draws
+  box-ruled tables) — so a research subagent's report is actually readable.
+  **`web_search` results** are now emitted as a markdown numbered list and render the
+  same way, so each result's URL + snippet stay cleanly indented (even when wrapped)
+  instead of the ragged raw text. (The main assistant reply already rendered
+  markdown; tables now render there too.)
 - **The `/command` "registered" cue now covers everything invocable.** It matches
   the authoritative name set from the engine snapshot (`commandNames` = built-ins +
   custom `.vibe/commands` + skills), not just the static built-in list — so a
@@ -110,22 +156,22 @@ All notable changes to vibe-codr are documented here.
   folds its tool/output work away (just the prose remains), and **Ctrl+O** folds/
   unfolds every turn at once. Search rows truncate the query and show `N results`
   instead of a raw line count, and the system prompt now tells the model to search
-  deliberately (no redundant reworded queries). The context rail is rebuilt as a
-  clean live summary of subagents, tasks, changed files, and session info instead
-  of a mostly-empty box (see the rail's final adaptive section list under *Added*).
+  deliberately (no redundant reworded queries). Live status — subagents, tasks,
+  changed files, git, and session info — is surfaced in the header, the Tasks/
+  Subagents panels, and the footer (see *Changed* for the centered single-column
+  layout).
 - **Real context window & cost for any model.** Context window now resolves via a
   `config.contextWindow` override → a live Ollama `/api/show` probe (local + cloud)
   → the catalog → a 128k default, so local/cloud models report a real window. Cost
   is always shown: `$0.00` for free/local, and a `~$` estimate for models priced by
   a base-model catalog match (e.g. Ollama Cloud `glm-5.2`), with a per-model
   `config.pricing`/`contextWindow` pin taking precedence.
-- **TUI palette & spacing.** The light lavender `#bb9af7` is now the single fixed
-  brand hue across all chrome (header, rail, spinner, user gutter, plan box,
-  menu); the **text-input area is the only region that recolors with the mode**
-  (plan/execute/yolo) — switching mode no longer repaints the whole screen. Added
-  a `gap={2}` gutter between the transcript and the context rail (message blocks
-  no longer touch the rail) and a uniform `marginTop={1}` rhythm below the body,
-  so the working line and footer no longer hug their neighbors.
+- **TUI palette & spacing.** A single brand hue (now `#ff3503`) paints all chrome
+  (panel titles, spinner, user gutter, plan box, menu, input frame); the **mode word
+  on the input border is the only region that recolors with the mode**
+  (plan/execute/yolo) — switching mode no longer repaints the whole screen. A
+  uniform `marginTop={1}` rhythm separates every region below the transcript, so the
+  working line, status panels, input, and footer no longer hug their neighbors.
 - **System prompt** strengthened on the dimensions that drive output quality on
   real codebases: convention-matching, scope discipline, verification rigor, and
   concise terminal-appropriate communication.

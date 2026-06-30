@@ -4,8 +4,6 @@
  * REPL uses 16-color ANSI (see `ansi.ts`) and is theme-agnostic.
  */
 export interface Palette {
-  /** App backdrop — the whole-screen background behind everything. */
-  background: string;
   user: string;
   assistant: string;
   tool: string;
@@ -26,6 +24,8 @@ export interface Palette {
   border: string;
   /** Secondary text: footer hint, placeholder, tool-result lines. */
   muted: string;
+  /** App background painted behind everything (else the terminal backdrop). */
+  background: string;
   /** Inset panel background (user message block, menu surface). */
   panel: string;
   /** Raised surface for the text input field (lighter than panel). */
@@ -38,14 +38,14 @@ export interface Palette {
   delBg: string;
 }
 
-/** Tokyo-Night-ish dark palette (the default). */
-// Charcoal + monochrome + a single lavender accent. Neutral grey surfaces (no
-// blue cast), near-white/grey text, and one accent hue (`primary`/`accent`,
-// configurable via `accentColor`). The only other colors are functional: green/
-// red on diffs, amber on warnings, and the plan/yolo mode hues (cyan/red) which
-// appear only on the input line + mode pill.
+/** Black + monochrome dark palette (the default). */
+// Black background + monochrome white/grey text + one vivid brand accent
+// (`#ff3503` orange-red) on the wordmark, input frame, gutters, and carets.
+// Neutral charcoal surfaces (panel/elevated) are raised on the black. The mode
+// word on the input border carries the mode hue (plan cyan / yolo salmon / execute
+// the accent). Other colors are purely functional: green/red on diffs, amber on
+// warnings. Override the brand via `accentColor` / `/accent <hex>`.
 const DEFAULT: Palette = {
-  background: "#000000",
   user: "#e6e6e6",
   assistant: "#e6e6e6",
   tool: "#7dcfff",
@@ -58,12 +58,14 @@ const DEFAULT: Palette = {
   taskDone: "#6a6a72",
   taskActive: "#bb9af7",
   taskPending: "#e6e6e6",
-  accent: "#bb9af7",
-  // The fixed brand hue: a lavender accent shown across the whole UI. Mode only
-  // recolors the input line + mode pill (see modeColor). Override via accentColor.
-  primary: "#bb9af7",
+  accent: "#ff3503",
+  // The brand hue: a vivid orange-red (`#ff3503`) — the single signature accent on
+  // the black UI (wordmark, input border, carets, panel titles). Override via
+  // accentColor / `/accent <hex>`.
+  primary: "#ff3503",
   border: "#34343a",
   muted: "#8a8a92",
+  background: "#000000",
   panel: "#161618",
   elevated: "#1e1e22",
   selBg: "#2a2a30",
@@ -74,7 +76,6 @@ const DEFAULT: Palette = {
 
 /** Light palette for bright terminals. */
 const LIGHT: Palette = {
-  background: "#ffffff",
   user: "#2959aa",
   assistant: "#343b58",
   tool: "#0f7b9c",
@@ -91,6 +92,7 @@ const LIGHT: Palette = {
   primary: "#2959aa",
   border: "#d0d4de",
   muted: "#9699a3",
+  background: "#f6f7f9",
   panel: "#eef1f8",
   elevated: "#e3e8f3",
   selBg: "#d3dcef",
@@ -101,7 +103,6 @@ const LIGHT: Palette = {
 
 /** High-contrast palette for accessibility. */
 const CONTRAST: Palette = {
-  background: "#000000",
   user: "#00d7ff",
   assistant: "#ffffff",
   tool: "#00ffff",
@@ -118,6 +119,7 @@ const CONTRAST: Palette = {
   primary: "#00d7ff",
   border: "#5f5f5f",
   muted: "#a8a8a8",
+  background: "#000000",
   panel: "#161616",
   elevated: "#242424",
   selBg: "#343434",
@@ -132,7 +134,6 @@ const CONTRAST: Palette = {
  * user-message gutter and menu selection.
  */
 const OPENCODE: Palette = {
-  background: "#0a0a0a",
   user: "#5c9cf5",
   assistant: "#eeeeee",
   tool: "#56b6c2",
@@ -149,6 +150,7 @@ const OPENCODE: Palette = {
   primary: "#fab283",
   border: "#3c3c3c",
   muted: "#808080",
+  background: "#0a0a0a",
   panel: "#141414",
   elevated: "#1e1e1e",
   selBg: "#2a2a2a",

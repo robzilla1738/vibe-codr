@@ -77,7 +77,7 @@ export interface Message {
   metadata?: Record<string, unknown>;
 }
 
-/** Working-tree git state surfaced in the context rail. */
+/** Working-tree git state surfaced in the header's git context. */
 export interface GitInfo {
   branch: string;
   /** Number of changed working-tree entries (`git status --porcelain`). */
@@ -87,6 +87,21 @@ export interface GitInfo {
   behind: number;
   /** True when running inside a linked worktree (not the main checkout). */
   worktree: boolean;
+}
+
+/** A background shell job (started with `bash background:true`), surfaced in the
+ * `/jobs` sub-view so you can see long-running commands and dev servers. */
+export interface JobInfo {
+  id: string;
+  command: string;
+  status: "running" | "exited" | "killed";
+  exitCode: number | null;
+  /** OS process id of the `bash -lc` child (for reference). */
+  pid?: number;
+  /** Localhost server URLs detected in the job's output (e.g. http://localhost:3000). */
+  servers: string[];
+  /** Trailing lines of captured output, for the sub-view detail. */
+  outputTail: string;
 }
 
 /** Static, read-only snapshot of engine state for the UI to render. */

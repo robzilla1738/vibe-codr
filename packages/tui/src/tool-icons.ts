@@ -18,6 +18,7 @@ const ICONS: Record<string, string> = {
   apply_patch: "%",
   glob: "✱",
   grep: "✱",
+  repo_map: "⌗",
   list: "☰",
   ls: "☰",
   webfetch: "%",

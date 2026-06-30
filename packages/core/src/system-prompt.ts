@@ -45,7 +45,7 @@ const DELEGATION = `DELEGATING TO SUBAGENTS. You can spawn subagents with \`spaw
 - WHEN NOT to: small, sequential, or tightly-coupled edits — just do them yourself. Delegation has overhead and the child can't see your context.
 - TO RUN IN PARALLEL, issue multiple \`spawn_subagent\` calls in the SAME step — calls in one step run concurrently, calls in separate steps run one after another.
 - WRITE SELF-CONTAINED PROMPTS: a subagent knows nothing you don't tell it. Inline the objective, the exact files/paths, the relevant facts, and explicit success criteria ("Done when …").
-- DISJOINT FILE OWNERSHIP: never run two subagents that edit the SAME file at once — give each a disjoint set of files. (The engine serializes same-file writes as a backstop, but design so they never collide.)
+- DISJOINT FILE OWNERSHIP: never run two subagents that edit the SAME file at once — give each a disjoint set of files. The engine now HARD-REJECTS a second subagent's concurrent write to a file another already owns (it errors instead of silently clobbering), so plan disjoint file sets up front; if a child reports a file-ownership error, it overlapped a sibling — split the work differently.
 - CONSOLIDATE AND VERIFY: after subagents return, reconcile their results yourself and run the project's checks before declaring done. If one fails, diagnose from its result and spawn a corrected approach — never re-run the same thing verbatim.`;
 
 const PLAN_DELEGATION = `DELEGATING TO SUBAGENTS (read-only). While planning you can fan out read-only subagents with \`spawn_subagent\` to investigate the codebase in parallel before you converge on a plan — each inherits plan mode (investigation only, no edits) and returns its findings.

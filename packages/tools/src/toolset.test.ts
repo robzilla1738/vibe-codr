@@ -269,3 +269,53 @@ test("createFileLock overlaps different paths", async () => {
   release();
   await all;
 });
+
+test("createFileLock rejects a different agent's CONCURRENT write to one file", async () => {
+  const lock = createFileLock();
+  let release!: () => void;
+  const barrier = new Promise<void>((r) => {
+    release = r;
+  });
+  // Agent A claims /shared and holds it open.
+  const a = lock("/shared", async () => barrier, "agent-A");
+  await new Promise((r) => setTimeout(r, 5));
+  // Agent B's concurrent write to the SAME file is hard-rejected.
+  await expect(lock("/shared", async () => "B wrote", "agent-B")).rejects.toThrow(
+    /being written by another subagent/,
+  );
+  release();
+  await a;
+  // Once A is done, the file is free — B can write it now (ownership released).
+  await expect(lock("/shared", async () => "ok", "agent-B")).resolves.toBe("ok");
+});
+
+test("createFileLock SERIALIZES the same agent's writes to one file (no reject)", async () => {
+  const lock = createFileLock();
+  const order: number[] = [];
+  let release!: () => void;
+  const barrier = new Promise<void>((r) => {
+    release = r;
+  });
+  // Same agent issues two parallel writes to one file — they serialize, not fail.
+  const first = lock("/f", async () => {
+    order.push(1);
+    await barrier;
+    order.push(2);
+  }, "agent-A");
+  const second = lock("/f", async () => {
+    order.push(3);
+  }, "agent-A");
+  await new Promise((r) => setTimeout(r, 5));
+  expect(order).toEqual([1]); // second waits for first
+  release();
+  await Promise.all([first, second]);
+  expect(order).toEqual([1, 2, 3]); // serialized, both ran
+});
+
+test("createFileLock without an owner serializes (backward-compatible)", async () => {
+  const lock = createFileLock();
+  // No ownerId → legacy serialize behavior, never rejects.
+  await expect(
+    Promise.all([lock("/g", async () => "1"), lock("/g", async () => "2")]),
+  ).resolves.toEqual(["1", "2"]);
+});

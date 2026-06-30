@@ -198,22 +198,53 @@ function canonicalLockKey(absPath: string): string {
   }
 }
 
+/** Thrown when a subagent tries to write a file a DIFFERENT live agent owns. */
+export class FileOwnedError extends Error {
+  constructor(public readonly path: string) {
+    super(
+      `"${path}" is currently being written by another subagent. ` +
+        "Coordinate (split the work by file) or pick a disjoint set of files.",
+    );
+    this.name = "FileOwnedError";
+  }
+}
+
+/** A file-lock function: claims `absPath` for the optional `ownerId` while `fn` runs. */
+export type FileLock = <T>(
+  absPath: string,
+  fn: () => Promise<T>,
+  ownerId?: string,
+) => Promise<T>;
+
 /**
- * Per-path write lock: `run(absPath, fn)` serializes `fn`s that share a file,
- * while different files run concurrently. One instance is shared across the
- * whole session tree so two subagents can never write the same file at once (the
- * convergence guarantee), yet disjoint-file work stays parallel. Keys are
- * canonicalized (symlinks + casing) and idle locks are pruned so the map can't
- * grow without bound over a long session.
+ * Per-path write CLAIM registry, shared across the whole session tree. A file is
+ * EXCLUSIVELY owned by the first agent (identified by `ownerId`) to write it
+ * while that write is live: a *concurrent* write from a DIFFERENT agent is hard-
+ * rejected with {@link FileOwnedError} so the model coordinates instead of two
+ * siblings clobbering each other. Same-agent writes (and any caller that passes
+ * no `ownerId`) merely SERIALIZE — so single-session behavior is unchanged, and
+ * a step's parallel edits to one file still apply one-after-another rather than
+ * one silently winning. Claims are scoped to live writers: once the last writer
+ * for a path finishes, ownership is released. Keys are canonicalized (symlinks +
+ * casing) and idle locks pruned so the map can't grow without bound.
  */
-export function createFileLock(): <T>(absPath: string, fn: () => Promise<T>) => Promise<T> {
-  const locks = new Map<string, { run: <T>(fn: () => Promise<T>) => Promise<T>; users: number }>();
-  return async <T>(absPath: string, fn: () => Promise<T>): Promise<T> => {
+export function createFileLock(): FileLock {
+  const locks = new Map<
+    string,
+    { run: <T>(fn: () => Promise<T>) => Promise<T>; users: number; owner: string | undefined }
+  >();
+  return async <T>(absPath: string, fn: () => Promise<T>, ownerId?: string): Promise<T> => {
     const key = canonicalLockKey(absPath);
     let entry = locks.get(key);
+    // A live entry owned by a DIFFERENT agent → reject this concurrent write.
+    if (entry && entry.owner !== undefined && ownerId !== undefined && entry.owner !== ownerId) {
+      throw new FileOwnedError(absPath);
+    }
     if (!entry) {
-      entry = { run: createSerialLock(), users: 0 };
+      entry = { run: createSerialLock(), users: 0, owner: ownerId };
       locks.set(key, entry);
+    } else if (entry.owner === undefined) {
+      entry.owner = ownerId; // first identified writer takes ownership
     }
     entry.users++;
     try {

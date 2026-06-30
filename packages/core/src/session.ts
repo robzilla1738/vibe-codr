@@ -25,6 +25,7 @@ import {
   toAISDKTool,
   createSemaphore,
   type ToolRuntimeBase,
+  type FileLock,
 } from "@vibe/tools";
 import type { HookBus, SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
@@ -79,10 +80,12 @@ export interface SessionDeps {
   extraSystem?: string[];
   /** Named subagents available to spawn. */
   agents?: Map<string, NamedAgent>;
-  /** Per-file write lock shared across the session tree (set by the engine).
-   * Forks inherit it via `...this.#deps`, so all subagents serialize same-file
-   * writes against each other. */
-  fileLock?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
+  /** Per-file write CLAIM registry shared across the session tree (set by the
+   * engine). Forks inherit it via `...this.#deps`; each session injects its own
+   * id as the owner, so a concurrent write from a different subagent to a file
+   * another already owns is hard-rejected (FileOwnedError) while same-agent
+   * writes serialize. */
+  fileLock?: FileLock;
   /** Long-term memory (hybrid recall + save). When present, recall_memory does
    * semantic+lexical search over saved memory and sessions, and save_memory is
    * offered; when absent, recall_memory degrades to lexical session search. */
@@ -678,7 +681,15 @@ export class Session {
         emit: (e: UIEvent) => bus.emit(e),
         recordToolResult: (toolCallId: string, isError: boolean) =>
           this.#toolCallErrors.set(toolCallId, isError),
-        ...(this.#deps.fileLock ? { lockFile: this.#deps.fileLock } : {}),
+        // Inject THIS session's id as the lock owner, so the claim registry can
+        // tell same-agent re-entrant writes (serialize) from a different
+        // subagent's concurrent write to the same file (hard-reject).
+        ...(this.#deps.fileLock
+          ? {
+              lockFile: <T>(absPath: string, fn: () => Promise<T>) =>
+                this.#deps.fileLock!(absPath, fn, this.id),
+            }
+          : {}),
         checkPermission: (name: string, input: unknown) =>
           checker.check(name, input),
         ...(hooks

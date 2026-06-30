@@ -3,6 +3,8 @@ export {
   toAISDKTool,
   createSemaphore,
   createFileLock,
+  FileOwnedError,
+  type FileLock,
   type ToolRuntimeBase,
 } from "./toolset.ts";
 export {

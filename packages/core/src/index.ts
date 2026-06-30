@@ -82,6 +82,25 @@ export {
   type VectorHit,
 } from "./vector-store.ts";
 export {
+  tokenize,
+  queryTerms,
+  rankBm25,
+  reciprocalRankFusion,
+  type Bm25Hit,
+} from "./bm25.ts";
+export {
+  SemanticMemory,
+  openSemanticMemory,
+  semanticIndexPath,
+  type MemoryDoc,
+} from "./semantic-memory.ts";
+export {
+  searchMemory,
+  formatMemoryHits,
+  type MemoryHit,
+  type SearchMemoryOptions,
+} from "./memory-search.ts";
+export {
   formatStatus,
   formatContextUsage,
   formatCost,

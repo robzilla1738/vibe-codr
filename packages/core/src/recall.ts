@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Message, Part } from "@vibe/shared";
 import { SessionStore, type SessionMeta } from "./store.ts";
+import { queryTerms, rankBm25 } from "./bm25.ts";
 
 /**
  * Session memory ("recall"): a lexical, dependency-free search across every
@@ -9,26 +10,14 @@ import { SessionStore, type SessionMeta } from "./store.ts";
  * via `/recall` — look up what was said or decided in past conversations,
  * turning a pile of session files into searchable long-term memory.
  *
- * Scoring is deterministic Okapi BM25 over word-boundary tokens (not raw
- * substring counts), so "the" no longer matches inside "other", common words are
- * deweighted by IDF, and long messages don't dominate by sheer length. It works
- * fully offline with no embeddings or vector store. Phase 1 fuses a dense
- * (semantic) scorer on top via reciprocal-rank fusion; this is the lexical half.
+ * Scoring is the shared deterministic Okapi BM25 ranker (`./bm25.ts`) over
+ * word-boundary tokens, so "the" no longer matches inside "other", common words
+ * are deweighted by IDF, and long messages don't dominate by length. It works
+ * fully offline with no embeddings. The memory subsystem fuses a dense (semantic)
+ * scorer on top of this lexical half via reciprocal-rank fusion (`./memory-search.ts`).
  * The `recall_memory` tool exposes the same engine to the model.
  */
 
-/** Very common words carry little signal; drop them from the query (IDF already
- * deweights them, but dropping avoids noisy snippet centering). Kept only if a
- * query is ALL stopwords, so a literal phrase still matches something. */
-const STOPWORDS = new Set([
-  "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "is",
-  "are", "was", "were", "be", "been", "with", "that", "this", "it", "as", "at",
-  "by", "from", "we", "you", "do", "did", "does", "how", "what", "when",
-]);
-
-/** BM25 term-frequency saturation (k1) and length-normalization (b) constants. */
-const BM25_K1 = 1.5;
-const BM25_B = 0.75;
 export interface RecallHit {
   sessionId: string;
   /** Session goal, if one was set — useful context for the snippet. */
@@ -46,14 +35,6 @@ export interface RecallOptions {
   limit?: number;
   /** Skip this session id (usually the live one) to surface *other* memory. */
   excludeId?: string;
-}
-
-/** Split a query/string into lowercased word tokens (length ≥ 2). */
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/i)
-    .filter((t) => t.length >= 2);
 }
 
 /** Flatten a message's renderable text (text + reasoning parts). */
@@ -94,11 +75,8 @@ export async function searchSessions(
   query: string,
   opts: RecallOptions = {},
 ): Promise<RecallHit[]> {
-  const allTerms = [...new Set(tokenize(query))];
-  if (!allTerms.length) return [];
-  // Drop stopwords unless that empties the query (so a literal phrase still matches).
-  const meaningful = allTerms.filter((t) => !STOPWORDS.has(t));
-  const terms = meaningful.length ? meaningful : allTerms;
+  const terms = queryTerms(query);
+  if (!terms.length) return [];
   const limit = opts.limit ?? 8;
 
   const store = new SessionStore(cwd);
@@ -109,16 +87,15 @@ export async function searchSessions(
     return [];
   }
 
-  // First pass: every message becomes a BM25 "document". We load only the UI
-  // history (not the much larger model transcript) since that's all recall reads.
+  // Every message becomes a BM25 "document". We load only the UI history (not the
+  // much larger model transcript) since that's all recall reads. Recency is a
+  // per-doc tie-breaker applied after scoring.
   interface Doc {
     sessionId: string;
     goal: string | null;
     when: number;
     role: Message["role"];
     text: string;
-    length: number;
-    tf: Map<string, number>;
     recencyBonus: number;
   }
   const docs: Doc[] = [];
@@ -130,50 +107,22 @@ export async function searchSessions(
     for (const msg of history) {
       const text = messageText(msg.parts);
       if (!text) continue;
-      const tokens = tokenize(text);
-      if (!tokens.length) continue;
-      const tf = new Map<string, number>();
-      for (const t of tokens) tf.set(t, (tf.get(t) ?? 0) + 1);
       docs.push({
         sessionId: meta.id,
         goal: meta.goal,
         when: meta.updatedAt,
         role: msg.role,
         text,
-        length: tokens.length,
-        tf,
         recencyBonus,
       });
     }
   }
   if (!docs.length) return [];
 
-  // Corpus statistics for BM25: N, average doc length, and per-term document
-  // frequency (exact token matches, so "the" can't match inside "other").
-  const N = docs.length;
-  const avgdl = docs.reduce((sum, d) => sum + d.length, 0) / N || 1;
-  const df = new Map<string, number>();
-  for (const t of terms) {
-    let n = 0;
-    for (const d of docs) if (d.tf.has(t)) n++;
-    df.set(t, n);
-  }
-  const idf = (t: string): number => {
-    const n = df.get(t) ?? 0;
-    return Math.log(1 + (N - n + 0.5) / (n + 0.5));
-  };
-
-  const hits: RecallHit[] = [];
-  for (const d of docs) {
-    let score = 0;
-    for (const t of terms) {
-      const f = d.tf.get(t) ?? 0;
-      if (!f) continue;
-      const denom = f + BM25_K1 * (1 - BM25_B + BM25_B * (d.length / avgdl));
-      score += idf(t) * ((f * (BM25_K1 + 1)) / denom);
-    }
-    if (score <= 0) continue;
-    hits.push({
+  const ranked = rankBm25(query, docs.map((d) => d.text), terms);
+  const hits: RecallHit[] = ranked.map(({ index, score }) => {
+    const d = docs[index]!;
+    return {
       sessionId: d.sessionId,
       goal: d.goal,
       when: d.when,
@@ -182,8 +131,8 @@ export async function searchSessions(
       // Recency only breaks ties between equal-relevance hits, so scale it well
       // below a single term's BM25 contribution.
       score: score + d.recencyBonus * 0.01,
-    });
-  }
+    };
+  });
 
   hits.sort((a, b) => b.score - a.score);
   return hits.slice(0, limit);

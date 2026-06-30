@@ -102,3 +102,75 @@ test("renderContent flattens text parts and falls back to JSON", () => {
   expect(renderContent("plain")).toBe("plain");
   expect(renderContent([{ type: "image", data: "x" }])).toContain("image");
 });
+
+test("renderContent omits base64 image/blob payloads (no transcript flooding)", () => {
+  const bigB64 = "A".repeat(100_000); // ~75KB of base64
+  const out = renderContent([{ type: "image", mimeType: "image/png", data: bigB64 }]);
+  expect(out).not.toContain(bigB64);
+  expect(out).toContain("image/png");
+  expect(out).toMatch(/omitted/);
+  // Embedded resource blobs are summarized; resource text is passed through.
+  expect(
+    renderContent([{ type: "resource", resource: { uri: "x://y", blob: "QUJD" } }]),
+  ).toMatch(/omitted/);
+  expect(
+    renderContent([{ type: "resource", resource: { uri: "x://y", text: "hello" } }]),
+  ).toBe("hello");
+});
+
+test("readOnlyHint maps to a read-only (un-gated) tool", async () => {
+  const ro: McpClient = {
+    listTools: async () => [
+      { name: "search", annotations: { readOnlyHint: true } },
+      { name: "write", annotations: { readOnlyHint: false } },
+      { name: "plain" },
+    ],
+    callTool: async () => ({ content: "ok" }),
+    close: async () => {},
+  };
+  const specs = await ro.listTools();
+  expect(toToolDefinition("s", specs[0]!, ro).readOnly).toBe(true);
+  expect(toToolDefinition("s", specs[1]!, ro).readOnly).toBe(false);
+  expect(toToolDefinition("s", specs[2]!, ro).readOnly).toBe(false); // default conservative
+});
+
+test("a slow server is bounded by the connect timeout, not blocking others", async () => {
+  const registered: ToolDefinition[] = [];
+  const hub = new McpHub({
+    registerTool: (def) => registered.push(def),
+    connectTimeoutMs: 50,
+    connect: async (name) => {
+      if (name === "slow") {
+        // Never resolves within the deadline.
+        await new Promise((r) => setTimeout(r, 10_000));
+      }
+      return fakeClient([]);
+    },
+  });
+  const t0 = performance.now();
+  await hub.start({ slow: { command: "x" }, fast: { command: "y" } });
+  const elapsed = performance.now() - t0;
+
+  // The fast server's tool registered; the slow one timed out without blocking.
+  expect(registered.map((t) => t.name)).toEqual(["mcp__fast__echo"]);
+  expect(elapsed).toBeLessThan(5_000);
+  const status = hub.status();
+  expect(status.find((s) => s.name === "slow")?.connected).toBe(false);
+  expect(status.find((s) => s.name === "fast")?.connected).toBe(true);
+});
+
+test("status reflects a transport that dropped after connecting", async () => {
+  let live = true;
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    isConnected: () => live,
+    close: async () => {},
+  };
+  const hub = new McpHub({ registerTool: () => {}, connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  expect(hub.status()[0]!.connected).toBe(true);
+  live = false; // the transport drops mid-session
+  expect(hub.status()[0]!.connected).toBe(false);
+  expect(hub.status()[0]!.toolCount).toBe(1);
+});

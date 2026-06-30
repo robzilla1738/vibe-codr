@@ -6,25 +6,62 @@ import {
 } from "@vibe/shared";
 import type { McpServer } from "@vibe/config";
 
+/** One MCP tool as reported by the server (incl. the read-only annotation). */
+export interface McpToolSpec {
+  name: string;
+  description?: string;
+  inputSchema?: JsonSchema;
+  /** Behavioral hints from the server; `readOnlyHint` lets a safe tool skip the
+   * permission gate and participate in plan mode. */
+  annotations?: { readOnlyHint?: boolean };
+}
+
 /** A connected MCP server, reduced to what the hub needs. */
 export interface McpClient {
-  listTools(): Promise<
-    { name: string; description?: string; inputSchema?: JsonSchema }[]
-  >;
+  listTools(): Promise<McpToolSpec[]>;
   callTool(
     name: string,
     args: unknown,
   ): Promise<{ content: unknown; isError?: boolean }>;
+  /** Live transport health — false once the connection drops (so `/mcp` and
+   * `/doctor` stop reporting a crashed server as healthy). Optional; absent =
+   * assumed connected. */
+  isConnected?(): boolean;
   close(): Promise<void>;
 }
 
 /** Connects to an MCP server (injectable so the hub is testable offline). */
 export type McpConnect = (name: string, config: McpServer) => Promise<McpClient>;
 
+/** Default per-server connect+list-tools deadline so one hung server can't block boot. */
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+
 export interface McpHubDeps {
   registerTool: (def: ToolDefinition) => void;
   connect?: McpConnect;
   logger?: Logger;
+  /** Per-server connect timeout (ms). Default 15000. */
+  connectTimeoutMs?: number;
+}
+
+/** Reject if `p` doesn't settle within `ms` (so a hung connect is bounded). */
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`timed out after ${ms}ms ${what}`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }
 
 /**
@@ -41,50 +78,98 @@ export interface McpServerStatus {
   error?: string;
 }
 
+/** One configured server's resolved state (client present iff it connected). */
+interface McpEntry {
+  name: string;
+  client?: McpClient;
+  toolCount: number;
+  error?: string;
+}
+
 export class McpHub {
   #deps: McpHubDeps;
   #connect: McpConnect;
   #log: Logger;
-  #clients: McpClient[] = [];
-  #status: McpServerStatus[] = [];
+  #connectTimeoutMs: number;
+  #entries: McpEntry[] = [];
 
   constructor(deps: McpHubDeps) {
     this.#deps = deps;
     this.#connect = deps.connect ?? defaultConnect;
     this.#log = deps.logger ?? createLogger("mcp");
+    this.#connectTimeoutMs = deps.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   }
 
-  /** Connect every server and register its tools. Safe to call once at boot. */
+  /**
+   * Connect every server and register its tools. Servers connect in PARALLEL,
+   * each under a wall-clock deadline, so one slow/hung stdio server can't block
+   * CLI startup for N×timeout. Safe to call once at boot. Registration + status
+   * preserve config order regardless of which connects finish first.
+   */
   async start(servers: Record<string, McpServer>): Promise<void> {
-    for (const [name, config] of Object.entries(servers)) {
-      try {
-        const client = await this.#connect(name, config);
-        this.#clients.push(client);
-        const tools = await client.listTools();
+    const entries = Object.entries(servers);
+    const results = await Promise.allSettled(
+      entries.map(([name, config]) => this.#connectAndList(name, config)),
+    );
+    for (let i = 0; i < entries.length; i++) {
+      const name = entries[i]![0];
+      const r = results[i]!;
+      if (r.status === "fulfilled") {
+        const { client, tools } = r.value;
         for (const spec of tools) {
           this.#deps.registerTool(toToolDefinition(name, spec, client));
         }
-        this.#status.push({ name, connected: true, toolCount: tools.length });
+        this.#entries.push({ name, client, toolCount: tools.length });
         this.#log.info(`connected MCP server "${name}" (${tools.length} tools)`);
-      } catch (err) {
-        const message = (err as Error).message;
-        this.#status.push({ name, connected: false, toolCount: 0, error: message });
+      } else {
+        const message = (r.reason as Error).message;
+        this.#entries.push({ name, toolCount: 0, error: message });
         this.#log.error(`MCP server "${name}" failed: ${message}`);
       }
     }
   }
 
-  /** Connection status for every configured server (for `/mcp`). */
+  async #connectAndList(
+    name: string,
+    config: McpServer,
+  ): Promise<{ client: McpClient; tools: McpToolSpec[] }> {
+    const client = await withTimeout(
+      this.#connect(name, config),
+      this.#connectTimeoutMs,
+      `connecting to MCP server "${name}"`,
+    );
+    try {
+      const tools = await withTimeout(
+        client.listTools(),
+        this.#connectTimeoutMs,
+        `listing tools for MCP server "${name}"`,
+      );
+      return { client, tools };
+    } catch (err) {
+      // We connected but couldn't enumerate — don't leak the transport.
+      await client.close().catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /** Connection status for every configured server (for `/mcp`, `/doctor`).
+   * `connected` is re-read live from the client so a server whose transport has
+   * since dropped is reported as down, not as "connected, N tools". */
   status(): McpServerStatus[] {
-    return this.#status.map((s) => ({ ...s }));
+    return this.#entries.map((e) => ({
+      name: e.name,
+      connected: e.client ? (e.client.isConnected?.() ?? true) : false,
+      toolCount: e.toolCount,
+      ...(e.error ? { error: e.error } : {}),
+    }));
   }
 
   /** Close all connected clients. */
   async close(): Promise<void> {
     await Promise.all(
-      this.#clients.map((c) => c.close().catch(() => undefined)),
+      this.#entries.map((e) => e.client?.close().catch(() => undefined)),
     );
-    this.#clients = [];
+    this.#entries = [];
   }
 }
 
@@ -116,7 +201,7 @@ function djb2(s: string): number {
 /** Adapt one MCP tool spec into a gated ToolDefinition bound to its client. */
 export function toToolDefinition(
   server: string,
-  spec: { name: string; description?: string; inputSchema?: JsonSchema },
+  spec: McpToolSpec,
   client: McpClient,
 ): ToolDefinition {
   return {
@@ -125,7 +210,9 @@ export function toToolDefinition(
     name: mcpToolName(server, spec.name),
     description: spec.description ?? `MCP tool "${spec.name}" from "${server}".`,
     inputSchema: spec.inputSchema ?? { type: "object", properties: {} },
-    readOnly: false,
+    // Honor the server's readOnlyHint: a genuinely read-only MCP tool skips the
+    // permission gate and works in plan mode. Default conservative (false).
+    readOnly: spec.annotations?.readOnlyHint === true,
     execute: async (args) => {
       const res = await client.callTool(spec.name, args);
       return { output: renderContent(res.content), isError: res.isError };
@@ -133,17 +220,44 @@ export function toToolDefinition(
   };
 }
 
+/** ~byte size of a base64 string, for a placeholder (no decoding). */
+function approxBase64Bytes(b64: string): number {
+  const len = b64.replace(/=+$/, "").length;
+  return Math.floor((len * 3) / 4);
+}
+
+/** Render one MCP content part to text, replacing binary payloads (image/audio/
+ * blob resources) with a compact placeholder instead of dumping base64. */
+function renderPart(p: unknown): string {
+  const part = p as {
+    type?: string;
+    text?: string;
+    data?: string;
+    mimeType?: string;
+    resource?: { uri?: string; mimeType?: string; text?: string; blob?: string };
+  };
+  if (part?.type === "text" && typeof part.text === "string") return part.text;
+  if (part?.type === "image" || part?.type === "audio") {
+    const mime = part.mimeType ? ` ${part.mimeType}` : "";
+    const size = part.data ? `, ~${approxBase64Bytes(part.data)} bytes` : "";
+    return `[${part.type}${mime}${size} omitted]`;
+  }
+  if (part?.type === "resource" && part.resource) {
+    const r = part.resource;
+    if (typeof r.text === "string") return r.text;
+    if (r.blob) {
+      const mime = r.mimeType ? ` ${r.mimeType}` : "";
+      return `[resource ${r.uri ?? ""}${mime}, ~${approxBase64Bytes(r.blob)} bytes omitted]`;
+    }
+    return `[resource ${r.uri ?? ""}]`;
+  }
+  return JSON.stringify(p);
+}
+
 /** Flatten MCP tool-result content into text the model can read. */
 export function renderContent(content: unknown): string {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const parts = content.map((p) => {
-      const part = p as { type?: string; text?: string };
-      if (part?.type === "text" && typeof part.text === "string") return part.text;
-      return JSON.stringify(p);
-    });
-    return parts.join("\n");
-  }
+  if (Array.isArray(content)) return content.map(renderPart).join("\n");
   return JSON.stringify(content ?? "");
 }
 
@@ -192,6 +306,19 @@ const defaultConnect: McpConnect = async (_name, config) => {
   }
 
   const client = new ClientCtor({ name: "vibecodr", version: "0.0.0" });
+  // Track live transport health: the SDK fires onclose/onerror when the
+  // connection drops, so `/mcp` and `/doctor` stop reporting a dead server up.
+  let connected = true;
+  const lifecycle = client as McpSdkClient & {
+    onclose?: () => void;
+    onerror?: (err: unknown) => void;
+  };
+  lifecycle.onclose = () => {
+    connected = false;
+  };
+  lifecycle.onerror = () => {
+    connected = false;
+  };
   await client.connect(await makeTransport());
   return {
     async listTools() {
@@ -200,6 +327,7 @@ const defaultConnect: McpConnect = async (_name, config) => {
         name: t.name,
         description: t.description,
         inputSchema: t.inputSchema as JsonSchema | undefined,
+        ...(t.annotations ? { annotations: t.annotations } : {}),
       }));
     },
     async callTool(name, args) {
@@ -209,7 +337,9 @@ const defaultConnect: McpConnect = async (_name, config) => {
       });
       return { content: res.content, isError: Boolean(res.isError) };
     },
+    isConnected: () => connected,
     async close() {
+      connected = false;
       await client.close();
     },
   };
@@ -219,7 +349,12 @@ const defaultConnect: McpConnect = async (_name, config) => {
 interface McpSdkClient {
   connect(transport: unknown): Promise<void>;
   listTools(): Promise<{
-    tools?: { name: string; description?: string; inputSchema?: unknown }[];
+    tools?: {
+      name: string;
+      description?: string;
+      inputSchema?: unknown;
+      annotations?: { readOnlyHint?: boolean };
+    }[];
   }>;
   callTool(req: {
     name: string;

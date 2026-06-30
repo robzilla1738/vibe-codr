@@ -69,6 +69,13 @@ export {
   type RecallOptions,
 } from "./recall.ts";
 export {
+  resolveEmbedder,
+  aiSdkEmbedder,
+  localEmbedder,
+  cosineSimilarity,
+  type Embedder,
+} from "./embeddings.ts";
+export {
   formatStatus,
   formatContextUsage,
   formatCost,

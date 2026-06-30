@@ -1,4 +1,4 @@
-import type { LanguageModel } from "ai";
+import type { LanguageModel, EmbeddingModel } from "ai";
 import type { ProviderConfig } from "@vibe/config";
 
 /** Capability + cost metadata, enriched from models.dev. */
@@ -48,6 +48,13 @@ export interface ProviderDef {
     modelId: string,
     opts: ProviderCreateOptions,
   ): LanguageModel | Promise<LanguageModel>;
+  /** Build an AI-SDK text-embedding model for `modelId`, when the provider
+   * supports embeddings (OpenAI + most OpenAI-compatible). Optional; absent or
+   * throwing means "no embeddings here" and the caller degrades to lexical. */
+  createEmbedding?(
+    modelId: string,
+    opts: ProviderCreateOptions,
+  ): EmbeddingModel<string> | Promise<EmbeddingModel<string>>;
   /** Live availability via the provider's `/v1/models` (or SDK). */
   listModels(opts: ProviderCreateOptions): Promise<ModelInfo[]>;
 }

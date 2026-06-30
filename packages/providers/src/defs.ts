@@ -1,4 +1,4 @@
-import type { LanguageModel } from "ai";
+import type { LanguageModel, EmbeddingModel } from "ai";
 import { ProviderAuthError } from "@vibe/shared";
 import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
@@ -235,8 +235,37 @@ const BUILTINS: BuiltinSpec[] = [
   },
 ];
 
+/** Build the AI-SDK provider instance (shared by language + embedding models). */
+async function buildProvider(
+  spec: BuiltinSpec,
+  baseURL: (opts: ProviderCreateOptions) => string,
+  opts: ProviderCreateOptions,
+): Promise<(modelId: string) => unknown> {
+  const url = baseURL(opts);
+  // A provider with no default base URL (the generic `custom` provider) is
+  // unusable until one is set — fail with an actionable message rather than
+  // letting the SDK build a broken relative URL.
+  if (!url) {
+    throw new ProviderAuthError(spec.id, [
+      `set a base URL: config.providers.${spec.id}.baseURL or $${spec.baseURLEnv ?? "BASE_URL"}`,
+    ]);
+  }
+  const mod = await loadProviderModule(spec.module!);
+  const factory = mod[spec.factory!];
+  if (typeof factory !== "function") {
+    throw new ProviderAuthError(spec.id, [`${spec.module} has no export "${spec.factory}"`]);
+  }
+  // openai-compatible needs a `name`; others ignore extra fields.
+  return factory({
+    name: spec.id,
+    apiKey: opts.apiKey ?? "not-needed",
+    baseURL: url,
+    ...(opts.headers ? { headers: opts.headers } : {}),
+  }) as (modelId: string) => unknown;
+}
+
 function buildDef(spec: BuiltinSpec): ProviderDef {
-  const baseURL = (opts: ProviderCreateOptions) =>
+  const baseURL = (opts: ProviderCreateOptions): string =>
     opts.baseURL ??
     (spec.baseURLEnv ? process.env[spec.baseURLEnv] : undefined) ??
     // With a key and no explicit override, prefer the hosted cloud endpoint
@@ -255,31 +284,22 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
     },
 
     async create(modelId, opts): Promise<LanguageModel> {
-      const url = baseURL(opts);
-      // A provider with no default base URL (the generic `custom` provider) is
-      // unusable until one is set — fail with an actionable message rather than
-      // letting the SDK build a broken relative URL.
-      if (!url) {
-        throw new ProviderAuthError(spec.id, [
-          `set a base URL: config.providers.${spec.id}.baseURL or $${spec.baseURLEnv ?? "BASE_URL"}`,
-        ]);
-      }
-      const mod = await loadProviderModule(spec.module!);
-      const factory = mod[spec.factory!];
-      if (typeof factory !== "function") {
-        throw new ProviderAuthError(spec.id, [
-          `${spec.module} has no export "${spec.factory}"`,
-        ]);
-      }
-      // openai-compatible needs a `name`; others ignore extra fields.
-      const provider = factory({
-        name: spec.id,
-        apiKey: opts.apiKey ?? "not-needed",
-        baseURL: url,
-        ...(opts.headers ? { headers: opts.headers } : {}),
-      });
+      const provider = await buildProvider(spec, baseURL, opts);
       // Provider instances are callable: provider(modelId) -> LanguageModel.
       return provider(modelId) as LanguageModel;
+    },
+
+    async createEmbedding(modelId, opts): Promise<EmbeddingModel<string>> {
+      const provider = await buildProvider(spec, baseURL, opts);
+      const embed = (provider as {
+        textEmbeddingModel?: (id: string) => EmbeddingModel<string>;
+      }).textEmbeddingModel;
+      if (typeof embed !== "function") {
+        throw new ProviderAuthError(spec.id, [
+          `provider "${spec.id}" does not support text embeddings`,
+        ]);
+      }
+      return embed.call(provider, modelId);
     },
 
     async listModels(opts): Promise<ModelInfo[]> {

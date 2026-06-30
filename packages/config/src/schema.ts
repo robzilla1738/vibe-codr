@@ -43,6 +43,26 @@ export const WebfetchConfigSchema = z.object({
   maxBytes: z.number().int().positive().default(4_000_000),
 });
 
+/** Long-term memory configuration (semantic recall + write-path + injection). */
+export const MemoryConfigSchema = z.object({
+  /** Semantic (embedding) recall fused with lexical BM25. Degrades to lexical
+   * when no embedder is available, so this is safe to leave enabled. */
+  semantic: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Embedding model: "local" for on-device ONNX (optional dep), or a
+       * "provider/model" string for a cloud embedder (e.g. openai/text-embedding-3-small). */
+      model: z.string().default("local"),
+    })
+    .default({ enabled: true, model: "local" }),
+  /** Inject a goal-seeded "relevant past context" block at session start. Off by
+   * default (it changes prompt content and cache keys); opt in for continuity. */
+  proactiveRecall: z.boolean().default(false),
+  /** Write a short {goal,status,summary,decisions} digest at session end for
+   * future recall. Off by default. */
+  sessionDigest: z.boolean().default(false),
+});
+
 /** Manual price override for a model, in USD per 1,000,000 tokens. */
 export const ModelPriceSchema = z.object({
   input: z.number().nonnegative().optional(),
@@ -107,6 +127,17 @@ export const ConfigSchema = z.object({
       threshold: z.number().min(0.1).max(0.95).default(0.75),
     })
     .default({ threshold: 0.75 }),
+  /**
+   * Long-term memory: semantic (embedding) recall on top of the lexical BM25
+   * scorer, an agent write-path, and optional proactive injection. Everything
+   * defaults to local/offline and degrades to lexical when no embedder is
+   * available, so nothing cloud or native is required at startup.
+   */
+  memory: MemoryConfigSchema.default({
+    semantic: { enabled: true, model: "local" },
+    proactiveRecall: false,
+    sessionDigest: false,
+  }),
   /** Web search (TinyFish). Enabled by default; needs a free API key to run. */
   search: SearchConfigSchema.default({ enabled: true }),
   /** webfetch SSRF policy + limits. Private/loopback/metadata hosts blocked by default. */
@@ -190,5 +221,6 @@ export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type PermissionRule = z.infer<typeof PermissionRuleSchema>;
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 export type WebfetchConfig = z.infer<typeof WebfetchConfigSchema>;
+export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type McpServer = z.infer<typeof McpServerSchema>;

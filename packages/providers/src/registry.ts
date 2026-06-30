@@ -1,4 +1,4 @@
-import type { LanguageModel } from "ai";
+import type { LanguageModel, EmbeddingModel } from "ai";
 import { ModelResolutionError, ProviderAuthError } from "@vibe/shared";
 import type { Config } from "@vibe/config";
 import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
@@ -86,6 +86,28 @@ export class ProviderRegistry {
     }
     const opts = this.resolveAuth(providerId, config);
     return def.create(modelId, opts);
+  }
+
+  /** Resolve a full model string to a live text-embedding model (for semantic
+   * memory). Throws if the provider is unknown, unconfigured, or has no
+   * embedding support — the caller catches and degrades to lexical recall. */
+  async embeddingModel(
+    modelString: string,
+    config: Config,
+  ): Promise<EmbeddingModel<string>> {
+    const { providerId, modelId } = parseModelString(modelString);
+    const def = this.#providers.get(providerId);
+    if (!def) {
+      throw new ModelResolutionError(modelString, `unknown provider "${providerId}"`);
+    }
+    if (!def.createEmbedding) {
+      throw new ModelResolutionError(
+        modelString,
+        `provider "${providerId}" has no embedding support`,
+      );
+    }
+    const opts = this.resolveAuth(providerId, config);
+    return def.createEmbedding(modelId, opts);
   }
 
   /** List live models for every configured provider, enriched elsewhere. */

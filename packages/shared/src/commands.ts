@@ -13,6 +13,11 @@ export type EngineCommand =
   | { type: "set-model"; model: string }
   | { type: "set-goal"; goal: string | null }
   | { type: "abort" }
+  // Drop one queued (waiting) prompt without running it.
+  | { type: "dequeue"; id: string }
+  // "Steer": jump a queued prompt to the front and interrupt the running turn so
+  // it runs next — redirect the agent now instead of waiting for the queue.
+  | { type: "steer"; id: string }
   | { type: "compact" }
   | {
       type: "resolve-permission";

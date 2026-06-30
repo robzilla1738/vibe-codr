@@ -293,6 +293,33 @@ check("/jobs opens the background-jobs view", frame.includes("Background jobs"))
 check("jobs view shows the running command", frame.includes("bun run dev"));
 check("jobs view surfaces the localhost server", frame.includes("http://localhost:5173"));
 
+// 10) The queue panel shows prompts typed ahead, and `steer`/`✕` send the right
+// commands (run-now-with-interrupt / drop). First close the /jobs view.
+push({ type: "jobs-changed", sessionId: "smoke", jobs: [] } as UIEvent);
+push({
+  type: "queue-changed",
+  active: { id: "qa", label: "current turn" },
+  pending: [
+    { id: "q1", label: "add a dark mode toggle" },
+    { id: "q2", label: "write tests for the parser" },
+  ],
+} as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("queue panel shows queued prompts", frame.includes("Queued") && frame.includes("add a dark mode toggle"));
+sent.length = 0;
+const qRow = t.captureCharFrame().split("\n").findIndex((l) => l.includes("dark mode toggle"));
+check("located the queued row", qRow >= 0);
+if (qRow >= 0) {
+  const steerCol = t.captureCharFrame().split("\n")[qRow].indexOf("steer");
+  await t.mockMouse.click(steerCol + 2, qRow);
+  await settle();
+  check(
+    "clicking steer runs that queued prompt now (steer command)",
+    sent.some((c) => c.type === "steer" && c.id === "q1"),
+  );
+}
+
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);
   process.exit(1);

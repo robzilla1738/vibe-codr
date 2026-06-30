@@ -332,6 +332,26 @@ export class Engine implements EngineClient {
         }
         this.#session.abort();
         break;
+      case "dequeue": {
+        // Remove one waiting prompt without running it (cancel a queued item).
+        const before = this.#pending.length;
+        this.#pending = this.#pending.filter((p) => p.id !== command.id);
+        if (this.#pending.length !== before) this.#emitQueue();
+        break;
+      }
+      case "steer": {
+        // Jump a waiting prompt to the front and interrupt the running turn, so
+        // the drain picks it up next — "steer" the agent now. Other queued items
+        // keep their order behind it; nothing is dropped.
+        const idx = this.#pending.findIndex((p) => p.id === command.id);
+        const [item] = idx >= 0 ? this.#pending.splice(idx, 1) : [];
+        if (item) {
+          this.#pending.unshift(item);
+          this.#emitQueue();
+          this.#session.abort();
+        }
+        break;
+      }
       case "run-slash":
         // `/queue` inspects/clears the queue, so it must run immediately rather
         // than wait behind the work it is meant to describe.

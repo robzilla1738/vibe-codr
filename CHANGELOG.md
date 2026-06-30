@@ -5,6 +5,13 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Added
+- **A visible message queue with per-item steer + remove.** Prompts you type while
+  a turn is running already queued and ran in order — but you couldn't see or
+  control them. There's now a **Queued** panel above the input listing each waiting
+  prompt, each with two actions: **steer** (jump it to the front and interrupt the
+  running turn so it runs *now* — redirect the agent mid-flight) and **✕** (drop
+  it). New `steer`/`dequeue` engine commands back them; nothing is dropped on a
+  steer, the rest keep their order.
 - **The message input grows and wraps instead of scrolling text off-screen.** A
   long message used to scroll horizontally — the start of what you typed vanished
   off the left edge. The input now soft-wraps on word boundaries and the framed

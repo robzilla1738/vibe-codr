@@ -167,7 +167,10 @@ export function App(props: { engine: EngineClient }) {
   // Files touched this session (path → cumulative line delta), summarized in the footer.
   const [changedFiles, setChangedFiles] = createSignal<ChangedFile[]>([]);
   const [plan, setPlan] = createSignal<string | null>(null);
-  const [queued, setQueued] = createSignal(0);
+  // The full queue of prompts waiting behind the running turn (id + label), so we
+  // can show the stack and offer per-item steer/remove — not just a count.
+  const [pendingQ, setPendingQ] = createSignal<{ id: string; label: string }[]>([]);
+  const queued = () => pendingQ().length;
   // Pending permission requests, oldest first; the head is shown as a card and
   // answered by y/a/n or a typed reply.
   const [perms, setPerms] = createSignal<PendingPerm[]>([]);
@@ -609,7 +612,7 @@ export function App(props: { engine: EngineClient }) {
             setTasks(event.tasks);
             break;
           case "queue-changed":
-            setQueued(event.pending.length);
+            setPendingQ(event.pending);
             refreshStatus();
             break;
           case "usage-updated":
@@ -731,7 +734,7 @@ export function App(props: { engine: EngineClient }) {
       setCollapsedTurns(new Set());
       setChangedFiles([]);
       setPerms([]);
-      setQueued(0);
+      setPendingQ([]);
       setWorking(false);
       activeAssistant = -1;
       toolByCallId.clear();
@@ -1180,6 +1183,50 @@ export function App(props: { engine: EngineClient }) {
               );
             }}
           </For>
+        </box>
+      </Show>
+      {/* Queue — prompts you typed ahead while a turn runs. They auto-run in
+          order; each row offers `steer` (jump it to the front + interrupt the
+          current turn so it runs NOW) and `✕` (drop it). */}
+      <Show when={pendingQ().length > 0}>
+        <box
+          border
+          borderColor={palette().border}
+          title={`Queued · ${pendingQ().length}`}
+          titleColor={brand()}
+          flexDirection="column"
+          flexShrink={0}
+          marginTop={1}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <For each={pendingQ()}>
+            {(q, i) => (
+              <box flexDirection="row" gap={1}>
+                <text flexShrink={0} fg={palette().muted}>{`${i() + 1}.`}</text>
+                <text flexGrow={1} wrapMode="none" fg={palette().assistant}>
+                  {truncate(q.label, Math.max(20, contentWidth() - 24))}
+                </text>
+                <text
+                  flexShrink={0}
+                  fg={brand()}
+                  onMouseDown={() => props.engine.send({ type: "steer", id: q.id })}
+                >
+                  {"steer"}
+                </text>
+                <text
+                  flexShrink={0}
+                  fg={palette().muted}
+                  onMouseDown={() => props.engine.send({ type: "dequeue", id: q.id })}
+                >
+                  {"✕"}
+                </text>
+              </box>
+            )}
+          </For>
+          <text fg={palette().muted} marginTop={1}>
+            {"steer = run next & interrupt now  ·  ✕ = remove  ·  otherwise they run in order"}
+          </text>
         </box>
       </Show>
       {/* Permission card — a bordered warning with the tool action and y/a/n. */}

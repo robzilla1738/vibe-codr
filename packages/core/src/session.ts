@@ -712,6 +712,20 @@ export class Session {
       return;
     }
     this.#modelMessages = result.messages;
+    // The provider's last-step input count measured the PRE-compaction prompt,
+    // so it now over-reports the context fill by everything we just summarized
+    // away. Drop it so `contextTokens` falls back to a fresh estimate of the
+    // compacted messages (the next real step refines it with the provider's
+    // true count), and surface that estimate now so `/context`, `/status`, and
+    // the live `ctx %` reflect the freed space immediately instead of staying
+    // pinned at the old high value until the next turn.
+    this.#lastInputTokens = 0;
+    this.#deps.bus.emit({
+      type: "context-updated",
+      sessionId: this.id,
+      usedTokens: estimateTokens(this.#modelMessages),
+      contextWindow: this.#contextWindow,
+    });
     this.#deps.bus.emit({
       type: "compacted",
       sessionId: this.id,

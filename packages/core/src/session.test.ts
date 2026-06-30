@@ -484,3 +484,59 @@ test("emits engine-error when the provider is unconfigured", async () => {
     if (prev !== undefined) process.env.ANTHROPIC_API_KEY = prev;
   }
 });
+
+test("compaction frees the reported context immediately (no stale provider count)", async () => {
+  // Each turn reports a big provider input count, so #lastInputTokens climbs to
+  // the PRE-compaction prompt size. After /compact drops most messages, the live
+  // context must reflect the freed space at once — not stay pinned at the old
+  // high value until the next turn runs a step.
+  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const reply = (text: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: text },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+    ]);
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => reply(`answer ${call++}`) as never,
+    // /compact summarizes the older half via generateText.
+    doGenerate: async () => ({
+      content: [{ type: "text", text: "earlier work summarized." }],
+      finishReason: "stop" as const,
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      warnings: [],
+    }),
+  });
+
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    getContextWindow: async () => 128_000,
+  });
+
+  // Build up more than COMPACT_KEEP_RECENT (6) model messages so there is an
+  // older half to summarize.
+  for (let i = 0; i < 5; i++) await session.run(`turn ${i}`);
+  expect(session.contextTokens).toBe(90_000); // pinned to the provider count
+
+  const events = await collect(bus, () => session.compact());
+
+  // After compaction the reported context drops to a fresh estimate of the
+  // surviving messages — far below the stale 90k provider count — and a
+  // context-updated event carries that lower number.
+  expect(session.contextTokens).toBeLessThan(90_000);
+  const ctxUpdate = events.findLast((e) => e.type === "context-updated");
+  expect(ctxUpdate && ctxUpdate.type === "context-updated" && ctxUpdate.usedTokens).toBeLessThan(
+    90_000,
+  );
+  expect(events.some((e) => e.type === "compacted")).toBe(true);
+});

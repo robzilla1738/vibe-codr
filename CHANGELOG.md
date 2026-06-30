@@ -5,6 +5,15 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **Context % stayed pinned at the pre-compaction fill after `/compact`.** The
+  live context indicator (and `/context`/`/status`) report the provider's real
+  last-step input-token count, but that count measured the prompt *before*
+  compaction dropped the older half — so right after a manual or auto compaction,
+  `contextTokens` kept returning the stale, high number until the next turn ran a
+  step, hiding the very space the compaction just freed. Compaction now clears the
+  cached count (so `contextTokens` falls back to a fresh estimate of the surviving
+  messages, refined by the next step's real count) and emits a `context-updated`
+  carrying that lower number, so the freed space shows immediately.
 - **Compaction could orphan a tool result and 400 the next turn.** The kept-window
   slice cut by message count alone, but `response.messages` records each tool result
   as its own `role: "tool"` message — so when the boundary landed on one, `recent`

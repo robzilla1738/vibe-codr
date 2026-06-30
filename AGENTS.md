@@ -126,7 +126,11 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
     kept window across a tool boundary: tool results are their own `role: "tool"`
     messages, so the slice point walks back past any leading `tool` message (and
     bails to null if that leaves nothing older) — otherwise `recent` would start
-    with a `tool_result` whose `tool_use` was summarized away, a hard 400.
+    with a `tool_result` whose `tool_use` was summarized away, a hard 400. After a
+    compaction actually replaces the message set it **resets `#lastInputTokens`**
+    (the provider's real prompt size measured the pre-compaction context) and emits
+    a fresh `context-updated`, so `contextTokens`/`/context`/the live `ctx %` reflect
+    the freed space immediately instead of staying pinned at the old high value.
   - Headless `runOneShot` returns `false` on engine error so the CLI exits
     non-zero; interactivity is gated on `values.prompt === undefined` (so `-p ""`
     reads stdin, not onboarding).

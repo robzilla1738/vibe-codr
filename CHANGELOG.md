@@ -5,6 +5,16 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **Markdown inline markers (`**bold**`, `` `code` ``) rendered raw in the TUI.**
+  OpenTUI's `<markdown>` renderable conceals syntax markers via a tree-sitter
+  *inline* parser, which is loaded by a worker that statically imports
+  `web-tree-sitter` — a **peer** dependency of `@opentui/core` that was never
+  installed. The worker failed with `Cannot find package 'web-tree-sitter'`, so
+  the inline parser never ran and every reply showed literal `**`/backticks
+  (e.g. `**BTC ≈ $58,954**` instead of bold). Added `web-tree-sitter@0.25.10`
+  (pinned to the peer range) as an optional peer of `@vibe/tui`, provided through
+  the root dev environment. The smoke test now asserts the bold markers are
+  concealed (`!frame.includes("**")`) so the missing peer can't regress silently.
 - **A subagent's answer could flood the parent's context window.** Every
   context-producing tool caps its output (`read`/`grep`/`git_*`/`edit`/…) because
   it lands verbatim in the prompt — but `spawn_subagent` returned the child's
@@ -216,6 +226,20 @@ All notable changes to vibe-codr are documented here.
   reserved for diffs and warnings.
 
 ### Improved
+- **Consecutive tool steps now chain instead of floating apart.** A run of tool
+  calls (search → fetch → fetch) used to render each row in its own one-line gap,
+  reading as unrelated fragments. A tool row that follows another *visible* tool
+  row now stacks flush (no top margin), so a sequence reads as one connected
+  group; the gap is kept only at the boundary with prose, a notice, or a folded
+  turn. Hidden (folded) rows don't count as the predecessor, so an expanded turn
+  still chains correctly.
+- **Cleaner splash + under-input status line.** The wordmark tagline, sample
+  prompts, and key hints are now one tidy left-aligned block (centered as a
+  whole, shared left edge) with a calm muted subtitle and the actionable tokens —
+  the example prompts and the `shift+tab`/`@`/`/` keys — in the brighter
+  foreground. The under-input key hints get the same two-tone treatment, and the
+  middot separators are unified to a single `·` rhythm across the splash and
+  footer so nothing reads as raggedly centered or randomly spaced.
 - **Subagent replies + web-search results render as rich markdown.** A
   `spawn_subagent` result used to print as raw text (literal `##`, `**bold**`,
   `|table|`); it now opens expanded and renders through the native `<markdown>`

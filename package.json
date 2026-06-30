@@ -36,7 +36,8 @@
     "playwright": "^1.61.1",
     "solid-js": "^1.9.13",
     "turbo": "^2.10.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "web-tree-sitter": "0.25.10"
   },
   "engines": {
     "bun": ">=1.2.0"

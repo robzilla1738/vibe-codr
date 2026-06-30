@@ -748,11 +748,32 @@ export function App(props: { engine: EngineClient }) {
   const detailsRight = () =>
     [headModel(), changedSummary(), metrics()].filter(Boolean).join("  ·  ");
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
-  // Key hints; advertise `/jobs` only while background jobs are actually running.
-  const hintsText = () => {
-    const base = "shift+tab mode · / commands · click ▸ expand";
+  // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in
+  // the bright foreground; their descriptors and separators stay muted. `/jobs`
+  // is advertised only while background jobs are actually running.
+  const hintSegs = (): Seg[] => {
+    const dim = palette().muted;
+    const lit = palette().assistant;
+    const segs: Seg[] = [
+      { t: "shift+tab", fg: lit },
+      { t: " mode", fg: dim },
+      { t: "  ·  ", fg: dim },
+      { t: "/", fg: lit },
+      { t: " commands", fg: dim },
+      { t: "  ·  ", fg: dim },
+      { t: "click", fg: lit },
+      { t: " ▸ expand", fg: dim },
+    ];
     const n = runningJobs();
-    return n > 0 ? `${base} · ${n} job${n === 1 ? "" : "s"} running (/jobs)` : base;
+    if (n > 0) {
+      segs.push(
+        { t: "  ·  ", fg: dim },
+        { t: `${n} job${n === 1 ? "" : "s"}`, fg: palette().notice },
+        { t: " running ", fg: dim },
+        { t: "(/jobs)", fg: lit },
+      );
+    }
+    return segs;
   };
 
   return (
@@ -868,18 +889,43 @@ export function App(props: { engine: EngineClient }) {
                 </box>
                 <box flexGrow={1} />
               </box>
+              {/* One tidy left-aligned block, centered as a whole (the flex
+                  spacers below), so every line shares a left edge instead of each
+                  centering raggedly. Calm muted subtitle; the actionable tokens —
+                  example prompts and keys — pick up the brighter foreground. */}
               <box flexDirection="row" marginTop={1}>
                 <box flexGrow={1} />
                 <box flexDirection="column" flexShrink={0}>
-                  <text fg={palette().muted}>
-                    {"Your model-agnostic coding agent — plan · execute · yolo."}
-                  </text>
-                  <text fg={palette().muted} marginTop={1}>
-                    {"Try:  explain this codebase  ·  fix the failing test  ·  add a --json flag"}
-                  </text>
-                  <text fg={palette().muted}>
-                    {"Shift+Tab switches mode · @file attaches · / opens commands"}
-                  </text>
+                  <SegRow
+                    segs={[
+                      { t: "Your model-agnostic coding agent", fg: palette().muted },
+                      { t: "  —  plan · execute · yolo", fg: palette().muted },
+                    ]}
+                  />
+                  <SegRow
+                    marginTop={1}
+                    segs={[
+                      { t: "Try ", fg: palette().muted },
+                      { t: "› ", fg: brand() },
+                      { t: "explain this codebase", fg: palette().assistant },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "fix the failing test", fg: palette().assistant },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "add a --json flag", fg: palette().assistant },
+                    ]}
+                  />
+                  <SegRow
+                    segs={[
+                      { t: "shift+tab", fg: palette().assistant },
+                      { t: " mode", fg: palette().muted },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "@", fg: palette().assistant },
+                      { t: " files", fg: palette().muted },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "/", fg: palette().assistant },
+                      { t: " commands", fg: palette().muted },
+                    ]}
+                  />
                 </box>
                 <box flexGrow={1} />
               </box>
@@ -902,7 +948,18 @@ export function App(props: { engine: EngineClient }) {
               tool block in place (tool→tool) but never changes kind — so the
               per-kind <Show> branches below never need to swap a row's element. */}
           <Index each={blocks()}>
-            {(block) => (
+            {(block, index) => {
+              // A tool row "chains" to the one above it when that row is also a
+              // visible tool — consecutive steps (search → fetch → fetch) then
+              // stack flush instead of each floating in its own gap.
+              const chained = () => {
+                if (index <= 0) return false;
+                const cur = block();
+                if (cur.kind !== "tool" || isHidden(cur.id)) return false;
+                const prev = blocks()[index - 1];
+                return prev?.kind === "tool" && !isHidden(prev.id);
+              };
+              return (
               <Show
                 when={block().kind !== "user"}
                 fallback={
@@ -971,6 +1028,7 @@ export function App(props: { engine: EngineClient }) {
                     block={block as () => Extract<Block, { kind: "tool" }>}
                     palette={palette()}
                     style={mdStyle}
+                    chained={chained()}
                     onToggle={(id) => anchoredToggle(() => toggle(id))}
                   />
                 </Show>
@@ -980,7 +1038,8 @@ export function App(props: { engine: EngineClient }) {
                   </text>
                 </Show>
               </Show>
-            )}
+              );
+            }}
           </Index>
         </scrollbox>
         </Show>
@@ -1193,7 +1252,7 @@ export function App(props: { engine: EngineClient }) {
         </Show>
       </box>
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
-        <text fg={palette().muted}>{hintsText()}</text>
+        <SegRow segs={hintSegs()} />
         <Show when={goalInfo()}>
           <text flexShrink={0} fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", 40)}`}</text>
         </Show>
@@ -1201,6 +1260,24 @@ export function App(props: { engine: EngineClient }) {
       </box>
       {/* Right gutter — mirrors the left, centering the chat column. */}
       <box flexGrow={1} flexShrink={1} />
+    </box>
+  );
+}
+
+/** One coloured run in a {@link SegRow} — bright tokens on muted scaffolding. */
+type Seg = { t: string; fg: string };
+
+/**
+ * A single line built from coloured text runs, rendered as a row of adjacent
+ * `<text>` segments (OpenTUI has no inline-markup `<text>`, so a styled line is a
+ * row of plain ones). Left-aligned; callers center a whole stack of these by
+ * wrapping the column in flex spacers, which keeps every line on a shared left
+ * edge instead of raggedly centering each one.
+ */
+function SegRow(props: { segs: Seg[]; marginTop?: number }) {
+  return (
+    <box flexDirection="row" flexShrink={0} marginTop={props.marginTop ?? 0}>
+      <For each={props.segs}>{(s) => <text fg={s.fg}>{s.t}</text>}</For>
     </box>
   );
 }
@@ -1243,6 +1320,8 @@ function ToolBlockView(props: {
   block: () => Extract<Block, { kind: "tool" }>;
   palette: Palette;
   style: SyntaxStyle | undefined;
+  /** This row follows another visible tool row → stack flush (no top gap). */
+  chained?: boolean;
   onToggle: (id: number) => void;
 }) {
   const b = props.block;
@@ -1261,7 +1340,7 @@ function ToolBlockView(props: {
       id={`tool-${b().id}`}
       flexDirection="column"
       flexShrink={0}
-      marginTop={1}
+      marginTop={props.chained ? 0 : 1}
       paddingLeft={1}
       onMouseDown={() => {
         if (expandable()) props.onToggle(b().id);

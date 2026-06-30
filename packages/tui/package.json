@@ -19,11 +19,13 @@
   "peerDependencies": {
     "@opentui/core": "*",
     "@opentui/solid": "*",
-    "solid-js": "*"
+    "solid-js": "*",
+    "web-tree-sitter": "*"
   },
   "peerDependenciesMeta": {
     "@opentui/core": { "optional": true },
     "@opentui/solid": { "optional": true },
-    "solid-js": { "optional": true }
+    "solid-js": { "optional": true },
+    "web-tree-sitter": { "optional": true }
   }
 }

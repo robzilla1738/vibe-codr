@@ -97,6 +97,10 @@ await settle();
 frame = t.captureCharFrame();
 check("user message renders", frame.includes("What is 6 times 7?"));
 check("streamed assistant reply renders", frame.includes("42"));
+// The reply was `**42**.` — the markdown renderable must CONCEAL the bold
+// markers (it needs the web-tree-sitter peer dep loaded). Raw `**` leaking
+// through means the inline parser didn't load. Guards that regression.
+check("assistant bold markers are concealed (no raw **)", !frame.includes("**"));
 // A turn is in flight (no turn-finished yet) → the working spinner shows.
 check("working indicator renders while a turn runs", frame.includes("Working"));
 

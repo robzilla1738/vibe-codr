@@ -191,7 +191,14 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   native `<markdown content streaming syntaxStyle>` renderable (build the style
   once with `SyntaxStyle.create()`) — **never** pre-style markdown into an ANSI
   string and hand it to `<text>`: the buffer counts the escape bytes as glyph
-  width and garbles wrapped/streamed replies (that was the corruption bug).
+  width and garbles wrapped/streamed replies (that was the corruption bug). The
+  renderable conceals inline markers (`**bold**`, `` `code` ``) via a tree-sitter
+  *inline* parser whose worker statically imports **`web-tree-sitter`** — a peer
+  dep of `@opentui/core`. It's wired as an optional peer of `@vibe/tui` and
+  provided through the root dev env; without it the worker throws `Cannot find
+  package 'web-tree-sitter'`, conceal never runs, and every reply shows literal
+  `**`/backticks. The smoke test pushes `**42**` and asserts `!frame.includes("**")`
+  so a missing peer can't regress silently.
   `<code>`/`<diff>` intrinsics also exist; all renderables accept `onMouseDown`
   (used for click-to-expand of tool output), and `useTerminalDimensions()` drives
   the responsive `contentWidth()` (the centered column reflows on resize). A mouse
@@ -223,7 +230,13 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   flex-grow-centered row, so the wordmark is centered to the screen — NOT
   left-aligned against the wider tips, which reads as off-center; a width+height
   guard swaps in a compact `◆ VIBE CODR`
-  on small terminals) — then the stacked status surfaces, the input, and the
+  on small terminals). The tips are one **left-aligned** column (tagline · sample
+  prompts · key hints) centered as a whole block, so every line shares a left edge
+  rather than each centering raggedly; they render via `SegRow` (a row of coloured
+  `<text>` runs — OpenTUI has no inline-markup `<text>`) in a two-tone scheme:
+  muted scaffolding, brighter foreground on the actionable tokens (example
+  prompts, `shift+tab`/`@`/`/`). The under-input key hints use the same `SegRow`
+  two-tone treatment — then the stacked status surfaces, the input, and the
   under-input status block. The transcript is `<scrollbox flexGrow={1}
   flexShrink={1} stickyScroll stickyStart="bottom">`. Every surface *below* the
   transcript (working spinner, plan box, **Tasks** panel, **Subagents** panel,
@@ -232,7 +245,10 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   overlapping row. Long conversations must scroll inside the box, never overflow
   onto the input. The transcript is a list of `Block`s rendered with `<Index>`
   (stable per position, append-only); tool output is condensed to one clickable
-  row and expands in place. A **`spawn_subagent` block is flagged `isMarkdown`** —
+  row and expands in place. Consecutive **tool** rows stack flush (chained — the
+  follower drops its top margin when the prior visible block is also a tool), so a
+  search→fetch→fetch sequence reads as one group instead of separated fragments;
+  the gap is kept only at a boundary with prose, a notice, or a folded turn. A **`spawn_subagent` block is flagged `isMarkdown`** —
   it opens expanded and renders its reply through `<markdown>` (headers, bold,
   lists, code, and **tables**, which OpenTUI renders natively) instead of raw text
   lines; `ToolBlockView` takes the `SyntaxStyle` for this. Expand/collapse goes

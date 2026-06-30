@@ -3,7 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
-import type { UIEvent } from "@vibe/shared";
+import { z } from "zod";
+import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
@@ -367,6 +368,105 @@ test("a plan-mode parent rejects an execute-only named agent (no child runs)", a
   expect(output).toContain("explore");
   // Only the parent's own two steps ran (no child model call).
   expect(call).toBe(2);
+});
+
+test("a read-only subagent does NOT mark the parent turn as mutating", async () => {
+  // spawn_subagent is read-only; an investigation child that touches nothing must
+  // not flip the parent's didMutate (which would spuriously trigger auto-verify).
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "investigate" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "c" },
+      { type: "text-delta", id: "c", delta: "looked, found nothing to change" },
+      { type: "text-end", id: "c" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "ok" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("delegate a read-only look");
+  expect(session.didMutate).toBe(false);
+});
+
+test("a subagent that mutates DOES mark the parent turn as mutating", async () => {
+  // A child that calls a non-read-only tool propagates didMutate up to the parent
+  // so auto-verify still runs — without the blanket spawn_subagent=mutated proxy.
+  let mutations = 0;
+  const writeTool = {
+    name: "do_write",
+    description: "pretend to write a file",
+    inputSchema: z.object({}),
+    readOnly: false,
+    concurrencySafe: true,
+    execute: async () => {
+      mutations++;
+      return { output: "wrote" };
+    },
+  } as unknown as ToolDefinition;
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "make a change" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    // child step 1: call the mutating tool
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "w1", toolName: "do_write", input: JSON.stringify({}) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    // child step 2: report
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "c" },
+      { type: "text-delta", id: "c", delta: "done writing" },
+      { type: "text-end", id: "c" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    // parent wrap-up
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "ok" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const session = new Session({
+    config: { ...defaultConfig(), approvalMode: "auto" },
+    registry: mockRegistry(model),
+    toolset: new Toolset([writeTool]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("delegate a mutating change");
+  expect(mutations).toBe(1);
+  expect(session.didMutate).toBe(true);
 });
 
 test("fork() gives a subagent a fresh context — no inherited history/usage/cost/store", async () => {

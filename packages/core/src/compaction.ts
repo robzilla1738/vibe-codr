@@ -1,9 +1,36 @@
 import type { ModelMessage } from "ai";
 
-/** Rough token estimate (~4 chars/token) over serialized messages. */
+/**
+ * Flat char-cost charged for a binary part (image/file) in the estimate. A real
+ * image is a handful of provider tokens, NOT the ~5-7 chars/byte that
+ * `JSON.stringify`-ing its `Uint8Array` (`{"0":255,"1":12,…}`) would invent — a
+ * single 500KB attachment would otherwise read as millions of "chars" and force
+ * compaction every turn. The provider's real input-token count (threaded in via
+ * `currentTokens`) is authoritative; this estimate is only the pre-first-step
+ * fallback, so a coarse flat cost is sufficient and safe.
+ */
+const BINARY_PART_CHARS = 1_500;
+
+/** Char weight of one message's content, treating binary parts as a flat cost. */
+function messageChars(m: ModelMessage): number {
+  const content = (m as { content?: unknown }).content;
+  if (typeof content === "string") return content.length + 16;
+  if (Array.isArray(content)) {
+    let chars = 16;
+    for (const part of content) {
+      const type = (part as { type?: string })?.type;
+      if (type === "image" || type === "file") chars += BINARY_PART_CHARS;
+      else chars += JSON.stringify(part).length;
+    }
+    return chars;
+  }
+  return JSON.stringify(m).length;
+}
+
+/** Rough token estimate (~4 chars/token); binary parts counted flat, not by byte. */
 export function estimateTokens(messages: ModelMessage[]): number {
   let chars = 0;
-  for (const m of messages) chars += JSON.stringify(m).length;
+  for (const m of messages) chars += messageChars(m);
   return Math.ceil(chars / 4);
 }
 
@@ -17,6 +44,14 @@ export interface CompactOptions {
   summarize: (messages: ModelMessage[]) => Promise<string>;
   /** Force compaction regardless of the threshold (e.g. /compact). */
   force?: boolean;
+  /**
+   * The TRUE current prompt size in tokens (the provider's real input count,
+   * which already includes the system prompt + tool schemas + cache). When
+   * provided, this — not the messages-only `estimateTokens` — drives the
+   * threshold check, so a session no longer sails past the limit because the
+   * estimate omitted ~40k of system/tool overhead. Falls back to the estimate.
+   */
+  currentTokens?: number;
 }
 
 export interface CompactResult {
@@ -25,7 +60,8 @@ export interface CompactResult {
 }
 
 /**
- * Context-window-aware compaction: when the estimated token count crosses the
+ * Context-window-aware compaction: when the current prompt size (the provider's
+ * real `currentTokens` when known, else the messages-only estimate) crosses the
  * threshold (or `force`), summarize all but the last `keep` messages into one
  * note and prepend it. The system prompt and goal live outside `messages` and
  * are therefore always preserved. The kept window is never cut across a
@@ -36,8 +72,11 @@ export async function compactMessages(
   messages: ModelMessage[],
   opts: CompactOptions,
 ): Promise<CompactResult | null> {
-  const before = estimateTokens(messages);
-  if (!opts.force && before < opts.threshold * opts.contextWindow) return null;
+  const estimate = estimateTokens(messages);
+  // Trigger on the provider's real prompt size when known (it counts the system
+  // prompt + tool schemas the estimate can't see); fall back to the estimate.
+  const trigger = opts.currentTokens && opts.currentTokens > 0 ? opts.currentTokens : estimate;
+  if (!opts.force && trigger < opts.threshold * opts.contextWindow) return null;
   if (messages.length <= opts.keep) return null;
 
   // Never cut between an assistant's `tool-call` and its `tool` result message:
@@ -72,5 +111,8 @@ export async function compactMessages(
   } else {
     next = [{ role: "user", content: note }, ...recent];
   }
-  return { messages: next, freed: Math.max(0, before - estimateTokens(next)) };
+  // Report freed space as the drop in the (messages-only) estimate, so it
+  // measures what compaction actually removed rather than the system/tool
+  // overhead that `currentTokens` carries and compaction never touches.
+  return { messages: next, freed: Math.max(0, estimate - estimateTokens(next)) };
 }

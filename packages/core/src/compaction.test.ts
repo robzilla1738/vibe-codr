@@ -13,6 +13,53 @@ test("estimateTokens grows with content", () => {
   expect(estimateTokens(msgs(2))).toBeLessThan(estimateTokens(msgs(20)));
 });
 
+test("estimateTokens counts an image part flat, not by its raw bytes", () => {
+  // A 500KB image: JSON.stringify-ing the Uint8Array would invent millions of
+  // "chars" (~5-7/byte); the flat cost keeps the estimate sane.
+  const bytes = new Uint8Array(500_000);
+  const withImage: ModelMessage[] = [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "look at this" },
+        { type: "image", image: bytes, mediaType: "image/png" },
+      ],
+    },
+  ];
+  // Far below the ~hundreds-of-thousands of tokens the byte-serialized form gave.
+  expect(estimateTokens(withImage)).toBeLessThan(2_000);
+});
+
+test("currentTokens (the real prompt size) drives the trigger, not the estimate", async () => {
+  // Messages estimate well under threshold, but the provider's real prompt
+  // (system + tool schemas) is over it — compaction must still fire.
+  const messages = msgs(20);
+  const estimate = estimateTokens(messages);
+  const contextWindow = 100_000;
+  // Estimate-only would NOT trip (estimate << 0.75 * window) ...
+  const noTrip = await compactMessages(messages, {
+    contextWindow,
+    threshold: 0.75,
+    keep: 6,
+    summarize: async () => "S",
+  });
+  expect(noTrip).toBeNull();
+  // ... but with the true prompt size over the threshold, it does.
+  const tripped = await compactMessages(messages, {
+    contextWindow,
+    threshold: 0.75,
+    keep: 6,
+    currentTokens: 0.8 * contextWindow,
+    summarize: async () => "S",
+  });
+  expect(estimate).toBeLessThan(0.75 * contextWindow);
+  expect(tripped).not.toBeNull();
+  // `freed` reflects the message reduction, not the system/tool overhead carried
+  // in currentTokens.
+  expect(tripped!.freed).toBeGreaterThan(0);
+  expect(tripped!.freed).toBeLessThanOrEqual(estimate);
+});
+
 test("does not compact below the threshold", async () => {
   const result = await compactMessages(msgs(4), {
     contextWindow: 100_000,

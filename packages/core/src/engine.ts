@@ -1041,6 +1041,10 @@ export class Engine implements EngineClient {
     const { command, auto, maxRetries } = this.#config.verify;
     if (!auto || !command) return;
     if (this.#session.mode !== "execute" || !this.#session.didMutate) return;
+    // The user interrupted this turn (Esc / steer) — don't run verify against a
+    // half-applied edit and enqueue an unsolicited "verification failed, fix it"
+    // turn behind whatever they steered to.
+    if (this.#session.interrupted) return;
 
     const result = await this.#runVerifyCommand(command);
     if (result.ok) return;

@@ -43,6 +43,10 @@ import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const COMPACT_KEEP_RECENT = 6;
+/** Pre-first-step padding (tokens) for the unseen system prompt + tool schemas,
+ * so a resumed/long session compacts before the real prompt blows the window.
+ * Capped to 10% of the window at the call site for small local-model contexts. */
+const COMPACT_OVERHEAD_MARGIN = 12_000;
 
 // A subagent's final answer lands verbatim in the PARENT's prompt, so — like
 // every other context-producing tool — it must be bounded: a verbose or runaway
@@ -139,6 +143,16 @@ export class Session {
    * parent detect a failed subagent — the child runs on an isolated bus so its
    * `engine-error` never reaches the parent UI. */
   #lastError: string | null = null;
+  /** Whether the last turn ended because the user cancelled it (Esc / steer /
+   * spend-stop) rather than completing or erroring. Drives "don't auto-verify a
+   * turn the user interrupted" and keeps a cancel from being painted as a fault. */
+  #interrupted = false;
+  /** Per-turn record of which tool calls ended in a handled error (permission
+   * deny, plugin veto, or an `isError` execute result). The AI-SDK reports these
+   * as ordinary string results, so the stream's `tool-result` part carries no
+   * error flag; this side-channel lets `#consume` mark them correctly. Keyed by
+   * toolCallId; populated by the tool adapter before the result part is emitted. */
+  #toolCallErrors = new Map<string, boolean>();
 
   constructor(deps: SessionDeps) {
     this.#deps = deps;
@@ -227,6 +241,11 @@ export class Session {
     return this.#lastError;
   }
 
+  /** Whether the last turn was cancelled by the user (Esc / steer / spend-stop). */
+  get interrupted(): boolean {
+    return this.#interrupted;
+  }
+
   /** The current working task list (live reference; treat as read-only). */
   get tasks(): Task[] {
     return this.#tasks;
@@ -253,8 +272,23 @@ export class Session {
   }
 
   abort(): void {
+    // Just signal the current turn. The fresh controller is installed at the
+    // top of the NEXT run()/compact() — recreating it here would discard an
+    // abort that lands during a turn's pre-stream prep (model resolve, pricing,
+    // compaction), letting the turn proceed against a non-aborted signal.
     this.#abort.abort();
-    this.#abort = new AbortController();
+  }
+
+  /** Is the active turn's signal aborted? (the user pressed Esc / steered). */
+  #aborted(): boolean {
+    return this.#abort.signal.aborted;
+  }
+
+  /** True when `err` represents the turn being cancelled rather than failing. */
+  #isAbortError(err: unknown): boolean {
+    if (this.#aborted()) return true;
+    const name = (err as { name?: string })?.name;
+    return name === "AbortError" || name === "NoOutputGeneratedError";
   }
 
   /** A marker of the current conversation length (for checkpoint rollback). */
@@ -417,6 +451,9 @@ export class Session {
         } finally {
           ctx.abortSignal?.removeEventListener("abort", onAbort);
         }
+        // A child that actually mutated the workspace makes THIS turn a mutating
+        // one (so auto-verify runs); a read-only investigation child does not.
+        if (child.didMutate) this.#turnMutated = true;
         // Fold the child's tokens + cost into the parent so `/cost` and the
         // spend guard account for delegated work (the child runs on an isolated
         // bus, so its own usage events never reach the parent UI).
@@ -429,20 +466,30 @@ export class Session {
         });
         this.#enforceBudget();
         // Surface a child failure to the parent model (and as a notice) instead
-        // of masking it as "no output".
+        // of masking it as "no output". Salvage any partial report the child
+        // produced before failing — run() records it in #history on error — so a
+        // near-complete answer isn't thrown away with the error message.
         if (child.lastError) {
+          const partial = child.lastAssistantText();
+          const result = partial
+            ? `Subagent failed: ${child.lastError}\n\nPartial output before failure:\n${partial}`
+            : `Subagent failed: ${child.lastError}`;
           this.#deps.bus.emit({
             type: "subagent-finished",
             sessionId: this.id,
             subagentId: child.id,
             result: `failed: ${child.lastError}`,
           });
-          return {
-            output: `Subagent failed: ${child.lastError}`,
-            isError: true,
-          };
+          return { output: capSubagentOutput(result), isError: true };
         }
-        const result = child.lastAssistantText() || "(subagent produced no output)";
+        // A child can complete without emitting any assistant prose (a terse
+        // execute agent that only ran tools, or a run truncated at maxSteps
+        // mid-tool-call). Say so explicitly rather than the bare "no output".
+        const result =
+          child.lastAssistantText() ||
+          (child.didMutate
+            ? "(subagent completed via tool calls but produced no written summary)"
+            : "(subagent produced no output)");
         this.#deps.bus.emit({
           type: "subagent-finished",
           sessionId: this.id,
@@ -508,20 +555,50 @@ export class Session {
     this.busy = true;
     this.#turnMutated = false;
     this.#lastError = null;
-    this.#pushUser(input, images);
+    this.#interrupted = false;
+    this.#toolCallErrors.clear();
+    // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
+    // cancel that arrives mid-turn aborts this turn's signal and the NEXT turn
+    // still starts clean — and so a steered prompt isn't run against a stale,
+    // already-aborted controller.
+    this.#abort = new AbortController();
 
     try {
-      // If a prior turn already blew the spend limit under `stop`, don't start
-      // another one — warn and end the turn immediately.
-      if (this.#enforceBudget() && config.budget.onExceed === "stop") return;
+      // If a prior turn already blew the spend limit under `stop`, refuse the new
+      // turn — but do so BEFORE pushing the user message, so we don't leave an
+      // orphan user turn with no assistant reply (consecutive same-role messages
+      // 400 on Anthropic/others). The user sees why via a notice.
+      if (config.budget.onExceed === "stop" && this.#enforceBudget()) {
+        bus.emit({
+          type: "notice",
+          level: "warn",
+          message:
+            `Spend limit reached ($${this.#costUSD.toFixed(4)} ≥ $${config.budget.limitUSD}); ` +
+            "new turns are blocked. Raise budget.limitUSD to continue.",
+        });
+        return;
+      }
+      this.#pushUser(input, images);
 
       const model = await withRetry(() => registry.resolveModel(this.model, config), {
         maxAttempts: config.retry.maxAttempts,
         baseDelayMs: config.retry.baseDelayMs,
       });
+      if (this.#aborted()) {
+        this.#interrupted = true;
+        return;
+      }
       // Resolve the active model's price once per turn for live cost tracking.
       this.#price = await this.#deps.getPricing?.(this.model);
+      if (this.#aborted()) {
+        this.#interrupted = true;
+        return;
+      }
       await this.#maybeCompact(model, false);
+      if (this.#aborted()) {
+        this.#interrupted = true;
+        return;
+      }
       const skills = this.#deps.skills;
       // Subagents are offered in BOTH modes (in plan mode they're coerced
       // read-only — parallel exploration while planning), capped by recursion
@@ -559,6 +636,8 @@ export class Session {
         cwd: this.#deps.cwd,
         sessionId: this.id,
         emit: (e: UIEvent) => bus.emit(e),
+        recordToolResult: (toolCallId: string, isError: boolean) =>
+          this.#toolCallErrors.set(toolCallId, isError),
         ...(this.#deps.fileLock ? { lockFile: this.#deps.fileLock } : {}),
         checkPermission: (name: string, input: unknown) =>
           checker.check(name, input),
@@ -695,12 +774,20 @@ export class Session {
         if (text) await this.#deps.hooks.run("assistant.message", { sessionId: this.id, text });
       }
     } catch (err) {
-      this.#lastError = (err as Error).message;
-      bus.emit({
-        type: "engine-error",
-        sessionId: this.id,
-        message: (err as Error).message,
-      });
+      // A user cancel (Esc / steer / spend-stop) makes the stream and
+      // `result.response` reject — that's not a fault. Don't paint it red or set
+      // `#lastError` (which would make a steered subagent read as "failed" to its
+      // parent). The stream's `abort` part already surfaced a "Turn aborted." notice.
+      if (this.#isAbortError(err)) {
+        this.#interrupted = true;
+      } else {
+        this.#lastError = (err as Error).message;
+        bus.emit({
+          type: "engine-error",
+          sessionId: this.id,
+          message: (err as Error).message,
+        });
+      }
     } finally {
       this.busy = false;
       await this.#persist();
@@ -711,6 +798,9 @@ export class Session {
 
   /** Force a compaction pass now (used by /compact). */
   async compact(): Promise<void> {
+    // Fresh controller so a prior turn's abort doesn't pre-cancel this, and so an
+    // Esc during the (possibly long) summarize can interrupt it.
+    this.#abort = new AbortController();
     const model = await this.#deps.registry.resolveModel(
       this.model,
       this.#deps.config,
@@ -735,11 +825,22 @@ export class Session {
       usedTokens: this.#lastInputTokens || estimateTokens(this.#modelMessages),
       contextWindow,
     });
+    // Drive the trigger off the provider's real prompt size (system prompt +
+    // tool schemas + messages + cache) when we have it; before the first step we
+    // only have the messages-only estimate, so pad it for the unseen system/tool
+    // overhead (capped to a fraction of the window so tiny local-model windows
+    // aren't forced to compact every turn).
+    const estimate = estimateTokens(this.#modelMessages);
+    const currentTokens =
+      this.#lastInputTokens > 0
+        ? Math.max(this.#lastInputTokens, estimate)
+        : estimate + Math.min(COMPACT_OVERHEAD_MARGIN, Math.floor(contextWindow * 0.1));
     const result = await compactMessages(this.#modelMessages, {
       contextWindow,
       threshold: this.#deps.config.compaction.threshold,
       keep: COMPACT_KEEP_RECENT,
       force,
+      currentTokens,
       summarize: (msgs) => this.#summarize(model, msgs),
     });
     if (!result) {
@@ -776,10 +877,7 @@ export class Session {
 
   async #summarize(model: LanguageModel, messages: ModelMessage[]): Promise<string> {
     const transcript = messages
-      .map(
-        (m) =>
-          `${m.role}: ${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`,
-      )
+      .map((m) => `${m.role}: ${contentToText(m.content)}`)
       .join("\n");
     const { text } = await generateText({
       model,
@@ -787,6 +885,9 @@ export class Session {
         "Summarize the following conversation excerpt for an AI coding agent. " +
         "Preserve decisions made, facts learned, file paths touched, and any open tasks. Be concise.\n\n" +
         transcript,
+      // Make compaction interruptible — an Esc during a long summarize shouldn't
+      // be ignored (the same controller the turn/`/compact` runs under).
+      abortSignal: this.#abort.signal,
     });
     return text;
   }
@@ -950,8 +1051,11 @@ export class Session {
         }
         case "tool-call": {
           // Track whether this turn changed the workspace (drives auto-verify).
+          // `spawn_subagent` is read-only here — it sets `#turnMutated` only if
+          // the *child* actually mutated (see `#spawnTool`), so a pure read-only
+          // investigation turn doesn't spuriously trigger auto-verify.
           const def = this.#deps.toolset.get(part.toolName);
-          if ((def && !def.readOnly) || part.toolName === "spawn_subagent") {
+          if (def && !def.readOnly) {
             this.#turnMutated = true;
           }
           bus.emit({
@@ -964,13 +1068,18 @@ export class Session {
           break;
         }
         case "tool-result": {
+          // A handled error (permission deny, plugin veto, `isError` execute
+          // result) comes back as an ordinary string result, so the SDK reports
+          // it here, not as `tool-error`. Recover the real status from the
+          // adapter's side-channel so the UI doesn't render a denied write as a
+          // successful tool call.
           bus.emit({
             type: "tool-call-finished",
             sessionId: this.id,
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             output: part.output,
-            isError: false,
+            isError: this.#toolCallErrors.get(part.toolCallId) ?? false,
           });
           break;
         }
@@ -1007,6 +1116,28 @@ export class Session {
     }
     return assistant;
   }
+}
+
+/**
+ * Flatten a model message's content to plain text for the summarizer, replacing
+ * binary parts (images/files) with a short placeholder. Without this, an
+ * `@image` attachment's `Uint8Array` would be `JSON.stringify`d into the
+ * summarization prompt as megabytes of `{"0":255,…}` byte-text.
+ */
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        const p = part as { type?: string; text?: string };
+        if (p?.type === "text") return p.text ?? "";
+        if (p?.type === "image") return "[image]";
+        if (p?.type === "file") return "[file]";
+        return JSON.stringify(part);
+      })
+      .join(" ");
+  }
+  return JSON.stringify(content);
 }
 
 function appendText(message: Message, delta: string): void {

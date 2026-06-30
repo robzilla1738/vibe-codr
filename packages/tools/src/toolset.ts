@@ -41,6 +41,13 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
   afterTool?: (toolName: string, output: unknown) => void | Promise<void>;
   /** Per-file write lock shared across the whole session tree (see ToolContext). */
   lockFile?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
+  /**
+   * Record whether a tool call ended in a (handled) error, keyed by toolCallId.
+   * Handled errors are returned to the model as ordinary string results, so the
+   * AI-SDK `tool-result` stream part carries no error flag; the consumer reads
+   * this side-channel to mark the call correctly in the UI.
+   */
+  recordToolResult?: (toolCallId: string, isError: boolean) => void;
 };
 
 /**
@@ -247,6 +254,7 @@ export function toAISDKTool(
       if (verdict.deny) {
         const reason = verdict.reason ?? "denied by a plugin";
         base.emit({ type: "notice", level: "warn", message: `Blocked ${def.name}: ${reason}` });
+        base.recordToolResult?.(options.toolCallId, true);
         return `ERROR: tool "${def.name}" was blocked (${reason}). Choose a different approach.`;
       }
     }
@@ -261,12 +269,14 @@ export function toAISDKTool(
           level: "warn",
           message: `Blocked ${def.name}: ${reason}`,
         });
+        base.recordToolResult?.(options.toolCallId, true);
         return `ERROR: tool "${def.name}" was not permitted (${reason}). Choose a different approach.`;
       }
     }
 
     const result = await def.execute(input, ctx);
     await base.afterTool?.(def.name, result.output);
+    base.recordToolResult?.(options.toolCallId, result.isError === true);
     if (result.isError) {
       const text =
         typeof result.output === "string"

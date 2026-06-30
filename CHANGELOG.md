@@ -5,6 +5,14 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **Compaction could orphan a tool result and 400 the next turn.** The kept-window
+  slice cut by message count alone, but `response.messages` records each tool result
+  as its own `role: "tool"` message — so when the boundary landed on one, `recent`
+  began with a `tool_result` whose `tool_use` had just been summarized away into the
+  older half. Anthropic/OpenAI reject that orphan with a hard 400, killing the very
+  next turn after an auto- or `/compact`. The boundary now walks back past any
+  leading `tool` message so the owning assistant turn stays whole (and returns null
+  rather than emit an invalid window when that swallows everything older).
 - **The accent color was stuck on lavender regardless of the theme.** The config
   schema *defaulted* `accentColor` to `#bb9af7`, so `brand() = accentColor() ||
   primary` always resolved to that lavender even when you never set it — the theme's

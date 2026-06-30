@@ -122,7 +122,11 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
     serialize with user turns; `LoopController.stop()` aborts the in-flight turn
     via `onStop`.
   - Compaction prepends the summary as a leading **user** turn (folding into an
-    existing leading user message) to keep strict alternation.
+    existing leading user message) to keep strict alternation, and never cuts the
+    kept window across a tool boundary: tool results are their own `role: "tool"`
+    messages, so the slice point walks back past any leading `tool` message (and
+    bails to null if that leaves nothing older) — otherwise `recent` would start
+    with a `tool_result` whose `tool_use` was summarized away, a hard 400.
   - Headless `runOneShot` returns `false` on engine error so the CLI exits
     non-zero; interactivity is gated on `values.prompt === undefined` (so `-p ""`
     reads stdin, not onboarding).

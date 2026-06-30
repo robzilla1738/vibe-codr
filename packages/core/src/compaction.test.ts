@@ -33,6 +33,21 @@ function expectValidContext(messages: ModelMessage[]): void {
   }
 }
 
+/**
+ * Assert no `tool` result message is orphaned from its `tool-call`: every
+ * `role: "tool"` message must be immediately preceded by an `assistant` message
+ * (the turn that issued the call), or by another `tool` message in the same step.
+ * A leading or summary-preceded `tool` message is the 400 we are guarding against.
+ */
+function expectNoOrphanToolResult(messages: ModelMessage[]): void {
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]!.role !== "tool") continue;
+    const prev = messages[i - 1];
+    expect(prev).toBeDefined();
+    expect(prev!.role === "assistant" || prev!.role === "tool").toBe(true);
+  }
+}
+
 test("compacts when forced, preserving the most recent messages", async () => {
   const messages = msgs(20);
   const result = await compactMessages(messages, {
@@ -80,5 +95,51 @@ test("the summary never creates two consecutive user turns", async () => {
     });
     expect(result!.messages[0]!.content).toContain("SUM");
     expectValidContext(result!.messages);
+  }
+});
+
+test("the kept window never begins with an orphaned tool result", async () => {
+  // A real turn: user → assistant(tool-call) → tool(result) → assistant(text).
+  // `response.messages` records the tool result as its own `role: "tool"` message,
+  // so a naive tail slice that lands on it would orphan the result from its call.
+  const u = (i: number): ModelMessage => ({
+    role: "user",
+    content: `ask ${i} with some padding text to add tokens`,
+  });
+  const aCall = (id: string): ModelMessage => ({
+    role: "assistant",
+    content: [
+      { type: "text", text: "working on it with padding" },
+      { type: "tool-call", toolCallId: id, toolName: "read", input: { path: "a.ts" } },
+    ],
+  });
+  const tRes = (id: string): ModelMessage => ({
+    role: "tool",
+    content: [{ type: "tool-result", toolCallId: id, toolName: "read", output: { type: "text", value: "ok" } }],
+  });
+  const aText = (i: number): ModelMessage => ({
+    role: "assistant",
+    content: `done ${i} with some padding text to add tokens`,
+  });
+
+  const messages: ModelMessage[] = [];
+  for (let i = 0; i < 5; i++) {
+    messages.push(u(i), aCall(`t${i}`), tRes(`t${i}`), aText(i));
+  }
+
+  // Sweep every `keep` so the slice boundary lands on each role in turn — the
+  // tool-message cases are the ones a naive slice would corrupt.
+  for (let keep = 1; keep <= messages.length; keep++) {
+    const result = await compactMessages(messages, {
+      contextWindow: 10,
+      threshold: 0,
+      keep,
+      force: true,
+      summarize: async () => "RECAP",
+    });
+    if (!result) continue; // boundary collapsed past anything older to summarize
+    expect(result.messages[0]!.role).toBe("user");
+    expect(result.messages[0]!.content).toContain("RECAP");
+    expectNoOrphanToolResult(result.messages);
   }
 });

@@ -28,7 +28,9 @@ export interface CompactResult {
  * Context-window-aware compaction: when the estimated token count crosses the
  * threshold (or `force`), summarize all but the last `keep` messages into one
  * note and prepend it. The system prompt and goal live outside `messages` and
- * are therefore always preserved. Returns null when no compaction is needed.
+ * are therefore always preserved. The kept window is never cut across a
+ * tool-call/tool-result boundary, so it stays a valid request. Returns null when
+ * no compaction is needed.
  */
 export async function compactMessages(
   messages: ModelMessage[],
@@ -38,8 +40,20 @@ export async function compactMessages(
   if (!opts.force && before < opts.threshold * opts.contextWindow) return null;
   if (messages.length <= opts.keep) return null;
 
-  const older = messages.slice(0, messages.length - opts.keep);
-  const recent = messages.slice(messages.length - opts.keep);
+  // Never cut between an assistant's `tool-call` and its `tool` result message:
+  // `response.messages` records tool results as their own `role: "tool"` message,
+  // so a naive tail slice can make `recent` begin with a `tool_result` whose
+  // `tool_use` got summarized away into `older` — an orphan that Anthropic/OpenAI
+  // reject with a hard 400 mid-session. Walk the boundary back until `recent`
+  // starts on a non-`tool` message, pulling the owning assistant turn along with
+  // it so the step stays whole. If that swallows everything, there is nothing
+  // older left to summarize.
+  let cut = messages.length - opts.keep;
+  while (cut > 0 && messages[cut]?.role === "tool") cut--;
+  if (cut <= 0) return null;
+
+  const older = messages.slice(0, cut);
+  const recent = messages.slice(cut);
   const summary = await opts.summarize(older);
   const note = `[Summary of earlier conversation]\n${summary}`;
 

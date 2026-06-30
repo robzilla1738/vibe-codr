@@ -109,6 +109,12 @@ export {
 } from "./memory-store.ts";
 export { MemoryService } from "./memory-service.ts";
 export {
+  registerConfigHooks,
+  parseHookOutput,
+  type ConfigHookRunners,
+  type HookRunResult,
+} from "./config-hooks.ts";
+export {
   createLimiter,
   type Limiter,
   type LimiterOptions,

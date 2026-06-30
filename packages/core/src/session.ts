@@ -886,7 +886,9 @@ export class Session {
           ? {
               beforeTool: async (toolName: string, input: unknown) => {
                 const r = await hooks.run("tool.before.execute", { toolName, input });
-                return { deny: r.deny, reason: r.reason };
+                // Return the (possibly hook-rewritten) input so the adapter runs
+                // the tool with it; `deny`/`reason` block it.
+                return { deny: r.deny, reason: r.reason, input: r.input };
               },
               afterTool: (toolName: string, output: unknown) =>
                 void hooks.run("tool.after.execute", { toolName, output }),

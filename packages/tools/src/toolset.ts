@@ -32,11 +32,12 @@ function isZodSchema(s: unknown): boolean {
 export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & {
   /** Optional gate for side-effecting tools (allow/deny/ask). */
   checkPermission?: CheckPermission;
-  /** Plugin hook fired before a tool runs; may veto it (deny + reason). */
+  /** Plugin hook fired before a tool runs; may veto it (deny + reason) or rewrite
+   * its input (the returned `input`, when present, replaces the original). */
   beforeTool?: (
     toolName: string,
     input: unknown,
-  ) => Promise<{ deny?: boolean; reason?: string }>;
+  ) => Promise<{ deny?: boolean; reason?: string; input?: unknown }>;
   /** Plugin hook fired after a tool produces output. */
   afterTool?: (toolName: string, output: unknown) => void | Promise<void>;
   /** Per-file write lock shared across the whole session tree (see ToolContext). */
@@ -278,8 +279,9 @@ export function toAISDKTool(
       abortSignal: options.abortSignal ?? new AbortController().signal,
     };
 
-    // Plugin veto hook (runs before the permission gate so a policy plugin can
-    // block a tool outright).
+    // Plugin/hook veto (runs before the permission gate so a policy hook can
+    // block a tool outright) — and may rewrite the tool's input.
+    let effectiveInput = input;
     if (base.beforeTool) {
       const verdict = await base.beforeTool(def.name, input);
       if (verdict.deny) {
@@ -288,11 +290,12 @@ export function toAISDKTool(
         base.recordToolResult?.(options.toolCallId, true);
         return `ERROR: tool "${def.name}" was blocked (${reason}). Choose a different approach.`;
       }
+      if (verdict.input !== undefined) effectiveInput = verdict.input;
     }
 
     // Gate side-effecting tools through the permission layer.
     if (!def.readOnly && base.checkPermission) {
-      const decision = await base.checkPermission(def.name, input);
+      const decision = await base.checkPermission(def.name, effectiveInput);
       if (!decision.allowed) {
         const reason = decision.reason ?? "denied";
         base.emit({
@@ -305,7 +308,7 @@ export function toAISDKTool(
       }
     }
 
-    const result = await def.execute(input, ctx);
+    const result = await def.execute(effectiveInput, ctx);
     await base.afterTool?.(def.name, result.output);
     base.recordToolResult?.(options.toolCallId, result.isError === true);
     if (result.isError) {

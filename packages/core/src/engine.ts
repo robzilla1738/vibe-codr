@@ -56,6 +56,7 @@ import { formatMemoryHits } from "./memory-search.ts";
 import { MemoryService } from "./memory-service.ts";
 import { createLimiter, type Limiter } from "./limiter.ts";
 import { createBlackboard } from "./blackboard.ts";
+import { registerConfigHooks } from "./config-hooks.ts";
 import { loadMemorySources, loadProjectMemory, formatMemory } from "./memory.ts";
 import { reasoningSupported } from "./model-tuning.ts";
 import { CheckpointManager } from "./checkpoints.ts";
@@ -274,6 +275,11 @@ export class Engine implements EngineClient {
       for (const skill of await loadSkillsFrom(dir)) {
         this.skills.register(skill);
       }
+    }
+
+    // Declarative config hooks (shell/HTTP) layered onto the in-process HookBus.
+    if (this.#config.hooks.length) {
+      registerConfigHooks(this.#config.hooks, this.hooks);
     }
 
     // Long-term memory: resolve the (optional) embedder and attach the service

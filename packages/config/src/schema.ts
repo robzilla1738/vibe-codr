@@ -43,6 +43,31 @@ export const WebfetchConfigSchema = z.object({
   maxBytes: z.number().int().positive().default(4_000_000),
 });
 
+/** A declarative lifecycle hook: run a shell command or POST to a URL on an
+ * event, with the payload as JSON; the response can deny or rewrite it. */
+export const HookSchema = z.object({
+  /** Lifecycle event to hook (matches @vibe/plugins HookName). */
+  event: z.enum([
+    "session.start",
+    "user.prompt.submit",
+    "tool.before.execute",
+    "tool.after.execute",
+    "step.finish",
+    "assistant.message",
+    "session.idle",
+    "session.end",
+  ]),
+  /** Glob matched against the tool name for tool.* events (omit = all). */
+  matcher: z.string().optional(),
+  /** Shell command; receives the payload as JSON on stdin. stdout JSON may carry
+   * `{deny,reason}` (block a tool) or `{input}` (rewrite the tool input). */
+  command: z.string().optional(),
+  /** URL to POST the payload to (JSON in, JSON out, same protocol as `command`). */
+  url: z.string().url().optional(),
+  /** Fire-and-forget: don't await or let it block/deny (e.g. notifications). */
+  async: z.boolean().default(false),
+});
+
 /** Long-term memory configuration (semantic recall + write-path + injection). */
 export const MemoryConfigSchema = z.object({
   /** Semantic (embedding) recall fused with lexical BM25. Degrades to lexical
@@ -116,6 +141,8 @@ export const ConfigSchema = z.object({
   accentColor: z.string().default(""),
   /** Plugin module specifiers (npm names or local paths). */
   plugins: z.array(z.string()).default([]),
+  /** Declarative lifecycle hooks (shell/HTTP) layered onto the in-process HookBus. */
+  hooks: z.array(HookSchema).default([]),
   subagent: z
     .object({
       maxDepth: z.number().int().positive().default(3),
@@ -247,5 +274,6 @@ export type PermissionRule = z.infer<typeof PermissionRuleSchema>;
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 export type WebfetchConfig = z.infer<typeof WebfetchConfigSchema>;
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
+export type HookConfig = z.infer<typeof HookSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type McpServer = z.infer<typeof McpServerSchema>;

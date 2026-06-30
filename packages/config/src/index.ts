@@ -11,6 +11,9 @@ export type {
   ProviderConfig,
   PermissionRule,
   SearchConfig,
+  WebfetchConfig,
+  MemoryConfig,
+  HookConfig,
   ModelPrice,
   McpServer,
 } from "./schema.ts";

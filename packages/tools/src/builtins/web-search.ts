@@ -1,5 +1,11 @@
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
+import {
+  duckDuckGoSearch,
+  createCooldown,
+  type SearchResult as EngineResult,
+  type FetchLike,
+} from "./search-engines.ts";
 
 const Input = z.object({
   query: z
@@ -25,30 +31,28 @@ const Input = z.object({
     ),
 });
 
-/** One TinyFish search result. */
-interface SearchResult {
-  position: number;
-  site_name: string;
-  title: string;
-  snippet: string;
-  url: string;
-}
+type SearchResult = EngineResult;
 
 const ENDPOINT = "https://api.search.tinyfish.ai";
 
 export interface WebSearchOptions {
   /** TinyFish API key. Falls back to `TINYFISH_API_KEY` at call time. */
   apiKey?: string;
+  /** Injectable fetch for the keyless engine (tests). */
+  fetchImpl?: FetchLike;
 }
 
+/** Shared per-engine cooldown so a transiently blocking engine is skipped. */
+const cooldown = createCooldown();
+
 /**
- * Web search powered by TinyFish (free tier, no card — key from
- * agent.tinyfish.ai). A factory so the engine can bind the configured key; the
- * env var `TINYFISH_API_KEY` is honoured as a fallback.
+ * Web search with a KEYLESS default. DuckDuckGo's HTML endpoint works with no API
+ * key, so `web_search` always functions; TinyFish (free key from
+ * agent.tinyfish.ai) is an optional higher-quality booster tried first when a key
+ * is configured. Whichever engine returns results wins; the other is the fallback.
  */
-export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<
-  z.infer<typeof Input>
-> {
+export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.infer<typeof Input>> {
+  const fetchImpl: FetchLike = opts.fetchImpl ?? ((url, init) => fetch(url, init));
   return {
     name: "web_search",
     description:
@@ -63,68 +67,62 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<
     readOnly: true,
     concurrencySafe: true,
     async execute({ query, recencyDays, maxResults }, ctx) {
+      const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(8000)]);
       const apiKey = process.env.TINYFISH_API_KEY ?? opts.apiKey;
-      if (!apiKey) {
-        return {
-          output:
-            "Web search is unavailable: no TinyFish API key configured. Get a " +
-            "free key at https://agent.tinyfish.ai/api-keys and set TINYFISH_API_KEY " +
-            "or search.apiKey in config.",
-          isError: true,
-        };
-      }
+      const now = Date.now();
+      const errors: string[] = [];
 
-      const url = new URL(ENDPOINT);
-      url.searchParams.set("query", query);
-      if (recencyDays !== undefined) {
-        url.searchParams.set("recency_minutes", String(recencyDays * 24 * 60));
+      // Engines in priority order: TinyFish (if a key is set) then keyless DDG.
+      const engines: { name: string; run: () => Promise<SearchResult[]> }[] = [];
+      if (apiKey) {
+        engines.push({ name: "tinyfish", run: () => tinyFishSearch(query, recencyDays, apiKey, fetchImpl, signal) });
       }
+      engines.push({
+        name: "duckduckgo",
+        run: () => duckDuckGoSearch(query, { ...(recencyDays !== undefined ? { recencyDays } : {}) }, fetchImpl, signal),
+      });
 
-      // One fetch attempt with a wall-clock cap layered on the caller's abort, so
-      // a stalled connection can't hang the turn. Returns the ranked results or
-      // throws (HTTP errors carry a "Search failed: …" message for the catch).
-      const attempt = async (): Promise<SearchResult[]> => {
-        const res = await fetch(url, {
-          headers: { "X-API-Key": apiKey },
-          signal: AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(8000)]),
-        });
-        if (!res.ok) {
-          const detail = res.status === 401 || res.status === 403
-            ? " (check your TinyFish API key)"
-            : "";
-          throw new Error(`Search failed: HTTP ${res.status}${detail}`);
+      for (const engine of engines) {
+        if (cooldown.blocked(engine.name, now)) continue;
+        try {
+          const all = await engine.run();
+          const results = maxResults ? all.slice(0, maxResults) : all;
+          if (results.length) return { output: formatResults(query, results) };
+        } catch (err) {
+          if (ctx.abortSignal.aborted) return { output: "Search aborted." };
+          const msg = (err as Error).message;
+          if (/\b(429|403|503)\b/.test(msg)) cooldown.trip(engine.name, now);
+          errors.push(`${engine.name}: ${msg}`);
         }
-        const data = (await res.json()) as { results?: SearchResult[] };
-        return data.results ?? [];
-      };
-
-      try {
-        // Keep every ranked result the provider returned by default (no engine
-        // throttle); `maxResults` only trims the list for a tighter quick-fact read.
-        let all = await attempt();
-        // The provider occasionally returns a *transient* empty array for a query
-        // that does have results. One cheap retry (~0.6s) absorbs that flake here,
-        // rather than handing the model a false dead-end and making it burn a whole
-        // slow reasoning step re-searching a reworded variant.
-        if (!all.length && !ctx.abortSignal.aborted) {
-          await new Promise((r) => setTimeout(r, 600));
-          if (!ctx.abortSignal.aborted) all = await attempt();
-        }
-        const results = maxResults ? all.slice(0, maxResults) : all;
-        if (!results.length) {
-          return { output: `No results for "${query}".` };
-        }
-        return { output: formatResults(query, results) };
-      } catch (err) {
-        if (ctx.abortSignal.aborted) return { output: "Search aborted." };
-        const msg = (err as Error).message;
-        return {
-          output: msg.startsWith("Search failed") ? msg : `Search failed: ${msg}`,
-          isError: true,
-        };
       }
+      if (errors.length) {
+        return { output: `Search failed (${errors.join("; ")}).`, isError: true };
+      }
+      return { output: `No results for "${query}".` };
     },
   };
+}
+
+/** TinyFish engine (the optional booster). Throws on HTTP error. */
+async function tinyFishSearch(
+  query: string,
+  recencyDays: number | undefined,
+  apiKey: string,
+  fetchImpl: FetchLike,
+  signal: AbortSignal,
+): Promise<SearchResult[]> {
+  const url = new URL(ENDPOINT);
+  url.searchParams.set("query", query);
+  if (recencyDays !== undefined) {
+    url.searchParams.set("recency_minutes", String(recencyDays * 24 * 60));
+  }
+  const res = await fetchImpl(url.toString(), { headers: { "X-API-Key": apiKey }, signal });
+  if (!res.ok) {
+    const detail = res.status === 401 || res.status === 403 ? " (check your TinyFish API key)" : "";
+    throw new Error(`HTTP ${res.status}${detail}`);
+  }
+  const data = JSON.parse(await res.text()) as { results?: SearchResult[] };
+  return data.results ?? [];
 }
 
 /** Render results as a markdown numbered list (title / URL / snippet) — clean for

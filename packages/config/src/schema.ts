@@ -158,7 +158,8 @@ export const ConfigSchema = z.object({
     proactiveRecall: false,
     sessionDigest: false,
   }),
-  /** Web search (TinyFish). Enabled by default; needs a free API key to run. */
+  /** Web search. Enabled by default and works KEYLESS (DuckDuckGo); a TinyFish
+   * key (search.apiKey / $TINYFISH_API_KEY) is an optional higher-quality booster. */
   search: SearchConfigSchema.default({ enabled: true }),
   /** webfetch SSRF policy + limits. Private/loopback/metadata hosts blocked by default. */
   webfetch: WebfetchConfigSchema.default({

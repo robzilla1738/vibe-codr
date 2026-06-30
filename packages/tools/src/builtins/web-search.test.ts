@@ -1,6 +1,7 @@
 import { test, expect, afterEach } from "bun:test";
 import type { ToolContext } from "@vibe/shared";
 import { webSearchTool, formatResults } from "./web-search.ts";
+import type { FetchLike } from "./search-engines.ts";
 
 function ctx(): ToolContext {
   return {
@@ -12,92 +13,96 @@ function ctx(): ToolContext {
   };
 }
 
-const realFetch = globalThis.fetch;
 const realKey = process.env.TINYFISH_API_KEY;
 afterEach(() => {
-  globalThis.fetch = realFetch;
   if (realKey === undefined) delete process.env.TINYFISH_API_KEY;
   else process.env.TINYFISH_API_KEY = realKey;
 });
 
-test("errors with guidance when no API key is configured", async () => {
-  delete process.env.TINYFISH_API_KEY;
-  const res = await webSearchTool().execute({ query: "anything" }, ctx());
-  expect(res.isError).toBe(true);
-  expect(String(res.output)).toContain("TinyFish");
-});
+/** A DuckDuckGo HTML results fixture (two results). */
+const DDG_HTML = `
+<div class="result results_links">
+  <h2 class="result__title">
+    <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbun.sh%2Fdocs&amp;rut=x">Bun <b>docs</b></a>
+  </h2>
+  <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fbun.sh">The fast all-in-one runtime &amp; toolkit.</a>
+</div>
+<div class="result results_links">
+  <h2 class="result__title">
+    <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fx">Example</a>
+  </h2>
+  <a class="result__snippet">Second snippet.</a>
+</div>`;
 
-/** Install a fake `fetch` that records the request and returns `body`. */
-function stubFetch(body: unknown, status = 200): { url: string; key: string } {
+/** A fetchImpl that routes by URL and records what it saw. */
+function routingFetch(opts: {
+  ddg?: { body: string; status?: number };
+  tinyfish?: { body: string; status?: number };
+}): { fetch: FetchLike; seen: { url: string; key: string } } {
   const seen = { url: "", key: "" };
-  globalThis.fetch = (async (input: unknown, init?: { headers?: Record<string, string> }) => {
-    seen.url = String(input);
-    seen.key = init?.headers?.["X-API-Key"] ?? "";
-    return new Response(typeof body === "string" ? body : JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    });
-  }) as unknown as typeof fetch;
-  return seen;
+  const fetch: FetchLike = async (url, init) => {
+    seen.url = url;
+    seen.key = init?.headers?.["X-API-Key"] ?? seen.key;
+    const which = url.includes("duckduckgo") ? opts.ddg : opts.tinyfish;
+    const status = which?.status ?? 200;
+    return { ok: status >= 200 && status < 300, status, text: async () => which?.body ?? "" };
+  };
+  return { fetch, seen };
 }
 
-test("sends the query + X-API-Key header and formats results", async () => {
+test("works keyless via DuckDuckGo (no API key required)", async () => {
   delete process.env.TINYFISH_API_KEY;
-  const seen = stubFetch({
-    query: "bun test",
-    results: [
-      { position: 1, site_name: "Bun", title: "Bun docs", snippet: "fast  runtime", url: "https://bun.sh" },
-    ],
-    total_results: 1,
-    page: 0,
-  });
+  const { fetch, seen } = routingFetch({ ddg: { body: DDG_HTML } });
+  const res = await webSearchTool({ fetchImpl: fetch }).execute({ query: "bun docs" }, ctx());
+  expect(res.isError).toBeUndefined();
+  const out = String(res.output);
+  expect(out).toContain("Bun docs");
+  expect(out).toContain("https://bun.sh/docs"); // uddg redirect decoded
+  expect(out).toContain("The fast all-in-one runtime & toolkit."); // entities decoded
+  expect(seen.url).toContain("html.duckduckgo.com");
+});
 
-  const res = await webSearchTool({ apiKey: "secret-key" }).execute(
+test("uses TinyFish first when a key is set, sending the X-API-Key header", async () => {
+  delete process.env.TINYFISH_API_KEY;
+  const tf = JSON.stringify({
+    results: [{ position: 1, site_name: "Bun", title: "Bun homepage", snippet: "x", url: "https://bun.sh" }],
+  });
+  const { fetch, seen } = routingFetch({ tinyfish: { body: tf } });
+  const res = await webSearchTool({ apiKey: "secret-key", fetchImpl: fetch }).execute(
     { query: "bun test", recencyDays: 7 },
     ctx(),
   );
-
-  expect(seen.url).toContain("query=bun+test");
-  expect(seen.url).toContain("recency_minutes=10080"); // 7 * 24 * 60
+  expect(seen.url).toContain("recency_minutes=10080"); // 7*24*60
   expect(seen.key).toBe("secret-key");
+  expect(String(res.output)).toContain("Bun homepage");
+});
+
+test("falls back to DuckDuckGo when TinyFish fails (auth error)", async () => {
+  process.env.TINYFISH_API_KEY = "bad";
+  const { fetch } = routingFetch({
+    tinyfish: { body: "nope", status: 401 },
+    ddg: { body: DDG_HTML },
+  });
+  const res = await webSearchTool({ fetchImpl: fetch }).execute({ query: "bun docs" }, ctx());
+  // TinyFish 401 → fall through to the keyless engine, which succeeds.
   expect(res.isError).toBeUndefined();
   expect(String(res.output)).toContain("Bun docs");
-  expect(String(res.output)).toContain("https://bun.sh");
 });
 
-test("keeps every provider result by default; maxResults only trims", async () => {
-  process.env.TINYFISH_API_KEY = "k";
-  const many = Array.from({ length: 12 }, (_, i) => ({
-    position: i + 1,
-    site_name: "S",
-    title: `Result ${i + 1}`,
-    snippet: "s",
-    url: `https://x/${i + 1}`,
-  }));
-  // Default: no engine throttle — all 12 provider results are kept.
-  stubFetch({ results: many });
-  const all = await webSearchTool().execute({ query: "deep research" }, ctx());
-  expect(String(all.output)).toContain("Result 12");
-  // Quick fact: trim to the top 3.
-  stubFetch({ results: many });
-  const tight = await webSearchTool().execute({ query: "btc price", maxResults: 3 }, ctx());
-  expect(String(tight.output)).toContain("Result 3");
-  expect(String(tight.output)).not.toContain("Result 4");
+test("maxResults trims the result list", async () => {
+  delete process.env.TINYFISH_API_KEY;
+  const { fetch } = routingFetch({ ddg: { body: DDG_HTML } });
+  const res = await webSearchTool({ fetchImpl: fetch }).execute({ query: "x", maxResults: 1 }, ctx());
+  expect(String(res.output)).toContain("Bun docs");
+  expect(String(res.output)).not.toContain("Example");
 });
 
-test("env var takes precedence over the configured key", async () => {
-  process.env.TINYFISH_API_KEY = "env-key";
-  const seen = stubFetch({ results: [] });
-  await webSearchTool({ apiKey: "config-key" }).execute({ query: "x" }, ctx());
-  expect(seen.key).toBe("env-key");
-});
-
-test("surfaces an auth hint on 401", async () => {
-  process.env.TINYFISH_API_KEY = "bad";
-  stubFetch("nope", 401);
-  const res = await webSearchTool().execute({ query: "x" }, ctx());
+test("reports an error only when every engine fails", async () => {
+  delete process.env.TINYFISH_API_KEY;
+  const { fetch } = routingFetch({ ddg: { body: "boom", status: 503 } });
+  const res = await webSearchTool({ fetchImpl: fetch }).execute({ query: "x" }, ctx());
   expect(res.isError).toBe(true);
-  expect(String(res.output)).toContain("API key");
+  expect(String(res.output)).toMatch(/duckduckgo/i);
 });
 
 test("formatResults numbers results and collapses snippet whitespace", () => {

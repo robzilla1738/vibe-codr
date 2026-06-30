@@ -223,27 +223,24 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   the **body** (`flexGrow={1}`) — when `showJobs()` it's the **`/jobs` sub-view**
   (background shell jobs + detected localhost servers, a scrollbox replacing the
   transcript; Esc or `/jobs` closes it). Otherwise a `<Show>` renders the scrolling
-  transcript when there are blocks, else a **centered VIBE CODR wordmark splash** — OpenTUI's
-  native `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (a sleek
-  rounded face in the brand color; `<ascii_font>` is the runtime tag, supports a
-  gradient `color` array). The wordmark and the tips are EACH in their own
-  flex-grow-centered row, so the wordmark is centered to the screen — NOT
-  left-aligned against the wider tips, which reads as off-center; a width+height
-  guard swaps in a compact `◆ VIBE CODR`
-  on small terminals). On a **wide + tall** terminal (≥ `WORDMARK_3D_COLS`+4 cols,
-  ≥22 rows) the splash instead shows the big **3D "impossible"-font wordmark**
-  (`packages/tui/src/wordmark.ts`, generated art rendered as one brand `<text>`
-  per line); the chat column widens to the full terminal for that splash only
-  (`splashLogo3D()` / `columnWidth()`) since the 111-col art exceeds the
-  `CONTENT_MAX` reading cap, then snaps back the instant a conversation starts.
-  Each tip line is **individually centered** (`SegRow center`) — tagline · sample
-  prompts · key hints — via `SegRow` (a row of coloured `<text>` runs — OpenTUI
-  has no inline-markup `<text>`) in a two-tone scheme: muted scaffolding, brighter
-  foreground on the actionable tokens (example prompts, `shift+tab`/`@`/`/`). The
-  under-input status is two **centered** lines: `detailsCenter()` (location · git
-  · model · changed · ctx · cost · goal) and the `SegRow` key hints — then the
-  stacked status surfaces, the input, and the
-  under-input status block. The transcript is `<scrollbox flexGrow={1}
+  transcript when there are blocks, else a **centered Vibe Codr wordmark splash**.
+  The wordmark is a compact ░██ block face (`packages/tui/src/wordmark.ts`, 80×7,
+  rendered one brand `<text>` per line, centered by flex spacers) when the column
+  has room (`showWordmark()`); otherwise it falls back to OpenTUI's native
+  `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (a sleek rounded
+  face; runtime tag, supports a gradient `color` array), then a one-line
+  `◆ Vibe Codr`. Each tip line is **individually centered** (`SegRow center`) —
+  tagline · sample prompts · key hints — via `SegRow` (a row of coloured `<text>`
+  runs — OpenTUI has no inline-markup `<text>`) in a two-tone scheme: muted
+  scaffolding, brighter foreground on the actionable tokens (example prompts,
+  `shift+tab`/`@`/`/`). The under-input status is two **centered** lines:
+  `detailsCenter()` (location · git · model · changed · ctx · cost · goal) and the
+  `SegRow` key hints — then the stacked status surfaces, the input, and the
+  under-input status block. **The slash-command menu is an absolute overlay** —
+  the chat column is `position:"relative"` and the menu is `position:"absolute"`
+  anchored `bottom={MENU_BOTTOM}` (clears the input + status rows) so opening it
+  *overlays* the area above the input instead of taking flow space; that keeps the
+  body from shrinking, so the wordmark/transcript never jump up when you type `/`. The transcript is `<scrollbox flexGrow={1}
   flexShrink={1} stickyScroll stickyStart="bottom">`. Every surface *below* the
   transcript (working spinner, plan box, **Tasks** panel, **Subagents** panel,
   permission card, command menu, input, the two status lines) must set

@@ -36,7 +36,7 @@ import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
 import { toolLabel } from "./tool-icons.ts";
-import { WORDMARK_3D, WORDMARK_3D_COLS } from "./wordmark.ts";
+import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
 
 /** The chat column's maximum width. At or below this the column fills the
  * terminal; above it the column stays centered with quiet side gutters
@@ -48,6 +48,11 @@ const MAX_OUTPUT_LINES = 160;
  * (`<ascii_font font="slick">`) in the brand color — see the empty-state splash. */
 /** Min column width to show the big wordmark (else a compact brand line). */
 const LOGO_MIN_COLS = 56;
+/** Rows the slash menu floats above the column's inner-bottom edge: it clears the
+ * two status lines (2) + the full input box incl. its `ASK` top border (4) + a
+ * 1-row breathing gap, so the menu sits just above an intact input box. Absolutely
+ * positioned, so opening it overlays the view instead of reflowing it. */
+const MENU_BOTTOM = 8;
 
 /**
  * One block in the transcript. The transcript is append-only: positions never
@@ -745,19 +750,11 @@ export function App(props: { engine: EngineClient }) {
       .join(" ");
     return `${GLYPH.file} ${fs.length} file${fs.length === 1 ? "" : "s"}${delta ? ` ${delta}` : ""}`;
   };
-  // The fresh, wide, tall splash shows the big 3D wordmark (111 cols wide), so
-  // the chat column spans the full terminal then — the reading cap would clip the
-  // art. It snaps back to CONTENT_MAX the instant a conversation starts or jobs
-  // open. `splashLogo3D()` is the single source of truth for "show the 3D logo".
-  const splashLogo3D = () =>
-    !showJobs() &&
-    blocks().length === 0 &&
-    // -4: the chat column reserves a 1-col gutter each side (its own padding plus
-    // the terminal margin), so the art needs WORDMARK_3D_COLS + 4 to clear it.
-    dims().width - 4 >= WORDMARK_3D_COLS &&
-    dims().height >= 22;
-  const columnWidth = () =>
-    splashLogo3D() ? Math.min(dims().width - 2, 160) : contentWidth();
+  // Show the block wordmark when the column is wide + tall enough to seat it
+  // (it's 80 cols / 7 rows); otherwise the splash falls back to the compact
+  // ascii-font logo, then a one-line glyph. The column padding eats 2 cols.
+  const showWordmark = () =>
+    contentWidth() - 2 >= WORDMARK_COLS && dims().height >= 16;
   const detailsLeft = () => [cwd, gitSummary()].filter(Boolean).join("  ·  ");
   const detailsRight = () =>
     [headModel(), changedSummary(), metrics()].filter(Boolean).join("  ·  ");
@@ -811,7 +808,13 @@ export function App(props: { engine: EngineClient }) {
       {/* The chat column — one centered, capped-width conversation column. No top
           bar: the brand is the centered splash, and the live details sit under the
           input. Everything else (transcript, status panels, input) lives here. */}
-      <box flexDirection="column" width={columnWidth()} flexShrink={0} padding={1}>
+      <box
+        position="relative"
+        flexDirection="column"
+        width={contentWidth()}
+        flexShrink={0}
+        padding={1}
+      >
       {/* Body — the /jobs sub-view when open; otherwise a centered VIBE CODR splash
           on a fresh screen, or the scrolling transcript once the chat starts. */}
       <box flexDirection="column" flexGrow={1}>
@@ -898,12 +901,12 @@ export function App(props: { engine: EngineClient }) {
                 <box flexGrow={1} />
                 <box flexDirection="column" flexShrink={0}>
                   <Show
-                    when={splashLogo3D()}
+                    when={showWordmark()}
                     fallback={
                       <Show
-                        when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 16}
+                        when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 12}
                         fallback={
-                          <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ VIBE CODR"}</text>
+                          <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ Vibe Codr"}</text>
                         }
                       >
                         {/* Native ASCII-font wordmark — a sleek rounded face in
@@ -912,10 +915,10 @@ export function App(props: { engine: EngineClient }) {
                       </Show>
                     }
                   >
-                    {/* Big 3D "impossible"-font wordmark on wide, tall terminals —
-                        one brand <text> per line, the block left-aligned within
-                        this column and centered by the flex spacers around it. */}
-                    <For each={WORDMARK_3D}>
+                    {/* Compact ░██ block wordmark — one brand <text> per line, the
+                        block left-aligned within this column and centered by the
+                        flex spacers around it. */}
+                    <For each={WORDMARK}>
                       {(line) => <text fg={brand()}>{line || " "}</text>}
                     </For>
                   </Show>
@@ -1213,14 +1216,20 @@ export function App(props: { engine: EngineClient }) {
           Tab to complete, Enter to run, Esc to dismiss. */}
       <Show when={menu().open}>
         <box
+          // Absolutely anchored just above the input, so opening the menu OVERLAYS
+          // the space below the wordmark (or the transcript tail) instead of
+          // pushing the whole view up — it reads as a fluid extension of the input
+          // rather than a layout jump. `MENU_BOTTOM` clears the input + status rows.
+          position="absolute"
+          bottom={MENU_BOTTOM}
+          left={1}
+          right={1}
           border
           borderColor={brand()}
           title={menuView()?.title}
           titleColor={brand()}
           backgroundColor={palette().panel}
           flexDirection="column"
-          flexShrink={0}
-          marginTop={1}
           paddingLeft={1}
           paddingRight={1}
         >

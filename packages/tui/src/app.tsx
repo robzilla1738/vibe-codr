@@ -36,6 +36,7 @@ import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
 import { toolLabel } from "./tool-icons.ts";
+import { WORDMARK_3D, WORDMARK_3D_COLS } from "./wordmark.ts";
 
 /** The chat column's maximum width. At or below this the column fills the
  * terminal; above it the column stays centered with quiet side gutters
@@ -744,9 +745,30 @@ export function App(props: { engine: EngineClient }) {
       .join(" ");
     return `${GLYPH.file} ${fs.length} file${fs.length === 1 ? "" : "s"}${delta ? ` ${delta}` : ""}`;
   };
+  // The fresh, wide, tall splash shows the big 3D wordmark (111 cols wide), so
+  // the chat column spans the full terminal then — the reading cap would clip the
+  // art. It snaps back to CONTENT_MAX the instant a conversation starts or jobs
+  // open. `splashLogo3D()` is the single source of truth for "show the 3D logo".
+  const splashLogo3D = () =>
+    !showJobs() &&
+    blocks().length === 0 &&
+    // -4: the chat column reserves a 1-col gutter each side (its own padding plus
+    // the terminal margin), so the art needs WORDMARK_3D_COLS + 4 to clear it.
+    dims().width - 4 >= WORDMARK_3D_COLS &&
+    dims().height >= 22;
+  const columnWidth = () =>
+    splashLogo3D() ? Math.min(dims().width - 2, 160) : contentWidth();
   const detailsLeft = () => [cwd, gitSummary()].filter(Boolean).join("  ·  ");
   const detailsRight = () =>
     [headModel(), changedSummary(), metrics()].filter(Boolean).join("  ·  ");
+  // One centered status line under the input: location · git · model · changed ·
+  // ctx · cost (· goal). Centered (not edge-justified) so the model never floats
+  // off alone on the far right with a void beside it — uniform with the hints
+  // line below and the centered splash above.
+  const detailsCenter = () =>
+    [detailsLeft(), detailsRight(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 40)}` : ""]
+      .filter(Boolean)
+      .join("  ·  ");
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
   // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in
   // the bright foreground; their descriptors and separators stay muted. `/jobs`
@@ -789,7 +811,7 @@ export function App(props: { engine: EngineClient }) {
       {/* The chat column — one centered, capped-width conversation column. No top
           bar: the brand is the centered splash, and the live details sit under the
           input. Everything else (transcript, status panels, input) lives here. */}
-      <box flexDirection="column" width={contentWidth()} flexShrink={0} padding={1}>
+      <box flexDirection="column" width={columnWidth()} flexShrink={0} padding={1}>
       {/* Body — the /jobs sub-view when open; otherwise a centered VIBE CODR splash
           on a fresh screen, or the scrolling transcript once the chat starts. */}
       <box flexDirection="column" flexGrow={1}>
@@ -868,66 +890,75 @@ export function App(props: { engine: EngineClient }) {
           when={blocks().length > 0}
           fallback={
             // Vertically centered by the top/bottom flex-grow spacers. The
-            // wordmark and the tips are EACH in their own horizontally-centered
-            // row, so the wordmark is centered to the screen (not left-aligned
-            // against the wider tip lines, which read as off-center).
+            // wordmark and every tip line are EACH centered on their own row, so
+            // the whole splash reads as one centered column under the logo.
             <box flexDirection="column" flexGrow={1}>
               <box flexGrow={1} />
               <box flexDirection="row">
                 <box flexGrow={1} />
                 <box flexDirection="column" flexShrink={0}>
                   <Show
-                    when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 16}
+                    when={splashLogo3D()}
                     fallback={
-                      <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ VIBE CODR"}</text>
+                      <Show
+                        when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 16}
+                        fallback={
+                          <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ VIBE CODR"}</text>
+                        }
+                      >
+                        {/* Native ASCII-font wordmark — a sleek rounded face in
+                            the brand color (orange-red by default; tracks /accent). */}
+                        <ascii_font text="VIBE CODR" font="slick" color={brand()} />
+                      </Show>
                     }
                   >
-                    {/* Native ASCII-font wordmark — a sleek rounded face in the
-                        brand color (orange-red by default; tracks /accent). */}
-                    <ascii_font text="VIBE CODR" font="slick" color={brand()} />
+                    {/* Big 3D "impossible"-font wordmark on wide, tall terminals —
+                        one brand <text> per line, the block left-aligned within
+                        this column and centered by the flex spacers around it. */}
+                    <For each={WORDMARK_3D}>
+                      {(line) => <text fg={brand()}>{line || " "}</text>}
+                    </For>
                   </Show>
                 </box>
                 <box flexGrow={1} />
               </box>
-              {/* One tidy left-aligned block, centered as a whole (the flex
-                  spacers below), so every line shares a left edge instead of each
-                  centering raggedly. Calm muted subtitle; the actionable tokens —
-                  example prompts and keys — pick up the brighter foreground. */}
-              <box flexDirection="row" marginTop={1}>
-                <box flexGrow={1} />
-                <box flexDirection="column" flexShrink={0}>
-                  <SegRow
-                    segs={[
-                      { t: "Your model-agnostic coding agent", fg: palette().muted },
-                      { t: "  —  plan · execute · yolo", fg: palette().muted },
-                    ]}
-                  />
-                  <SegRow
-                    marginTop={1}
-                    segs={[
-                      { t: "Try ", fg: palette().muted },
-                      { t: "› ", fg: brand() },
-                      { t: "explain this codebase", fg: palette().assistant },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "fix the failing test", fg: palette().assistant },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "add a --json flag", fg: palette().assistant },
-                    ]}
-                  />
-                  <SegRow
-                    segs={[
-                      { t: "shift+tab", fg: palette().assistant },
-                      { t: " mode", fg: palette().muted },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "@", fg: palette().assistant },
-                      { t: " files", fg: palette().muted },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "/", fg: palette().assistant },
-                      { t: " commands", fg: palette().muted },
-                    ]}
-                  />
-                </box>
-                <box flexGrow={1} />
+              {/* Tip lines — each individually centered (calm muted subtitle; the
+                  actionable tokens — example prompts and keys — in the brighter
+                  foreground). */}
+              <box flexDirection="column" marginTop={1}>
+                <SegRow
+                  center
+                  segs={[
+                    { t: "Your model-agnostic coding agent", fg: palette().muted },
+                    { t: "  —  plan · execute · yolo", fg: palette().muted },
+                  ]}
+                />
+                <SegRow
+                  center
+                  marginTop={1}
+                  segs={[
+                    { t: "Try ", fg: palette().muted },
+                    { t: "› ", fg: brand() },
+                    { t: "explain this codebase", fg: palette().assistant },
+                    { t: "  ·  ", fg: palette().muted },
+                    { t: "fix the failing test", fg: palette().assistant },
+                    { t: "  ·  ", fg: palette().muted },
+                    { t: "add a --json flag", fg: palette().assistant },
+                  ]}
+                />
+                <SegRow
+                  center
+                  segs={[
+                    { t: "shift+tab", fg: palette().assistant },
+                    { t: " mode", fg: palette().muted },
+                    { t: "  ·  ", fg: palette().muted },
+                    { t: "@", fg: palette().assistant },
+                    { t: " files", fg: palette().muted },
+                    { t: "  ·  ", fg: palette().muted },
+                    { t: "/", fg: palette().assistant },
+                    { t: " commands", fg: palette().muted },
+                  ]}
+                />
               </box>
               <box flexGrow={1} />
             </box>
@@ -1243,20 +1274,14 @@ export function App(props: { engine: EngineClient }) {
         />
       </box>
       {/* Status details + hints, directly UNDER the input (the old top header
-          lives here now). Line 1: cwd · git  /  model · changed · ctx · cost.
-          Line 2: key hints  /  the session goal. Only relevant parts show. */}
-      <box flexDirection="row" justifyContent="space-between" flexShrink={0} marginTop={1}>
-        <text fg={palette().muted}>{detailsLeft()}</text>
-        <Show when={detailsRight()}>
-          <text flexShrink={0} fg={palette().muted}>{detailsRight()}</text>
-        </Show>
+          lives here now), BOTH centered for a uniform footer. Line 1: location ·
+          git · model · changed · ctx · cost (· goal). Line 2: the key hints. */}
+      <box flexDirection="row" flexShrink={0} marginTop={1}>
+        <box flexGrow={1} />
+        <text flexShrink={0} fg={palette().muted}>{detailsCenter()}</text>
+        <box flexGrow={1} />
       </box>
-      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
-        <SegRow segs={hintSegs()} />
-        <Show when={goalInfo()}>
-          <text flexShrink={0} fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", 40)}`}</text>
-        </Show>
-      </box>
+      <SegRow center segs={hintSegs()} />
       </box>
       {/* Right gutter — mirrors the left, centering the chat column. */}
       <box flexGrow={1} flexShrink={1} />
@@ -1270,14 +1295,23 @@ type Seg = { t: string; fg: string };
 /**
  * A single line built from coloured text runs, rendered as a row of adjacent
  * `<text>` segments (OpenTUI has no inline-markup `<text>`, so a styled line is a
- * row of plain ones). Left-aligned; callers center a whole stack of these by
- * wrapping the column in flex spacers, which keeps every line on a shared left
- * edge instead of raggedly centering each one.
+ * row of plain ones). `center` wraps the line in flex spacers so it sits centered
+ * on its own row (used by the splash + footer so each line is individually
+ * centered); without it the row is left-aligned for callers that center a whole
+ * stack themselves.
  */
-function SegRow(props: { segs: Seg[]; marginTop?: number }) {
+function SegRow(props: { segs: Seg[]; center?: boolean; marginTop?: number }) {
   return (
     <box flexDirection="row" flexShrink={0} marginTop={props.marginTop ?? 0}>
-      <For each={props.segs}>{(s) => <text fg={s.fg}>{s.t}</text>}</For>
+      <Show when={props.center}>
+        <box flexGrow={1} />
+      </Show>
+      <box flexDirection="row" flexShrink={0}>
+        <For each={props.segs}>{(s) => <text fg={s.fg}>{s.t}</text>}</For>
+      </box>
+      <Show when={props.center}>
+        <box flexGrow={1} />
+      </Show>
     </box>
   );
 }

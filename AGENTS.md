@@ -230,13 +230,19 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   flex-grow-centered row, so the wordmark is centered to the screen — NOT
   left-aligned against the wider tips, which reads as off-center; a width+height
   guard swaps in a compact `◆ VIBE CODR`
-  on small terminals). The tips are one **left-aligned** column (tagline · sample
-  prompts · key hints) centered as a whole block, so every line shares a left edge
-  rather than each centering raggedly; they render via `SegRow` (a row of coloured
-  `<text>` runs — OpenTUI has no inline-markup `<text>`) in a two-tone scheme:
-  muted scaffolding, brighter foreground on the actionable tokens (example
-  prompts, `shift+tab`/`@`/`/`). The under-input key hints use the same `SegRow`
-  two-tone treatment — then the stacked status surfaces, the input, and the
+  on small terminals). On a **wide + tall** terminal (≥ `WORDMARK_3D_COLS`+4 cols,
+  ≥22 rows) the splash instead shows the big **3D "impossible"-font wordmark**
+  (`packages/tui/src/wordmark.ts`, generated art rendered as one brand `<text>`
+  per line); the chat column widens to the full terminal for that splash only
+  (`splashLogo3D()` / `columnWidth()`) since the 111-col art exceeds the
+  `CONTENT_MAX` reading cap, then snaps back the instant a conversation starts.
+  Each tip line is **individually centered** (`SegRow center`) — tagline · sample
+  prompts · key hints — via `SegRow` (a row of coloured `<text>` runs — OpenTUI
+  has no inline-markup `<text>`) in a two-tone scheme: muted scaffolding, brighter
+  foreground on the actionable tokens (example prompts, `shift+tab`/`@`/`/`). The
+  under-input status is two **centered** lines: `detailsCenter()` (location · git
+  · model · changed · ctx · cost · goal) and the `SegRow` key hints — then the
+  stacked status surfaces, the input, and the
   under-input status block. The transcript is `<scrollbox flexGrow={1}
   flexShrink={1} stickyScroll stickyStart="bottom">`. Every surface *below* the
   transcript (working spinner, plan box, **Tasks** panel, **Subagents** panel,

@@ -226,6 +226,16 @@ All notable changes to vibe-codr are documented here.
   reserved for diffs and warnings.
 
 ### Improved
+- **Big 3D wordmark + fully-centered splash & footer.** On a wide, tall terminal
+  the empty-state splash now renders "VIBE CODR" in a 3D "impossible"-font
+  wordmark (`packages/tui/src/wordmark.ts`); the chat column widens to the full
+  terminal for that splash only and snaps back to the reading cap once a
+  conversation starts. Narrower/shorter terminals keep the compact `slick`
+  ascii-font logo (then `◆ VIBE CODR`). The tagline / sample prompts / key-hint
+  lines are now each individually **centered**, and the under-input status is two
+  centered lines (location · git · model · changed · ctx · cost on one, key hints
+  on the other) instead of edge-justified — so the model no longer floats off
+  alone on the far right and the whole frame reads as one uniform centered column.
 - **Consecutive tool steps now chain instead of floating apart.** A run of tool
   calls (search → fetch → fetch) used to render each row in its own one-line gap,
   reading as unrelated fragments. A tool row that follows another *visible* tool

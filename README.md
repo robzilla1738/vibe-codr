@@ -195,7 +195,10 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a
   notice instead of failing silently. Structured `git_status` / `git_diff` /
   `git_log` / `git_commit` / `git_push` tools avoid hand-parsing porcelain and
-  let the agent commit and publish to GitHub end-to-end, and `bash background:true`
+  let the agent commit and publish to GitHub end-to-end; `git_diff` can target a
+  commit, branch, or range (`ref:"HEAD"`, `"main"`, `"main...HEAD"`) so the agent
+  can review its whole session's committed work, not just the working tree. And
+  `bash background:true`
   starts long-running commands you poll with `job_status` / stop with `job_kill`.
   For richer GitHub workflows (issues, PRs, reviews), connect the official
   [GitHub MCP server](https://github.com/github/github-mcp-server) under

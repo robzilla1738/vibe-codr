@@ -51,6 +51,30 @@ test("git_diff shows unstaged changes", async () => {
   expect(text).toContain("+two");
 });
 
+test("git_diff ref:HEAD shows committed changes the working tree no longer has", async () => {
+  const cwd = await initRepo();
+  await Bun.write(join(cwd, "a.txt"), "one\n");
+  await gitCommitTool.execute({ message: "init", all: true }, ctx(cwd));
+  await Bun.write(join(cwd, "a.txt"), "two\n");
+  await gitCommitTool.execute({ message: "second", all: true }, ctx(cwd));
+
+  // The change is committed, so a plain unstaged diff is empty...
+  const unstaged = await gitDiffTool.execute({}, ctx(cwd));
+  expect(String(unstaged.output)).toBe("(no changes)");
+  // ...but diffing the range surfaces the committed edit.
+  const ranged = await gitDiffTool.execute({ ref: "HEAD~1...HEAD" }, ctx(cwd));
+  const text = String(ranged.output);
+  expect(text).toContain("-one");
+  expect(text).toContain("+two");
+});
+
+test("git_diff rejects a ref that looks like an option", async () => {
+  const cwd = await initRepo();
+  const r = await gitDiffTool.execute({ ref: "--output=/tmp/x" }, ctx(cwd));
+  expect(r.isError).toBe(true);
+  expect(String(r.output)).toContain("Invalid ref");
+});
+
 test("git_commit with nothing staged is an error", async () => {
   const cwd = await initRepo();
   const r = await gitCommitTool.execute({ message: "noop" }, ctx(cwd));

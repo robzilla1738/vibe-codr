@@ -40,17 +40,33 @@ export const gitStatusTool: ToolDefinition<Record<string, never>> = {
 
 const DiffInput = z.object({
   staged: z.boolean().optional().describe("Show staged (index) changes instead of unstaged."),
+  ref: z
+    .string()
+    .optional()
+    .describe(
+      "Diff against a commit/branch/range instead of the working tree — e.g. " +
+        "'HEAD' (all uncommitted tracked changes), 'main', a commit hash, or a " +
+        "range like 'main...HEAD' (a branch's commits). Combine with path to scope.",
+    ),
   path: z.string().optional().describe("Limit the diff to this path."),
 });
 
 export const gitDiffTool: ToolDefinition<z.infer<typeof DiffInput>> = {
   name: "git_diff",
-  description: "Show the git diff of unstaged (or, with staged:true, staged) changes.",
+  description:
+    "Show a git diff. Defaults to unstaged changes; staged:true shows the index, " +
+    "and ref:'HEAD'/'main'/'<sha>'/'main...HEAD' diffs against a commit, branch, or range.",
   inputSchema: DiffInput,
   readOnly: true,
-  async execute({ staged, path }, ctx) {
+  async execute({ staged, ref, path }, ctx) {
+    // A ref starting with '-' would be parsed as an option (e.g. injecting
+    // `--output`); reject it rather than hand git an ambiguous flag.
+    if (ref?.startsWith("-")) {
+      return { output: `Invalid ref "${ref}".`, isError: true };
+    }
     const args = ["diff"];
     if (staged) args.push("--staged");
+    if (ref) args.push(ref);
     if (path) args.push("--", path);
     const { code, out } = await git(args, ctx);
     if (code !== 0) return { output: out || "git diff failed", isError: true };

@@ -74,6 +74,14 @@ All notable changes to vibe-codr are documented here.
   truncation marker instead of silently dropping results.
 
 ### Added
+- **`git_diff` can target a commit, branch, or range.** Previously the tool only
+  showed unstaged or (with `staged:true`) staged changes, so the agent had no
+  structured way to review committed work — it had to fall back to raw `bash` to
+  see `git diff HEAD` or a branch's full diff. `git_diff` now takes an optional
+  `ref` (`"HEAD"`, `"main"`, a commit hash, or a range like `"main...HEAD"`),
+  composable with `path`, so the agent can review everything it has committed this
+  session or a whole branch's diff. Refs that begin with `-` are rejected so a ref
+  can't smuggle in a git option.
 - **`/jobs` sub-view — running shell commands + localhost servers.** Background
   bash jobs (started with the bash tool's `background` mode) are now visible: the
   Engine owns the `BackgroundJobs` registry and pushes a `jobs-changed` event, and

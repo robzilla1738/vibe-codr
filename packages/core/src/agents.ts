@@ -9,8 +9,23 @@ export interface NamedAgent {
   description: string;
   model?: string;
   mode?: Mode;
+  /** Tool allowlist (frontmatter `tools:`): when set, the agent sees ONLY these
+   * tools — defense-in-depth for a focused worker. */
+  tools?: string[];
+  /** Tool denylist (frontmatter `disallowed_tools:`): these are removed. */
+  denyTools?: string[];
   /** System instructions (the markdown body). */
   system?: string;
+}
+
+/** Parse a comma/space-separated frontmatter list (e.g. "read, grep glob"). */
+function parseToolList(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const list = value
+    .split(/[,\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return list.length ? list : undefined;
 }
 
 /**
@@ -82,11 +97,15 @@ export async function loadAgents(cwd: string): Promise<Map<string, NamedAgent>> 
         frontmatter.mode === "plan" || frontmatter.mode === "execute"
           ? frontmatter.mode
           : undefined;
+      const tools = parseToolList(frontmatter.tools);
+      const denyTools = parseToolList(frontmatter.disallowed_tools ?? frontmatter.deny_tools);
       agents.set(name, {
         name,
         description: frontmatter.description ?? name,
         ...(frontmatter.model ? { model: frontmatter.model } : {}),
         ...(mode ? { mode } : {}),
+        ...(tools ? { tools } : {}),
+        ...(denyTools ? { denyTools } : {}),
         ...(body ? { system: body } : {}),
       });
     }

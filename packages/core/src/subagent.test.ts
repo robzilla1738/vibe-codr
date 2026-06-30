@@ -20,6 +20,75 @@ function mockRegistry(model: MockLanguageModelV2) {
 
 import { createBlackboard } from "./blackboard.ts";
 
+test("a named agent's tool allowlist restricts the child's tools", async () => {
+  const readTool = {
+    name: "fake_read",
+    description: "read",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({ output: "ok" }),
+  } as unknown as ToolDefinition;
+  const writeTool = {
+    name: "fake_write",
+    description: "write",
+    inputSchema: z.object({}),
+    readOnly: false,
+    concurrencySafe: true,
+    execute: async () => ({ output: "ok" }),
+  } as unknown as ToolDefinition;
+
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "scout", agent: "scout" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "c" },
+      { type: "text-delta", id: "c", delta: "scouted" },
+      { type: "text-end", id: "c" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "done" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  const toolNames: string[][] = [];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const tools = (options as { tools?: { name: string }[] }).tools ?? [];
+      toolNames.push(tools.map((t) => t.name));
+      return steps[call++] as never;
+    },
+  });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([readTool, writeTool]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    agents: new Map([
+      ["scout", { name: "scout", description: "read-only scout", mode: "execute" as const, tools: ["fake_read"] }],
+    ]),
+  });
+  await session.run("delegate to the restricted scout");
+  // Child call is index 1; its tools must be exactly the allowlist — not
+  // fake_write, recall_memory, spawn_subagent, etc.
+  expect(toolNames[1]).toEqual(["fake_read"]);
+  // The parent (index 0) is unrestricted: it has the full set.
+  expect(toolNames[0]).toContain("fake_write");
+  expect(toolNames[0]).toContain("spawn_subagent");
+});
+
 test("a hung subagent is stopped by the wall-clock timeout and reported", async () => {
   const steps = [
     stream([

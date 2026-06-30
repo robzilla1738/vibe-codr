@@ -86,6 +86,9 @@ export interface SessionDeps {
   permissionResolver?: PermissionResolver;
   /** Extra system-prompt blocks (e.g. a named agent's instructions). */
   extraSystem?: string[];
+  /** Restrict this (sub)agent's tools to an allowlist / minus a denylist (from a
+   * named agent's frontmatter). Applied to the assembled tool map each turn. */
+  toolFilter?: { allow?: string[]; deny?: string[] };
   /** Named subagents available to spawn. */
   agents?: Map<string, NamedAgent>;
   /** Per-file write CLAIM registry shared across the session tree (set by the
@@ -652,6 +655,10 @@ export class Session {
       goal: this.goal,
       depth: this.depth + 1,
       ...(named?.system ? { extraSystem: [named.system] } : {}),
+      // A named agent's tool allowlist/denylist restricts the child's tools.
+      ...(named?.tools || named?.denyTools
+        ? { toolFilter: { ...(named.tools ? { allow: named.tools } : {}), ...(named.denyTools ? { deny: named.denyTools } : {}) } }
+        : {}),
     });
   }
 
@@ -929,6 +936,17 @@ export class Session {
       if (this.#deps.blackboard && (this.depth > 0 || subagentsAvailable)) {
         tools.post_note = toAISDKTool(this.#postNoteTool(), base);
         tools.read_notes = toAISDKTool(this.#readNotesTool(), base);
+      }
+
+      // Per-agent tool restriction (from a named agent's frontmatter): keep only
+      // the allowlist (when set) minus the denylist, applied to the whole map.
+      const filter = this.#deps.toolFilter;
+      if (filter && (filter.allow?.length || filter.deny?.length)) {
+        for (const name of Object.keys(tools)) {
+          const allowed = !filter.allow?.length || filter.allow.includes(name);
+          const denied = filter.deny?.includes(name) ?? false;
+          if (!allowed || denied) delete tools[name];
+        }
       }
 
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
@@ -1245,6 +1263,9 @@ export class Session {
       initialCostUSD: undefined,
       store: undefined,
       extraSystem: undefined,
+      // Don't inherit a parent agent's tool restriction — #forkChild re-applies
+      // the *child* named agent's own filter (if any).
+      toolFilter: undefined,
       createdAt: undefined,
       id: createId("sub"),
       model: overrides.model ?? this.model,

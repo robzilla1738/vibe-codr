@@ -1,6 +1,17 @@
 import { Glob } from "bun";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseSkillMarkdown, type SlashCommand, type Skill } from "@vibe/plugins";
+import { vibeConfigDir } from "./memory.ts";
+
+/** User-global skills directory (`~/.config/vibe-codr/skills`). */
+export function globalSkillsDir(): string {
+  return join(vibeConfigDir(), "skills");
+}
+
+/** User-global commands directory (`~/.config/vibe-codr/commands`). */
+export function globalCommandsDir(): string {
+  return join(vibeConfigDir(), "commands");
+}
 
 /**
  * Substitute `$ARGUMENTS` (all args) and `$1`..`$99` (positional) in a template.
@@ -17,14 +28,10 @@ export function applyArgs(body: string, args: string): string {
   });
 }
 
-/**
- * Load custom slash commands from `.vibe/commands/*.md`. Each file becomes a
- * `/name` command whose body (with arg substitution) is injected as a prompt.
- */
-export async function loadCommandFiles(cwd: string): Promise<SlashCommand[]> {
+/** Load custom slash commands from a `commands/*.md` directory. */
+export async function loadCommandsFrom(dir: string): Promise<SlashCommand[]> {
   const commands: SlashCommand[] = [];
   const glob = new Glob("*.md");
-  const dir = `${cwd}/.vibe/commands`;
   try {
     for await (const file of glob.scan({ cwd: dir, absolute: true })) {
       const raw = await Bun.file(file).text();
@@ -41,6 +48,14 @@ export async function loadCommandFiles(cwd: string): Promise<SlashCommand[]> {
     // No commands directory — fine.
   }
   return commands;
+}
+
+/**
+ * Load custom slash commands from the project's `.vibe/commands/*.md`. Each file
+ * becomes a `/name` command whose body (with arg substitution) is a prompt.
+ */
+export function loadCommandFiles(cwd: string): Promise<SlashCommand[]> {
+  return loadCommandsFrom(`${cwd}/.vibe/commands`);
 }
 
 /**

@@ -48,7 +48,14 @@ import {
 } from "./introspect.ts";
 import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, type NamedAgent } from "./agents.ts";
-import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
+import {
+  loadCommandFiles,
+  loadCommandsFrom,
+  loadSkills,
+  loadSkillsFrom,
+  globalCommandsDir,
+  globalSkillsDir,
+} from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { searchSessions, formatRecall } from "./recall.ts";
@@ -251,6 +258,15 @@ export class Engine implements EngineClient {
   async bootstrap(): Promise<void> {
     for (const [name, agent] of await loadAgents(this.#cwd)) {
       this.#agents.set(name, agent);
+    }
+    // Global skills/commands (~/.config/vibe-codr/{skills,commands}) load FIRST so
+    // a project-local file of the same name overrides the user-global one (the
+    // registries are last-write-wins by name), matching how memory precedence works.
+    for (const cmd of await loadCommandsFrom(globalCommandsDir())) {
+      this.commands.register(cmd);
+    }
+    for (const skill of await loadSkillsFrom(globalSkillsDir())) {
+      this.skills.register(skill);
     }
     for (const cmd of await loadCommandFiles(this.#cwd)) {
       this.commands.register(cmd);

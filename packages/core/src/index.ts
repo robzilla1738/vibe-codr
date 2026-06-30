@@ -22,8 +22,11 @@ export { loadAgents, type NamedAgent } from "./agents.ts";
 export {
   applyArgs,
   loadCommandFiles,
+  loadCommandsFrom,
   loadSkills,
   loadSkillsFrom,
+  globalSkillsDir,
+  globalCommandsDir,
 } from "./loaders.ts";
 export {
   LoopController,

@@ -2,7 +2,20 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyArgs, loadCommandFiles, loadSkills } from "./loaders.ts";
+import { applyArgs, loadCommandFiles, loadCommandsFrom, loadSkills, loadSkillsFrom } from "./loaders.ts";
+
+test("loadCommandsFrom + loadSkillsFrom read an arbitrary (e.g. global) directory", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-global-"));
+  await Bun.write(join(dir, "commands", "deploy.md"), "Deploy the app.");
+  await Bun.write(
+    join(dir, "skills", "my-skill", "SKILL.md"),
+    `---\ndescription: a global skill\n---\nbody`,
+  );
+  const cmds = await loadCommandsFrom(join(dir, "commands"));
+  expect(cmds.map((c) => c.name)).toEqual(["deploy"]);
+  const skills = await loadSkillsFrom(join(dir, "skills"));
+  expect(skills.map((s) => s.name)).toEqual(["my-skill"]);
+});
 
 test("applyArgs substitutes $ARGUMENTS and positional $1/$2", () => {
   expect(applyArgs("run $ARGUMENTS now", "a b c")).toBe("run a b c now");

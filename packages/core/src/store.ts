@@ -75,6 +75,13 @@ export class SessionStore {
     return { meta, modelMessages, history };
   }
 
+  /** Load only a session's UI history (history.jsonl) — recall searches this and
+   * doesn't need the much larger authoritative model transcript (messages.jsonl).
+   * Returns [] if the session or its history is absent/unreadable. */
+  async loadHistory(id: string): Promise<Message[]> {
+    return this.#readJsonl<Message>(join(this.#dir(id), "history.jsonl"));
+  }
+
   async #readJsonl<T>(path: string): Promise<T[]> {
     const file = Bun.file(path);
     if (!(await file.exists())) return [];

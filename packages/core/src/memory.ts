@@ -40,10 +40,18 @@ function memoryDirs(cwd: string): string[] {
   return foundGit ? chain.reverse() : [start];
 }
 
-/** Soft-cap a memory file's content, appending a visible truncation marker. */
+/** Soft-cap a memory file's content, appending a visible truncation marker.
+ * Truncates by ENCODED BYTES (not `String.slice`'s UTF-16 code units), so a
+ * file of CJK/emoji text actually honors the byte budget it claims to enforce. */
 function capMemory(text: string): string {
-  if (Buffer.byteLength(text, "utf8") <= MAX_MEMORY_BYTES) return text;
-  const kept = text.slice(0, MAX_MEMORY_BYTES).trimEnd();
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= MAX_MEMORY_BYTES) return text;
+  // Decode the byte-truncated slice non-fatally and drop a dangling partial
+  // codepoint (U+FFFD) the cut may have produced.
+  const kept = new TextDecoder("utf-8", { fatal: false })
+    .decode(bytes.subarray(0, MAX_MEMORY_BYTES))
+    .replace(/�+$/, "")
+    .trimEnd();
   return `${kept}\n\n…[memory truncated to ${Math.floor(MAX_MEMORY_BYTES / 1024)} KB]`;
 }
 

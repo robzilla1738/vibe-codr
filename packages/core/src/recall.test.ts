@@ -51,6 +51,45 @@ test("searchSessions on a dir with no sessions yields no hits", async () => {
   expect(await searchSessions(dir, "anything")).toEqual([]);
 });
 
+test("scores whole-word matches, not substrings ('the' is not inside 'other')", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "vibe-recall-bm25-"));
+  const store = new SessionStore(dir);
+  await store.save(
+    { id: "has_the", model: "m", mode: "execute", goal: null, createdAt: 1, updatedAt: 1000 },
+    [],
+    [msg("user", "the cat sat on the mat"), msg("assistant", "ok")],
+  );
+  await store.save(
+    { id: "substr_only", model: "m", mode: "execute", goal: null, createdAt: 2, updatedAt: 2000 },
+    [],
+    [msg("user", "mother brother another bother"), msg("assistant", "ok")],
+  );
+  const hits = await searchSessions(dir, "the");
+  // Old substring scoring matched "the" inside mother/brother/another/bother.
+  expect(hits.length).toBeGreaterThan(0);
+  expect(hits.every((h) => h.sessionId === "has_the")).toBe(true);
+});
+
+test("a rarer (higher-IDF) term outranks a ubiquitous one", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "vibe-recall-idf-"));
+  const store = new SessionStore(dir);
+  // "config" appears everywhere (low IDF); "zylphqx" is unique (high IDF).
+  for (let i = 0; i < 6; i++) {
+    await store.save(
+      { id: `common_${i}`, model: "m", mode: "execute", goal: null, createdAt: i, updatedAt: 100 + i },
+      [],
+      [msg("user", "update the config settings here"), msg("assistant", "ok")],
+    );
+  }
+  await store.save(
+    { id: "rare", model: "m", mode: "execute", goal: null, createdAt: 9, updatedAt: 50 },
+    [],
+    [msg("user", "the zylphqx config tweak"), msg("assistant", "ok")],
+  );
+  const hits = await searchSessions(dir, "zylphqx config");
+  expect(hits[0]!.sessionId).toBe("rare");
+});
+
 test("formatRecall renders matches and a clear no-match message", async () => {
   const dir = await seed();
   const hits = await searchSessions(dir, "oauth");

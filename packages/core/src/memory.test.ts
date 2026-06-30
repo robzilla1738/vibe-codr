@@ -37,6 +37,20 @@ test("concatenates multiple memory files under their own headings", async () => 
   expect(memory).toContain("Claude conventions here.");
 });
 
+test("caps a multibyte memory file by BYTES, not UTF-16 code units", async () => {
+  const dir = await freshDir();
+  // '中' is 3 UTF-8 bytes but 1 UTF-16 code unit. A file of MAX code units is
+  // ~3x the byte budget; the old String.slice cap kept all of it.
+  const text = "中".repeat(MAX_MEMORY_BYTES);
+  await writeFile(join(dir, "VIBE.md"), text);
+  const memory = await loadProjectMemory(dir);
+  expect(memory).toBeDefined();
+  expect(memory).toContain("memory truncated");
+  // The whole injected block (heading + capped body + marker) must stay close to
+  // the byte budget — not ~3x it as the code-unit bug produced.
+  expect(Buffer.byteLength(memory!, "utf8")).toBeLessThan(MAX_MEMORY_BYTES + 2_000);
+});
+
 test("ignores empty/whitespace-only memory files", async () => {
   const dir = await freshDir();
   await writeFile(join(dir, "VIBE.md"), "   \n\n  ");

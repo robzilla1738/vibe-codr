@@ -145,6 +145,34 @@ test("under budget=stop, a second prompt is refused without an orphan user turn"
   expect(blocked).toBeDefined();
 });
 
+test("setProjectMemory is reflected in the next turn's system prompt", async () => {
+  const systems: string[] = [];
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      systems.push(JSON.stringify(options.prompt));
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "p" },
+        { type: "text-delta", id: "p", delta: "ok" },
+        { type: "text-end", id: "p" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never;
+    },
+  });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  session.setProjectMemory("PROJECT-MEMORY-MARKER-XYZ");
+  await session.run("hi");
+  expect(systems[0]).toContain("PROJECT-MEMORY-MARKER-XYZ");
+});
+
 test("a user cancel is not surfaced as an engine error", async () => {
   // The model aborts the turn mid-stream then the stream rejects (as it does on
   // a real Esc/steer). That must be classified as an interrupt, not a fault.

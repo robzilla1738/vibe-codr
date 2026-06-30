@@ -52,7 +52,7 @@ import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { searchSessions, formatRecall } from "./recall.ts";
-import { loadMemorySources, formatMemory } from "./memory.ts";
+import { loadMemorySources, loadProjectMemory, formatMemory } from "./memory.ts";
 import { reasoningSupported } from "./model-tuning.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
@@ -462,6 +462,14 @@ export class Engine implements EngineClient {
       active: this.#active,
       pending: this.#pending.map(({ id, label }) => ({ id, label })),
     });
+  }
+
+  /** Re-read project memory from disk and push it into the live session, so a
+   * mid-session change (e.g. `/init`, a saved memory, an edited VIBE.md) is
+   * reflected in the next turn's system prompt without a restart. */
+  async #refreshProjectMemory(): Promise<void> {
+    this.#projectMemory = await loadProjectMemory(this.#cwd);
+    this.#session.setProjectMemory(this.#projectMemory);
   }
 
   /** Build an ephemeral session sharing infra but with a fresh context. */
@@ -894,6 +902,10 @@ export class Engine implements EngineClient {
             ? `Created: ${created.join(", ")}`
             : "Project already initialized.",
         );
+        // Pick up the just-scaffolded VIBE.md immediately — the cached
+        // #projectMemory was captured at startup and would otherwise ignore it
+        // until restart.
+        await this.#refreshProjectMemory();
         break;
       }
       default: {

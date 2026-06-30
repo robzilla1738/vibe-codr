@@ -271,6 +271,13 @@ export class Session {
     this.#deps.bus.emit({ type: "goal-changed", sessionId: this.id, goal });
   }
 
+  /** Replace the injected project-memory block (e.g. after `/init` scaffolds
+   * VIBE.md or the agent saves a memory) so the next turn's system prompt
+   * reflects it without a restart. The prompt is rebuilt from this each turn. */
+  setProjectMemory(text: string | undefined): void {
+    this.#deps.projectMemory = text;
+  }
+
   abort(): void {
     // Just signal the current turn. The fresh controller is installed at the
     // top of the NEXT run()/compact() — recreating it here would discard an

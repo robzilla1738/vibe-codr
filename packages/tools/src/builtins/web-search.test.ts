@@ -65,6 +65,26 @@ test("sends the query + X-API-Key header and formats results", async () => {
   expect(String(res.output)).toContain("https://bun.sh");
 });
 
+test("keeps every provider result by default; maxResults only trims", async () => {
+  process.env.TINYFISH_API_KEY = "k";
+  const many = Array.from({ length: 12 }, (_, i) => ({
+    position: i + 1,
+    site_name: "S",
+    title: `Result ${i + 1}`,
+    snippet: "s",
+    url: `https://x/${i + 1}`,
+  }));
+  // Default: no engine throttle — all 12 provider results are kept.
+  stubFetch({ results: many });
+  const all = await webSearchTool().execute({ query: "deep research" }, ctx());
+  expect(String(all.output)).toContain("Result 12");
+  // Quick fact: trim to the top 3.
+  stubFetch({ results: many });
+  const tight = await webSearchTool().execute({ query: "btc price", maxResults: 3 }, ctx());
+  expect(String(tight.output)).toContain("Result 3");
+  expect(String(tight.output)).not.toContain("Result 4");
+});
+
 test("env var takes precedence over the configured key", async () => {
   process.env.TINYFISH_API_KEY = "env-key";
   const seen = stubFetch({ results: [] });

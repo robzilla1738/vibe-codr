@@ -114,6 +114,123 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
   expect(session.snapshot().usage.totalTokens).toBe(6);
 });
 
+test("spawn_subagent routes to a named agent (its mode + system apply)", async () => {
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "look at engine.ts", agent: "explore" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "c" },
+      { type: "text-delta", id: "c", delta: "explored" },
+      { type: "text-end", id: "c" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "done" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  const systems: string[] = [];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      systems.push(JSON.stringify(options.prompt));
+      return steps[call++] as never;
+    },
+  });
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    agents: new Map([
+      [
+        "explore",
+        {
+          name: "explore",
+          description: "read-only research",
+          mode: "plan" as const,
+          system: "EXPLORE-AGENT-MARKER",
+        },
+      ],
+    ]),
+  });
+
+  await session.run("delegate to explore");
+
+  // The child (second model call) ran with the named agent's system body and in
+  // its declared plan mode (read-only), not the parent's execute mode.
+  expect(systems[1]).toContain("EXPLORE-AGENT-MARKER");
+  expect(systems[1]).toContain("MUST NOT modify"); // plan-mode marker
+});
+
+test("a plan-mode parent's subagents are coerced read-only (even if execute is requested)", async () => {
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        // Explicitly ask for execute — the plan-mode parent must override it.
+        input: JSON.stringify({ prompt: "investigate", mode: "execute" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "c" },
+      { type: "text-delta", id: "c", delta: "findings" },
+      { type: "text-end", id: "c" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "plan ready" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  const systems: string[] = [];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      systems.push(JSON.stringify(options.prompt));
+      return steps[call++] as never;
+    },
+  });
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "plan",
+  });
+
+  await session.run("plan a refactor");
+  // The child (second model call) ran in plan mode despite requesting execute.
+  expect(systems[1]).toContain("MUST NOT modify");
+});
+
 test("fork() gives a subagent a fresh context — no inherited history/usage/cost/store", async () => {
   // Regression for the resume+subagent leak: a resumed parent carries
   // initial*/store in its deps; a forked subagent must NOT inherit any of it.

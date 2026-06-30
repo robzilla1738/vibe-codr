@@ -20,7 +20,7 @@ import {
   probeOllamaContextWindow,
   type ModelInfo,
 } from "@vibe/providers";
-import { Toolset, builtinTools } from "@vibe/tools";
+import { Toolset, builtinTools, createFileLock } from "@vibe/tools";
 import type { ModelPrice } from "@vibe/config";
 import {
   HookBus,
@@ -110,6 +110,9 @@ export class Engine implements EngineClient {
   #draining = false;
   #idleResolvers: (() => void)[] = [];
   #agents = new Map<string, NamedAgent>();
+  /** One per-file write lock shared across the whole session tree (parent +
+   * every subagent), so concurrent agents can't corrupt the same file. */
+  #fileLock = createFileLock();
   #loop: LoopController | undefined;
   /** The session running the current loop iteration, so a stop can abort it. */
   #loopSession: Session | undefined;
@@ -180,6 +183,7 @@ export class Engine implements EngineClient {
       projectMemory: opts.projectMemory,
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
+      fileLock: this.#fileLock,
       skills: this.skills,
       hooks: this.hooks,
       store: this.#store,
@@ -434,6 +438,7 @@ export class Engine implements EngineClient {
       projectMemory: this.#projectMemory,
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
+      fileLock: this.#fileLock,
       skills: this.skills,
       hooks: this.hooks,
       getContextWindow: (model) => this.#resolveContextWindow(model),

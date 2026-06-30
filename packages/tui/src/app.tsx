@@ -674,43 +674,55 @@ export function App(props: { engine: EngineClient }) {
   const submit = (value?: string) => runText(value ?? draft());
 
   return (
-    <box flexDirection="column" padding={1} style={{ height: "100%" }} onMouseDown={refocusInput}>
-      {/* Header — a slim status bar with a single underline rule. Brand + mode
-          pill on the left, cwd on the right. The model/usage detail moves to the
-          rail when it's shown; on narrow terminals it stays in a second row. */}
-      <box
-        flexDirection="column"
-        flexShrink={0}
-        border={["bottom"]}
-        borderColor={palette().border}
-        paddingBottom={1}
-      >
-        <box flexDirection="row" justifyContent="space-between">
-          <box flexDirection="row">
-            <text fg={brand()} attributes={TextAttributes.BOLD}>
-              {"◆ vibe-codr"}
-            </text>
-            <text fg={palette().muted}>{"   "}</text>
-            <text
-              fg={accent()}
-              bg={palette().elevated}
-              attributes={TextAttributes.BOLD}
-            >{` ${modeLabel(uiMode())} `}</text>
+    <box
+      flexDirection="row"
+      backgroundColor={palette().background}
+      style={{ height: "100%" }}
+      onMouseDown={refocusInput}
+    >
+      {/* LEFT column — header, the scrolling transcript, and every input
+          affordance. The context rail is a full-height sibling to the right, so
+          the input bar shrinks to this column's width instead of spanning the
+          whole terminal. */}
+      <box flexDirection="column" flexGrow={1} padding={1}>
+      {/* Header — only on NARROW terminals, where the rail is hidden. When the
+          rail is shown, the brand, mode pill, cwd, model and goal all live in the
+          rail's identity block instead, so there's no black header strip here. */}
+      <Show when={!showRail()}>
+        <box
+          flexDirection="column"
+          flexShrink={0}
+          border={["bottom"]}
+          borderColor={palette().border}
+          paddingBottom={1}
+        >
+          <box flexDirection="row" justifyContent="space-between">
+            <box flexDirection="row">
+              <text fg={brand()} attributes={TextAttributes.BOLD}>
+                {"◆ vibe-codr"}
+              </text>
+              <text fg={palette().muted}>{"   "}</text>
+              <text
+                fg={accent()}
+                bg={palette().elevated}
+                attributes={TextAttributes.BOLD}
+              >{` ${modeLabel(uiMode())} `}</text>
+            </box>
+            <text fg={palette().muted}>{cwd}</text>
           </box>
-          <text fg={palette().muted}>{cwd}</text>
-        </box>
-        <Show when={!showRail()}>
           <box flexDirection="row" justifyContent="space-between">
             <text fg={palette().assistant}>{headModel()}</text>
             <Show when={goalInfo()}>
               <text fg={palette().muted}>{`★ ${truncate(goalInfo() ?? "", 32)}`}</text>
             </Show>
           </box>
-        </Show>
-      </box>
+        </box>
+      </Show>
 
-      {/* Body — a scrolling transcript beside the context rail. */}
-      <box flexDirection="row" flexGrow={1} marginTop={1} gap={2}>
+      {/* Body — the scrolling transcript. The context rail is a sibling of this
+          whole column (see below), not of the transcript, so it runs full-height.
+          No top margin when the rail carries the header (transcript starts at top). */}
+      <box flexDirection="column" flexGrow={1} marginTop={showRail() ? 0 : 1}>
         <scrollbox
           ref={(el: typeof scrollEl) => (scrollEl = el)}
           flexGrow={1}
@@ -815,150 +827,6 @@ export function App(props: { engine: EngineClient }) {
             )}
           </Index>
         </scrollbox>
-
-        {/* Context rail — a panel surface with stacked, scrolling sections:
-            tasks, subagents, changed files, then session info (last so the work
-            stays prominent up top). Sections hide when empty; the task list also
-            hides once everything's done (the transcript keeps the record). Item
-            text wraps rather than truncating, so nothing is silently cut off. */}
-        <Show when={showRail()}>
-          <box
-            width={RAIL_WIDTH}
-            flexShrink={0}
-            backgroundColor={palette().elevated}
-            flexDirection="column"
-            paddingTop={1}
-            paddingBottom={1}
-            paddingLeft={2}
-            paddingRight={2}
-          >
-            <scrollbox
-              flexGrow={1}
-              scrollY
-              contentOptions={{ flexDirection: "column", gap: 1 }}
-              scrollbarOptions={{ visible: false }}
-            >
-              {/* Tasks — the to-do list, prominent up top; hides once all done. */}
-              <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
-                <box flexDirection="column">
-                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
-                    {`Tasks  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-                  </text>
-                  <For each={tasks()}>
-                    {(task) => {
-                      const c = () =>
-                        task.status === "completed"
-                          ? palette().muted
-                          : task.status === "in_progress"
-                            ? brand()
-                            : palette().assistant;
-                      return (
-                        <box flexDirection="row" gap={1}>
-                          <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
-                          <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
-                        </box>
-                      );
-                    }}
-                  </For>
-                </box>
-              </Show>
-
-              <Show when={subagents().length > 0}>
-                <box flexDirection="column">
-                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Subagents"}</text>
-                  <For each={subagents()}>
-                    {(s) => (
-                      <box flexDirection="column">
-                        <box flexDirection="row" gap={1}>
-                          <text flexShrink={0} fg={s.status === "running" ? brand() : palette().muted}>
-                            {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
-                          </text>
-                          <text
-                            flexGrow={1}
-                            wrapMode="word"
-                            fg={s.status === "running" ? brand() : palette().muted}
-                          >
-                            {s.prompt}
-                          </text>
-                        </box>
-                        <Show when={s.result}>
-                          <text fg={palette().muted} wrapMode="word">
-                            {`   ${GLYPH.result} ${s.result}`}
-                          </text>
-                        </Show>
-                      </box>
-                    )}
-                  </For>
-                </box>
-              </Show>
-
-              <Show when={changedFiles().length > 0}>
-                <box flexDirection="column">
-                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Changed"}</text>
-                  <For each={changedFiles()}>
-                    {(f) => (
-                      <box flexDirection="row" gap={1} justifyContent="space-between">
-                        <text flexGrow={1} wrapMode="none" fg={palette().muted}>
-                          {truncateLeft(f.path, RAIL_WIDTH - 5 - changeWidth(f))}
-                        </text>
-                        <box flexDirection="row" gap={1} flexShrink={0}>
-                          <Show when={f.added > 0}>
-                            <text fg={palette().add}>{`+${f.added}`}</text>
-                          </Show>
-                          <Show when={f.removed > 0}>
-                            <text fg={palette().del}>{`-${f.removed}`}</text>
-                          </Show>
-                        </box>
-                      </box>
-                    )}
-                  </For>
-                </box>
-              </Show>
-
-              {/* Git — branch, dirty count, ahead/behind, and a worktree marker;
-                  shown only inside a repo. */}
-              <Show when={git()}>
-                {(g) => (
-                  <box flexDirection="column">
-                    <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Git"}</text>
-                    <box flexDirection="row" gap={1}>
-                      <text fg={palette().muted}>{`⎇ ${g().branch}`}</text>
-                      <Show when={g().dirty > 0}>
-                        <text fg={palette().muted}>{`·  ${g().dirty} dirty`}</text>
-                      </Show>
-                    </box>
-                    <Show when={g().ahead > 0 || g().behind > 0 || g().worktree}>
-                      <box flexDirection="row" gap={1}>
-                        <Show when={g().ahead > 0 || g().behind > 0}>
-                          <text fg={palette().muted}>{`↑${g().ahead} ↓${g().behind}`}</text>
-                        </Show>
-                        <Show when={g().worktree}>
-                          <text fg={palette().muted}>{g().ahead > 0 || g().behind > 0 ? "·  worktree" : "worktree"}</text>
-                        </Show>
-                      </box>
-                    </Show>
-                  </box>
-                )}
-              </Show>
-
-              {/* Session — always shown, last so tasks/subagents stay prominent
-                  up top; on a fresh chat it's the only section and sits at the top. */}
-              <box flexDirection="column">
-                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Session"}</text>
-                <text fg={palette().muted} wrapMode="word">{headModel()}</text>
-                <Show when={ctxInfo()}>
-                  <text fg={palette().muted}>{`ctx ${ctxInfo()}`}</text>
-                </Show>
-                <Show when={usageInfo()}>
-                  <text fg={palette().muted}>{usageInfo()}</text>
-                </Show>
-                <Show when={goalInfo()}>
-                  <text fg={palette().muted} wrapMode="word">{`★ ${goalInfo()}`}</text>
-                </Show>
-              </box>
-            </scrollbox>
-          </box>
-        </Show>
       </box>
 
       {/* Live working indicator — braille spinner + elapsed, hidden while a
@@ -1120,6 +988,160 @@ export function App(props: { engine: EngineClient }) {
           <text flexShrink={0} fg={palette().muted}>{metrics()}</text>
         </Show>
       </box>
+      </box>
+      {/* Context rail — a full-height GREY panel on the right edge. It opens with
+          the identity block (brand · mode · cwd · model · goal, moved out of the
+          old black header bar) and then the live sections: tasks, subagents,
+          changed files, git, session. Sections hide when empty; the task list also
+          hides once everything's done. Item text wraps rather than truncating. */}
+      <Show when={showRail()}>
+        <box
+          width={RAIL_WIDTH}
+          flexShrink={0}
+          backgroundColor={palette().elevated}
+          flexDirection="column"
+          paddingTop={1}
+          paddingBottom={1}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <scrollbox
+            flexGrow={1}
+            scrollY
+            contentOptions={{ flexDirection: "column", gap: 1 }}
+            scrollbarOptions={{ visible: false }}
+          >
+            {/* Identity — brand mark, mode (colored + bg pill), cwd. Model/goal
+                live in the Session section below, so they're not repeated here. */}
+            <box flexDirection="column">
+              <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ vibe-codr"}</text>
+              <text fg={accent()} bg={palette().selBg} attributes={TextAttributes.BOLD}>
+                {` ${modeLabel(uiMode())} `}
+              </text>
+              <text fg={palette().muted} wrapMode="word">{cwd}</text>
+            </box>
+
+            {/* Tasks — the to-do list, prominent up top; hides once all done. */}
+            <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
+              <box flexDirection="column">
+                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>
+                  {`Tasks  ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
+                </text>
+                <For each={tasks()}>
+                  {(task) => {
+                    const c = () =>
+                      task.status === "completed"
+                        ? palette().muted
+                        : task.status === "in_progress"
+                          ? brand()
+                          : palette().assistant;
+                    return (
+                      <box flexDirection="row" gap={1}>
+                        <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
+                        <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
+                      </box>
+                    );
+                  }}
+                </For>
+              </box>
+            </Show>
+
+            <Show when={subagents().length > 0}>
+              <box flexDirection="column">
+                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Subagents"}</text>
+                <For each={subagents()}>
+                  {(s) => (
+                    <box flexDirection="column">
+                      <box flexDirection="row" gap={1}>
+                        <text flexShrink={0} fg={s.status === "running" ? brand() : palette().muted}>
+                          {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
+                        </text>
+                        <text
+                          flexGrow={1}
+                          wrapMode="word"
+                          fg={s.status === "running" ? brand() : palette().muted}
+                        >
+                          {s.prompt}
+                        </text>
+                      </box>
+                      <Show when={s.result}>
+                        <text fg={palette().muted} wrapMode="word">
+                          {`   ${GLYPH.result} ${s.result}`}
+                        </text>
+                      </Show>
+                    </box>
+                  )}
+                </For>
+              </box>
+            </Show>
+
+            <Show when={changedFiles().length > 0}>
+              <box flexDirection="column">
+                <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Changed"}</text>
+                <For each={changedFiles()}>
+                  {(f) => (
+                    <box flexDirection="row" gap={1} justifyContent="space-between">
+                      <text flexGrow={1} wrapMode="none" fg={palette().muted}>
+                        {truncateLeft(f.path, RAIL_WIDTH - 5 - changeWidth(f))}
+                      </text>
+                      <box flexDirection="row" gap={1} flexShrink={0}>
+                        <Show when={f.added > 0}>
+                          <text fg={palette().add}>{`+${f.added}`}</text>
+                        </Show>
+                        <Show when={f.removed > 0}>
+                          <text fg={palette().del}>{`-${f.removed}`}</text>
+                        </Show>
+                      </box>
+                    </box>
+                  )}
+                </For>
+              </box>
+            </Show>
+
+            {/* Git — branch, dirty count, ahead/behind, and a worktree marker;
+                shown only inside a repo. */}
+            <Show when={git()}>
+              {(g) => (
+                <box flexDirection="column">
+                  <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Git"}</text>
+                  <box flexDirection="row" gap={1}>
+                    <text fg={palette().muted}>{`⎇ ${g().branch}`}</text>
+                    <Show when={g().dirty > 0}>
+                      <text fg={palette().muted}>{`·  ${g().dirty} dirty`}</text>
+                    </Show>
+                  </box>
+                  <Show when={g().ahead > 0 || g().behind > 0 || g().worktree}>
+                    <box flexDirection="row" gap={1}>
+                      <Show when={g().ahead > 0 || g().behind > 0}>
+                        <text fg={palette().muted}>{`↑${g().ahead} ↓${g().behind}`}</text>
+                      </Show>
+                      <Show when={g().worktree}>
+                        <text fg={palette().muted}>{g().ahead > 0 || g().behind > 0 ? "·  worktree" : "worktree"}</text>
+                      </Show>
+                    </box>
+                  </Show>
+                </box>
+              )}
+            </Show>
+
+            {/* Session — always shown, last so tasks/subagents stay prominent up
+                top; on a fresh chat it's the only section and sits at the top. */}
+            <box flexDirection="column">
+              <text fg={palette().assistant} attributes={TextAttributes.BOLD}>{"Session"}</text>
+              <text fg={palette().muted} wrapMode="word">{headModel()}</text>
+              <Show when={ctxInfo()}>
+                <text fg={palette().muted}>{`ctx ${ctxInfo()}`}</text>
+              </Show>
+              <Show when={usageInfo()}>
+                <text fg={palette().muted}>{usageInfo()}</text>
+              </Show>
+              <Show when={goalInfo()}>
+                <text fg={palette().muted} wrapMode="word">{`★ ${goalInfo()}`}</text>
+              </Show>
+            </box>
+          </scrollbox>
+        </box>
+      </Show>
     </box>
   );
 }

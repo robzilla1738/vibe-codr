@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadAgents } from "./agents.ts";
+import { loadAgents, defaultAgents } from "./agents.ts";
 
 function projectWithAgents(files: Record<string, string>): string {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-agents-"));
@@ -33,7 +33,29 @@ test("falls back to the filename when no name is given, and ignores a bad mode",
   expect(a?.mode).toBeUndefined(); // invalid mode dropped, not crashed
 });
 
-test("no agents directory yields an empty map (not an error)", async () => {
+test("ships the built-in coding agents by default", () => {
+  const defaults = defaultAgents();
+  expect(defaults.get("explore")?.mode).toBe("plan"); // read-only
+  expect(defaults.get("review")?.mode).toBe("plan"); // read-only
+  expect(defaults.get("test")?.mode).toBe("execute"); // writes
+  for (const a of defaults.values()) expect(a.system?.length).toBeGreaterThan(0);
+});
+
+test("no agents directory still yields the built-in defaults (not an error)", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-noagents-"));
-  expect((await loadAgents(cwd)).size).toBe(0);
+  const agents = await loadAgents(cwd);
+  expect(agents.has("explore")).toBe(true);
+  expect(agents.has("review")).toBe(true);
+  expect(agents.has("test")).toBe(true);
+});
+
+test("a user .vibe/agents file overrides a built-in default by name", async () => {
+  const cwd = projectWithAgents({
+    "explore.md": `---\nname: explore\ndescription: My custom explorer\n---\nCustom explore instructions.`,
+  });
+  const agents = await loadAgents(cwd);
+  expect(agents.get("explore")?.description).toBe("My custom explorer");
+  expect(agents.get("explore")?.system).toBe("Custom explore instructions.");
+  // The other defaults remain available alongside the override.
+  expect(agents.has("review")).toBe(true);
 });

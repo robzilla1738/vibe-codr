@@ -5,6 +5,15 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **Parallel subagents could corrupt a shared file.** The mutating-tool serial
+  lock was created per session, so two concurrent subagents editing the same file
+  got different locks and raced. A **tree-wide per-file write lock**
+  (`createFileLock` → `SessionDeps.fileLock` → `ToolContext.lockFile`, taken by
+  `edit`/`write`) now serializes same-path writes across the whole session tree
+  while disjoint paths stay parallel. Lock keys are canonicalized
+  (`realpathSync.native`), so different spellings of one file — including
+  case-variants on case-insensitive filesystems like macOS APFS — share a lock
+  instead of racing.
 - **Expanding a tool/diff row no longer jumps to the bottom.** On an idle turn,
   expand/collapse now disengages the scrollbox's sticky auto-follow and freezes
   the scroll position, so the clicked row stays put and revealed content drops in
@@ -34,6 +43,34 @@ All notable changes to vibe-codr are documented here.
   truncation marker instead of silently dropping results.
 
 ### Added
+- **`package_info` tool** — authoritative latest-version + metadata lookup from
+  npm or PyPI (no key required). The fast, reliable way to check dependency
+  currency: read the manifest, then compare against the real latest instead of
+  scraping the web. Read-only, so it's usable while planning too.
+- **Adaptive web-search — the model controls depth, nothing throttles it.** The
+  search guidance calibrates effort to the question: quick facts (price, date,
+  version) are answered straight from the `web_search` snippets — one query, no
+  `webfetch`, stop — while hard or high-stakes questions go deep (more queries,
+  more sources, full-page fetches, cross-checking). No engine throttle: `web_search`
+  now keeps every ranked result the provider returns by default (the old hardcoded
+  8-result cap is gone), with an optional `maxResults` to trim to the top N for a
+  quick fact; `webfetch` takes `maxChars` (default 25k, raise to read a long page
+  in full, and truncation now reports how much was dropped). Broader coverage comes
+  from issuing more queries. Version questions are pointed at `package_info` and
+  official docs over blogs.
+- **Multi-agent coding, dialed in.** The execute-mode system prompt now carries a
+  **delegation doctrine** (when/how to fan out, self-contained child prompts,
+  disjoint-file ownership, consolidate + verify), injected only when subagents are
+  actually available. Three **default coding agents** ship out of the box —
+  `explore` (read-only research), `review` (adversarial code review), `test`
+  (write/run tests) — and the named-agent roster is injected into the prompt so
+  the model routes by capability; `.vibe/agents/*.md` override them by name. A new
+  `subagent.maxParallel` (default 4) bounds each fan-out via a per-session
+  semaphore (deadlock-free, unlike a tree-global cap). **Plan mode can now fan out
+  read-only subagents** for parallel codebase exploration while planning — they're
+  coerced to plan mode so they can never write. `spawn_subagent` no longer prompts
+  for permission for the orchestration itself (the child's own tools still gate
+  every side effect).
 - **Context rail "Git" section** — branch, dirty count, ahead/behind, and a
   worktree marker, from a new `Engine.#gitInfo()` + `git-updated` event (refreshed
   at startup and after each turn). The rail is now adaptive: **Tasks → Subagents →
@@ -46,6 +83,16 @@ All notable changes to vibe-codr are documented here.
   prompt. Built-ins and custom commands still take precedence.
 
 ### Changed
+- **Black canvas + full-height grey sidebar.** The TUI sits on a pure-black
+  backdrop (new `background` palette field) with a **full-height grey sidebar**
+  (`elevated`) pinned to the right edge, top-to-bottom. The brand mark, mode pill,
+  and cwd moved out of the old black header bar into the sidebar's **identity
+  block** (so there's no header strip on wide terminals; it falls back to a top bar
+  only on narrow terminals where the sidebar is hidden). The layout root became a
+  flex *row* — transcript and input affordances live in a left column, so the
+  **input bar shrinks** to that column's width instead of spanning under the
+  sidebar. Sidebar sections (Tasks/Subagents/Changed/Git/Session) are plain text on
+  the one grey surface.
 - **Charcoal + monochrome theme.** The default theme now uses neutral charcoal
   surfaces and monochrome white/grey text with a single purple accent (the old
   blue-tinted palette is gone). Mode (plan/execute/yolo) color is now scoped to
@@ -64,9 +111,8 @@ All notable changes to vibe-codr are documented here.
   unfolds every turn at once. Search rows truncate the query and show `N results`
   instead of a raw line count, and the system prompt now tells the model to search
   deliberately (no redundant reworded queries). The context rail is rebuilt as a
-  clean live summary — **Activity** (in-progress tool feed, hidden when idle),
-  **Subagents** (with one-line results), Tasks, Changed, then a compact Session —
-  instead of a mostly-empty box.
+  clean live summary of subagents, tasks, changed files, and session info instead
+  of a mostly-empty box (see the rail's final adaptive section list under *Added*).
 - **Real context window & cost for any model.** Context window now resolves via a
   `config.contextWindow` override → a live Ollama `/api/show` probe (local + cloud)
   → the catalog → a 128k default, so local/cloud models report a real window. Cost

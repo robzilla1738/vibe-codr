@@ -1,7 +1,16 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ToolDefinition } from "@vibe/shared";
 import { z } from "zod";
-import { Toolset, createSerialLock, isConcurrencySafe } from "./toolset.ts";
+import {
+  Toolset,
+  createSerialLock,
+  createSemaphore,
+  createFileLock,
+  isConcurrencySafe,
+} from "./toolset.ts";
 import { builtinTools } from "./builtins/index.ts";
 
 test("plan mode exposes only read-only tools", () => {
@@ -165,4 +174,98 @@ test("aiTools serializes mutating tools but lets read-only tools overlap", async
   const mutB = [order.indexOf("+mutB"), order.indexOf("-mutB")];
   const noOverlap = mutA[1]! < mutB[0]! || mutB[1]! < mutA[0]!;
   expect(noOverlap).toBe(true);
+});
+
+test("createSemaphore admits at most n concurrently", async () => {
+  const sem = createSemaphore(2);
+  let active = 0;
+  let peak = 0;
+  let release!: () => void;
+  const barrier = new Promise<void>((r) => {
+    release = r;
+  });
+  const task = () =>
+    sem(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await barrier;
+      active--;
+    });
+  const all = Promise.all([task(), task(), task(), task()]);
+  await new Promise((r) => setTimeout(r, 10));
+  expect(active).toBe(2); // only 2 of 4 admitted
+  release();
+  await all;
+  expect(peak).toBe(2); // never exceeded the cap, even as the queue drained
+});
+
+test("createFileLock serializes the same path, FIFO", async () => {
+  const lock = createFileLock();
+  const order: string[] = [];
+  let releaseA!: () => void;
+  const aBarrier = new Promise<void>((r) => {
+    releaseA = r;
+  });
+  const p1 = lock("/x", async () => {
+    order.push("a-start");
+    await aBarrier;
+    order.push("a-end");
+  });
+  const p2 = lock("/x", async () => {
+    order.push("b-start");
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(order).toEqual(["a-start"]); // b is blocked behind a on the same path
+  releaseA();
+  await Promise.all([p1, p2]);
+  expect(order).toEqual(["a-start", "a-end", "b-start"]);
+});
+
+test("createFileLock canonicalizes keys so different spellings of one file serialize", async () => {
+  // A real file so realpath resolves; `./sub/../f.txt` and `f.txt` are the same.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-lockkey-"));
+  mkdirSync(join(dir, "sub"));
+  const f = join(dir, "f.txt");
+  writeFileSync(f, "x");
+  const lock = createFileLock();
+  const order: string[] = [];
+  let releaseA!: () => void;
+  const aBarrier = new Promise<void>((r) => {
+    releaseA = r;
+  });
+  const p1 = lock(f, async () => {
+    order.push("a-start");
+    await aBarrier;
+    order.push("a-end");
+  });
+  const p2 = lock(join(dir, "sub", "..", "f.txt"), async () => {
+    order.push("b-start");
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(order).toEqual(["a-start"]); // same file via a different spelling → blocked
+  releaseA();
+  await Promise.all([p1, p2]);
+  expect(order).toEqual(["a-start", "a-end", "b-start"]);
+});
+
+test("createFileLock overlaps different paths", async () => {
+  const lock = createFileLock();
+  let active = 0;
+  let peak = 0;
+  let release!: () => void;
+  const barrier = new Promise<void>((r) => {
+    release = r;
+  });
+  const run = (p: string) =>
+    lock(p, async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await barrier;
+      active--;
+    });
+  const all = Promise.all([run("/x"), run("/y")]);
+  await new Promise((r) => setTimeout(r, 10));
+  expect(peak).toBe(2); // disjoint paths run concurrently
+  release();
+  await all;
 });

@@ -8,6 +8,7 @@ import { writeTool } from "./write.ts";
 import { editTool } from "./edit.ts";
 import { webfetchTool } from "./webfetch.ts";
 import { webSearchTool } from "./web-search.ts";
+import { packageInfoTool } from "./package-info.ts";
 import { presentPlanTool } from "./present-plan.ts";
 import { gitTools } from "./git.ts";
 import { BackgroundJobs, backgroundJobTools } from "./jobs.ts";
@@ -28,6 +29,7 @@ export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
     lsTool,
     grepTool,
     webfetchTool,
+    packageInfoTool,
     writeTool,
     editTool,
     bashTool(jobs),
@@ -51,6 +53,7 @@ export {
   editTool,
   webfetchTool,
   webSearchTool,
+  packageInfoTool,
   presentPlanTool,
   gitTools,
 };

@@ -37,6 +37,13 @@ export interface ToolContext {
   emit: (event: UIEvent) => void;
   /** Tool-call id assigned by the model, for progress correlation. */
   toolCallId: string;
+  /**
+   * Serialize the read-modify-write of a single absolute path across the whole
+   * session tree, so two concurrent subagents can never corrupt the same file
+   * (writes to different paths still run in parallel). Optional: undefined in
+   * unit tests, where the tool runs its mutation directly.
+   */
+  lockFile?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
 }
 
 /** Result returned by a tool execution. */

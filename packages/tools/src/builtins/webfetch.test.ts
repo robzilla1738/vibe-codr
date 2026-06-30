@@ -43,6 +43,21 @@ test("returns non-HTML bodies verbatim", async () => {
   expect(String(res.output)).toBe('{"ok":true}');
 });
 
+test("maxChars governs truncation and reports how much was dropped", async () => {
+  const big = "x".repeat(40_000);
+  stubFetch(big, "text/plain");
+  // Skim: cap to 100 chars.
+  const skim = await webfetchTool.execute({ url: "https://e.com", maxChars: 100 }, ctx());
+  const out = String(skim.output);
+  expect(out).toContain("…(truncated");
+  expect(out).toContain("raise maxChars");
+  expect(out.startsWith("x".repeat(100))).toBe(true);
+  // Read in full: a large cap returns everything, no truncation marker.
+  stubFetch(big, "text/plain");
+  const full = await webfetchTool.execute({ url: "https://e.com", maxChars: 100_000 }, ctx());
+  expect(String(full.output)).toBe(big);
+});
+
 test("a non-OK HTTP status is an error", async () => {
   stubFetch("not found", "text/plain", 404);
   const res = await webfetchTool.execute({ url: "https://example.com/missing" }, ctx());

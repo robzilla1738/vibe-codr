@@ -1,4 +1,10 @@
-export { Toolset, toAISDKTool, type ToolRuntimeBase } from "./toolset.ts";
+export {
+  Toolset,
+  toAISDKTool,
+  createSemaphore,
+  createFileLock,
+  type ToolRuntimeBase,
+} from "./toolset.ts";
 export {
   builtinTools,
   type BuiltinToolOptions,
@@ -11,6 +17,7 @@ export {
   editTool,
   webfetchTool,
   webSearchTool,
+  packageInfoTool,
 } from "./builtins/index.ts";
 export type { WebSearchOptions } from "./builtins/web-search.ts";
 export { unifiedDiff, type DiffResult } from "./diff.ts";

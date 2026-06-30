@@ -76,10 +76,12 @@ export const ConfigSchema = z.object({
   subagent: z
     .object({
       maxDepth: z.number().int().positive().default(3),
+      /** Max subagents one agent runs concurrently (bounds each fan-out). */
+      maxParallel: z.number().int().positive().default(4),
       /** Default model for subagents. Falls back to the main model when unset. */
       model: z.string().optional(),
     })
-    .default({ maxDepth: 3 }),
+    .default({ maxDepth: 3, maxParallel: 4 }),
   compaction: z
     .object({
       /** Fraction of context window at which to auto-compact. */

@@ -63,7 +63,49 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   in plan mode; non-read-only tools pass through the permission gate. The AI SDK
   runs a step's tool calls in parallel, so `Toolset.aiTools` serializes every
   non-`concurrencySafe` (mutating) tool behind a shared FIFO lock — never bypass
-  it, or parallel edits/writes to one file will race.
+  it, or parallel edits/writes to one file will race. That lock is **per session**,
+  so cross-_subagent_ same-file safety comes from a separate **tree-wide per-file
+  write lock** (`createFileLock`, threaded through `SessionDeps.fileLock` →
+  `ToolContext.lockFile`): `edit`/`write` wrap their read-modify-write in
+  `withFileLock(ctx, absPath, …)` so two parallel subagents editing the same path
+  serialize while disjoint paths stay parallel. Lock keys are **canonicalized**
+  (`realpathSync.native` — resolves symlinks and on-disk casing) so different
+  spellings of one file (`src/App.ts` vs `SRC/app.ts` on case-insensitive APFS)
+  still share a lock; idle locks are pruned race-free. Don't add a file-mutating
+  built-in without taking that lock.
+- **Multi-agent coding.** Delegation is the model's own job (vibe-codr has no
+  separate orchestrator process), so the execute-mode system prompt carries a
+  delegation doctrine (when/how to fan out, self-contained child prompts,
+  disjoint-file ownership, consolidate+verify) — injected by `composeSystemPrompt`
+  only when `subagentsAvailable` (`depth < subagent.maxDepth`, either mode), the
+  same gate that registers `spawn_subagent`. **Plan mode can fan out too** — the
+  parent is read-only, so every subagent it spawns is **coerced to plan**
+  (`childMode = this.mode === "plan" ? "plan" : …`), giving parallel read-only
+  exploration while planning without ever risking a write; plan mode gets a
+  read-only doctrine variant and the roster is filtered to read-only agents.
+  `spawn_subagent` is `readOnly: true` so the orchestration itself never prompts
+  for permission — the child's own tools gate their side effects individually
+  (auto-verify still counts a spawn turn as mutating via a special-case). Three
+  coding agents ship by default (`agents.ts` `defaultAgents()`: `explore`/`review`
+  are plan-mode/read-only, `test` is execute); `loadAgents` layers
+  `.vibe/agents/*.md` over them so a user file overrides a default by name. The
+  roster is injected into the prompt for capability routing. Per-fan-out
+  concurrency is bounded by a **per-session** semaphore (`#childGate` =
+  `createSemaphore(subagent.maxParallel)`) — per-session on purpose: a tree-global
+  cap deadlocks a parent awaiting its own children.
+- **Web context-gathering is adaptive, by prompt.** The "Gather web context in
+  proportion to the question" block in `system-prompt.ts` (part of `BASE`)
+  calibrates depth: quick facts answered from `web_search` snippets (one query, no
+  `webfetch`), broad/technical questions cross-check 1–3 authoritative sources.
+  Version/currency questions route to **`package_info`** (npm/PyPI authoritative
+  latest, no key, read-only — `package-info.ts`) and official docs over blogs.
+  No engine throttle: `web_search` keeps every result the provider returns by
+  default (`maxResults` only TRIMS to the top N — it is a client-side cap, NOT a
+  count forwarded to the API, so it can't fetch *more* than the provider's page;
+  broader coverage comes from more queries), and `webfetch` takes `maxChars`
+  (default 25k, truncation reports the dropped count). Keep it that way — the
+  design intent is "fast when simple, exhaustive when needed, model decides." The
+  only thing the prompt biases is snippet-first reading (cheaper), never a cap.
 - MCP tool names exposed to the model go through `mcpToolName()` (sanitize to
   `[A-Za-z0-9_-]`, cap 64 with a hash suffix); the real MCP name is used only for
   `callTool`. Hosted providers 400 on dotted/over-long function names.
@@ -135,11 +177,20 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `commands-catalog.ts`. `screenshot.ts` can't import `@vibe/tui`, so it carries
   a **local copy of the tool-icon/summary logic** — keep it identical to
   `tool-icons.ts` (it has a comment pointing here).
-- **Layout invariant (don't regress scrolling):** the body is a flex *row* — a
-  `<scrollbox flexGrow={1} flexShrink={1} stickyScroll stickyStart="bottom">`
-  transcript beside a fixed-width **context rail** (`flexShrink={0}`, shown only
-  when `dims().width >= RAIL_MIN_COLS`; below that, tasks fall back to a bottom
-  panel). Every panel *below* the body (working spinner, plan, tasks fallback,
+- **Layout invariant (don't regress scrolling):** the ROOT is a flex *row* on a
+  solid-black backdrop (`palette().background`): a **LEFT column**
+  (`flexDirection="column" flexGrow={1}`) holding the transcript and every input
+  affordance, and a **full-height grey context rail** (`flexShrink={0}`, fixed
+  `RAIL_WIDTH`, `backgroundColor={palette().elevated}`) as its right sibling — so
+  the rail spans top-to-bottom and the input bar shrinks to the LEFT column's
+  width instead of spanning the whole terminal. On wide terminals there is **no
+  top header bar**: the brand mark, mode pill, and cwd live in the rail's
+  **identity block** (the first thing in its scrollbox); the dedicated header
+  (`<Show when={!showRail()}>`) renders only on narrow terminals where the rail is
+  hidden. The rail shows only when `dims().width >= RAIL_MIN_COLS`; below that,
+  tasks fall back to a bottom panel. Inside the LEFT column the transcript is a
+  `<scrollbox flexGrow={1} flexShrink={1} stickyScroll stickyStart="bottom">`.
+  Every panel *below* the transcript (working spinner, plan, tasks fallback,
   permission card, menu, input, footer) must set `flexShrink={0}`, or the
   scrollbox steals their space and they collapse to one overlapping row (the
   permission card did exactly this before the fix). Long conversations must
@@ -158,8 +209,11 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   an emission-time `turn` field on blocks. Clicking a message folds its work
   (`collapsedTurns` + `isHidden`, "N steps hidden" affordance); **Ctrl+O**
   (`toggleAllTurns`) folds/unfolds every turn — leaving just prose.
-  The rail itself is an `elevated`-bg (charcoal) panel with its OWN `<scrollbox>`
-  of stacked, adaptive sections: **Tasks** (the to-do list, hides once all done) →
+  The rail is a **solid grey panel** (`backgroundColor={palette().elevated}`, full
+  height) with its OWN `<scrollbox>`. It opens with the **identity block** (brand ·
+  mode pill · cwd) and then stacked, adaptive sections — plain text on the grey,
+  separated by the scrollbox `gap`, no per-section background (the whole rail is
+  the surface). The sections: **Tasks** (the to-do list, hides once all done) →
   **Subagents** (prompt + running/done + one-line `result`) → **Changed** (session
   edits) → **Git** (branch · dirty · ↑ahead ↓behind · worktree marker) →
   **Session** (model · ctx% · usage · goal, last). Each hides when empty so the
@@ -174,14 +228,18 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   read as one element. The footer is a flex row: key-binding hints on the left,
   `metricsLine()` (context-window %, token usage, cost — `metrics()` signal) on
   the right, shown only when there's data; goal lives in the rail / narrow header.
-- **Spacing (uniform rhythm):** the body row sets `gap={2}` so the transcript
-  never butts against the rail surface. Every region stacked below the body
-  (working spinner, plan, tasks fallback, permission card, menu, input, footer)
-  carries `marginTop={1}` — one blank row between every area, top to bottom. Keep
-  that single-row rhythm; don't special-case a region to 0 or 2.
-- **Color discipline (charcoal + monochrome + one accent):** the `DEFAULT` theme
-  is neutral **charcoal** surfaces (`panel`/`elevated`/`selBg`/`border`) and
-  **monochrome** text (`assistant` near-white, `muted` grey). One **configurable
+- **Spacing (uniform rhythm):** the LEFT column carries `padding={1}` and the rail
+  carries `paddingLeft={1}`, so the transcript and the grey rail panel never butt
+  together (a ~2-col channel of black between them). Every region stacked below the
+  transcript (working spinner, plan, tasks fallback, permission card, menu, input,
+  footer) carries `marginTop={1}` — one blank row between every area, top to
+  bottom. Keep that single-row rhythm; don't special-case a region to 0 or 2.
+- **Color discipline (black backdrop + charcoal surfaces + monochrome + one
+  accent):** the `DEFAULT` theme paints the whole app on a solid-black
+  `background` (`#000000`), with neutral **charcoal** surfaces raised on top
+  (`panel`/`elevated`/`selBg`/`border` — rail section cards, input field, user
+  blocks, menus) and **monochrome** text (`assistant` near-white, `muted` grey).
+  One **configurable
   accent** — `brand()` = `accentColor() || palette().primary` (lavender `#bb9af7`
   by default, set live with `/accent <hex>` or the `accentColor` config) — paints
   ALL chrome: brand mark, user gutter, `❯` carets, spinner, rail headers/active

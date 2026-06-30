@@ -22,14 +22,15 @@ Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 ## Screenshots
 
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberately
-restrained palette: **charcoal surfaces, monochrome text, and one configurable
-accent** (lavender by default — `/accent <hex>`). The accent carries the chrome
-(brand mark, user gutter, carets, spinner, menu, rail headers), while **mode color
-is scoped to just the input border line and the header mode pill** (lavender for
-execute, cyan for plan, salmon for yolo), so switching mode is unmistakable
+restrained palette: a **solid-black canvas**, **monochrome text**, and one
+**configurable accent** (lavender by default — `/accent <hex>`). The accent carries
+the chrome (brand mark, user gutter, carets, spinner, menu, rail headers), while
+**mode color is scoped to just the input border line and the mode pill** (lavender
+for execute, cyan for plan, salmon for yolo), so switching mode is unmistakable
 without repainting the screen. The only other colors are functional — green/red on
-diffs, amber on warnings. The layout is two columns: a scrolling **transcript**
-beside a **context rail** of adaptive sections (each shown only when relevant)
+diffs, amber on warnings. The layout is two columns: a scrolling **transcript** on
+the black, beside a **full-height grey context rail** that opens with the identity
+block (brand · mode · cwd) and then adaptive sections (each shown only when relevant)
 that tracks the plan's task list, live subagents, the files changed this session
 (with line deltas), **git branch/status**, and session info (model, context %,
 token/cost) — sections hide when empty and the task list clears once everything's
@@ -163,13 +164,14 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
-  disciplined palette: **charcoal surfaces, monochrome text, and one configurable
-  accent** (lavender by default, `/accent <hex>`); **mode color is scoped to the
-  input border line + the mode pill**; green/red/amber are reserved for diffs and
-  warnings. A two-column layout pairs a scrolling transcript with an adaptive
-  **context rail** that tracks the plan's task list, live subagents, the files
-  changed this session, **git branch/status**, and session info (model, context %,
-  token/cost); sections hide when empty and the task list clears once it's done. User turns render in a heavy left-gutter
+  disciplined palette: a **solid-black canvas, monochrome text, and one
+  configurable accent** (lavender by default, `/accent <hex>`); **mode color is
+  scoped to the input border line + the mode pill**; green/red/amber are reserved
+  for diffs and warnings. A two-column layout pairs a scrolling transcript on the
+  black with a **full-height grey context rail** — identity block (brand · mode ·
+  cwd) up top, then adaptive sections tracking the task list, live subagents, the
+  files changed this session, **git branch/status**, and session info (model,
+  context %, token/cost); sections hide when empty and the task list clears once it's done. User turns render in a heavy left-gutter
   panel block; assistant replies render real Markdown via OpenTUI's native
   renderer; tool calls read as a distinct icon + action label (`$` bash, `→` read,
   `←` edit/write, `✱` glob/grep, `◈` websearch, `±` git, `✦` subagent…) and
@@ -218,10 +220,20 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   a visible, ordered backlog that drains one at a time so history stays
   consistent. `/queue` shows it, `/queue clear` (or aborting) drops what's
   waiting.
-- **Web search** — a `web_search` tool powered by [TinyFish](https://tinyfish.ai)
-  (free tier, no card) is on by default; the model can search the live web and
-  follow up with `webfetch`. Set `TINYFISH_API_KEY` (or `search.apiKey`); disable
-  with `search.enabled: false`.
+- **Web search & context gathering** — a `web_search` tool powered by
+  [TinyFish](https://tinyfish.ai) (free tier, no card) is on by default; the model
+  can search the live web and follow up with `webfetch`. Set `TINYFISH_API_KEY`
+  (or `search.apiKey`); disable with `search.enabled: false`. Search depth is
+  **adaptive and model-controlled** — nothing throttles it: a quick fact (a price,
+  a date, a version) is answered straight from the search snippets (one query, no
+  fetch), while a hard question goes deep (more queries, full-page fetches,
+  cross-checking). `web_search` keeps every result the provider
+  returns by default (`maxResults` optionally trims to the top N), and `webfetch`'s
+  `maxChars` controls how much page text comes back — depth is the model's call.
+- **Dependency currency** — a `package_info` tool returns the authoritative latest
+  version + metadata from npm or PyPI, the fast, reliable way to check whether a
+  project's stack is up to date (read the manifest, then compare against the real
+  latest) instead of scraping blog posts. No key required.
 - **MCP client** — connect [Model Context Protocol](https://modelcontextprotocol.io)
   servers under `mcp.servers` (stdio or SSE/HTTP); their tools register as
   `mcp__<server>__<tool>` and flow through the same permission gate. Requires the
@@ -246,10 +258,20 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   reuse it; `reasoning.budgetTokens` / `reasoning.effort` drive extended thinking
   per provider; `budget.limitUSD` warns (or, with `onExceed: "stop"`, halts the
   turn) when a session's cost crosses the cap.
-- **Subagents** — `spawn_subagent` forks an isolated child with its own context
-  that returns only its final answer; depth-capped and parallel-safe. Set a
-  default subagent model with `subagent.model` (named agents in `.vibe/agents/`
-  can override per agent).
+- **Subagents / multi-agent coding** — `spawn_subagent` forks an isolated child
+  with its own context that returns only its final answer. The model is coached
+  (in the execute-mode system prompt) on _when_ to fan out, writing self-contained
+  child prompts, disjoint-file ownership, and consolidating + verifying results.
+  Three coding agents ship by default — **`explore`** (read-only research),
+  **`review`** (adversarial code review), **`test`** (write/run tests) — and the
+  roster is injected into the prompt so the model can route by capability;
+  `.vibe/agents/*.md` add or override them by name. Planning can fan out too —
+  while in plan mode every subagent is coerced read-only, so you get parallel
+  codebase exploration before converging on a plan, with no risk of a write.
+  Fan-out is bounded by `subagent.maxParallel` (default 4) and recursion by
+  `subagent.maxDepth` (default 3), and a tree-wide, canonicalized per-file write
+  lock means two parallel subagents can never corrupt the same file. Set a default
+  subagent model with `subagent.model`.
 - **`/goal`** injects a north-star into every system prompt; **`/loop`** reruns a
   prompt on an interval until a `--until` condition (checked with a structured
   model call) or `--max` is reached.
@@ -324,7 +346,7 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
 ```jsonc
 {
   "model": "anthropic/claude-opus-4-8",
-  "subagent": { "model": "anthropic/claude-haiku-4-5", "maxDepth": 3 },
+  "subagent": { "model": "anthropic/claude-haiku-4-5", "maxDepth": 3, "maxParallel": 4 },
   "search": { "enabled": true, "apiKey": "tf-..." },   // TinyFish web search
   "pricing": {                                          // USD per 1M tokens
     "anthropic/claude-opus-4-8": { "input": 5, "output": 25 }

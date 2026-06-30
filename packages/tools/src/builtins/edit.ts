@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "@vibe/shared";
 import { unifiedDiff } from "../diff.ts";
+import { withFileLock } from "../toolset.ts";
 
 const SingleEdit = z.object({
   oldString: z.string().describe("Exact text to replace."),
@@ -73,10 +74,6 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
   async execute(input, ctx: ToolContext) {
     const { path } = input;
     const full = resolve(ctx.cwd, path);
-    const file = Bun.file(full);
-    if (!(await file.exists())) {
-      return { output: `File not found: ${path}`, isError: true };
-    }
 
     // Normalize to a list of edits (single-edit form is sugar for one entry).
     const ops: EditOp[] = input.edits?.length
@@ -97,38 +94,47 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
       };
     }
 
-    const before = await file.text();
-    // Apply against an in-memory buffer; write only if every edit succeeds.
-    let buffer = before;
-    for (let i = 0; i < ops.length; i++) {
-      const result = applyOne(buffer, ops[i] as EditOp);
-      if ("error" in result) {
-        return {
-          output: `Edit ${i + 1}/${ops.length} failed in ${path}: ${result.error}. No changes written.`,
-          isError: true,
-        };
+    // Serialize the whole read-modify-write on this path so a concurrent
+    // subagent editing the same file can't clobber our change (cross-tree lock).
+    return withFileLock(ctx, full, async () => {
+      const file = Bun.file(full);
+      if (!(await file.exists())) {
+        return { output: `File not found: ${path}`, isError: true };
       }
-      buffer = result.text;
-    }
 
-    if (buffer === before) {
-      return { output: `No changes: replacement matched existing content in ${path}.` };
-    }
+      const before = await file.text();
+      // Apply against an in-memory buffer; write only if every edit succeeds.
+      let buffer = before;
+      for (let i = 0; i < ops.length; i++) {
+        const result = applyOne(buffer, ops[i] as EditOp);
+        if ("error" in result) {
+          return {
+            output: `Edit ${i + 1}/${ops.length} failed in ${path}: ${result.error}. No changes written.`,
+            isError: true,
+          };
+        }
+        buffer = result.text;
+      }
 
-    await Bun.write(full, buffer);
-    const diff = unifiedDiff(before, buffer);
-    ctx.emit({
-      type: "file-changed",
-      sessionId: ctx.sessionId,
-      toolCallId: ctx.toolCallId,
-      path,
-      action: "edit",
-      diff: diff.text,
-      added: diff.added,
-      removed: diff.removed,
+      if (buffer === before) {
+        return { output: `No changes: replacement matched existing content in ${path}.` };
+      }
+
+      await Bun.write(full, buffer);
+      const diff = unifiedDiff(before, buffer);
+      ctx.emit({
+        type: "file-changed",
+        sessionId: ctx.sessionId,
+        toolCallId: ctx.toolCallId,
+        path,
+        action: "edit",
+        diff: diff.text,
+        added: diff.added,
+        removed: diff.removed,
+      });
+      return {
+        output: `Edited ${path} (+${diff.added} -${diff.removed})\n${diff.text}`,
+      };
     });
-    return {
-      output: `Edited ${path} (+${diff.added} -${diff.removed})\n${diff.text}`,
-    };
   },
 };

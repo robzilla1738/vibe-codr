@@ -1,4 +1,6 @@
 import { tool, jsonSchema, type Tool } from "ai";
+import { realpathSync } from "node:fs";
+import { dirname, basename, join } from "node:path";
 import type { ZodType } from "zod";
 import type {
   CheckPermission,
@@ -6,6 +8,19 @@ import type {
   ToolContext,
   ToolDefinition,
 } from "@vibe/shared";
+
+/**
+ * Run a file mutation under the session-tree's per-path write lock when one is
+ * present (it is in the engine; not in standalone unit tests). Keeps the
+ * read-modify-write of `absPath` atomic against concurrent subagents.
+ */
+export function withFileLock<T>(
+  ctx: ToolContext,
+  absPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return ctx.lockFile ? ctx.lockFile(absPath, fn) : fn();
+}
 import { builtinTools } from "./builtins/index.ts";
 
 /** Zod schemas expose `.parse`; raw JSON Schema objects don't. */
@@ -24,6 +39,8 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
   ) => Promise<{ deny?: boolean; reason?: string }>;
   /** Plugin hook fired after a tool produces output. */
   afterTool?: (toolName: string, output: unknown) => void | Promise<void>;
+  /** Per-file write lock shared across the whole session tree (see ToolContext). */
+  lockFile?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
 };
 
 /**
@@ -121,6 +138,84 @@ export function createSerialLock(): <T>(fn: () => Promise<T>) => Promise<T> {
       () => undefined,
     );
     return result;
+  };
+}
+
+/**
+ * A counting semaphore: `run(fn)` executes `fn` once a slot is free, with at
+ * most `n` running concurrently. Used to bound how many subagents one agent
+ * fans out at a time. Per-parent (not tree-global) on purpose — a global
+ * semaphore deadlocks when a parent holding a slot awaits a child needing one.
+ */
+export function createSemaphore(n: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  const limit = Math.max(1, Math.floor(n));
+  let active = 0;
+  const queue: Array<() => void> = [];
+  const release = () => {
+    active--;
+    queue.shift()?.();
+  };
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    const start = async (): Promise<T> => {
+      active++;
+      try {
+        return await fn();
+      } finally {
+        release();
+      }
+    };
+    if (active < limit) return start();
+    return new Promise<T>((resolve, reject) => {
+      queue.push(() => start().then(resolve, reject));
+    });
+  };
+}
+
+/**
+ * Canonicalize an absolute path so different spellings of the SAME on-disk file
+ * map to one lock key: resolve symlinks and on-disk casing (critical on
+ * case-insensitive filesystems like macOS's default APFS, where `src/App.ts`
+ * and `SRC/app.ts` are the same file). For a path that doesn't exist yet (a
+ * `write` creating a new file) we canonicalize the nearest existing ancestor and
+ * re-append the rest, then fall back to the raw path.
+ */
+function canonicalLockKey(absPath: string): string {
+  try {
+    return realpathSync.native(absPath);
+  } catch {
+    try {
+      return join(realpathSync.native(dirname(absPath)), basename(absPath));
+    } catch {
+      return absPath;
+    }
+  }
+}
+
+/**
+ * Per-path write lock: `run(absPath, fn)` serializes `fn`s that share a file,
+ * while different files run concurrently. One instance is shared across the
+ * whole session tree so two subagents can never write the same file at once (the
+ * convergence guarantee), yet disjoint-file work stays parallel. Keys are
+ * canonicalized (symlinks + casing) and idle locks are pruned so the map can't
+ * grow without bound over a long session.
+ */
+export function createFileLock(): <T>(absPath: string, fn: () => Promise<T>) => Promise<T> {
+  const locks = new Map<string, { run: <T>(fn: () => Promise<T>) => Promise<T>; users: number }>();
+  return async <T>(absPath: string, fn: () => Promise<T>): Promise<T> => {
+    const key = canonicalLockKey(absPath);
+    let entry = locks.get(key);
+    if (!entry) {
+      entry = { run: createSerialLock(), users: 0 };
+      locks.set(key, entry);
+    }
+    entry.users++;
+    try {
+      return await entry.run(fn);
+    } finally {
+      // The decrement-and-delete is one synchronous step, so no acquirer can
+      // ever observe (or re-grab) an entry at users===0 — pruning is race-free.
+      if (--entry.users === 0) locks.delete(key);
+    }
   };
 }
 

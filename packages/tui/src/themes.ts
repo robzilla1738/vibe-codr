@@ -4,6 +4,8 @@
  * REPL uses 16-color ANSI (see `ansi.ts`) and is theme-agnostic.
  */
 export interface Palette {
+  /** App backdrop — the whole-screen background behind everything. */
+  background: string;
   user: string;
   assistant: string;
   tool: string;
@@ -43,6 +45,7 @@ export interface Palette {
 // red on diffs, amber on warnings, and the plan/yolo mode hues (cyan/red) which
 // appear only on the input line + mode pill.
 const DEFAULT: Palette = {
+  background: "#000000",
   user: "#e6e6e6",
   assistant: "#e6e6e6",
   tool: "#7dcfff",
@@ -71,6 +74,7 @@ const DEFAULT: Palette = {
 
 /** Light palette for bright terminals. */
 const LIGHT: Palette = {
+  background: "#ffffff",
   user: "#2959aa",
   assistant: "#343b58",
   tool: "#0f7b9c",
@@ -97,6 +101,7 @@ const LIGHT: Palette = {
 
 /** High-contrast palette for accessibility. */
 const CONTRAST: Palette = {
+  background: "#000000",
   user: "#00d7ff",
   assistant: "#ffffff",
   tool: "#00ffff",
@@ -127,6 +132,7 @@ const CONTRAST: Palette = {
  * user-message gutter and menu selection.
  */
 const OPENCODE: Palette = {
+  background: "#0a0a0a",
   user: "#5c9cf5",
   assistant: "#eeeeee",
   tool: "#56b6c2",

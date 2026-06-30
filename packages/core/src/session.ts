@@ -20,7 +20,12 @@ import {
 } from "@vibe/shared";
 import type { Config, ModelPrice } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
-import { type Toolset, toAISDKTool, type ToolRuntimeBase } from "@vibe/tools";
+import {
+  type Toolset,
+  toAISDKTool,
+  createSemaphore,
+  type ToolRuntimeBase,
+} from "@vibe/tools";
 import type { HookBus, SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
 import { EventBus as EventBusImpl } from "./event-bus.ts";
@@ -54,6 +59,10 @@ export interface SessionDeps {
   extraSystem?: string[];
   /** Named subagents available to spawn. */
   agents?: Map<string, NamedAgent>;
+  /** Per-file write lock shared across the session tree (set by the engine).
+   * Forks inherit it via `...this.#deps`, so all subagents serialize same-file
+   * writes against each other. */
+  fileLock?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
   /** Skills available for progressive disclosure via `use_skill`. */
   skills?: SkillRegistry;
   /** Plugin hook bus for tool.before/after.execute and assistant.message. */
@@ -103,6 +112,10 @@ export class Session {
   #budgetTripped = false;
   #createdAt: number;
   #abort = new AbortController();
+  /** Bounds how many subagents this session runs concurrently (each fan-out).
+   * Per-session, not tree-global, so a parent awaiting its children can't
+   * deadlock against the cap. */
+  #childGate: <T>(fn: () => Promise<T>) => Promise<T>;
   /** The last turn's fatal error message, if any (null on success). Lets a
    * parent detect a failed subagent — the child runs on an isolated bus so its
    * `engine-error` never reaches the parent UI. */
@@ -123,6 +136,7 @@ export class Session {
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
     this.#createdAt = deps.createdAt ?? Date.now();
+    this.#childGate = createSemaphore(deps.config.subagent.maxParallel);
   }
 
   snapshot(): EngineSnapshot {
@@ -291,28 +305,46 @@ export class Session {
     mode?: Mode;
   }> {
     const Input = z.object({
-      prompt: z.string().describe("The complete, self-contained subtask."),
-      agent: z.string().optional().describe("Named agent to use (see /agents)."),
+      prompt: z
+        .string()
+        .describe(
+          "The complete, self-contained subtask. The subagent sees none of this " +
+            "conversation — inline the objective, exact files/paths, and success criteria.",
+        ),
+      agent: z
+        .string()
+        .optional()
+        .describe("Named agent to specialize the subagent (see the roster in the system prompt)."),
       model: z.string().optional().describe("Override the model for this subagent."),
       mode: z.enum(["plan", "execute"]).optional(),
     });
     return {
       name: "spawn_subagent",
       description:
-        "Delegate an independent subtask to a fresh subagent that has its own context window and returns only its final answer. Use for parallel or independent workstreams; give a complete, self-contained prompt.",
+        "Delegate a self-contained subtask to a fresh subagent with its own context " +
+        "window; it returns only its final answer. Issue several calls in ONE step to " +
+        "run them in parallel — give each a disjoint set of files. While you are " +
+        "planning (read-only), subagents are read-only too (investigation only).",
       inputSchema: Input,
-      readOnly: false,
+      // The spawn itself touches nothing — the child's own tools gate their side
+      // effects individually — so don't make orchestration prompt for permission.
+      readOnly: true,
       concurrencySafe: true,
       execute: async ({ prompt, agent, model, mode }, ctx) => {
         const named = agent ? this.#deps.agents?.get(agent) : undefined;
         if (agent && !named) {
           return { output: `Unknown agent "${agent}". Run /agents to list them.`, isError: true };
         }
+        // In plan mode the parent is read-only, so its subagents must be too —
+        // force plan regardless of the requested/named mode (keeps planning
+        // strictly investigation, while still allowing parallel exploration).
+        const childMode: Mode =
+          this.mode === "plan" ? "plan" : (mode ?? named?.mode ?? "execute");
         const child = this.fork({
           bus: new EventBusImpl(), // isolate the subagent's fine-grained stream
           model:
             model ?? named?.model ?? this.#deps.config.subagent.model ?? this.model,
-          mode: mode ?? named?.mode ?? "execute",
+          mode: childMode,
           goal: this.goal,
           depth: this.depth + 1,
           ...(named?.system ? { extraSystem: [named.system] } : {}),
@@ -327,7 +359,14 @@ export class Session {
           prompt,
         });
         try {
-          await child.run(prompt);
+          // Bound concurrent fan-out: at most `subagent.maxParallel` children
+          // run at once; extras queue. Parallel calls in one step share this gate.
+          await this.#childGate(() => {
+            // If the user aborted while this child was still queued, don't burn
+            // a model call — the parent turn is already unwinding.
+            if (ctx.abortSignal?.aborted) return Promise.resolve();
+            return child.run(prompt);
+          });
         } finally {
           ctx.abortSignal?.removeEventListener("abort", onAbort);
         }
@@ -437,11 +476,27 @@ export class Session {
       this.#price = await this.#deps.getPricing?.(this.model);
       await this.#maybeCompact(model, false);
       const skills = this.#deps.skills;
+      // Subagents are offered in BOTH modes (in plan mode they're coerced
+      // read-only — parallel exploration while planning), capped by recursion
+      // depth. Mirrors the spawn_subagent registration gate below so the prompt
+      // never advertises a tool the model can't call.
+      const subagentsAvailable = this.depth < config.subagent.maxDepth;
+      // Roster lines for capability routing. In plan mode children are coerced
+      // read-only, so only advertise read-only agents (a write-capable one would
+      // be useless). Empty → omitted entirely (plan mode with only execute agents).
+      const rosterLines =
+        subagentsAvailable && this.#deps.agents?.size
+          ? [...this.#deps.agents.values()]
+              .filter((a) => this.mode !== "plan" || a.mode === "plan")
+              .map((a) => `${a.name} — ${a.description}`)
+          : [];
       const system = composeSystemPrompt({
         mode: this.mode,
         goal: this.goal,
         projectMemory: this.#deps.projectMemory,
         pluginBlocks: this.#deps.extraSystem,
+        subagentsAvailable,
+        ...(rosterLines.length ? { agentRoster: rosterLines } : {}),
         ...(skills?.list().length
           ? { skillDescriptions: skills.descriptions() }
           : {}),
@@ -456,6 +511,7 @@ export class Session {
         cwd: this.#deps.cwd,
         sessionId: this.id,
         emit: (e: UIEvent) => bus.emit(e),
+        ...(this.#deps.fileLock ? { lockFile: this.#deps.fileLock } : {}),
         checkPermission: (name: string, input: unknown) =>
           checker.check(name, input),
         ...(hooks
@@ -474,9 +530,9 @@ export class Session {
       // The task list is available in both modes: the model can lay out tasks
       // while planning, and they carry over into execution.
       tools.update_tasks = toAISDKTool(this.#tasksTool(), base);
-      // Subagents do real work, so only offer spawning in execute mode and
-      // below the configured recursion depth.
-      if (this.mode === "execute" && this.depth < config.subagent.maxDepth) {
+      // Offer spawning in both modes (plan-mode children are coerced read-only),
+      // bounded by recursion depth.
+      if (subagentsAvailable) {
         tools.spawn_subagent = toAISDKTool(this.#spawnTool(), base);
       }
       // Progressive disclosure: expose use_skill when skills are available.

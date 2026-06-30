@@ -54,6 +54,7 @@ import { SessionStore, type PersistedSession } from "./store.ts";
 import { searchSessions, formatRecall } from "./recall.ts";
 import { formatMemoryHits } from "./memory-search.ts";
 import { MemoryService } from "./memory-service.ts";
+import { createLimiter, type Limiter } from "./limiter.ts";
 import { loadMemorySources, loadProjectMemory, formatMemory } from "./memory.ts";
 import { reasoningSupported } from "./model-tuning.ts";
 import { CheckpointManager } from "./checkpoints.ts";
@@ -120,6 +121,9 @@ export class Engine implements EngineClient {
   /** One per-file write lock shared across the whole session tree (parent +
    * every subagent), so concurrent agents can't corrupt the same file. */
   #fileLock = createFileLock();
+  /** Tree-global adaptive concurrency gate in front of every provider call
+   * (initialized in the constructor once config is available). */
+  #limiter!: Limiter;
   #loop: LoopController | undefined;
   /** The session running the current loop iteration, so a stop can abort it. */
   #loopSession: Session | undefined;
@@ -139,6 +143,10 @@ export class Engine implements EngineClient {
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
+    this.#limiter = createLimiter({
+      max: opts.config.subagent.providerConcurrency,
+      onChange: (limit) => this.#log.debug(`provider concurrency ceiling → ${limit}`),
+    });
     this.#cwd = opts.cwd ?? process.cwd();
     this.#projectMemory = opts.projectMemory;
     this.#interactive = opts.interactive ?? false;
@@ -203,6 +211,7 @@ export class Engine implements EngineClient {
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       fileLock: this.#fileLock,
+      limiter: this.#limiter,
       skills: this.skills,
       hooks: this.hooks,
       store: this.#store,
@@ -556,6 +565,7 @@ export class Engine implements EngineClient {
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       fileLock: this.#fileLock,
+      limiter: this.#limiter,
       skills: this.skills,
       hooks: this.hooks,
       ...(this.#memory ? { memory: this.#memory } : {}),

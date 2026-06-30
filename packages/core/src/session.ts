@@ -41,6 +41,7 @@ import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
 import type { ImageAttachment } from "./mentions.ts";
 import { withRetry } from "./retry.ts";
+import type { Limiter } from "./limiter.ts";
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -92,6 +93,9 @@ export interface SessionDeps {
   hooks?: HookBus;
   /** Subagent recursion depth (0 = root). */
   depth?: number;
+  /** Tree-global adaptive concurrency gate in front of every provider call,
+   * shared across the session tree (forks inherit it via `...this.#deps`). */
+  limiter?: Limiter;
   id?: string;
   /** Persistence backend; when set, the session is saved after each turn. */
   store?: SessionStore;
@@ -317,6 +321,12 @@ export class Session {
     if (this.#aborted()) return true;
     const name = (err as { name?: string })?.name;
     return name === "AbortError" || name === "NoOutputGeneratedError";
+  }
+
+  /** Run a provider call through the tree-global limiter when one is wired (so
+   * fan-out can't stampede the provider); otherwise run it directly. */
+  #withLimiter<T>(fn: () => Promise<T>): Promise<T> {
+    return this.#deps.limiter ? this.#deps.limiter.run(fn) : fn();
   }
 
   /** A marker of the current conversation length (for checkpoint rollback). */
@@ -714,6 +724,7 @@ export class Session {
           ]
         : this.#modelMessages;
 
+      await this.#withLimiter(async () => {
       const result = streamText({
         model,
         // When caching, the system prompt rides in `messages` with a cache
@@ -812,6 +823,7 @@ export class Session {
           .join("");
         if (text) await this.#deps.hooks.run("assistant.message", { sessionId: this.id, text });
       }
+      });
     } catch (err) {
       // A user cancel (Esc / steer / spend-stop) makes the stream and
       // `result.response` reject — that's not a fault. Don't paint it red or set
@@ -866,16 +878,18 @@ export class Session {
       .join("\n")
       .slice(0, 24_000);
     try {
-      const { text } = await generateText({
-        model,
-        prompt:
-          "Write a durable memory note for a coding agent's FUTURE sessions on this " +
-          "project. From the transcript below, produce ONE compact paragraph (≤ 80 " +
-          "words) capturing the goal, what was accomplished, and any key decisions or " +
-          "gotchas worth remembering. No preamble, no markdown headings, no bullet list.\n\n" +
-          transcript,
-        abortSignal: this.#abort.signal,
-      });
+      const { text } = await this.#withLimiter(() =>
+        generateText({
+          model,
+          prompt:
+            "Write a durable memory note for a coding agent's FUTURE sessions on this " +
+            "project. From the transcript below, produce ONE compact paragraph (≤ 80 " +
+            "words) capturing the goal, what was accomplished, and any key decisions or " +
+            "gotchas worth remembering. No preamble, no markdown headings, no bullet list.\n\n" +
+            transcript,
+          abortSignal: this.#abort.signal,
+        }),
+      );
       const digest = text.trim().replace(/\s+/g, " ");
       return digest || undefined;
     } catch {
@@ -954,16 +968,18 @@ export class Session {
     const transcript = messages
       .map((m) => `${m.role}: ${contentToText(m.content)}`)
       .join("\n");
-    const { text } = await generateText({
-      model,
-      prompt:
-        "Summarize the following conversation excerpt for an AI coding agent. " +
-        "Preserve decisions made, facts learned, file paths touched, and any open tasks. Be concise.\n\n" +
-        transcript,
-      // Make compaction interruptible — an Esc during a long summarize shouldn't
-      // be ignored (the same controller the turn/`/compact` runs under).
-      abortSignal: this.#abort.signal,
-    });
+    const { text } = await this.#withLimiter(() =>
+      generateText({
+        model,
+        prompt:
+          "Summarize the following conversation excerpt for an AI coding agent. " +
+          "Preserve decisions made, facts learned, file paths touched, and any open tasks. Be concise.\n\n" +
+          transcript,
+        // Make compaction interruptible — an Esc during a long summarize shouldn't
+        // be ignored (the same controller the turn/`/compact` runs under).
+        abortSignal: this.#abort.signal,
+      }),
+    );
     return text;
   }
 

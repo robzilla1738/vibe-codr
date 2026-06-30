@@ -32,6 +32,16 @@ export function isTransientError(err: unknown): boolean {
   );
 }
 
+/** Narrower than {@link isTransientError}: provider back-pressure (429 / overloaded
+ * / too-many-requests) specifically — the signal the adaptive limiter backs off on. */
+export function isOverloadError(err: unknown): boolean {
+  const e = err as { status?: number; statusCode?: number; name?: string; message?: string };
+  const status = e?.status ?? e?.statusCode;
+  if (status === 429 || status === 503) return true;
+  const text = `${e?.name ?? ""} ${e?.message ?? ""}`.toLowerCase();
+  return /overloaded|rate limit|too many requests|429|503/.test(text);
+}
+
 /**
  * Run `fn`, retrying on transient errors with exponential backoff (delay
  * doubles each attempt). Non-transient errors throw immediately. After

@@ -74,7 +74,9 @@ const settle = async () => {
 // 1) Fresh screen: the centered VIBE CODR wordmark, the mode break on the input
 // border, the model in the under-input status line, and the input placeholder.
 let frame = t.captureCharFrame();
-check("splash renders (wordmark + tagline)", frame.includes("model-agnostic"));
+// Splash: the block wordmark (░██ cells) + the single "Try ›" prompt-starter line
+// (no tagline, no key cheatsheet — those moved to the under-input status).
+check("splash renders (wordmark + try line)", frame.includes("░") && frame.includes("explain this codebase"));
 check("input shows the placeholder", frame.includes("Send a message"));
 check("input border shows the ASK mode", frame.includes("ASK"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));

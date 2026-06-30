@@ -233,15 +233,17 @@ All notable changes to vibe-codr are documented here.
   anchored just above the input (`MENU_BOTTOM`), so it *overlays* the space above
   the input (opencode-style) instead of taking flow space — the wordmark and
   transcript stay put and the menu reads as an extension of the input box.
-- **Compact ░██ block wordmark + fully-centered splash & footer.** The empty-state
-  splash renders "Vibe Codr" in a compact ░██ block face (`packages/tui/src/wordmark.ts`,
-  80×7) — smaller and more legible than before — falling back to the `slick`
-  ascii-font logo, then `◆ Vibe Codr`, on narrow/short terminals. The tagline /
-  sample prompts / key-hint lines are each individually **centered**, and the
-  under-input status is two centered lines (location · git · model · changed · ctx
-  · cost on one, key hints on the other) instead of edge-justified — so the model
-  no longer floats off alone on the far right and the frame reads as one uniform
-  centered column.
+- **Compact ░██ block wordmark + minimal, fully-centered splash & footer.** The
+  empty-state splash renders "Vibe Codr" in a compact ░██ block face
+  (`packages/tui/src/wordmark.ts`, 80×7) — smaller and more legible than before —
+  falling back to the `slick` ascii-font logo, then `◆ Vibe Codr`, on narrow/short
+  terminals. The splash is now decluttered to just the wordmark + one centered
+  "Try ›" prompt-starter line — the tagline and the `shift+tab`/`@`/`/` key
+  cheatsheet were removed (the keys already live in the under-input status). That
+  status is two centered lines (location · git · model · changed · ctx · cost on
+  one, key hints on the other) instead of edge-justified, so the model no longer
+  floats off alone on the far right and the frame reads as one uniform centered
+  column.
 - **Consecutive tool steps now chain instead of floating apart.** A run of tool
   calls (search → fetch → fetch) used to render each row in its own one-line gap,
   reading as unrelated fragments. A tool row that follows another *visible* tool

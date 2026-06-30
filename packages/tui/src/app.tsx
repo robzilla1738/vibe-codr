@@ -925,20 +925,12 @@ export function App(props: { engine: EngineClient }) {
                 </box>
                 <box flexGrow={1} />
               </box>
-              {/* Tip lines — each individually centered (calm muted subtitle; the
-                  actionable tokens — example prompts and keys — in the brighter
-                  foreground). */}
+              {/* A single, centered prompt-starter line — no tagline, no key
+                  cheatsheet (those live in the under-input status). Just three
+                  example asks to get going. */}
               <box flexDirection="column" marginTop={1}>
                 <SegRow
                   center
-                  segs={[
-                    { t: "Your model-agnostic coding agent", fg: palette().muted },
-                    { t: "  —  plan · execute · yolo", fg: palette().muted },
-                  ]}
-                />
-                <SegRow
-                  center
-                  marginTop={1}
                   segs={[
                     { t: "Try ", fg: palette().muted },
                     { t: "› ", fg: brand() },
@@ -947,19 +939,6 @@ export function App(props: { engine: EngineClient }) {
                     { t: "fix the failing test", fg: palette().assistant },
                     { t: "  ·  ", fg: palette().muted },
                     { t: "add a --json flag", fg: palette().assistant },
-                  ]}
-                />
-                <SegRow
-                  center
-                  segs={[
-                    { t: "shift+tab", fg: palette().assistant },
-                    { t: " mode", fg: palette().muted },
-                    { t: "  ·  ", fg: palette().muted },
-                    { t: "@", fg: palette().assistant },
-                    { t: " files", fg: palette().muted },
-                    { t: "  ·  ", fg: palette().muted },
-                    { t: "/", fg: palette().assistant },
-                    { t: " commands", fg: palette().muted },
                   ]}
                 />
               </box>

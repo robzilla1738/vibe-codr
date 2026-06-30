@@ -229,11 +229,12 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   has room (`showWordmark()`); otherwise it falls back to OpenTUI's native
   `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (a sleek rounded
   face; runtime tag, supports a gradient `color` array), then a one-line
-  `◆ Vibe Codr`. Each tip line is **individually centered** (`SegRow center`) —
-  tagline · sample prompts · key hints — via `SegRow` (a row of coloured `<text>`
-  runs — OpenTUI has no inline-markup `<text>`) in a two-tone scheme: muted
-  scaffolding, brighter foreground on the actionable tokens (example prompts,
-  `shift+tab`/`@`/`/`). The under-input status is two **centered** lines:
+  `◆ Vibe Codr`. Below it is a single **centered** prompt-starter line
+  (`SegRow center`) — `Try › …` example asks — and nothing else (no tagline, no
+  key cheatsheet; the keys live in the under-input status). `SegRow` is a row of
+  coloured `<text>` runs (OpenTUI has no inline-markup `<text>`), two-tone: muted
+  scaffolding, brighter foreground on the example prompts. The under-input status
+  is two **centered** lines:
   `detailsCenter()` (location · git · model · changed · ctx · cost · goal) and the
   `SegRow` key hints — then the stacked status surfaces, the input, and the
   under-input status block. **The slash-command menu is an absolute overlay** —

@@ -158,6 +158,12 @@ export class Engine implements EngineClient {
               ? { apiKey: opts.config.search.apiKey }
               : {}),
           },
+          webfetch: {
+            allowPrivateHosts: opts.config.webfetch.allowPrivateHosts,
+            allowHosts: opts.config.webfetch.allowHosts,
+            timeoutMs: opts.config.webfetch.timeoutMs,
+            maxBytes: opts.config.webfetch.maxBytes,
+          },
           jobs: this.#jobs,
         }),
       );

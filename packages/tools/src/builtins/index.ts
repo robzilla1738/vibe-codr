@@ -6,7 +6,7 @@ import { grepTool } from "./grep.ts";
 import { bashTool } from "./bash.ts";
 import { writeTool } from "./write.ts";
 import { editTool } from "./edit.ts";
-import { webfetchTool } from "./webfetch.ts";
+import { webfetchTool, type WebfetchOptions } from "./webfetch.ts";
 import { webSearchTool } from "./web-search.ts";
 import { packageInfoTool } from "./package-info.ts";
 import { presentPlanTool } from "./present-plan.ts";
@@ -16,6 +16,8 @@ import { BackgroundJobs, backgroundJobTools } from "./jobs.ts";
 export interface BuiltinToolOptions {
   /** Web search (TinyFish). Omit or set `enabled: false` to leave it out. */
   search?: { enabled?: boolean; apiKey?: string };
+  /** webfetch SSRF policy + limits (timeout, byte cap). */
+  webfetch?: WebfetchOptions;
   /** Shared background-job registry; enables `bash background:true` + job tools. */
   jobs?: BackgroundJobs;
 }
@@ -28,7 +30,7 @@ export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
     globTool,
     lsTool,
     grepTool,
-    webfetchTool,
+    webfetchTool(opts.webfetch),
     packageInfoTool,
     writeTool,
     editTool,

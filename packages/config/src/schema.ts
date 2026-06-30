@@ -31,6 +31,18 @@ export const SearchConfigSchema = z.object({
   apiKey: z.string().optional(),
 });
 
+/** webfetch SSRF policy + resource limits. Default-deny on private hosts. */
+export const WebfetchConfigSchema = z.object({
+  /** Allow fetching loopback/link-local/private/metadata hosts (intranet docs). */
+  allowPrivateHosts: z.boolean().default(false),
+  /** Hostnames always allowed even if they resolve to a private address. */
+  allowHosts: z.array(z.string()).default([]),
+  /** Per-fetch wall-clock cap (ms). */
+  timeoutMs: z.number().int().positive().default(8_000),
+  /** Byte ceiling pulled off the wire before the char cap. */
+  maxBytes: z.number().int().positive().default(4_000_000),
+});
+
 /** Manual price override for a model, in USD per 1,000,000 tokens. */
 export const ModelPriceSchema = z.object({
   input: z.number().nonnegative().optional(),
@@ -92,6 +104,13 @@ export const ConfigSchema = z.object({
     .default({ threshold: 0.75 }),
   /** Web search (TinyFish). Enabled by default; needs a free API key to run. */
   search: SearchConfigSchema.default({ enabled: true }),
+  /** webfetch SSRF policy + limits. Private/loopback/metadata hosts blocked by default. */
+  webfetch: WebfetchConfigSchema.default({
+    allowPrivateHosts: false,
+    allowHosts: [],
+    timeoutMs: 8_000,
+    maxBytes: 4_000_000,
+  }),
   /** Workspace checkpoints before each edit turn (git repos only). */
   checkpoints: z
     .object({ enabled: z.boolean().default(true) })
@@ -165,5 +184,6 @@ export type Config = z.infer<typeof ConfigSchema>;
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 export type PermissionRule = z.infer<typeof PermissionRuleSchema>;
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
+export type WebfetchConfig = z.infer<typeof WebfetchConfigSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type McpServer = z.infer<typeof McpServerSchema>;

@@ -10,6 +10,7 @@ coverage/
 
 # vibe-codr runtime state (project config / commands / skills stay tracked)
 .vibe/sessions/
+.vibe/plans/
 .vibe/checkpoints.json
 # The semantic memory index is a rebuildable shadow of the markdown in
 # .vibe/memory/*.md (which stays tracked so saved facts can be committed).

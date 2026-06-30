@@ -1,4 +1,5 @@
 import { join, resolve } from "node:path";
+import { mkdir } from "node:fs/promises";
 import { generateObject } from "ai";
 import { z } from "zod";
 import {
@@ -150,6 +151,12 @@ export class Engine implements EngineClient {
   #proactiveRecallDone = false;
   /** Memoized finalize promise (digest + teardown runs once). */
   #finalizing: Promise<void> | undefined;
+  /** The last plan the model presented via present_plan (for handoff on execute). */
+  #lastPlan: string | undefined;
+  /** Set when plan→execute happens after a presented plan: the next prompt gets
+   * a "the user approved your plan; proceed" preamble so the model doesn't read
+   * its own "stop here" as an instruction to halt. */
+  #pendingHandoff = false;
   #verifyAttempts = 0;
 
   constructor(opts: EngineOptions) {
@@ -247,8 +254,31 @@ export class Engine implements EngineClient {
           }
         : {}),
     });
+
+    // Watch our own (fan-out) event stream to capture a presented plan: persist
+    // it to .vibe/plans and remember it for the plan→execute handoff. A separate
+    // subscriber, so it never steals events from the TUI/headless renderer.
+    void this.#watchInternalEvents();
   }
 
+  async #watchInternalEvents(): Promise<void> {
+    for await (const event of this.#bus.subscribe()) {
+      if (event.type === "plan-presented") await this.#onPlanPresented(event.plan);
+    }
+  }
+
+  /** Persist an approved-able plan and remember it for the execute handoff. */
+  async #onPlanPresented(plan: string): Promise<void> {
+    this.#lastPlan = plan;
+    try {
+      const path = join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`);
+      await mkdir(join(this.#cwd, ".vibe", "plans"), { recursive: true });
+      await Bun.write(path, `# Plan — ${this.#session.id}\n\n${plan}\n`);
+      this.#bus.emit({ type: "notice", level: "info", message: `Plan saved to .vibe/plans/${this.#session.id}.md` });
+    } catch {
+      // Best-effort persistence — never let it disrupt the turn.
+    }
+  }
 
   /**
    * Load project-local resources from disk: named agents, custom slash command
@@ -400,9 +430,15 @@ export class Engine implements EngineClient {
           this.#handlePrompt(command.text),
         );
         break;
-      case "set-mode":
+      case "set-mode": {
+        // Leaving plan mode for execute right after a presented plan = approval:
+        // arm a handoff so the next turn proceeds against the plan.
+        const approvingPlan =
+          this.#session.mode === "plan" && command.mode === "execute" && this.#lastPlan !== undefined;
         this.#session.setMode(command.mode);
+        if (approvingPlan) this.#pendingHandoff = true;
         break;
+      }
       case "set-approvals":
         // Immediate (not queued), mirroring set-mode — the mode toggle must
         // take effect at once so the next turn sees the new approval policy.
@@ -1131,6 +1167,15 @@ export class Engine implements EngineClient {
   }
 
   async #handlePrompt(text: string): Promise<void> {
+    // Plan→execute handoff: prepend an explicit approval directive so the model
+    // doesn't read its own present_plan "stop here" as an instruction to halt.
+    if (this.#pendingHandoff) {
+      this.#pendingHandoff = false;
+      this.#lastPlan = undefined;
+      text =
+        "The plan you presented was approved by the user — proceed with implementing it " +
+        `now (your earlier "stop here" no longer applies).${text.trim() ? `\n\n${text}` : ""}`;
+    }
     // Snapshot the workspace before an edit turn so /undo can roll it back.
     if (this.#config.checkpoints.enabled && this.#session.mode === "execute") {
       // Capture the conversation length too, so /undo can rewind history to

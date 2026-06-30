@@ -92,3 +92,73 @@ test("Engine: prompt -> real read builtin -> tool result -> final text", async (
   expect(text).toBe("The file says the answer is 42.");
   expect(events.some((e) => e.type === "turn-finished")).toBe(true);
 });
+
+test("Engine planning: present_plan persists the plan + plan→execute injects a handoff", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-plan-"));
+  const prompts: string[] = [];
+  const steps = [
+    // Plan turn: the model presents a plan.
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify({ plan: "1. Refactor the loader\n2. Add tests" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "a" },
+      { type: "text-delta", id: "a", delta: "Plan presented." },
+      { type: "text-end", id: "a" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    // Execute turn (after approval): capture the prompt the model receives.
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "b" },
+      { type: "text-delta", id: "b", delta: "Implementing the plan." },
+      { type: "text-end", id: "b" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return steps[call++] as never;
+    },
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const sub = engine.events();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  engine.send({ type: "submit-prompt", text: "plan a refactor" });
+  await engine.whenIdle();
+  // The plan was presented and persisted to .vibe/plans/<session>.md.
+  expect(events.some((e) => e.type === "plan-presented")).toBe(true);
+  const sessionId = engine.snapshot().sessionId;
+  const planFile = await Bun.file(join(cwd, ".vibe", "plans", `${sessionId}.md`)).text();
+  expect(planFile).toContain("Refactor the loader");
+
+  // Approve: switch to execute, then run a turn — the model's prompt carries the
+  // handoff directive so it doesn't read its own present_plan "stop here" as halt.
+  engine.send({ type: "set-mode", mode: "execute" });
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  expect(prompts.at(-1)).toContain("approved by the user");
+});

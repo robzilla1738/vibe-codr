@@ -8,6 +8,11 @@ const Input = z.object({
   limit: z.number().int().positive().optional().describe("Max lines to read."),
 });
 
+/** Cap on the returned content. Like grep/git/webfetch, read never dumps an
+ * unbounded blob into the context window — a minified bundle or a file with a
+ * single multi-megabyte line is truncated with an explicit marker. */
+const MAX_OUTPUT = 100_000;
+
 export const readTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "read",
   description:
@@ -20,14 +25,36 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
     if (!(await file.exists())) {
       return { output: `File not found: ${path}`, isError: true };
     }
+    // Sniff the leading bytes for a NUL — present in binary files, never in
+    // valid UTF-8 text — and refuse rather than flood the context with thousands
+    // of mojibake tokens (an image, an executable, a compiled artifact).
+    const head = new Uint8Array(await file.slice(0, 4096).arrayBuffer());
+    if (head.includes(0)) {
+      return {
+        output: `Cannot read ${path}: it appears to be a binary file.`,
+        isError: true,
+      };
+    }
     const text = await file.text();
+    if (text === "") return { output: "(empty file)" };
     const lines = text.split("\n");
     const start = offset ?? 0;
+    // A non-empty file read entirely past its end is a paging mistake worth
+    // flagging, not a silent "(empty file)".
+    if (start > 0 && start >= lines.length) {
+      return {
+        output: `offset ${start} is past the end of ${path} (${lines.length} lines).`,
+        isError: true,
+      };
+    }
     const end = limit !== undefined ? start + limit : lines.length;
-    const body = lines
+    let body = lines
       .slice(start, end)
       .map((line, i) => `${start + i + 1}\t${line}`)
       .join("\n");
-    return { output: body || "(empty file)" };
+    if (body.length > MAX_OUTPUT) {
+      body = `${body.slice(0, MAX_OUTPUT)}\n…(truncated at ${MAX_OUTPUT} chars; use offset/limit to page)`;
+    }
+    return { output: body };
   },
 };

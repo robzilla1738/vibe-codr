@@ -5,6 +5,18 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **`read` could flood the context window with a binary file or a giant line.**
+  Unlike every other context-producing tool (`grep`/`git`/`webfetch` all cap
+  their output), `read` returned whatever it found verbatim — so reading an
+  image, an executable, or a minified bundle (often a single multi-megabyte
+  line) dumped thousands of mojibake or junk tokens straight into the prompt,
+  blowing up the very context accounting the engine works to keep accurate.
+  `read` now (1) sniffs the leading bytes for a NUL and refuses a binary file
+  with a clear message instead of dumping garbage, (2) caps returned content at
+  100k chars with an explicit `…(truncated at 100000 chars; use offset/limit to
+  page)` marker, (3) returns a distinct `(empty file)` for a genuinely empty
+  file rather than a bare `1\t`, and (4) flags an `offset` past the end of a
+  non-empty file instead of silently returning nothing.
 - **Context % stayed pinned at the pre-compaction fill after `/compact`.** The
   live context indicator (and `/context`/`/status`) report the provider's real
   last-step input-token count, but that count measured the prompt *before*

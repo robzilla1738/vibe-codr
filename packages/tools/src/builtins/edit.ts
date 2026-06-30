@@ -64,6 +64,20 @@ function truncate(s: string, max = 40): string {
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
+/**
+ * Cap the diff embedded in the model-facing output. Like every other
+ * context-producing tool, `edit` must not return an unbounded blob — a large
+ * `replaceAll` or multi-edit on a big file would otherwise dump the whole diff
+ * verbatim into the prompt and defeat the engine's context accounting. The UI
+ * still gets the full diff via the `file-changed` event; only the model's copy
+ * (a confirmation aid) is bounded. Caps at the same 20k as `git_diff`.
+ */
+function capDiff(s: string, max = 20_000): string {
+  return s.length > max
+    ? `${s.slice(0, max)}\n…(diff truncated at ${max} chars)`
+    : s;
+}
+
 export const editTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "edit",
   description:
@@ -133,7 +147,7 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
         removed: diff.removed,
       });
       return {
-        output: `Edited ${path} (+${diff.added} -${diff.removed})\n${diff.text}`,
+        output: `Edited ${path} (+${diff.added} -${diff.removed})\n${capDiff(diff.text)}`,
       };
     });
   },

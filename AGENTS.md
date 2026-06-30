@@ -76,8 +76,10 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
 - **Every context-producing tool caps its output.** A tool's output lands in the
   prompt verbatim, so none may return an unbounded blob — `grep` caps at 500
   matches, `glob` at 1000, `git_*` at 20k chars, `verify` at 8k, `webfetch` at
-  `maxChars`, and `read` at 100k chars (all with an explicit `…(truncated …)`
-  marker). `read` additionally sniffs the leading bytes for a NUL and refuses a
+  `maxChars`, `read` at 100k chars, and `edit` caps the diff it echoes back at
+  20k chars (`write` keeps its diff out of the output entirely — both still emit
+  the full diff on the `file-changed` event for the UI) (all with an explicit
+  `…(truncated …)` marker). `read` additionally sniffs the leading bytes for a NUL and refuses a
   binary file rather than dump mojibake. Any new tool that surfaces file/command
   content must cap likewise — an uncapped read defeats the engine's context
   accounting and can 400 the next turn on an over-long prompt.

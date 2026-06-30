@@ -107,6 +107,25 @@ test("multi-edit applies all hunks in order when valid", async () => {
   expect(await Bun.file(join(cwd, path)).text()).toBe("1\ntwo\n3\n");
 });
 
+test("a large diff is capped in the model output but full in the UI event", async () => {
+  // The model-facing output must stay bounded (context-cap invariant), while the
+  // file-changed event keeps the complete diff for the UI to render.
+  const lines = Array.from({ length: 5000 }, (_, i) => `old line ${i}`).join("\n");
+  const { cwd, path } = await seed(`${lines}\n`);
+  const events: UIEvent[] = [];
+  const r = await editTool.execute(
+    { path, oldString: "old line", newString: "new line", replaceAll: true },
+    ctx(cwd, events),
+  );
+  expect(r.isError).toBeUndefined();
+  // Output is capped well under the raw diff size and carries the marker.
+  expect(r.output.length).toBeLessThan(21_000);
+  expect(r.output).toContain("…(diff truncated at 20000 chars)");
+  // The UI event still carries the full, uncapped diff.
+  const changed = events.find((e) => e.type === "file-changed");
+  expect(changed && changed.type === "file-changed" && changed.diff.length).toBeGreaterThan(50_000);
+});
+
 test("write emits a file-changed event with an all-additions diff for a new file", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-write-"));
   const events: UIEvent[] = [];

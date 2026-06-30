@@ -5,6 +5,16 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **`edit` could flood the context window with an unbounded diff.** Every other
+  context-producing tool caps its output (`grep`/`glob`/`git_*`/`read`/…), but
+  `edit` echoed the *entire* unified diff of its change back into the model
+  prompt with no limit — so a large `replaceAll` or a multi-edit across a big
+  file dumped thousands of lines verbatim, defeating the very context accounting
+  the engine maintains and risking a 400 on the next over-long turn. `edit` now
+  caps the diff it returns at 20k chars (matching `git_diff`) with an explicit
+  `…(diff truncated at 20000 chars)` marker; the UI still receives the complete
+  diff via the `file-changed` event, so nothing is lost on screen. (`write`
+  already kept its diff out of the output — only `edit` inlined it.)
 - **A `bash` timeout looked like a generic command failure.** When a command
   exceeded its `timeoutMs`, the tool killed the process and returned the bare
   SIGTERM exit code (`exit 143`) — indistinguishable from a real non-zero exit.

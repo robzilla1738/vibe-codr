@@ -5,6 +5,12 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Added
+- **The message input grows and wraps instead of scrolling text off-screen.** A
+  long message used to scroll horizontally — the start of what you typed vanished
+  off the left edge. The input now soft-wraps on word boundaries and the framed
+  box grows downward as you type (up to 10 rows, then it scrolls internally), so
+  the whole message stays visible. (Two parts: `wrapMode="word"` on the input, and
+  flipping its frame to a column so it grows vertically rather than only widening.)
 - **`/model` is now a full, persistent provider/model control center — switch
   everything from chat, cross-provider, and it's remembered.** Previously `/model
   <id>` only changed the session model and forgot it on exit. Now:

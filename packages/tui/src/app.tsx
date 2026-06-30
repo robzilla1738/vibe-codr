@@ -44,6 +44,8 @@ import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
 const CONTENT_MAX = 96;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
+/** Max visible rows the input box grows to before it scrolls internally. */
+const INPUT_MAX_ROWS = 10;
 /** The wordmark is rendered with OpenTUI's native ASCII-font renderable
  * (`<ascii_font font="slick">`) in the brand color — see the empty-state splash. */
 /** Min column width to show the big wordmark (else a compact brand line). */
@@ -259,6 +261,20 @@ export function App(props: { engine: EngineClient }) {
   // terminal width so the column reflows on resize.
   const dims = useTerminalDimensions();
   const contentWidth = () => Math.min(CONTENT_MAX, Math.max(1, dims().width - 2));
+
+  // How many rows the input needs for the current draft: each explicit line
+  // soft-wraps to ceil(width / inner-width) rows. Drives the input box height so
+  // it grows with the text (capped at INPUT_MAX_ROWS, then it scrolls inside).
+  // `inner` = column inner (contentWidth−2) minus the input's border+padding (4).
+  // Once the draft wraps we add one row of headroom: the edit buffer keeps the
+  // cursor's trailing position visible, so without it the first line scrolls off.
+  const inputRows = () => {
+    const inner = Math.max(8, contentWidth() - 6);
+    const rows = draft()
+      .split("\n")
+      .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / inner)), 0);
+    return Math.min(INPUT_MAX_ROWS, Math.max(1, rows >= 2 ? rows + 1 : rows));
+  };
 
   // Slash-command menu: derives from the draft, so it opens/filters as you type.
   const menu = () => paletteState(draft());
@@ -1238,16 +1254,26 @@ export function App(props: { engine: EngineClient }) {
         borderColor={inputAccent()}
         title={` ${modeWord()} `}
         titleColor={uiMode() === "execute" ? brand() : accent()}
-        flexDirection="row"
+        // COLUMN, not row: in a row the input only grows horizontally and shows a
+        // single (cursor) line; in a column it grows vertically so every wrapped
+        // line stays visible as the frame gets taller.
+        flexDirection="column"
         flexShrink={0}
         marginTop={1}
         paddingLeft={1}
         paddingRight={1}
+        // Grow with the text: the input soft-wraps (wrapMode below) and the frame
+        // gets taller as it fills, up to INPUT_MAX_ROWS, then scrolls internally —
+        // instead of the old single line that scrolled long text off to the left.
+        height={inputRows() + 2}
       >
         <input
           ref={(el: { focus: () => void }) => (inputEl = el)}
           focused
           flexGrow={1}
+          // Soft-wrap on word boundaries so long input stays visible and the box
+          // grows, rather than scrolling horizontally out of view.
+          wrapMode="word"
           value={draft()}
           onInput={(v: string) => setDraft(v)}
           onSubmit={submit}

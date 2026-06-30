@@ -55,6 +55,7 @@ import { searchSessions, formatRecall } from "./recall.ts";
 import { formatMemoryHits } from "./memory-search.ts";
 import { MemoryService } from "./memory-service.ts";
 import { createLimiter, type Limiter } from "./limiter.ts";
+import { createBlackboard } from "./blackboard.ts";
 import { loadMemorySources, loadProjectMemory, formatMemory } from "./memory.ts";
 import { reasoningSupported } from "./model-tuning.ts";
 import { CheckpointManager } from "./checkpoints.ts";
@@ -124,6 +125,8 @@ export class Engine implements EngineClient {
   /** Tree-global adaptive concurrency gate in front of every provider call
    * (initialized in the constructor once config is available). */
   #limiter!: Limiter;
+  /** Shared coordination board for parallel subagents, shared across the tree. */
+  #blackboard = createBlackboard();
   #loop: LoopController | undefined;
   /** The session running the current loop iteration, so a stop can abort it. */
   #loopSession: Session | undefined;
@@ -212,6 +215,7 @@ export class Engine implements EngineClient {
       agents: this.#agents,
       fileLock: this.#fileLock,
       limiter: this.#limiter,
+      blackboard: this.#blackboard,
       skills: this.skills,
       hooks: this.hooks,
       store: this.#store,
@@ -566,6 +570,7 @@ export class Engine implements EngineClient {
       agents: this.#agents,
       fileLock: this.#fileLock,
       limiter: this.#limiter,
+      blackboard: this.#blackboard,
       skills: this.skills,
       hooks: this.hooks,
       ...(this.#memory ? { memory: this.#memory } : {}),

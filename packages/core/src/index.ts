@@ -109,6 +109,17 @@ export {
 } from "./memory-store.ts";
 export { MemoryService } from "./memory-service.ts";
 export {
+  createLimiter,
+  type Limiter,
+  type LimiterOptions,
+} from "./limiter.ts";
+export {
+  createBlackboard,
+  formatNotes,
+  type Blackboard,
+  type Note,
+} from "./blackboard.ts";
+export {
   formatStatus,
   formatContextUsage,
   formatCost,

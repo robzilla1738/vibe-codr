@@ -18,6 +18,129 @@ function mockRegistry(model: MockLanguageModelV2) {
   ]);
 }
 
+import { createBlackboard } from "./blackboard.ts";
+
+test("a hung subagent is stopped by the wall-clock timeout and reported", async () => {
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "do slow work" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    // Child stream stalls long past the 50ms timeout (initialDelay 3s).
+    {
+      stream: simulateReadableStream({
+        chunks: [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "c" },
+          { type: "text-delta", id: "c", delta: "still going" },
+          { type: "text-end", id: "c" },
+          { type: "finish", finishReason: "stop", usage: USAGE },
+        ] as never[],
+        initialDelayInMs: 300, // > the 50ms timeout, so the guard fires first
+        chunkDelayInMs: 0,
+      }),
+    },
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "moving on" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+
+  const bus = new EventBus();
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  const config = { ...defaultConfig() };
+  config.subagent = { ...config.subagent, timeoutMs: 50 };
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  await session.run("delegate slow work");
+  bus.close();
+  await collector;
+
+  const toolDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
+  const out = toolDone && toolDone.type === "tool-call-finished" ? String(toolDone.output) : "";
+  expect(out).toMatch(/timed out/i);
+  expect(toolDone && toolDone.type === "tool-call-finished" && toolDone.isError).toBe(true);
+});
+
+test("post_note writes to the shared board and read_notes reads it back", async () => {
+  // The agent posts a coordination note, then reads it back — exercising the
+  // post_note/read_notes tools against the shared board (by reference).
+  const board = createBlackboard();
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "p1", toolName: "post_note", input: JSON.stringify({ note: "claimed src/auth.ts" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: JSON.stringify({}) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "done" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+
+  const bus = new EventBus();
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    blackboard: board,
+  });
+
+  await session.run("coordinate via the board");
+  bus.close();
+  await collector;
+
+  // The note landed on the shared board...
+  expect(board.read().some((n) => n.text === "claimed src/auth.ts")).toBe(true);
+  // ...and read_notes surfaced it (proving the agent saw the shared state).
+  const notesRead = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "read_notes",
+  );
+  const out = notesRead && notesRead.type === "tool-call-finished" ? String(notesRead.output) : "";
+  expect(out).toContain("claimed src/auth.ts");
+});
+
 function stream(chunks: unknown[]) {
   return {
     stream: simulateReadableStream({

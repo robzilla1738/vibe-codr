@@ -121,10 +121,13 @@ export const ConfigSchema = z.object({
        * logical maxParallel fan-out cap): the adaptive limiter never exceeds this.
        * High by default so it's a no-op for ordinary single-session use. */
       providerConcurrency: z.number().int().positive().default(16),
+      /** Per-subagent wall-clock timeout (ms); a hung provider stream can't wedge
+       * the parent's fan-out gate forever. 0 disables. Default 5 minutes. */
+      timeoutMs: z.number().int().min(0).default(300_000),
       /** Default model for subagents. Falls back to the main model when unset. */
       model: z.string().optional(),
     })
-    .default({ maxDepth: 3, maxParallel: 4, providerConcurrency: 16 }),
+    .default({ maxDepth: 3, maxParallel: 4, providerConcurrency: 16, timeoutMs: 300_000 }),
   compaction: z
     .object({
       /** Fraction of context window at which to auto-compact. */

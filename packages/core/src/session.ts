@@ -43,6 +43,7 @@ import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
 import type { ImageAttachment } from "./mentions.ts";
 import { withRetry } from "./retry.ts";
 import type { Limiter } from "./limiter.ts";
+import { type Blackboard, formatNotes } from "./blackboard.ts";
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -99,6 +100,9 @@ export interface SessionDeps {
   /** Tree-global adaptive concurrency gate in front of every provider call,
    * shared across the session tree (forks inherit it via `...this.#deps`). */
   limiter?: Limiter;
+  /** Shared coordination board for parallel subagents (post_note / read_notes),
+   * shared across the tree like the file lock. */
+  blackboard?: Blackboard;
   id?: string;
   /** Persistence backend; when set, the session is saved after each turn. */
   store?: SessionStore;
@@ -481,6 +485,7 @@ export class Session {
           subagentId: child.id,
           prompt,
         });
+        let timedOut = false;
         try {
           // Bound concurrent fan-out: at most `subagent.maxParallel` children
           // run at once; extras queue. Parallel calls in one step share this gate.
@@ -488,10 +493,38 @@ export class Session {
             // If the user aborted while this child was still queued, don't burn
             // a model call — the parent turn is already unwinding.
             if (ctx.abortSignal?.aborted) return Promise.resolve();
-            return child.run(prompt);
+            // Wall-clock guard: a hung provider stream can't wedge the gate (and
+            // thus the parent) forever. On timeout, abort the child; its partial
+            // output (if any) is still salvaged below.
+            const timeoutMs = this.#deps.config.subagent.timeoutMs;
+            if (!timeoutMs) return child.run(prompt);
+            const timer = setTimeout(() => {
+              timedOut = true;
+              child.abort();
+            }, timeoutMs);
+            return child.run(prompt).finally(() => clearTimeout(timer));
           });
         } finally {
           ctx.abortSignal?.removeEventListener("abort", onAbort);
+        }
+        if (timedOut) {
+          const partial = child.lastAssistantText();
+          const secs = Math.round(this.#deps.config.subagent.timeoutMs / 1000);
+          this.#deps.bus.emit({
+            type: "subagent-finished",
+            sessionId: this.id,
+            subagentId: child.id,
+            result: `timed out after ${secs}s`,
+          });
+          addUsage(this.#usage, child.usage);
+          this.#costUSD += child.costUSD;
+          return {
+            output: capSubagentOutput(
+              `Subagent timed out after ${secs}s and was stopped.` +
+                (partial ? `\n\nPartial output before timeout:\n${partial}` : ""),
+            ),
+            isError: true,
+          };
         }
         // A child that actually mutated the workspace makes THIS turn a mutating
         // one (so auto-verify runs); a read-only investigation child does not.
@@ -723,6 +756,14 @@ export class Session {
       tools.recall_memory = toAISDKTool(this.#recallTool(), base);
       if (this.#deps.memory && this.mode !== "plan") {
         tools.save_memory = toAISDKTool(this.#saveMemoryTool(), base);
+      }
+      // Cross-agent coordination board: offer post_note/read_notes whenever this
+      // agent is part of a multi-agent tree — a subagent worker (depth > 0) or a
+      // root that can still delegate — so siblings can coordinate, but a plain
+      // single-agent turn with no one to coordinate with isn't cluttered.
+      if (this.#deps.blackboard && (this.depth > 0 || subagentsAvailable)) {
+        tools.post_note = toAISDKTool(this.#postNoteTool(), base);
+        tools.read_notes = toAISDKTool(this.#readNotesTool(), base);
       }
 
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
@@ -1125,6 +1166,46 @@ export class Session {
         }
         const path = await memory.save({ fact, ...(scope ? { scope } : {}), ...(tags ? { tags } : {}) });
         return { output: `Saved to ${path}. It will surface via recall_memory when relevant.` };
+      },
+    };
+  }
+
+  /** Build the `post_note` tool: share a coordination note with sibling agents. */
+  #postNoteTool(): ToolDefinition<{ note: string }> {
+    const board = this.#deps.blackboard;
+    const from = this.depth === 0 ? "lead" : `sub:${this.id.slice(-4)}`;
+    return {
+      name: "post_note",
+      description:
+        "Share a short coordination note with the other agents working in parallel (a decision you made, an interface you settled, a file you're taking, a conflict you hit). Other agents see it via read_notes. Keep it terse and factual.",
+      inputSchema: z.object({
+        note: z.string().min(1).describe("The note to share (one short factual line)."),
+      }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ note }) => {
+        if (!board) return { output: "No shared board in this session.", isError: true };
+        board.post(from, note);
+        return { output: "Posted to the shared board." };
+      },
+    };
+  }
+
+  /** Build the `read_notes` tool: read what sibling agents have shared. */
+  #readNotesTool(): ToolDefinition<{ limit?: number }> {
+    const board = this.#deps.blackboard;
+    return {
+      name: "read_notes",
+      description:
+        "Read the coordination notes other parallel agents have shared (decisions, claimed files, conflicts). Check this before and during delegated work to avoid duplicating or contradicting a sibling.",
+      inputSchema: z.object({
+        limit: z.number().int().positive().max(100).optional().describe("Max recent notes (default all)."),
+      }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ limit }) => {
+        if (!board) return { output: "No shared board in this session." };
+        return { output: formatNotes(board.read(limit)) };
       },
     };
   }

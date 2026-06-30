@@ -46,9 +46,16 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
         signal: ctx.abortSignal,
       });
 
+      const limit = timeoutMs ?? DEFAULT_TIMEOUT;
+      // Record that WE killed the process for exceeding the timeout, so the
+      // model isn't handed a bare SIGTERM exit code (143) it would read as a
+      // genuine command failure — without this it can't tell a hang apart from
+      // an error, so it can't decide to raise the timeout or use background.
+      let timedOut = false;
       const timer = setTimeout(() => {
+        timedOut = true;
         proc.kill();
-      }, timeoutMs ?? DEFAULT_TIMEOUT);
+      }, limit);
 
       let out = "";
       const pump = async (stream: ReadableStream<Uint8Array>) => {
@@ -74,9 +81,12 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
       clearTimeout(timer);
 
       const trimmed = out.length > 30_000 ? `${out.slice(0, 30_000)}\n…(truncated)` : out;
+      const status = timedOut
+        ? `timed out after ${limit}ms (process killed; rerun with a larger timeoutMs or background:true)`
+        : `exit ${code}`;
       return {
-        output: `exit ${code}\n${trimmed || "(no output)"}`,
-        isError: code !== 0,
+        output: `${status}\n${trimmed || "(no output)"}`,
+        isError: timedOut || code !== 0,
       };
     },
   };

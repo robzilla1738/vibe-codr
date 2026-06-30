@@ -5,6 +5,15 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **A `bash` timeout looked like a generic command failure.** When a command
+  exceeded its `timeoutMs`, the tool killed the process and returned the bare
+  SIGTERM exit code (`exit 143`) — indistinguishable from a real non-zero exit.
+  An autonomous agent couldn't tell a hang apart from an error, so it couldn't
+  decide to raise the timeout, switch to `background:true`, or stop retrying.
+  The tool now tracks that it killed the process for exceeding the deadline and
+  reports `timed out after <N>ms (process killed; rerun with a larger timeoutMs
+  or background:true)` instead, while still surfacing the partial output it
+  captured before the kill.
 - **Planning could waste a subagent turn on a write-oriented agent.** In plan
   mode the parent is read-only and every subagent it spawns is coerced to plan,
   so the named-agent roster only advertises read-only (`mode: "plan"`) agents.

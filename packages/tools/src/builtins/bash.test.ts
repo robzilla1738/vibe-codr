@@ -47,6 +47,16 @@ test("stderr is captured alongside stdout", async () => {
   expect(String(r.output)).toContain("oops");
 });
 
+test("a command that exceeds its timeout is reported as a timeout, not a bare exit code", async () => {
+  // A killed process exits with a SIGTERM code (143); without the explicit
+  // timeout marker the model can't tell that apart from a real failure.
+  const r = await bashTool().execute({ command: "sleep 5", timeoutMs: 150 }, ctx(cwd()));
+  expect(r.isError).toBe(true);
+  expect(String(r.output)).toContain("timed out after 150ms");
+  // The misleading "exit 143" status must not be the headline instead.
+  expect(String(r.output).startsWith("exit")).toBe(false);
+});
+
 test("background run without a job registry is rejected cleanly", async () => {
   const r = await bashTool().execute({ command: "sleep 1", background: true }, ctx(cwd()));
   expect(r.isError).toBe(true);

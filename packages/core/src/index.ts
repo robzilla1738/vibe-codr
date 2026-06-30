@@ -75,6 +75,12 @@ export {
   cosineSimilarity,
   type Embedder,
 } from "./embeddings.ts";
+export { chunkMarkdown, sha256, type Chunk } from "./chunk.ts";
+export {
+  VectorStore,
+  type VectorRecord,
+  type VectorHit,
+} from "./vector-store.ts";
 export {
   formatStatus,
   formatContextUsage,

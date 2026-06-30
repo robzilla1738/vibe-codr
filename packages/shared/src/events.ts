@@ -77,6 +77,14 @@ export type UIEvent =
     }
   | { type: "tasks-updated"; sessionId: string; tasks: Task[] }
   | {
+      /** A scheduled orchestrator task changed state (spawn_tasks DAG). */
+      type: "orchestration-task";
+      sessionId: string;
+      taskId: string;
+      objective: string;
+      status: "running" | "completed" | "failed" | "skipped";
+    }
+  | {
       type: "queue-changed";
       /** Item currently running, if any. */
       active: QueuedItem | null;

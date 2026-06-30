@@ -44,6 +44,13 @@ import type { ImageAttachment } from "./mentions.ts";
 import { withRetry } from "./retry.ts";
 import type { Limiter } from "./limiter.ts";
 import { type Blackboard, formatNotes } from "./blackboard.ts";
+import {
+  validateDag,
+  runDag,
+  formatTaskResults,
+  type TaskSpec,
+  type TaskResult,
+} from "./orchestrator.ts";
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -461,119 +468,269 @@ export class Session {
             isError: true,
           };
         }
-        // In plan mode the parent is read-only, so its subagents must be too —
-        // force plan regardless of the requested/named mode (keeps planning
-        // strictly investigation, while still allowing parallel exploration).
-        const childMode: Mode =
-          this.mode === "plan" ? "plan" : (mode ?? named?.mode ?? "execute");
-        const child = this.fork({
-          bus: new EventBusImpl(), // isolate the subagent's fine-grained stream
-          // Subagent model = named agent's own model → the `subagent.model`
-          // setting → the parent's model. Never model-chosen (no `model` arg).
-          model: named?.model ?? this.#deps.config.subagent.model ?? this.model,
-          mode: childMode,
-          goal: this.goal,
-          depth: this.depth + 1,
-          ...(named?.system ? { extraSystem: [named.system] } : {}),
-        });
-        // Aborting the parent turn (e.g. /abort, spend stop) cancels the child.
-        const onAbort = () => child.abort();
-        ctx.abortSignal?.addEventListener("abort", onAbort, { once: true });
+        const child = this.#forkChild(named, mode);
         this.#deps.bus.emit({
           type: "subagent-started",
           sessionId: this.id,
           subagentId: child.id,
           prompt,
         });
-        let timedOut = false;
-        try {
-          // Bound concurrent fan-out: at most `subagent.maxParallel` children
-          // run at once; extras queue. Parallel calls in one step share this gate.
-          await this.#childGate(() => {
-            // If the user aborted while this child was still queued, don't burn
-            // a model call — the parent turn is already unwinding.
-            if (ctx.abortSignal?.aborted) return Promise.resolve();
-            // Wall-clock guard: a hung provider stream can't wedge the gate (and
-            // thus the parent) forever. On timeout, abort the child; its partial
-            // output (if any) is still salvaged below.
-            const timeoutMs = this.#deps.config.subagent.timeoutMs;
-            if (!timeoutMs) return child.run(prompt);
-            const timer = setTimeout(() => {
-              timedOut = true;
-              child.abort();
-            }, timeoutMs);
-            return child.run(prompt).finally(() => clearTimeout(timer));
-          });
-        } finally {
-          ctx.abortSignal?.removeEventListener("abort", onAbort);
-        }
-        if (timedOut) {
-          const partial = child.lastAssistantText();
-          const secs = Math.round(this.#deps.config.subagent.timeoutMs / 1000);
-          this.#deps.bus.emit({
-            type: "subagent-finished",
-            sessionId: this.id,
-            subagentId: child.id,
-            result: `timed out after ${secs}s`,
-          });
-          addUsage(this.#usage, child.usage);
-          this.#costUSD += child.costUSD;
-          return {
-            output: capSubagentOutput(
-              `Subagent timed out after ${secs}s and was stopped.` +
-                (partial ? `\n\nPartial output before timeout:\n${partial}` : ""),
-            ),
-            isError: true,
-          };
-        }
-        // A child that actually mutated the workspace makes THIS turn a mutating
-        // one (so auto-verify runs); a read-only investigation child does not.
-        if (child.didMutate) this.#turnMutated = true;
-        // Fold the child's tokens + cost into the parent so `/cost` and the
-        // spend guard account for delegated work (the child runs on an isolated
-        // bus, so its own usage events never reach the parent UI).
-        addUsage(this.#usage, child.usage);
-        this.#costUSD += child.costUSD;
-        this.#deps.bus.emit({
-          type: "usage-updated",
-          sessionId: this.id,
-          usage: this.#usageSnapshot(),
-        });
-        this.#enforceBudget();
-        // Surface a child failure to the parent model (and as a notice) instead
-        // of masking it as "no output". Salvage any partial report the child
-        // produced before failing — run() records it in #history on error — so a
-        // near-complete answer isn't thrown away with the error message.
-        if (child.lastError) {
-          const partial = child.lastAssistantText();
-          const result = partial
-            ? `Subagent failed: ${child.lastError}\n\nPartial output before failure:\n${partial}`
-            : `Subagent failed: ${child.lastError}`;
-          this.#deps.bus.emit({
-            type: "subagent-finished",
-            sessionId: this.id,
-            subagentId: child.id,
-            result: `failed: ${child.lastError}`,
-          });
-          return { output: capSubagentOutput(result), isError: true };
-        }
-        // A child can complete without emitting any assistant prose (a terse
-        // execute agent that only ran tools, or a run truncated at maxSteps
-        // mid-tool-call). Say so explicitly rather than the bare "no output".
-        const result =
-          child.lastAssistantText() ||
-          (child.didMutate
-            ? "(subagent completed via tool calls but produced no written summary)"
-            : "(subagent produced no output)");
+        const { timedOut } = await this.#runChildToCompletion(child, prompt, ctx.abortSignal);
+        const outcome = this.#childOutcome(child, timedOut);
         this.#deps.bus.emit({
           type: "subagent-finished",
           sessionId: this.id,
           subagentId: child.id,
-          result, // UI gets the full answer; the model-facing output is capped below.
+          result: outcome.event,
         });
-        return { output: capSubagentOutput(result) };
+        return { output: capSubagentOutput(outcome.text), ...(outcome.isError ? { isError: true } : {}) };
       },
     };
+  }
+
+  /**
+   * Build the per-session `spawn_tasks` tool: submit a dependency-ordered plan
+   * the engine schedules deterministically (the agentswarm Executor pattern).
+   */
+  #spawnTasksTool(): ToolDefinition<{
+    tasks: {
+      id: string;
+      objective: string;
+      deps?: string[];
+      files?: string[];
+      verify?: boolean;
+      agent?: string;
+    }[];
+  }> {
+    const TaskInput = z.object({
+      id: z.string().describe("Stable id, referenced by other tasks' `deps`."),
+      objective: z
+        .string()
+        .describe("The complete, self-contained subtask (the subagent sees none of this conversation)."),
+      deps: z.array(z.string()).optional().describe("Ids of tasks that must finish before this one starts."),
+      files: z.array(z.string()).optional().describe("Files this task owns (give each task a DISJOINT set)."),
+      verify: z.boolean().optional().describe("Run a review→retry pass after this task."),
+      agent: z.string().optional().describe("Named agent to specialize the subagent."),
+    });
+    return {
+      name: "spawn_tasks",
+      description:
+        "Submit a whole plan of subtasks as a dependency graph; the engine runs it deterministically — every task whose dependencies are done starts immediately (parallel where possible), dependents unlock as inputs complete, and a task whose dependency failed is skipped. Prefer this over many separate spawn_subagent calls for multi-step work: declare `deps` for ordering, disjoint `files` per task, and `verify:true` on a task to have it reviewed and retried. Each task is a fresh subagent; it returns a consolidated report.",
+      inputSchema: z.object({ tasks: z.array(TaskInput).min(1) }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ tasks }, ctx) => {
+        const specs: TaskSpec[] = tasks.map((t) => ({
+          id: t.id,
+          objective: t.objective,
+          deps: t.deps ?? [],
+          ...(t.files ? { files: t.files } : {}),
+          ...(t.verify ? { verify: t.verify } : {}),
+          ...(t.agent ? { agent: t.agent } : {}),
+        }));
+        const dagError = validateDag(specs);
+        if (dagError) return { output: `Invalid task plan: ${dagError}`, isError: true };
+        for (const s of specs) {
+          const err = this.#validateAgentForTask(s.agent);
+          if (err) return { output: `Task "${s.id}": ${err}`, isError: true };
+        }
+        const results = await runDag(
+          specs,
+          (spec, depResults) => this.#runTask(spec, depResults, ctx.abortSignal),
+          {
+            onStatus: (spec, status) =>
+              this.#deps.bus.emit({
+                type: "orchestration-task",
+                sessionId: this.id,
+                taskId: spec.id,
+                objective: spec.objective,
+                status,
+              }),
+          },
+        );
+        return { output: capSubagentOutput(formatTaskResults(results)) };
+      },
+    };
+  }
+
+  /** Validate a task's named agent against the current mode (mirrors spawn_subagent). */
+  #validateAgentForTask(agent: string | undefined): string | null {
+    if (!agent) return null;
+    const named = this.#deps.agents?.get(agent);
+    if (!named) return `unknown agent "${agent}". Run /agents to list them.`;
+    if (this.mode === "plan" && named.mode !== "plan") {
+      return `agent "${agent}" runs in execute mode and can't run while planning.`;
+    }
+    return null;
+  }
+
+  /** Run one orchestrator task: fork a subagent, thread in dependency results +
+   * coordination, and (when `verify`) review→retry up to verifyMaxAttempts. */
+  async #runTask(
+    spec: TaskSpec,
+    depResults: TaskResult[],
+    parentSignal: AbortSignal | undefined,
+  ): Promise<TaskResult> {
+    const named = spec.agent ? this.#deps.agents?.get(spec.agent) : undefined;
+    const maxAttempts = spec.verify ? Math.max(1, this.#deps.config.subagent.verifyMaxAttempts) : 1;
+    let feedback = "";
+    let attempts = 0;
+    while (attempts < maxAttempts) {
+      attempts++;
+      const child = this.#forkChild(named, undefined);
+      this.#deps.bus.emit({
+        type: "subagent-started",
+        sessionId: this.id,
+        subagentId: child.id,
+        prompt: spec.objective,
+      });
+      const { timedOut } = await this.#runChildToCompletion(
+        child,
+        buildTaskKickoff(spec, depResults, feedback),
+        parentSignal,
+      );
+      const outcome = this.#childOutcome(child, timedOut);
+      this.#deps.bus.emit({
+        type: "subagent-finished",
+        sessionId: this.id,
+        subagentId: child.id,
+        result: outcome.event,
+      });
+      if (outcome.isError) {
+        return { id: spec.id, objective: spec.objective, outcome: "failed", output: outcome.text, attempts };
+      }
+      if (!spec.verify || !child.didMutate) {
+        return { id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts };
+      }
+      const review = await this.#reviewTask(spec, outcome.text, parentSignal);
+      if (review.clean) {
+        return { id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts };
+      }
+      feedback = review.feedback;
+    }
+    return {
+      id: spec.id,
+      objective: spec.objective,
+      outcome: "failed",
+      output: `Verification still failing after ${attempts} attempt(s):\n${feedback}`,
+      attempts,
+    };
+  }
+
+  /** Run the built-in read-only `review` agent over a finished task's work. */
+  async #reviewTask(
+    spec: TaskSpec,
+    work: string,
+    parentSignal: AbortSignal | undefined,
+  ): Promise<{ clean: boolean; feedback: string }> {
+    const reviewAgent = this.#deps.agents?.get("review");
+    const child = this.#forkChild(reviewAgent, "plan"); // review is read-only
+    const prompt =
+      `Review the work done for this task. Objective: ${spec.objective}\n` +
+      (spec.files?.length ? `Files: ${spec.files.join(", ")}\n` : "") +
+      `\nThe agent reported:\n${work}\n\n` +
+      "Verify against the ACTUAL files (don't trust the report). Report concrete issues as " +
+      "`path:line — problem`, or reply exactly REVIEW-CLEAN if the work is correct and complete.";
+    await this.#runChildToCompletion(child, prompt, parentSignal);
+    const out = child.lastAssistantText();
+    return { clean: /REVIEW-CLEAN/.test(out), feedback: out || "(reviewer produced no output)" };
+  }
+
+  /**
+   * Fork a subagent child for delegated work (shared by spawn_subagent and the
+   * orchestrator). Resolves the named agent's mode/model/system and coerces the
+   * child to plan mode when the parent is planning. The model is a *setting*
+   * (named agent → subagent.model → parent), never model-chosen per call.
+   */
+  #forkChild(named: NamedAgent | undefined, requestedMode: Mode | undefined): Session {
+    const childMode: Mode =
+      this.mode === "plan" ? "plan" : (requestedMode ?? named?.mode ?? "execute");
+    return this.fork({
+      bus: new EventBusImpl(), // isolate the subagent's fine-grained stream
+      model: named?.model ?? this.#deps.config.subagent.model ?? this.model,
+      mode: childMode,
+      goal: this.goal,
+      depth: this.depth + 1,
+      ...(named?.system ? { extraSystem: [named.system] } : {}),
+    });
+  }
+
+  /**
+   * Run a forked child to completion through the fan-out gate + per-subagent
+   * wall-clock timeout, propagating a parent abort and folding the child's
+   * usage/cost up into this session. Returns whether the timeout fired.
+   */
+  async #runChildToCompletion(
+    child: Session,
+    prompt: string,
+    parentSignal: AbortSignal | undefined,
+  ): Promise<{ timedOut: boolean }> {
+    const onAbort = () => child.abort();
+    parentSignal?.addEventListener("abort", onAbort, { once: true });
+    let timedOut = false;
+    try {
+      // Bound concurrent fan-out: at most `subagent.maxParallel` children run at
+      // once; extras queue. Parallel calls in one step share this gate.
+      await this.#childGate(() => {
+        // If the user aborted while this child was still queued, don't burn a
+        // model call — the parent turn is already unwinding.
+        if (parentSignal?.aborted) return Promise.resolve();
+        // Wall-clock guard: a hung provider stream can't wedge the gate forever.
+        const timeoutMs = this.#deps.config.subagent.timeoutMs;
+        if (!timeoutMs) return child.run(prompt);
+        const timer = setTimeout(() => {
+          timedOut = true;
+          child.abort();
+        }, timeoutMs);
+        return child.run(prompt).finally(() => clearTimeout(timer));
+      });
+    } finally {
+      parentSignal?.removeEventListener("abort", onAbort);
+    }
+    // A child that actually mutated the workspace makes THIS turn a mutating one
+    // (so auto-verify runs); a read-only investigation child does not.
+    if (child.didMutate) this.#turnMutated = true;
+    // Fold the child's tokens + cost into the parent so `/cost` + the spend guard
+    // account for delegated work (the child runs on an isolated bus).
+    addUsage(this.#usage, child.usage);
+    this.#costUSD += child.costUSD;
+    this.#deps.bus.emit({ type: "usage-updated", sessionId: this.id, usage: this.#usageSnapshot() });
+    this.#enforceBudget();
+    return { timedOut };
+  }
+
+  /** Normalize a finished child into a model-facing text + error flag + a short
+   * event label, salvaging any partial output on timeout/failure. */
+  #childOutcome(
+    child: Session,
+    timedOut: boolean,
+  ): { text: string; isError: boolean; event: string } {
+    const partial = child.lastAssistantText();
+    if (timedOut) {
+      const secs = Math.round(this.#deps.config.subagent.timeoutMs / 1000);
+      return {
+        text:
+          `Subagent timed out after ${secs}s and was stopped.` +
+          (partial ? `\n\nPartial output before timeout:\n${partial}` : ""),
+        isError: true,
+        event: `timed out after ${secs}s`,
+      };
+    }
+    if (child.lastError) {
+      return {
+        text: partial
+          ? `Subagent failed: ${child.lastError}\n\nPartial output before failure:\n${partial}`
+          : `Subagent failed: ${child.lastError}`,
+        isError: true,
+        event: `failed: ${child.lastError}`,
+      };
+    }
+    const text =
+      partial ||
+      (child.didMutate
+        ? "(subagent completed via tool calls but produced no written summary)"
+        : "(subagent produced no output)");
+    return { text, isError: false, event: text };
   }
 
   /**
@@ -745,6 +902,12 @@ export class Session {
       // bounded by recursion depth.
       if (subagentsAvailable) {
         tools.spawn_subagent = toAISDKTool(this.#spawnTool(), base);
+        // Deterministic task-DAG orchestration (opt-in): in addition to one-off
+        // spawn_subagent, offer spawn_tasks so the model can submit a whole
+        // dependency-ordered plan the engine schedules.
+        if (config.orchestration.enabled) {
+          tools.spawn_tasks = toAISDKTool(this.#spawnTasksTool(), base);
+        }
       }
       // Progressive disclosure: expose use_skill when skills are available.
       if (skills?.list().length) {
@@ -1334,6 +1497,31 @@ export class Session {
     }
     return assistant;
   }
+}
+
+/** Compose the self-contained kickoff prompt for an orchestrator task: the
+ * objective, owned files, prerequisite results, coordination reminder, and (on a
+ * verify retry) the reviewer's feedback. */
+function buildTaskKickoff(spec: TaskSpec, depResults: TaskResult[], feedback: string): string {
+  const parts: string[] = [spec.objective];
+  if (spec.files?.length) {
+    parts.push(
+      `Files you own (edit only these; the engine hard-rejects writes to a file another task owns): ${spec.files.join(", ")}`,
+    );
+  }
+  if (depResults.length) {
+    const summaries = depResults
+      .map((d) => `- [${d.id}] ${d.output.replace(/\s+/g, " ").trim().slice(0, 1_000)}`)
+      .join("\n");
+    parts.push(`Results from the prerequisite tasks you depend on:\n${summaries}`);
+  }
+  parts.push(
+    "You're one task in a coordinated plan. Use read_notes/post_note to see and share decisions with sibling tasks. Be self-contained, then report what you did and any follow-ups. Done only when the objective is fully met.",
+  );
+  if (feedback) {
+    parts.push(`A previous attempt was reviewed and needs fixing before this is acceptable:\n${feedback}`);
+  }
+  return parts.join("\n\n");
 }
 
 /**

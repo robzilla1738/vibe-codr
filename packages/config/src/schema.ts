@@ -124,10 +124,23 @@ export const ConfigSchema = z.object({
       /** Per-subagent wall-clock timeout (ms); a hung provider stream can't wedge
        * the parent's fan-out gate forever. 0 disables. Default 5 minutes. */
       timeoutMs: z.number().int().min(0).default(300_000),
+      /** Max attempts for a verify→retry task (orchestrator `verify` flag): the
+       * subagent re-runs with review feedback up to this many times. */
+      verifyMaxAttempts: z.number().int().min(1).max(5).default(2),
       /** Default model for subagents. Falls back to the main model when unset. */
       model: z.string().optional(),
     })
-    .default({ maxDepth: 3, maxParallel: 4, providerConcurrency: 16, timeoutMs: 300_000 }),
+    .default({
+      maxDepth: 3,
+      maxParallel: 4,
+      providerConcurrency: 16,
+      timeoutMs: 300_000,
+      verifyMaxAttempts: 2,
+    }),
+  /** Deterministic task-DAG orchestration (the `spawn_tasks` tool). Off by
+   * default — the inline `spawn_subagent` path is unchanged; enable to let the
+   * model submit a dependency-ordered plan the engine schedules. */
+  orchestration: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
   compaction: z
     .object({
       /** Fraction of context window at which to auto-compact. */

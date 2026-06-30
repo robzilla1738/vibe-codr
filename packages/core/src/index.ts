@@ -120,6 +120,14 @@ export {
   type Note,
 } from "./blackboard.ts";
 export {
+  validateDag,
+  runDag,
+  formatTaskResults,
+  type TaskSpec,
+  type TaskResult,
+  type TaskOutcome,
+} from "./orchestrator.ts";
+export {
   formatStatus,
   formatContextUsage,
   formatCost,

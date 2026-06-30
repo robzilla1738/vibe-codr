@@ -142,6 +142,74 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
+    // Google Gemini via its OpenAI-compatible endpoint — keeps us on `ai@5` /
+    // openai-compatible (no `@ai-sdk/google`, which needs `ai@6`). Use a Google AI
+    // Studio key. models.dev slug is `google` (enrichment lands directly).
+    id: "google",
+    env: ["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"],
+    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+    baseURLEnv: "GOOGLE_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "groq",
+    env: ["GROQ_API_KEY"],
+    baseURL: "https://api.groq.com/openai/v1",
+    baseURLEnv: "GROQ_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "mistral",
+    env: ["MISTRAL_API_KEY"],
+    baseURL: "https://api.mistral.ai/v1",
+    baseURLEnv: "MISTRAL_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Together AI — OpenAI-compatible. models.dev slug is `togetherai`, so the
+    // catalog alias maps `together` → `togetherai` for enrichment.
+    id: "together",
+    env: ["TOGETHER_API_KEY"],
+    baseURL: "https://api.together.xyz/v1",
+    baseURLEnv: "TOGETHER_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "cerebras",
+    env: ["CEREBRAS_API_KEY"],
+    baseURL: "https://api.cerebras.ai/v1",
+    baseURLEnv: "CEREBRAS_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Perplexity (Sonar) — OpenAI-compatible chat; it has no `/models` listing, so
+    // models are used by id (listing degrades gracefully to []).
+    id: "perplexity",
+    env: ["PERPLEXITY_API_KEY"],
+    baseURL: "https://api.perplexity.ai",
+    baseURLEnv: "PERPLEXITY_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Generic bring-your-own OpenAI-compatible endpoint: point it at ANY OpenAI-
+    // style API. The base URL is REQUIRED (no default) — set it via
+    // `config.providers.custom.baseURL` or `CUSTOM_BASE_URL`; the key is optional
+    // (keyless) since some self-hosted endpoints need none.
+    id: "custom",
+    env: ["CUSTOM_API_KEY"],
+    baseURL: "",
+    baseURLEnv: "CUSTOM_BASE_URL",
+    keyless: true,
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
     id: "lmstudio",
     env: [],
     baseURL: "http://localhost:1234/v1",
@@ -187,6 +255,15 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
     },
 
     async create(modelId, opts): Promise<LanguageModel> {
+      const url = baseURL(opts);
+      // A provider with no default base URL (the generic `custom` provider) is
+      // unusable until one is set — fail with an actionable message rather than
+      // letting the SDK build a broken relative URL.
+      if (!url) {
+        throw new ProviderAuthError(spec.id, [
+          `set a base URL: config.providers.${spec.id}.baseURL or $${spec.baseURLEnv ?? "BASE_URL"}`,
+        ]);
+      }
       const mod = await loadProviderModule(spec.module!);
       const factory = mod[spec.factory!];
       if (typeof factory !== "function") {
@@ -198,7 +275,7 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       const provider = factory({
         name: spec.id,
         apiKey: opts.apiKey ?? "not-needed",
-        baseURL: baseURL(opts),
+        baseURL: url,
         ...(opts.headers ? { headers: opts.headers } : {}),
       });
       // Provider instances are callable: provider(modelId) -> LanguageModel.
@@ -206,7 +283,9 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
     },
 
     async listModels(opts): Promise<ModelInfo[]> {
-      return listOpenAICompatibleModels(spec.id, baseURL(opts), opts.apiKey);
+      const url = baseURL(opts);
+      if (!url) return []; // no endpoint configured yet (e.g. custom) → nothing to list
+      return listOpenAICompatibleModels(spec.id, url, opts.apiKey, undefined, opts.headers);
     },
   };
 }

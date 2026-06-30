@@ -54,11 +54,38 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `"v2"`). Only providers with a v2-compatible dedicated SDK use it directly
   (anthropic `^2`, openai `^2`, deepseek `^1`, codex via openai); **every other
   provider routes through `@ai-sdk/openai-compatible` (`^1`, spec v2)** —
-  minimax, ollama, lmstudio, baseten, xai, openrouter, fireworks. Their dedicated
-  packages have moved to AI SDK v6/v7 (spec v3/v4) and `ai@5` rejects those with
-  "unsupported model version". Don't wire a provider to a dedicated SDK unless you
-  confirm it resolves `@ai-sdk/provider@^2`; otherwise use openai-compatible with
-  its base URL. `registry.test.ts` asserts the rerouted providers stay spec-`v2`.
+  minimax, ollama, lmstudio, baseten, xai, openrouter, fireworks, google, groq,
+  mistral, together, cerebras, perplexity, custom. Their dedicated packages have
+  moved to AI SDK v6/v7 (spec v3/v4) and `ai@5` rejects those with "unsupported
+  model version". Don't wire a provider to a dedicated SDK unless you confirm it
+  resolves `@ai-sdk/provider@^2`; otherwise use openai-compatible with its base
+  URL. `registry.test.ts` asserts the rerouted providers stay spec-`v2`.
+- **Adding a provider = one `BuiltinSpec`** in `packages/providers/src/defs.ts`
+  (`id`, `env`, `baseURL`, optional `baseURLEnv`/`keyless`/`tokenFile`,
+  `module:"@ai-sdk/openai-compatible"`, `factory:"createOpenAICompatible"`). No new
+  SDK package, no `PROVIDER_MODULES` change. Then add a `ProviderChoice` to
+  `packages/cli/src/providers-catalog.ts` (onboarding). **Match the `id` to its
+  models.dev slug** so `CatalogService.enrich` lands metadata; where they differ,
+  add the exception to `PROVIDER_SLUG_ALIASES` in `catalog.ts` (e.g. `together →
+  togetherai`, `fireworks → fireworks-ai`, `codex → openai`). The generic `custom`
+  provider has no default base URL — it requires `config.providers.custom.baseURL`
+  (or `$CUSTOM_BASE_URL`) and errors clearly otherwise.
+- **Model freshness is automatic:** metadata is a live `models.dev/api.json` fetch
+  with a 24h disk cache (no vendored snapshot to go stale); availability is each
+  provider's live `/v1/models`. `/models refresh` force-pulls past the cache.
+- **"Via auth" = token reuse, no OAuth in-repo.** `resolveAuth`→`#resolveKey`
+  resolves env → config `apiKey` → token file (`tokenFile`/`tokenPath`, default
+  e.g. codex's `~/.codex/auth.json`) → keyless, **re-read every turn** so a token
+  another CLI refreshes is picked up. `codex` reuses `OPENAI_API_KEY` or
+  `tokens.access_token` from `~/.codex/auth.json` (`auth-file.ts` `COMMON_KEYS`);
+  the ChatGPT-subscription backend is configurable (`CODEX_BASE_URL` + provider
+  `headers`), not hard-wired. Any provider can reuse another CLI's creds via
+  `config.providers.<id>.tokenFile`/`tokenPath`. There is **no OAuth/refresh
+  flow** — don't add one without an explicit ask.
+- **The models.dev cache honors `$XDG_CACHE_HOME`** (default `~/.cache`), read at
+  `CatalogService` construction — same rationale as the config's
+  `$XDG_CONFIG_HOME` (Bun's `os.homedir()` caches at startup; XDG is read live, so
+  `test-preload.ts` isolates both off the developer's real files).
 - Tools declare `readOnly` and `concurrencySafe`. Only read-only tools are exposed
   in plan mode; non-read-only tools pass through the permission gate. The AI SDK
   runs a step's tool calls in parallel, so `Toolset.aiTools` serializes every
@@ -224,12 +251,18 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   (background shell jobs + detected localhost servers, a scrollbox replacing the
   transcript; Esc or `/jobs` closes it). Otherwise a `<Show>` renders the scrolling
   transcript when there are blocks, else a **centered Vibe Codr wordmark splash**.
-  The wordmark is a compact ░██ block face (`packages/tui/src/wordmark.ts`, 80×7,
-  rendered one brand `<text>` per line, centered by flex spacers) when the column
-  has room (`showWordmark()`); otherwise it falls back to OpenTUI's native
-  `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (a sleek rounded
-  face; runtime tag, supports a gradient `color` array), then a one-line
-  `◆ Vibe Codr`. Below it is a single **centered** prompt-starter line
+  The wordmark is a compact ░██ block face (`packages/tui/src/wordmark.ts`, 80×7)
+  rendered as a **clean left→right rainbow gradient** (`RainbowLine`): each row is a
+  flex *row* of one `<text fg>` per character, colored by COLUMN position
+  (`rainbowSpans`, `rainbow.ts`), so column `i` shares a hue across every row and
+  the block reads as one smooth sweep. **Gotcha: per-character color must use a row
+  of `<text fg>` (the SegRow mechanism); inline `<span fg>` children DO NOT paint in
+  this renderer** (they render the default fg — this is what made the wordmark show
+  up white). The smoke test asserts the gradient via `captureSpans()` (counts
+  distinct fg colors — `captureCharFrame` is color-blind). Shown when the column has
+  room (`showWordmark()`); otherwise it falls back to `<ascii_font text="VIBE CODR"
+  font="slick" color={rainbowAt(0.5)}>` (single rainbow-mid hue — the array/gradient
+  `color` form is unverified, so a fallback uses one color), then `◆ Vibe Codr`. Below it is a single **centered** prompt-starter line
   (`SegRow center`) — `Try › …` example asks — and nothing else (no tagline, no
   key cheatsheet; the keys live in the under-input status). `SegRow` is a row of
   coloured `<text>` runs (OpenTUI has no inline-markup `<text>`), two-tone: muted
@@ -269,14 +302,13 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   every turn. Assistant/tool/notice blocks are NOT click targets — folding is
   driven from the user message only; do NOT reintroduce an emission-time `turn`
   field on blocks.
-  **The input is a clean closed box** (`border` all sides, default light style) that
-  **matches the command-menu box**: its `borderColor` is `inputAccent()` = `brand()`
-  (the purple/accent — NOT the mode), flipping to green (`subagent`) while the draft
-  exactly matches an invocable `/name` (`isExactCommand`). Its top border carries the
-  **mode word** as the title via `modeWord()` (` ASK `/` PLAN `/` YOLO ` — no glyph;
-  **execute reads "ASK"** because every action is gated by an approval prompt, vs
-  YOLO = no prompts), and ONLY the title is mode-colored: `uiMode() === "execute" ?
-  brand() : accent()` (execute brand · plan cyan · yolo red). There is **no `❯`
+  **The input is a clean closed box** (`border` all sides, default light style) with a
+  **white frame** (`borderColor={brand()}`, and `brand()` is now neutral white — see
+  Color discipline). Its top border carries the **mode word** as the title via
+  `modeWord()` (` ASK `/` PLAN `/` YOLO ` — no glyph; **execute reads "ASK"** because
+  every action is gated by an approval prompt, vs YOLO = no prompts), and the title is
+  the **mode CHIP** — the one mode-colored thing — via `accent()` = `modeColor(uiMode())`
+  (ASK blue · PLAN green · YOLO red, fixed constants in `modes.ts`). There is **no `❯`
   prompt glyph inside** the input; the placeholder is "Send a message or type / to
   start". The input has **no background fill at all** — just the bordered frame and
   the text on the black backdrop: the box sets no `backgroundColor` and the
@@ -303,30 +335,46 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `marginTop={1}` — one blank row between every area; the second status line (hints
   / goal) hugs the details line with no margin so the two read as one block. Keep
   that rhythm; don't special-case a region to 2.
-- **Color discipline (black background + monochrome + minimal accent):** the app
-  paints a **black background** (`backgroundColor={palette().background}`, `#000`
-  on the default theme), with neutral **charcoal** surfaces raised on top
-  (`panel`/`elevated`/`selBg`/`border` — the input box, user blocks, menus, and the
-  Tasks/Subagents panel borders) and **monochrome white/grey** text (`assistant`
-  near-white, `muted` grey). The brand hue `brand()` = `accentColor() ||
-  palette().primary` is a **vivid orange-red** by default (`#ff3503`; set live with
-  `/accent <hex>` or the `accentColor` config) — the single signature accent — and
-  paints ALL chrome: the wordmark, user gutter, `❯` carets, spinner, panel titles, plan
-  box, menu selection, **and the input box border** (so the input matches the
-  command-menu box). **Mode color** (`accent()` = `modeColor`) appears ONLY on the
-  input's **top-border title** (the mode word): plan `tool`/cyan, yolo `del`/salmon,
-  execute = `brand()` (the accent itself). The input caret/cursor stay `brand()`.
-  The input border flips to the green `subagent` hue while the draft exactly matches
-  an invocable `/name` (`isExactCommand` against `snapshot().commandNames` —
-  built-ins + custom commands + skills) as a "command registered" cue. (Skills run
-  as `/skillname`, dispatched in the engine's `#handleSlash` default case.)
-  Transcript prose is `assistant`, tool rows `muted`. The only other colors are
-  functional: `add`/`del` on expanded diff lines and `notice` (amber) on
-  warnings/permissions.
-  Don't reintroduce per-kind hues (blue user, cyan tools, green dots) — that's the
-  rainbow we removed; don't widen mode color beyond the input's top-border title
-  (use `brand()` for chrome). A `title` needs a top edge, so the input uses a full
-  `border` (all sides) — `border={["left"]}` alone can't host one.
+- **Color discipline (black bg + neutral chrome + four deliberate color zones):**
+  the app paints a **black background** (`backgroundColor={palette().background}`,
+  `#000` on the default theme), neutral **charcoal** surfaces (`panel`/`elevated`/
+  `selBg`/`border`), and **monochrome white/grey** text. The chrome accent `brand()`
+  = `accentColor() || palette().primary` is now a **soft neutral white** by default
+  (`#e6e6e6`; orange `#ff3503` retired) and paints quiet chrome — panel titles, the
+  `❯` user marker, the cursor, the input frame. Override it to a single hue with
+  `/accent <hex>`. **Color is reserved for exactly four zones** (`rainbow.ts` +
+  `modes.ts`):
+  1. **Wordmark** — static per-column rainbow gradient (`RainbowLine`).
+  2. **Mode chip** — the input's top-border title, `modeColor(uiMode())` = ASK blue
+     `#7aa2f7` · PLAN green `#9ece6a` · YOLO red `#f7768e` (fixed constants).
+  3. **Working spinner** — the braille glyph cycles `rainbowAt(tick % CYCLE)`,
+     animated only while a turn runs (rides the existing `working()`-gated tick; no
+     new idle timer). The elapsed/interrupt label stays muted.
+  4. **Per-agent / per-step** — each Subagents-rail row and each tool-step marker
+     (`▎`) gets a stable `rotateHue(index)`; the row/header TEXT stays neutral.
+  Everything else stays neutral: transcript prose `assistant`, tool headers `muted`,
+  with `add`/`del` on diffs and `notice` (amber) on warnings the only functional
+  colors. **Rainbow/mode color is for ACCENTS only — never body text or tool
+  output.** This IS the intended look (an earlier note said "don't reintroduce the
+  rainbow we removed" — obsolete; the curated rainbow is now the design). A `title`
+  needs a top edge, so the input uses a full `border` (all sides).
+- **Interactive submenus (the `/` menu):** one normalized `menuModel` memo in
+  `app.tsx` drives three shapes — `command` (the flat list), `value` (enum submenus
+  like `/theme`/`/approvals`/`/reasoning`, current value marked `●`), and `models`
+  (the live picker). `/model ` / `/models` / `/model sub ` open the picker:
+  `EngineClient.listModels()` (fetched once, cached) → filter by the trailing text →
+  click/Enter dispatches the typed `set-model` / `set-subagent-model` (no text
+  round-trip). Rows are mouse-clickable (`chooseAt(idx)`) with hover highlight. To
+  add a command submenu, extend `menuModel` — don't dump output into the transcript
+  via `#notice`.
+- **Persisted settings + test isolation (FOOTGUN — already bit once):**
+  `/model`, `/model sub`, `/model key`, `/accent`, `/theme`, `/reasoning` persist via
+  `#persistConfig` → `writeGlobalConfig` → `globalConfigPath()`. That path honors
+  **`$XDG_CONFIG_HOME`** (read live), NOT `HOME` — because **Bun's `os.homedir()`
+  caches at startup and ignores a runtime `process.env.HOME`**. Any test that runs a
+  persisting command MUST isolate via `XDG_CONFIG_HOME` (the `test-preload.ts` Bun
+  `preload` does this suite-wide; per-test helpers set it too). Setting `HOME` does
+  nothing and silently clobbers the developer's real `~/.config/vibe-codr/config.json`.
 - Match the surrounding code's style; comments explain *why*, not *what*.
 
 ## Before you finish

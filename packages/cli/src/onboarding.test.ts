@@ -71,6 +71,44 @@ test("buildOnboardingPatch includes keys only when provided", () => {
   ).toEqual({ model: "lmstudio/x" });
 });
 
+test("buildOnboardingPatch persists a base URL for a custom OpenAI-compatible endpoint", () => {
+  expect(
+    buildOnboardingPatch({
+      model: "custom/my-model",
+      providerId: "custom",
+      apiKey: "k",
+      baseURL: "https://my-endpoint.example.com/v1",
+    }),
+  ).toEqual({
+    model: "custom/my-model",
+    providers: { custom: { apiKey: "k", baseURL: "https://my-endpoint.example.com/v1" } },
+  });
+  // A keyless custom endpoint still persists its base URL.
+  expect(
+    buildOnboardingPatch({
+      model: "custom/m",
+      providerId: "custom",
+      baseURL: "http://localhost:8080/v1",
+    }),
+  ).toEqual({
+    model: "custom/m",
+    providers: { custom: { baseURL: "http://localhost:8080/v1" } },
+  });
+});
+
+test("the new providers + custom endpoint appear in the onboarding menu", () => {
+  const keys = new Set(PROVIDER_CHOICES.map((c) => c.key));
+  for (const k of ["google", "groq", "mistral", "together", "cerebras", "perplexity", "codex", "minimax", "fireworks", "custom-endpoint"]) {
+    expect(keys.has(k)).toBe(true);
+  }
+  // The custom endpoint maps to the real `custom` provider and is flagged.
+  const custom = PROVIDER_CHOICES.find((c) => c.key === "custom-endpoint");
+  expect(custom?.registryId).toBe("custom");
+  expect(custom?.customEndpoint).toBe(true);
+  // Every non-advanced choice maps to a registered provider id.
+  expect(PROVIDER_CHOICES.find((c) => c.key === "codex")?.registryId).toBe("codex");
+});
+
 test("Ollama Cloud is offered as a key-required choice on the `ollama` provider", () => {
   const cloud = PROVIDER_CHOICES.find((c) => c.key === "ollama-cloud");
   expect(cloud).toBeDefined();

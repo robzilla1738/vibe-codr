@@ -46,6 +46,14 @@ const engine: EngineClient = {
   send: (cmd) => {
     sent.push(cmd);
   },
+  // The interactive `/model` picker fetches this list and renders it searchable.
+  async listModels() {
+    return [
+      { id: "glm-5.2", providerId: "ollama", contextWindow: 128000 },
+      { id: "gpt-4o", providerId: "openai", name: "GPT-4o", contextWindow: 128000 },
+      { id: "o4-mini", providerId: "openai", contextWindow: 200000 },
+    ];
+  },
   async *events() {
     while (true) {
       if (queue.length) {
@@ -66,9 +74,22 @@ const t = await testRender(() => <App engine={engine} />, { width: 104, height: 
 await t.renderOnce();
 const settle = async () => {
   await t.flush();
-  await new Promise((r) => setTimeout(r, 25));
+  // > the streamed-delta coalescing window (STREAM_FLUSH_MS=40ms in app.tsx).
+  await new Promise((r) => setTimeout(r, 60));
   await t.waitForVisualIdle().catch(() => {});
   await t.flush();
+};
+// Poll until `needle` appears (or timeout) — for content rendered by the async
+// <markdown> worker, which waitForVisualIdle doesn't wait on (it's off-thread).
+const waitForText = async (needle: string, ms = 2000): Promise<string> => {
+  const deadline = Date.now() + ms;
+  let frame = t.captureCharFrame();
+  while (!frame.includes(needle) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25));
+    await t.flush();
+    frame = t.captureCharFrame();
+  }
+  return frame;
 };
 
 // 1) Fresh screen: the centered VIBE CODR wordmark, the mode break on the input
@@ -80,6 +101,27 @@ check("splash renders (wordmark + try line)", frame.includes("░") && frame.inc
 check("input shows the placeholder", frame.includes("Send a message"));
 check("input border shows the ASK mode", frame.includes("ASK"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));
+
+// The wordmark must be an actual rainbow GRADIENT (many distinct per-column
+// colors), not a flat fill. captureCharFrame is color-blind, so inspect the
+// per-span fg via captureSpans. This guards the regression where inline <span>
+// fg didn't paint and the whole wordmark rendered white.
+const wordmarkColors = new Set<string>();
+for (const line of t.captureSpans().lines) {
+  if (!line.spans.some((s) => s.text.includes("░") || s.text.includes("█"))) continue;
+  for (const s of line.spans) {
+    if (s.text.trim()) wordmarkColors.add(`${s.fg.r},${s.fg.g},${s.fg.b}`);
+  }
+}
+check(`wordmark is a rainbow gradient (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
+// The default theme paints a BLACK background — guards the regression where a
+// persisted `theme: light` (or a non-black default) turned the whole UI white.
+const bgBlack = t
+  .captureSpans()
+  .lines.some((l) =>
+    l.spans.some((s) => s.text.includes("░") && s.bg.r < 0.1 && s.bg.g < 0.1 && s.bg.b < 0.1),
+  );
+check("default theme background is black", bgBlack);
 
 // 2) Typing + Enter submits a prompt command (the focus/submit path).
 await t.mockInput.typeText("hello there");
@@ -96,7 +138,7 @@ push({ type: "user-message", text: "What is 6 times 7?" });
 push({ type: "assistant-text-delta", id: "d", delta: "The answer is " } as UIEvent);
 push({ type: "assistant-text-delta", id: "d", delta: "**42**." } as UIEvent);
 await settle();
-frame = t.captureCharFrame();
+frame = await waitForText("42"); // markdown is parsed off-thread; poll for it
 check("user message renders", frame.includes("What is 6 times 7?"));
 check("streamed assistant reply renders", frame.includes("42"));
 // The reply was `**42**.` — the markdown renderable must CONCEAL the bold
@@ -105,6 +147,15 @@ check("streamed assistant reply renders", frame.includes("42"));
 check("assistant bold markers are concealed (no raw **)", !frame.includes("**"));
 // A turn is in flight (no turn-finished yet) → the working spinner shows.
 check("working indicator renders while a turn runs", frame.includes("Working"));
+// The spinner glyph cycles through the rainbow — assert the braille glyph span
+// carries a SATURATED fg (channel spread), not the muted/white default. Same
+// per-<text fg> mechanism the subagent/tool-step rainbows use.
+const saturated = (fg: { r: number; g: number; b: number }) =>
+  Math.max(fg.r, fg.g, fg.b) - Math.min(fg.r, fg.g, fg.b) > 0.2;
+const spinnerColored = t
+  .captureSpans()
+  .lines.some((l) => l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg)));
+check("working spinner glyph is rainbow-colored", spinnerColored);
 
 // 4) A tool call renders with its icon + summary, and its output is condensed.
 push({ type: "tool-call-started", toolCallId: "t1", toolName: "read", input: { path: "x" } } as UIEvent);
@@ -245,6 +296,49 @@ check(
   sent.some((c) => c.type === "set-approvals" && c.mode === "auto"),
 );
 
+// 7b) An enum submenu marks the CURRENT value with ● (snapshot theme = default).
+await t.mockInput.typeText("/theme ");
+await settle();
+frame = t.captureCharFrame();
+check("value submenu lists the options", frame.includes("opencode") && frame.includes("contrast"));
+check("value submenu marks the current value (●)", frame.includes("●"));
+// Esc clears the draft (closes the menu) before the next section.
+t.mockInput.pressEscape();
+await settle();
+
+// 7c) The interactive `/model` picker: fetches the model list, filters as you
+// type, marks the current model, and a click dispatches the typed set-model.
+sent.length = 0;
+await t.mockInput.typeText("/model ");
+await settle();
+await settle(); // let listModels() resolve and the picker repopulate
+frame = t.captureCharFrame();
+check("model picker lists provider models", frame.includes("openai/gpt-4o"));
+check(
+  "model picker marks the current model (●)",
+  frame.includes("●") && frame.includes("ollama/glm-5.2"),
+);
+// Filter to a single openai model by typing — the picker narrows live.
+await t.mockInput.typeText("o4-mini");
+await settle();
+frame = t.captureCharFrame();
+// gpt-4o only appears in the picker (glm-5.2 also shows in the footer status
+// line, so its absence can't prove filtering — gpt-4o's can).
+check(
+  "model picker filters as you type",
+  frame.includes("openai/o4-mini") && !frame.includes("openai/gpt-4o"),
+);
+const pickRow = t.captureCharFrame().split("\n").findIndex((l) => l.includes("openai/o4-mini"));
+check("located the model picker row", pickRow >= 0);
+if (pickRow >= 0) {
+  await t.mockMouse.click(12, pickRow);
+  await settle();
+  check(
+    "clicking a model sets it (typed set-model command)",
+    sent.some((c) => c.type === "set-model" && c.model === "openai/o4-mini"),
+  );
+}
+
 // 8) A permission request renders as a card and a typed y/a/n answers it.
 sent.length = 0;
 push({
@@ -319,6 +413,28 @@ if (qRow >= 0) {
     sent.some((c) => c.type === "steer" && c.id === "q1"),
   );
 }
+
+// 11) A reply mixing prose + a code block + a table must render ALL of it. This
+// guards the regression where OpenTUI's <markdown> blanked prose siblings of a
+// code/table block — vibe now renders code/tables as native primitives, so the
+// prose survives. (New turn at the end so it doesn't disturb the turns above.)
+t.mockInput.pressEscape(); // close the /jobs sub-view from §9 so the transcript shows
+await settle();
+push({ type: "queue-changed", active: null, pending: [] } as UIEvent);
+push({ type: "user-message", text: "show me a table and code" });
+push({
+  type: "assistant-text-delta",
+  id: "r",
+  delta:
+    "PROSE_ALPHA before.\n\n```ts\nconst RICHCODE = 1;\n```\n\n| Name | Size |\n| --- | --- |\n| Zustand | tiny |\n\nPROSE_OMEGA after.",
+} as UIEvent);
+push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+await settle();
+frame = await waitForText("PROSE_OMEGA");
+check("rich reply: prose before a code/table block renders", frame.includes("PROSE_ALPHA"));
+check("rich reply: prose after a code/table block renders", frame.includes("PROSE_OMEGA"));
+check("rich reply: the code block renders", frame.includes("RICHCODE"));
+check("rich reply: the table renders (native box-drawing)", frame.includes("Zustand") && frame.includes("│"));
 
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);

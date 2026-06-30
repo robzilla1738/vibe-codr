@@ -13,11 +13,12 @@ function withProvider(id: string, cfg: Record<string, unknown>): Config {
 
 test("the new providers are registered", () => {
   const reg = new ProviderRegistry();
-  expect(reg.has("minimax")).toBe(true);
-  expect(reg.has("codex")).toBe(true);
-  expect(reg.has("xai")).toBe(true);
-  expect(reg.has("ollama")).toBe(true);
-  expect(reg.has("lmstudio")).toBe(true);
+  for (const id of [
+    "minimax", "codex", "xai", "ollama", "lmstudio",
+    "google", "groq", "mistral", "together", "cerebras", "perplexity", "custom",
+  ]) {
+    expect(reg.has(id)).toBe(true);
+  }
 });
 
 test("keyless local providers (ollama, lmstudio) are configured without a key", () => {
@@ -131,7 +132,10 @@ test("openai-compatible-routed providers create ai@5 (spec v2) models", async ()
   // through @ai-sdk/openai-compatible. Their dedicated packages moved to spec v3+
   // (AI SDK v6) and would be rejected by ai@5 ("unsupported model version"), so
   // this locks in that each still produces a spec-"v2" model.
-  for (const id of ["baseten", "xai", "openrouter", "fireworks", "minimax"]) {
+  for (const id of [
+    "baseten", "xai", "openrouter", "fireworks", "minimax",
+    "google", "groq", "mistral", "together", "cerebras", "perplexity",
+  ]) {
     const def = builtinProviders().find((d) => d.id === id);
     if (!def) throw new Error(`${id} provider missing`);
     const model = (await def.create("some-model", { apiKey: "test-key" })) as {
@@ -139,6 +143,49 @@ test("openai-compatible-routed providers create ai@5 (spec v2) models", async ()
     };
     expect(model.specificationVersion).toBe("v2");
   }
+});
+
+test("the generic `custom` provider requires a base URL but works once given one", async () => {
+  const custom = builtinProviders().find((d) => d.id === "custom");
+  if (!custom) throw new Error("custom provider missing");
+  // No base URL anywhere → a clear, actionable error (not a broken relative URL).
+  const prev = process.env.CUSTOM_BASE_URL;
+  delete process.env.CUSTOM_BASE_URL;
+  try {
+    await expect(custom.create("m", { apiKey: "k" })).rejects.toThrow(/base URL/i);
+    // listing degrades gracefully (no endpoint yet → empty, never throws).
+    expect(await custom.listModels({ apiKey: "k" })).toEqual([]);
+    // With a base URL it builds a normal spec-v2 model.
+    const model = (await custom.create("m", {
+      apiKey: "k",
+      baseURL: "https://my-endpoint.example.com/v1",
+    })) as { specificationVersion?: string };
+    expect(model.specificationVersion).toBe("v2");
+  } finally {
+    if (prev === undefined) delete process.env.CUSTOM_BASE_URL;
+    else process.env.CUSTOM_BASE_URL = prev;
+  }
+});
+
+test("listModels forwards custom headers to the /models probe", async () => {
+  const def = builtinProviders().find((d) => d.id === "openrouter");
+  if (!def) throw new Error("openrouter provider missing");
+  let seen: Headers | undefined;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+    seen = new Headers(init?.headers);
+    return new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    await def.listModels({ apiKey: "k", headers: { "x-account": "acct_1" } });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(seen?.get("x-account")).toBe("acct_1");
+  expect(seen?.get("authorization")).toBe("Bearer k");
 });
 
 test("an unconfigured non-keyless provider is not configured", () => {

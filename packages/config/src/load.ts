@@ -105,9 +105,18 @@ export interface LoadOptions {
   overrides?: Partial<Config>;
 }
 
-/** The user-global config path (`~/.config/vibe-codr/config.json`). */
+/**
+ * The user-global config path (`~/.config/vibe-codr/config.json`).
+ *
+ * Honors `$XDG_CONFIG_HOME` (the XDG Base Directory spec — `~/.config` is just its
+ * default), read at call-time. This is also what makes the path overridable in
+ * tests: Bun's `os.homedir()` caches at startup and ignores a runtime
+ * `process.env.HOME`, so HOME can't isolate the config — `XDG_CONFIG_HOME` (read
+ * here every call) can, which keeps the suite off the developer's real config.
+ */
 export function globalConfigPath(): string {
-  return join(homedir(), ".config", "vibe-codr", "config.json");
+  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  return join(base, "vibe-codr", "config.json");
 }
 
 /** Locations searched, lowest precedence first. */

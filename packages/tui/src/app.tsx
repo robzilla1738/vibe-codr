@@ -26,17 +26,30 @@
 
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
-import type { EngineClient, GitInfo, JobInfo, SessionUsage, Task, UIEvent } from "@vibe/shared";
-import { createEffect, createMemo, createSignal, For, Index, onCleanup, onMount, Show } from "solid-js";
-import { applyPalette, isExactCommand, PALETTE_COMMANDS, paletteState } from "./commands-catalog.ts";
+import type {
+  EngineClient,
+  GitInfo,
+  JobInfo,
+  ModelSummary,
+  SessionUsage,
+  Task,
+  UIEvent,
+} from "@vibe/shared";
+import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { applyPalette, paletteState } from "./commands-catalog.ts";
+import { renderTable, splitMarkdown, type MdBlock } from "./markdown-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
+import { rainbowAt, rainbowSpans, rotateHue } from "./rainbow.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
 import { toolLabel } from "./tool-icons.ts";
 import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
+
+/** Ticks per full hue sweep of the working spinner (≈2.5s at the 90ms tick). */
+const SPINNER_CYCLE = 28;
 
 /** The chat column's maximum width. At or below this the column fills the
  * terminal; above it the column stays centered with quiet side gutters
@@ -224,31 +237,64 @@ export function App(props: { engine: EngineClient }) {
   // The goal (★) shown in the header's second row; updated via /goal.
   const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
   const cwd = shortCwd();
-  // One configurable accent hue (orange-red `#ff3503` by default, set via `/accent`
-  // or the `accentColor` config) is shown across the chrome — wordmark, input
-  // frame, working line, user gutter, plan box, menu. Surfaces are charcoal, text
-  // monochrome;
-  // green/red appear only on diffs, amber only on warnings.
+  // The neutral chrome accent: a soft white by default (the DEFAULT palette's
+  // primary), overridable to a single hue via `/accent <hex>`. Used for panel
+  // titles, the input frame, the `❯` user marker, and the caret. The vivid color
+  // lives elsewhere — the rainbow wordmark, the mode chip, the spinner, and the
+  // per-agent/per-step rotation.
   const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
   const brand = () => accentColor() || palette().primary;
-  // The active mode recolors ONLY the input's top-border TITLE (the mode word):
-  // plan cyan / execute brand / yolo red. The input border itself stays brand
-  // (purple), matching the command-menu box and the rest of the chrome.
-  const accent = () => modeColor(uiMode(), palette());
-  // Every invocable slash name (built-ins + custom commands + skills) from the
-  // engine snapshot, plus the static palette as a floor. When the draft matches
-  // one exactly, the input border shifts to the green "recognized" hue as an
-  // instant registered cue; otherwise it stays the brand (purple).
-  const commandNames = new Set(
-    [...PALETTE_COMMANDS.map((c) => c.name), ...(snap.commandNames ?? [])].map((n) =>
-      n.toLowerCase(),
-    ),
-  );
-  const inputAccent = () =>
-    isExactCommand(draft(), commandNames) ? palette().subagent : brand();
+  // The mode chip on the input's top border — the one mode-driven hue in the UI:
+  // ASK (execute) blue · PLAN green · YOLO red.
+  const accent = () => modeColor(uiMode());
   // The mode word shown on the input's top border. "execute" means "every action
   // is gated by an approval prompt", so it reads as ASK (vs YOLO = no prompts).
   const modeWord = () => (uiMode() === "execute" ? "ASK" : uiMode().toUpperCase());
+
+  // ── Interactive submenu state ──────────────────────────────────────────────
+  // The live model list for the `/model` picker (fetched lazily on first open,
+  // then cached for the session). `null` = not fetched yet → show "Fetching…".
+  const [models, setModels] = createSignal<ModelSummary[] | null>(null);
+  const [modelsLoading, setModelsLoading] = createSignal(false);
+  // Current settings tracked reactively so the value submenus can mark the active
+  // choice (theme/accent come back as events; subagent-model + reasoning have no
+  // event, so we also update them optimistically when chosen here).
+  const [themeName, setThemeName] = createSignal(snap.theme);
+  const [subagentModelSig, setSubagentModelSig] = createSignal(snap.subagentModel);
+  const [reasoningSig, setReasoningSig] = createSignal<string | undefined>(snap.reasoning);
+  // The current value of an enum command, for marking the active row in its
+  // submenu (approvals is derived from the live UI mode; the rest from snapshot/
+  // event-tracked signals above).
+  const currentValueFor = (name: string): string | undefined => {
+    if (name === "theme") return themeName();
+    if (name === "approvals") return uiMode() === "yolo" ? "auto" : "ask";
+    if (name === "reasoning") return reasoningSig() ?? "off";
+    return undefined;
+  };
+  // Detect when the draft is a `/model` (or `/models`) picker rather than the flat
+  // command menu: `/model ` → pick the MAIN model; `/model sub ` → the SUBAGENT
+  // model; `/model key …` is the key flow (not a picker). The trailing text filters.
+  const pickerTarget = (): { target: "main" | "sub"; query: string } | null => {
+    const d = draft();
+    const lm = /^\/models(?:\s+(.*))?$/is.exec(d);
+    if (lm) {
+      const q = (lm[1] ?? "").trim();
+      // `/models refresh` is a command (force a catalog re-fetch), not a filter.
+      if (q.toLowerCase() === "refresh") return null;
+      return { target: "main", query: q };
+    }
+    const m = /^\/model\s+(.*)$/is.exec(d);
+    if (m) {
+      const rest = m[1] ?? "";
+      const tokens = rest.trim().split(/\s+/).filter(Boolean);
+      const first = (tokens[0] ?? "").toLowerCase();
+      if (first === "key") return null;
+      if (first === "sub" || first === "subagent")
+        return { target: "sub", query: tokens.slice(1).join(" ") };
+      return { target: "main", query: rest.trim() };
+    }
+    return null;
+  };
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -279,40 +325,125 @@ export function App(props: { engine: EngineClient }) {
     return Math.min(INPUT_MAX_ROWS, Math.max(1, rows >= 2 ? rows + 1 : rows));
   };
 
-  // Slash-command menu: derives from the draft, so it opens/filters as you type.
-  const menu = () => paletteState(draft());
   const [selIdx, setSelIdx] = createSignal(0);
-  // Reset the highlight whenever the menu's contents change (new query/mode).
-  createEffect(() => {
-    const st = menu();
-    void (st.open ? `${st.mode}:${st.query}` : "closed");
-    setSelIdx(0);
-  });
-  // Windowed rows for rendering the menu (≤8 visible, scrolled to the highlight).
-  const menuView = () => {
-    const st = menu();
-    if (!st.open) return null;
-    const sel = Math.min(Math.max(0, selIdx()), st.items.length - 1);
-    const WINDOW = 8;
-    const start = Math.min(Math.max(0, sel - 4), Math.max(0, st.items.length - WINDOW));
-    // Pad command names so descriptions line up in a column (opencode-style).
-    const nameW =
-      st.mode === "command"
-        ? Math.min(14, Math.max(...st.items.map((c) => (c as { name: string }).name.length + 1)))
-        : 0;
-    const rows = st.items.slice(start, start + WINDOW).map((it, i) => {
-      const active = start + i === sel;
-      if (st.mode === "command") {
-        const c = it as { name: string; description: string; values?: string[]; arg?: string };
+
+  // One normalized menu row — its `choose` carries the row's own action, so the
+  // keyboard handler, click handler, and renderer share a single path regardless
+  // of which kind of menu produced it.
+  type MenuRow = { text: string; current?: boolean; choose: (run: boolean) => void };
+
+  // The unified slash menu — three shapes, one row list:
+  //   • command — the flat `/command` list (filters as you type)
+  //   • value   — an enum submenu (theme/approvals/reasoning), current value marked
+  //   • models  — the live, searchable model picker (main or subagent), current
+  //               marked; choosing dispatches the typed set-(subagent-)model
+  const menuModel = createMemo(() => {
+    const pick = pickerTarget();
+    if (pick) {
+      const title =
+        pick.target === "sub" ? "subagent model · type to filter" : "model · type to filter";
+      const all = models();
+      if (all === null) return { open: true, loading: true, title, rows: [] as MenuRow[] };
+      const q = pick.query.toLowerCase();
+      const curMain = headModel();
+      const curSub = subagentModelSig();
+      const rows: MenuRow[] = all
+        .filter((mdl) => {
+          const full = `${mdl.providerId}/${mdl.id}`.toLowerCase();
+          return !q || full.includes(q) || (mdl.name ?? "").toLowerCase().includes(q);
+        })
+        .map((mdl) => {
+          const full = `${mdl.providerId}/${mdl.id}`;
+          const ctx = mdl.contextWindow ? `  (${Math.round(mdl.contextWindow / 1000)}k)` : "";
+          return {
+            text: `${full}${ctx}`,
+            current: pick.target === "sub" ? curSub === full : curMain === full,
+            choose: () => {
+              if (pick.target === "sub") {
+                setSubagentModelSig(full);
+                props.engine.send({ type: "set-subagent-model", model: full });
+              } else {
+                props.engine.send({ type: "set-model", model: full });
+              }
+              setDraft("");
+            },
+          } satisfies MenuRow;
+        });
+      return { open: rows.length > 0, loading: false, title, rows };
+    }
+    const st = paletteState(draft());
+    if (!st.open) return { open: false, loading: false, title: "", rows: [] as MenuRow[] };
+    if (st.mode === "command") {
+      const nameW = Math.min(14, Math.max(...st.items.map((c) => c.name.length + 1)));
+      const rows: MenuRow[] = st.items.map((c, idx) => {
         const hint = c.values ? ` (${c.values.join("|")})` : c.arg ? ` ${c.arg}` : "";
-        return { active, text: `${`/${c.name}`.padEnd(nameW + 1)}  ${c.description}${hint}` };
-      }
-      return { active, text: `${st.command.name} → ${it as string}` };
-    });
-    const title = st.mode === "command" ? "commands" : `/${st.command.name}`;
-    const more =
-      st.items.length > WINDOW ? `+${st.items.length - WINDOW} more · type to filter` : "";
-    return { rows, title, more };
+        return {
+          text: `${`/${c.name}`.padEnd(nameW + 1)}  ${c.description}${hint}`,
+          choose: (run: boolean) => {
+            const res = applyPalette(st, idx);
+            if (!res) return;
+            setDraft(res.draft);
+            if (run && res.done) runText(res.draft);
+          },
+        };
+      });
+      return { open: true, loading: false, title: "commands", rows };
+    }
+    const cur = currentValueFor(st.command.name);
+    const rows: MenuRow[] = st.items.map((v) => ({
+      text: `${st.command.name} → ${v}`,
+      current: cur === v,
+      choose: (run: boolean) => {
+        const line = `/${st.command.name} ${v}`;
+        setDraft(line);
+        if (st.command.name === "reasoning") setReasoningSig(v === "off" ? undefined : v);
+        if (run) runText(line);
+      },
+    }));
+    return { open: true, loading: false, title: `/${st.command.name}`, rows };
+  });
+
+  // Pre-highlight the current value (if any), else the first row, whenever the
+  // menu contents change (new query / picker target / freshly-loaded models).
+  createEffect(() => {
+    const m = menuModel();
+    void `${m.title}:${m.rows.length}:${m.loading}`;
+    const cur = m.rows.findIndex((r) => r.current);
+    setSelIdx(cur >= 0 ? cur : 0);
+  });
+
+  // Lazily fetch the model list the first time a `/model` picker opens (cached
+  // for the session); the picker shows "Fetching…" until it lands.
+  createEffect(() => {
+    if (pickerTarget() && models() === null && !modelsLoading()) {
+      setModelsLoading(true);
+      void Promise.resolve(props.engine.listModels?.() ?? [])
+        .then((list) => setModels(list ?? []))
+        .catch(() => setModels([]))
+        .finally(() => setModelsLoading(false));
+    }
+  });
+
+  // Apply the row at absolute index `i` (keyboard highlight or a click).
+  const chooseAt = (i: number, run: boolean) => menuModel().rows[i]?.choose(run);
+
+  // Windowed rows for rendering (≤8 visible, scrolled to keep the highlight in
+  // view). Each view row carries its absolute index so a click selects + runs it.
+  const WINDOW = 8;
+  const menuView = () => {
+    const m = menuModel();
+    if (!m.open) return null;
+    const rows = m.rows;
+    const sel = Math.min(Math.max(0, selIdx()), Math.max(0, rows.length - 1));
+    const start = Math.min(Math.max(0, sel - 4), Math.max(0, rows.length - WINDOW));
+    const view = rows.slice(start, start + WINDOW).map((r, i) => ({
+      active: start + i === sel,
+      current: !!r.current,
+      text: r.text,
+      idx: start + i,
+    }));
+    const more = rows.length > WINDOW ? `+${rows.length - WINDOW} more · type to filter` : "";
+    return { rows: view, title: m.title, more, loading: m.loading };
   };
 
   // ── Transcript reducer state ───────────────────────────────────────────────
@@ -323,9 +454,46 @@ export function App(props: { engine: EngineClient }) {
   let activeAssistant = -1; // index of the in-flight assistant block, or -1
   const toolByCallId = new Map<string, number>();
 
-  // Finalize the streaming reply (flip `streaming` off so <markdown> closes any
-  // trailing fence/table) and stop appending deltas to it.
+  // Streamed deltas are COALESCED: tokens accumulate in a buffer and flush to the
+  // block on a short timer (~25fps) instead of one setBlocks + <markdown> re-parse
+  // per token. Re-parsing growing text on every token is O(n²) and was the source
+  // of the streaming lag/jank on long replies; flushing per frame keeps it smooth
+  // while the conceal still happens live.
+  let pendingDelta = "";
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const STREAM_FLUSH_MS = 40;
+  const flushAssistant = () => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (!pendingDelta) return;
+    const delta = pendingDelta;
+    pendingDelta = "";
+    setBlocks((prev) => {
+      const cur = prev[activeAssistant];
+      if (activeAssistant >= 0 && cur && cur.kind === "assistant") {
+        const copy = prev.slice();
+        copy[activeAssistant] = { ...cur, text: cur.text + delta };
+        return copy;
+      }
+      // The first flushed delta opens a new block with a blank line above it.
+      const next = [
+        ...prev,
+        { kind: "assistant" as const, id: newId(), text: delta, streaming: true, gap: true },
+      ];
+      activeAssistant = next.length - 1;
+      return next;
+    });
+  };
+  const scheduleFlush = () => {
+    if (!flushTimer) flushTimer = setTimeout(flushAssistant, STREAM_FLUSH_MS);
+  };
+
+  // Finalize the streaming reply: land any buffered text, then flip `streaming`
+  // off so <markdown> closes any trailing fence/table; stop appending to it.
   const finalizeAssistant = () => {
+    flushAssistant();
     if (activeAssistant >= 0) {
       setBlocks((prev) => {
         const b = prev[activeAssistant];
@@ -367,13 +535,8 @@ export function App(props: { engine: EngineClient }) {
     const target = nextUiMode(deriveUiMode(mode, approvals));
     for (const cmd of commandsForUiMode(target)) props.engine.send(cmd);
   };
-  // Apply the highlighted command-menu entry; `run` also submits a complete one.
-  const choosePalette = (run: boolean) => {
-    const res = applyPalette(menu(), selIdx());
-    if (!res) return;
-    setDraft(res.draft);
-    if (run && res.done) runText(res.draft);
-  };
+  // Apply the highlighted menu row; `run` also submits a complete one.
+  const choosePalette = (run: boolean) => chooseAt(selIdx(), run);
   useKeyboard(
     (key: { name?: string; shift?: boolean; ctrl?: boolean; preventDefault?: () => void }) => {
     // Shift+Tab cycles plan → execute → yolo, menu open or not.
@@ -394,10 +557,10 @@ export function App(props: { engine: EngineClient }) {
       setShowJobs(false);
       return;
     }
-    const st = menu();
+    const m = menuModel();
     // Permission shortcuts: while a request is pending and you're not mid-typing,
     // y/a/n answers it directly and Esc rejects it.
-    if (perms().length > 0 && !st.open && !draft().trim()) {
+    if (perms().length > 0 && !m.open && !draft().trim()) {
       if (key.name === "y" || key.name === "a" || key.name === "n") {
         key.preventDefault?.();
         answerPerm(key.name === "y" ? "once" : key.name === "a" ? "always" : "deny");
@@ -410,30 +573,30 @@ export function App(props: { engine: EngineClient }) {
       }
     }
     // Esc interrupts an in-flight turn when nothing else claims the key.
-    if (key.name === "escape" && !st.open && working() && perms().length === 0) {
+    if (key.name === "escape" && !m.open && working() && perms().length === 0) {
       key.preventDefault?.();
       props.engine.send({ type: "abort" });
       return;
     }
-    if (!st.open) return; // menu closed → let the input handle keys normally
-    const n = st.items.length;
+    if (!m.open) return; // menu closed → let the input handle keys normally
+    const n = m.rows.length; // 0 while the model picker is still fetching
     switch (key.name) {
       case "up":
         key.preventDefault?.();
-        setSelIdx((i) => (i - 1 + n) % n);
+        if (n) setSelIdx((i) => (i - 1 + n) % n);
         break;
       case "down":
         key.preventDefault?.();
-        setSelIdx((i) => (i + 1) % n);
+        if (n) setSelIdx((i) => (i + 1) % n);
         break;
       case "tab": // complete the highlighted entry without running it
         key.preventDefault?.();
-        choosePalette(false);
+        if (n) choosePalette(false);
         break;
       case "return":
       case "enter": // run the highlighted entry (preventDefault stops onSubmit)
         key.preventDefault?.();
-        choosePalette(true);
+        if (n) choosePalette(true);
         break;
       case "escape":
         key.preventDefault?.();
@@ -449,7 +612,10 @@ export function App(props: { engine: EngineClient }) {
     const timer = setInterval(() => {
       if (working()) setTick((t) => t + 1);
     }, 90);
-    onCleanup(() => clearInterval(timer));
+    onCleanup(() => {
+      clearInterval(timer);
+      if (flushTimer) clearTimeout(flushTimer);
+    });
 
     void (async () => {
       // edit/write also echo their diff as the tool result; the file-changed
@@ -486,29 +652,10 @@ export function App(props: { engine: EngineClient }) {
             // Subagents panel, not streamed into the parent transcript; empty
             // deltas are no-ops.
             if (event.subagentId || !event.delta) break;
-            // Append to the in-flight reply IMMUTABLY: replace its block object so
-            // <Index> sees a changed value and re-renders just that row. The first
-            // delta of a turn opens a new block with a blank line above it.
-            setBlocks((prev) => {
-              const cur = prev[activeAssistant];
-              if (activeAssistant >= 0 && cur && cur.kind === "assistant") {
-                const copy = prev.slice();
-                copy[activeAssistant] = { ...cur, text: cur.text + event.delta };
-                return copy;
-              }
-              const next = [
-                ...prev,
-                {
-                  kind: "assistant" as const,
-                  id: newId(),
-                  text: event.delta,
-                  streaming: true,
-                  gap: true,
-                },
-              ];
-              activeAssistant = next.length - 1;
-              return next;
-            });
+            // Buffer the token and flush on the next frame (see flushAssistant) —
+            // coalescing keeps long streamed replies smooth.
+            pendingDelta += event.delta;
+            scheduleFlush();
             break;
           case "tool-call-started": {
             if (event.subagentId) break; // subagent tools don't enter the transcript
@@ -663,6 +810,7 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "theme-changed":
             setPalette(getTheme(event.theme));
+            setThemeName(event.theme);
             break;
           case "accent-changed":
             setAccentColor(event.accent);
@@ -925,20 +1073,24 @@ export function App(props: { engine: EngineClient }) {
                       <Show
                         when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 12}
                         fallback={
-                          <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ Vibe Codr"}</text>
+                          <text fg={rainbowAt(0.5)} attributes={TextAttributes.BOLD}>{"◆ Vibe Codr"}</text>
                         }
                       >
-                        {/* Native ASCII-font wordmark — a sleek rounded face in
-                            the brand color (orange-red by default; tracks /accent). */}
-                        <ascii_font text="VIBE CODR" font="slick" color={brand()} />
+                        {/* Native ASCII-font wordmark (medium terminals, where the
+                            block art doesn't fit) — a single vivid rainbow-mid hue
+                            (per-character gradient isn't available on this renderable). */}
+                        <ascii_font text="VIBE CODR" font="slick" color={rainbowAt(0.5)} />
                       </Show>
                     }
                   >
-                    {/* Compact ░██ block wordmark — one brand <text> per line, the
-                        block left-aligned within this column and centered by the
-                        flex spacers around it. */}
+                    {/* ░██ block wordmark with a clean left→right rainbow gradient:
+                        each row is a line of per-character <span>s colored by COLUMN
+                        position, so column i shares a hue across every row and the
+                        whole block reads as one smooth sweep (red→violet), not
+                        per-letter confetti. Static (rendered once on the idle
+                        splash) — no idle timer. */}
                     <For each={WORDMARK}>
-                      {(line) => <text fg={brand()}>{line || " "}</text>}
+                      {(line) => <RainbowLine line={line} cols={WORDMARK_COLS} />}
                     </For>
                   </Show>
                 </box>
@@ -1045,13 +1197,18 @@ export function App(props: { engine: EngineClient }) {
                     id={`msg-${(block() as { id: number }).id}`}
                     flexDirection="column"
                     marginTop={(block() as { gap: boolean }).gap ? 1 : 0}
-                    paddingLeft={1}
+                    // x=2 — aligns the reply text with the user-message and tool-step
+                    // content (which sit at border(1)+pad(1)), so the whole transcript
+                    // shares one left text column with the colored gutters at x=0.
+                    paddingLeft={2}
                   >
                     <AssistantText
                       text={(block() as { text: string }).text}
                       streaming={(block() as { streaming: boolean }).streaming}
                       style={mdStyle}
                       fg={palette().assistant}
+                      palette={palette()}
+                      width={contentWidth() - 4}
                     />
                   </box>
                 </Show>
@@ -1061,11 +1218,12 @@ export function App(props: { engine: EngineClient }) {
                     palette={palette()}
                     style={mdStyle}
                     chained={chained()}
+                    hue={rotateHue(index)}
                     onToggle={(id) => anchoredToggle(() => toggle(id))}
                   />
                 </Show>
                 <Show when={block().kind === "notice" && !isHidden((block() as { id: number }).id)}>
-                  <text fg={palette().notice} marginTop={1} paddingLeft={1}>
+                  <text fg={palette().notice} marginTop={1} paddingLeft={2}>
                     {(block() as { text: string }).text}
                   </text>
                 </Show>
@@ -1078,17 +1236,24 @@ export function App(props: { engine: EngineClient }) {
         </Show>
       </box>
 
-      {/* Live working indicator — braille spinner + elapsed, hidden while a
+      {/* Live working indicator — the braille spinner glyph cycles through the
+          rainbow (animated via `tick`, which only advances while a turn runs), the
+          elapsed/interrupt label stays muted for readability. Hidden while a
           permission card is up (the card is the active affordance then). */}
       <Show when={working() && perms().length === 0}>
-        <text fg={brand()} flexShrink={0} marginTop={1}>
-          {`${spinnerFrame(tick())} ${workingLabel(Date.now() - turnStartedAt)}  ·  esc to interrupt`}
-        </text>
+        <box flexDirection="row" flexShrink={0} marginTop={1}>
+          <text fg={rainbowAt((tick() % SPINNER_CYCLE) / SPINNER_CYCLE)}>
+            {spinnerFrame(tick())}
+          </text>
+          <text fg={palette().muted}>
+            {` ${workingLabel(Date.now() - turnStartedAt)}  ·  esc to interrupt`}
+          </text>
+        </box>
       </Show>
       <Show when={plan()}>
         <box
           border
-          borderColor={brand()}
+          borderColor={palette().border}
           title="Plan"
           titleColor={brand()}
           flexDirection="column"
@@ -1102,6 +1267,8 @@ export function App(props: { engine: EngineClient }) {
             streaming={false}
             style={mdStyle}
             fg={palette().assistant}
+            palette={palette()}
+            width={contentWidth() - 4}
           />
           <text fg={palette().muted}>Shift+Tab to execute, or /execute to proceed.</text>
         </box>
@@ -1154,16 +1321,21 @@ export function App(props: { engine: EngineClient }) {
           paddingRight={1}
         >
           <For each={subagents()}>
-            {(s) => {
+            {(s, i) => {
               const open = () => expandedSubs().has(s.id);
-              const fg = () => (s.status === "running" ? brand() : palette().muted);
+              // Each subagent gets a stable rainbow hue by its fan-out index, so
+              // concurrent agents are visually distinguishable; the colored glyph
+              // carries that identity even after it finishes. The prompt text stays
+              // muted once done so finished rows recede.
+              const hue = () => rotateHue(i());
+              const fg = () => (s.status === "running" ? hue() : palette().muted);
               const oneLine = () =>
                 truncate(firstLine(s.prompt) ?? s.prompt, Math.max(24, contentWidth() - 14));
               return (
                 <box flexDirection="column" onMouseDown={() => toggleSub(s.id)}>
                   <box flexDirection="row" gap={1}>
                     <text flexShrink={0} fg={palette().muted}>{open() ? "▾" : "▸"}</text>
-                    <text flexShrink={0} fg={fg()}>
+                    <text flexShrink={0} fg={hue()}>
                       {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
                     </text>
                     <Show
@@ -1210,6 +1382,7 @@ export function App(props: { engine: EngineClient }) {
                 <text
                   flexShrink={0}
                   fg={brand()}
+                  attributes={TextAttributes.UNDERLINE}
                   onMouseDown={() => props.engine.send({ type: "steer", id: q.id })}
                 >
                   {"steer"}
@@ -1254,9 +1427,12 @@ export function App(props: { engine: EngineClient }) {
           </box>
         )}
       </Show>
-      {/* Slash-command menu — opens while typing a `/command`. ↑/↓ to highlight,
-          Tab to complete, Enter to run, Esc to dismiss. */}
-      <Show when={menu().open}>
+      {/* Slash-command menu / interactive submenus — opens while typing a
+          `/command`. ↑/↓ (or hover) to highlight, Tab to complete, Enter (or
+          click a row) to run, Esc to dismiss. Drilling into `/model` opens a live,
+          searchable model picker; enum commands (theme/approvals/reasoning) show
+          their values with the current one marked `●`. */}
+      <Show when={menuModel().open}>
         <box
           // Absolutely anchored just above the input, so opening the menu OVERLAYS
           // the space below the wordmark (or the transcript tail) instead of
@@ -1267,7 +1443,7 @@ export function App(props: { engine: EngineClient }) {
           left={1}
           right={1}
           border
-          borderColor={brand()}
+          borderColor={palette().border}
           title={menuView()?.title}
           titleColor={brand()}
           backgroundColor={palette().panel}
@@ -1275,32 +1451,45 @@ export function App(props: { engine: EngineClient }) {
           paddingLeft={1}
           paddingRight={1}
         >
+          <Show when={menuView()?.loading}>
+            <text fg={palette().muted}>{"  Fetching models…"}</text>
+          </Show>
           <For each={menuView()?.rows ?? []}>
+            {/* Hover highlights, click selects + runs (index-based, so a click works
+                on any row regardless of the highlight). Keyboard nav is global via
+                useKeyboard — terminal text rows have no DOM focus, so the hover needs
+                no paired onFocus despite the browser-oriented a11y lint. */}
             {(row) => (
+              // biome-ignore lint/a11y/useKeyWithMouseEvents: terminal UI — no text-row focus; keyboard nav is global (useKeyboard)
               <text
                 fg={row.active ? brand() : palette().muted}
                 bg={row.active ? palette().selBg : undefined}
                 attributes={row.active ? TextAttributes.BOLD : undefined}
+                onMouseOver={() => setSelIdx(row.idx)}
+                onMouseDown={() => {
+                  chooseAt(row.idx, true);
+                  refocusInput();
+                }}
               >
-                {`${row.active ? "❯ " : "  "}${row.text}`}
+                {`${row.active ? "❯" : " "} ${row.current ? "●" : " "} ${row.text}`}
               </text>
             )}
           </For>
           <Show when={menuView()?.more}>
-            <text fg={palette().muted}>{`  ${menuView()?.more}`}</text>
+            <text fg={palette().muted}>{`     ${menuView()?.more}`}</text>
           </Show>
         </box>
       </Show>
-      {/* Text input — just the brand border with the mode word on the top edge and
-          the text inside, on the black backdrop (NO fill): the box sets no
-          background and the input is transparent, so there's no grey surface at all.
-          The border flips green while a recognized /command is drafted; the mode word
-          carries the mode color (execute brand · plan cyan · yolo red). */}
+      {/* Text input — a clean WHITE frame (neutral chrome) with the text inside, on
+          the black backdrop (NO fill): the box sets no background and the input is
+          transparent, so there's no grey surface at all. The only color here is the
+          mode CHIP on the top edge — the `ASK`/`PLAN`/`YOLO` word — in the mode hue
+          (ASK blue · PLAN green · YOLO red). */}
       <box
         border
-        borderColor={inputAccent()}
+        borderColor={brand()}
         title={` ${modeWord()} `}
-        titleColor={uiMode() === "execute" ? brand() : accent()}
+        titleColor={accent()}
         // COLUMN, not row: in a row the input only grows horizontally and shows a
         // single (cursor) line; in a column it grows vertically so every wrapped
         // line stays visible as the frame gets taller.
@@ -1378,17 +1567,50 @@ function SegRow(props: { segs: Seg[]; center?: boolean; marginTop?: number }) {
 }
 
 /**
- * Assistant / plan prose. Renders through OpenTUI's native <markdown> renderable
- * (proper wrapping, bold/italic/code, fenced blocks) — never a pre-styled ANSI
- * string, which the buffer would miscount and garble. Falls back to plain
- * per-line <text> if a SyntaxStyle couldn't be created.
+ * One wordmark row as a left→right rainbow gradient: a flex ROW of one `<text>`
+ * per character, each colored by its COLUMN position (`cols` = the full block
+ * width, so every row shares the same hue per column → one clean sweep, not
+ * per-letter confetti). This is the same per-`<text fg>` mechanism `SegRow` uses
+ * — OpenTUI applies `fg` reliably on a `<text>`, whereas inline `<span fg>`
+ * children do not paint. Static (rendered once on the idle splash), so the
+ * per-character node count is fine. Empty rows render a single space to keep
+ * their height.
+ */
+function RainbowLine(props: { line: string; cols: number }) {
+  const cells = () => rainbowSpans(props.line || " ", props.cols);
+  return (
+    <box flexDirection="row" flexShrink={0}>
+      <For each={cells()}>
+        {(c) => (
+          <text flexShrink={0} fg={c.fg}>
+            {c.ch}
+          </text>
+        )}
+      </For>
+    </box>
+  );
+}
+
+/**
+ * Assistant / plan / subagent markdown. Splits the text into prose / code / table
+ * blocks (markdown-blocks.ts) and renders each with the RIGHT primitive: prose via
+ * OpenTUI's native <markdown> (proper wrapping + inline bold/italic/code conceal),
+ * code and tables via our own <box>/<text>. This is deliberate: OpenTUI's
+ * <markdown> blanks a prose block whenever a code/table block is a sibling (even
+ * across separate <markdown> instances), which silently ate the prose in every
+ * code-containing reply — so code/tables get native primitives instead, which also
+ * lets us style them cleanly. Falls back to plain <text> with no SyntaxStyle.
  */
 function AssistantText(props: {
   text: string;
   streaming: boolean;
   style: SyntaxStyle | undefined;
   fg: string;
+  palette: Palette;
+  /** Width budget for table fitting; defaults to a sane value for narrow contexts. */
+  width?: number;
 }) {
+  const blocks = () => splitMarkdown(props.text);
   return (
     <Show
       when={props.style}
@@ -1396,13 +1618,80 @@ function AssistantText(props: {
         <For each={props.text.split("\n")}>{(l) => <text fg={props.fg}>{l || " "}</text>}</For>
       }
     >
-      <markdown
-        content={props.text}
-        streaming={props.streaming}
-        syntaxStyle={props.style!}
-        fg={props.fg}
-      />
+      <box flexDirection="column">
+        <Index each={blocks()}>
+          {(block, i) => (
+            // One blank row between blocks (none above the first) for even rhythm.
+            <box flexDirection="column" marginTop={i > 0 ? 1 : 0}>
+              <Switch>
+                <Match when={block().kind === "code"}>
+                  <CodeBlock block={block as () => Extract<MdBlock, { kind: "code" }>} palette={props.palette} />
+                </Match>
+                <Match when={block().kind === "table"}>
+                  <TableBlock
+                    block={block as () => Extract<MdBlock, { kind: "table" }>}
+                    palette={props.palette}
+                    width={props.width ?? 80}
+                  />
+                </Match>
+                <Match when={block().kind === "prose"}>
+                  {/* Prose ONLY — never code/tables — so the <markdown> sibling bug
+                      can't trigger. Inline bold/italic/code still conceal here. */}
+                  <markdown
+                    content={(block() as Extract<MdBlock, { kind: "prose" }>).text}
+                    streaming={false}
+                    syntaxStyle={props.style!}
+                    fg={props.fg}
+                  />
+                </Match>
+              </Switch>
+            </box>
+          )}
+        </Index>
+      </box>
     </Show>
+  );
+}
+
+/** A fenced code block — monospace lines on a raised panel surface, lang dimmed. */
+function CodeBlock(props: { block: () => Extract<MdBlock, { kind: "code" }>; palette: Palette }) {
+  const p = props.palette;
+  const lines = () => {
+    const l = props.block().lines;
+    return l.length ? l : [""];
+  };
+  return (
+    <box flexDirection="column" backgroundColor={p.panel} paddingLeft={1} paddingRight={1}>
+      <Show when={props.block().lang}>
+        <text fg={p.muted}>{props.block().lang}</text>
+      </Show>
+      <For each={lines()}>{(l) => <text fg={p.tool} wrapMode="none">{l || " "}</text>}</For>
+    </box>
+  );
+}
+
+/** A GFM table — clean box-drawing, columns aligned, borders muted, header bold. */
+function TableBlock(props: {
+  block: () => Extract<MdBlock, { kind: "table" }>;
+  palette: Palette;
+  width: number;
+}) {
+  const p = props.palette;
+  const lines = () => renderTable(props.block().rows, props.block().align, Math.max(12, props.width));
+  return (
+    <box flexDirection="column">
+      <For each={lines()}>
+        {(line) => (
+          <text
+            fg={line.role === "rule" ? p.muted : p.assistant}
+            attributes={line.role === "header" ? TextAttributes.BOLD : undefined}
+            wrapMode="none"
+          >
+            {line.text}
+          </text>
+        )}
+      </For>
+    </box>
   );
 }
 
@@ -1417,6 +1706,8 @@ function ToolBlockView(props: {
   style: SyntaxStyle | undefined;
   /** This row follows another visible tool row → stack flush (no top gap). */
   chained?: boolean;
+  /** Per-step rainbow hue for the leading marker (rotates down the transcript). */
+  hue: string;
   onToggle: (id: number) => void;
 }) {
   const b = props.block;
@@ -1433,6 +1724,13 @@ function ToolBlockView(props: {
   return (
     <box
       id={`tool-${b().id}`}
+      // The per-step rainbow hue is the LEFT-BORDER gutter — anchored at the
+      // column's left edge so it lines up exactly with the user-message gutter and
+      // the input frame (all at x=0). Chained steps stack flush, so a run of tool
+      // calls reads as one continuous colored thread. (A thin `│` vs the user
+      // gutter's heavy `┃`, so they're aligned but distinct.)
+      border={["left"]}
+      borderColor={props.hue}
       flexDirection="column"
       flexShrink={0}
       marginTop={props.chained ? 0 : 1}
@@ -1441,6 +1739,7 @@ function ToolBlockView(props: {
         if (expandable()) props.onToggle(b().id);
       }}
     >
+      {/* Header text stays neutral (red on error) for readability. */}
       <text fg={b().isError ? p.del : p.muted}>{head()}</text>
       <Show when={!b().collapsed && expandable()}>
         <Show
@@ -1472,6 +1771,7 @@ function ToolBlockView(props: {
               streaming={false}
               style={props.style}
               fg={p.assistant}
+              palette={p}
             />
           </box>
         </Show>

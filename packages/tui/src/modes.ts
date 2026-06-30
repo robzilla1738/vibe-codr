@@ -1,5 +1,4 @@
 import type { EngineCommand } from "@vibe/shared";
-import type { Palette } from "./themes.ts";
 
 /**
  * The three interaction modes the user cycles with Shift+Tab. These are a
@@ -51,12 +50,18 @@ export function modeLabel(m: UiMode): string {
 }
 
 /**
- * The single accent color for the current mode — this is the *only* hue the UI
- * shows at a time (everything else is neutral text/muted). It's theme-driven so
- * each theme stays cohesive: execute = the theme's primary (the default theme's
- * primary is the signature dark purple), plan = the calm secondary, yolo = the
- * danger color.
+ * The mode color — shown on the input's mode chip (the `ASK`/`PLAN`/`YOLO` title
+ * on its top border), and the only mode-driven hue in the UI. Fixed (not
+ * theme-derived) so the mode reads identically everywhere: ASK (execute, every
+ * action gated by a prompt) = blue, PLAN (read-only) = green, YOLO (no prompts) =
+ * red. Tokyo-night family, so it sits cleanly on the neutral chrome.
  */
-export function modeColor(m: UiMode, p: Palette): string {
-  return m === "plan" ? p.tool : m === "yolo" ? p.del : p.primary;
+export const MODE_COLORS: Record<UiMode, string> = {
+  execute: "#7aa2f7", // ASK — blue
+  plan: "#9ece6a", // PLAN — green
+  yolo: "#f7768e", // YOLO — red
+};
+
+export function modeColor(m: UiMode): string {
+  return MODE_COLORS[m];
 }

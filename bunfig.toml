@@ -3,3 +3,7 @@
 [test]
 # Bun's built-in test runner picks up *.test.ts across packages
 root = "./packages"
+# Isolate the user-global config (~/.config/vibe-codr) for the whole run so tests
+# that persist settings (/model, /accent, /theme, /reasoning, keys) never touch
+# the developer's real config. See test-preload.ts.
+preload = ["./test-preload.ts"]

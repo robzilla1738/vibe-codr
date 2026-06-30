@@ -38,7 +38,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         description:
           "Switch model + manage providers (persisted): /model <id> · /model sub <id> · /model key <provider> <key>",
       },
-      { name: "models", description: "List available models for configured providers" },
+      { name: "models", description: "List available models (/models refresh to force-pull the latest)" },
       { name: "plan", description: "Switch to read-only plan mode" },
       { name: "execute", description: "Switch to execute mode" },
       { name: "approvals", description: "Show or set approval mode (/approvals ask|auto)" },

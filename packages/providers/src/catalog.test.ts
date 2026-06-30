@@ -1,5 +1,11 @@
 import { test, expect } from "bun:test";
-import { parseModelsDev, resolveCatalogPrice } from "./catalog.ts";
+import {
+  parseModelsDev,
+  resolveCatalogPrice,
+  aliasModelKey,
+  PROVIDER_SLUG_ALIASES,
+  CatalogService,
+} from "./catalog.ts";
 
 test("resolveCatalogPrice: exact match is real, base-model match is estimated", () => {
   const meta = parseModelsDev({
@@ -56,4 +62,73 @@ test("malformed input degrades to an empty map instead of throwing", () => {
   expect(parseModelsDev(null).size).toBe(0);
   expect(parseModelsDev("nonsense").size).toBe(0);
   expect(parseModelsDev({ p: { models: null } }).size).toBe(0);
+});
+
+test("aliasModelKey rewrites provider ids that differ from their models.dev slug", () => {
+  // The exceptions (vibe id → catalog slug) are what make enrichment land.
+  expect(aliasModelKey("together/Llama-3.3-70B")).toBe("togetherai/Llama-3.3-70B");
+  expect(aliasModelKey("fireworks/x")).toBe("fireworks-ai/x");
+  expect(aliasModelKey("codex/gpt-5.2-codex")).toBe("openai/gpt-5.2-codex");
+  // Ids that already match models.dev pass through untouched.
+  expect(aliasModelKey("openai/gpt-5.2")).toBe("openai/gpt-5.2");
+  expect(aliasModelKey("google/gemini-2.5-pro")).toBe("google/gemini-2.5-pro");
+  expect(aliasModelKey("no-slash")).toBe("no-slash");
+  // Every alias target is a real models.dev-style slug (non-empty, no slash).
+  for (const slug of Object.values(PROVIDER_SLUG_ALIASES)) {
+    expect(slug.length).toBeGreaterThan(0);
+    expect(slug).not.toContain("/");
+  }
+});
+
+test("enrich resolves metadata through the alias (fireworks → fireworks-ai)", async () => {
+  const cat = new CatalogService();
+  const raw = {
+    "fireworks-ai": {
+      models: {
+        "accounts/fireworks/models/deepseek-v4-pro": {
+          name: "DeepSeek V4 Pro",
+          limit: { context: 160000 },
+          cost: { input: 0.9, output: 0.9 },
+        },
+      },
+    },
+  };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string | URL) =>
+    new Response(JSON.stringify(raw), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  try {
+    await cat.refresh(); // force a fetch of our fixture
+    const [enriched] = await cat.enrich([
+      { id: "accounts/fireworks/models/deepseek-v4-pro", providerId: "fireworks" },
+    ]);
+    // The live `fireworks/...` id picked up `fireworks-ai/...` metadata via the alias.
+    expect(enriched?.contextWindow).toBe(160000);
+    expect(enriched?.name).toBe("DeepSeek V4 Pro");
+    expect(enriched?.providerId).toBe("fireworks"); // live id wins
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("refresh() force-fetches the catalog and returns the model count", async () => {
+  const cat = new CatalogService();
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_url: string | URL) => {
+    calls++;
+    return new Response(
+      JSON.stringify({ openai: { models: { "gpt-5.2": {}, "gpt-5.2-codex": {} } } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    expect(await cat.refresh()).toBe(2);
+    await cat.refresh(); // bypasses the 24h cache every time
+    expect(calls).toBe(2);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

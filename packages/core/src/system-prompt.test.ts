@@ -24,6 +24,16 @@ test("the base prompt sets the quality bar: conventions, verification, concision
   expect(out).toMatch(/package_info/);
 });
 
+test("the base prompt carries a terminal output-formatting doctrine", () => {
+  const out = composeSystemPrompt({ mode: "execute", goal: null });
+  // Always-on (part of BASE), and it teaches the safe constructs + the trap that
+  // produced raw `~*$58,400*` in the wild.
+  expect(out).toMatch(/Format for the terminal/);
+  expect(out).toMatch(/inline code/);
+  expect(out).toMatch(/never bold/);
+  expect(out).toMatch(/flanking/); // the *-against-$/digit failure mode
+});
+
 test("the goal is injected as a north-star block", () => {
   const out = composeSystemPrompt({ mode: "execute", goal: "ship v1" });
   expect(out).toContain("NORTH-STAR GOAL: ship v1");

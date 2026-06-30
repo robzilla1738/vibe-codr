@@ -3,8 +3,13 @@
 A cutting-edge, **model-agnostic** CLI coding agent for the terminal — in the
 class of Claude Code / Codex / opencode, but able to drive coding and agentic
 tasks on *any* model: local models via **Ollama** and **LM Studio**, aggregators
-(**OpenRouter, Fireworks, Baseten**), and first-party providers (**OpenAI,
-Anthropic, DeepSeek, xAI/Grok, MiniMax**).
+(**OpenRouter, Fireworks, Together, Baseten**), and first-party providers
+(**OpenAI, Anthropic, Google Gemini, DeepSeek, xAI/Grok, Groq, Mistral, Cerebras,
+Perplexity, MiniMax**) — plus **OpenAI Codex via your `codex login` session** and a
+generic **custom** provider for any OpenAI-compatible endpoint (your own base URL +
+key). Model context windows, pricing, and capabilities come live from
+[models.dev](https://models.dev) (24h cache; `/models refresh` to force the
+latest) — never hardcoded.
 
 > Status: **feature-complete.** Multi-provider agent loop, live model catalog,
 > **plan / execute / yolo** modes (Shift+Tab to cycle) with a permission layer, a
@@ -21,27 +26,31 @@ Anthropic, DeepSeek, xAI/Grok, MiniMax**).
 
 ## Screenshots
 
-An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberately
-restrained look: a **black background**, **monochrome white/grey text**, and one
-**vivid `#ff3503` brand accent** (configurable — `/accent <hex>`) on a sleek ASCII
-wordmark, the input frame, and the gutters. The **mode shows on the input's top
-border** — colored per mode (plan cyan · yolo salmon) — so switching mode is
-unmistakable without
-repainting the screen. The other colors are purely functional — green/red on
-diffs, amber on warnings. The layout is a **single, centered chat column**
+An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberate
+color language: a **black background** and **neutral white/grey chrome**, with
+color reserved for four tasteful zones — a **rainbow-gradient VIBE CODR wordmark**,
+the input's **mode chip** (ASK blue · PLAN green · YOLO red), the **rainbow thinking
+spinner**, and a **per-subagent / per-step rainbow** (override the accent with
+`/accent <hex>`). The mode chip on the input's top border makes switching mode
+unmistakable without repainting the screen. The other colors are purely functional
+— green/red on diffs, amber on warnings. The layout is a **single, centered chat
+column**
 (ChatGPT-style): it fills a narrow terminal and centers on a wide one, with **no
 sidebar and no top header**. A fresh screen shows a **centered VIBE CODR wordmark**;
 once you start, the column is the scrolling **transcript**, the live status — the
 plan's **task list** and live **subagents** (one tidy line each, tap to expand) — in
-panels above the input, and the input itself: a **clean closed box whose top border
-is the mode break** (`┏━ EXECUTE ━┓`). **All the details sit under the input** —
-cwd · git, then model · changed-files · context · cost, plus key hints and the goal.
-Each user turn sits in a heavy left-gutter panel block (**tap your message to fold
-the whole exchange** under it); assistant replies render real Markdown; tool calls
+panels above the input, and the input itself: a **clean white closed box whose top
+border carries the mode chip**. **All the details sit under the input** — cwd · git,
+then model · changed-files · context · cost, plus key hints and the goal. Each user
+turn sits in a heavy left-gutter block (**tap your message to fold the whole
+exchange** under it), with the rainbow step gutters and the input frame aligned on
+one left edge; **assistant replies render beautifully** — prose as Markdown, with
+**code blocks and tables as clean native primitives** (aligned columns); tool calls
 read as a distinct icon + action (`$` bash, `→` read, `←` edit, `✱` glob/grep,
 `◈` websearch, `±` git…) and **condense to one line you click to expand**, while
-edits fold into a single diff row with the hunk shown beneath it; a braille spinner
-shows live work; the slash-command menu highlights the selection.
+edits fold into a single diff row with the hunk shown beneath it; a rainbow braille
+spinner shows live work; the slash menu is mouse-clickable and drills into rich
+submenus (a searchable model picker, clickable toggles).
 
 | Chat + tool calls | Live diff |
 |---|---|
@@ -133,6 +142,41 @@ With a key set, vibecodr automatically targets `https://ollama.com/v1`. Run
 `vibecodr models` to list the exact ids your subscription exposes (e.g.
 `ollama/gpt-oss:120b`, `ollama/qwen3-coder:480b`, `ollama/deepseek-v3.1:671b`).
 
+### OpenAI Codex (reuse your ChatGPT login)
+
+If you've logged in with the official Codex CLI (`codex login`), vibecodr reuses
+its credentials — no API key to paste:
+
+```bash
+codex login                    # once, with the official OpenAI Codex CLI
+vibecodr setup                 # pick "OpenAI · Codex (ChatGPT login)" — it's auto-detected
+vibecodr --model codex/gpt-5.2-codex
+```
+
+It reads `~/.codex/auth.json` (API key or ChatGPT OAuth token) and re-reads it each
+turn, so refreshes are picked up. For ChatGPT-subscription use, point
+`CODEX_BASE_URL` at the right backend and add any required `headers` under
+`config.providers.codex`. Any provider can reuse another CLI's token via
+`config.providers.<id>.tokenFile` / `tokenPath`.
+
+### Any OpenAI-compatible endpoint (`custom`)
+
+Point vibecodr at any OpenAI-style API — a gateway, a self-hosted server, a
+provider not listed above:
+
+```bash
+vibecodr setup                 # pick "Custom · OpenAI-compatible endpoint"
+# or set it directly in ~/.config/vibe-codr/config.json:
+#   "providers": { "custom": { "baseURL": "https://my-endpoint/v1", "apiKey": "…" } }
+vibecodr --model custom/my-model-id
+```
+
+### Keeping models current
+
+Model metadata (context window, pricing, capabilities) is fetched live from
+[models.dev](https://models.dev) and cached 24h. New models appear automatically;
+run `/models refresh` (in-session) to force-pull the very latest right away.
+
 ### In-session commands
 
 Type `/` to open the **command menu** — it filters as you type, `↑`/`↓` to
@@ -145,11 +189,13 @@ Highlights:
   `/context` (window usage + compaction threshold), `/clear` (alias `/new`),
   `/compact`, `/resume`, `/recall <text>` (search past sessions), `/export [path]`,
   `/init`, `/exit`.
-- **Model & mode** — `/model <id>`, `/models`, `/plan`, `/execute`,
-  `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
+- **Model & mode** — `/model` (opens a live, searchable picker; or `/model <id>`,
+  `/model sub <id>` for a dedicated subagent model, `/model key <provider> <key>` —
+  all persisted), `/models` (`/models refresh` force-pulls the latest), `/plan`,
+  `/execute`, `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
   `/theme <default|light|contrast|opencode>`.
-  Press **Shift+Tab** to cycle the mode (shown on the input's top border):
-  **plan → execute → yolo → plan**.
+  Press **Shift+Tab** to cycle the mode (the colored chip on the input's top
+  border): **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>`,
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
   `/queue` (`/queue clear`).
@@ -164,33 +210,40 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
-  disciplined look: a **black background**, **monochrome white/grey text, and one
-  vivid `#ff3503` brand accent** (configurable, `/accent <hex>`); the **mode shows
-  on the input's top border**, colored per mode (cyan plan / salmon yolo / neutral
-  execute); green/red/amber are reserved for diffs and warnings. A **single,
+  deliberate color language: a **black background** and **neutral white/grey
+  chrome**, with color reserved for four tasteful zones — a **rainbow-gradient VIBE
+  CODR wordmark**, the input's **mode chip** (ASK blue / PLAN green / YOLO red), the
+  **rainbow thinking spinner**, and a **per-subagent / per-step rainbow** so a
+  fan-out or a run of steps is easy to follow; green/red/amber stay reserved for
+  diffs and warnings (override the accent with `/accent <hex>`). A **single,
   centered chat column** (ChatGPT-style — no sidebar, **no top header**) fills a
-  narrow terminal and centers on a wide one: a fresh screen shows a **centered VIBE
-  CODR wordmark**, then the scrolling transcript, the **task list** and live
-  **subagents** (one line each, tap to expand) in panels above the input, the input
-  as a **clean closed box whose top border is the mode break** (`┏━ EXECUTE ━┓`),
-  and **all the details under it** (cwd · git / model · changed · ctx · cost, plus
-  hints + goal). User turns render in a heavy left-gutter panel block (**tap your
-  message to fold the whole exchange**); assistant replies render real Markdown via
-  OpenTUI's native renderer; tool calls read as a distinct icon + action label
-  (`$` bash, `→` read, `←` edit/write, `✱` glob/grep, `◈` websearch, `±` git, `✦`
-  subagent…) and **condense to one line you click to expand**, while edits fold into
-  a single diff row (tinted add/remove backgrounds) with the hunk shown beneath it.
-  A braille spinner with elapsed time shows live work (**Esc** interrupts the turn);
-  the slash menu draws a full-row selection highlight; and permission prompts
-  surface as a bordered `△` card answerable with `y`/`a`/`n`. Four themes ship —
-  `default` (black), `light`, `contrast`, and `opencode` (warm peach).
+  narrow terminal and centers on a wide one: a fresh screen shows the wordmark, then
+  the scrolling transcript, the **task list** and live **subagents** (one line each,
+  tap to expand) in panels above the input, the input as a **clean white closed box
+  whose top border carries the mode chip**, and **all the details under it** (cwd ·
+  git / model · changed · ctx · cost, plus hints + goal). The user gutter, the
+  rainbow step gutters, and the input frame all align on one left edge. User turns
+  render in a heavy left-gutter block (**tap your message to fold the whole
+  exchange**); **assistant replies render beautifully** — prose through OpenTUI's
+  native Markdown (inline bold/italic/code concealed), with **code blocks and GFM
+  tables rendered as clean native primitives** (aligned columns, box-drawing); tool
+  calls read as a distinct icon + action label (`$` bash, `→` read, `←` edit/write,
+  `✱` glob/grep, `◈` websearch, `±` git, `✦` subagent…) and **condense to one line
+  you click to expand**, while edits fold into a single diff row with the hunk
+  beneath it. Streamed text is coalesced so long replies stay smooth. A braille
+  spinner with elapsed time shows live work (**Esc** interrupts the turn). The
+  slash menu is **mouse-clickable** and drills into rich submenus — a **live,
+  searchable model picker** (filter, click, current marked) and clickable
+  theme/approvals/reasoning toggles. Permission prompts surface as a bordered card
+  answerable with `y`/`a`/`n`. Four themes ship — `default` (black), `light`,
+  `contrast`, and `opencode` (warm peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
   `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools
   (the model calls `present_plan`; you approve to proceed). **Execute** allows
   edits/commands, each gated by a glob-based allow/deny/ask **permission layer**.
-  **Yolo** runs side-effecting tools without prompting. The input border, caret,
-  and cursor are color-coded so the active mode is unmistakable (the rest of the
-  UI stays on the fixed brand hue).
+  **Yolo** runs side-effecting tools without prompting. The mode chip on the
+  input's top border is color-coded (ASK blue / PLAN green / YOLO red) so the
+  active mode is unmistakable, while the rest of the chrome stays neutral.
 - **Resilience & git/process tools** — provider calls retry transient failures
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a
   notice instead of failing silently. Structured `git_status` / `git_diff` /

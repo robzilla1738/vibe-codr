@@ -7,6 +7,27 @@ const MODELS_DEV_URL = "https://models.dev/api.json";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const FETCH_TIMEOUT_MS = 8000;
 
+/**
+ * Map a vibe provider id to its models.dev catalog slug where they differ, so
+ * enrichment lands for every provider. Most ids match models.dev 1:1; these are
+ * the verified exceptions. Providers with no catalog presence (lmstudio, custom,
+ * local ollama tags) simply don't enrich — they fall back to the base-model price
+ * match and the session's default context window.
+ */
+export const PROVIDER_SLUG_ALIASES: Record<string, string> = {
+  together: "togetherai",
+  fireworks: "fireworks-ai",
+  codex: "openai", // Codex serves OpenAI models
+};
+
+/** Rewrite the provider prefix of a `provider/model` key to its catalog slug. */
+export function aliasModelKey(modelString: string): string {
+  const slash = modelString.indexOf("/");
+  if (slash < 0) return modelString;
+  const alias = PROVIDER_SLUG_ALIASES[modelString.slice(0, slash)];
+  return alias ? `${alias}${modelString.slice(slash)}` : modelString;
+}
+
 interface CacheFile {
   fetchedAt: number;
   data: unknown;
@@ -73,12 +94,12 @@ export class CatalogService {
 
   constructor(log: Logger = createLogger("catalog")) {
     this.#log = log;
-    this.#cachePath = join(
-      homedir(),
-      ".cache",
-      "vibe-codr",
-      "models.dev.json",
-    );
+    // Honor $XDG_CACHE_HOME (its default is ~/.cache), read at construction. This
+    // also isolates the cache in tests — Bun's os.homedir() caches at startup and
+    // ignores a runtime $HOME, but XDG_CACHE_HOME is read live, so the test
+    // preload can keep the suite off the developer's real catalog cache.
+    const base = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
+    this.#cachePath = join(base, "vibe-codr", "models.dev.json");
   }
 
   /**
@@ -88,7 +109,7 @@ export class CatalogService {
    * stalls on the network. Subsequent turns get the real value once it lands.
    */
   async contextWindow(modelString: string): Promise<number | undefined> {
-    if (this.#metadata) return this.#metadata.get(modelString)?.contextWindow;
+    if (this.#metadata) return this.#metadata.get(aliasModelKey(modelString))?.contextWindow;
     void this.#load(); // warm the cache for next time, but don't wait on it
     return undefined;
   }
@@ -108,7 +129,7 @@ export class CatalogService {
       void this.#load();
       return undefined;
     }
-    return resolveCatalogPrice(this.#metadata, modelString);
+    return resolveCatalogPrice(this.#metadata, aliasModelKey(modelString));
   }
 
   /**
@@ -116,7 +137,7 @@ export class CatalogService {
    * the catalog has loaded (and for models it doesn't know about).
    */
   async supportsImages(modelString: string): Promise<boolean | undefined> {
-    if (this.#metadata) return this.#metadata.get(modelString)?.capabilities?.vision;
+    if (this.#metadata) return this.#metadata.get(aliasModelKey(modelString))?.capabilities?.vision;
     void this.#load();
     return undefined;
   }
@@ -125,9 +146,21 @@ export class CatalogService {
   async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
     const meta = await this.#load();
     return live.map((m) => {
-      const extra = meta.get(`${m.providerId}/${m.id}`);
+      const extra = meta.get(aliasModelKey(`${m.providerId}/${m.id}`));
       return extra ? { ...extra, ...m } : m;
     });
+  }
+
+  /**
+   * Force a fresh fetch of the models.dev catalog, bypassing the 24h cache, and
+   * return how many models are now known. Backs `/models refresh` so a user can
+   * pull a just-released model's metadata without waiting for the cache to expire.
+   */
+  async refresh(): Promise<number> {
+    const raw = await this.#fetchCatalog(true);
+    this.#metadata = raw ? parseModelsDev(raw) : new Map();
+    this.#loadPromise = Promise.resolve(this.#metadata);
+    return this.#metadata.size;
   }
 
   /** Load (and memoize) the catalog metadata; a single in-flight fetch is shared. */
@@ -142,9 +175,9 @@ export class CatalogService {
     return this.#loadPromise;
   }
 
-  async #fetchCatalog(): Promise<unknown | null> {
+  async #fetchCatalog(force = false): Promise<unknown | null> {
     const cached = await this.#readCache();
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    if (!force && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
       return cached.data;
     }
     try {

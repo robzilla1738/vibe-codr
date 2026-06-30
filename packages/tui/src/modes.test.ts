@@ -3,6 +3,8 @@ import {
   deriveUiMode,
   nextUiMode,
   commandsForUiMode,
+  modeColor,
+  MODE_COLORS,
   modeLabel,
   type UiMode,
 } from "./modes.ts";
@@ -64,4 +66,13 @@ test("a full Shift+Tab cycle visits every mode and returns to start", () => {
 test("modeLabel is distinct and non-empty per mode", () => {
   const labels = new Set(["plan", "execute", "yolo"].map((m) => modeLabel(m as UiMode)));
   expect(labels.size).toBe(3);
+});
+
+test("modeColor maps ASK→blue, PLAN→green, YOLO→red (distinct hexes)", () => {
+  expect(modeColor("execute")).toBe(MODE_COLORS.execute); // ASK
+  expect(modeColor("plan")).toBe(MODE_COLORS.plan);
+  expect(modeColor("yolo")).toBe(MODE_COLORS.yolo);
+  const hexes = new Set([modeColor("execute"), modeColor("plan"), modeColor("yolo")]);
+  expect(hexes.size).toBe(3);
+  for (const h of hexes) expect(h).toMatch(/^#[0-9a-f]{6}$/);
 });

@@ -29,6 +29,8 @@ export interface OnboardingAnswers {
   model: string;
   providerId: string;
   apiKey?: string;
+  /** Base URL for a bring-your-own OpenAI-compatible endpoint (the `custom` provider). */
+  baseURL?: string;
   searchKey?: string;
 }
 
@@ -37,8 +39,13 @@ export function buildOnboardingPatch(
   answers: OnboardingAnswers,
 ): Record<string, unknown> {
   const patch: Record<string, unknown> = { model: answers.model };
-  if (answers.apiKey && answers.providerId) {
-    patch.providers = { [answers.providerId]: { apiKey: answers.apiKey } };
+  if (answers.providerId && (answers.apiKey || answers.baseURL)) {
+    patch.providers = {
+      [answers.providerId]: {
+        ...(answers.apiKey ? { apiKey: answers.apiKey } : {}),
+        ...(answers.baseURL ? { baseURL: answers.baseURL } : {}),
+      },
+    };
   }
   if (answers.searchKey) {
     patch.search = { apiKey: answers.searchKey };
@@ -337,12 +344,22 @@ async function withSpinner<T>(label: string, work: Promise<T>): Promise<T> {
 async function chooseModel(
   registry: ProviderRegistry,
   choice: ProviderChoice,
+  config: Config,
   apiKey: string | undefined,
 ): Promise<string> {
   const def = registry.get(choice.registryId);
   // A key in `opts` is enough for the cloud endpoint: the registry's baseURL
   // resolver swaps in the hosted URL (e.g. ollama.com) whenever a key is set.
-  const opts: ProviderCreateOptions = apiKey ? { apiKey } : {};
+  // With no freshly-entered key, resolve via the registry so token-file
+  // providers (e.g. codex reusing ~/.codex/auth.json) and saved keys still list.
+  let opts: ProviderCreateOptions = apiKey ? { apiKey } : {};
+  if (!apiKey && def) {
+    try {
+      opts = registry.resolveAuth(choice.registryId, config);
+    } catch {
+      opts = {};
+    }
+  }
   let models: ModelInfo[] = [];
   if (def) {
     try {
@@ -409,7 +426,29 @@ export async function runOnboarding(
     initialChoiceIndex(PROVIDER_CHOICES, process.env),
   );
 
-  // Custom: the user supplies the whole model string; derive the provider.
+  // Custom OpenAI-compatible endpoint: a base URL + optional key + a model id.
+  if (choice.customEndpoint) {
+    const baseURL = (
+      await input("Base URL", {
+        placeholder: "https://my-endpoint.example.com/v1",
+        hint: "any OpenAI-compatible /v1 endpoint",
+      })
+    ).trim();
+    const apiKey =
+      (await input("API key (optional)", { mask: true, placeholder: "Enter to skip" })).trim() ||
+      undefined;
+    const modelId = (
+      await input("Model id", { placeholder: "model-name", hint: "as the endpoint names it" })
+    ).trim();
+    return persist({
+      model: `custom/${modelId}`,
+      providerId: "custom",
+      apiKey,
+      baseURL: baseURL || undefined,
+    });
+  }
+
+  // Other / advanced: the user supplies the whole model string; derive the provider.
   if (choice.registryId === "" || choice.key === "custom") {
     const model = await input("Model string", {
       placeholder: "provider/model-id",
@@ -426,14 +465,23 @@ export async function runOnboarding(
     return persist({ model, providerId, apiKey });
   }
 
-  // 2) Key — skip for local/keyless and when already in the environment.
+  // 2) Key — skip for local/keyless and whenever the provider is ALREADY
+  // configured: an env var, a previously-saved key, OR a reusable token file
+  // another CLI wrote (e.g. codex's ~/.codex/auth.json). isConfigured() covers
+  // all three, so a `codex login` session needs no key prompt here.
   let apiKey: string | undefined;
   const envKey = choice.env ? process.env[choice.env] : undefined;
   if (choice.localKeyless) {
     if (choice.note) stdout.write(`${dim(`note: ${choice.note}`)}\n`);
-  } else if (envKey) {
-    stdout.write(`${fg("✓", OK)} Using ${bold(choice.env ?? "")} from your environment\n`);
+  } else if (registry.isConfigured(choice.registryId, config)) {
+    const how = envKey
+      ? `${bold(choice.env ?? "")} from your environment`
+      : choice.registryId === "codex"
+        ? "your Codex/ChatGPT session (~/.codex/auth.json)"
+        : "your saved credentials";
+    stdout.write(`${fg("✓", OK)} Using ${how}\n`);
   } else {
+    if (choice.note) stdout.write(`${dim(`note: ${choice.note}`)}\n`);
     const link = choice.keyUrl ? `get one at ${choice.keyUrl}` : undefined;
     apiKey =
       (
@@ -445,8 +493,8 @@ export async function runOnboarding(
       ).trim() || undefined;
   }
 
-  // 3) Model — live picker (uses the key/env so cloud + local both list).
-  const model = await chooseModel(registry, choice, apiKey ?? envKey);
+  // 3) Model — live picker (uses the key/env/token so cloud + local both list).
+  const model = await chooseModel(registry, choice, config, apiKey ?? envKey);
 
   // 4) Optional web search.
   let searchKey: string | undefined;

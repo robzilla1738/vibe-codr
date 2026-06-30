@@ -5,6 +5,42 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Added
+- **Seven more providers + a generic bring-your-own endpoint — use vibe with
+  almost any model.** Added Google Gemini (via its OpenAI-compatible endpoint),
+  Groq, Mistral, Together AI, Cerebras, and Perplexity, plus a generic **`custom`**
+  provider that points at ANY OpenAI-style API (`config.providers.custom.baseURL`
+  or `$CUSTOM_BASE_URL` + an optional key). All ship through `@ai-sdk/openai-
+  compatible` (no new SDKs, stays on `ai@5`). They — and the previously-hidden
+  minimax/fireworks/codex — now appear in onboarding. (OpenRouter and Codex already
+  shipped.)
+- **`/models refresh`** — force-pull the models.dev catalog past its 24h cache, so
+  a just-released model's context window/pricing shows up immediately.
+- **First-class token reuse for `codex` / ChatGPT login.** If you've run `codex
+  login` (official CLI), vibe reuses `~/.codex/auth.json` — onboarding detects it
+  and skips the key prompt, `/doctor` shows it configured, and the token is re-read
+  every turn so a refresh is picked up. The ChatGPT-subscription backend is
+  configurable (`CODEX_BASE_URL` + provider `headers`). Any provider can reuse
+  another CLI's credentials via `config.providers.<id>.tokenFile`/`tokenPath`.
+- **A deliberate rainbow color language for the TUI.** Color is now reserved for
+  four tasteful zones instead of one flat orange accent: the **wordmark** is a
+  clean left→right rainbow gradient (per-column hue, so it reads as one smooth
+  sweep, not per-letter confetti); the input's **mode chip** carries the mode
+  color (ASK blue · PLAN green · YOLO red); the **thinking spinner** glyph cycles
+  through the rainbow while a turn runs; and **each subagent / tool-step** gets a
+  stable rainbow hue so a fan-out or a sequence of steps is visually
+  distinguishable. Accents only — body text and tool output stay neutral and
+  readable. New `rainbow.ts` helpers (`rainbowAt`/`rainbowSpans`/`rotateHue`); no
+  always-on timer (the wordmark/agent colors are static, the spinner rides the
+  existing working-only tick). Per-character color uses a row of `<text fg>` (the
+  reliable mechanism) — inline `<span fg>` children don't paint in this renderer.
+- **Interactive submenus — a live, searchable model picker and clickable
+  toggles.** Slash submenus are no longer text dumped into the transcript. Typing
+  `/model ` opens a picker of the real models across your configured providers:
+  filter by typing, the current model is marked `●`, and a **click** (or Enter)
+  sets it — `/model sub ` targets the subagent model the same way. Menu rows are
+  now mouse-clickable with hover highlighting, and the enum submenus
+  (`/theme`, `/approvals`, `/reasoning`) mark the current value. Backed by a new
+  typed `set-subagent-model` command and `EngineClient.listModels()`.
 - **A visible message queue with per-item steer + remove.** Prompts you type while
   a turn is running already queued and ran in order — but you couldn't see or
   control them. There's now a **Queued** panel above the input listing each waiting
@@ -33,7 +69,69 @@ All notable changes to vibe-codr are documented here.
   one. `writeGlobalConfig` gained `null`-deletes-key semantics so settings can be
   cleared, not just set.
 
+### Changed
+- **Onboarding/default models refreshed to current flagships** (e.g. OpenAI
+  `gpt-4o` → `gpt-5.2`, xAI `grok-4` → `grok-4.3`) and the new providers seeded
+  with current defaults. The live picker remains the source of truth; these are
+  just the preselects.
+- **The models.dev cache honors `$XDG_CACHE_HOME`** (default `~/.cache`), mirroring
+  the config's `$XDG_CONFIG_HOME` — so the test suite no longer risks overwriting
+  the developer's real catalog cache.
+- **Neutral white/grey chrome — the orange brand accent is retired.** Panel
+  titles, borders, the `❯` marker, the cursor, and the input frame are now a quiet
+  white/grey, so color reads as intentional where it appears (the four rainbow/mode
+  zones above). The DEFAULT palette's `primary`/`accent` are neutral; `/accent
+  <hex>` still recolors the chrome to a single hue.
+- **`/theme`, `/accent`, and `/reasoning` now persist** to the global config (like
+  `/model` already did), so a toggled preference sticks across sessions. (Mode and
+  approvals stay session-only by design — safer to start fresh in ask/plan.)
+- **`globalConfigPath()` honors `$XDG_CONFIG_HOME`** (the XDG Base Directory spec —
+  `~/.config` is just its default). Read at call-time, so it's also what makes the
+  config path overridable for test isolation (see Fixed).
+
 ### Fixed
+- **Replies that mixed prose with a code block or table lost the prose.** OpenTUI's
+  `<markdown>` renderable has a layout bug where a code/table block blanks its
+  *sibling* prose (even across separate `<markdown>` instances) — so in every
+  code-containing reply, the explanation around the code silently vanished. vibe now
+  splits each reply into blocks and renders **prose via `<markdown>`** (inline
+  bold/italic/code still conceal) while rendering **code blocks and tables as native
+  `<box>`/`<text>` primitives** — clean box-drawing tables with aligned columns
+  (GFM alignment respected) and panel-backed code blocks. All the prose survives.
+- **Streaming was laggy/janky on long replies.** Every token did a full re-render +
+  markdown re-parse (O(n²)). Streamed tokens are now coalesced and flushed ~25×/s,
+  so a long reply stays smooth while inline markers still conceal live.
+- **The colored step markers didn't line up with the message gutter.** The per-step
+  rainbow was an inline `▎` at a different x than the user-message left border; it's
+  now a left-border gutter anchored at the column edge, so the user gutter, the
+  rainbow tool-step gutters, and the input frame all align — with the reply text on
+  one consistent column beside them.
+- **Fireworks (and now Together) models showed no context/pricing in the picker.**
+  Their provider ids didn't match their models.dev catalog slugs (`fireworks` vs
+  `fireworks-ai`, `together` vs `togetherai`), so enrichment silently missed. A
+  provider-id→slug alias map in `CatalogService` fixes it; `codex` models now
+  enrich from `openai` too. `config.providers.<id>.headers` are also now sent on
+  the `/v1/models` listing call (gateways that need them can list, not just chat).
+- **Replies leaked raw markdown markers (`~*$58,400-58,700 USD*`) and read clumsily.**
+  Diagnosed empirically (rendered the exact string through the real OpenTUI
+  `<markdown>`): conceal is healthy — `**bold**`, `` `inline code` ``, and
+  word-flanked `*italic*` all hide their markers — but OpenTUI's strict tree-sitter
+  grammar (unlike lenient parsers) does **not** treat `~*$…*` as emphasis, so it
+  prints literally. It's a model-output problem, not a renderer bug. The system
+  prompt now carries an always-on **terminal output-formatting doctrine**: lead with
+  the answer; wrap every literal (prices, paths, ids, flags, versions, quoted
+  errors/output) in `` `inline code` `` (verbatim, never mangles) rather than bold;
+  never put `*`/`_`/`~` against a digit/`$`/punctuation; real pipe tables fine,
+  hand-drawn ASCII tables not; no strikethrough (`~~` shows its tildes here).
+- **The test suite was overwriting the developer's real
+  `~/.config/vibe-codr/config.json`.** Tests that exercise persisted settings
+  (`/model`, `/accent`, `/theme`, `/reasoning`, provider keys) had no working
+  isolation: they set `process.env.HOME`, but Bun's `os.homedir()` caches at
+  startup and ignores a runtime HOME change, so every run clobbered the real config
+  (e.g. flipping the theme to `light` → a white UI, overwriting API keys with test
+  placeholders). Now a Bun test `preload` redirects `XDG_CONFIG_HOME` to a throwaway
+  dir (read live by `globalConfigPath`), and the suite is verified to leave the real
+  config byte-for-byte untouched.
 - **On Ollama Cloud, the model spawned "gpt-4" subagents it had no provider for.**
   `spawn_subagent` exposed a `model` parameter, so a model would *invent* a
   subagent model string (e.g. `"gpt-4"`) pointing at a provider the user never

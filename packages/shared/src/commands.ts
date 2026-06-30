@@ -1,4 +1,4 @@
-import type { Mode, EngineSnapshot } from "./types.ts";
+import type { Mode, EngineSnapshot, ModelSummary } from "./types.ts";
 import type { UIEvent } from "./events.ts";
 
 /**
@@ -11,6 +11,8 @@ export type EngineCommand =
   | { type: "set-mode"; mode: Mode }
   | { type: "set-approvals"; mode: "ask" | "auto" }
   | { type: "set-model"; model: string }
+  // Set (or, with `null`, clear → inherit main) the dedicated subagent model.
+  | { type: "set-subagent-model"; model: string | null }
   | { type: "set-goal"; goal: string | null }
   | { type: "abort" }
   // Drop one queued (waiting) prompt without running it.
@@ -39,4 +41,6 @@ export interface EngineClient {
   send(command: EngineCommand): Promise<void> | void;
   /** Current static state, for first paint and resync. */
   snapshot(): EngineSnapshot;
+  /** Models across the configured providers, for the interactive `/model` picker. */
+  listModels(): Promise<ModelSummary[]>;
 }

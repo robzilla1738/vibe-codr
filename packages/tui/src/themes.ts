@@ -39,12 +39,13 @@ export interface Palette {
 }
 
 /** Black + monochrome dark palette (the default). */
-// Black background + monochrome white/grey text + one vivid brand accent
-// (`#ff3503` orange-red) on the wordmark, input frame, gutters, and carets.
-// Neutral charcoal surfaces (panel/elevated) are raised on the black. The mode
-// word on the input border carries the mode hue (plan cyan / yolo salmon / execute
-// the accent). Other colors are purely functional: green/red on diffs, amber on
-// warnings. Override the brand via `accentColor` / `/accent <hex>`.
+// Black background + monochrome white/grey CHROME (titles, markers, carets, the
+// input frame), with color reserved for four deliberate zones: the rainbow
+// wordmark, the mode chip on the input border (ASK blue / PLAN green / YOLO red),
+// the animated working spinner, and the per-agent/per-step rainbow rotation.
+// Neutral charcoal surfaces (panel/elevated) are raised on the black; green/red
+// stay functional on diffs, amber on warnings. The chrome accent (`primary`) is a
+// soft white — override it with a single hue via `accentColor` / `/accent <hex>`.
 const DEFAULT: Palette = {
   user: "#e6e6e6",
   assistant: "#e6e6e6",
@@ -58,11 +59,12 @@ const DEFAULT: Palette = {
   taskDone: "#6a6a72",
   taskActive: "#bb9af7",
   taskPending: "#e6e6e6",
-  accent: "#ff3503",
-  // The brand hue: a vivid orange-red (`#ff3503`) — the single signature accent on
-  // the black UI (wordmark, input border, carets, panel titles). Override via
+  accent: "#e6e6e6",
+  // Neutral chrome accent: a soft white used for panel titles, the input frame,
+  // the `❯` user marker, and the caret. Color lives in the wordmark / mode chip /
+  // spinner / per-agent rotation, not here. Override with a single hue via
   // accentColor / `/accent <hex>`.
-  primary: "#ff3503",
+  primary: "#e6e6e6",
   border: "#34343a",
   muted: "#8a8a92",
   background: "#000000",

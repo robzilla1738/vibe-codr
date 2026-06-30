@@ -36,6 +36,22 @@ export interface Task {
   status: TaskStatus;
 }
 
+/**
+ * A model the UI can offer in the interactive `/model` picker. A deliberately
+ * minimal projection of the providers' richer `ModelInfo` so this base package
+ * stays free of any provider-layer dependency.
+ */
+export interface ModelSummary {
+  /** Bare model id within its provider (e.g. `gpt-4o`, `glm-5.2`). */
+  id: string;
+  /** Provider id (e.g. `openai`, `ollama`); `${providerId}/${id}` is the full id. */
+  providerId: string;
+  /** Human label, when the provider supplies one. */
+  name?: string;
+  /** Context window in tokens, when known. */
+  contextWindow?: number;
+}
+
 /** A prompt or command waiting in (or running at the head of) the engine queue. */
 export interface QueuedItem {
   id: string;
@@ -126,6 +142,12 @@ export interface EngineSnapshot {
   /** All invocable slash names (built-in + custom commands + skills), for the
    * input's "recognized command" cue. */
   commandNames: string[];
+  /** Dedicated subagent model (full `provider/id`), or undefined when subagents
+   * inherit the main model. Lets the picker mark the current subagent choice. */
+  subagentModel?: string;
+  /** Current reasoning effort (low|medium|high), or undefined for the provider
+   * default. Lets the `/reasoning` toggle mark the current value. */
+  reasoning?: string;
   /** Working-tree git state, when in a repo. */
   git?: GitInfo;
 }

@@ -90,10 +90,12 @@ test("comment-stripping preserves // and /* */ inside string values", async () =
 });
 
 test("writeGlobalConfig deep-merges, and a null value clears a persisted key", async () => {
-  // Point the global config at a throwaway HOME so we never touch the real one.
-  const home = mkdtempSync(join(tmpdir(), "vibe-home-"));
-  const prevHome = process.env.HOME;
-  process.env.HOME = home;
+  // Point the global config at a throwaway dir so we never touch the real one.
+  // Must use XDG_CONFIG_HOME, not HOME — Bun's os.homedir() caches at startup and
+  // ignores a runtime HOME change, but globalConfigPath() reads XDG_CONFIG_HOME live.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-xdg-"));
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = dir;
   try {
     await writeGlobalConfig({
       model: "ollama/gpt-oss:120b",
@@ -118,7 +120,7 @@ test("writeGlobalConfig deep-merges, and a null value clears a persisted key", a
     // And the cleared result still validates (subagent.model is optional).
     expect(ConfigSchema.safeParse(written).success).toBe(true);
   } finally {
-    if (prevHome === undefined) delete process.env.HOME;
-    else process.env.HOME = prevHome;
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
   }
 });

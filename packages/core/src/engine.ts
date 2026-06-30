@@ -266,6 +266,8 @@ export class Engine implements EngineClient {
     return {
       ...this.#session.snapshot(),
       commandNames: this.#commandNames(),
+      subagentModel: this.#config.subagent.model,
+      reasoning: this.#config.reasoning.effort,
       ...(this.#gitState ? { git: this.#gitState } : {}),
     };
   }
@@ -320,6 +322,10 @@ export class Engine implements EngineClient {
         // Persist too, so the choice is remembered across sessions (the menu and
         // any direct sender route here; `/model …` goes through the slash router).
         void this.#setMainModel(command.model);
+        break;
+      case "set-subagent-model":
+        // The interactive model picker (and `/model sub …`) route here; persisted.
+        void this.#setSubagentModel(command.model);
         break;
       case "set-goal":
         this.#session.setGoal(command.goal);
@@ -604,6 +610,23 @@ export class Engine implements EngineClient {
     this.#notice(`Model → ${id}${this.#providerKeyHint(id)}`);
   }
 
+  /** Set (or, with a falsy id, clear → inherit main) the dedicated subagent model,
+   * persisted. Shared by `/model sub …` and the `set-subagent-model` command. */
+  async #setSubagentModel(target: string | null): Promise<void> {
+    const id = target?.trim();
+    if (!id) {
+      this.#config.subagent.model = undefined;
+      await this.#persistConfig({ subagent: { model: null } });
+      this.#notice(
+        `Subagent model cleared — subagents inherit the main model (${this.#session.model}).`,
+      );
+      return;
+    }
+    this.#config.subagent.model = id;
+    await this.#persistConfig({ subagent: { model: id } });
+    this.#notice(`Subagent model → ${id}${this.#providerKeyHint(id)}`);
+  }
+
   /**
    * `/model` router — everything model/provider in one place, all persisted:
    *   /model                       → show main + subagent model and the cheatsheet
@@ -631,17 +654,9 @@ export class Engine implements EngineClient {
 
     if (verb === "sub" || verb === "subagent") {
       const target = parts.slice(1).join(" ").trim();
-      if (!target || ["clear", "none", "inherit", "reset", "main"].includes(target.toLowerCase())) {
-        this.#config.subagent.model = undefined;
-        await this.#persistConfig({ subagent: { model: null } });
-        this.#notice(
-          `Subagent model cleared — subagents inherit the main model (${this.#session.model}).`,
-        );
-        return;
-      }
-      this.#config.subagent.model = target;
-      await this.#persistConfig({ subagent: { model: target } });
-      this.#notice(`Subagent model → ${target}${this.#providerKeyHint(target)}`);
+      const clear =
+        !target || ["clear", "none", "inherit", "reset", "main"].includes(target.toLowerCase());
+      await this.#setSubagentModel(clear ? null : target);
       return;
     }
 
@@ -705,6 +720,13 @@ export class Engine implements EngineClient {
         await this.#handleModelCommand(args);
         break;
       case "models": {
+        // `/models refresh` force-pulls the models.dev catalog (bypassing the 24h
+        // cache) so a just-released model's metadata shows up immediately.
+        if (args.trim().toLowerCase() === "refresh") {
+          this.#notice("Refreshing model catalog…");
+          const count = await this.catalog.refresh();
+          this.#notice(`Model catalog refreshed (${count} models known).`);
+        }
         this.#notice("Fetching models…");
         this.#notice(formatModelList(await this.listModels()));
         break;
@@ -1149,6 +1171,7 @@ export class Engine implements EngineClient {
     }
     if (next === "off" || next === "none") {
       delete this.#config.reasoning.effort;
+      void this.#persistConfig({ reasoning: { effort: null } });
       this.#notice("Reasoning effort cleared (provider default).");
       return;
     }
@@ -1157,6 +1180,7 @@ export class Engine implements EngineClient {
       return;
     }
     this.#config.reasoning.effort = next;
+    void this.#persistConfig({ reasoning: { effort: next } });
     if (reasoningSupported(this.#session.model)) {
       this.#notice(`Reasoning effort: ${next}.`);
     } else {
@@ -1187,6 +1211,7 @@ export class Engine implements EngineClient {
       return;
     }
     this.#config.theme = next;
+    void this.#persistConfig({ theme: next });
     this.#bus.emit({ type: "theme-changed", theme: next });
     this.#notice(`Theme set to "${next}".`);
   }
@@ -1195,8 +1220,8 @@ export class Engine implements EngineClient {
   #handleAccent(args: string): void {
     const next = args.trim();
     if (!next) {
-      const cur = this.#config.accentColor || "theme default (#ff3503)";
-      this.#notice(`Accent: ${cur}. Use /accent <hex>, e.g. /accent #ff3503.`);
+      const cur = this.#config.accentColor || "theme default (neutral white)";
+      this.#notice(`Accent: ${cur}. Use /accent <hex>, e.g. /accent #7aa2f7.`);
       return;
     }
     if (!/^#?[0-9a-fA-F]{6}$/.test(next)) {
@@ -1205,6 +1230,7 @@ export class Engine implements EngineClient {
     }
     const hex = next.startsWith("#") ? next : `#${next}`;
     this.#config.accentColor = hex;
+    void this.#persistConfig({ accentColor: hex });
     this.#bus.emit({ type: "accent-changed", accent: hex });
     this.#notice(`Accent set to ${hex}.`);
   }

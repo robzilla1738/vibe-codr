@@ -9,9 +9,12 @@ export async function listOpenAICompatibleModels(
   baseURL: string,
   apiKey: string | undefined,
   signal?: AbortSignal,
+  extraHeaders?: Record<string, string>,
 ): Promise<ModelInfo[]> {
   try {
-    const headers: Record<string, string> = { Accept: "application/json" };
+    // Caller-supplied headers (e.g. a gateway account id) first, so the standard
+    // Accept/Authorization below take precedence over any collision.
+    const headers: Record<string, string> = { ...extraHeaders, Accept: "application/json" };
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
     const res = await fetch(`${baseURL.replace(/\/$/, "")}/models`, {
       headers,

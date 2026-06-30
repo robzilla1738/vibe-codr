@@ -5,6 +5,18 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **A subagent's answer could flood the parent's context window.** Every
+  context-producing tool caps its output (`read`/`grep`/`git_*`/`edit`/…) because
+  it lands verbatim in the prompt — but `spawn_subagent` returned the child's
+  *entire* final answer uncapped, straight into the **parent's** context. A
+  verbose or runaway child (and a parent can fan out `subagent.maxParallel` of
+  them in a single step) could dump tens of thousands of tokens into the parent,
+  defeating the engine's context accounting and risking a hard 400 on the parent's
+  next turn. `spawn_subagent` now caps the model-facing result at 32k chars
+  (`MAX_SUBAGENT_OUTPUT`) with an explicit `…(subagent output truncated …)` marker
+  that nudges the model toward a more focused subtask; the UI still receives the
+  complete answer via the `subagent-finished` event, so nothing is lost on screen
+  (the same split `edit`/`write` use for their diffs).
 - **`edit` could flood the context window with an unbounded diff.** Every other
   context-producing tool caps its output (`grep`/`glob`/`git_*`/`read`/…), but
   `edit` echoed the *entire* unified diff of its change back into the model

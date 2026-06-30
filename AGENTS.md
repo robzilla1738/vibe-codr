@@ -79,7 +79,12 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `maxChars`, `read` at 100k chars, and `edit` caps the diff it echoes back at
   20k chars (`write` keeps its diff out of the output entirely — both still emit
   the full diff on the `file-changed` event for the UI) (all with an explicit
-  `…(truncated …)` marker). `read` additionally sniffs the leading bytes for a NUL and refuses a
+  `…(truncated …)` marker). **`spawn_subagent` is no exception:** a child's final
+  answer lands verbatim in the *parent's* prompt (and a parent can fan out
+  `maxParallel` of them in one step), so it's capped at 32k chars
+  (`MAX_SUBAGENT_OUTPUT`) before the model sees it while the full text still rides
+  the `subagent-finished` event for the UI — same head-cap pattern as `edit`.
+  `read` additionally sniffs the leading bytes for a NUL and refuses a
   binary file rather than dump mojibake. Any new tool that surfaces file/command
   content must cap likewise — an uncapped read defeats the engine's context
   accounting and can 400 the next turn on an over-long prompt.

@@ -114,6 +114,77 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
   expect(session.snapshot().usage.totalTokens).toBe(6);
 });
 
+test("a subagent's oversized answer is capped before it reaches the parent prompt", async () => {
+  // A child's final answer lands verbatim in the PARENT's context. Like every
+  // other context-producing tool it must be bounded, or a verbose/runaway child
+  // floods the parent and can 400 the next turn. The UI event keeps the full text.
+  const huge = "X".repeat(40_000); // > MAX_SUBAGENT_OUTPUT (32k)
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "produce a long report" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "c" },
+      { type: "text-delta", id: "c", delta: huge },
+      { type: "text-end", id: "c" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "done" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => steps[call++] as never,
+  });
+
+  const bus = new EventBus();
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  await session.run("delegate a big report");
+  bus.close();
+  await collector;
+
+  // The model-facing tool output is capped with an explicit marker.
+  const toolDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
+  const output =
+    toolDone && toolDone.type === "tool-call-finished" ? String(toolDone.output) : "";
+  expect(output.length).toBeLessThan(huge.length);
+  expect(output).toContain("truncated");
+
+  // The UI event still carries the complete answer (nothing lost on screen).
+  const finished = events.find((e) => e.type === "subagent-finished");
+  expect(finished && finished.type === "subagent-finished" && finished.result).toBe(huge);
+});
+
 test("spawn_subagent routes to a named agent (its mode + system apply)", async () => {
   const steps = [
     stream([

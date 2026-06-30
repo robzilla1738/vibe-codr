@@ -44,6 +44,19 @@ import type { SessionUsage } from "@vibe/shared";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const COMPACT_KEEP_RECENT = 6;
 
+// A subagent's final answer lands verbatim in the PARENT's prompt, so — like
+// every other context-producing tool — it must be bounded: a verbose or runaway
+// child (and a parent can fan out `maxParallel` of them in one step) would
+// otherwise flood the parent's context window and risk a 400 on the next turn.
+// Generous, since a consolidated report is high-value, but capped. The UI still
+// gets the full text via the `subagent-finished` event.
+const MAX_SUBAGENT_OUTPUT = 32_000;
+function capSubagentOutput(s: string): string {
+  return s.length > MAX_SUBAGENT_OUTPUT
+    ? `${s.slice(0, MAX_SUBAGENT_OUTPUT)}\n…(subagent output truncated at ${MAX_SUBAGENT_OUTPUT} chars; ask it for a more focused subtask if you need the rest)`
+    : s;
+}
+
 export interface SessionDeps {
   config: Config;
   registry: ProviderRegistry;
@@ -430,9 +443,9 @@ export class Session {
           type: "subagent-finished",
           sessionId: this.id,
           subagentId: child.id,
-          result,
+          result, // UI gets the full answer; the model-facing output is capped below.
         });
-        return { output: result };
+        return { output: capSubagentOutput(result) };
       },
     };
   }

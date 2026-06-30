@@ -93,6 +93,9 @@ export async function resolveEmbedder(
   if (!sem.enabled) return undefined;
   const model = sem.model.trim();
   if (!model || model === "none" || model === "off") return undefined;
+  // The "local" default being unavailable (no optional dep) is expected and quiet
+  // (debug); a failure of an EXPLICITLY configured embedder is worth a warning.
+  const note = (msg: string) => (model === "local" ? logger?.debug(msg) : logger?.warn(msg));
   try {
     const embedder =
       model === "local" || model.startsWith("local/")
@@ -100,13 +103,13 @@ export async function resolveEmbedder(
         : aiSdkEmbedder(model, await registry.embeddingModel(model, config));
     const [vec] = await embedder.embed(["probe"]);
     if (!vec?.length) {
-      logger?.warn(`semantic memory disabled: embedder "${model}" returned no vector`);
+      note(`semantic memory disabled: embedder "${model}" returned no vector`);
       return undefined;
     }
     embedder.dimensions = vec.length;
     return embedder;
   } catch (err) {
-    logger?.warn(`semantic memory disabled (lexical recall only): ${(err as Error).message}`);
+    note(`semantic memory disabled (lexical recall only): ${(err as Error).message}`);
     return undefined;
   }
 }

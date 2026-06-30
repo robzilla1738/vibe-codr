@@ -52,6 +52,8 @@ import { loadCommandFiles, loadSkills, loadSkillsFrom } from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { searchSessions, formatRecall } from "./recall.ts";
+import { formatMemoryHits } from "./memory-search.ts";
+import { MemoryService } from "./memory-service.ts";
 import { loadMemorySources, loadProjectMemory, formatMemory } from "./memory.ts";
 import { reasoningSupported } from "./model-tuning.ts";
 import { CheckpointManager } from "./checkpoints.ts";
@@ -128,6 +130,11 @@ export class Engine implements EngineClient {
   #store: SessionStore;
   #checkpoints: CheckpointManager;
   #mcp: McpHub;
+  #memory: MemoryService | undefined;
+  /** Whether proactive recall has already injected context this session (once). */
+  #proactiveRecallDone = false;
+  /** Memoized finalize promise (digest + teardown runs once). */
+  #finalizing: Promise<void> | undefined;
   #verifyAttempts = 0;
 
   constructor(opts: EngineOptions) {
@@ -256,6 +263,17 @@ export class Engine implements EngineClient {
       }
     }
 
+    // Long-term memory: resolve the (optional) embedder and attach the service
+    // to the live session. Degrades to lexical recall when no embedder is
+    // available, so this never blocks or fails startup.
+    this.#memory = await MemoryService.create(
+      this.#cwd,
+      this.#config,
+      this.registry,
+      this.#log,
+    );
+    this.#session.setMemory(this.#memory);
+
     // Connect MCP servers last so their tools join the same registry.
     await this.#mcp.start(this.#config.mcp.servers);
 
@@ -286,6 +304,39 @@ export class Engine implements EngineClient {
       ...this.commands.list().map((c) => c.name),
       ...this.skills.list().map((s) => s.name),
     ];
+  }
+
+  /**
+   * Finalize the session: write a cross-run digest to long-term memory (when
+   * `memory.sessionDigest` is on), then tear down (hooks, loop, MCP, memory,
+   * bus). Idempotent and awaitable — the CLI awaits it before process exit so an
+   * in-flight digest completes; the `shutdown` command also triggers it.
+   */
+  finalize(): Promise<void> {
+    this.#finalizing ??= this.#doFinalize();
+    return this.#finalizing;
+  }
+
+  async #doFinalize(): Promise<void> {
+    try {
+      if (this.#config.memory.sessionDigest && this.#memory) {
+        const digest = await this.#session.buildDigest();
+        if (digest) {
+          const path = await this.#memory.save({ fact: digest, tags: ["session-digest"] });
+          this.#log.info(`wrote session digest to ${path}`);
+        }
+      }
+    } catch (err) {
+      this.#log.debug(`session digest skipped: ${(err as Error).message}`);
+    }
+    void this.hooks.run("session.end", { sessionId: this.#session.id });
+    this.#loop?.stop("shutdown");
+    // Unblock any in-flight permission prompts so nothing hangs.
+    for (const resolve of this.#pendingPermissions.values()) resolve("deny");
+    this.#pendingPermissions.clear();
+    await this.#mcp.close();
+    this.#memory?.close();
+    this.#bus.close();
   }
 
   /** Resolves when the queue (running + pending work) has fully drained. */
@@ -385,13 +436,9 @@ export class Engine implements EngineClient {
         break;
       }
       case "shutdown":
-        void this.hooks.run("session.end", { sessionId: this.#session.id });
-        this.#loop?.stop("shutdown");
-        // Unblock any in-flight permission prompts so nothing hangs.
-        for (const resolve of this.#pendingPermissions.values()) resolve("deny");
-        this.#pendingPermissions.clear();
-        void this.#mcp.close();
-        this.#bus.close();
+        // Kick off the awaitable finalize (session digest + teardown). The CLI
+        // also awaits finalize() before process exit so the digest completes.
+        void this.finalize();
         break;
     }
   }
@@ -464,6 +511,28 @@ export class Engine implements EngineClient {
     });
   }
 
+  /** Once per session (when `memory.proactiveRecall` is on), search long-term
+   * memory seeded by the first prompt + goal and inject the top hits as a
+   * "relevant past context" block. Best-effort and bounded; never throws. */
+  async #maybeProactiveRecall(prompt: string): Promise<void> {
+    if (this.#proactiveRecallDone) return;
+    if (!this.#config.memory.proactiveRecall || !this.#memory) return;
+    this.#proactiveRecallDone = true;
+    try {
+      const seed = [this.#session.goal, prompt].filter(Boolean).join(" ").slice(0, 500);
+      if (!seed.trim()) return;
+      const hits = await this.#memory.search(seed, 3);
+      if (!hits.length) return;
+      const block = hits
+        .map((h) => `- ${h.text.replace(/\s+/g, " ").trim().slice(0, 300)}`)
+        .join("\n");
+      this.#session.setRecalledContext(block);
+      this.#notice(`Recalled ${hits.length} relevant note(s) from long-term memory.`, "info");
+    } catch {
+      // Recall is a best-effort enhancement; never let it block the turn.
+    }
+  }
+
   /** Re-read project memory from disk and push it into the live session, so a
    * mid-session change (e.g. `/init`, a saved memory, an edited VIBE.md) is
    * reflected in the next turn's system prompt without a restart. */
@@ -489,6 +558,7 @@ export class Engine implements EngineClient {
       fileLock: this.#fileLock,
       skills: this.skills,
       hooks: this.hooks,
+      ...(this.#memory ? { memory: this.#memory } : {}),
       getContextWindow: (model) => this.#resolveContextWindow(model),
       getPricing: (model) => this.#resolvePricing(model),
     });
@@ -885,13 +955,16 @@ export class Engine implements EngineClient {
         break;
       case "recall": {
         if (!args.trim()) {
-          this.#notice("Usage: /recall <text to find in past sessions>", "warn");
+          this.#notice("Usage: /recall <text to find in saved memory + past sessions>", "warn");
           break;
         }
-        const hits = await searchSessions(this.#cwd, args, {
-          excludeId: this.#session.id,
-        });
-        this.#notice(formatRecall(args.trim(), hits));
+        if (this.#memory) {
+          const hits = await this.#memory.search(args.trim());
+          this.#notice(formatMemoryHits(args.trim(), hits));
+        } else {
+          const hits = await searchSessions(this.#cwd, args, { excludeId: this.#session.id });
+          this.#notice(formatRecall(args.trim(), hits));
+        }
         break;
       }
       case "memory":
@@ -1034,6 +1107,10 @@ export class Engine implements EngineClient {
       }
     }
     const hooked = await this.hooks.run("user.prompt.submit", { text });
+    // Proactive recall (opt-in): once per session, seed a "relevant past context"
+    // block from long-term memory using the first prompt + goal, injected into
+    // the system prompt. Best-effort — a failure must not block the turn.
+    await this.#maybeProactiveRecall(hooked.text);
     // Expand `@file` mentions: text files become context blocks, images become
     // attachments for vision models. Unresolvable mentions pass through.
     const expanded = await expandMentions(hooked.text, this.#cwd);

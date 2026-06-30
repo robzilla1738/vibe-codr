@@ -8,6 +8,9 @@ export interface SystemPromptInputs {
   goal: string | null;
   /** Project memory (VIBE.md / AGENTS.md / CLAUDE.md) contents, if present. */
   projectMemory?: string;
+  /** Proactively-recalled relevant past context (saved memory / prior sessions),
+   * injected at session start when `memory.proactiveRecall` is enabled. */
+  recalledContext?: string;
   /** Skill name/description lines for progressive disclosure. */
   skillDescriptions?: string[];
   /** Extra blocks contributed by plugins. */
@@ -77,6 +80,11 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   }
   if (inputs.projectMemory) {
     sections.push(`PROJECT NOTES:\n${inputs.projectMemory}`);
+  }
+  if (inputs.recalledContext) {
+    sections.push(
+      `RELEVANT PAST CONTEXT (recalled from long-term memory — may be incomplete or stale; verify against the current workspace before relying on it):\n${inputs.recalledContext}`,
+    );
   }
   if (inputs.subagentsAvailable) {
     const doctrine = inputs.mode === "plan" ? PLAN_DELEGATION : DELEGATION;

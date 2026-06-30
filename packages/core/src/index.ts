@@ -101,6 +101,14 @@ export {
   type SearchMemoryOptions,
 } from "./memory-search.ts";
 export {
+  gatherMemoryDocs,
+  appendMemory,
+  projectMemoryDir,
+  globalMemoryDir,
+  type SaveMemoryInput,
+} from "./memory-store.ts";
+export { MemoryService } from "./memory-service.ts";
+export {
   formatStatus,
   formatContextUsage,
   formatCost,

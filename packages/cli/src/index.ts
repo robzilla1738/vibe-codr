@@ -164,11 +164,14 @@ export async function run(argv: string[]): Promise<number> {
       showReasoning: values.reasoning,
       outputFormat,
     });
+    // Finalize (write the session digest when enabled, then tear down) before exit.
+    await engine.finalize();
     // Propagate failure so `vibecodr -p … && next` and CI behave correctly.
     return ok ? 0 : 1;
   }
 
   await startTui(engine);
+  await engine.finalize();
   return 0;
 }
 

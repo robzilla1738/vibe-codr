@@ -35,6 +35,8 @@ import type { NamedAgent } from "./agents.ts";
 import { compactMessages, estimateTokens } from "./compaction.ts";
 import type { SessionStore } from "./store.ts";
 import { searchSessions, formatRecall } from "./recall.ts";
+import { formatMemoryHits } from "./memory-search.ts";
+import type { MemoryService } from "./memory-service.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
 import type { ImageAttachment } from "./mentions.ts";
@@ -80,6 +82,10 @@ export interface SessionDeps {
    * Forks inherit it via `...this.#deps`, so all subagents serialize same-file
    * writes against each other. */
   fileLock?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
+  /** Long-term memory (hybrid recall + save). When present, recall_memory does
+   * semantic+lexical search over saved memory and sessions, and save_memory is
+   * offered; when absent, recall_memory degrades to lexical session search. */
+  memory?: MemoryService;
   /** Skills available for progressive disclosure via `use_skill`. */
   skills?: SkillRegistry;
   /** Plugin hook bus for tool.before/after.execute and assistant.message. */
@@ -134,6 +140,8 @@ export class Session {
   /** Set once the session's cumulative cost crosses the configured budget. */
   #budgetTripped = false;
   #createdAt: number;
+  /** Proactively-recalled context injected into the system prompt (opt-in). */
+  #recalledContext: string | undefined;
   #abort = new AbortController();
   /** Bounds how many subagents this session runs concurrently (each fan-out).
    * Per-session, not tree-global, so a parent awaiting its children can't
@@ -278,6 +286,19 @@ export class Session {
     this.#deps.projectMemory = text;
   }
 
+  /** Attach the long-term memory service (created asynchronously after the
+   * session is constructed, once the embedder has been resolved). */
+  setMemory(memory: MemoryService): void {
+    this.#deps.memory = memory;
+  }
+
+  /** Set the proactively-recalled context block injected into the system prompt
+   * (cleared on /clear). Set once at session start by the engine when
+   * `memory.proactiveRecall` is enabled. */
+  setRecalledContext(text: string | undefined): void {
+    this.#recalledContext = text;
+  }
+
   abort(): void {
     // Just signal the current turn. The fresh controller is installed at the
     // top of the NEXT run()/compact() — recreating it here would discard an
@@ -320,6 +341,7 @@ export class Session {
   clear(): void {
     this.#modelMessages = [];
     this.#history = [];
+    this.#recalledContext = undefined;
     if (this.#tasks.length) this.setTasks([]);
     this.#deps.bus.emit({
       type: "notice",
@@ -626,6 +648,7 @@ export class Session {
         cwd: this.#deps.cwd,
         goal: this.goal,
         projectMemory: this.#deps.projectMemory,
+        ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
         pluginBlocks: this.#deps.extraSystem,
         subagentsAvailable,
         ...(rosterLines.length ? { agentRoster: rosterLines } : {}),
@@ -673,8 +696,13 @@ export class Session {
       if (skills?.list().length) {
         tools.use_skill = toAISDKTool(this.#useSkillTool(), base);
       }
-      // Long-term memory: let the model search prior sessions on demand.
+      // Long-term memory: let the model search prior context on demand, and —
+      // when memory is wired and we're not in read-only plan mode — persist
+      // durable facts for future sessions.
       tools.recall_memory = toAISDKTool(this.#recallTool(), base);
+      if (this.#deps.memory && this.mode !== "plan") {
+        tools.save_memory = toAISDKTool(this.#saveMemoryTool(), base);
+      }
 
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
       // the stable system prefix so repeated turns don't re-bill the full prompt.
@@ -817,6 +845,42 @@ export class Session {
       this.#deps.config,
     );
     await this.#maybeCompact(model, true);
+  }
+
+  /**
+   * Distill the session into one compact memory note (≤ ~80 words) for future
+   * recall: the goal, what was accomplished, and key decisions/gotchas. Returns
+   * undefined when there's nothing worth saving or the model call fails — a
+   * best-effort enhancement that must never throw.
+   */
+  async buildDigest(): Promise<string | undefined> {
+    const assistantTurns = this.#history.filter((m) => m.role === "assistant").length;
+    if (assistantTurns < 1 || !this.#modelMessages.length) return undefined;
+    this.#abort = new AbortController();
+    const model = await this.#deps.registry
+      .resolveModel(this.model, this.#deps.config)
+      .catch(() => undefined);
+    if (!model) return undefined;
+    const transcript = this.#modelMessages
+      .map((m) => `${m.role}: ${contentToText(m.content)}`)
+      .join("\n")
+      .slice(0, 24_000);
+    try {
+      const { text } = await generateText({
+        model,
+        prompt:
+          "Write a durable memory note for a coding agent's FUTURE sessions on this " +
+          "project. From the transcript below, produce ONE compact paragraph (≤ 80 " +
+          "words) capturing the goal, what was accomplished, and any key decisions or " +
+          "gotchas worth remembering. No preamble, no markdown headings, no bullet list.\n\n" +
+          transcript,
+        abortSignal: this.#abort.signal,
+      });
+      const digest = text.trim().replace(/\s+/g, " ");
+      return digest || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Summarize older context when over the threshold (or when forced). */
@@ -979,26 +1043,61 @@ export class Session {
     };
   }
 
-  /** Build the read-only `recall_memory` tool: search past sessions' history. */
+  /** Build the read-only `recall_memory` tool: hybrid search over saved memory +
+   * past sessions when a MemoryService is wired; lexical session search otherwise. */
   #recallTool(): ToolDefinition<{ query: string; limit?: number }> {
     const cwd = this.#deps.cwd;
     const selfId = this.id;
+    const memory = this.#deps.memory;
     return {
       name: "recall_memory",
       description:
-        "Search the user's past vibe-codr sessions (long-term memory) for relevant prior context, decisions, or code discussion. Use this when the user references earlier work, asks 'what did we decide', or you need history beyond the current conversation.",
+        "Search long-term memory — saved facts/decisions and past vibe-codr sessions — for relevant prior context. Use this when the user references earlier work, asks 'what did we decide', or you need context beyond the current conversation.",
       inputSchema: z.object({
-        query: z.string().describe("What to look for in past sessions."),
+        query: z.string().describe("What to look for in saved memory and past sessions."),
         limit: z.number().int().positive().max(20).optional().describe("Max matches (default 8)."),
       }),
       readOnly: true,
       concurrencySafe: true,
       execute: async ({ query, limit }) => {
+        if (memory) {
+          const hits = await memory.search(query, limit ?? 8);
+          return { output: formatMemoryHits(query, hits) };
+        }
         const hits = await searchSessions(cwd, query, {
           excludeId: selfId,
           ...(limit ? { limit } : {}),
         });
         return { output: formatRecall(query, hits) };
+      },
+    };
+  }
+
+  /** Build the `save_memory` write tool: persist a durable fact to long-term
+   * memory (permission-gated, since it writes a file). */
+  #saveMemoryTool(): ToolDefinition<{
+    fact: string;
+    scope?: "project" | "global";
+    tags?: string[];
+  }> {
+    const memory = this.#deps.memory;
+    return {
+      name: "save_memory",
+      description:
+        "Persist a durable fact, decision, or user preference to long-term memory so future sessions can recall it (architecture choices, conventions, gotchas, stable preferences). Use sparingly — not for transient task state, which the task list already tracks. Choose scope: 'project' for this repo, 'global' for things true across all the user's projects.",
+      inputSchema: z.object({
+        fact: z.string().min(1).describe("The fact to remember, as one concise self-contained statement."),
+        scope: z.enum(["project", "global"]).optional().describe("project (this repo, default) or global (all projects)."),
+        tags: z.array(z.string()).optional().describe("Optional tags for grouping."),
+      }),
+      readOnly: false,
+      concurrencySafe: false,
+      execute: async ({ fact, scope, tags }) => {
+        if (!memory) {
+          return { output: "Memory is not available in this session.", isError: true };
+        }
+        const path = await memory.save({ fact, ...(scope ? { scope } : {}), ...(tags ? { tags } : {}) });
+        return { output: `Saved to ${path}. It will surface via recall_memory when relevant.` };
       },
     };
   }

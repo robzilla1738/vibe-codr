@@ -55,9 +55,15 @@ function capMemory(text: string): string {
   return `${kept}\n\n…[memory truncated to ${Math.floor(MAX_MEMORY_BYTES / 1024)} KB]`;
 }
 
+/** The user-global vibe-codr config dir, honoring `XDG_CONFIG_HOME` (consistent
+ * with `@vibe/config`'s global config path), falling back to `~/.config`. */
+export function vibeConfigDir(): string {
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "vibe-codr");
+}
+
 /** Path to the user-global notes file (applies across all projects). */
 export function globalMemoryPath(): string {
-  return join(homedir(), ".config", "vibe-codr", "VIBE.md");
+  return join(vibeConfigDir(), "VIBE.md");
 }
 
 /** One discovered memory file: where it came from and its content. */
@@ -92,6 +98,17 @@ export async function loadMemorySources(cwd: string): Promise<MemorySource[]> {
   const global = await readTrimmed(globalMemoryPath());
   if (global) {
     sources.push({ scope: "global", path: "~/.config/vibe-codr/VIBE.md", text: capMemory(global) });
+  }
+  // Structured global user memory: a curated USER.md (preferences, environment,
+  // standing rules) under the global memory dir, injected like the global VIBE.md.
+  // The dated entries in that dir are episodic/search-only (see memory-store.ts).
+  const userGlobal = await readTrimmed(join(vibeConfigDir(), "memory", "USER.md"));
+  if (userGlobal) {
+    sources.push({
+      scope: "global",
+      path: "~/.config/vibe-codr/memory/USER.md",
+      text: capMemory(userGlobal),
+    });
   }
 
   const here = resolve(cwd);

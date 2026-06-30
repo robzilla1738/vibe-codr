@@ -16,6 +16,21 @@ export interface McpToolSpec {
   annotations?: { readOnlyHint?: boolean };
 }
 
+/** An MCP resource a server exposes (read via `read_mcp_resource`). */
+export interface McpResource {
+  uri: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+/** An MCP prompt a server exposes (surfaced as a slash command). */
+export interface McpPrompt {
+  name: string;
+  description?: string;
+  arguments?: { name: string; description?: string; required?: boolean }[];
+}
+
 /** A connected MCP server, reduced to what the hub needs. */
 export interface McpClient {
   listTools(): Promise<McpToolSpec[]>;
@@ -23,6 +38,14 @@ export interface McpClient {
     name: string,
     args: unknown,
   ): Promise<{ content: unknown; isError?: boolean }>;
+  /** List the server's resources (optional capability). */
+  listResources?(): Promise<McpResource[]>;
+  /** Read a resource's contents by uri (optional capability). */
+  readResource?(uri: string): Promise<{ content: unknown }>;
+  /** List the server's prompts (optional capability). */
+  listPrompts?(): Promise<McpPrompt[]>;
+  /** Render a prompt to text by name + args (optional capability). */
+  getPrompt?(name: string, args: Record<string, unknown>): Promise<{ content: unknown }>;
   /** Live transport health — false once the connection drops (so `/mcp` and
    * `/doctor` stop reporting a crashed server as healthy). Optional; absent =
    * assumed connected. */
@@ -75,6 +98,8 @@ export interface McpServerStatus {
   name: string;
   connected: boolean;
   toolCount: number;
+  resourceCount: number;
+  promptCount: number;
   error?: string;
 }
 
@@ -83,6 +108,8 @@ interface McpEntry {
   name: string;
   client?: McpClient;
   toolCount: number;
+  resources: McpResource[];
+  prompts: McpPrompt[];
   error?: string;
 }
 
@@ -115,24 +142,40 @@ export class McpHub {
       const name = entries[i]![0];
       const r = results[i]!;
       if (r.status === "fulfilled") {
-        const { client, tools } = r.value;
+        const { client, tools, resources, prompts } = r.value;
         for (const spec of tools) {
           this.#deps.registerTool(toToolDefinition(name, spec, client));
         }
-        this.#entries.push({ name, client, toolCount: tools.length });
-        this.#log.info(`connected MCP server "${name}" (${tools.length} tools)`);
+        this.#entries.push({ name, client, toolCount: tools.length, resources, prompts });
+        this.#log.info(
+          `connected MCP server "${name}" (${tools.length} tools` +
+            `${resources.length ? `, ${resources.length} resources` : ""}` +
+            `${prompts.length ? `, ${prompts.length} prompts` : ""})`,
+        );
       } else {
         const message = (r.reason as Error).message;
-        this.#entries.push({ name, toolCount: 0, error: message });
+        this.#entries.push({ name, toolCount: 0, resources: [], prompts: [], error: message });
         this.#log.error(`MCP server "${name}" failed: ${message}`);
       }
+    }
+    // Register read_mcp_resource / get_mcp_prompt once if any server exposes them.
+    if (this.#entries.some((e) => e.resources.length)) {
+      this.#deps.registerTool(this.#readResourceTool());
+    }
+    if (this.#entries.some((e) => e.prompts.length)) {
+      this.#deps.registerTool(this.#getPromptTool());
     }
   }
 
   async #connectAndList(
     name: string,
     config: McpServer,
-  ): Promise<{ client: McpClient; tools: McpToolSpec[] }> {
+  ): Promise<{
+    client: McpClient;
+    tools: McpToolSpec[];
+    resources: McpResource[];
+    prompts: McpPrompt[];
+  }> {
     const client = await withTimeout(
       this.#connect(name, config),
       this.#connectTimeoutMs,
@@ -144,12 +187,123 @@ export class McpHub {
         this.#connectTimeoutMs,
         `listing tools for MCP server "${name}"`,
       );
-      return { client, tools };
+      // Resources + prompts are optional capabilities — a server that doesn't
+      // support them throws "method not found"; treat that as "none".
+      const resources = client.listResources
+        ? await client.listResources().catch(() => [] as McpResource[])
+        : [];
+      const prompts = client.listPrompts
+        ? await client.listPrompts().catch(() => [] as McpPrompt[])
+        : [];
+      return { client, tools, resources, prompts };
     } catch (err) {
       // We connected but couldn't enumerate — don't leak the transport.
       await client.close().catch(() => undefined);
       throw err;
     }
+  }
+
+  /** Every resource across connected servers (for `read_mcp_resource` + status). */
+  resources(): (McpResource & { server: string })[] {
+    return this.#entries.flatMap((e) => e.resources.map((r) => ({ ...r, server: e.name })));
+  }
+
+  /** Every prompt across connected servers (the engine registers these as commands). */
+  prompts(): (McpPrompt & { server: string })[] {
+    return this.#entries.flatMap((e) => e.prompts.map((p) => ({ ...p, server: e.name })));
+  }
+
+  /** Read a resource by uri (optionally scoped to a server). */
+  async readResource(uri: string, server?: string): Promise<string> {
+    const entry = this.#entries.find(
+      (e) => e.client?.readResource && (server ? e.name === server : e.resources.some((r) => r.uri === uri)),
+    );
+    if (!entry?.client?.readResource) {
+      throw new Error(`no MCP server provides resource "${uri}"`);
+    }
+    const res = await entry.client.readResource(uri);
+    return renderContent(res.content);
+  }
+
+  /** Render a server prompt to text by name + args. */
+  async getPrompt(server: string, name: string, args: Record<string, unknown>): Promise<string> {
+    const entry = this.#entries.find((e) => e.name === server);
+    if (!entry?.client?.getPrompt) throw new Error(`MCP server "${server}" has no prompt "${name}"`);
+    const res = await entry.client.getPrompt(name, args);
+    return renderContent(res.content);
+  }
+
+  /** The read_mcp_resource tool: list resources, or read one by uri. */
+  #readResourceTool(): ToolDefinition {
+    return {
+      name: "read_mcp_resource",
+      description:
+        "List or read resources exposed by connected MCP servers. Call with no arguments to list available resources (uri + description); pass a `uri` (and optional `server`) to read one's contents.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          uri: { type: "string", description: "Resource uri to read; omit to list all resources." },
+          server: { type: "string", description: "Restrict to a specific server (optional)." },
+        },
+      },
+      readOnly: true,
+      execute: async (args) => {
+        const { uri, server } = (args ?? {}) as { uri?: string; server?: string };
+        if (!uri) {
+          const list = this.resources();
+          if (!list.length) return { output: "No MCP resources available." };
+          const lines = list.map(
+            (r) => `- ${r.uri}${r.name ? ` (${r.name})` : ""} — ${r.description ?? r.mimeType ?? "resource"} [${r.server}]`,
+          );
+          return { output: `MCP resources:\n${lines.join("\n")}` };
+        }
+        try {
+          return { output: await this.readResource(uri, server) };
+        } catch (err) {
+          return { output: (err as Error).message, isError: true };
+        }
+      },
+    };
+  }
+
+  /** The get_mcp_prompt tool: list server prompts, or render one by name + args. */
+  #getPromptTool(): ToolDefinition {
+    return {
+      name: "get_mcp_prompt",
+      description:
+        "List or render prompt templates exposed by connected MCP servers. Call with no `name` to list available prompts; pass `server` + `name` (and optional `args`) to render one into text you can use.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          server: { type: "string", description: "The server the prompt belongs to." },
+          name: { type: "string", description: "Prompt name to render; omit to list prompts." },
+          args: { type: "object", description: "Arguments for the prompt template (optional)." },
+        },
+      },
+      readOnly: true,
+      execute: async (input) => {
+        const { server, name, args } = (input ?? {}) as {
+          server?: string;
+          name?: string;
+          args?: Record<string, unknown>;
+        };
+        if (!name) {
+          const list = this.prompts();
+          if (!list.length) return { output: "No MCP prompts available." };
+          const lines = list.map((p) => {
+            const argNames = (p.arguments ?? []).map((a) => a.name).join(", ");
+            return `- ${p.name}${argNames ? `(${argNames})` : ""} — ${p.description ?? "prompt"} [${p.server}]`;
+          });
+          return { output: `MCP prompts:\n${lines.join("\n")}` };
+        }
+        if (!server) return { output: "Pass `server` to render a prompt.", isError: true };
+        try {
+          return { output: await this.getPrompt(server, name, args ?? {}) };
+        } catch (err) {
+          return { output: (err as Error).message, isError: true };
+        }
+      },
+    };
   }
 
   /** Connection status for every configured server (for `/mcp`, `/doctor`).
@@ -160,6 +314,8 @@ export class McpHub {
       name: e.name,
       connected: e.client ? (e.client.isConnected?.() ?? true) : false,
       toolCount: e.toolCount,
+      resourceCount: e.resources.length,
+      promptCount: e.prompts.length,
       ...(e.error ? { error: e.error } : {}),
     }));
   }
@@ -289,13 +445,22 @@ const defaultConnect: McpConnect = async (_name, config) => {
           env: { ...process.env, ...(config.env ?? {}) },
         });
     } else {
-      const sseMod = (await import(`${sdk}/sse.js`)) as {
-        SSEClientTransport: new (url: URL, o?: unknown) => unknown;
-      };
       // Forward configured headers (Authorization / API keys) so authenticated
       // remote MCP servers can connect.
       const options = config.headers ? { requestInit: { headers: config.headers } } : undefined;
-      makeTransport = async () => new sseMod.SSEClientTransport(new URL(config.url), options);
+      const url = new URL(config.url);
+      // Streamable HTTP is the modern default transport; "sse" selects the legacy one.
+      if (config.transport === "sse") {
+        const sseMod = (await import(`${sdk}/sse.js`)) as {
+          SSEClientTransport: new (url: URL, o?: unknown) => unknown;
+        };
+        makeTransport = async () => new sseMod.SSEClientTransport(url, options);
+      } else {
+        const httpMod = (await import(`${sdk}/streamableHttp.js`)) as {
+          StreamableHTTPClientTransport: new (url: URL, o?: unknown) => unknown;
+        };
+        makeTransport = async () => new httpMod.StreamableHTTPClientTransport(url, options);
+      }
     }
   } catch (err) {
     throw new Error(
@@ -337,6 +502,33 @@ const defaultConnect: McpConnect = async (_name, config) => {
       });
       return { content: res.content, isError: Boolean(res.isError) };
     },
+    async listResources() {
+      const res = await client.listResources();
+      return (res.resources ?? []).map((r) => ({
+        uri: r.uri,
+        ...(r.name ? { name: r.name } : {}),
+        ...(r.description ? { description: r.description } : {}),
+        ...(r.mimeType ? { mimeType: r.mimeType } : {}),
+      }));
+    },
+    async readResource(uri) {
+      const res = await client.readResource({ uri });
+      return { content: res.contents };
+    },
+    async listPrompts() {
+      const res = await client.listPrompts();
+      return (res.prompts ?? []).map((p) => ({
+        name: p.name,
+        ...(p.description ? { description: p.description } : {}),
+        ...(p.arguments ? { arguments: p.arguments } : {}),
+      }));
+    },
+    async getPrompt(name, args) {
+      const res = await client.getPrompt({ name, arguments: args });
+      // Prompt messages → flatten each message's content for the model.
+      const content = (res.messages ?? []).map((m) => m.content);
+      return { content };
+    },
     isConnected: () => connected,
     async close() {
       connected = false;
@@ -360,5 +552,20 @@ interface McpSdkClient {
     name: string;
     arguments: Record<string, unknown>;
   }): Promise<{ content: unknown; isError?: boolean }>;
+  listResources(): Promise<{
+    resources?: { uri: string; name?: string; description?: string; mimeType?: string }[];
+  }>;
+  readResource(req: { uri: string }): Promise<{ contents: unknown }>;
+  listPrompts(): Promise<{
+    prompts?: {
+      name: string;
+      description?: string;
+      arguments?: { name: string; description?: string; required?: boolean }[];
+    }[];
+  }>;
+  getPrompt(req: {
+    name: string;
+    arguments: Record<string, unknown>;
+  }): Promise<{ messages?: { content: unknown }[] }>;
   close(): Promise<void>;
 }

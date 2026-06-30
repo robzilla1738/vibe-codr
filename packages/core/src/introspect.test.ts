@@ -101,8 +101,8 @@ test("formatTools groups read-only vs side-effecting", () => {
 test("formatMcp reports per-server status", () => {
   const out = formatMcp(
     [
-      { name: "github", connected: true, toolCount: 8 },
-      { name: "broken", connected: false, toolCount: 0, error: "boom" },
+      { name: "github", connected: true, toolCount: 8, resourceCount: 2, promptCount: 0 },
+      { name: "broken", connected: false, toolCount: 0, resourceCount: 0, promptCount: 0, error: "boom" },
     ],
     ["github", "broken"],
   );

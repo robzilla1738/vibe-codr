@@ -159,6 +159,62 @@ test("a slow server is bounded by the connect timeout, not blocking others", asy
   expect(status.find((s) => s.name === "fast")?.connected).toBe(true);
 });
 
+test("registers read_mcp_resource + get_mcp_prompt and they list/read/render", async () => {
+  const registered: ToolDefinition[] = [];
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    listResources: async () => [
+      { uri: "file:///readme.md", name: "Readme", description: "project readme", mimeType: "text/markdown" },
+    ],
+    readResource: async (uri) => ({ content: [{ type: "text", text: `contents of ${uri}` }] }),
+    listPrompts: async () => [
+      { name: "summarize", description: "summarize a file", arguments: [{ name: "path", required: true }] },
+    ],
+    getPrompt: async (name, args) => ({
+      content: [{ type: "text", text: `prompt ${name} for ${JSON.stringify(args)}` }],
+    }),
+    close: async () => {},
+  };
+  const hub = new McpHub({ registerTool: (d) => registered.push(d), connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+
+  const names = registered.map((t) => t.name);
+  expect(names).toContain("read_mcp_resource");
+  expect(names).toContain("get_mcp_prompt");
+
+  const readTool = registered.find((t) => t.name === "read_mcp_resource")!;
+  expect(String((await readTool.execute({}, {} as never)).output)).toContain("file:///readme.md");
+  expect(
+    String((await readTool.execute({ uri: "file:///readme.md" }, {} as never)).output),
+  ).toContain("contents of file:///readme.md");
+
+  const promptTool = registered.find((t) => t.name === "get_mcp_prompt")!;
+  expect(String((await promptTool.execute({}, {} as never)).output)).toContain("summarize");
+  expect(
+    String((await promptTool.execute({ server: "demo", name: "summarize", args: { path: "a.ts" } }, {} as never)).output),
+  ).toContain("prompt summarize");
+
+  expect(hub.resources()).toHaveLength(1);
+  expect(hub.prompts()[0]!.server).toBe("demo");
+});
+
+test("a server without resources/prompts capability degrades cleanly", async () => {
+  const registered: ToolDefinition[] = [];
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    listResources: async () => {
+      throw new Error("Method not found");
+    },
+    close: async () => {},
+  };
+  const hub = new McpHub({ registerTool: (d) => registered.push(d), connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  expect(registered.map((t) => t.name)).toEqual(["mcp__demo__echo"]);
+  expect(hub.resources()).toEqual([]);
+});
+
 test("status reflects a transport that dropped after connecting", async () => {
   let live = true;
   const client: McpClient = {

@@ -74,7 +74,7 @@ export const ModelPriceSchema = z.object({
   cacheWrite: z.number().nonnegative().optional(),
 });
 
-/** An MCP server: a local stdio process or a remote SSE/HTTP URL. */
+/** An MCP server: a local stdio process or a remote URL (Streamable HTTP or SSE). */
 export const McpServerSchema = z.union([
   z.object({
     command: z.string(),
@@ -83,6 +83,10 @@ export const McpServerSchema = z.union([
   }),
   z.object({
     url: z.string().url(),
+    /** Remote transport: "http" (Streamable HTTP, the modern default) or "sse"
+     * (legacy). Defaults to "http". */
+    transport: z.enum(["http", "sse"]).optional(),
+    /** Static auth/identity headers (e.g. `Authorization: Bearer …`). */
     headers: z.record(z.string(), z.string()).optional(),
   }),
 ]);

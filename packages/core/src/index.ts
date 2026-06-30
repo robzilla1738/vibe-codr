@@ -149,4 +149,6 @@ export {
   type McpConnect,
   type McpHubDeps,
   type McpServerStatus,
+  type McpResource,
+  type McpPrompt,
 } from "./mcp.ts";

@@ -160,13 +160,18 @@ export function formatMcp(
   configuredNames: string[],
 ): string {
   if (!configuredNames.length) {
-    return "No MCP servers configured. Add them under `mcp.servers` in config (stdio or SSE/HTTP).";
+    return "No MCP servers configured. Add them under `mcp.servers` in config (stdio command, or a url with transport http/sse).";
   }
   const byName = new Map(status.map((s) => [s.name, s]));
   const lines = configuredNames.map((name) => {
     const s = byName.get(name);
     if (!s) return `  ○ ${name} — not started`;
-    if (s.connected) return `  ● ${name} — connected, ${s.toolCount} tool(s)`;
+    if (s.connected) {
+      const extra =
+        (s.resourceCount ? `, ${s.resourceCount} resource(s)` : "") +
+        (s.promptCount ? `, ${s.promptCount} prompt(s)` : "");
+      return `  ● ${name} — connected, ${s.toolCount} tool(s)${extra}`;
+    }
     return `  ✗ ${name} — failed${s.error ? `: ${s.error}` : ""}`;
   });
   return `MCP servers:\n${lines.join("\n")}`;

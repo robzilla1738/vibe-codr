@@ -321,7 +321,6 @@ export class Session {
   #spawnTool(): ToolDefinition<{
     prompt: string;
     agent?: string;
-    model?: string;
     mode?: Mode;
   }> {
     const Input = z.object({
@@ -335,9 +334,13 @@ export class Session {
         .string()
         .optional()
         .describe("Named agent to specialize the subagent (see the roster in the system prompt)."),
-      model: z.string().optional().describe("Override the model for this subagent."),
       mode: z.enum(["plan", "execute"]).optional(),
     });
+    // NOTE: there is deliberately no `model` parameter. The subagent's model is a
+    // user *setting* — `subagent.model` (or a named agent's own `model`), falling
+    // back to the parent's model — never something the model picks per call. A
+    // model that invented `model:"gpt-4"` here would spawn a child on a provider
+    // the user hasn't configured (the Ollama-Cloud "gpt-4 subagent" bug).
     return {
       name: "spawn_subagent",
       description:
@@ -350,7 +353,7 @@ export class Session {
       // effects individually — so don't make orchestration prompt for permission.
       readOnly: true,
       concurrencySafe: true,
-      execute: async ({ prompt, agent, model, mode }, ctx) => {
+      execute: async ({ prompt, agent, mode }, ctx) => {
         const named = agent ? this.#deps.agents?.get(agent) : undefined;
         if (agent && !named) {
           return { output: `Unknown agent "${agent}". Run /agents to list them.`, isError: true };
@@ -385,8 +388,9 @@ export class Session {
           this.mode === "plan" ? "plan" : (mode ?? named?.mode ?? "execute");
         const child = this.fork({
           bus: new EventBusImpl(), // isolate the subagent's fine-grained stream
-          model:
-            model ?? named?.model ?? this.#deps.config.subagent.model ?? this.model,
+          // Subagent model = named agent's own model → the `subagent.model`
+          // setting → the parent's model. Never model-chosen (no `model` arg).
+          model: named?.model ?? this.#deps.config.subagent.model ?? this.model,
           mode: childMode,
           goal: this.goal,
           depth: this.depth + 1,

@@ -14,6 +14,7 @@ import {
   type UIEvent,
 } from "@vibe/shared";
 import type { Config } from "@vibe/config";
+import { writeGlobalConfig } from "@vibe/config";
 import {
   ProviderRegistry,
   CatalogService,
@@ -316,7 +317,9 @@ export class Engine implements EngineClient {
         this.#handleApprovals(command.mode, true);
         break;
       case "set-model":
-        this.#session.setModel(command.model);
+        // Persist too, so the choice is remembered across sessions (the menu and
+        // any direct sender route here; `/model …` goes through the slash router).
+        void this.#setMainModel(command.model);
         break;
       case "set-goal":
         this.#session.setGoal(command.goal);
@@ -557,6 +560,103 @@ export class Engine implements EngineClient {
   }
 
   /** Handle a built-in or plugin/file slash command. */
+  /** Persist a patch to the user-global config; surface a failure as a notice. */
+  async #persistConfig(patch: Record<string, unknown>): Promise<void> {
+    try {
+      await writeGlobalConfig(patch);
+    } catch (err) {
+      this.#notice(`Couldn't save config to disk: ${(err as Error).message}`, "warn");
+    }
+  }
+
+  /** A trailing hint when a model's provider has no usable credentials yet. */
+  #providerKeyHint(modelId: string): string {
+    const provider = modelId.split("/")[0] ?? "";
+    if (!provider || this.registry.isConfigured(provider, this.#config)) return "";
+    return ` — note: no API key for "${provider}" yet; add one with /model key ${provider} <key>`;
+  }
+
+  /** Switch the main model live on the session AND persist it (remembered). */
+  async #setMainModel(id: string): Promise<void> {
+    this.#session.setModel(id);
+    this.#config.model = id;
+    await this.#persistConfig({ model: id });
+    this.#notice(`Model → ${id}${this.#providerKeyHint(id)}`);
+  }
+
+  /**
+   * `/model` router — everything model/provider in one place, all persisted:
+   *   /model                       → show main + subagent model and the cheatsheet
+   *   /model <provider/id>         → switch the main model (cross-provider)
+   *   /model sub <provider/id>     → set the subagent model (any provider)
+   *   /model sub clear             → subagents inherit the main model again
+   *   /model key <provider> <key>  → save/replace a provider API key
+   */
+  async #handleModelCommand(args: string): Promise<void> {
+    const raw = args.trim();
+    if (!raw) {
+      const sub = this.#config.subagent.model;
+      this.#notice(
+        `Main model:     ${this.#session.model}\n` +
+          `Subagent model: ${sub ?? `inherits main (${this.#session.model})`}\n\n` +
+          `Switch main:    /model <provider/id>\n` +
+          `Subagent model: /model sub <provider/id>   ·   /model sub clear\n` +
+          `Add a key:      /model key <provider> <api-key>\n` +
+          `List models:    /models`,
+      );
+      return;
+    }
+    const parts = raw.split(/\s+/);
+    const verb = (parts[0] ?? "").toLowerCase();
+
+    if (verb === "sub" || verb === "subagent") {
+      const target = parts.slice(1).join(" ").trim();
+      if (!target || ["clear", "none", "inherit", "reset", "main"].includes(target.toLowerCase())) {
+        this.#config.subagent.model = undefined;
+        await this.#persistConfig({ subagent: { model: null } });
+        this.#notice(
+          `Subagent model cleared — subagents inherit the main model (${this.#session.model}).`,
+        );
+        return;
+      }
+      this.#config.subagent.model = target;
+      await this.#persistConfig({ subagent: { model: target } });
+      this.#notice(`Subagent model → ${target}${this.#providerKeyHint(target)}`);
+      return;
+    }
+
+    if (verb === "key") {
+      const provider = parts[1];
+      const key = parts.slice(2).join(" ").trim();
+      if (!provider || !key) {
+        this.#notice("Usage: /model key <provider> <api-key>", "warn");
+        return;
+      }
+      if (!this.registry.list().some((d) => d.id === provider)) {
+        this.#notice(
+          `Unknown provider "${provider}". Known providers: ${this.registry
+            .list()
+            .map((d) => d.id)
+            .join(", ")}.`,
+          "warn",
+        );
+        return;
+      }
+      this.#config.providers[provider] = {
+        ...(this.#config.providers[provider] ?? {}),
+        apiKey: key,
+      };
+      await this.#persistConfig({ providers: { [provider]: { apiKey: key } } });
+      this.#notice(
+        `Saved API key for ${provider} (…${key.slice(-4)}) — remembered across sessions.`,
+      );
+      return;
+    }
+
+    // Anything else is a model id for the main model.
+    await this.#setMainModel(raw);
+  }
+
   async #handleSlash(name: string, args: string): Promise<void> {
     // Plugin/file commands take precedence over built-ins of the same name —
     // except a small set of safety-critical built-ins, which can't be shadowed
@@ -582,8 +682,7 @@ export class Engine implements EngineClient {
         this.#notice(helpText(this.commands.list()));
         break;
       case "model":
-        if (args) this.#session.setModel(args);
-        else this.#notice(`Current model: ${this.#session.model}`);
+        await this.#handleModelCommand(args);
         break;
       case "models": {
         this.#notice("Fetching models…");

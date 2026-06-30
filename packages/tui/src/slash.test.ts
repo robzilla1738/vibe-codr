@@ -8,10 +8,18 @@ test("plain text becomes a prompt submission", () => {
   });
 });
 
-test("/model keeps its argument (the dropped-args regression)", () => {
+test("/model routes through run-slash, preserving args (incl. slashes in the id)", () => {
+  // The engine's /model router handles `<id>`, `sub …`, and `key …` in one place,
+  // so the TUI must hand it the full args verbatim (the dropped-args regression).
   expect(lineToCommand("/model openrouter/anthropic/claude-3.5")).toEqual({
-    type: "set-model",
-    model: "openrouter/anthropic/claude-3.5",
+    type: "run-slash",
+    name: "model",
+    args: "openrouter/anthropic/claude-3.5",
+  });
+  expect(lineToCommand("/model sub deepseek/deepseek-chat")).toEqual({
+    type: "run-slash",
+    name: "model",
+    args: "sub deepseek/deepseek-chat",
   });
 });
 

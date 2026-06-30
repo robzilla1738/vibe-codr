@@ -116,16 +116,44 @@ export function configLocations(cwd: string): string[] {
 }
 
 /**
+ * Deep-merge for *writes*: like {@link deepMerge}, but a `null` patch value
+ * DELETES that key from the result (so callers can clear a persisted setting,
+ * e.g. resetting `subagent.model` to "inherit the main model"). `undefined` is
+ * skipped (no-op), matching `deepMerge`.
+ */
+function mergeForWrite(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (value === null) {
+      delete out[key];
+      continue;
+    }
+    const existing = out[key];
+    if (isPlainObject(existing) && isPlainObject(value)) {
+      out[key] = mergeForWrite(existing, value as Record<string, unknown>);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
  * Merge `patch` into the user-global config file (creating it if absent) and
- * write it back. Used by first-run onboarding to persist API keys outside any
- * project. Returns the merged object that was written.
+ * write it back. Used by onboarding and the in-chat `/model` command to persist
+ * model/provider/key changes outside any project. A `null` value in `patch`
+ * deletes that key (clearing a setting). Returns the object that was written.
  */
 export async function writeGlobalConfig(
   patch: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const path = globalConfigPath();
   const existing = (await readConfigFile(path)) ?? {};
-  const merged = deepMerge(existing, patch);
+  const merged = mergeForWrite(existing, patch);
   await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
   return merged;
 }

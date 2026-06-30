@@ -33,7 +33,11 @@ export const COMMAND_GROUPS: CommandGroup[] = [
   {
     title: "Model & mode",
     commands: [
-      { name: "model", description: "Show or switch the active model (/model <id>)" },
+      {
+        name: "model",
+        description:
+          "Switch model + manage providers (persisted): /model <id> · /model sub <id> · /model key <provider> <key>",
+      },
       { name: "models", description: "List available models for configured providers" },
       { name: "plan", description: "Switch to read-only plan mode" },
       { name: "execute", description: "Switch to execute mode" },

@@ -4,7 +4,31 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added
+- **`/model` is now a full, persistent provider/model control center — switch
+  everything from chat, cross-provider, and it's remembered.** Previously `/model
+  <id>` only changed the session model and forgot it on exit. Now:
+  - `/model <provider/id>` switches the **main** model (any provider) and persists
+    it to `~/.config/vibe-codr/config.json`.
+  - `/model sub <provider/id>` sets a dedicated **subagent** model (e.g. a cheaper
+    or faster model for delegated work); `/model sub clear` reverts to inheriting
+    the main model. Persisted, and applied live to the running session.
+  - `/model key <provider> <key>` saves/replaces a provider API key, persisted and
+    remembered across sessions — no editing JSON by hand.
+  - `/model` with no args shows the current main + subagent model and a cheatsheet.
+  Switching to a provider with no key yet prints a one-line hint telling you to add
+  one. `writeGlobalConfig` gained `null`-deletes-key semantics so settings can be
+  cleared, not just set.
+
 ### Fixed
+- **On Ollama Cloud, the model spawned "gpt-4" subagents it had no provider for.**
+  `spawn_subagent` exposed a `model` parameter, so a model would *invent* a
+  subagent model string (e.g. `"gpt-4"`) pointing at a provider the user never
+  configured — the turn then failed trying to reach OpenAI. The subagent model is
+  now strictly a **setting**, never model-chosen: the `model` parameter is removed,
+  and a subagent uses the named agent's own model → the `subagent.model` config →
+  the parent's model. With nothing custom set, subagents run on exactly the model/
+  provider you're using.
 - **The model wasn't told its working directory — it ran `pwd` to orient and
   hallucinated absolute paths.** The system prompt never injected the cwd
   (`composeSystemPrompt` ignored it), so on a "make me a website" task the model

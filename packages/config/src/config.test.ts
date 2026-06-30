@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigSchema, defaultConfig, loadConfig } from "./index.ts";
+import { ConfigSchema, defaultConfig, loadConfig, writeGlobalConfig, globalConfigPath } from "./index.ts";
 
 test("defaultConfig is valid and carries the documented defaults", () => {
   const c = defaultConfig();
@@ -87,4 +87,38 @@ test("comment-stripping preserves // and /* */ inside string values", async () =
   expect(cfg.providers.custom?.baseURL).toBe("https://api.example.com/v1");
   expect(cfg.theme).toBe("a/*not a comment*/b");
   expect(cfg.model).toBe("openai/gpt-x");
+});
+
+test("writeGlobalConfig deep-merges, and a null value clears a persisted key", async () => {
+  // Point the global config at a throwaway HOME so we never touch the real one.
+  const home = mkdtempSync(join(tmpdir(), "vibe-home-"));
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    await writeGlobalConfig({
+      model: "ollama/gpt-oss:120b",
+      subagent: { model: "deepseek/deepseek-chat" },
+      providers: { ollama: { apiKey: "k1" } },
+    });
+    let written = JSON.parse(await Bun.file(globalConfigPath()).text());
+    expect(written.model).toBe("ollama/gpt-oss:120b");
+    expect(written.subagent.model).toBe("deepseek/deepseek-chat");
+    expect(written.providers.ollama.apiKey).toBe("k1");
+
+    // A second write merges (doesn't clobber) and `null` removes the subagent model.
+    await writeGlobalConfig({
+      providers: { deepseek: { apiKey: "k2" } },
+      subagent: { model: null },
+    });
+    written = JSON.parse(await Bun.file(globalConfigPath()).text());
+    expect(written.model).toBe("ollama/gpt-oss:120b"); // untouched
+    expect(written.providers.ollama.apiKey).toBe("k1"); // preserved
+    expect(written.providers.deepseek.apiKey).toBe("k2"); // added
+    expect(written.subagent.model).toBeUndefined(); // cleared
+    // And the cleared result still validates (subagent.model is optional).
+    expect(ConfigSchema.safeParse(written).success).toBe(true);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
 });

@@ -27,9 +27,9 @@ export function lineToCommand(line: string): EngineCommand {
         ? { type: "set-approvals", mode: args }
         : { type: "run-slash", name, args };
     case "model":
-      return args
-        ? { type: "set-model", model: args }
-        : { type: "run-slash", name, args };
+      // Always route through the engine's /model router so subcommands
+      // (`sub …`, `key …`) and persistence are handled in one place.
+      return { type: "run-slash", name, args };
     case "goal":
       return { type: "set-goal", goal: args || null };
     case "compact":

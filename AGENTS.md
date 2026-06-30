@@ -17,7 +17,7 @@ vibe-codr itself, Codex (`AGENTS.md`), and Claude Code (`CLAUDE.md`).
 | `@vibe/config` | Zod config schema, file discovery + deep-merge, auth resolution |
 | `@vibe/providers` | `ProviderRegistry`, `resolveModel`, `CatalogService` (models.dev + `/v1/models`) |
 | `@vibe/tools` | Built-in tools (`read`/`edit`/`bash`/`grep`/`git_*`/…) + the AI-SDK `tool()` adapter |
-| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, MCP, checkpoints, project/global memory + cross-session **recall** (`recall.ts`), context-window tracking |
+| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, MCP, checkpoints, context-window tracking, and **long-term memory**: injected project/global notes (`memory.ts`), an agent write-path (`save_memory` → `memory-store.ts`), and **hybrid recall** — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and past-session recall (`recall.ts`) via RRF (`memory-search.ts`), behind `MemoryService` |
 | `@vibe/plugins` | `HookBus`, slash-command + skill runtimes, `PluginHost` |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers, themes, tool icons, spinner |
 | `@vibe/cli` | `bin/vibecodr` entrypoint (argv, config, headless `-p` vs TUI) |
@@ -47,9 +47,12 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
 
 - Keep the **core/TUI boundary** intact: core must not import from `@vibe/tui`;
   UIs communicate only through `UIEvent` / `EngineCommand`.
-- Provider SDKs, OpenTUI, and `@modelcontextprotocol/sdk` are **optional peer
-  deps** — import them via non-literal specifiers and fail with a clear,
-  actionable error rather than at startup.
+- Provider SDKs, OpenTUI, `@modelcontextprotocol/sdk`, and
+  `@huggingface/transformers` (on-device embeddings for semantic memory) are
+  **optional peer deps** — import them via non-literal specifiers and fail with a
+  clear, actionable error rather than at startup. Semantic memory degrades to
+  lexical BM25 recall when no embedder (local dep or configured cloud model) is
+  available, so `bun add @huggingface/transformers` is opt-in.
 - **Provider spec invariant:** the repo is pinned to **AI SDK v5** (provider spec
   `"v2"`). Only providers with a v2-compatible dedicated SDK use it directly
   (anthropic `^2`, openai `^2`, deepseek `^1`, codex via openai); **every other

@@ -91,7 +91,12 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   (`childMode = this.mode === "plan" ? "plan" : …`), giving parallel read-only
   exploration while planning without ever risking a write; plan mode gets a
   read-only doctrine variant and the roster is filtered to read-only agents.
-  `spawn_subagent` is `readOnly: true` so the orchestration itself never prompts
+  That filter is enforced at the call site too: a **plan-mode parent rejects an
+  execute-only named agent** (`named.mode !== "plan"`) rather than coerce it —
+  coercing a writer to read-only would hand the child a write-oriented brief
+  with no write tools and burn a turn; the error points at the read-only agents
+  it can use (an explicit `mode:"execute"` *without* a named agent is still
+  safely coerced). `spawn_subagent` is `readOnly: true` so the orchestration itself never prompts
   for permission — the child's own tools gate their side effects individually
   (auto-verify still counts a spawn turn as mutating via a special-case). Three
   coding agents ship by default (`agents.ts` `defaultAgents()`: `explore`/`review`

@@ -5,6 +5,17 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **Planning could waste a subagent turn on a write-oriented agent.** In plan
+  mode the parent is read-only and every subagent it spawns is coerced to plan,
+  so the named-agent roster only advertises read-only (`mode: "plan"`) agents.
+  But `spawn_subagent` still *accepted* an execute-only agent (e.g. the default
+  `test`) if the model named one anyway — coercing it to plan handed the child a
+  write-oriented brief (`"write and run tests, leave it green"`) with none of the
+  write/run tools plan mode exposes, so the child could only report that it
+  couldn't act, burning a full (cost-bearing) turn. A plan-mode parent now
+  **rejects an execute-only named agent up front** with an error that points at
+  the read-only agents it can delegate to instead; an explicit `mode:"execute"`
+  request *without* a named agent is still safely coerced (unchanged).
 - **`read` could flood the context window with a binary file or a giant line.**
   Unlike every other context-producing tool (`grep`/`git`/`webfetch` all cap
   their output), `read` returned whatever it found verbatim — so reading an

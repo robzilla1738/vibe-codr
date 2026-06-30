@@ -231,6 +231,73 @@ test("a plan-mode parent's subagents are coerced read-only (even if execute is r
   expect(systems[1]).toContain("MUST NOT modify");
 });
 
+test("a plan-mode parent rejects an execute-only named agent (no child runs)", async () => {
+  // The roster hides execute agents while planning, but the model could still
+  // name one. Coercing `test` (a writer) to plan would hand it a write-oriented
+  // brief with no write tools — a wasted turn. It must be rejected up front.
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "add tests", agent: "test" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "plan ready" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => steps[call++] as never,
+  });
+
+  const bus = new EventBus();
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "plan",
+    agents: new Map([
+      ["test", { name: "test", description: "writes tests", mode: "execute" as const }],
+      ["explore", { name: "explore", description: "read-only", mode: "plan" as const }],
+    ]),
+  });
+
+  await session.run("plan some testing");
+  bus.close();
+  await collector;
+
+  // The child never started — the spawn was rejected before forking.
+  expect(events.find((e) => e.type === "subagent-started")).toBeUndefined();
+  // The parent saw an error pointing at the read-only agent it CAN use.
+  const toolDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
+  const output =
+    toolDone && toolDone.type === "tool-call-finished" ? String(toolDone.output) : "";
+  expect(output).toContain("execute mode");
+  expect(output).toContain("explore");
+  // Only the parent's own two steps ran (no child model call).
+  expect(call).toBe(2);
+});
+
 test("fork() gives a subagent a fresh context — no inherited history/usage/cost/store", async () => {
   // Regression for the resume+subagent leak: a resumed parent carries
   // initial*/store in its deps; a forked subagent must NOT inherit any of it.

@@ -342,6 +342,29 @@ export class Session {
         if (agent && !named) {
           return { output: `Unknown agent "${agent}". Run /agents to list them.`, isError: true };
         }
+        // While planning the parent is read-only, so any child is coerced to plan
+        // below. A named agent declared for execute (it writes / runs commands)
+        // can't do its job under that constraint — coercing it would just burn a
+        // turn on a child instructed to edit files it has no tools to touch. The
+        // plan-mode roster already hides such agents (only `mode === "plan"` is
+        // advertised); reject one named explicitly here too, pointing at the
+        // read-only agents the model CAN delegate to. (An explicit `mode:"execute"`
+        // request without a named agent is still safely coerced — see below.)
+        if (this.mode === "plan" && named && named.mode !== "plan") {
+          const readOnly = [...(this.#deps.agents?.values() ?? [])]
+            .filter((a) => a.mode === "plan")
+            .map((a) => a.name);
+          const suggestion = readOnly.length
+            ? ` Use a read-only agent (${readOnly.join(", ")})`
+            : " Investigate read-only without a named agent";
+          return {
+            output:
+              `Agent "${agent}" runs in execute mode (it writes or runs commands) ` +
+              `and can't run while planning, which is read-only.${suggestion}, or ` +
+              `delegate it once you switch to execute mode.`,
+            isError: true,
+          };
+        }
         // In plan mode the parent is read-only, so its subagents must be too —
         // force plan regardless of the requested/named mode (keeps planning
         // strictly investigation, while still allowing parallel exploration).

@@ -97,6 +97,58 @@ test("/queue clear drops everything still waiting", async () => {
   ).toBe(true);
 });
 
+/** Poll the event log for the queue id of a waiting prompt with `label`. */
+async function waitForQueueId(events: UIEvent[], label: string): Promise<string> {
+  for (let i = 0; i < 100; i++) {
+    for (const e of events) {
+      if (e.type === "queue-changed") {
+        const hit = e.pending.find((p) => p.label === label);
+        if (hit) return hit.id;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  throw new Error(`queued prompt "${label}" never surfaced`);
+}
+
+test("dequeue drops one specific waiting prompt without running it", async () => {
+  const { engine, events } = mockEngine(replyModel(20));
+
+  engine.send({ type: "submit-prompt", text: "A" });
+  engine.send({ type: "submit-prompt", text: "B" });
+  engine.send({ type: "submit-prompt", text: "C" });
+  // Drop B while A is still running (B and C are queued behind it).
+  const bid = await waitForQueueId(events, "B");
+  engine.send({ type: "dequeue", id: bid });
+  await engine.whenIdle();
+
+  const prompts = events
+    .filter((e): e is Extract<UIEvent, { type: "user-message" }> => e.type === "user-message")
+    .map((e) => e.text);
+  // A ran, B was removed, C still ran — and C kept its place after A.
+  expect(prompts).toEqual(["A", "C"]);
+});
+
+test("steer jumps a queued prompt to the front and interrupts the running turn", async () => {
+  const { engine, events } = mockEngine(replyModel(30));
+
+  engine.send({ type: "submit-prompt", text: "A" });
+  engine.send({ type: "submit-prompt", text: "B" });
+  engine.send({ type: "submit-prompt", text: "C" });
+  // Steer C: it should jump ahead of B and run next (A is interrupted).
+  const cid = await waitForQueueId(events, "C");
+  engine.send({ type: "steer", id: cid });
+  await engine.whenIdle();
+
+  const prompts = events
+    .filter((e): e is Extract<UIEvent, { type: "user-message" }> => e.type === "user-message")
+    .map((e) => e.text);
+  // Nothing was dropped, and C was steered ahead of B.
+  expect(prompts).toContain("C");
+  expect(prompts).toContain("B");
+  expect(prompts.indexOf("C")).toBeLessThan(prompts.indexOf("B"));
+});
+
 test("abort clears the pending queue", async () => {
   const { engine, events } = mockEngine(replyModel(5));
 

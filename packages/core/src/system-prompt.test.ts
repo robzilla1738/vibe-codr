@@ -29,6 +29,14 @@ test("the goal is injected as a north-star block", () => {
   expect(out).toContain("NORTH-STAR GOAL: ship v1");
 });
 
+test("the cwd is injected so the model never has to run pwd or guess paths", () => {
+  const out = composeSystemPrompt({ mode: "execute", goal: null, cwd: "/Users/me/proj" });
+  expect(out).toContain("Working directory (cwd): /Users/me/proj");
+  expect(out).toMatch(/do not run `pwd`/);
+  // Absent when not provided (keeps the prompt clean in non-workspace contexts).
+  expect(composeSystemPrompt({ mode: "execute", goal: null })).not.toContain("ENVIRONMENT:");
+});
+
 test("skill descriptions are surfaced for progressive disclosure", () => {
   const out = composeSystemPrompt({
     mode: "execute",

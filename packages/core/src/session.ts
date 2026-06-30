@@ -535,6 +535,7 @@ export class Session {
           : [];
       const system = composeSystemPrompt({
         mode: this.mode,
+        cwd: this.#deps.cwd,
         goal: this.goal,
         projectMemory: this.#deps.projectMemory,
         pluginBlocks: this.#deps.extraSystem,

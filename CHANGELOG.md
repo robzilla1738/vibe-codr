@@ -5,6 +5,22 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Fixed
+- **The model wasn't told its working directory — it ran `pwd` to orient and
+  hallucinated absolute paths.** The system prompt never injected the cwd
+  (`composeSystemPrompt` ignored it), so on a "make me a website" task the model
+  wrote to a *guessed* `/Users/<someone-else>/…` path, then burned a whole slow
+  step running `pwd && ls` to discover where it actually was. The prompt now
+  carries an `ENVIRONMENT:` block with the cwd and an explicit "you already know
+  this — don't run `pwd`, don't invent absolute paths" directive. Removes a tool
+  round-trip per task and the wrong-path writes.
+- **A transient empty `web_search` result cost a whole extra model step.** TinyFish
+  occasionally returns a flaky empty array for a query that has results; the tool
+  reported a clean "No results", so the (slow, thinking) model treated it as a
+  dead end and re-searched a reworded variant — one wasted ~10-18s reasoning step.
+  `web_search` now does one cheap in-tool retry (~0.6s) on an empty array before
+  giving up, and wraps its fetch in an 8s wall-clock timeout (layered on the
+  caller's abort) so a stalled connection can't hang the turn. Its description was
+  also softened to stop nudging the model into reflexive multi-search.
 - **Markdown inline markers (`**bold**`, `` `code` ``) rendered raw in the TUI.**
   OpenTUI's `<markdown>` renderable conceals syntax markers via a tree-sitter
   *inline* parser, which is loaded by a worker that statically imports

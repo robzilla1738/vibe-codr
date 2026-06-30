@@ -2,6 +2,9 @@ import type { Mode } from "@vibe/shared";
 
 export interface SystemPromptInputs {
   mode: Mode;
+  /** Absolute path of the workspace root — injected so the model never has to
+   * run `pwd` to orient and never guesses (hallucinates) an absolute path. */
+  cwd?: string;
   goal: string | null;
   /** Project memory (VIBE.md / AGENTS.md / CLAUDE.md) contents, if present. */
   projectMemory?: string;
@@ -54,6 +57,16 @@ const EXECUTE_MODE = `MODE: EXECUTE. You may read and modify the workspace and r
 export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   const sections: string[] = [BASE];
   sections.push(inputs.mode === "plan" ? PLAN_MODE : EXECUTE_MODE);
+
+  // Tell the model where it is. Without this it guesses absolute paths (e.g.
+  // writing to a hallucinated `/Users/someone/...`) and burns a whole step
+  // running `pwd` to orient — both observed in the wild. The cwd is the single
+  // highest-value orientation fact, so it goes near the top.
+  if (inputs.cwd) {
+    sections.push(
+      `ENVIRONMENT:\nWorking directory (cwd): ${inputs.cwd}\nThis is the workspace root. You already know it — do not run \`pwd\` to discover it. Resolve relative paths against this directory and prefer relative paths; never invent an absolute path for a file or folder you haven't actually located.`,
+    );
+  }
 
   if (inputs.goal) {
     sections.push(

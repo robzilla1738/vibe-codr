@@ -19,9 +19,9 @@ const Input = z.object({
     .optional()
     .describe(
       "Keep only the top N of the provider's ranked results. Omit to keep them " +
-        "all (the default); set a small N for a quick fact to stay tight. To " +
-        "research more broadly, issue more queries rather than expecting more " +
-        "results from one.",
+        "all (the default); set a small N for a quick fact to stay tight. One " +
+        "good query usually answers a quick fact — only issue another query when " +
+        "you're genuinely researching a broad topic.",
     ),
 });
 
@@ -55,10 +55,10 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<
       "Search the web for current information and return ranked results " +
       "(title, URL, snippet). Use for anything beyond the workspace or your " +
       "training cutoff. The snippets often already contain the answer (prices, " +
-      "dates, version numbers) — read them first and only `webfetch` a result " +
-      "when its snippet isn't enough. `maxResults` trims to the top N (keep it " +
-      "small for a quick fact; omit to keep all); for more breadth issue more " +
-      "queries. Use `recencyDays` for fast-moving topics.",
+      "dates, version numbers) — read them first and answer from them; only " +
+      "`webfetch` a result when its snippet isn't enough. One good query usually " +
+      "settles a quick fact — don't reflexively re-search; reserve extra queries " +
+      "for genuinely broad research. Use `recencyDays` for fast-moving topics.",
     inputSchema: Input,
     readOnly: true,
     concurrencySafe: true,
@@ -80,23 +80,36 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<
         url.searchParams.set("recency_minutes", String(recencyDays * 24 * 60));
       }
 
-      try {
+      // One fetch attempt with a wall-clock cap layered on the caller's abort, so
+      // a stalled connection can't hang the turn. Returns the ranked results or
+      // throws (HTTP errors carry a "Search failed: …" message for the catch).
+      const attempt = async (): Promise<SearchResult[]> => {
         const res = await fetch(url, {
           headers: { "X-API-Key": apiKey },
-          signal: ctx.abortSignal,
+          signal: AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(8000)]),
         });
         if (!res.ok) {
           const detail = res.status === 401 || res.status === 403
             ? " (check your TinyFish API key)"
             : "";
-          return { output: `Search failed: HTTP ${res.status}${detail}`, isError: true };
+          throw new Error(`Search failed: HTTP ${res.status}${detail}`);
         }
         const data = (await res.json()) as { results?: SearchResult[] };
+        return data.results ?? [];
+      };
+
+      try {
         // Keep every ranked result the provider returned by default (no engine
-        // throttle); `maxResults` only trims the list for a tighter quick-fact
-        // read. The provider's page size is the natural upper bound — we can't
-        // ask it for more than it returns, so breadth comes from more queries.
-        const all = data.results ?? [];
+        // throttle); `maxResults` only trims the list for a tighter quick-fact read.
+        let all = await attempt();
+        // The provider occasionally returns a *transient* empty array for a query
+        // that does have results. One cheap retry (~0.6s) absorbs that flake here,
+        // rather than handing the model a false dead-end and making it burn a whole
+        // slow reasoning step re-searching a reworded variant.
+        if (!all.length && !ctx.abortSignal.aborted) {
+          await new Promise((r) => setTimeout(r, 600));
+          if (!ctx.abortSignal.aborted) all = await attempt();
+        }
         const results = maxResults ? all.slice(0, maxResults) : all;
         if (!results.length) {
           return { output: `No results for "${query}".` };
@@ -104,7 +117,11 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<
         return { output: formatResults(query, results) };
       } catch (err) {
         if (ctx.abortSignal.aborted) return { output: "Search aborted." };
-        return { output: `Search failed: ${(err as Error).message}`, isError: true };
+        const msg = (err as Error).message;
+        return {
+          output: msg.startsWith("Search failed") ? msg : `Search failed: ${msg}`,
+          isError: true,
+        };
       }
     },
   };

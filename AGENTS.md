@@ -16,8 +16,8 @@ vibe-codr itself, Codex (`AGENTS.md`), and Claude Code (`CLAUDE.md`).
 | `@vibe/shared` | Contracts: `UIEvent`, `Message`/`Part`, `ToolDefinition`, `EngineSnapshot`, errors, logger |
 | `@vibe/config` | Zod config schema, file discovery + deep-merge, auth resolution |
 | `@vibe/providers` | `ProviderRegistry`, `resolveModel`, `CatalogService` (models.dev + `/v1/models`) |
-| `@vibe/tools` | Built-in tools (`read`/`edit`/`bash`/`grep`/`repo_map`/`git_*`/…) + the AI-SDK `tool()` adapter; the file-write lock is an **exclusive-ownership claim registry** (`createFileLock`) so parallel subagents can't clobber one file. Web search is **keyless** (DuckDuckGo, `search-engines.ts`) with TinyFish as an optional booster |
-| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD provider limiter (`limiter.ts`), a deterministic task-DAG scheduler (`orchestrator.ts`, `spawn_tasks`, behind `orchestration.enabled`), and a shared coordination blackboard (`blackboard.ts`, `post_note`/`read_notes`); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), and prompts (`get_mcp_prompt`) |
+| `@vibe/tools` | Built-in tools (`read`/`edit`/`bash`/`grep`/`repo_map`/`git_*`/…) + the AI-SDK `tool()` adapter; the file-write lock is an **exclusive-ownership claim registry** (`createFileLock`) so parallel subagents can't clobber one file. Web search is **keyless** and **fans out across DuckDuckGo + Bing** (`search-engines.ts`), then dedupes by canonical URL + quality-ranks the merge (`searchcore.ts`); TinyFish is an optional booster. `webfetch` extracts PDFs (`pdftext.ts`, zero-dep) + optional Readability, backed by a cache-through store (`fetch-cache.ts`) |
+| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD provider limiter (`limiter.ts`), a deterministic task-DAG scheduler (`orchestrator.ts`, `spawn_tasks`, behind `orchestration.enabled`), and a shared coordination blackboard (`blackboard.ts`, `post_note`/`read_notes`); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`), OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/list_changed` re-registration |
 | `@vibe/plugins` | `HookBus`, slash-command + skill runtimes, `PluginHost`; declarative shell/HTTP hooks are layered on via `core/config-hooks.ts` from the config `hooks` block |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers, themes, tool icons, spinner |
 | `@vibe/cli` | `bin/vibecodr` entrypoint (argv, config, headless `-p` vs TUI) |
@@ -83,8 +83,9 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `tokens.access_token` from `~/.codex/auth.json` (`auth-file.ts` `COMMON_KEYS`);
   the ChatGPT-subscription backend is configurable (`CODEX_BASE_URL` + provider
   `headers`), not hard-wired. Any provider can reuse another CLI's creds via
-  `config.providers.<id>.tokenFile`/`tokenPath`. There is **no OAuth/refresh
-  flow** — don't add one without an explicit ask.
+  `config.providers.<id>.tokenFile`/`tokenPath`. There is **no *provider* OAuth/
+  refresh flow** — don't add one without an explicit ask. (MCP *servers* do have
+  OAuth 2.1 — `mcp-oauth.ts` — a separate concern from provider chat auth.)
 - **The models.dev cache honors `$XDG_CACHE_HOME`** (default `~/.cache`), read at
   `CatalogService` construction — same rationale as the config's
   `$XDG_CONFIG_HOME` (Bun's `os.homedir()` caches at startup; XDG is read live, so
@@ -149,13 +150,15 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `webfetch`), broad/technical questions cross-check 1–3 authoritative sources.
   Version/currency questions route to **`package_info`** (npm/PyPI authoritative
   latest, no key, read-only — `package-info.ts`) and official docs over blogs.
-  No engine throttle: `web_search` keeps every result the provider returns by
-  default (`maxResults` only TRIMS to the top N — it is a client-side cap, NOT a
-  count forwarded to the API, so it can't fetch *more* than the provider's page;
-  broader coverage comes from more queries), and `webfetch` takes `maxChars`
-  (default 25k, truncation reports the dropped count). Keep it that way — the
-  design intent is "fast when simple, exhaustive when needed, model decides." The
-  only thing the prompt biases is snippet-first reading (cheaper), never a cap.
+  `web_search` **fans out across every engine in parallel** (keyless DuckDuckGo +
+  Bing, TinyFish when keyed), then **dedupes by canonical URL and quality-ranks**
+  the merged pool (`searchcore.ts` `mergeCandidates`), capped at `maxResults` (the
+  merged/ranked top-N, default `DEFAULT_MAX`=12); `deep:true` widens the query into
+  complementary phrasings before the fan-out. A per-engine cooldown sits an engine
+  out on 429/403/503 rather than hammering it. `webfetch` takes `maxChars` (default
+  25k, truncation reports the dropped count) and caches per-URL (TTL + stale-on-
+  failure). Keep the intent: "fast when simple, exhaustive when needed, model
+  decides"; the prompt only biases snippet-first reading (cheaper), never a cap.
 - MCP tool names exposed to the model go through `mcpToolName()` (sanitize to
   `[A-Za-z0-9_-]`, cap 64 with a hash suffix); the real MCP name is used only for
   `callTool`. Hosted providers 400 on dotted/over-long function names.
@@ -207,7 +210,8 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   native dep) and can't run in CI. Verify it two ways: `bun run smoke:tui` drives
   the real `App` with a mock engine through OpenTUI's test renderer (asserts
   input/submit, streamed output, tool icons, the working spinner, the command
-  menu, and the permission card actually work), and `screenshot.ts` mirrors its
+  menu, the permission card, and the plan-approval card actually work), and
+  `screenshot.ts` mirrors its
   render logic for the README shots. Keep all three in lockstep: any visible
   app.tsx change gets the matching change in the screenshot reducer and, where
   behavioral, a smoke assertion — and never use an OpenTUI prop you can't confirm
@@ -238,9 +242,13 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   immediately undone); the smoke test clicks a tool row then opens the menu to
   guard this.
 - Pure UI logic lives in small, unit-tested modules so app.tsx stays thin:
-  `tool-icons.ts` (per-tool glyph + action summary), `spinner.ts` (braille
-  frames), `themes.ts` (palettes incl. `opencode`), `modes.ts`,
-  `commands-catalog.ts`. `screenshot.ts` can't import `@vibe/tui`, so it carries
+  **`reducer.ts`** (the transcript `UIEvent→Block` reducer — streaming coalescing,
+  tool-block creation, diff folding, cumulative file deltas + `groupTurns` — app.tsx
+  keeps only the Solid signals + the flush timer and delegates via `apply(action)`),
+  `layout.ts` (the shared `PANEL` box chrome), `tool-icons.ts` (per-tool glyph +
+  action summary), `spinner.ts` (braille frames), `themes.ts` (palettes incl.
+  `opencode`), `modes.ts`, `commands-catalog.ts`. `screenshot.ts` can't import
+  `@vibe/tui`, so it carries
   a **local copy of the tool-icon/summary logic** — keep it identical to
   `tool-icons.ts` (it has a comment pointing here).
 - **Layout invariant (centered single column; don't regress scrolling):** the
@@ -321,7 +329,9 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   details live UNDER the input**, not in a
   header: line 1 is `detailsLeft()` / `detailsRight()` = `cwd · git  /  model ·
   changed · ctx · usage · cost`; line 2 is the key hints (left) and the goal `★ …`
-  (right). Git state comes from `Engine.#gitInfo()` (the `#git` runner) via the
+  (right). Git state comes from `readGitInfo()` (`git-info.ts`, an injectable-
+  runner module unit-tested against fixed porcelain output; the engine keeps a thin
+  `#git` wrapper + `#emitGit`) via the
   `git-updated` event + the snapshot `git` field; `changedSummary()` condenses the
   session's edits (`✎ N files +a -b` — the detail is the inline diff rows). Do NOT
   add a tool-call "Activity" feed — it duplicated the transcript and was removed.
@@ -361,6 +371,14 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   output.** This IS the intended look (an earlier note said "don't reintroduce the
   rainbow we removed" — obsolete; the curated rainbow is now the design). A `title`
   needs a top edge, so the input uses a full `border` (all sides).
+- **Plan-approval modal.** A presented plan (`plan-presented` event) is an
+  interactive gate, not a static hint: with the input empty, **Enter accepts**
+  (`resolve-plan` → engine switches to execute, seeds the task list from the plan's
+  checklist, and runs a turn against the approved plan via the existing
+  `#pendingHandoff`), **typing a message revises** it (`resolve-plan` `edit` →
+  re-plan in plan mode), and **Esc keeps planning**. The binding is collision-free
+  on purpose — single letters go into the revision text, not a shortcut — mirroring
+  the permission card's `resolve-permission` pattern.
 - **Interactive submenus (the `/` menu):** one normalized `menuModel` memo in
   `app.tsx` drives three shapes — `command` (the flat list), `value` (enum submenus
   like `/theme`/`/approvals`/`/reasoning`, current value marked `●`), and `models`

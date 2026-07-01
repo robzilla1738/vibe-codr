@@ -300,6 +300,23 @@ export function App(props: { engine: EngineClient }) {
   };
 
   const [selIdx, setSelIdx] = createSignal(0);
+  // The menu window's scroll offset (top visible row). Kept SEPARATE from the
+  // highlight so hovering a row only moves the highlight — it never scrolls. Only
+  // arrow keys (and the initial current-value highlight) scroll, via
+  // `ensureMenuVisible`. This kills the runaway "mouse moves → window re-centers →
+  // rows shift under the cursor → hover fires again" fast-scroll loop.
+  const MENU_WINDOW = 8;
+  const [menuStart, setMenuStart] = createSignal(0);
+  /** Scroll the window the minimum needed to keep row `sel` of `count` visible. */
+  const ensureMenuVisible = (sel: number, count: number) => {
+    const maxStart = Math.max(0, count - MENU_WINDOW);
+    setMenuStart((s) => {
+      const cur = Math.min(Math.max(0, s), maxStart);
+      if (sel < cur) return sel;
+      if (sel > cur + MENU_WINDOW - 1) return Math.min(sel - MENU_WINDOW + 1, maxStart);
+      return cur;
+    });
+  };
 
   // One normalized menu row — its `choose` carries the row's own action, so the
   // keyboard handler, click handler, and renderer share a single path regardless
@@ -444,7 +461,9 @@ export function App(props: { engine: EngineClient }) {
     const m = menuModel();
     void `${m.title}:${m.rows.length}:${m.loading}:${modelTarget()}`;
     const cur = m.rows.findIndex((r) => r.current);
-    setSelIdx(cur >= 0 ? cur : 0);
+    const sel = cur >= 0 ? cur : 0;
+    setSelIdx(sel);
+    ensureMenuVisible(sel, m.rows.length); // scroll so the pre-highlight is on-screen
   });
 
   // Lazily fetch the model list the first time a `/model` picker opens (cached
@@ -487,14 +506,16 @@ export function App(props: { engine: EngineClient }) {
   const chooseAt = (i: number, run: boolean) => menuModel().rows[i]?.choose(run);
 
   // Windowed rows for rendering (≤8 visible, scrolled to keep the highlight in
-  // view). Each view row carries its absolute index so a click selects + runs it.
-  const WINDOW = 8;
+  // view). The window scroll (`menuStart`) is arrow-driven, NOT derived from the
+  // highlight — so hovering never scrolls. Each view row carries its absolute index
+  // so a click selects + runs it.
+  const WINDOW = MENU_WINDOW;
   const menuView = () => {
     const m = menuModel();
     if (!m.open) return null;
     const rows = m.rows;
     const sel = Math.min(Math.max(0, selIdx()), Math.max(0, rows.length - 1));
-    const start = Math.min(Math.max(0, sel - 4), Math.max(0, rows.length - WINDOW));
+    const start = Math.min(Math.max(0, menuStart()), Math.max(0, rows.length - WINDOW));
     const view = rows.slice(start, start + WINDOW).map((r, i) => ({
       active: start + i === sel,
       current: !!r.current,
@@ -653,11 +674,19 @@ export function App(props: { engine: EngineClient }) {
     switch (key.name) {
       case "up":
         key.preventDefault?.();
-        if (n) setSelIdx((i) => (i - 1 + n) % n);
+        if (n) {
+          const ni = (selIdx() - 1 + n) % n;
+          setSelIdx(ni);
+          ensureMenuVisible(ni, n);
+        }
         break;
       case "down":
         key.preventDefault?.();
-        if (n) setSelIdx((i) => (i + 1) % n);
+        if (n) {
+          const ni = (selIdx() + 1) % n;
+          setSelIdx(ni);
+          ensureMenuVisible(ni, n);
+        }
         break;
       case "tab":
         key.preventDefault?.();

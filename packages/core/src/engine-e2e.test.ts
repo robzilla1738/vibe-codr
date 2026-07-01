@@ -227,9 +227,44 @@ test("Engine planning: resolve-plan accept switches to execute, seeds tasks, run
   // Switched to execute and ran the turn with the approval handoff.
   expect(events.some((e) => e.type === "mode-changed" && e.mode === "execute")).toBe(true);
   expect(prompts.at(-1)).toContain("approved by the user");
+  // The internal handoff directive goes to the MODEL but must NOT render as a user
+  // message the user "sent" — instead a clean "Executing the approved plan…" notice.
+  const userMsgs = events.filter((e) => e.type === "user-message" && "text" in e) as {
+    text: string;
+  }[];
+  expect(userMsgs.some((e) => e.text.includes("approved by the user"))).toBe(false);
+  expect(
+    events.some((e) => e.type === "notice" && "message" in e && e.message.includes("Executing the approved plan")),
+  ).toBe(true);
 
   engine.send({ type: "shutdown" });
   await collector;
+});
+
+test("Engine /clear emits exactly one 'Conversation cleared.' notice", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-clear-"));
+  const model = new MockLanguageModelV2({ doStream: async () => stream([]) });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test" },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  engine.send({ type: "run-slash", name: "clear", args: "" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  const cleared = events.filter(
+    (e) => e.type === "notice" && "message" in e && e.message === "Conversation cleared.",
+  );
+  expect(cleared).toHaveLength(1);
 });
 
 test("Engine planning: resolve-plan edit re-plans with feedback; keep-planning stays put", async () => {

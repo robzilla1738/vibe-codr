@@ -789,7 +789,11 @@ export class Session {
   }
 
   /** Execute one agentic turn for `input`. Resolves when the turn ends. */
-  async run(input: string, images: ImageAttachment[] = []): Promise<void> {
+  async run(
+    input: string,
+    images: ImageAttachment[] = [],
+    opts: { display?: string | null } = {},
+  ): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;
     this.busy = true;
     this.#turnMutated = false;
@@ -817,7 +821,7 @@ export class Session {
         });
         return;
       }
-      this.#pushUser(input, images);
+      this.#pushUser(input, images, opts.display);
 
       const model = await withRetry(() => registry.resolveModel(this.model, config), {
         maxAttempts: config.retry.maxAttempts,
@@ -1396,7 +1400,7 @@ export class Session {
     };
   }
 
-  #pushUser(input: string, images: ImageAttachment[] = []): void {
+  #pushUser(input: string, images: ImageAttachment[] = [], display?: string | null): void {
     // Multimodal user turn when images are attached; plain string otherwise so
     // existing text-only behaviour and persistence are unchanged.
     const content = images.length
@@ -1418,7 +1422,12 @@ export class Session {
       parts,
       createdAt: Date.now(),
     });
-    this.#deps.bus.emit({ type: "user-message", sessionId: this.id, text: input });
+    // `display === null` suppresses the visible user bubble (e.g. the internal
+    // plan→execute handoff directive, which the model needs but the user shouldn't
+    // see as a message they "sent"); otherwise show `display` (or the raw input).
+    if (display !== null) {
+      this.#deps.bus.emit({ type: "user-message", sessionId: this.id, text: display ?? input });
+    }
   }
 
   /** Translate AI-SDK stream parts into UIEvents and accumulate the message. */

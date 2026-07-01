@@ -1026,8 +1026,9 @@ export class Engine implements EngineClient {
         break;
       case "clear":
       case "new":
+        // `session.clear()` already emits the "Conversation cleared." notice —
+        // don't emit a second one here (that showed the message twice).
         this.#session.clear();
-        this.#notice("Conversation cleared.");
         break;
       case "status":
         this.#notice(await this.#statusText());
@@ -1300,13 +1301,18 @@ export class Engine implements EngineClient {
 
   async #handlePrompt(text: string): Promise<void> {
     // Plan→execute handoff: prepend an explicit approval directive so the model
-    // doesn't read its own present_plan "stop here" as an instruction to halt.
-    if (this.#pendingHandoff) {
+    // doesn't read its own present_plan "stop here" as an instruction to halt. This
+    // directive is internal — the model needs it, but it must NOT render as a user
+    // message (the user approved via the plan card, they didn't "type" this). So we
+    // send it with `display: null` (no user bubble) and show a clean notice instead.
+    const isHandoff = this.#pendingHandoff;
+    if (isHandoff) {
       this.#pendingHandoff = false;
       this.#lastPlan = undefined;
       text =
         "The plan you presented was approved by the user — proceed with implementing it " +
         `now (your earlier "stop here" no longer applies).${text.trim() ? `\n\n${text}` : ""}`;
+      this.#notice("Executing the approved plan…");
     }
     // Snapshot the workspace before an edit turn so /undo can roll it back.
     if (this.#config.checkpoints.enabled && this.#session.mode === "execute") {
@@ -1338,7 +1344,7 @@ export class Engine implements EngineClient {
         );
       }
     }
-    await this.#session.run(expanded.text, expanded.images);
+    await this.#session.run(expanded.text, expanded.images, isHandoff ? { display: null } : {});
     await this.#maybeVerify();
     // The turn may have touched the working tree — refresh the header's git state.
     void this.#emitGit();

@@ -65,7 +65,7 @@ test("a header-without-delimiter stays prose (not a premature table)", () => {
   expect(b).toEqual([{ kind: "prose", text: "| Name | Size |" }]);
 });
 
-test("renderTable produces an aligned, fitted box-drawing table", () => {
+test("renderTable produces a clean borderless table: header, rule, rows", () => {
   const lines = renderTable(
     [
       ["Name", "Size"],
@@ -74,15 +74,17 @@ test("renderTable produces an aligned, fitted box-drawing table", () => {
     ["left", "right"],
     80,
   );
-  expect(lines[0]!.role).toBe("rule");
-  expect(lines[0]!.text.startsWith("┌") && lines[0]!.text.endsWith("┐")).toBe(true);
-  expect(lines[1]!.role).toBe("header");
-  expect(lines[1]!.text).toContain("Name");
-  // Every rendered line is the same visual width (a well-formed table).
+  // Header first (no top border), then a single rule, then rows.
+  expect(lines[0]!.role).toBe("header");
+  expect(lines[0]!.text).toContain("Name");
+  expect(lines[1]!.role).toBe("rule");
+  expect(lines[1]!.text).toMatch(/^─+$/); // a plain horizontal rule, no box corners
+  expect(lines.at(-1)!.role).toBe("row");
+  // No vertical bars / box corners anywhere (borderless).
+  for (const l of lines) expect(l.text).not.toMatch(/[│┌┐└┘├┤┬┴┼]/);
+  // Columns align: every line is the same visual width.
   const widths = new Set(lines.map((l) => [...l.text].length));
   expect(widths.size).toBe(1);
-  // The closing rule caps the box.
-  expect(lines.at(-1)!.text.startsWith("└")).toBe(true);
 });
 
 test("stripInline conceals bold/italic/code/strikethrough/links", () => {

@@ -563,7 +563,7 @@ frame = await waitForText("PROSE_OMEGA");
 check("rich reply: prose before a code/table block renders", frame.includes("PROSE_ALPHA"));
 check("rich reply: prose after a code/table block renders", frame.includes("PROSE_OMEGA"));
 check("rich reply: the code block renders", frame.includes("RICHCODE"));
-check("rich reply: the table renders (native box-drawing)", frame.includes("Zustand") && frame.includes("│"));
+check("rich reply: the table renders (borderless: header + rows)", frame.includes("Name") && frame.includes("Zustand"));
 // Table cells conceal inline markdown — the `**Name**` header must not leak raw
 // `**` (and the whole reply, prose + table, has no stray markers).
 check("rich reply: table cells conceal inline markdown (no raw **)", !frame.includes("**"));

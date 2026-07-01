@@ -172,25 +172,31 @@ function wrapCell(s: string, width: number): string[] {
   return lines;
 }
 
+/** The gap between columns in the borderless table (in spaces). */
+const TABLE_GUTTER = 2;
+
 /**
- * Render a GFM table to clean box-drawing lines: inline markdown is stripped from
- * every cell, columns are aligned, and the whole table is fit within `maxWidth` by
- * **wrapping** overflowing cells across multiple lines (no truncation, no data
- * loss). Every emitted line is the same visual width.
+ * Render a GFM table to clean, borderless lines — the modern terminal style: the
+ * header row (tagged `header`), a single horizontal rule, then the data rows,
+ * columns aligned with a 2-space gutter (no vertical bars, no outer box, which read
+ * as cluttered once cells wrap). Inline markdown is stripped from every cell, and
+ * overflowing cells **wrap** across lines (no truncation, no data loss). Every line
+ * shares the same width so the rule and columns line up.
  */
 export function renderTable(rows: string[][], align: Align[], maxWidth: number): TableLine[] {
   const cols = Math.max(1, ...rows.map((r) => r.length));
   const norm = rows.map((r) => Array.from({ length: cols }, (_, c) => stripInline((r[c] ?? "").trim())));
   const w = Array.from({ length: cols }, (_, c) => Math.max(1, ...norm.map((r) => len(r[c]!))));
 
-  // Shrink the widest column until the table fits (min 3 cols wide so wrapping
-  // stays legible). Chrome = `│`*(cols+1) + 2 pad/col. Overflow now wraps, not truncates.
-  const chrome = cols + 1 + 2 * cols;
+  // Shrink the widest column until the table fits (min 3 wide so wrapping stays
+  // legible). Chrome = the inter-column gutters. Overflow wraps, never truncates.
+  const chrome = TABLE_GUTTER * (cols - 1);
   let total = chrome + w.reduce((a, b) => a + b, 0);
   while (total > maxWidth && Math.max(...w) > 3) {
     w[w.indexOf(Math.max(...w))]!--;
     total--;
   }
+  const tableWidth = chrome + w.reduce((a, b) => a + b, 0);
 
   const alignLine = (v: string, c: number): string => {
     const width = w[c]!;
@@ -203,24 +209,22 @@ export function renderTable(rows: string[][], align: Align[], maxWidth: number):
     }
     return v + " ".repeat(pad);
   };
-  const rule = (l: string, m: string, r: string): string =>
-    l + w.map((width) => "─".repeat(width + 2)).join(m) + r;
-  // A logical row → 1+ physical lines: wrap each cell, then stack them to the row's
-  // tallest cell, padding shorter cells with blank lines.
-  const dataRows = (r: string[]): string[] => {
+  const gutter = " ".repeat(TABLE_GUTTER);
+  // A logical row → 1+ physical lines: wrap each cell, stack to the tallest cell,
+  // join columns with the gutter.
+  const rowLines = (r: string[]): string[] => {
     const wrapped = r.map((s, c) => wrapCell(s, w[c]!));
     const height = Math.max(1, ...wrapped.map((x) => x.length));
     const out: string[] = [];
     for (let li = 0; li < height; li++) {
-      out.push(`│${wrapped.map((lines, c) => ` ${alignLine(lines[li] ?? "", c)} `).join("│")}│`);
+      out.push(wrapped.map((lines, c) => alignLine(lines[li] ?? "", c)).join(gutter));
     }
     return out;
   };
 
-  const out: TableLine[] = [{ role: "rule", text: rule("┌", "┬", "┐") }];
-  for (const line of dataRows(norm[0]!)) out.push({ role: "header", text: line });
-  out.push({ role: "rule", text: rule("├", "┼", "┤") });
-  for (const r of norm.slice(1)) for (const line of dataRows(r)) out.push({ role: "row", text: line });
-  out.push({ role: "rule", text: rule("└", "┴", "┘") });
+  const out: TableLine[] = [];
+  for (const line of rowLines(norm[0]!)) out.push({ role: "header", text: line });
+  out.push({ role: "rule", text: "─".repeat(tableWidth) });
+  for (const r of norm.slice(1)) for (const line of rowLines(r)) out.push({ role: "row", text: line });
   return out;
 }

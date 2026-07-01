@@ -1,5 +1,12 @@
 import { test, expect } from "bun:test";
-import { splitMarkdown, renderTable, stripInline } from "./markdown-blocks.ts";
+import { splitMarkdown, renderTable, stripInline, displayWidth, type TableLine } from "./markdown-blocks.ts";
+
+/** Reconstruct a grid table line's visual text (the box rules verbatim; a
+ * header/row as its cells wrapped by the outer + inner `│` borders the UI draws) so
+ * width/content assertions work on the structured grid output. */
+const lineText = (l: TableLine): string => (l.role === "rule" ? l.text : `│ ${l.cells.join(" │ ")} │`);
+/** Terminal-cell display width of a reconstructed line (CJK/emoji-aware). */
+const lineWidth = (l: TableLine): number => displayWidth(lineText(l));
 
 test("plain prose is a single prose block", () => {
   const b = splitMarkdown("Hello there.\n\nSecond paragraph.");
@@ -94,26 +101,46 @@ test("a header-without-delimiter stays prose (not a premature table)", () => {
   expect(b).toEqual([{ kind: "prose", text: "| Name | Size |" }]);
 });
 
-test("renderTable produces a clean borderless table: header, rule, rows", () => {
+test("renderTable produces a grid: top rule, header, ├┼┤ dividers, rows, bottom rule", () => {
   const lines = renderTable(
     [
       ["Name", "Size"],
       ["Redux", "large"],
+      ["Zustand", "tiny"],
     ],
     ["left", "right"],
     80,
   );
-  // Header first (no top border), then a single rule, then rows.
-  expect(lines[0]!.role).toBe("header");
-  expect(lines[0]!.text).toContain("Name");
-  expect(lines[1]!.role).toBe("rule");
-  expect(lines[1]!.text).toMatch(/^─+$/); // a plain horizontal rule, no box corners
-  expect(lines.at(-1)!.role).toBe("row");
-  // No vertical bars / box corners anywhere (borderless).
-  for (const l of lines) expect(l.text).not.toMatch(/[│┌┐└┘├┤┬┴┼]/);
-  // Columns align: every line is the same visual width.
-  const widths = new Set(lines.map((l) => [...l.text].length));
-  expect(widths.size).toBe(1);
+  // Top rule → header → divider → row → inter-row rule → row → bottom rule.
+  expect((lines[0] as { text: string }).text).toMatch(/^┌[─┬]+┐$/);
+  expect(lines[1]!.role).toBe("header");
+  expect((lines[1] as { cells: string[] }).cells.join(" ")).toContain("Name");
+  expect((lines[2] as { text: string }).text).toMatch(/^├[─┼]+┤$/);
+  expect((lines.at(-1) as { text: string }).text).toMatch(/^└[─┴]+┘$/);
+  // There is at least one inter-row divider between the two data rows.
+  expect(lines.filter((l) => l.role === "rule").length).toBe(4); // top, header-div, inter-row, bottom
+  // Two columns → each header/row line carries two cells (UI draws the `│` borders).
+  for (const l of lines) if (l.role !== "rule") expect(l.cells.length).toBe(2);
+  // Columns align: every reconstructed line (framed cells or a box rule) is one width.
+  expect(new Set(lines.map(lineWidth)).size).toBe(1);
+});
+
+test("renderTable converts a cell's <br> into real in-cell line breaks", () => {
+  const lines = renderTable(
+    [
+      ["Aspect", "Notes"],
+      ["Pros", "fast<br>simple<br>tested"],
+    ],
+    ["left", "left"],
+    80,
+  );
+  // The <br>-joined cell spans THREE physical row lines (one per segment), none of
+  // which contains a literal `<br>`.
+  const rowLines = lines.filter((l) => l.role === "row") as { cells: string[] }[];
+  expect(rowLines.length).toBe(3);
+  const joined = rowLines.map((r) => r.cells.join(" ")).join("\n");
+  expect(joined).not.toContain("<br>");
+  for (const seg of ["fast", "simple", "tested"]) expect(joined).toContain(seg);
 });
 
 test("stripInline conceals bold/italic/code/strikethrough/links", () => {
@@ -143,7 +170,7 @@ test("renderTable conceals inline markdown in cells (no raw ** leaks)", () => {
     ["left", "left"],
     80,
   );
-  const body = lines.map((l) => l.text).join("\n");
+  const body = lines.map(lineText).join("\n");
   expect(body).not.toContain("**");
   expect(body).not.toContain("`");
   expect(body).toContain("Metric");
@@ -157,10 +184,10 @@ test("renderTable wraps (not truncates) cells to fit a narrow width, losing no t
     18,
   );
   // Every line fits the width, and nothing is truncated with an ellipsis.
-  for (const l of lines) expect([...l.text].length).toBeLessThanOrEqual(18);
-  expect(lines.some((l) => l.text.includes("…"))).toBe(false);
+  for (const l of lines) expect(lineWidth(l)).toBeLessThanOrEqual(18);
+  expect(lines.some((l) => lineText(l).includes("…"))).toBe(false);
   // All the original words survive across the wrapped body lines.
-  const body = lines.map((l) => l.text).join(" ");
+  const body = lines.map(lineText).join(" ");
   for (const word of ["long", "cell", "value", "overflows", "column"]) {
     expect(body).toContain(word);
   }
@@ -174,6 +201,31 @@ test("every wrapped table line is the same visual width", () => {
     ["left", "left"],
     28,
   );
-  const widths = new Set(lines.map((l) => [...l.text].length));
-  expect(widths.size).toBe(1);
+  expect(new Set(lines.map(lineWidth)).size).toBe(1);
+});
+
+test("renderTable aligns columns by DISPLAY width so CJK/emoji cells don't desync the grid", () => {
+  // 语言 is 2 code points but 4 terminal columns; a naive len() would under-pad
+  // column 0 and drift every ` │ ` right of the `┼` junction.
+  const lines = renderTable(
+    [
+      ["Lang", "Name"],
+      ["语言", "Chinese"],
+      ["en", "English"],
+    ],
+    ["left", "left"],
+    80,
+  );
+  // Column 0 must be 4 display cells wide (max of "Lang"=4 and "语言"=4).
+  const header = lines.find((l) => l.role === "header") as { cells: string[] };
+  expect(displayWidth(header.cells[0]!)).toBe(4);
+  // Every line has the same DISPLAY width → separators sit under the rule's ┼.
+  expect(new Set(lines.map(lineWidth)).size).toBe(1);
+});
+
+test("renderTable preserves a cell's internal spacing when it fits the column", () => {
+  const lines = renderTable([["x"], ["a    b"]], ["left"], 20);
+  const row = lines.find((l) => l.role === "row") as { cells: string[] };
+  // The four spaces survive (no greedy re-flow collapsing them to one).
+  expect(row.cells[0]).toContain("a    b");
 });

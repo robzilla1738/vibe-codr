@@ -9,18 +9,22 @@ import { toolLabel } from "./tool-icons.ts";
  * `~$` prefix when the price is an estimate (a base-model catalog fallback).
  */
 export function formatUsage(u: SessionUsage): string {
-  const tok =
-    u.totalTokens >= 1000
-      ? `${(u.totalTokens / 1000).toFixed(1)}k`
-      : `${u.totalTokens}`;
+  const tok = fmtCount(u.totalTokens);
   const prefix = u.costEstimated ? "~$" : "$";
   const digits = u.costUSD === 0 ? 2 : u.costUSD < 1 ? 4 : 2;
   const cost = ` · ${prefix}${u.costUSD.toFixed(digits)}`;
+  // Format the cached count like the total (`1.1k`, not `1100`) so the footer
+  // reads uniformly.
   const cached =
     u.cachedInputTokens && u.cachedInputTokens > 0
-      ? ` · ${u.cachedInputTokens} cached`
+      ? ` · ${fmtCount(u.cachedInputTokens)} cached`
       : "";
   return `${tok} tok${cost}${cached}`;
+}
+
+/** Compact token count: `1.5k` at ≥1000, the raw number below. */
+function fmtCount(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
 }
 
 /** Status → checklist glyph, shared by the headless printer and the OpenTUI app. */
@@ -186,7 +190,10 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       process.stderr.write(`${ansi.red(`error: ${event.message}`)}\n`);
       break;
     // `usage-updated` is tracked by the drivers and shown as a per-turn footer
-    // rather than printed on every step (which would be noisy).
+    // rather than printed on every step (which would be noisy). `subagent-activity`
+    // is likewise a high-frequency live signal (the TUI's Subagents panel consumes
+    // it): too chatty for this line-per-milestone log, so it's intentionally dropped
+    // here while `subagent-started`/`-finished` still print the milestones.
     default:
       break;
   }

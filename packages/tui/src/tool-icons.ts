@@ -27,12 +27,16 @@ const ICONS: Record<string, string> = {
   web_search: "◈",
   task: "✦",
   subagent: "✦",
+  spawn_subagent: "✦",
   update_tasks: "☑",
   todowrite: "☑",
   todo_write: "☑",
   present_plan: "◑",
-  recall: "⌕",
+  recall: "❖",
   memory: "❖",
+  recall_memory: "❖",
+  save_memory: "❖",
+  think: "✎",
 };
 
 /** Resolve a tool name to its glyph, with sensible prefixes for families. */
@@ -119,7 +123,14 @@ export function toolSummary(name: string, input: unknown): string {
       return `search ${quote(truncate(str(a.query || a.q), 56))}`.trim();
     case "task":
     case "subagent":
-      return `task ${truncate(str(a.prompt || a.description || a.title), 56)}`.trim();
+    case "spawn_subagent":
+      return `subagent ${quote(truncate(str(a.description || a.title || a.prompt), 56))}`.trim();
+    case "recall":
+    case "recall_memory":
+      return `recall memory ${quote(truncate(str(a.query || a.q || a.prompt), 48))}`.trim();
+    case "save_memory":
+    case "memory":
+      return `save memory ${quote(truncate(str(a.title || a.name || a.query), 48))}`.trim();
     case "update_tasks":
     case "todowrite":
     case "todo_write":
@@ -128,10 +139,18 @@ export function toolSummary(name: string, input: unknown): string {
       return "present plan";
     default:
       if (key.startsWith("git_") || key.startsWith("git")) {
-        return `${name}${kv(a, 2)}`;
+        return `${humanize(name)}${kv(a, 2)}`;
       }
-      return `${name}${kv(a)}`;
+      return `${humanize(name)}${kv(a)}`;
   }
+}
+
+/** Turn a raw tool identifier into a human label: drop the `mcp__` marker (keeping
+ * the server name for context) and read `snake_case`/`kebab-case` as spaced words,
+ * so `mcp__linear__create_issue` → "linear create issue" and `recall_memory` →
+ * "recall memory". Keeps the fallback line readable instead of code-y. */
+function humanize(name: string): string {
+  return name.replace(/^mcp__/i, "").replace(/[_-]+/g, " ").trim();
 }
 
 /** The full transcript label: `{icon} {summary}`. */

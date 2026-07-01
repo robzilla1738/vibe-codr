@@ -23,13 +23,60 @@ export type MdBlock =
   /** A `>` blockquote; `lines` are the quoted lines with the marker stripped. */
   | { kind: "quote"; lines: string[] };
 
-/** A rendered table line, tagged so the UI can color borders/header/rows. */
-export interface TableLine {
-  role: "rule" | "header" | "row";
-  text: string;
+/**
+ * A rendered table line. A `rule` is a ready-made box-drawing divider (top, header,
+ * inter-row, or bottom) the UI draws in the border tone. A `header`/`row` carries
+ * its columns as separate `cells` (each pre-padded to its column width) so the UI
+ * draws the `│` borders in the border tone and the cells in their role color — a
+ * proper grid like opencode's. The `┬┼┴` junctions in the rules line up under the
+ * `│` separators because every ` cell ` and every rule segment is `width+2` wide.
+ */
+export type TableLine =
+  | { role: "rule"; text: string }
+  | { role: "header" | "row"; cells: string[] };
+
+/** Terminal columns one code point occupies: 0 for combining/zero-width marks, 2
+ * for East-Asian wide + fullwidth + emoji, else 1. A compact wcwidth — enough to
+ * keep table columns aligned when a cell holds CJK/emoji (which count as one code
+ * point but render two cells), without pulling in a dependency. */
+function charWidth(cp: number): number {
+  if (cp === 0) return 0;
+  // Combining marks, zero-width spaces/joiners, variation selectors.
+  if (
+    (cp >= 0x0300 && cp <= 0x036f) ||
+    (cp >= 0x200b && cp <= 0x200f) ||
+    (cp >= 0xfe00 && cp <= 0xfe0f) ||
+    cp === 0xfeff
+  )
+    return 0;
+  // Wide: CJK, Hangul, Kana, fullwidth forms, and the emoji/symbol planes.
+  if (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    cp === 0x2329 ||
+    cp === 0x232a ||
+    (cp >= 0x2e80 && cp <= 0x303e) || // CJK radicals … symbols
+    (cp >= 0x3041 && cp <= 0x33ff) || // Kana … CJK compat
+    (cp >= 0x3400 && cp <= 0x4dbf) || // CJK Ext A
+    (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified
+    (cp >= 0xa000 && cp <= 0xa4cf) || // Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul Syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK Compat Ideographs
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK Compat Forms
+    (cp >= 0xff00 && cp <= 0xff60) || // Fullwidth Forms
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f000 && cp <= 0x1faff) || // emoji, symbols, tiles
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK Ext B+
+  )
+    return 2;
+  return 1;
 }
 
-const len = (s: string): number => [...s].length;
+/** Display width of a string in terminal cells (sums {@link charWidth}). */
+export function displayWidth(s: string): number {
+  let w = 0;
+  for (const ch of s) w += charWidth(ch.codePointAt(0)!);
+  return w;
+}
 
 /**
  * Strip inline markdown (emphasis / code / links) for text we render OURSELVES —
@@ -170,25 +217,46 @@ export function splitMarkdown(src: string): MdBlock[] {
   return blocks;
 }
 
-/** Greedy word-wrap `s` to `width` columns; a word longer than `width` is
- * hard-broken. Always returns at least one (possibly empty) line. */
+/** Take the leading `w` display columns of `s`, returning `[head, rest]`. Never
+ * splits a wide glyph across the boundary, and always advances by ≥1 char so a
+ * wide glyph in a 1-wide column can't loop forever. */
+function sliceByWidth(s: string, w: number): [string, string] {
+  const chars = [...s];
+  let width = 0;
+  let i = 0;
+  for (; i < chars.length; i++) {
+    const cw = charWidth(chars[i]!.codePointAt(0)!);
+    if (width + cw > w) break;
+    width += cw;
+  }
+  if (i === 0 && chars.length > 0) i = 1; // guarantee progress
+  return [chars.slice(0, i).join(""), chars.slice(i).join("")];
+}
+
+/** Greedy word-wrap `s` to `width` display columns; a word longer than `width` is
+ * hard-broken. A cell that already fits is returned verbatim (preserving any
+ * intentional internal spacing — re-flow only runs on genuine overflow). Widths
+ * are measured in terminal cells so CJK/emoji wrap correctly. Always returns at
+ * least one (possibly empty) line. */
 function wrapCell(s: string, width: number): string[] {
   const w = Math.max(1, width);
+  if (displayWidth(s) <= w) return [s];
   const lines: string[] = [];
   let cur = "";
   for (let word of s.split(/\s+/).filter(Boolean)) {
-    // Hard-break a single word that can't fit the column.
-    while (len(word) > w) {
+    // Hard-break a single word that can't fit the column (by display width).
+    while (displayWidth(word) > w) {
       if (cur) {
         lines.push(cur);
         cur = "";
       }
-      lines.push([...word].slice(0, w).join(""));
-      word = [...word].slice(w).join("");
+      const [head, rest] = sliceByWidth(word, w);
+      lines.push(head);
+      word = rest;
     }
     if (!word) continue;
     if (!cur) cur = word;
-    else if (len(cur) + 1 + len(word) <= w) cur += ` ${word}`;
+    else if (displayWidth(cur) + 1 + displayWidth(word) <= w) cur += ` ${word}`;
     else {
       lines.push(cur);
       cur = word;
@@ -198,35 +266,48 @@ function wrapCell(s: string, width: number): string[] {
   return lines;
 }
 
-/** The gap between columns in the borderless table (in spaces). */
-const TABLE_GUTTER = 2;
+/** Per-column chrome: a left `│` + one padding cell each side of the content
+ * (` cell `). Plus one trailing `│` for the whole grid. */
+const COL_CHROME = 3;
+
+/** Normalize a cell: convert HTML `<br>` line breaks (GFM tables can't hold a
+ * literal newline, so authors use `<br>` for in-cell breaks) to real newlines, then
+ * strip inline markdown per line. Returns a (possibly multi-line) cell. */
+function normCell(s: string): string {
+  return s
+    .replace(/<br\s*\/?>/gi, "\n")
+    .split("\n")
+    .map(stripInline)
+    .join("\n");
+}
 
 /**
- * Render a GFM table to clean, borderless lines — the modern terminal style: the
- * header row (tagged `header`), a single horizontal rule, then the data rows,
- * columns aligned with a 2-space gutter (no vertical bars, no outer box, which read
- * as cluttered once cells wrap). Inline markdown is stripped from every cell, and
- * overflowing cells **wrap** across lines (no truncation, no data loss). Every line
- * shares the same width so the rule and columns line up.
+ * Render a GFM table to a proper GRID (opencode-style): a `┌┬┐` top rule, the header
+ * row (accent), a `├┼┤` divider, then each data row followed by a `├┼┤` inter-row
+ * rule (the last closes with `└┴┘`). The UI draws the `│` borders in the border tone
+ * and the cells in their role color. A cell's HTML `<br>` becomes a real in-cell line
+ * break; inline markdown is stripped; overflowing cells **wrap** (no truncation).
+ * Every ` cell ` and rule segment is `width+2` wide, so junctions align under `│`.
  */
 export function renderTable(rows: string[][], align: Align[], maxWidth: number): TableLine[] {
   const cols = Math.max(1, ...rows.map((r) => r.length));
-  const norm = rows.map((r) => Array.from({ length: cols }, (_, c) => stripInline((r[c] ?? "").trim())));
-  const w = Array.from({ length: cols }, (_, c) => Math.max(1, ...norm.map((r) => len(r[c]!))));
+  const norm = rows.map((r) => Array.from({ length: cols }, (_, c) => normCell((r[c] ?? "").trim())));
+  // A cell's width is its widest line (cells may now hold `<br>`-driven newlines).
+  const cellW = (s: string): number => Math.max(1, ...s.split("\n").map(displayWidth));
+  const w = Array.from({ length: cols }, (_, c) => Math.max(1, ...norm.map((r) => cellW(r[c]!))));
 
-  // Shrink the widest column until the table fits (min 3 wide so wrapping stays
-  // legible). Chrome = the inter-column gutters. Overflow wraps, never truncates.
-  const chrome = TABLE_GUTTER * (cols - 1);
+  // Shrink the widest column until the grid fits (min 3 wide so wrapping stays
+  // legible). Chrome = per-column borders + padding. Overflow wraps, never truncates.
+  const chrome = COL_CHROME * cols + 1;
   let total = chrome + w.reduce((a, b) => a + b, 0);
   while (total > maxWidth && Math.max(...w) > 3) {
     w[w.indexOf(Math.max(...w))]!--;
     total--;
   }
-  const tableWidth = chrome + w.reduce((a, b) => a + b, 0);
 
-  const alignLine = (v: string, c: number): string => {
+  const alignCell = (v: string, c: number): string => {
     const width = w[c]!;
-    const pad = Math.max(0, width - len(v));
+    const pad = Math.max(0, width - displayWidth(v));
     const a = align[c] ?? "left";
     if (a === "right") return " ".repeat(pad) + v;
     if (a === "center") {
@@ -235,22 +316,30 @@ export function renderTable(rows: string[][], align: Align[], maxWidth: number):
     }
     return v + " ".repeat(pad);
   };
-  const gutter = " ".repeat(TABLE_GUTTER);
-  // A logical row → 1+ physical lines: wrap each cell, stack to the tallest cell,
-  // join columns with the gutter.
-  const rowLines = (r: string[]): string[] => {
-    const wrapped = r.map((s, c) => wrapCell(s, w[c]!));
+  // A logical row → 1+ physical lines: split each cell on its `<br>` newlines, wrap
+  // each segment to the column width, stack to the tallest cell, emit padded cells.
+  const rowLines = (r: string[]): string[][] => {
+    const wrapped = r.map((s, c) => s.split("\n").flatMap((part) => wrapCell(part, w[c]!)));
     const height = Math.max(1, ...wrapped.map((x) => x.length));
-    const out: string[] = [];
+    const out: string[][] = [];
     for (let li = 0; li < height; li++) {
-      out.push(wrapped.map((lines, c) => alignLine(lines[li] ?? "", c)).join(gutter));
+      out.push(wrapped.map((lines, c) => alignCell(lines[li] ?? "", c)));
     }
     return out;
   };
+  // A box rule: `left` + per-column `─`×(width+2) joined by `mid` + `right`.
+  const rule = (left: string, mid: string, right: string): string =>
+    left + w.map((width) => "─".repeat(width + 2)).join(mid) + right;
 
   const out: TableLine[] = [];
-  for (const line of rowLines(norm[0]!)) out.push({ role: "header", text: line });
-  out.push({ role: "rule", text: "─".repeat(tableWidth) });
-  for (const r of norm.slice(1)) for (const line of rowLines(r)) out.push({ role: "row", text: line });
+  out.push({ role: "rule", text: rule("┌", "┬", "┐") });
+  for (const cells of rowLines(norm[0]!)) out.push({ role: "header", cells });
+  const data = norm.slice(1);
+  out.push({ role: "rule", text: rule(data.length ? "├" : "└", data.length ? "┼" : "┴", data.length ? "┤" : "┘") });
+  data.forEach((r, i) => {
+    for (const cells of rowLines(r)) out.push({ role: "row", cells });
+    const last = i === data.length - 1;
+    out.push({ role: "rule", text: rule(last ? "└" : "├", last ? "┴" : "┼", last ? "┘" : "┤") });
+  });
   return out;
 }

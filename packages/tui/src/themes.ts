@@ -43,6 +43,10 @@ export interface Palette {
   heading: string;
   /** Fenced code-block text (distinct from the vivid chrome accent). */
   code: string;
+  /** A harmonious ramp of distinct hues for data views (bar/line/pie series,
+   * source-card accents, weather chips) — cycled by index so a multi-series chart
+   * reads as clean, differentiable categories rather than one flat color. */
+  series: string[];
 }
 
 /** Black + Blue-300 dark palette (the default). */
@@ -85,6 +89,10 @@ const DEFAULT: Palette = {
   gutter: "#3f5766",
   heading: "#70cbf4",
   code: "#9cdcfe",
+  // A calm, distinct 6-hue ramp for charts/pies/sources on black: blue, green,
+  // violet, amber, rose, teal — spaced around the wheel so adjacent series never
+  // read as the same color, all bright enough to pop on the black backdrop.
+  series: ["#70cbf4", "#9ece6a", "#bb9af7", "#e0af68", "#f7768e", "#2ac3de"],
 };
 
 /** Light palette for bright terminals. */
@@ -115,6 +123,8 @@ const LIGHT: Palette = {
   gutter: "#9aa7b5",
   heading: "#2959aa",
   code: "#0f5e78",
+  // Deeper, saturated hues that stay legible on the light backdrop.
+  series: ["#2959aa", "#385f0d", "#5a3e8e", "#8f5e15", "#a1113b", "#0f7b9c"],
 };
 
 /** High-contrast palette for accessibility. */
@@ -145,6 +155,8 @@ const CONTRAST: Palette = {
   gutter: "#7fa8c0",
   heading: "#00d7ff",
   code: "#87e5ff",
+  // Maximum-separation bright hues for the high-contrast theme.
+  series: ["#00d7ff", "#5fff00", "#ff87ff", "#ffd700", "#ff3b3b", "#00ffaf"],
 };
 
 /**
@@ -179,6 +191,8 @@ const OPENCODE: Palette = {
   gutter: "#544c44",
   heading: "#fab283",
   code: "#56b6c2",
+  // Peach-forward ramp echoing the opencode signature, kept distinct per hue.
+  series: ["#fab283", "#7fd88f", "#9d7cd8", "#5c9cf5", "#c53b53", "#4fd6be"],
 };
 
 export const THEMES: Record<string, Palette> = {

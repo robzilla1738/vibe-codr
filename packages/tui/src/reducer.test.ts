@@ -3,6 +3,7 @@ import {
   initialTranscript,
   reduceTranscript,
   groupTurns,
+  groupIntoTurns,
   collapsedHint,
   firstLine,
   truncate,
@@ -132,6 +133,16 @@ test("notice and clear-turn finalize the reply", () => {
   expect(s.toolByCallId).toEqual({});
 });
 
+test("notice level: defaults to info, carries error/warn through so the UI can color them", () => {
+  const s = run([
+    { type: "notice", text: "compacted" }, // no level → info
+    { type: "notice", text: "boom", level: "error" },
+    { type: "notice", text: "heads up", level: "warn" },
+  ]);
+  const notices = s.blocks.filter((b): b is Extract<Block, { kind: "notice" }> => b.kind === "notice");
+  expect(notices.map((n) => n.level)).toEqual(["info", "error", "warn"]);
+});
+
 test("block ids are unique and monotonic", () => {
   const s = run([
     { type: "user", text: "a" },
@@ -160,6 +171,38 @@ test("groupTurns maps blocks to their turn and counts non-user blocks", () => {
   expect(counts.get(u1)).toBe(2); // assistant + tool in turn 1
   // every non-user block maps to some user turn
   for (const b of s.blocks) if (b.kind !== "user") expect(turnKey.get(b.id)).toBeDefined();
+});
+
+test("groupIntoTurns groups each user message with its following blocks", () => {
+  const s = run([
+    { type: "user", text: "q1" },
+    { type: "delta", text: "a1" },
+    { type: "finalize" },
+    { type: "tool-start", toolCallId: "c1", toolName: "read", input: {} },
+    { type: "user", text: "q2" },
+    { type: "delta", text: "a2" },
+  ]);
+  const turns = groupIntoTurns(s.blocks);
+  expect(turns.length).toBe(2);
+  expect(turns[0]!.user?.text).toBe("q1");
+  expect(turns[0]!.items.map((b) => b.kind)).toEqual(["assistant", "tool"]);
+  expect(turns[0]!.key).toBe(turns[0]!.user!.id); // keyed by the user id
+  expect(turns[1]!.user?.text).toBe("q2");
+  expect(turns[1]!.items.map((b) => b.kind)).toEqual(["assistant"]);
+});
+
+test("groupIntoTurns puts a leading (pre-user) block in a node-less preamble turn", () => {
+  const s = run([
+    { type: "notice", text: "session restored", level: "info" },
+    { type: "user", text: "q1" },
+    { type: "delta", text: "a1" },
+  ]);
+  const turns = groupIntoTurns(s.blocks);
+  expect(turns.length).toBe(2);
+  expect(turns[0]!.user).toBeUndefined(); // preamble → no node
+  expect(turns[0]!.items.map((b) => b.kind)).toEqual(["notice"]);
+  expect(turns[0]!.key).toBeLessThan(0); // synthetic stable key
+  expect(turns[1]!.user?.text).toBe("q1");
 });
 
 test("collapsedHint reads diffs, search results, and line counts", () => {

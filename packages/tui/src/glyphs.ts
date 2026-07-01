@@ -1,10 +1,7 @@
 /**
  * Canonical UI glyphs, shared by the OpenTUI app (`app.tsx`) and the headless
- * renderer (`headless.ts`) so the two surfaces never drift.
- *
- * NOTE: `packages/core/scripts/screenshot.ts` lives in `@vibe/core` and must not
- * import from `@vibe/tui`, so it keeps its own literal copies — keep them
- * identical to the values below (it carries a comment pointing here).
+ * renderer (`headless.ts`) so the two surfaces never drift. The README screenshot
+ * generator renders the real `App`, so it picks these up automatically.
  */
 export const GLYPH = {
   /** Tool call. */

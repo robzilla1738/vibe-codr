@@ -31,13 +31,16 @@ export type Block =
       isMarkdown?: boolean;
       isError: boolean;
     }
-  | { kind: "notice"; id: number; text: string };
+  | { kind: "notice"; id: number; text: string; level: "info" | "warn" | "error" };
 
 /** A subagent shown in the Subagents panel while it runs and after it finishes. */
 export interface Subagent {
   id: string;
   prompt: string;
   status: "running" | "done";
+  /** Live one-line "what it's doing right now" ("$ bun test", "edit app.ts"),
+   *  set from `subagent-activity` while RUNNING and cleared on finish. */
+  activity?: string;
   /** One-line result summary, surfaced once the subagent finishes. */
   result?: string;
 }
@@ -96,7 +99,7 @@ export type TranscriptAction =
       removed: number;
       diff?: string;
     }
-  | { type: "notice"; text: string }
+  | { type: "notice"; text: string; level?: "info" | "warn" | "error" }
   | { type: "toggle"; id: number }
   /** Turn boundary: finalize the reply and drop per-turn call maps. */
   | { type: "clear-turn" };
@@ -228,7 +231,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       const f = finalizeActive(s);
       return {
         ...f,
-        blocks: [...f.blocks, { kind: "notice", id: f.nextId, text: a.text }],
+        blocks: [...f.blocks, { kind: "notice", id: f.nextId, text: a.text, level: a.level ?? "info" }],
         nextId: f.nextId + 1,
       };
     }
@@ -244,6 +247,47 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
     default:
       return s;
   }
+}
+
+/**
+ * One conversation turn: the user message that opens it plus every block that
+ * follows until the next user message. Blocks that arrive before any user message
+ * (a leading banner/notice) form a `user`-less preamble turn. Rendered as a single
+ * connected "thread" — a continuous left rail (git-graph style) runs from the user
+ * node at the top down through the turn's tool steps and answer.
+ */
+export interface Turn {
+  /** The user message that anchors the turn, or undefined for a leading preamble. */
+  user?: Extract<Block, { kind: "user" }>;
+  /** The turn's non-user blocks (assistant / tool / notice), in arrival order. */
+  items: Block[];
+  /** Stable render/fold key: the user-message id, or a negative synthetic id for a
+   * preamble (so `<Index>` positions and the collapsed-turns set stay stable). */
+  key: number;
+}
+
+/**
+ * Group the flat append-only block list into {@link Turn}s. Pure and testable;
+ * app.tsx renders each turn as one threaded unit. Turns only ever append (the
+ * transcript never reorders), so a turn's `key` is stable across recomputes.
+ */
+export function groupIntoTurns(blocks: Block[]): Turn[] {
+  const turns: Turn[] = [];
+  let cur: Turn | null = null;
+  for (const b of blocks) {
+    if (b.kind === "user") {
+      cur = { user: b, items: [], key: b.id };
+      turns.push(cur);
+    } else {
+      if (!cur) {
+        // A block before the first user message → a keyed, node-less preamble.
+        cur = { items: [], key: -1 - turns.length };
+        turns.push(cur);
+      }
+      cur.items.push(b);
+    }
+  }
+  return turns;
 }
 
 /**

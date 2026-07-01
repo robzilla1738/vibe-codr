@@ -36,6 +36,20 @@ test("formatUsage always shows cost: $0.00 for free, $ for real, ~$ for estimate
   ).toContain("~$0.0420");
 });
 
+test("formatUsage renders cached tokens compactly (k-suffix), matching the total", () => {
+  const s = formatUsage({
+    inputTokens: 5000,
+    outputTokens: 100,
+    totalTokens: 5100,
+    costUSD: 0.03,
+    cachedInputTokens: 1100,
+  });
+  // Both the total and the cached count use the compact `k` form — not `1100`.
+  expect(s).toContain("5.1k tok");
+  expect(s).toContain("1.1k cached");
+  expect(s).not.toContain("1100 cached");
+});
+
 test("formatJsonResult emits a parseable result with the expected fields", () => {
   const json = formatJsonResult({
     sessionId: "ses_1",

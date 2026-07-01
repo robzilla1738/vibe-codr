@@ -50,11 +50,22 @@ test("every theme defines the new gutter/heading/code text tokens", () => {
 });
 
 test("every theme defines a full palette of color strings", () => {
-  const keys = Object.keys(getTheme("default"));
+  const keys = Object.keys(getTheme("default")).filter((k) => k !== "series");
   for (const name of THEME_NAMES) {
     const palette = getTheme(name) as unknown as Record<string, string>;
     for (const k of keys) {
       expect(typeof palette[k]).toBe("string");
     }
+  }
+});
+
+test("every theme defines a series ramp of ≥4 distinct hex hues (for charts)", () => {
+  for (const name of THEME_NAMES) {
+    const { series } = getTheme(name);
+    expect(Array.isArray(series)).toBe(true);
+    expect(series.length).toBeGreaterThanOrEqual(4);
+    for (const c of series) expect(c).toMatch(/^#[0-9a-f]{6}$/);
+    // Distinct hues so adjacent chart series never read as the same color.
+    expect(new Set(series).size).toBe(series.length);
   }
 });

@@ -160,6 +160,14 @@ push({ type: "assistant-text-delta", id: "d", delta: "**42**." } as UIEvent);
 await settle();
 frame = await waitForText("42"); // markdown is parsed off-thread; poll for it
 check("user message renders", frame.includes("What is 6 times 7?"));
+// The turn renders as UNIFORM filled blocks (opencode-style): the user prompt sits
+// on a raised panel surface. Assert the prompt line carries a non-black background.
+const userBlocked = t
+  .captureSpans()
+  .lines.some(
+    (l) => l.spans.some((s) => s.text.includes("times 7")) && l.spans.some((s) => s.bg.r + s.bg.g + s.bg.b > 0.02),
+  );
+check("user prompt renders in a uniform filled block", userBlocked);
 check("streamed assistant reply renders", frame.includes("42"));
 // The reply was `**42**.` — the markdown renderable must CONCEAL the bold
 // markers (it needs the web-tree-sitter peer dep loaded). Raw `**` leaking
@@ -259,6 +267,19 @@ check("tasks panel shows the Tasks section", frame.includes("Tasks"));
 check("tasks panel shows a task title", frame.includes("cost footer"));
 check("subagents panel shows the Subagents section", frame.includes("Subagents"));
 check("subagents panel shows a running subagent", frame.includes("explore the repo"));
+
+// 6a) A RUNNING subagent surfaces its live activity after the (truncated) prompt
+// ("… · $ bun test"); the label is CLEARED once the child finishes, so the row
+// then shows just its prompt + a done glyph. Guards the subagent-activity wiring.
+push({ type: "subagent-activity", subagentId: "sa_42", label: "$ bun test" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("running subagent shows its live activity label", frame.includes("$ bun test"));
+push({ type: "subagent-finished", subagentId: "sa_42", result: "all green" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("subagent activity clears once the child finishes", !frame.includes("$ bun test"));
+check("finished subagent still shows its prompt", frame.includes("explore the repo"));
 // The edit in 5b touched g.ts → it shows in the under-input changed-file summary.
 check("status line shows the changed-file summary", frame.includes("1 file"));
 // The under-input status line surfaces the git branch from the snapshot.
@@ -307,17 +328,17 @@ await t.mockInput.typeText("/appr");
 await settle();
 frame = t.captureCharFrame();
 check("menu opens on slash", frame.includes("approvals"));
-// The menu now DOCKS flush above the input (no floating gap, aligned edges): the
-// row directly above the input's `ASK` top border must be a menu row (non-blank),
-// and the menu's left edge must line up with the input's (the old 1-col inset is
-// gone). Guards a regression back to the detached floating popup.
+// The menu is a FLAT extension of the input: the command list sits directly above
+// the prompt row (`ASK ❯ /appr`), which sits above the under-input status line —
+// one connected control, no popup box, no filled frame. Guards a regression back to
+// a separate floating box.
 {
   const fl = frame.split("\n");
-  const askRow = fl.findIndex((l) => l.includes("ASK"));
-  const aboveAsk = askRow > 0 ? fl[askRow - 1]! : "";
-  const firstCol = (s: string) => s.length - s.trimStart().length;
-  check("menu docks flush above the input (no gap row)", askRow > 0 && aboveAsk.trim().length > 0);
-  check("menu and input left edges align (no inset)", askRow > 0 && firstCol(aboveAsk) === firstCol(fl[askRow]!));
+  const promptRow = fl.findIndex((l) => l.includes("ASK") && l.includes("❯"));
+  const menuRow = fl.findIndex((l) => l.includes("approvals"));
+  const statusRow = fl.findIndex((l) => l.includes("ollama/glm-5.2"));
+  check("menu renders directly above the prompt (one flat control)", menuRow >= 0 && promptRow > menuRow);
+  check("menu + prompt sit above the under-input status", statusRow > promptRow);
 }
 t.mockInput.pressEnter();
 await settle();
@@ -563,18 +584,70 @@ frame = await waitForText("PROSE_OMEGA");
 check("rich reply: prose before a code/table block renders", frame.includes("PROSE_ALPHA"));
 check("rich reply: prose after a code/table block renders", frame.includes("PROSE_OMEGA"));
 check("rich reply: the code block renders", frame.includes("RICHCODE"));
-check("rich reply: the table renders (borderless: header + rows)", frame.includes("Name") && frame.includes("Zustand"));
+// The table is a box-drawing GRID (opencode-style): `┌┬┐`/`├┼┤`/`└┴┘` rules + `│`
+// column borders, header cells in the accent.
+check("rich reply: the table renders (grid: header + rows)", frame.includes("Name") && frame.includes("Zustand"));
+check("rich reply: the table is a box-drawing grid", frame.includes("┌") && frame.includes("┼") && frame.includes("│"));
+const headerAccent = t
+  .captureSpans()
+  .lines.flatMap((l) => l.spans)
+  .some((s) => s.text.includes("Name") && s.fg.b >= s.fg.r && s.fg.b >= s.fg.g && s.fg.b - Math.min(s.fg.r, s.fg.g) > 0.15);
+check("rich reply: the table header is accent-colored", headerAccent);
 // Table cells conceal inline markdown — the `**Name**` header must not leak raw
 // `**` (and the whole reply, prose + table, has no stray markers).
 check("rich reply: table cells conceal inline markdown (no raw **)", !frame.includes("**"));
 check("rich reply: the heading renders", frame.includes("RICHHEAD"));
-check("rich reply: the blockquote renders with a gutter bar", frame.includes("RICHQUOTE") && frame.includes("▎"));
+// The blockquote renders with a SOLID bg gutter bar (a filled cell, not a `▎`
+// glyph) — assert the quoted line carries a filled (non-black) leading background.
+const quoteBar = t
+  .captureSpans()
+  .lines.some(
+    (l) => l.spans.some((s) => s.text.includes("RICHQUOTE")) && l.spans.some((s) => s.bg.r + s.bg.g + s.bg.b > 0.1),
+  );
+check("rich reply: the blockquote renders with a filled gutter bar", frame.includes("RICHQUOTE") && quoteBar);
 // The heading is painted in the blue accent (the `heading` token), not body white.
 const headingBlue = t
   .captureSpans()
   .lines.flatMap((l) => l.spans)
   .some((s) => s.text.includes("RICHHEAD") && s.fg.b >= s.fg.r && s.fg.b >= s.fg.g && s.fg.b - Math.min(s.fg.r, s.fg.g) > 0.15);
 check("rich reply: the heading is accent-blue", headingBlue);
+
+// 12) Rich data views: a reply with fenced chart / pie / sources blocks renders as
+// beautiful views (bars, a colored pie disc + legend, numbered source cards) rather
+// than raw code. Guards the rich-block engine end-to-end.
+push({ type: "user-message", text: "show me BTC vs ETH data" });
+push({
+  type: "assistant-text-delta",
+  id: "rv",
+  delta:
+    "Here's the breakdown:\n\n```chart\n# Market cap ($B)\nBitcoin: 1200\nEthereum: 190\nSolana: 62\n```\n\n```pie\nBitcoin: 55\nEthereum: 25\nOthers: 20\n```\n\n```sources\nBitcoin surges | coindesk.com | BTC past $58k on ETF inflows.\n```",
+} as UIEvent);
+push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+await settle();
+frame = await waitForText("Market cap");
+check("rich view: bar chart renders a title + bars", frame.includes("Market cap") && frame.includes("█"));
+check("rich view: bar chart keeps the value labels", frame.includes("1200") && frame.includes("190"));
+check("rich view: pie legend shows labelled percentages", frame.includes("55%") && frame.includes("Others"));
+check("rich view: sources render as cards (title + domain)", frame.includes("Bitcoin surges") && frame.includes("coindesk.com"));
+// The pie disc paints slices as background-colored cells — assert a span exists
+// with a saturated (non-grey) BACKGROUND, proving the series ramp is applied.
+const pieColored = t
+  .captureSpans()
+  .lines.flatMap((l) => l.spans)
+  .some((s) => Math.max(s.bg.r, s.bg.g, s.bg.b) - Math.min(s.bg.r, s.bg.g, s.bg.b) > 0.2);
+check("rich view: pie disc paints colored slices", pieColored);
+
+// 13) Selecting text (a mouse drag) copies it to the clipboard and flashes the
+// "Copied to clipboard" toast in the top-right corner.
+const capRow = t.captureCharFrame().split("\n").findIndex((l) => l.includes("Market cap"));
+check("located a row to select", capRow >= 0);
+if (capRow >= 0) {
+  await t.mockMouse.drag(8, capRow, 30, capRow);
+  // Let the toast slide in to its hold position (it eases in over ~4 frames).
+  for (let i = 0; i < 5; i++) await settle();
+  frame = t.captureCharFrame();
+  check("selecting text flashes the copy toast", frame.includes("Copied to clipboard"));
+}
 
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);

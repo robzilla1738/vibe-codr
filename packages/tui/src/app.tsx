@@ -6,22 +6,36 @@
  * optional native peer deps. It is dynamically imported by `startTui`; if the
  * import fails, the readline REPL in `tui.ts` takes over. Because it can't be
  * typechecked, only use OpenTUI props/events confirmed to exist in the installed
- * version, and keep `packages/core/scripts/screenshot.ts` in lockstep with any
- * visible change here (that script mirrors this render for the README shots).
+ * version. The README screenshots render THIS component and rasterize its real
+ * cell grid (`packages/tui/scripts/screenshot.ts`), so there is no parallel render
+ * to keep in sync — just re-run that script after a visible change.
  *
- * Layout: a single, centered, capped-width chat column (ChatGPT-style, no
- * sidebar) on a black background. There is NO top header — a fresh screen shows a
- * centered VIBE CODR wordmark; once you start, the column is: the scrolling
- * transcript, the live status panels (working · plan · tasks · subagents ·
- * permission · command-menu), the input (whose top border doubles as the mode
- * break, e.g. `━━ ▶ EXECUTE ━━`), and a two-line status block UNDER the input
- * (cwd · git / model · changed · ctx · cost — plus hints + goal). The column is
- * centered by two flex-grow gutter boxes, so it fills a narrow terminal and gets
- * quiet side margins on a wide one. Assistant text renders through OpenTUI's
- * native <markdown> renderable (NOT a hand-rolled ANSI string — embedding raw
- * escape codes in a <text> made the renderer miscount widths and garble long
- * streamed replies). Tool and diff output is condensed to one line and expands on
- * click; tapping your own message folds the whole turn under it.
+ * Layout: a single, centered, capped-width chat column (ChatGPT-style, no sidebar)
+ * on a black background, with a muted TOP-LEFT context line (cwd · git · goal).
+ *
+ * DESIGN LANGUAGE — flat chrome, filled content. Structural chrome (status
+ * sections, the input, cards) is drawn FLAT: accent-colored titles + spacing on the
+ * uniform black, never line-drawn boxes or grey fills. This is deliberate: many
+ * terminals add line/letter spacing, which turns box-drawing borders (│─┼) into
+ * broken dashes and makes multi-row background fills read as messy floating
+ * rectangles. Flat text stays uniform on ANY terminal. The ONLY filled/bar elements
+ * are: (a) the turn-thread RAIL — a thin solid bg bar (git-graph style) down the
+ * left of each turn; (b) DATA VIZ — bar/line/pie charts, whose colored fills ARE
+ * the content; (c) thin left rails on code/quote blocks. A filled cell fills its
+ * whole rect, so these bars/fills stay solid everywhere.
+ *
+ * A fresh screen shows a centered VIBE CODR wordmark. Once you start: the scrolling
+ * transcript renders as connected TURN THREADS (a `◆` node carries your prompt, a
+ * continuous rail runs down through its tool steps + answer); below it sit the live
+ * status sections (working · plan · tasks · subagents · queue · permission); then
+ * the input — its OWN filled block (elevated surface, mode-hued left accent) holding
+ * a `MODE ❯` prompt with the command menu as rows inside the same block; then a
+ * justified status line (model ·
+ * changed · ctx · cost left; key hints right). Assistant prose renders through
+ * OpenTUI's native <markdown>; headings/quotes/code/tables + rich data views
+ * (chart/line/pie/weather/sources — see rich-blocks.ts) render from our own
+ * primitives. Tool/diff output is condensed to one line and expands on click;
+ * tapping your own message folds the whole turn under it.
  */
 
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
@@ -40,7 +54,21 @@ import type {
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
 import { applyPalette, paletteState } from "./commands-catalog.ts";
-import { renderTable, splitMarkdown, type MdBlock } from "./markdown-blocks.ts";
+import { displayWidth, renderTable, splitMarkdown, type MdBlock } from "./markdown-blocks.ts";
+import {
+  barGlyphs,
+  brailleChart,
+  compactNum,
+  parseChart,
+  parseSeries,
+  parseSources,
+  parseWeather,
+  pieGrid,
+  richKind,
+  sharePercents,
+  sparkline,
+  weatherIcon,
+} from "./rich-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
@@ -48,12 +76,11 @@ import { brandSpans } from "./gradient.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
-import { PANEL } from "./layout.ts";
 import { toolLabel } from "./tool-icons.ts";
 import {
   initialTranscript,
   reduceTranscript,
-  groupTurns,
+  groupIntoTurns,
   collapsedHint,
   firstLine,
   truncate,
@@ -104,21 +131,17 @@ export function App(props: { engine: EngineClient }) {
       next.has(turn) ? next.delete(turn) : next.add(turn);
       return next;
     });
-  // A turn is anchored by its user message; every block after it (until the next
-  // user message) belongs to that turn. `turnKey` maps any block id → its turn's
-  // user-message id, and `counts` is how many non-user blocks each turn has — so
-  // tapping a user message can fold (and count) its whole exchange.
-  const grouping = createMemo(() => groupTurns(blocks()));
-  const turnItemCount = (userId: number) => grouping().counts.get(userId) ?? 0;
-  // A non-user block is hidden when its turn (its user message) is folded.
-  const isHidden = (blockId: number) => {
-    const k = grouping().turnKey.get(blockId);
-    return k !== undefined && collapsedTurns().has(k);
-  };
-  // Ctrl+O: fold every turn that has work, or unfold all if any is folded.
+  // The transcript is rendered as connected TURN THREADS: each user message plus
+  // the blocks that follow it (until the next user message) is one turn, drawn with
+  // a continuous left rail (git-graph style) from the user node at the top down
+  // through its tool steps and answer. `turns()` is the pure grouping.
+  const turns = createMemo(() => groupIntoTurns(blocks()));
+  // Ctrl+O: fold every turn that has a node + work, or unfold all if any is folded.
   const toggleAllTurns = () =>
     setCollapsedTurns((prev) =>
-      prev.size > 0 ? new Set() : new Set(grouping().counts.keys()),
+      prev.size > 0
+        ? new Set()
+        : new Set(turns().filter((t) => t.user && t.items.length > 0).map((t) => t.key)),
     );
   // Subagent rows the user has expanded (one truncated line each by default, so a
   // big fan-out stays tidy unless you open a row).
@@ -294,10 +317,47 @@ export function App(props: { engine: EngineClient }) {
     return workingLabel(Date.now() - turnStartedAt);
   };
 
+  // Copy-toast: a brief "Copied to clipboard" card that slides in at the TOP-RIGHT
+  // corner when a selection is copied, holds, then slides back out. `toastFrame`
+  // (−1 = hidden, else 0..TOAST_FRAMES) drives the slide-in / hold / slide-out via a
+  // short-lived timer — a small, self-contained animation independent of the spinner.
+  const [toastFrame, setToastFrame] = createSignal(-1);
+  const TOAST_FRAMES = 32;
+  let toastTimer: ReturnType<typeof setInterval> | null = null;
+  const flashCopied = () => {
+    setToastFrame(0);
+    if (toastTimer) clearInterval(toastTimer);
+    toastTimer = setInterval(() => {
+      setToastFrame((f) => {
+        const next = f + 1;
+        if (next >= TOAST_FRAMES) {
+          if (toastTimer) clearInterval(toastTimer);
+          toastTimer = null;
+          return -1;
+        }
+        return next;
+      });
+    }, 55);
+  };
+  onCleanup(() => {
+    if (toastTimer) clearInterval(toastTimer);
+  });
+  // Vertical offset for the slide animation: rises from off-screen (−3) to row 1,
+  // holds, then slides back up on exit. A 4-frame ease at each end.
+  const toastTop = () => {
+    const f = toastFrame();
+    const HOLD = 1;
+    const HIDDEN = -3;
+    if (f < 0) return HIDDEN;
+    if (f < 4) return HIDDEN + Math.round(((HOLD - HIDDEN) * f) / 4);
+    if (f < TOAST_FRAMES - 4) return HOLD;
+    return HOLD + Math.round(((HIDDEN - HOLD) * (f - (TOAST_FRAMES - 4))) / 4);
+  };
+
   // Copy-on-selection: when a mouse drag-selection FINISHES, copy the highlighted
-  // text to the clipboard. OSC52 (via the renderer) covers tmux/SSH; the platform
-  // command (pbcopy/clip/wl-copy…) covers local terminals that ignore OSC52. Copy
-  // is best-effort — a failure must never break the render.
+  // text to the clipboard and flash the toast. OSC52 (via the renderer) covers
+  // tmux/SSH; the platform command (pbcopy/clip/wl-copy…) covers local terminals
+  // that ignore OSC52. Copy is best-effort — a failure must never break the render.
   const renderer = useRenderer();
   useSelectionHandler((selection: { isDragging: boolean; getSelectedText?: () => string }) => {
     if (selection.isDragging) return; // still dragging → wait for the release
@@ -305,6 +365,7 @@ export function App(props: { engine: EngineClient }) {
     if (!text.trim()) return;
     try {
       copyToClipboard(text, { osc52: (t) => renderer.copyToClipboardOSC52?.(t) ?? false });
+      flashCopied();
     } catch {
       // best-effort — ignore clipboard failures
     }
@@ -344,15 +405,25 @@ export function App(props: { engine: EngineClient }) {
   // arrow keys (and the initial current-value highlight) scroll, via
   // `ensureMenuVisible`. This kills the runaway "mouse moves → window re-centers →
   // rows shift under the cursor → hover fires again" fast-scroll loop.
-  const MENU_WINDOW = 8;
+  const MENU_WINDOW_MAX = 8;
+  // The menu now lives INSIDE the input frame (rigid, flexShrink=0), so an
+  // unbounded row count would push the input line + caret off the bottom on a
+  // short pane (or when Tasks/Subagents panels are also up). Adapt the window to
+  // the terminal height — reserving rows for the top-left line, the frame border,
+  // the menu title/hint/more/divider, the input line, and the under-input status —
+  // so the prompt you're typing at always stays visible (the rest scrolls with a
+  // "+N more" affordance). Mirrors `planPanelRows()`'s height cap.
+  const menuWindow = () =>
+    Math.max(3, Math.min(MENU_WINDOW_MAX, dims().height - inputRows() - 11));
   const [menuStart, setMenuStart] = createSignal(0);
   /** Scroll the window the minimum needed to keep row `sel` of `count` visible. */
   const ensureMenuVisible = (sel: number, count: number) => {
-    const maxStart = Math.max(0, count - MENU_WINDOW);
+    const win = menuWindow();
+    const maxStart = Math.max(0, count - win);
     setMenuStart((s) => {
       const cur = Math.min(Math.max(0, s), maxStart);
       if (sel < cur) return sel;
-      if (sel > cur + MENU_WINDOW - 1) return Math.min(sel - MENU_WINDOW + 1, maxStart);
+      if (sel > cur + win - 1) return Math.min(sel - win + 1, maxStart);
       return cur;
     });
   };
@@ -399,7 +470,7 @@ export function App(props: { engine: EngineClient }) {
         })
         .map((mdl) => {
           const full = `${mdl.providerId}/${mdl.id}`;
-          const ctx = mdl.contextWindow ? `  (${Math.round(mdl.contextWindow / 1000)}k)` : "";
+          const ctx = mdl.contextWindow ? `  (${fmtContext(mdl.contextWindow)})` : "";
           return {
             text: `${full}${ctx}`,
             current: cur === full,
@@ -544,24 +615,24 @@ export function App(props: { engine: EngineClient }) {
   // Apply the row at absolute index `i` (keyboard highlight or a click).
   const chooseAt = (i: number, run: boolean) => menuModel().rows[i]?.choose(run);
 
-  // Windowed rows for rendering (≤8 visible, scrolled to keep the highlight in
-  // view). The window scroll (`menuStart`) is arrow-driven, NOT derived from the
-  // highlight — so hovering never scrolls. Each view row carries its absolute index
-  // so a click selects + runs it.
-  const WINDOW = MENU_WINDOW;
+  // Windowed rows for rendering (≤ menuWindow() visible, scrolled to keep the
+  // highlight in view). The window scroll (`menuStart`) is arrow-driven, NOT derived
+  // from the highlight — so hovering never scrolls. Each view row carries its
+  // absolute index so a click selects + runs it.
   const menuView = () => {
     const m = menuModel();
     if (!m.open) return null;
+    const win = menuWindow();
     const rows = m.rows;
     const sel = Math.min(Math.max(0, selIdx()), Math.max(0, rows.length - 1));
-    const start = Math.min(Math.max(0, menuStart()), Math.max(0, rows.length - WINDOW));
-    const view = rows.slice(start, start + WINDOW).map((r, i) => ({
+    const start = Math.min(Math.max(0, menuStart()), Math.max(0, rows.length - win));
+    const view = rows.slice(start, start + win).map((r, i) => ({
       active: start + i === sel,
       current: !!r.current,
       text: r.text,
       idx: start + i,
     }));
-    const more = rows.length > WINDOW ? `+${rows.length - WINDOW} more · type to filter` : "";
+    const more = rows.length > win ? `+${rows.length - win} more · type to filter` : "";
     return { rows: view, title: m.title, hint: m.hint, more, loading: m.loading };
   };
 
@@ -749,9 +820,11 @@ export function App(props: { engine: EngineClient }) {
   });
 
   onMount(() => {
-    // Animate the working spinner / elapsed clock, but only while a turn runs.
+    // Animate the working spinner / elapsed clock while a turn runs — and also
+    // while the /jobs sub-view is open, so its per-job running spinners actually
+    // spin (otherwise `tick` never advances at idle and they freeze).
     const timer = setInterval(() => {
-      if (working()) setTick((t) => t + 1);
+      if (working() || showJobs()) setTick((t) => t + 1);
     }, 90);
     onCleanup(() => {
       clearInterval(timer);
@@ -849,11 +922,23 @@ export function App(props: { engine: EngineClient }) {
               { id: event.subagentId, prompt: event.prompt, status: "running" },
             ]);
             break;
+          case "subagent-activity":
+            // Live "what is it doing now" line — attach only to the RUNNING child,
+            // so a stray activity event arriving after it finished can't relight a
+            // done row's label.
+            setSubagents((prev) =>
+              prev.map((s) =>
+                s.id === event.subagentId && s.status === "running"
+                  ? { ...s, activity: event.label }
+                  : s,
+              ),
+            );
+            break;
           case "subagent-finished":
             setSubagents((prev) =>
               prev.map((s) =>
                 s.id === event.subagentId
-                  ? { ...s, status: "done", result: firstLine(event.result) }
+                  ? { ...s, status: "done", activity: undefined, result: firstLine(event.result) }
                   : s,
               ),
             );
@@ -894,11 +979,23 @@ export function App(props: { engine: EngineClient }) {
             endTurn();
             break;
           case "notice":
-            apply({ type: "notice", text: event.message });
+            apply({ type: "notice", text: event.message, level: event.level });
+            break;
+          case "compacted":
+            // Surface compaction in the transcript (the footer's ctx% also drops),
+            // matching the headless printer — otherwise `/compact` looks like a no-op.
+            apply({
+              type: "notice",
+              text: `Compacted history · freed ~${event.freedTokens} tokens`,
+              level: "info",
+            });
+            break;
+          case "loop-stopped":
+            apply({ type: "notice", text: `Loop stopped · ${event.reason}`, level: "info" });
             break;
           case "engine-error":
             endTurn();
-            apply({ type: "notice", text: `error: ${event.message}` });
+            apply({ type: "notice", text: `error: ${event.message}`, level: "error" });
             break;
           default:
             break;
@@ -977,8 +1074,8 @@ export function App(props: { engine: EngineClient }) {
   // intercepts Enter instead, so this runs only for prompts / typed commands.
   const submit = (value?: string) => runText(value ?? draft());
 
-  // The status details sit UNDER the input now (ChatGPT-style), cleanly split:
-  // left = cwd · git; right = model · changed-files · ctx/usage/cost.
+  // Status is split by location: cwd · git · goal go TOP-LEFT (`topLeftLine`),
+  // while model · changed-files · ctx/usage/cost sit UNDER the input (`detailsRight`).
   const gitSummary = () => {
     const g = git();
     if (!g) return "";
@@ -1003,21 +1100,21 @@ export function App(props: { engine: EngineClient }) {
   // ascii-font logo, then a one-line glyph. The column padding eats 2 cols.
   const showWordmark = () =>
     contentWidth() - 2 >= WORDMARK_COLS && dims().height >= 16;
-  const detailsLeft = () => [cwd, gitSummary()].filter(Boolean).join("  ·  ");
-  const detailsRight = () =>
-    [headModel(), changedSummary(), metrics()].filter(Boolean).join("  ·  ");
-  // One centered status line under the input: location · git · model · changed ·
-  // ctx · cost (· goal). Centered (not edge-justified) so the model never floats
-  // off alone on the far right with a void beside it — uniform with the hints
-  // line below and the centered splash above.
-  const detailsCenter = () =>
-    [detailsLeft(), detailsRight(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 40)}` : ""]
+  // The persistent "where am I" context — location · git · goal — sits at the
+  // TOP-LEFT of the column (out of the way), not under the input.
+  const topLeftLine = () =>
+    [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}` : ""]
       .filter(Boolean)
       .join("  ·  ");
+  // Live status shown under the input: model · changed · ctx · cost.
+  const detailsRight = () =>
+    [headModel(), changedSummary(), metrics()].filter(Boolean).join("  ·  ");
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
   // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in
-  // the bright foreground; their descriptors and separators stay muted. `/jobs`
-  // is advertised only while background jobs are actually running.
+  // the bright foreground; descriptors + separators stay muted. Shown on the empty
+  // splash (where discovery matters) and whenever a job is running; the working
+  // footer otherwise stays a single status line. `/jobs` is advertised only while
+  // background jobs are actually running.
   const hintSegs = (): Seg[] => {
     const dim = palette().muted;
     const lit = palette().assistant;
@@ -1042,14 +1139,56 @@ export function App(props: { engine: EngineClient }) {
     }
     return segs;
   };
+  // Hints belong under the input on the empty splash, and any time a background
+  // job is running (so the `/jobs` pointer is reachable) — otherwise the working
+  // footer is just the one status line.
+  const showHints = () => blocks().length === 0 || runningJobs() > 0;
+  // The under-input status bar is justified (status left, hints right). Only keep
+  // both on ONE row when they actually fit with a gap; otherwise the hints drop to
+  // their own row so the two never collide / clip on a narrow terminal.
+  const hintsWidth = () => hintSegs().reduce((n, s) => n + [...s.t].length, 0);
+  const footerFits = () => contentWidth() - 2 >= [...detailsRight()].length + hintsWidth() + 6;
+
+  // Hover-vs-arrows: a menu row's onMouseOver would otherwise keep pinning the
+  // selection to whatever row is under a RESTING mouse — so pressing ↑/↓ appeared
+  // to do nothing (the re-fired hover snapped it back, especially once the window
+  // scrolled a new row under the cursor). Gate hover on ACTUAL pointer movement:
+  // remember the last (x,y) and only re-select when it changes. A re-fire at the
+  // same coords is ignored, so the keyboard wins until you truly move the mouse.
+  let lastPointerX = -1;
+  let lastPointerY = -1;
+  const hoverRow = (idx: number, e: { x: number; y: number }) => {
+    if (e.x === lastPointerX && e.y === lastPointerY) return;
+    lastPointerX = e.x;
+    lastPointerY = e.y;
+    setSelIdx(idx);
+  };
 
   return (
     <box
+      position="relative"
       flexDirection="row"
       backgroundColor={palette().background}
       style={{ height: "100%" }}
       onMouseDown={refocusInput}
     >
+      {/* Copy toast — a small "Copied to clipboard" card that slides in at the
+          top-right corner on a selection copy, holds, then slides out (see
+          flashCopied / toastTop). Absolutely positioned so it overlays the column. */}
+      <Show when={toastFrame() >= 0}>
+        <box position="absolute" top={toastTop()} right={2} flexShrink={0}>
+          <box
+            backgroundColor={palette().panel}
+            border={["left", "right"]}
+            borderColor={brand()}
+            paddingLeft={2}
+            paddingRight={2}
+          >
+            <text fg={palette().assistant}>{"Copied to clipboard"}</text>
+          </box>
+        </box>
+      </Show>
+
       {/* Left gutter — black backdrop that centers the chat column. */}
       <box flexGrow={1} flexShrink={1} />
 
@@ -1063,6 +1202,12 @@ export function App(props: { engine: EngineClient }) {
         flexShrink={0}
         padding={1}
       >
+      {/* Top-left context line: location · git · goal — the persistent "where am
+          I", tucked in the corner so it's out of the conversation's way. */}
+      <box flexDirection="row" flexShrink={0}>
+        <text flexShrink={1} fg={palette().muted} wrapMode="none">{topLeftLine()}</text>
+        <box flexGrow={1} />
+      </box>
       {/* Body — the /jobs sub-view when open; otherwise a centered VIBE CODR splash
           on a fresh screen, or the scrolling transcript once the chat starts. */}
       <box flexDirection="column" flexGrow={1}>
@@ -1177,22 +1322,25 @@ export function App(props: { engine: EngineClient }) {
                 </box>
                 <box flexGrow={1} />
               </box>
-              {/* A single, centered prompt-starter line — no tagline, no key
-                  cheatsheet (those live in the under-input status). Just three
-                  example asks to get going. */}
-              <box flexDirection="column" marginTop={1}>
-                <SegRow
-                  center
-                  segs={[
-                    { t: "Try ", fg: palette().muted },
-                    { t: "› ", fg: brand() },
-                    { t: "explain this codebase", fg: palette().assistant },
-                    { t: "  ·  ", fg: palette().muted },
-                    { t: "fix the failing test", fg: palette().assistant },
-                    { t: "  ·  ", fg: palette().muted },
-                    { t: "add a --json flag", fg: palette().assistant },
-                  ]}
-                />
+              {/* Prompt starters under the wordmark: a quiet intro, then the
+                  example asks as a block-centered list with aligned `›` markers —
+                  reads as inviting quick-actions instead of a cramped one-liner. */}
+              <box flexDirection="column" marginTop={2}>
+                <SegRow center segs={[{ t: "Try asking", fg: palette().muted }]} />
+                <box flexDirection="row" flexShrink={0} marginTop={1}>
+                  <box flexGrow={1} />
+                  <box flexDirection="column" flexShrink={0}>
+                    <For each={["explain this codebase", "fix the failing test", "add a --json flag"]}>
+                      {(ex) => (
+                        <box flexDirection="row" flexShrink={0}>
+                          <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"›  "}</text>
+                          <text flexShrink={0} fg={palette().assistant}>{ex}</text>
+                        </box>
+                      )}
+                    </For>
+                  </box>
+                  <box flexGrow={1} />
+                </box>
               </box>
               <box flexGrow={1} />
             </box>
@@ -1208,108 +1356,130 @@ export function App(props: { engine: EngineClient }) {
           contentOptions={{ flexDirection: "column" }}
           scrollbarOptions={{ visible: false }}
         >
-          {/* <Index> keys by position (stable, append-only). A block's `kind`
-              is immutable for its lifetime — the file-changed fold mutates a
-              tool block in place (tool→tool) but never changes kind — so the
-              per-kind <Show> branches below never need to swap a row's element. */}
-          <Index each={blocks()}>
-            {(block, index) => {
-              // A tool row "chains" to the one above it when that row is also a
-              // visible tool — consecutive steps (search → fetch → fetch) then
-              // stack flush instead of each floating in its own gap.
-              const chained = () => {
-                if (index <= 0) return false;
-                const cur = block();
-                if (cur.kind !== "tool" || isHidden(cur.id)) return false;
-                const prev = blocks()[index - 1];
-                return prev?.kind === "tool" && !isHidden(prev.id);
+          {/* The transcript as connected TURN THREADS. `<Index>` keys by position
+              (turns only ever append), so streaming re-renders only the live turn.
+              Each turn: a `◆` node carrying the user message, then a continuous
+              left rail (git-graph style) running top→bottom through the turn's tool
+              steps + answer. Tap the node to fold the whole exchange under it. */}
+          <Index each={turns()}>
+            {(turn) => {
+              const hasNode = () => turn().user !== undefined;
+              const items = () => turn().items;
+              const folded = () => hasNode() && collapsedTurns().has(turn().key);
+              const foldTap = () => {
+                if (hasNode() && items().length > 0) anchoredToggle(() => toggleTurn(turn().key));
               };
+              // Content width inside a block = column pad(2) + block left border(1) +
+              // block padding L(2)+R(1) = 6 consumed.
+              const blockInner = () => contentWidth() - 6;
               return (
-              <Show
-                when={block().kind !== "user"}
-                fallback={
-                  // Your turn: the SAME raised frame as the input bar. TAP it to
-                  // fold the whole exchange under it (reply + tool work), leaving
-                  // just your message + an expand affordance. Tap again to reopen.
-                  <box
-                    flexDirection="column"
-                    marginTop={1}
-                    onMouseDown={() => {
-                      const id = (block() as { id: number }).id;
-                      if (turnItemCount(id) > 0) anchoredToggle(() => toggleTurn(id));
-                    }}
-                  >
+                // Every block (including the first, below the top-left context line)
+                // gets the same 1-row top gap, so spacing is uniform throughout.
+                <box flexDirection="column" flexShrink={0} marginTop={1}>
+                  {/* Each turn renders as UNIFORM filled BLOCKS (opencode-style): a
+                      raised panel surface with top/bottom/left padding and a thin left
+                      accent edge. The fill makes it read as one clean, uniform solid
+                      block on any terminal; the accent is a thin line, not a bar. */}
+                  <Show when={turn().user}>
                     <box
                       border={["left"]}
-                      borderStyle="heavy"
                       borderColor={brand()}
-                      backgroundColor={palette().elevated}
-                      flexDirection="row"
-                      paddingLeft={1}
-                      paddingRight={1}
-                      paddingTop={1}
-                      paddingBottom={1}
+                      flexShrink={0}
+                      onMouseDown={foldTap}
                     >
-                      <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                        {"❯ "}
-                      </text>
-                      <text flexGrow={1} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
-                        {block().text}
-                      </text>
+                      <box
+                        backgroundColor={palette().panel}
+                        flexDirection="column"
+                        paddingTop={1}
+                        paddingBottom={1}
+                        paddingLeft={2}
+                        paddingRight={1}
+                      >
+                        <text flexShrink={0} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
+                          {turn().user!.text}
+                        </text>
+                        <Show when={folded()}>
+                          <text flexShrink={0} fg={palette().muted} marginTop={1}>
+                            {`▸ ${items().length} item${items().length === 1 ? "" : "s"} hidden · tap to expand`}
+                          </text>
+                        </Show>
+                      </box>
                     </box>
-                    <Show
-                      when={
-                        turnItemCount((block() as { id: number }).id) > 0 &&
-                        collapsedTurns().has((block() as { id: number }).id)
-                      }
+                  </Show>
+                  {/* The turn's output — assistant answer + tool steps + notices — in a
+                      single uniform panel block with a subtle left accent. */}
+                  <Show when={!folded() && items().length > 0}>
+                    <box
+                      border={["left"]}
+                      borderColor={palette().gutter}
+                      flexShrink={0}
+                      marginTop={hasNode() ? 1 : 0}
                     >
-                      <text fg={palette().muted} paddingLeft={1}>
-                        {`▸ ${turnItemCount((block() as { id: number }).id)} item${turnItemCount((block() as { id: number }).id) === 1 ? "" : "s"} hidden · tap to expand`}
-                      </text>
-                    </Show>
-                  </box>
-                }
-              >
-                {/* assistant / tool / notice — all hidden when their turn (the
-                    user message above) is folded. Folding is driven from the user
-                    message, so these are not themselves click targets. */}
-                <Show when={block().kind === "assistant" && !isHidden((block() as { id: number }).id)}>
-                  <box
-                    id={`msg-${(block() as { id: number }).id}`}
-                    flexDirection="column"
-                    marginTop={(block() as { gap: boolean }).gap ? 1 : 0}
-                  >
-                    {/* `indent={2}` aligns prose/headings/quotes with the user-message
-                        and tool-step content (border(1)+pad(1)); code blocks and
-                        tables render flush at x=0 so they share the input frame's full
-                        width (both left AND right edges align, not just the right). */}
-                    <AssistantText
-                      text={(block() as { text: string }).text}
-                      streaming={(block() as { streaming: boolean }).streaming}
-                      style={mdStyle}
-                      fg={palette().assistant}
-                      palette={palette()}
-                      width={contentWidth() - 2}
-                      indent={2}
-                    />
-                  </box>
-                </Show>
-                <Show when={block().kind === "tool" && !isHidden((block() as { id: number }).id)}>
-                  <ToolBlockView
-                    block={block as () => Extract<Block, { kind: "tool" }>}
-                    palette={palette()}
-                    style={mdStyle}
-                    chained={chained()}
-                    hue={palette().gutter}
-                    onToggle={(id) => anchoredToggle(() => toggle(id))}
-                  />
-                </Show>
-                <Show when={block().kind === "notice" && !isHidden((block() as { id: number }).id)}>
-                  <text fg={palette().notice} marginTop={1} paddingLeft={2}>
-                    {(block() as { text: string }).text}
-                  </text>
-                </Show>
-              </Show>
+                      <box
+                        backgroundColor={palette().panel}
+                        flexDirection="column"
+                        paddingTop={1}
+                        paddingBottom={1}
+                        paddingLeft={2}
+                        paddingRight={1}
+                      >
+                        <Index each={items()}>
+                          {(blk, i) => {
+                            // A tool row stacks flush under a preceding tool (a run of
+                            // steps reads as one segment); otherwise a gap row above it.
+                            const chained = () =>
+                              blk().kind === "tool" && items()[i - 1]?.kind === "tool";
+                            return (
+                              <>
+                                <Show when={blk().kind === "assistant"}>
+                                  <box
+                                    id={`msg-${(blk() as { id: number }).id}`}
+                                    flexDirection="column"
+                                    flexShrink={0}
+                                    marginTop={i > 0 && (blk() as { gap: boolean }).gap ? 1 : 0}
+                                  >
+                                    <AssistantText
+                                      text={(blk() as { text: string }).text}
+                                      streaming={(blk() as { streaming: boolean }).streaming}
+                                      style={mdStyle}
+                                      fg={palette().assistant}
+                                      palette={palette()}
+                                      width={blockInner()}
+                                      indent={0}
+                                    />
+                                  </box>
+                                </Show>
+                                <Show when={blk().kind === "tool"}>
+                                  <ToolBlockView
+                                    block={blk as () => Extract<Block, { kind: "tool" }>}
+                                    palette={palette()}
+                                    style={mdStyle}
+                                    chained={i > 0 && chained()}
+                                    first={i === 0}
+                                    width={blockInner()}
+                                    onToggle={(id) => anchoredToggle(() => toggle(id))}
+                                  />
+                                </Show>
+                                <Show when={blk().kind === "notice"}>
+                                  {/* Errors pop red; info/warn stay amber. A leading `·`
+                                      marks a system note. No word-wrap: command output
+                                      (/help, /config) is pre-aligned. */}
+                                  <text
+                                    flexShrink={0}
+                                    fg={(blk() as { level?: string }).level === "error" ? palette().del : palette().notice}
+                                    marginTop={i > 0 ? 1 : 0}
+                                  >
+                                    {`· ${(blk() as { text: string }).text}`}
+                                  </text>
+                                </Show>
+                              </>
+                            );
+                          }}
+                        </Index>
+                      </box>
+                    </box>
+                  </Show>
+                </box>
               );
             }}
           </Index>
@@ -1322,7 +1492,7 @@ export function App(props: { engine: EngineClient }) {
           (which only advances while a turn runs) in the flat brand accent; the
           elapsed/interrupt label stays muted for readability. Hidden while a
           permission card is up (the card is the active affordance then). */}
-      <Show when={working() && perms().length === 0}>
+      <Show when={working() && perms().length === 0 && !plan()}>
         <box flexDirection="row" flexShrink={0} marginTop={1}>
           <text fg={brand()}>
             {spinnerFrame(tick())}
@@ -1334,20 +1504,16 @@ export function App(props: { engine: EngineClient }) {
       </Show>
       <Show when={plan()}>
         {/* Bounded + scrollable: the plan can be long, so its content scrolls
-            inside the panel (mouse wheel / drag) while the approval hint below it
-            and the input stay on-screen — instead of the whole thing overflowing. */}
+            inside the FILLED card (mouse wheel / drag) while the approval hint below
+            it and the input stay on-screen — instead of the whole thing overflowing.
+            A filled surface (no line border) stays a clean box on any terminal. */}
         <box
-          border
           flexDirection="column"
           flexShrink={0}
           marginTop={1}
-          paddingLeft={1}
-          paddingRight={1}
-          borderColor={palette().border}
-          title=" Plan "
-          titleColor={brand()}
-          height={planPanelRows() + 3}
+          height={planPanelRows() + 1}
         >
+          <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"Plan"}</text>
           <scrollbox flexGrow={1} flexShrink={1} stickyScroll={false}>
             <AssistantText
               text={plan() ?? ""}
@@ -1355,7 +1521,7 @@ export function App(props: { engine: EngineClient }) {
               style={mdStyle}
               fg={palette().assistant}
               palette={palette()}
-              width={contentWidth() - 6}
+              width={contentWidth() - 2}
             />
           </scrollbox>
           <text fg={palette().muted} flexShrink={0}>
@@ -1366,9 +1532,7 @@ export function App(props: { engine: EngineClient }) {
       {/* Tasks — the live to-do list, just above the input; hides once everything
           is done so a finished list doesn't linger. */}
       <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
-        <box
-          {...PANEL}
-          borderColor={palette().border}
+        <Panel
           title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
           titleColor={brand()}
         >
@@ -1388,18 +1552,13 @@ export function App(props: { engine: EngineClient }) {
               );
             }}
           </For>
-        </box>
+        </Panel>
       </Show>
       {/* Subagents — live fan-out. ONE truncated line each by default (so a big
           fan-out stays tidy and never fills the screen); tap a row to expand its
           full prompt + result (bounded), tap again to collapse. Cleared per turn. */}
       <Show when={subagents().length > 0}>
-        <box
-          {...PANEL}
-          borderColor={palette().border}
-          title={`Subagents · ${subagents().length}`}
-          titleColor={brand()}
-        >
+        <Panel title={`Subagents · ${subagents().length}`} titleColor={brand()}>
           <For each={subagents()}>
             {(s) => {
               const open = () => expandedSubs().has(s.id);
@@ -1409,8 +1568,14 @@ export function App(props: { engine: EngineClient }) {
               // dims to muted once done so finished rows recede.
               const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
               const fg = () => (s.status === "running" ? palette().assistant : palette().muted);
-              const oneLine = () =>
-                truncate(firstLine(s.prompt) ?? s.prompt, Math.max(24, contentWidth() - 14));
+              const oneLine = () => {
+                const base = firstLine(s.prompt) ?? s.prompt;
+                // A running child appends its live activity ("… · $ bun test"); the
+                // label is cleared on finish, so a done row shows only its prompt.
+                const line =
+                  s.status === "running" && s.activity ? `${base} · ${s.activity}` : base;
+                return truncate(line, Math.max(24, contentWidth() - 14));
+              };
               return (
                 <box flexDirection="column" onMouseDown={() => toggleSub(s.id)}>
                   <box flexDirection="row" gap={1}>
@@ -1427,26 +1592,26 @@ export function App(props: { engine: EngineClient }) {
                     </Show>
                   </box>
                   <Show when={open() && s.result}>
-                    <text fg={palette().muted} wrapMode="word">
-                      {`    ${GLYPH.result} ${truncate(s.result ?? "", 300)}`}
-                    </text>
+                    {/* A flex row so a long result HANGS under the `↳` marker
+                        instead of wrapping back to the panel's left edge. */}
+                    <box flexDirection="row" paddingLeft={4}>
+                      <text flexShrink={0} fg={palette().muted}>{`${GLYPH.result} `}</text>
+                      <text flexGrow={1} wrapMode="word" fg={palette().muted}>
+                        {truncate(s.result ?? "", 300)}
+                      </text>
+                    </box>
                   </Show>
                 </box>
               );
             }}
           </For>
-        </box>
+        </Panel>
       </Show>
       {/* Queue — prompts you typed ahead while a turn runs. They auto-run in
           order; each row offers `steer` (jump it to the front + interrupt the
           current turn so it runs NOW) and `✕` (drop it). */}
       <Show when={pendingQ().length > 0}>
-        <box
-          {...PANEL}
-          borderColor={palette().border}
-          title={`Queued · ${pendingQ().length}`}
-          titleColor={brand()}
-        >
+        <Panel title={`Queued · ${pendingQ().length}`} titleColor={brand()}>
           <For each={pendingQ()}>
             {(q, i) => (
               <box flexDirection="row" gap={1}>
@@ -1475,22 +1640,13 @@ export function App(props: { engine: EngineClient }) {
           <text fg={palette().muted} marginTop={1}>
             {"steer = run next & interrupt now  ·  ✕ = remove  ·  otherwise they run in order"}
           </text>
-        </box>
+        </Panel>
       </Show>
-      {/* Permission card — a bordered warning with the tool action and y/a/n. */}
+      {/* Permission request — a FLAT amber-titled block (no fill) with the tool
+          action and y/a/n. Flat chrome stays uniform on any terminal. */}
       <Show when={perms()[0]}>
         {(p) => (
-          <box
-            border={["left"]}
-            borderStyle="heavy"
-            borderColor={palette().notice}
-            backgroundColor={palette().panel}
-            flexDirection="column"
-            flexShrink={0}
-            marginTop={1}
-            paddingLeft={1}
-            paddingRight={1}
-          >
+          <box flexDirection="column" flexShrink={0} marginTop={1}>
             <text fg={palette().notice} attributes={TextAttributes.BOLD}>
               {`${GLYPH.warn} permission required · ${p().toolName}`}
             </text>
@@ -1502,120 +1658,109 @@ export function App(props: { engine: EngineClient }) {
           </box>
         )}
       </Show>
-      {/* Slash-command menu / interactive submenus — opens while typing a
-          `/command`. ↑/↓ (or hover) to highlight, Tab to complete, Enter (or
-          click a row) to run, Esc to dismiss. Drilling into `/model` opens a live,
-          searchable model picker; enum commands (theme/approvals/reasoning) show
-          their values with the current one marked `●`. */}
-      <Show when={menuModel().open}>
+      {/* The input — a UNIFORM filled block (same language as the message blocks): a
+          raised ELEVATED surface (a shade above the panel blocks, so the active field
+          stands out) with padding and a thin left accent in the MODE hue (ASK blue /
+          PLAN green / YOLO red). The prompt reads `MODE ❯ …`; typing `/` opens the
+          command menu as rows inside the SAME block above the prompt — one connected
+          control. A background fill (not a line frame) stays a clean solid box on any
+          terminal. */}
+      <box border={["left"]} borderColor={accent()} flexShrink={0} marginTop={1}>
         <box
-          // Docks IN-FLOW directly above the input as one connected control: the
-          // same full width, the same neutral-grey border, and a blue title — with
-          // NO bottom border, so the input's own top border (carrying the mode
-          // chip) is the shared divider and the two read as a single framed field
-          // that grows upward as you type `/`. The input drops its top margin while
-          // this is open (below) so they sit flush. Opening it shrinks the
-          // scrollable transcript above rather than covering it.
-          border={["top", "left", "right"]}
-          borderColor={palette().border}
-          // Padded to match the input's ` ASK ` chip so the docked pair share one
-          // title style (`┌─ commands ─` rather than a flush `┌─commands─`).
-          title={menuView()?.title ? ` ${menuView()?.title} ` : undefined}
-          titleColor={brand()}
-          backgroundColor={palette().panel}
+          backgroundColor={palette().elevated}
           flexDirection="column"
-          flexShrink={0}
-          marginTop={1}
-          paddingLeft={1}
+          paddingTop={1}
+          paddingBottom={1}
+          paddingLeft={2}
           paddingRight={1}
         >
-          {/* Context header (e.g. which agent the model picker is configuring). */}
-          <Show when={menuView()?.hint}>
-            <text fg={palette().heading}>{`  ${menuView()?.hint}`}</text>
+          {/* Command menu / submenus, inside the block above the prompt while typing
+              `/`. ↑/↓ (or hover) highlight, Tab completes, Enter (or click) runs, Esc
+              dismisses. `/model` opens a live searchable picker; enum commands mark the
+              current value with `●`. Only the highlighted row carries a selection tint. */}
+          <Show when={menuModel().open}>
+            <box flexDirection="column" flexShrink={0}>
+              <Show when={menuView()?.title}>
+                <text fg={brand()} attributes={TextAttributes.BOLD}>{menuView()?.title}</text>
+              </Show>
+              <Show when={menuView()?.hint}>
+                <text fg={palette().muted}>{menuView()?.hint}</text>
+              </Show>
+              <Show when={menuView()?.loading}>
+                <text fg={palette().muted}>{"Loading…"}</text>
+              </Show>
+              <For each={menuView()?.rows ?? []}>
+                {/* Hover highlights (only on real pointer movement — see hoverRow),
+                    click selects + runs. Keyboard nav is global via useKeyboard;
+                    terminal text rows have no DOM focus, hence the a11y ignore. */}
+                {(row) => (
+                  // biome-ignore lint/a11y/useKeyWithMouseEvents: terminal UI — no text-row focus; keyboard nav is global (useKeyboard)
+                  <text
+                    fg={row.active ? brand() : palette().muted}
+                    bg={row.active ? palette().selBg : undefined}
+                    attributes={row.active ? TextAttributes.BOLD : undefined}
+                    onMouseOver={(e: { x: number; y: number }) => hoverRow(row.idx, e)}
+                    onMouseDown={() => {
+                      chooseAt(row.idx, true);
+                      refocusInput();
+                    }}
+                  >
+                    {`${row.active ? "❯" : " "} ${row.current ? "●" : " "} ${row.text}`}
+                  </text>
+                )}
+              </For>
+              <Show when={menuView()?.more}>
+                <text fg={palette().muted}>{`     ${menuView()?.more}`}</text>
+              </Show>
+              <text flexShrink={0}>{" "}</text>
+            </box>
           </Show>
-          <Show when={menuView()?.loading}>
-            <text fg={palette().muted}>{"  Loading…"}</text>
-          </Show>
-          <For each={menuView()?.rows ?? []}>
-            {/* Hover highlights, click selects + runs (index-based, so a click works
-                on any row regardless of the highlight). Keyboard nav is global via
-                useKeyboard — terminal text rows have no DOM focus, so the hover needs
-                no paired onFocus despite the browser-oriented a11y lint. */}
-            {(row) => (
-              // biome-ignore lint/a11y/useKeyWithMouseEvents: terminal UI — no text-row focus; keyboard nav is global (useKeyboard)
-              <text
-                fg={row.active ? brand() : palette().muted}
-                bg={row.active ? palette().selBg : undefined}
-                attributes={row.active ? TextAttributes.BOLD : undefined}
-                onMouseOver={() => setSelIdx(row.idx)}
-                onMouseDown={() => {
-                  chooseAt(row.idx, true);
-                  refocusInput();
-                }}
-              >
-                {`${row.active ? "❯" : " "} ${row.current ? "●" : " "} ${row.text}`}
-              </text>
-            )}
-          </For>
-          <Show when={menuView()?.more}>
-            <text fg={palette().muted}>{`     ${menuView()?.more}`}</text>
-          </Show>
+          {/* The prompt row: mode label · caret · field. The field grows with wrapped
+              text up to INPUT_MAX_ROWS, then scrolls internally; the mode + caret stay
+              on the first line. */}
+          <box flexDirection="row" flexShrink={0}>
+            <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>{`${modeWord()} `}</text>
+            <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"❯ "}</text>
+            <box flexDirection="column" flexGrow={1} height={inputRows()}>
+              <input
+                ref={(el: { focus: () => void }) => (inputEl = el)}
+                focused
+                flexGrow={1}
+                wrapMode="word"
+                value={draft()}
+                onInput={(v: string) => setDraft(v)}
+                onSubmit={submit}
+                placeholder="Send a message or type / to start"
+                backgroundColor="transparent"
+                focusedBackgroundColor="transparent"
+                textColor={palette().assistant}
+                focusedTextColor={palette().assistant}
+                placeholderColor={palette().muted}
+                cursorColor={brand()}
+              />
+            </box>
+          </box>
+        </box>
+      </box>
+      {/* Under-input status bar — a justified row, NOT centered: the live status
+          (model · changed · ctx · cost) hugs the LEFT edge (aligned with the
+          top-left context line), and the key hints hug the RIGHT edge. Hints show
+          only on the splash / while a job runs; if they don't fit beside the status
+          they drop to their own left row below (never centered, never colliding). */}
+      <box flexDirection="row" flexShrink={0} marginTop={1}>
+        <text flexShrink={0} fg={palette().muted} wrapMode="none">{detailsRight()}</text>
+        <box flexGrow={1} />
+        <Show when={showHints() && footerFits()}>
+          <box flexDirection="row" flexShrink={0}>
+            <For each={hintSegs()}>{(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}</For>
+          </box>
+        </Show>
+      </box>
+      <Show when={showHints() && !footerFits()}>
+        <box flexDirection="row" flexShrink={0}>
+          <For each={hintSegs()}>{(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}</For>
         </box>
       </Show>
-      {/* Text input — a clean neutral-grey frame with the text inside, on the black
-          backdrop (NO fill): the box sets no background and the input is
-          transparent, so there's no grey surface at all. Color here is on the
-          markers only — the mode CHIP on the top edge (the `ASK`/`PLAN`/`YOLO` word
-          in the mode hue: ASK blue · PLAN green · YOLO red) and the blue caret. */}
-      <box
-        border
-        borderColor={palette().border}
-        title={` ${modeWord()} `}
-        titleColor={accent()}
-        // COLUMN, not row: in a row the input only grows horizontally and shows a
-        // single (cursor) line; in a column it grows vertically so every wrapped
-        // line stays visible as the frame gets taller.
-        flexDirection="column"
-        flexShrink={0}
-        // Flush against the docked menu when it's open (they share the top border
-        // as a divider); a 1-row breathing gap otherwise.
-        marginTop={menuModel().open ? 0 : 1}
-        paddingLeft={1}
-        paddingRight={1}
-        // Grow with the text: the input soft-wraps (wrapMode below) and the frame
-        // gets taller as it fills, up to INPUT_MAX_ROWS, then scrolls internally —
-        // instead of the old single line that scrolled long text off to the left.
-        height={inputRows() + 2}
-      >
-        <input
-          ref={(el: { focus: () => void }) => (inputEl = el)}
-          focused
-          flexGrow={1}
-          // Soft-wrap on word boundaries so long input stays visible and the box
-          // grows, rather than scrolling horizontally out of view.
-          wrapMode="word"
-          value={draft()}
-          onInput={(v: string) => setDraft(v)}
-          onSubmit={submit}
-          placeholder="Send a message or type / to start"
-          // Transparent — no fill, just the bordered frame + text on black.
-          backgroundColor="transparent"
-          focusedBackgroundColor="transparent"
-          textColor={palette().assistant}
-          focusedTextColor={palette().assistant}
-          placeholderColor={palette().muted}
-          cursorColor={brand()}
-        />
-      </box>
-      {/* Status details + hints, directly UNDER the input (the old top header
-          lives here now), BOTH centered for a uniform footer. Line 1: location ·
-          git · model · changed · ctx · cost (· goal). Line 2: the key hints. */}
-      <box flexDirection="row" flexShrink={0} marginTop={1}>
-        <box flexGrow={1} />
-        <text flexShrink={0} fg={palette().muted}>{detailsCenter()}</text>
-        <box flexGrow={1} />
-      </box>
-      <SegRow center segs={hintSegs()} />
       </box>
       {/* Right gutter — mirrors the left, centering the chat column. */}
       <box flexGrow={1} flexShrink={1} />
@@ -1699,7 +1844,15 @@ function AssistantText(props: {
   indent?: number;
 }) {
   const blocks = () => splitMarkdown(props.text);
-  const pad = (kind: MdBlock["kind"]) => (kind === "code" || kind === "table" ? 0 : props.indent ?? 0);
+  const indent = () => props.indent ?? 0;
+  // One left edge for all assistant content. `code` and `quote` carry their OWN
+  // left marker (the `│` border / the `▎` bar), so they sit flush at the block
+  // edge and their marker lines up with the tool-step + user gutters; their text
+  // then falls one column in — matching prose. `prose`/`heading`/`table` have no
+  // marker, so they're indented to that same content column. (Previously tables
+  // rendered flush-left, 2 cols left of the prose, and quotes 2 cols right — a
+  // visible zig-zag; this aligns every block on one edge.)
+  const pad = (kind: MdBlock["kind"]) => (kind === "code" || kind === "quote" ? 0 : indent());
   return (
     <Show
       when={props.style}
@@ -1721,13 +1874,22 @@ function AssistantText(props: {
                   <QuoteBlock block={block as () => Extract<MdBlock, { kind: "quote" }>} palette={props.palette} />
                 </Match>
                 <Match when={block().kind === "code"}>
-                  <CodeBlock block={block as () => Extract<MdBlock, { kind: "code" }>} palette={props.palette} />
+                  {/* A fenced block tagged with a data-view language (chart / line /
+                      pie / weather / sources) renders as a rich view; anything else
+                      is an ordinary syntax-highlighted code block. */}
+                  <RichOrCode
+                    block={block as () => Extract<MdBlock, { kind: "code" }>}
+                    palette={props.palette}
+                    width={(props.width ?? 80) - indent()}
+                  />
                 </Match>
                 <Match when={block().kind === "table"}>
                   <TableBlock
                     block={block as () => Extract<MdBlock, { kind: "table" }>}
                     palette={props.palette}
-                    width={props.width ?? 80}
+                    // The table is indented like prose (pad above), so shrink its
+                    // fit-width by that indent to keep the right edge in the column.
+                    width={(props.width ?? 80) - indent()}
                   />
                 </Match>
                 <Match when={block().kind === "prose"}>
@@ -1754,40 +1916,43 @@ function AssistantText(props: {
 function HeadingBlock(props: { block: () => Extract<MdBlock, { kind: "heading" }>; palette: Palette }) {
   const p = props.palette;
   const b = props.block;
-  const rule = () => (b().level <= 2 ? "─".repeat(Math.max(3, [...b().text].length)) : "");
+  // A thin FILLED underline bar (not a `─` rule) under h1/h2 — a filled band has no
+  // seams on terminals that gap box-drawing glyphs.
+  const ruleW = () => (b().level <= 2 ? Math.max(3, displayWidth(b().text)) : 0);
   return (
     <box flexDirection="column">
       <text fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="word">
         {b().text}
       </text>
-      <Show when={rule()}>
-        <text fg={p.border}>{rule()}</text>
+      <Show when={ruleW() > 0}>
+        <text flexShrink={0} bg={p.border} fg={p.border}>{" ".repeat(ruleW())}</text>
       </Show>
     </box>
   );
 }
 
-/** A blockquote — a calm gutter bar with muted, italic quoted text. */
+/** A blockquote — a thin `│` left accent (a border char, NOT a full-cell bar) with
+ * muted, italic quoted text hanging beside it. */
 function QuoteBlock(props: { block: () => Extract<MdBlock, { kind: "quote" }>; palette: Palette }) {
   const p = props.palette;
   return (
-    <box flexDirection="column">
-      <For each={props.block().lines}>
-        {(l) => (
-          <box flexDirection="row">
-            <text flexShrink={0} fg={p.gutter}>{"▎ "}</text>
+    <box border={["left"]} borderColor={p.gutter} flexShrink={0}>
+      <box flexDirection="column" flexGrow={1} paddingLeft={1}>
+        <For each={props.block().lines}>
+          {(l) => (
             <text flexGrow={1} wrapMode="word" fg={p.muted} attributes={TextAttributes.ITALIC}>
               {l || " "}
             </text>
-          </box>
-        )}
-      </For>
+          )}
+        </For>
+      </box>
     </box>
   );
 }
 
-/** A fenced code block — monospace lines on a raised panel surface with a calm
- * left gutter, the language tagged in the accent. */
+/** A fenced code block — an inset ELEVATED surface (a shade above the message panel
+ * so it reads as a distinct code block) with monospace code in its own hue. No left
+ * bar; the fill + code color set it apart. The language is a quiet muted tag. */
 function CodeBlock(props: { block: () => Extract<MdBlock, { kind: "code" }>; palette: Palette }) {
   const p = props.palette;
   const lines = () => {
@@ -1795,24 +1960,20 @@ function CodeBlock(props: { block: () => Extract<MdBlock, { kind: "code" }>; pal
     return l.length ? l : [""];
   };
   return (
-    <box
-      flexDirection="column"
-      backgroundColor={p.panel}
-      border={["left"]}
-      borderColor={p.gutter}
-      paddingLeft={1}
-      paddingRight={1}
-    >
+    <box flexDirection="column" flexShrink={0} backgroundColor={p.elevated} paddingLeft={1} paddingRight={1}>
       <Show when={props.block().lang}>
-        <text fg={p.heading} attributes={TextAttributes.BOLD}>{props.block().lang}</text>
+        <text fg={p.muted}>{props.block().lang}</text>
       </Show>
       <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{l || " "}</text>}</For>
     </box>
   );
 }
 
-/** A GFM table — clean box-drawing, columns aligned, rules in the border tone, the
- * header row in the accent and bold. */
+/** A GFM table as a proper GRID (opencode-style): `┌┬┐`/`├┼┤`/`└┴┘` box rules with
+ * `│` column borders drawn in the border tone, header cells in the accent (bold),
+ * data cells in the body tone. The rules render as one border-tone `<text>`; each
+ * data line draws its outer + inner `│` borders around cells. Cells come pre-padded
+ * + width-fitted (with `<br>` in-cell breaks) from renderTable. */
 function TableBlock(props: {
   block: () => Extract<MdBlock, { kind: "table" }>;
   palette: Palette;
@@ -1820,19 +1981,378 @@ function TableBlock(props: {
 }) {
   const p = props.palette;
   const lines = () => renderTable(props.block().rows, props.block().align, Math.max(12, props.width));
-  const rowFg = (role: "rule" | "header" | "row") =>
-    role === "rule" ? p.border : role === "header" ? p.heading : p.assistant;
+  // A header/row → alternating border + ` cell ` parts: │ c0 │ c1 │ … so the `│`
+  // and the rule junctions line up (each ` cell ` is the column width + 2 pad).
+  const parts = (cells: string[]): { text: string; sep: boolean }[] => {
+    const out: { text: string; sep: boolean }[] = [{ text: "│", sep: true }];
+    for (const c of cells) {
+      out.push({ text: ` ${c} `, sep: false });
+      out.push({ text: "│", sep: true });
+    }
+    return out;
+  };
   return (
-    <box flexDirection="column">
+    <box flexDirection="column" flexShrink={0}>
       <For each={lines()}>
-        {(line) => (
-          <text
-            fg={rowFg(line.role)}
-            attributes={line.role === "header" ? TextAttributes.BOLD : undefined}
-            wrapMode="none"
-          >
-            {line.text}
-          </text>
+        {(line) =>
+          line.role === "rule" ? (
+            <text flexShrink={0} fg={p.border} wrapMode="none">{line.text}</text>
+          ) : (
+            <box flexDirection="row" flexShrink={0}>
+              <For each={parts(line.cells)}>
+                {(part) => (
+                  <text
+                    flexShrink={0}
+                    fg={part.sep ? p.border : line.role === "header" ? p.heading : p.assistant}
+                    attributes={!part.sep && line.role === "header" ? TextAttributes.BOLD : undefined}
+                    wrapMode="none"
+                  >
+                    {part.text}
+                  </text>
+                )}
+              </For>
+            </box>
+          )
+        }
+      </For>
+    </box>
+  );
+}
+
+// ── Rich data views (charts / graphs / weather / sources) ─────────────────────
+
+/** Route a fenced code block to its rich view (bar/line/pie/weather/sources) by
+ * language tag, or fall back to a syntax-highlighted code block. */
+function RichOrCode(props: { block: () => Extract<MdBlock, { kind: "code" }>; palette: Palette; width: number }) {
+  const kind = () => richKind(props.block().lang);
+  const body = () => props.block().lines.join("\n");
+  const w = () => Math.max(12, props.width);
+  return (
+    <Switch fallback={<CodeBlock block={props.block} palette={props.palette} />}>
+      <Match when={kind() === "bar"}>
+        <BarChart body={body()} palette={props.palette} width={w()} />
+      </Match>
+      <Match when={kind() === "line" || kind() === "sparkline"}>
+        <LineChart body={body()} palette={props.palette} width={w()} spark={kind() === "sparkline"} />
+      </Match>
+      <Match when={kind() === "pie"}>
+        <PieChart body={body()} palette={props.palette} width={w()} />
+      </Match>
+      <Match when={kind() === "weather"}>
+        <WeatherCard body={body()} palette={props.palette} />
+      </Match>
+      <Match when={kind() === "sources"}>
+        <SourceCards body={body()} palette={props.palette} width={w()} />
+      </Match>
+    </Switch>
+  );
+}
+
+/** Run-length encode a pie grid row into `{slice, len}` runs so a stretch of
+ * same-slice cells renders as one solid background span (fewer nodes, no seams). */
+function pieRuns(row: number[]): { slice: number; len: number }[] {
+  const out: { slice: number; len: number }[] = [];
+  for (const s of row) {
+    const last = out[out.length - 1];
+    if (last && last.slice === s) last.len++;
+    else out.push({ slice: s, len: 1 });
+  }
+  return out;
+}
+
+/** Right-pad `s` to `n` display cells (CJK/emoji-aware). */
+function padRight(s: string, n: number): string {
+  return s + " ".repeat(Math.max(0, n - displayWidth(s)));
+}
+/** Left-pad `s` to `n` display cells. */
+function padLeft(s: string, n: number): string {
+  return " ".repeat(Math.max(0, n - displayWidth(s))) + s;
+}
+/** Truncate to `n` display cells with an ellipsis. */
+function clampWidth(s: string, n: number): string {
+  if (displayWidth(s) <= n) return s;
+  let out = "";
+  for (const ch of s) {
+    if (displayWidth(out + ch) > n - 1) break;
+    out += ch;
+  }
+  return `${out}…`;
+}
+
+/** A horizontal bar chart: `label ▇▇▇▇  value`, each bar in a distinct series hue,
+ * value labels right-aligned into a column. A quiet title sits above. */
+function BarChart(props: { body: string; palette: Palette; width: number }) {
+  const p = props.palette;
+  const model = () => parseChart(props.body);
+  const rows = () => {
+    const { data } = model();
+    const max = Math.max(1, ...data.map((d) => d.value));
+    const labelW = Math.min(20, Math.max(1, ...data.map((d) => displayWidth(d.label))));
+    const valueW = Math.max(1, ...data.map((d) => displayWidth(d.display)));
+    // Row = label(+2) + bar/track + gap(2) + value; keep a cell of slack so the
+    // right-aligned value column never clips at the column edge.
+    const track = Math.max(6, props.width - labelW - valueW - 5);
+    return data.map((d, i) => {
+      const bar = barGlyphs(d.value / max, track);
+      const gap = " ".repeat(Math.max(0, track - displayWidth(bar)));
+      return {
+        label: padRight(clampWidth(d.label, labelW), labelW),
+        bar,
+        tail: `${gap}  ${padLeft(d.display, valueW)}`,
+        color: p.series[i % p.series.length]!,
+      };
+    });
+  };
+  return (
+    <box flexDirection="column" flexShrink={0}>
+      <Show when={model().title}>
+        <text fg={p.heading} attributes={TextAttributes.BOLD}>{model().title}</text>
+      </Show>
+      <Show when={model().data.length === 0}>
+        <CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />
+      </Show>
+      <For each={rows()}>
+        {(r) => (
+          <box flexDirection="row" flexShrink={0}>
+            <text flexShrink={0} fg={p.muted}>{`${r.label}  `}</text>
+            <text flexShrink={0} fg={r.color}>{r.bar}</text>
+            <text flexShrink={0} fg={p.assistant}>{r.tail}</text>
+          </box>
+        )}
+      </For>
+    </box>
+  );
+}
+
+/** A line chart: a single series as a braille plot with min/max y-axis labels, or
+ * (for `sparkline`, or multiple series) one compact block sparkline per series with
+ * its range — each in a distinct series hue. */
+function LineChart(props: { body: string; palette: Palette; width: number; spark?: boolean }) {
+  const p = props.palette;
+  const model = () => parseSeries(props.body);
+  const useBraille = () => !props.spark && model().series.length === 1 && model().series[0]!.points.length >= 2;
+  const braille = () => {
+    const pts = model().series[0]!.points;
+    const min = Math.min(...pts);
+    const max = Math.max(...pts);
+    const axisW = Math.max(displayWidth(compactNum(min)), displayWidth(compactNum(max)));
+    const h = 6;
+    const w = Math.max(8, props.width - axisW - 1);
+    const rows = brailleChart(pts, w, h);
+    // Axis labels: the series max sits on the top row, the min on the bottom row.
+    return { rows, axisW, top: compactNum(max), bottom: compactNum(min), color: p.series[0]! };
+  };
+  const sparks = () => {
+    const labelW = Math.min(16, Math.max(1, ...model().series.map((s) => displayWidth(s.label ?? ""))));
+    return model().series.map((s, i) => {
+      const min = Math.min(...s.points);
+      const max = Math.max(...s.points);
+      return {
+        label: s.label ? padRight(clampWidth(s.label, labelW), labelW) : "",
+        spark: sparkline(s.points),
+        range: `  ${compactNum(min)}–${compactNum(max)}`,
+        color: p.series[i % p.series.length]!,
+      };
+    });
+  };
+  return (
+    <box flexDirection="column" flexShrink={0}>
+      <Show when={model().title}>
+        <text fg={p.heading} attributes={TextAttributes.BOLD}>{model().title}</text>
+      </Show>
+      <Show
+        when={useBraille()}
+        fallback={
+          <For each={sparks()}>
+            {(s) => (
+              <box flexDirection="row" flexShrink={0}>
+                <Show when={s.label}>
+                  <text flexShrink={0} fg={p.muted}>{`${s.label}  `}</text>
+                </Show>
+                <text flexShrink={0} fg={s.color}>{s.spark}</text>
+                <text flexShrink={0} fg={p.muted}>{s.range}</text>
+              </box>
+            )}
+          </For>
+        }
+      >
+        <For each={braille().rows}>
+          {(row, i) => (
+            <box flexDirection="row" flexShrink={0}>
+              <text flexShrink={0} fg={p.muted}>
+                {`${padLeft(i() === 0 ? braille().top : i() === braille().rows.length - 1 ? braille().bottom : "", braille().axisW)} `}
+              </text>
+              <text flexShrink={0} fg={braille().color}>{row}</text>
+            </box>
+          )}
+        </For>
+      </Show>
+    </box>
+  );
+}
+
+/** A pie/donut chart: a circular grid of colored blocks beside a legend of
+ * `■ label  pct%` rows. Slices start at 12 o'clock, sized by share of the total. */
+function PieChart(props: { body: string; palette: Palette; width: number }) {
+  const p = props.palette;
+  const model = () => parseChart(props.body);
+  const view = () => {
+    const { data } = model();
+    const values = data.map((d) => d.value);
+    const pct = sharePercents(values);
+    const labelW = Math.max(1, ...data.map((d) => displayWidth(d.label)));
+    const legendW = Math.min(30, labelW + 8);
+    const avail = props.width - legendW - 2;
+    const cols = Math.max(10, Math.min(18, avail % 2 === 0 ? avail : avail - 1));
+    const pieRows = Math.max(5, Math.round(cols / 2));
+    // A SOLID disc (not a donut) — at terminal cell sizes a filled circle reads
+    // unmistakably as a pie, where a hole fragments into scattered arcs.
+    const grid = pieGrid(values, cols, pieRows);
+    return {
+      grid,
+      legend: data.map((d, i) => ({
+        label: d.label,
+        pct: pct[i]!,
+        color: p.series[i % p.series.length]!,
+      })),
+      height: pieRows,
+    };
+  };
+  return (
+    <Show
+      when={model().data.length > 0}
+      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />}
+    >
+      <box flexDirection="row" flexShrink={0}>
+        {/* The circular grid, painted as background-colored cells (run-length
+            encoded per row). A bg-filled space fills the whole cell rect — solid
+            edge-to-edge regardless of the block-glyph's font metrics, where a run
+            of `█` foreground glyphs can seam at a color boundary. */}
+        <box flexDirection="column" flexShrink={0}>
+          <For each={view().grid}>
+            {(gridRow) => (
+              <box flexDirection="row" flexShrink={0}>
+                <For each={pieRuns(gridRow)}>
+                  {(run) => (
+                    <text flexShrink={0} bg={run.slice >= 0 ? view().legend[run.slice]?.color ?? p.muted : undefined}>
+                      {" ".repeat(run.len)}
+                    </text>
+                  )}
+                </For>
+              </box>
+            )}
+          </For>
+        </box>
+        {/* Legend: swatch · label · percentage. */}
+        <box flexDirection="column" flexShrink={0} paddingLeft={2}>
+          <For each={view().legend}>
+            {(l) => (
+              <box flexDirection="row" flexShrink={0}>
+                <text flexShrink={0} fg={l.color}>{"■ "}</text>
+                <text flexShrink={0} fg={p.assistant}>{`${l.label}  `}</text>
+                <text flexShrink={0} fg={p.muted}>{`${l.pct}%`}</text>
+              </box>
+            )}
+          </For>
+        </box>
+      </box>
+    </Show>
+  );
+}
+
+/** A weather card: a bordered panel with the location, a big glyph + temperature +
+ * condition, then a chip row (hi/lo, humidity, wind, …) and an optional forecast. */
+function WeatherCard(props: { body: string; palette: Palette }) {
+  const p = props.palette;
+  const w = () => parseWeather(props.body);
+  return (
+    <box flexDirection="column" flexShrink={0}>
+      <Show when={w().location}>
+        <text fg={p.heading} attributes={TextAttributes.BOLD}>{w().location}</text>
+      </Show>
+      <box flexDirection="row" flexShrink={0}>
+        <text flexShrink={0} fg={p.series[3] ?? p.notice}>{weatherIcon(w().condition)}</text>
+        <Show when={w().temp}>
+          <text flexShrink={0} fg={p.assistant} attributes={TextAttributes.BOLD}>{`  ${w().temp}`}</text>
+        </Show>
+        <Show when={w().condition}>
+          <text flexShrink={0} fg={p.muted}>{`   ${w().condition}`}</text>
+        </Show>
+      </box>
+      <Show when={w().hi || w().lo || w().chips.length > 0}>
+        {/* A flat row of adjacent <text> runs — OpenTUI paints fg per <text>, so a
+            two-tone chip (muted label + bright value) is two siblings, not nested. */}
+        <box flexDirection="row" flexShrink={0}>
+          <Show when={w().hi}>
+            <text flexShrink={0} fg={p.add}>{`↑${w().hi}`}</text>
+          </Show>
+          <Show when={w().lo}>
+            <text flexShrink={0} fg={p.del}>{`  ↓${w().lo}`}</text>
+          </Show>
+          <For each={w().chips}>
+            {(c, i) => (
+              <>
+                <text flexShrink={0} fg={p.muted}>
+                  {`${i() > 0 || w().hi || w().lo ? "  ·  " : ""}${c.label} `}
+                </text>
+                <text flexShrink={0} fg={p.assistant}>{c.value}</text>
+              </>
+            )}
+          </For>
+        </box>
+      </Show>
+      <Show when={w().forecast.length > 0}>
+        {/* `gap` between day columns (no trailing padding on the last), so the row
+            isn't wider than the rest and the filled card stays a clean rectangle. */}
+        <box flexDirection="row" flexShrink={0} marginTop={1} gap={3}>
+          <For each={w().forecast}>
+            {(d) => (
+              <box flexDirection="column" flexShrink={0}>
+                <text flexShrink={0} fg={p.muted}>{d.day}</text>
+                <text flexShrink={0} fg={p.series[3] ?? p.notice}>{weatherIcon(d.cond)}</text>
+                <text flexShrink={0} fg={p.assistant}>{`${d.hi ?? ""}${d.lo ? `/${d.lo}` : ""}`}</text>
+              </box>
+            )}
+          </For>
+        </box>
+      </Show>
+    </box>
+  );
+}
+
+/** Source / citation cards: a numbered list where each entry is a bold title, a
+ * link-tone domain, and a muted wrapped snippet — the industry-standard "sources"
+ * treatment for search/reference output. The title + domain are real OSC 8
+ * HYPERLINKS (via the `link` prop), so Cmd/Ctrl-click opens the source in a browser
+ * on any terminal that supports terminal hyperlinks. */
+function SourceCards(props: { body: string; palette: Palette; width: number }) {
+  const p = props.palette;
+  const sources = () => parseSources(props.body);
+  // A clickable href: use the URL as-is if it has a scheme, else assume https.
+  const href = (s: { url?: string }): { url: string } | undefined =>
+    s.url ? { url: /^[a-z]+:\/\//i.test(s.url) ? s.url : `https://${s.url}` } : undefined;
+  return (
+    <box flexDirection="column" flexShrink={0}>
+      <For each={sources()}>
+        {(s, i) => (
+          <box flexDirection="row" flexShrink={0} marginTop={i() > 0 ? 1 : 0}>
+            <text flexShrink={0} fg={p.series[i() % p.series.length]!} attributes={TextAttributes.BOLD}>
+              {`${i() + 1}  `}
+            </text>
+            <box flexDirection="column" flexGrow={1}>
+              <text flexShrink={0} fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="none" link={href(s)}>
+                {clampWidth(s.title, Math.max(8, props.width - 4))}
+              </text>
+              <Show when={s.domain}>
+                <text flexShrink={0} fg={p.tool} attributes={TextAttributes.UNDERLINE} link={href(s)}>
+                  {s.domain}
+                </text>
+              </Show>
+              <Show when={s.snippet}>
+                <text flexGrow={1} fg={p.muted} wrapMode="word">{s.snippet}</text>
+              </Show>
+            </box>
+          </box>
         )}
       </For>
     </box>
@@ -1840,9 +2360,31 @@ function TableBlock(props: {
 }
 
 /**
- * A tool call / file edit: a single clickable header that expands to show the
- * captured output or the colored diff hunk. Condensed by default so the
- * transcript stays scannable.
+ * A live status section (Tasks / Subagents / Queued): a bold accent TITLE row over
+ * its rows, FLAT on the base background — no box, no fill. Filled chrome reads as
+ * messy grey rectangles floating on black (especially where a terminal's line
+ * spacing ragged-edges the fill); a titled, flat section stays uniform on any
+ * terminal. Hierarchy comes from the accent title + spacing, not a container.
+ */
+function Panel(props: {
+  title: string;
+  titleColor: string;
+  children: unknown;
+}) {
+  return (
+    <box flexDirection="column" flexShrink={0} marginTop={1}>
+      <text flexShrink={0} fg={props.titleColor} attributes={TextAttributes.BOLD}>{props.title}</text>
+      {props.children}
+    </box>
+  );
+}
+
+/**
+ * A tool call / file edit as one clean step hanging off the turn thread: a
+ * clickable header (chevron · colored icon · human label · right-aligned meta) that
+ * expands to the captured output or colored diff hunk. Condensed by default so the
+ * transcript stays scannable; the right-aligned meta forms a tidy column down a run
+ * of steps. No own border — the enclosing turn rail is the thread.
  */
 function ToolBlockView(props: {
   block: () => Extract<Block, { kind: "tool" }>;
@@ -1850,41 +2392,51 @@ function ToolBlockView(props: {
   style: SyntaxStyle | undefined;
   /** This row follows another visible tool row → stack flush (no top gap). */
   chained?: boolean;
-  /** The calm gutter tone for the leading left-border marker (one flat tone). */
-  hue: string;
+  /** First item in the turn's output block → no top gap (the block padding spaces it). */
+  first?: boolean;
+  /** Inner content width (for the subagent-reply markdown). */
+  width?: number;
   onToggle: (id: number) => void;
 }) {
   const b = props.block;
   const p = props.palette;
   const expandable = () => b().output.length > 0;
-  const head = () => {
-    const t = b();
-    const chevron = expandable() ? (t.collapsed ? "▸ " : "▾ ") : "  ";
-    const hint = t.collapsed && expandable() ? `  ·  ${collapsedHint(t)}` : "";
-    return `${chevron}${t.label}${hint}`;
+  // Split the stored label into its leading glyph + the summary so the icon can
+  // carry the tool tone while the summary stays calm — `"→ read x"` → `→`, `read x`.
+  const icon = () => {
+    const sp = b().label.indexOf(" ");
+    return sp > 0 ? b().label.slice(0, sp) : b().label;
   };
+  const summary = () => {
+    const sp = b().label.indexOf(" ");
+    return sp > 0 ? b().label.slice(sp + 1) : "";
+  };
+  // The chevron shows expand state; the meta (right-aligned) is the collapsed hint
+  // (`5 results` / `12 lines` / `diff`) — a scannable column, hidden once expanded.
+  const chevron = () => (expandable() ? (b().collapsed ? "▸" : "▾") : "·");
+  const meta = () => (b().collapsed && expandable() ? collapsedHint(b()) : "");
   const visible = () => b().output.slice(0, MAX_OUTPUT_LINES);
   const overflow = () => Math.max(0, b().output.length - MAX_OUTPUT_LINES);
   return (
     <box
       id={`tool-${b().id}`}
-      // The calm gutter tone is the LEFT-BORDER marker — anchored at the column's
-      // left edge so it lines up exactly with the user-message gutter and the input
-      // frame (all at x=0). Chained steps stack flush, so a run of tool calls reads
-      // as one continuous quiet thread. (A thin `│` vs the user gutter's heavy `┃`,
-      // so they're aligned but distinct.)
-      border={["left"]}
-      borderColor={props.hue}
       flexDirection="column"
       flexShrink={0}
-      marginTop={props.chained ? 0 : 1}
-      paddingLeft={1}
+      marginTop={props.first || props.chained ? 0 : 1}
       onMouseDown={() => {
         if (expandable()) props.onToggle(b().id);
       }}
     >
-      {/* Header text stays neutral (red on error) for readability. */}
-      <text fg={b().isError ? p.del : p.muted}>{head()}</text>
+      {/* Header: chevron · icon · summary … right-aligned meta. */}
+      <box flexDirection="row" flexShrink={0}>
+        <text flexShrink={0} fg={p.muted}>{`${chevron()} `}</text>
+        <text flexShrink={0} fg={b().isError ? p.del : p.tool}>{icon()}</text>
+        <text flexShrink={1} wrapMode="none" fg={b().isError ? p.del : p.muted}>{` ${summary()}`}</text>
+        <box flexGrow={1} />
+        <Show when={meta()}>
+          <text flexShrink={0} fg={b().isError ? p.del : p.gutter}>{`  ${meta()}`}</text>
+        </Show>
+      </box>
       <Show when={!b().collapsed && expandable()}>
         <Show
           when={b().isMarkdown}
@@ -1893,9 +2445,9 @@ function ToolBlockView(props: {
               <For each={visible()}>
                 {(line) =>
                   b().isDiff ? (
-                    <text fg={diffColor(line, p)} bg={diffBg(line, p)}>
-                      {line || " "}
-                    </text>
+                    // Fg-only diff: green additions, red deletions, dim context — no
+                    // background band (flat stays uniform on any terminal).
+                    <text fg={diffColor(line, p)} wrapMode="none">{`  ${line || " "}`}</text>
                   ) : (
                     <text fg={p.muted}>{`  ${line}`}</text>
                   )
@@ -1916,6 +2468,7 @@ function ToolBlockView(props: {
               style={props.style}
               fg={p.assistant}
               palette={p}
+              width={(props.width ?? 80) - 2}
             />
           </box>
         </Show>
@@ -1929,11 +2482,6 @@ function diffColor(line: string, p: Palette): string {
   if (line.startsWith("+")) return p.add;
   if (line.startsWith("-")) return p.del;
   return p.muted;
-}
-function diffBg(line: string, p: Palette): string | undefined {
-  if (line.startsWith("+")) return p.addBg;
-  if (line.startsWith("-")) return p.delBg;
-  return undefined;
 }
 
 /** The dim footer metrics: context fill, token usage/cost, and queue depth. */
@@ -1952,6 +2500,15 @@ function metricsLine(
   if (usage.totalTokens > 0) parts.push(formatUsage(usage));
   if (queued > 0) parts.push(`${queued} queued`);
   return parts.join("  ·  ");
+}
+
+/** A model's context window as a compact label: `1M` / `400k` / `128k`. */
+function fmtContext(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  return `${Math.round(tokens / 1000)}k`;
 }
 
 /** Current working directory with $HOME collapsed to `~`. */

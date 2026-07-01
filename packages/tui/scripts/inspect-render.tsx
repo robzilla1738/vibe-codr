@@ -143,4 +143,13 @@ await settle();
 await settle();
 console.log(t.captureCharFrame());
 
+banner("9) LONG PLAN — bounded + scrollable, input stays visible");
+t.mockInput.pressEscape();
+await settle();
+const longPlan = `# Build a big thing\n\n${Array.from({ length: 40 }, (_, i) => `- Step ${i + 1}: do the important work item number ${i + 1} carefully and completely`).join("\n")}\n\nThat's the plan.`;
+push({ type: "plan-presented", sessionId: "ins", plan: longPlan } as UIEvent);
+await settle();
+await settle();
+console.log(t.captureCharFrame());
+
 process.exit(0);

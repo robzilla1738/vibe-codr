@@ -469,7 +469,7 @@ push({
 } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
-check("plan approval card renders with interactive hints", frame.includes("type changes to revise"));
+check("plan approval card renders with interactive hints", frame.includes("type to revise"));
 await t.mockInput.typeText("also handle errors");
 await settle();
 t.mockInput.pressEnter();

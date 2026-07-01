@@ -299,6 +299,20 @@ export function App(props: { engine: EngineClient }) {
     return Math.min(INPUT_MAX_ROWS, Math.max(1, rows >= 2 ? rows + 1 : rows));
   };
 
+  // The presented-plan panel is bounded so its (often long) content scrolls
+  // INSIDE the panel instead of pushing the input + approval hint off-screen. Cap
+  // at most of the terminal, leaving room for the input/status; if the plan is
+  // short, the panel shrinks to fit it (rough wrap estimate — the scrollbox handles
+  // the exact overflow).
+  const planPanelRows = () => {
+    const cap = Math.max(6, dims().height - 12);
+    const inner = Math.max(20, contentWidth() - 4);
+    const est = (plan() ?? "")
+      .split("\n")
+      .reduce((n, l) => n + Math.max(1, Math.ceil(l.length / inner)), 0);
+    return Math.min(cap, est + 2); // +2 = the approval hint + a blank rhythm row
+  };
+
   const [selIdx, setSelIdx] = createSignal(0);
   // The menu window's scroll offset (top visible row). Kept SEPARATE from the
   // highlight so hovering a row only moves the highlight — it never scrolls. Only
@@ -1276,17 +1290,33 @@ export function App(props: { engine: EngineClient }) {
         </box>
       </Show>
       <Show when={plan()}>
-        <box {...PANEL} borderColor={palette().border} title="Plan" titleColor={brand()}>
-          <AssistantText
-            text={plan() ?? ""}
-            streaming={false}
-            style={mdStyle}
-            fg={palette().assistant}
-            palette={palette()}
-            width={contentWidth() - 4}
-          />
-          <text fg={palette().muted}>
-            {`${GLYPH.check} Enter to accept & execute  ·  type changes to revise  ·  Esc to keep planning`}
+        {/* Bounded + scrollable: the plan can be long, so its content scrolls
+            inside the panel (mouse wheel / drag) while the approval hint below it
+            and the input stay on-screen — instead of the whole thing overflowing. */}
+        <box
+          border
+          flexDirection="column"
+          flexShrink={0}
+          marginTop={1}
+          paddingLeft={1}
+          paddingRight={1}
+          borderColor={palette().border}
+          title=" Plan "
+          titleColor={brand()}
+          height={planPanelRows() + 3}
+        >
+          <scrollbox flexGrow={1} flexShrink={1} stickyScroll={false}>
+            <AssistantText
+              text={plan() ?? ""}
+              streaming={false}
+              style={mdStyle}
+              fg={palette().assistant}
+              palette={palette()}
+              width={contentWidth() - 6}
+            />
+          </scrollbox>
+          <text fg={palette().muted} flexShrink={0}>
+            {`${GLYPH.check} Enter accept & execute  ·  type to revise  ·  Esc keep planning  ·  scroll to read`}
           </text>
         </box>
       </Show>

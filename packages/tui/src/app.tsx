@@ -45,6 +45,7 @@ import { rainbowAt, rainbowSpans, rotateHue } from "./rainbow.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
+import { PANEL } from "./layout.ts";
 import { toolLabel } from "./tool-icons.ts";
 import {
   initialTranscript,
@@ -1133,17 +1134,7 @@ export function App(props: { engine: EngineClient }) {
         </box>
       </Show>
       <Show when={plan()}>
-        <box
-          border
-          borderColor={palette().border}
-          title="Plan"
-          titleColor={brand()}
-          flexDirection="column"
-          flexShrink={0}
-          marginTop={1}
-          paddingLeft={1}
-          paddingRight={1}
-        >
+        <box {...PANEL} borderColor={palette().border} title="Plan" titleColor={brand()}>
           <AssistantText
             text={plan() ?? ""}
             streaming={false}
@@ -1161,15 +1152,10 @@ export function App(props: { engine: EngineClient }) {
           is done so a finished list doesn't linger. */}
       <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
         <box
-          border
+          {...PANEL}
           borderColor={palette().border}
           title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
           titleColor={brand()}
-          flexDirection="column"
-          flexShrink={0}
-          marginTop={1}
-          paddingLeft={1}
-          paddingRight={1}
         >
           <For each={tasks()}>
             {(task) => {
@@ -1194,15 +1180,10 @@ export function App(props: { engine: EngineClient }) {
           full prompt + result (bounded), tap again to collapse. Cleared per turn. */}
       <Show when={subagents().length > 0}>
         <box
-          border
+          {...PANEL}
           borderColor={palette().border}
           title={`Subagents · ${subagents().length}`}
           titleColor={brand()}
-          flexDirection="column"
-          flexShrink={0}
-          marginTop={1}
-          paddingLeft={1}
-          paddingRight={1}
         >
           <For each={subagents()}>
             {(s, i) => {
@@ -1246,15 +1227,10 @@ export function App(props: { engine: EngineClient }) {
           current turn so it runs NOW) and `✕` (drop it). */}
       <Show when={pendingQ().length > 0}>
         <box
-          border
+          {...PANEL}
           borderColor={palette().border}
           title={`Queued · ${pendingQ().length}`}
           titleColor={brand()}
-          flexDirection="column"
-          flexShrink={0}
-          marginTop={1}
-          paddingLeft={1}
-          paddingRight={1}
         >
           <For each={pendingQ()}>
             {(q, i) => (

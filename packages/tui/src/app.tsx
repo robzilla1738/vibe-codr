@@ -46,6 +46,19 @@ import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
 import { toolLabel } from "./tool-icons.ts";
+import {
+  initialTranscript,
+  reduceTranscript,
+  groupTurns,
+  collapsedHint,
+  firstLine,
+  truncate,
+  type Block,
+  type Subagent,
+  type ChangedFile,
+  type PendingPerm,
+  type TranscriptAction,
+} from "./reducer.ts";
 import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
 
 /** Ticks per full hue sweep of the working spinner (≈2.5s at the 90ms tick). */
@@ -69,52 +82,9 @@ const LOGO_MIN_COLS = 56;
  * positioned, so opening it overlays the view instead of reflowing it. */
 const MENU_BOTTOM = 8;
 
-/**
- * One block in the transcript. The transcript is append-only: positions never
- * move, so we render it with <Index> (stable per-position rows) and only the
- * block currently being mutated (the streaming reply, or a toggled tool block)
- * re-renders. `id` is a stable handle for click-to-toggle.
- */
-type Block =
-  | { kind: "user"; id: number; text: string }
-  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean }
-  | {
-      kind: "tool";
-      id: number;
-      /** Header label ("→ read x" or, after a file change, "✎ edited x +n -m"). */
-      label: string;
-      /** Full captured output / diff hunk, shown only when expanded. */
-      output: string[];
-      collapsed: boolean;
-      /** Output is a unified diff → color +/- lines when expanded. */
-      isDiff: boolean;
-      /** Output is markdown prose (a subagent's reply) → render via <markdown>. */
-      isMarkdown?: boolean;
-      isError: boolean;
-    }
-  | { kind: "notice"; id: number; text: string };
-
-/** A subagent shown in the Subagents panel while it runs and after it finishes. */
-interface Subagent {
-  id: string;
-  prompt: string;
-  status: "running" | "done";
-  /** One-line result summary, surfaced once the subagent finishes. */
-  result?: string;
-}
-
-/** A file edited this session, with its cumulative line delta (footer summary). */
-interface ChangedFile {
-  path: string;
-  added: number;
-  removed: number;
-}
-
-interface PendingPerm {
-  id: string;
-  toolName: string;
-  input: unknown;
-}
+// The transcript Block model + its pure reducer live in reducer.ts (headless,
+// unit-tested). This file owns the Solid signals and the per-frame flush timer,
+// and delegates every transcript state transition to reduceTranscript.
 
 export function App(props: { engine: EngineClient }) {
   const snap = props.engine.snapshot();
@@ -142,21 +112,7 @@ export function App(props: { engine: EngineClient }) {
   // user message) belongs to that turn. `turnKey` maps any block id → its turn's
   // user-message id, and `counts` is how many non-user blocks each turn has — so
   // tapping a user message can fold (and count) its whole exchange.
-  const grouping = createMemo(() => {
-    const turnKey = new Map<number, number>(); // block id → turn's user-message id
-    const counts = new Map<number, number>(); // user id → # of non-user blocks
-    let cur = -1;
-    for (const b of blocks()) {
-      if (b.kind === "user") {
-        cur = b.id;
-        turnKey.set(b.id, b.id);
-      } else if (cur >= 0) {
-        turnKey.set(b.id, cur);
-        counts.set(cur, (counts.get(cur) ?? 0) + 1);
-      }
-    }
-    return { turnKey, counts };
-  });
+  const grouping = createMemo(() => groupTurns(blocks()));
   const turnItemCount = (userId: number) => grouping().counts.get(userId) ?? 0;
   // A non-user block is hidden when its turn (its user message) is folded.
   const isHidden = (blockId: number) => {
@@ -446,71 +402,55 @@ export function App(props: { engine: EngineClient }) {
     return { rows: view, title: m.title, more, loading: m.loading };
   };
 
-  // ── Transcript reducer state ───────────────────────────────────────────────
-  // Positions are stable (append-only), so we track the streaming reply and each
-  // tool call by index rather than searching the array on every delta.
-  let nextId = 0;
-  const newId = () => nextId++;
-  let activeAssistant = -1; // index of the in-flight assistant block, or -1
-  const toolByCallId = new Map<string, number>();
+  // ── Transcript state ────────────────────────────────────────────────────────
+  // The pure reducer (reducer.ts) owns blocks/changedFiles + the streaming/tool
+  // cursors; this file mirrors its output into Solid signals for rendering.
+  let ts = initialTranscript();
+  const commit = () => {
+    setBlocks(ts.blocks);
+    setChangedFiles(ts.changedFiles);
+  };
+  const resetTranscript = () => {
+    ts = initialTranscript();
+    commit();
+  };
 
-  // Streamed deltas are COALESCED: tokens accumulate in a buffer and flush to the
-  // block on a short timer (~25fps) instead of one setBlocks + <markdown> re-parse
-  // per token. Re-parsing growing text on every token is O(n²) and was the source
-  // of the streaming lag/jank on long replies; flushing per frame keeps it smooth
-  // while the conceal still happens live.
+  // Streamed deltas are COALESCED: tokens accumulate in a buffer and flush on a
+  // short timer (~25fps) instead of one reduce + <markdown> re-parse per token.
+  // Re-parsing growing text on every token is O(n²) and was the source of the
+  // streaming lag on long replies; flushing per frame keeps it smooth.
   let pendingDelta = "";
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const STREAM_FLUSH_MS = 40;
-  const flushAssistant = () => {
+  const landPending = () => {
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
     if (!pendingDelta) return;
-    const delta = pendingDelta;
+    ts = reduceTranscript(ts, { type: "delta", text: pendingDelta });
     pendingDelta = "";
-    setBlocks((prev) => {
-      const cur = prev[activeAssistant];
-      if (activeAssistant >= 0 && cur && cur.kind === "assistant") {
-        const copy = prev.slice();
-        copy[activeAssistant] = { ...cur, text: cur.text + delta };
-        return copy;
-      }
-      // The first flushed delta opens a new block with a blank line above it.
-      const next = [
-        ...prev,
-        { kind: "assistant" as const, id: newId(), text: delta, streaming: true, gap: true },
-      ];
-      activeAssistant = next.length - 1;
-      return next;
-    });
+  };
+  const flushAssistant = () => {
+    landPending();
+    commit();
   };
   const scheduleFlush = () => {
     if (!flushTimer) flushTimer = setTimeout(flushAssistant, STREAM_FLUSH_MS);
   };
 
-  // Finalize the streaming reply: land any buffered text, then flip `streaming`
-  // off so <markdown> closes any trailing fence/table; stop appending to it.
-  const finalizeAssistant = () => {
-    flushAssistant();
-    if (activeAssistant >= 0) {
-      setBlocks((prev) => {
-        const b = prev[activeAssistant];
-        if (b?.kind !== "assistant" || !b.streaming) return prev;
-        const copy = prev.slice();
-        copy[activeAssistant] = { ...b, streaming: false };
-        return copy;
-      });
-    }
-    activeAssistant = -1;
+  // Apply a transcript action: land any buffered stream text first (so the action
+  // sees the up-to-date reply), reduce, then mirror the new state to the signals.
+  const apply = (action: TranscriptAction) => {
+    if (action.type !== "delta") landPending();
+    ts = reduceTranscript(ts, action);
+    commit();
   };
 
+  // Finalize the streaming reply (land buffered text, flip `streaming` off).
+  const finalizeAssistant = () => apply({ type: "finalize" });
   // Toggle a tool/diff block's collapsed state (the click-to-expand handler).
-  const toggle = (id: number) =>
-    setBlocks((prev) =>
-      prev.map((b) => (b.id === id && b.kind === "tool" ? { ...b, collapsed: !b.collapsed } : b)),
-    );
+  const toggle = (id: number) => apply({ type: "toggle", id });
 
   // Refresh the header chrome + rail projections whenever live status changes.
   const refreshStatus = () => {
@@ -618,30 +558,21 @@ export function App(props: { engine: EngineClient }) {
     });
 
     void (async () => {
-      // edit/write also echo their diff as the tool result; the file-changed
-      // event already folded it into a diff block, so we skip that one
-      // tool-call-finished echo — keyed by tool call id so an interleaved result
-      // from a parallel read can never be swallowed by mistake.
-      const suppressCallIds = new Set<string>();
-      // Per-turn maps are cleared on each turn boundary so they can't leak.
+      // The reducer owns per-turn call maps; endTurn finalizes the reply and
+      // drops them, then stops the spinner.
       const endTurn = () => {
-        finalizeAssistant();
-        toolByCallId.clear();
-        suppressCallIds.clear();
+        apply({ type: "clear-turn" });
         setWorking(false);
       };
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
         switch (event.type) {
           case "user-message":
-            finalizeAssistant();
-            toolByCallId.clear();
-            suppressCallIds.clear();
             // Subagents are per-turn activity (tasks persist, they don't) — start
-            // each turn with a clean SUBAGENTS section. The plan box is a transient
-            // affordance too: a new turn means it was acted on or abandoned.
+            // each turn with a clean SUBAGENTS section. The plan box is transient
+            // too: a new turn means it was acted on or abandoned.
             setSubagents([]);
             setPlan(null);
-            setBlocks((prev) => [...prev, { kind: "user", id: newId(), text: event.text }]);
+            apply({ type: "user", text: event.text });
             // A new turn begins: start the working clock/spinner.
             turnStartedAt = Date.now();
             setTick(0);
@@ -652,109 +583,43 @@ export function App(props: { engine: EngineClient }) {
             // Subagents panel, not streamed into the parent transcript; empty
             // deltas are no-ops.
             if (event.subagentId || !event.delta) break;
-            // Buffer the token and flush on the next frame (see flushAssistant) —
-            // coalescing keeps long streamed replies smooth.
+            // Buffer the token and flush on the next frame — coalescing keeps long
+            // streamed replies smooth.
             pendingDelta += event.delta;
             scheduleFlush();
             break;
-          case "tool-call-started": {
+          case "tool-call-started":
             if (event.subagentId) break; // subagent tools don't enter the transcript
-            finalizeAssistant();
-            const label = toolLabel(event.toolName, event.input);
-            // Subagent replies and web-search results are markdown — render them
-            // (headers, bold, lists, tables) when expanded instead of raw lines.
-            const isMarkdown =
-              event.toolName === "spawn_subagent" || event.toolName === "web_search";
-            setBlocks((prev) => {
-              const next = [
-                ...prev,
-                {
-                  kind: "tool" as const,
-                  id: newId(),
-                  label,
-                  output: [] as string[],
-                  // A subagent reply opens expanded (it's the answer); other tools
-                  // (incl. web_search) stay condensed to one line until clicked.
-                  collapsed: event.toolName !== "spawn_subagent",
-                  isDiff: false,
-                  isMarkdown,
-                  isError: false,
-                },
-              ];
-              toolByCallId.set(event.toolCallId, next.length - 1);
-              return next;
+            apply({
+              type: "tool-start",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              input: event.input,
             });
             break;
-          }
-          case "tool-call-finished": {
+          case "tool-call-finished":
             if (event.subagentId) break;
-            // Skip only the echo for the exact call whose diff we already folded.
-            if (suppressCallIds.has(event.toolCallId)) {
-              suppressCallIds.delete(event.toolCallId);
-              break;
-            }
-            const idx = toolByCallId.get(event.toolCallId);
-            toolByCallId.delete(event.toolCallId); // call ids are single-use
-            const out =
-              typeof event.output === "string"
-                ? event.output
-                : JSON.stringify(event.output, null, 2);
-            const lines = out.split("\n").filter((l, i, a) => l.length || i < a.length - 1);
-            setBlocks((prev) => {
-              if (idx == null) return prev;
-              const b = prev[idx];
-              if (b?.kind !== "tool") return prev;
-              const copy = prev.slice();
-              copy[idx] = { ...b, output: lines, isError: event.isError };
-              return copy;
+            apply({
+              type: "tool-finish",
+              toolCallId: event.toolCallId,
+              output: event.output,
+              isError: event.isError,
             });
             break;
-          }
-          case "file-changed": {
-            // Fold the diff into the EXACT tool block that produced it (by call
-            // id — no positional guessing), so an edit reads as one row with the
-            // hunk shown beneath it. Diffs are the signature output, so they're
-            // expanded by default (click the row to collapse).
-            suppressCallIds.add(event.toolCallId);
-            const verb = event.action === "write" ? "wrote" : "edited";
-            const header = `${GLYPH.file} ${verb} ${event.path}  +${event.added} -${event.removed}`;
-            const lines = event.diff ? event.diff.split("\n") : [];
-            // Track the file for the footer's changed-file summary (cumulative delta).
-            setChangedFiles((prev) => {
-              const i = prev.findIndex((f) => f.path === event.path);
-              if (i >= 0) {
-                const copy = prev.slice();
-                const f = copy[i] as ChangedFile;
-                copy[i] = { path: f.path, added: f.added + event.added, removed: f.removed + event.removed };
-                return copy;
-              }
-              return [...prev, { path: event.path, added: event.added, removed: event.removed }];
-            });
-            finalizeAssistant();
-            setBlocks((prev) => {
-              const idx = toolByCallId.get(event.toolCallId);
-              const target = idx == null ? undefined : prev[idx];
-              const canFold = !!target && target.kind === "tool" && !target.isDiff;
-              const folded = {
-                kind: "tool" as const,
-                id: canFold ? (target as { id: number }).id : newId(),
-                label: header,
-                output: lines,
-                collapsed: false,
-                isDiff: true,
-                isError: false,
-              };
-              if (canFold && idx != null) {
-                const copy = prev.slice();
-                copy[idx] = folded;
-                return copy;
-              }
-              // No matching block, or this call already produced a diff (a second
-              // changed file) → append a standalone diff row.
-              return [...prev, folded];
+          case "file-changed":
+            // The reducer folds the diff into the EXACT tool block that produced it
+            // (by call id), so an edit reads as one row with the hunk beneath it, and
+            // accumulates the per-file delta for the footer summary.
+            apply({
+              type: "file-changed",
+              toolCallId: event.toolCallId,
+              path: event.path,
+              action: event.action,
+              added: event.added,
+              removed: event.removed,
+              ...(event.diff ? { diff: event.diff } : {}),
             });
             break;
-          }
           case "tasks-updated":
             setTasks(event.tasks);
             break;
@@ -828,18 +693,11 @@ export function App(props: { engine: EngineClient }) {
             endTurn();
             break;
           case "notice":
-            finalizeAssistant();
-            setBlocks((prev) => [
-              ...prev,
-              { kind: "notice", id: newId(), text: event.message },
-            ]);
+            apply({ type: "notice", text: event.message });
             break;
           case "engine-error":
             endTurn();
-            setBlocks((prev) => [
-              ...prev,
-              { kind: "notice", id: newId(), text: `error: ${event.message}` },
-            ]);
+            apply({ type: "notice", text: `error: ${event.message}` });
             break;
           default:
             break;
@@ -876,16 +734,14 @@ export function App(props: { engine: EngineClient }) {
     // is in flight so the engine stops streaming into the cleared screen.
     if (text === "/clear" || text === "/new") {
       if (working()) props.engine.send({ type: "abort" });
-      setBlocks([]);
+      pendingDelta = "";
+      resetTranscript();
       setPlan(null);
       setSubagents([]);
       setCollapsedTurns(new Set());
-      setChangedFiles([]);
       setPerms([]);
       setPendingQ([]);
       setWorking(false);
-      activeAssistant = -1;
-      toolByCallId.clear();
     }
     // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.
     // keep their arguments (the same logic the REPL uses).
@@ -1780,21 +1636,6 @@ function ToolBlockView(props: {
   );
 }
 
-/**
- * The collapsed-row detail after a tool label: `diff` for edits, `N results`
- * for a web search (counting the numbered result entries the search tool emits),
- * else the raw `N lines`. The result-count reads far better than "33 lines" of
- * payload for a search.
- */
-function collapsedHint(t: Extract<Block, { kind: "tool" }>): string {
-  if (t.isDiff) return "diff";
-  if (t.label.startsWith("◈")) {
-    const results = t.output.filter((l) => /^\d+\.\s/.test(l)).length;
-    if (results > 0) return `${results} result${results === 1 ? "" : "s"}`;
-  }
-  return `${t.output.length} line${t.output.length === 1 ? "" : "s"}`;
-}
-
 /** Green additions / red deletions / dim context on an expanded diff. */
 function diffColor(line: string, p: Palette): string {
   if (line.startsWith("+")) return p.add;
@@ -1831,16 +1672,6 @@ function shortCwd(): string {
   const home = process.env.HOME ?? "";
   const path = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
   return path.length > 48 ? `…${path.slice(-47)}` : path;
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
-
-/** The first non-empty line of a (possibly multi-line) string, for one-line summaries. */
-function firstLine(s: string | undefined): string | undefined {
-  const line = s?.split("\n").find((l) => l.trim().length > 0)?.trim();
-  return line || undefined;
 }
 
 export async function mountApp(engine: EngineClient): Promise<void> {

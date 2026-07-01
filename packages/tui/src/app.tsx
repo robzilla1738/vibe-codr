@@ -74,11 +74,6 @@ const INPUT_MAX_ROWS = 10;
  * (`<ascii_font font="slick">`) in the brand color — see the empty-state splash. */
 /** Min column width to show the big wordmark (else a compact brand line). */
 const LOGO_MIN_COLS = 56;
-/** Rows the slash menu floats above the column's inner-bottom edge: it clears the
- * two status lines (2) + the full input box incl. its `ASK` top border (4) + a
- * 1-row breathing gap, so the menu sits just above an intact input box. Absolutely
- * positioned, so opening it overlays the view instead of reflowing it. */
-const MENU_BOTTOM = 8;
 
 // The transcript Block model + its pure reducer live in reducer.ts (headless,
 // unit-tested). This file owns the Solid signals and the per-frame flush timer,
@@ -1291,20 +1286,23 @@ export function App(props: { engine: EngineClient }) {
           their values with the current one marked `●`. */}
       <Show when={menuModel().open}>
         <box
-          // Absolutely anchored just above the input, so opening the menu OVERLAYS
-          // the space below the wordmark (or the transcript tail) instead of
-          // pushing the whole view up — it reads as a fluid extension of the input
-          // rather than a layout jump. `MENU_BOTTOM` clears the input + status rows.
-          position="absolute"
-          bottom={MENU_BOTTOM}
-          left={1}
-          right={1}
-          border
+          // Docks IN-FLOW directly above the input as one connected control: the
+          // same full width, the same neutral-grey border, and a blue title — with
+          // NO bottom border, so the input's own top border (carrying the mode
+          // chip) is the shared divider and the two read as a single framed field
+          // that grows upward as you type `/`. The input drops its top margin while
+          // this is open (below) so they sit flush. Opening it shrinks the
+          // scrollable transcript above rather than covering it.
+          border={["top", "left", "right"]}
           borderColor={palette().border}
-          title={menuView()?.title}
+          // Padded to match the input's ` ASK ` chip so the docked pair share one
+          // title style (`┌─ commands ─` rather than a flush `┌─commands─`).
+          title={menuView()?.title ? ` ${menuView()?.title} ` : undefined}
           titleColor={brand()}
           backgroundColor={palette().panel}
           flexDirection="column"
+          flexShrink={0}
+          marginTop={1}
           paddingLeft={1}
           paddingRight={1}
         >
@@ -1352,7 +1350,9 @@ export function App(props: { engine: EngineClient }) {
         // line stays visible as the frame gets taller.
         flexDirection="column"
         flexShrink={0}
-        marginTop={1}
+        // Flush against the docked menu when it's open (they share the top border
+        // as a divider); a 1-row breathing gap otherwise.
+        marginTop={menuModel().open ? 0 : 1}
         paddingLeft={1}
         paddingRight={1}
         // Grow with the text: the input soft-wraps (wrapMode below) and the frame

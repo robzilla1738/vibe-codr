@@ -18,6 +18,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "smoke:tui": "bun packages/tui/scripts/smoke.ts",
+    "inspect:tui": "bun packages/tui/scripts/inspect.ts",
     "lint": "biome lint packages",
     "format": "biome format --write packages",
     "clean": "turbo run clean && rm -rf node_modules dist"

@@ -39,7 +39,9 @@ const engine: EngineClient = {
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
     tasks: [],
     theme: "default",
-    accentColor: "#bb9af7",
+    // No /accent override → brand() falls back to the theme's Blue 300 primary, so
+    // the smoke exercises the real default chrome (blue wordmark/markers/spinner).
+    accentColor: "",
     commandNames: ["help", "cost", "model", "myskill"],
     git: { branch: "main", dirty: 3, ahead: 1, behind: 0, worktree: false },
   }),
@@ -292,6 +294,18 @@ await t.mockInput.typeText("/appr");
 await settle();
 frame = t.captureCharFrame();
 check("menu opens on slash", frame.includes("approvals"));
+// The menu now DOCKS flush above the input (no floating gap, aligned edges): the
+// row directly above the input's `ASK` top border must be a menu row (non-blank),
+// and the menu's left edge must line up with the input's (the old 1-col inset is
+// gone). Guards a regression back to the detached floating popup.
+{
+  const fl = frame.split("\n");
+  const askRow = fl.findIndex((l) => l.includes("ASK"));
+  const aboveAsk = askRow > 0 ? fl[askRow - 1]! : "";
+  const firstCol = (s: string) => s.length - s.trimStart().length;
+  check("menu docks flush above the input (no gap row)", askRow > 0 && aboveAsk.trim().length > 0);
+  check("menu and input left edges align (no inset)", askRow > 0 && firstCol(aboveAsk) === firstCol(fl[askRow]!));
+}
 t.mockInput.pressEnter();
 await settle();
 t.mockInput.pressArrow("down");

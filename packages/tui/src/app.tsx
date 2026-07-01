@@ -25,7 +25,7 @@
  */
 
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
-import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid";
 import type {
   EngineClient,
   AgentInfo,
@@ -38,6 +38,7 @@ import type {
   UIEvent,
 } from "@vibe/shared";
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { copyToClipboard } from "./clipboard.ts";
 import { applyPalette, paletteState } from "./commands-catalog.ts";
 import { renderTable, splitMarkdown, type MdBlock } from "./markdown-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
@@ -284,6 +285,22 @@ export function App(props: { engine: EngineClient }) {
   // terminal width so the column reflows on resize.
   const dims = useTerminalDimensions();
   const contentWidth = () => Math.min(CONTENT_MAX, Math.max(1, dims().width - 2));
+
+  // Copy-on-selection: when a mouse drag-selection FINISHES, copy the highlighted
+  // text to the clipboard. OSC52 (via the renderer) covers tmux/SSH; the platform
+  // command (pbcopy/clip/wl-copy…) covers local terminals that ignore OSC52. Copy
+  // is best-effort — a failure must never break the render.
+  const renderer = useRenderer();
+  useSelectionHandler((selection: { isDragging: boolean; getSelectedText?: () => string }) => {
+    if (selection.isDragging) return; // still dragging → wait for the release
+    const text = selection.getSelectedText?.() ?? "";
+    if (!text.trim()) return;
+    try {
+      copyToClipboard(text, { osc52: (t) => renderer.copyToClipboardOSC52?.(t) ?? false });
+    } catch {
+      // best-effort — ignore clipboard failures
+    }
+  });
 
   // How many rows the input needs for the current draft: each explicit line
   // soft-wraps to ceil(width / inner-width) rows. Drives the input box height so

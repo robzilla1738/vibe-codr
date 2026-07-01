@@ -286,6 +286,14 @@ export function App(props: { engine: EngineClient }) {
   const dims = useTerminalDimensions();
   const contentWidth = () => Math.min(CONTENT_MAX, Math.max(1, dims().width - 2));
 
+  // The live "Working… Ns" elapsed label. It reads `tick()` so Solid re-renders it
+  // on every spinner frame — without a signal dependency the clock would render
+  // once and freeze (the bug where the timer stuck while the turn kept running).
+  const elapsedLabel = () => {
+    void tick();
+    return workingLabel(Date.now() - turnStartedAt);
+  };
+
   // Copy-on-selection: when a mouse drag-selection FINISHES, copy the highlighted
   // text to the clipboard. OSC52 (via the renderer) covers tmux/SSH; the platform
   // command (pbcopy/clip/wl-copy…) covers local terminals that ignore OSC52. Copy
@@ -1302,7 +1310,7 @@ export function App(props: { engine: EngineClient }) {
             {spinnerFrame(tick())}
           </text>
           <text fg={palette().muted}>
-            {` ${workingLabel(Date.now() - turnStartedAt)}  ·  esc to interrupt`}
+            {` ${elapsedLabel()}  ·  esc to interrupt`}
           </text>
         </box>
       </Show>

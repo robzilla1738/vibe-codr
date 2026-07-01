@@ -245,9 +245,16 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   **`reducer.ts`** (the transcript `UIEvent→Block` reducer — streaming coalescing,
   tool-block creation, diff folding, cumulative file deltas + `groupTurns` — app.tsx
   keeps only the Solid signals + the flush timer and delegates via `apply(action)`),
-  `layout.ts` (the shared `PANEL` box chrome), `tool-icons.ts` (per-tool glyph +
-  action summary), `spinner.ts` (braille frames), `themes.ts` (palettes incl.
-  `opencode`), `modes.ts`, `commands-catalog.ts`. `screenshot.ts` can't import
+  `markdown-blocks.ts` (`splitMarkdown` peels a reply into prose / **heading** /
+  **quote** / code / table blocks — streaming-tolerant and fence-aware — so app.tsx
+  renders each with the right primitive and explicit color: headings/table-header in
+  `heading`, quotes with a `gutter` bar, code in `code`; prose still goes through
+  the native `<markdown>`), `gradient.ts` (the single-hue accent ramp
+  `brandRamp`/`brandSpans` + `hexToHsv`/`hsvToHex`), `layout.ts` (the shared `PANEL`
+  box chrome), `tool-icons.ts` (per-tool glyph + action summary), `spinner.ts`
+  (braille frames), `themes.ts` (palettes incl. `opencode`; every palette defines the
+  `gutter`/`heading`/`code` text tokens), `modes.ts`, `commands-catalog.ts`.
+  `screenshot.ts` can't import
   `@vibe/tui`, so it carries
   a **local copy of the tool-icon/summary logic** — keep it identical to
   `tool-icons.ts` (it has a comment pointing here).
@@ -263,17 +270,18 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   transcript; Esc or `/jobs` closes it). Otherwise a `<Show>` renders the scrolling
   transcript when there are blocks, else a **centered Vibe Codr wordmark splash**.
   The wordmark is a compact ░██ block face (`packages/tui/src/wordmark.ts`, 80×7)
-  rendered as a **clean left→right rainbow gradient** (`RainbowLine`): each row is a
-  flex *row* of one `<text fg>` per character, colored by COLUMN position
-  (`rainbowSpans`, `rainbow.ts`), so column `i` shares a hue across every row and
-  the block reads as one smooth sweep. **Gotcha: per-character color must use a row
-  of `<text fg>` (the SegRow mechanism); inline `<span fg>` children DO NOT paint in
-  this renderer** (they render the default fg — this is what made the wordmark show
-  up white). The smoke test asserts the gradient via `captureSpans()` (counts
-  distinct fg colors — `captureCharFrame` is color-blind). Shown when the column has
-  room (`showWordmark()`); otherwise it falls back to `<ascii_font text="VIBE CODR"
-  font="slick" color={rainbowAt(0.5)}>` (single rainbow-mid hue — the array/gradient
-  `color` form is unverified, so a fallback uses one color), then `◆ Vibe Codr`. Below it is a single **centered** prompt-starter line
+  rendered as a **clean left→right single-hue blue fade** (`BrandLine`): each row is
+  a flex *row* of one `<text fg>` per character, colored by COLUMN position
+  (`brandSpans`, `gradient.ts`) via a lightness ramp around the live accent hue
+  (`brand()`), so column `i` shares a ramp position across every row and the block
+  reads as one smooth light→deep sweep (and follows `/accent`). **Gotcha:
+  per-character color must use a row of `<text fg>` (the SegRow mechanism); inline
+  `<span fg>` children DO NOT paint in this renderer** (they render the default fg —
+  this is what made the wordmark show up white). The smoke test asserts the gradient
+  via `captureSpans()` (many distinct fg colors, all blue-dominant — `captureCharFrame`
+  is color-blind). Shown when the column has room (`showWordmark()`); otherwise it
+  falls back to `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (flat
+  accent), then `◆ Vibe Codr`. Below it is a single **centered** prompt-starter line
   (`SegRow center`) — `Try › …` example asks — and nothing else (no tagline, no
   key cheatsheet; the keys live in the under-input status). `SegRow` is a row of
   coloured `<text>` runs (OpenTUI has no inline-markup `<text>`), two-tone: muted
@@ -281,11 +289,13 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   is two **centered** lines:
   `detailsCenter()` (location · git · model · changed · ctx · cost · goal) and the
   `SegRow` key hints — then the stacked status surfaces, the input, and the
-  under-input status block. **The slash-command menu is an absolute overlay** —
-  the chat column is `position:"relative"` and the menu is `position:"absolute"`
-  anchored `bottom={MENU_BOTTOM}` (clears the input + status rows) so opening it
-  *overlays* the area above the input instead of taking flow space; that keeps the
-  body from shrinking, so the wordmark/transcript never jump up when you type `/`. The transcript is `<scrollbox flexGrow={1}
+  under-input status block. **The slash-command menu docks in-flow to the input** —
+  it renders as the sibling immediately *above* the input box (same full width, same
+  neutral-grey border, blue padded title, panel fill) with **no bottom border**, and
+  the input drops its top margin while the menu is open so the two sit flush and read
+  as one connected control (the input's mode-chip top border is the shared divider).
+  Because it's in normal flow, opening it shrinks the scrollable transcript above
+  rather than covering it; the input stays pinned at the bottom. The transcript is `<scrollbox flexGrow={1}
   flexShrink={1} stickyScroll stickyStart="bottom">`. Every surface *below* the
   transcript (working spinner, plan box, **Tasks** panel, **Subagents** panel,
   permission card, command menu, input, the two status lines) must set
@@ -348,29 +358,33 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   `marginTop={1}` — one blank row between every area; the second status line (hints
   / goal) hugs the details line with no margin so the two read as one block. Keep
   that rhythm; don't special-case a region to 2.
-- **Color discipline (black bg + neutral chrome + four deliberate color zones):**
+- **Color discipline (black bg + neutral grey borders + a single Blue 300 accent):**
   the app paints a **black background** (`backgroundColor={palette().background}`,
   `#000` on the default theme), neutral **charcoal** surfaces (`panel`/`elevated`/
-  `selBg`/`border`), and **monochrome white/grey** text. The chrome accent `brand()`
-  = `accentColor() || palette().primary` is now a **soft neutral white** by default
-  (`#e6e6e6`; orange `#ff3503` retired) and paints quiet chrome — panel titles, the
-  `❯` user marker, the cursor, the input frame. Override it to a single hue with
-  `/accent <hex>`. **Color is reserved for exactly four zones** (`rainbow.ts` +
-  `modes.ts`):
-  1. **Wordmark** — static per-column rainbow gradient (`RainbowLine`).
-  2. **Mode chip** — the input's top-border title, `modeColor(uiMode())` = ASK blue
-     `#7aa2f7` · PLAN green `#9ece6a` · YOLO red `#f7768e` (fixed constants).
-  3. **Working spinner** — the braille glyph cycles `rainbowAt(tick % CYCLE)`,
-     animated only while a turn runs (rides the existing `working()`-gated tick; no
-     new idle timer). The elapsed/interrupt label stays muted.
-  4. **Per-agent / per-step** — each Subagents-rail row and each tool-step marker
-     (`▎`) gets a stable `rotateHue(index)`; the row/header TEXT stays neutral.
-  Everything else stays neutral: transcript prose `assistant`, tool headers `muted`,
-  with `add`/`del` on diffs and `notice` (amber) on warnings the only functional
-  colors. **Rainbow/mode color is for ACCENTS only — never body text or tool
-  output.** This IS the intended look (an earlier note said "don't reintroduce the
-  rainbow we removed" — obsolete; the curated rainbow is now the design). A `title`
-  needs a top edge, so the input uses a full `border` (all sides).
+  `selBg`), **neutral grey borders** (`palette().border`, `#34343a`), and mostly
+  **white/grey** text. The chrome accent `brand()` = `accentColor() || palette().primary`
+  is **Blue 300** by default (`#70cbf4`; the old white `#e6e6e6` and rainbow both
+  retired). Override it to any hue with `/accent <hex>` — the wordmark fade follows
+  it. **The accent is reserved for titles + markers only** (`gradient.ts` +
+  `modes.ts` + palette tokens):
+  1. **Wordmark** — a single-hue blue fade (`BrandLine`/`brandSpans`), a lightness
+     ramp around `brand()`.
+  2. **Markers** — panel titles, the `❯` user marker + heavy left gutter, the active
+     task/step, the selected menu row, and the input caret (all `brand()`).
+  3. **Mode chip** — the input's top-border title, `modeColor(uiMode())` = ASK blue
+     `#70cbf4` (aligned to the accent) · PLAN green `#9ece6a` · YOLO red `#f7768e`.
+  4. **Working spinner** — the braille glyph in flat `brand()`, animated only while a
+     turn runs (rides the existing `working()`-gated tick; no new idle timer).
+  **Borders stay neutral grey** — the input frame and every panel box use
+  `palette().border`, NOT `brand()`. Tool-step gutters and subagent markers use one
+  **calm muted tone** (`palette().gutter`, `#3f5766`) — no per-item rotation; a
+  running subagent's glyph is `brand()` (alive), a finished one recedes to the
+  gutter tone. Text-output tokens: markdown **headings** and the **table header row**
+  use `palette().heading` (blue, bold); **code** text uses `palette().code`; diffs
+  use `add`/`del`, warnings `notice` (amber). **Accent/mode color is for ACCENTS
+  only — never body text or tool output.** A `title` needs a top edge, so the input
+  uses a full `border` (all sides); the docked slash menu (below) drops its *bottom*
+  border so the input's top border is the shared divider.
 - **Plan-approval modal.** A presented plan (`plan-presented` event) is an
   interactive gate, not a static hint: with the input empty, **Enter accepts**
   (`resolve-plan` → engine switches to execute, seeds the task list from the plan's

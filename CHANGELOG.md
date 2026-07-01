@@ -52,6 +52,19 @@ All notable changes to vibe-codr are documented here.
   plan→execute injects an explicit approval directive.
 
 ### Changed
+- **TUI redesign — one Blue 300 accent, no rainbow.** The full-spectrum rainbow
+  (wordmark, spinner, per-step/per-subagent gutters) is replaced by a single
+  **Blue 300 (`#70cbf4`)** accent reserved for titles + markers. The wordmark is now
+  a calm single-hue **light→deep blue fade** (`gradient.ts`, `brandRamp`/`brandSpans`,
+  derived from the live accent so `/accent <hex>` recolors it); the spinner is flat
+  blue; tool-step and subagent gutters share one **calm muted tone**; box borders
+  (input frame + panels) stay neutral grey so blue reads as the accent, not the whole
+  UI. **Richer text output:** markdown **headings** (accent, bold, h1/h2 underline)
+  and **blockquotes** (gutter bar) are peeled out and styled explicitly; code blocks
+  gain a left gutter + accent language tag in a dedicated `code` tone; GFM tables put
+  the header row in the accent. The **slash/model menu now docks flush to the input**
+  as one connected control (shared divider, aligned edges) instead of a floating
+  popup. New palette tokens (`gutter`/`heading`/`code`) across all five themes.
 - **Testable core (god-object reduction).** The transcript `UIEvent→Block`
   transform (streaming coalescing, tool-block creation, diff folding, cumulative
   file deltas) is extracted from `app.tsx` into a pure, unit-tested `reducer.ts`;

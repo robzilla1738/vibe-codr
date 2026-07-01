@@ -92,10 +92,15 @@ await t.mockInput.typeText("/the");
 await settle();
 console.log(t.captureCharFrame());
 
-banner("4) MODEL PICKER DOCKED");
+banner("4) MODEL PICKER — MAIN target");
 t.mockInput.pressEscape();
 await settle();
 await t.mockInput.typeText("/model ");
+await settle();
+console.log(t.captureCharFrame());
+
+banner("5) MODEL PICKER — Tab → SUBAGENTS target");
+t.mockInput.pressTab();
 await settle();
 console.log(t.captureCharFrame());
 

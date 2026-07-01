@@ -31,10 +31,7 @@ test("a slash opens the command list and filters by prefix", () => {
     expect(all.items.length).toBe(PALETTE_COMMANDS.length);
   }
   const mod = paletteState("/mod");
-  expect(mod.open && mod.mode === "command" && mod.items.map((c) => c.name)).toEqual([
-    "model",
-    "models",
-  ]);
+  expect(mod.open && mod.mode === "command" && mod.items.map((c) => c.name)).toEqual(["model"]);
 });
 
 test("an unknown command closes the menu", () => {

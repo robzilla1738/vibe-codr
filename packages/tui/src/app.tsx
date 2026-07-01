@@ -211,6 +211,9 @@ export function App(props: { engine: EngineClient }) {
   const [themeName, setThemeName] = createSignal(snap.theme);
   const [subagentModelSig, setSubagentModelSig] = createSignal(snap.subagentModel);
   const [reasoningSig, setReasoningSig] = createSignal<string | undefined>(snap.reasoning);
+  // Which agent the `/model` picker is configuring — flipped with Tab while the
+  // picker is open. Resets to "main" whenever the picker closes.
+  const [modelTarget, setModelTarget] = createSignal<"main" | "sub">("main");
   // The current value of an enum command, for marking the active row in its
   // submenu (approvals is derived from the live UI mode; the rest from snapshot/
   // event-tracked signals above).
@@ -220,30 +223,24 @@ export function App(props: { engine: EngineClient }) {
     if (name === "reasoning") return reasoningSig() ?? "off";
     return undefined;
   };
-  // Detect when the draft is a `/model` (or `/models`) picker rather than the flat
-  // command menu: `/model ` → pick the MAIN model; `/model sub ` → the SUBAGENT
-  // model; `/model key …` is the key flow (not a picker). The trailing text filters.
-  const pickerTarget = (): { target: "main" | "sub"; query: string } | null => {
-    const d = draft();
-    const lm = /^\/models(?:\s+(.*))?$/is.exec(d);
-    if (lm) {
-      const q = (lm[1] ?? "").trim();
-      // `/models refresh` is a command (force a catalog re-fetch), not a filter.
-      if (q.toLowerCase() === "refresh") return null;
-      return { target: "main", query: q };
-    }
-    const m = /^\/model\s+(.*)$/is.exec(d);
-    if (m) {
-      const rest = m[1] ?? "";
-      const tokens = rest.trim().split(/\s+/).filter(Boolean);
-      const first = (tokens[0] ?? "").toLowerCase();
-      if (first === "key") return null;
-      if (first === "sub" || first === "subagent")
-        return { target: "sub", query: tokens.slice(1).join(" ") };
-      return { target: "main", query: rest.trim() };
-    }
-    return null;
+  // Detect when the draft opens the unified `/model` picker (which sets BOTH the
+  // main and the subagent model — the target is a Tab-toggle, `modelTarget()`, not
+  // text syntax). Returns the trailing filter text, or null when it's NOT a picker:
+  // `/model key …` (set a provider key) and `/model refresh` (re-pull the catalog)
+  // are text subcommands. `/models` is accepted as a legacy alias.
+  const modelPickerQuery = (): string | null => {
+    const m = /^\/models?(?:\s+(.*))?$/is.exec(draft());
+    if (!m) return null;
+    const q = (m[1] ?? "").trim();
+    const first = q.split(/\s+/)[0]?.toLowerCase() ?? "";
+    if (first === "key" || first === "refresh") return null;
+    return q;
   };
+  // The picker's target resets to "main" whenever it's closed, so it always opens
+  // configuring the main agent.
+  createEffect(() => {
+    if (modelPickerQuery() === null) setModelTarget("main");
+  });
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -287,15 +284,22 @@ export function App(props: { engine: EngineClient }) {
   //   • models  — the live, searchable model picker (main or subagent), current
   //               marked; choosing dispatches the typed set-(subagent-)model
   const menuModel = createMemo(() => {
-    const pick = pickerTarget();
-    if (pick) {
+    const pquery = modelPickerQuery();
+    if (pquery !== null) {
+      const target = modelTarget();
+      // Title carries the Tab toggle so switching agents is discoverable; the hint
+      // line names which agent is being configured.
       const title =
-        pick.target === "sub" ? "subagent model · type to filter" : "model · type to filter";
-      const all = models();
-      if (all === null) return { open: true, loading: true, title, rows: [] as MenuRow[] };
-      const q = pick.query.toLowerCase();
-      const curMain = headModel();
+        target === "sub" ? "model · Tab: Subagents ◂ Main" : "model · Tab: Main ▸ Subagents";
       const curSub = subagentModelSig();
+      const hint =
+        target === "sub"
+          ? `setting SUBAGENTS  ·  now: ${curSub ?? "inherits main"}`
+          : `setting MAIN agent  ·  now: ${headModel()}`;
+      const all = models();
+      if (all === null) return { open: true, loading: true, kind: "models" as const, title, hint, rows: [] as MenuRow[] };
+      const q = pquery.toLowerCase();
+      const curMain = headModel();
       const rows: MenuRow[] = all
         .filter((mdl) => {
           const full = `${mdl.providerId}/${mdl.id}`.toLowerCase();
@@ -306,9 +310,9 @@ export function App(props: { engine: EngineClient }) {
           const ctx = mdl.contextWindow ? `  (${Math.round(mdl.contextWindow / 1000)}k)` : "";
           return {
             text: `${full}${ctx}`,
-            current: pick.target === "sub" ? curSub === full : curMain === full,
+            current: target === "sub" ? curSub === full : curMain === full,
             choose: () => {
-              if (pick.target === "sub") {
+              if (target === "sub") {
                 setSubagentModelSig(full);
                 props.engine.send({ type: "set-subagent-model", model: full });
               } else {
@@ -318,10 +322,10 @@ export function App(props: { engine: EngineClient }) {
             },
           } satisfies MenuRow;
         });
-      return { open: rows.length > 0, loading: false, title, rows };
+      return { open: rows.length > 0, loading: false, kind: "models" as const, title, hint, rows };
     }
     const st = paletteState(draft());
-    if (!st.open) return { open: false, loading: false, title: "", rows: [] as MenuRow[] };
+    if (!st.open) return { open: false, loading: false, kind: "command" as const, title: "", hint: "", rows: [] as MenuRow[] };
     if (st.mode === "command") {
       const nameW = Math.min(14, Math.max(...st.items.map((c) => c.name.length + 1)));
       const rows: MenuRow[] = st.items.map((c, idx) => {
@@ -336,7 +340,7 @@ export function App(props: { engine: EngineClient }) {
           },
         };
       });
-      return { open: true, loading: false, title: "commands", rows };
+      return { open: true, loading: false, kind: "command" as const, title: "commands", hint: "", rows };
     }
     const cur = currentValueFor(st.command.name);
     const rows: MenuRow[] = st.items.map((v) => ({
@@ -349,14 +353,14 @@ export function App(props: { engine: EngineClient }) {
         if (run) runText(line);
       },
     }));
-    return { open: true, loading: false, title: `/${st.command.name}`, rows };
+    return { open: true, loading: false, kind: "value" as const, title: `/${st.command.name}`, hint: "", rows };
   });
 
   // Pre-highlight the current value (if any), else the first row, whenever the
   // menu contents change (new query / picker target / freshly-loaded models).
   createEffect(() => {
     const m = menuModel();
-    void `${m.title}:${m.rows.length}:${m.loading}`;
+    void `${m.title}:${m.rows.length}:${m.loading}:${modelTarget()}`;
     const cur = m.rows.findIndex((r) => r.current);
     setSelIdx(cur >= 0 ? cur : 0);
   });
@@ -364,7 +368,7 @@ export function App(props: { engine: EngineClient }) {
   // Lazily fetch the model list the first time a `/model` picker opens (cached
   // for the session); the picker shows "Fetching…" until it lands.
   createEffect(() => {
-    if (pickerTarget() && models() === null && !modelsLoading()) {
+    if (modelPickerQuery() !== null && models() === null && !modelsLoading()) {
       setModelsLoading(true);
       void Promise.resolve(props.engine.listModels?.() ?? [])
         .then((list) => setModels(list ?? []))
@@ -392,7 +396,7 @@ export function App(props: { engine: EngineClient }) {
       idx: start + i,
     }));
     const more = rows.length > WINDOW ? `+${rows.length - WINDOW} more · type to filter` : "";
-    return { rows: view, title: m.title, more, loading: m.loading };
+    return { rows: view, title: m.title, hint: m.hint, more, loading: m.loading };
   };
 
   // ── Transcript state ────────────────────────────────────────────────────────
@@ -542,9 +546,12 @@ export function App(props: { engine: EngineClient }) {
         key.preventDefault?.();
         if (n) setSelIdx((i) => (i + 1) % n);
         break;
-      case "tab": // complete the highlighted entry without running it
+      case "tab":
         key.preventDefault?.();
-        if (n) choosePalette(false);
+        // In the model picker, Tab flips the target (Main ⇄ Subagents); elsewhere
+        // it completes the highlighted entry without running it.
+        if (m.kind === "models") setModelTarget((t) => (t === "main" ? "sub" : "main"));
+        else if (n) choosePalette(false);
         break;
       case "return":
       case "enter": // run the highlighted entry (preventDefault stops onSubmit)
@@ -1307,6 +1314,10 @@ export function App(props: { engine: EngineClient }) {
           paddingLeft={1}
           paddingRight={1}
         >
+          {/* Context header (e.g. which agent the model picker is configuring). */}
+          <Show when={menuView()?.hint}>
+            <text fg={palette().heading}>{`  ${menuView()?.hint}`}</text>
+          </Show>
           <Show when={menuView()?.loading}>
             <text fg={palette().muted}>{"  Fetching models…"}</text>
           </Show>

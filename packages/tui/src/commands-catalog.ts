@@ -27,8 +27,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "export", description: "Export the conversation to Markdown", arg: "[path]" },
   { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
   // Model & mode
-  { name: "model", description: "Pick or switch the active model", arg: "<id>" },
-  { name: "models", description: "Browse + pick a model (· refresh to force-pull)", arg: "[filter]" },
+  { name: "model", description: "Pick the model (Tab: main ⇄ subagents · /model refresh)", arg: "[filter]" },
   { name: "plan", description: "Switch to read-only plan mode" },
   { name: "execute", description: "Switch to execute mode" },
   { name: "approvals", description: "Set approval mode", values: ["ask", "auto"] },

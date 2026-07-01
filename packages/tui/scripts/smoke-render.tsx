@@ -339,6 +339,17 @@ check(
   "model picker marks the current model (●)",
   frame.includes("●") && frame.includes("ollama/glm-5.2"),
 );
+// The unified picker sets BOTH agents: it opens on MAIN, and Tab flips it to the
+// SUBAGENTS target (the header + toggle title update). Guards the /model+/models
+// consolidation and the Tab toggle.
+check("model picker opens configuring the MAIN agent", frame.includes("MAIN agent"));
+check("model picker title shows the Tab toggle", frame.includes("Main") && frame.includes("Subagents"));
+t.mockInput.pressTab();
+await settle();
+frame = t.captureCharFrame();
+check("Tab flips the model picker to the SUBAGENTS target", frame.includes("SUBAGENTS"));
+t.mockInput.pressTab(); // flip back to MAIN for the rest of the section
+await settle();
 // Filter to a single openai model by typing — the picker narrows live.
 await t.mockInput.typeText("o4-mini");
 await settle();

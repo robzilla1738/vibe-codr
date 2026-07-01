@@ -260,11 +260,16 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   expand**, while edits fold into a single diff row with the hunk beneath it.
   Streamed text is coalesced so long replies stay smooth. A blue braille spinner
   with elapsed time shows live work (**Esc** interrupts the turn). The **slash menu
-  docks flush to the input as one connected control** and drills into rich submenus
-  — a **live, searchable model picker** (filter, click, current marked) and
-  clickable theme/approvals/reasoning toggles. Permission prompts surface as a
-  bordered card answerable with `y`/`a`/`n`. Four themes ship — `default` (black,
-  blue accent), `light`, `contrast`, and `opencode` (warm peach).
+  docks flush to the input as one connected control** and drills into real,
+  configurable settings: **`/model`** is one searchable picker that sets both agents
+  (Tab flips **Main ⇄ Subagents**, current marked); **`/providers`** lists every
+  provider with ✓ configured / ○ needs-a-key and lets you paste a key in-session;
+  **`/agents`** lists your named subagents with their model + mode and lets you set a
+  per-agent model or scaffold a new one (`/agents new <name>`) — so you can run as many
+  distinct subagents as you like, each on its own model/provider. Plus clickable
+  theme/approvals/reasoning toggles. Permission prompts surface as a bordered card
+  answerable with `y`/`a`/`n`. Four themes ship — `default` (black, blue accent),
+  `light`, `contrast`, and `opencode` (warm peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
   `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools;
   when the model calls `present_plan` you get an **interactive approval card** —

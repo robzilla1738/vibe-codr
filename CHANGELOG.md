@@ -52,6 +52,21 @@ All notable changes to vibe-codr are documented here.
   plan→execute injects an explicit approval directive.
 
 ### Changed
+- **Menus rebuilt into real, configurable settings.** The `/model` and `/models`
+  redundancy collapses into one searchable picker that configures **both** agents —
+  Tab flips the target Main ⇄ Subagents (the current model for each is marked). New
+  **`/providers`** menu lists every provider with ✓ configured / ○ needs-a-key and the
+  env var to set (choosing an unconfigured one prefills the key entry; a configured one
+  browses its models). New interactive **`/agents`** menu lists each named subagent with
+  its model + mode: selecting one opens a model picker targeting **that** agent
+  (persisted to `.vibe/agents/<name>.md`), and `/agents new <name>` scaffolds a new one —
+  so you can define as many subagents as you want, each with its own model/provider.
+  Subagent concurrency default raised (maxParallel 4 → 8; total count was already
+  unbounded). Esc now clears a half-typed draft.
+- **Markdown tables render cleanly.** Inline `**bold**` / `` `code` `` markers are
+  concealed in table cells (and headings/quotes); overflowing cells **wrap** across
+  lines instead of truncating with `…` (no data loss, uniform width); and code blocks +
+  tables render flush-left at the full input-frame width, so both edges align.
 - **TUI redesign — one Blue 300 accent, no rainbow.** The full-spectrum rainbow
   (wordmark, spinner, per-step/per-subagent gutters) is replaced by a single
   **Blue 300 (`#70cbf4`)** accent reserved for titles + markers. The wordmark is now

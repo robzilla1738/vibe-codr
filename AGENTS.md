@@ -394,14 +394,23 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   on purpose — single letters go into the revision text, not a shortcut — mirroring
   the permission card's `resolve-permission` pattern.
 - **Interactive submenus (the `/` menu):** one normalized `menuModel` memo in
-  `app.tsx` drives three shapes — `command` (the flat list), `value` (enum submenus
-  like `/theme`/`/approvals`/`/reasoning`, current value marked `●`), and `models`
-  (the live picker). `/model ` / `/models` / `/model sub ` open the picker:
-  `EngineClient.listModels()` (fetched once, cached) → filter by the trailing text →
-  click/Enter dispatches the typed `set-model` / `set-subagent-model` (no text
-  round-trip). Rows are mouse-clickable (`chooseAt(idx)`) with hover highlight. To
-  add a command submenu, extend `menuModel` — don't dump output into the transcript
-  via `#notice`.
+  `app.tsx` drives five shapes — `command` (flat list), `value` (enum submenus like
+  `/theme`/`/approvals`/`/reasoning`, current value marked `●`), `models` (the model
+  picker), `providers`, and `agents`. Each shape builds `MenuRow[]` whose `choose`
+  carries its own action, so keyboard/click/render share one path (`chooseAt(idx)`,
+  hover highlight). Detectors on the draft text open each: **`/model` (one unified
+  picker for BOTH agents — `modelPicker()` returns a `target` of `"main" | "sub" |
+  {agent}`; Tab flips main⇄sub via the `modelTarget()` signal, `/model agent <name>`
+  targets a named agent)** → `set-model` / `set-subagent-model` / `set-agent-model`;
+  **`/providers`** (`EngineClient.listProviders()`, ✓/○ status) → prefills
+  `/model key <id> ` or browses that provider's models; **`/agents`**
+  (`EngineClient.listAgents()`, per-agent model + mode, with `/agents new <name>` to
+  scaffold) → opens an agent-targeted model picker. Model/provider/agent lists
+  are fetched once and cached in signals (`models`/`providers`/`agents`); the agents
+  cache is invalidated (`setAgents(null)`) after a write so it re-fetches. To add a
+  submenu, extend `menuModel` + add a detector — don't dump output into the transcript
+  via `#notice`. Named-agent models persist to `.vibe/agents/<name>.md` via the
+  `agents.ts` writer (`setAgentModel`/`scaffoldAgent`), then the engine reloads the roster.
 - **Persisted settings + test isolation (FOOTGUN — already bit once):**
   `/model`, `/model sub`, `/model key`, `/accent`, `/theme`, `/reasoning` persist via
   `#persistConfig` → `writeGlobalConfig` → `globalConfigPath()`. That path honors

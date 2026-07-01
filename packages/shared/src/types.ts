@@ -65,6 +65,16 @@ export interface ProviderInfo {
   env: string[];
 }
 
+/** A named subagent the UI can list/configure in the `/agents` menu. */
+export interface AgentInfo {
+  name: string;
+  description: string;
+  /** Its configured model, or null when it inherits the subagent/main model. */
+  model: string | null;
+  /** Its default run mode. */
+  mode: Mode;
+}
+
 /** A prompt or command waiting in (or running at the head of) the engine queue. */
 export interface QueuedItem {
   id: string;

@@ -45,6 +45,13 @@ const engine: EngineClient = {
       { id: "groq", configured: false, keyless: false, env: ["GROQ_API_KEY"] },
     ];
   },
+  listAgents() {
+    return [
+      { name: "explore", description: "Read-only research", model: null, mode: "plan" as const },
+      { name: "review", description: "Adversarial review", model: "openai/o4-mini", mode: "plan" as const },
+      { name: "test", description: "Write + run tests", model: "ollama/glm-5.2", mode: "execute" as const },
+    ];
+  },
   async *events() {
     while (true) {
       if (queue.length) {
@@ -116,6 +123,22 @@ banner("6) PROVIDERS MENU (configured status + key entry)");
 t.mockInput.pressEscape();
 await settle();
 await t.mockInput.typeText("/providers ");
+await settle();
+await settle();
+console.log(t.captureCharFrame());
+
+banner("7) AGENTS MENU (per-agent model + create)");
+t.mockInput.pressEscape();
+await settle();
+await t.mockInput.typeText("/agents ");
+await settle();
+await settle();
+console.log(t.captureCharFrame());
+
+banner("8) AGENT-TARGETED MODEL PICKER (/model agent review)");
+t.mockInput.pressEscape();
+await settle();
+await t.mockInput.typeText("/model agent review ");
 await settle();
 await settle();
 console.log(t.captureCharFrame());

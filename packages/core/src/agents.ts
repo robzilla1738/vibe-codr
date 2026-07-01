@@ -1,4 +1,5 @@
 import { Glob } from "bun";
+import { mkdir } from "node:fs/promises";
 import { basename } from "node:path";
 import { parseSkillMarkdown } from "@vibe/plugins";
 import type { Mode } from "@vibe/shared";
@@ -113,4 +114,68 @@ export async function loadAgents(cwd: string): Promise<Map<string, NamedAgent>> 
     // No agents directory — that's fine.
   }
   return agents;
+}
+
+/** The on-disk path of a named agent's definition file. */
+export function agentFilePath(cwd: string, name: string): string {
+  return `${cwd}/.vibe/agents/${name}.md`;
+}
+
+/** Serialize a NamedAgent to its `.vibe/agents/<name>.md` form (frontmatter +
+ * markdown body). Round-trips through {@link loadAgents}/`parseSkillMarkdown`. */
+export function serializeAgent(agent: NamedAgent): string {
+  const fm = [`name: ${agent.name}`, `description: ${agent.description}`];
+  if (agent.model) fm.push(`model: ${agent.model}`);
+  if (agent.mode) fm.push(`mode: ${agent.mode}`);
+  if (agent.tools?.length) fm.push(`tools: ${agent.tools.join(", ")}`);
+  if (agent.denyTools?.length) fm.push(`disallowed_tools: ${agent.denyTools.join(", ")}`);
+  return `---\n${fm.join("\n")}\n---\n\n${(agent.system ?? "").trim()}\n`;
+}
+
+/** Write a named agent to `.vibe/agents/<name>.md`, creating the directory. */
+export async function writeAgent(cwd: string, agent: NamedAgent): Promise<string> {
+  const path = agentFilePath(cwd, agent.name);
+  await mkdir(`${cwd}/.vibe/agents`, { recursive: true });
+  await Bun.write(path, serializeAgent(agent));
+  return path;
+}
+
+/**
+ * Set (or, with `null`, clear → inherit) a named agent's model and persist it.
+ * `base` is the current definition (from the loaded map) — for a built-in with no
+ * file yet, this materializes the built-in as an editable user file with the model
+ * applied. Returns the written path.
+ */
+export async function setAgentModel(
+  cwd: string,
+  base: NamedAgent,
+  model: string | null,
+): Promise<string> {
+  const next: NamedAgent = { ...base };
+  if (model) next.model = model;
+  else delete next.model;
+  return writeAgent(cwd, next);
+}
+
+/**
+ * Scaffold a new named agent file if one doesn't already exist. Returns the path
+ * and whether it was created (false = a file for that name already existed).
+ */
+export async function scaffoldAgent(
+  cwd: string,
+  name: string,
+  model?: string,
+): Promise<{ path: string; created: boolean }> {
+  const path = agentFilePath(cwd, name);
+  if (await Bun.file(path).exists()) return { path, created: false };
+  await writeAgent(cwd, {
+    name,
+    description: `The ${name} subagent.`,
+    mode: "execute",
+    ...(model ? { model } : {}),
+    system:
+      `You are the ${name} subagent. Describe its focused job here, then edit ` +
+      `this file (${path}) — the frontmatter sets its model / mode / tools.`,
+  });
+  return { path, created: true };
 }

@@ -63,6 +63,12 @@ const engine: EngineClient = {
       { id: "anthropic", configured: false, keyless: false, env: ["ANTHROPIC_API_KEY"] },
     ];
   },
+  listAgents() {
+    return [
+      { name: "explore", description: "Read-only research", model: null, mode: "plan" as const },
+      { name: "review", description: "Adversarial review", model: "openai/o4-mini", mode: "plan" as const },
+    ];
+  },
   async *events() {
     while (true) {
       if (queue.length) {
@@ -396,6 +402,39 @@ if (provRow >= 0) {
     "choosing an unconfigured provider prefills the key entry",
     t.captureCharFrame().includes("/model key anthropic"),
   );
+}
+t.mockInput.pressEscape();
+await settle();
+
+// 7e) The `/agents` menu lists named agents with their model + mode; selecting one
+// opens an agent-targeted model picker, and choosing a model dispatches
+// set-agent-model for THAT agent.
+sent.length = 0;
+await t.mockInput.typeText("/agents ");
+await settle();
+await settle();
+frame = t.captureCharFrame();
+check("agents menu lists a named agent + its model", frame.includes("explore") && frame.includes("review"));
+check("agents menu shows an inherit + a pinned model", frame.includes("inherits") && frame.includes("openai/o4-mini"));
+check("agents menu offers a create affordance", frame.includes("new agent"));
+// Match the MENU row specifically ("explore … inherits …"), not a Subagents panel
+// line that also contains "explore" (e.g. "explore the repo" from an earlier turn).
+const agentRow = frame.split("\n").findIndex((l) => l.includes("explore") && l.includes("inherits"));
+if (agentRow >= 0) {
+  await t.mockMouse.click(12, agentRow); // select "explore" → agent-targeted picker
+  await settle();
+  await settle();
+  frame = t.captureCharFrame();
+  check("selecting an agent opens its model picker", frame.includes("agent: explore") || frame.includes('agent "explore"'));
+  const mrow = frame.split("\n").findIndex((l) => l.includes("openai/o4-mini"));
+  if (mrow >= 0) {
+    await t.mockMouse.click(12, mrow);
+    await settle();
+    check(
+      "choosing a model sets THAT agent's model (set-agent-model)",
+      sent.some((c) => c.type === "set-agent-model" && c.name === "explore" && c.model === "openai/o4-mini"),
+    );
+  }
 }
 t.mockInput.pressEscape();
 await settle();

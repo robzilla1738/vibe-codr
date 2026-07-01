@@ -14,6 +14,7 @@ export type {
   JobInfo,
   ModelSummary,
   ProviderInfo,
+  AgentInfo,
 } from "./types.ts";
 
 // UI events (engine -> UI)

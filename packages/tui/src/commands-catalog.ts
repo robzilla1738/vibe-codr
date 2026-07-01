@@ -50,7 +50,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "memory", description: "Show loaded memory files" },
   { name: "permissions", description: "Show tool permission rules" },
   { name: "tools", description: "List tools in the current mode" },
-  { name: "agents", description: "List named subagents" },
+  { name: "agents", description: "Named subagents — set a model or create one", arg: "[new <name>]" },
   { name: "skills", description: "List available skills" },
   { name: "commands", description: "List custom slash commands" },
   { name: "mcp", description: "Show connected MCP servers" },

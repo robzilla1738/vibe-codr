@@ -2,7 +2,14 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadAgents, defaultAgents } from "./agents.ts";
+import {
+  loadAgents,
+  defaultAgents,
+  serializeAgent,
+  writeAgent,
+  setAgentModel,
+  scaffoldAgent,
+} from "./agents.ts";
 
 function projectWithAgents(files: Record<string, string>): string {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-agents-"));
@@ -58,4 +65,53 @@ test("a user .vibe/agents file overrides a built-in default by name", async () =
   expect(agents.get("explore")?.system).toBe("Custom explore instructions.");
   // The other defaults remain available alongside the override.
   expect(agents.has("review")).toBe(true);
+});
+
+test("serializeAgent round-trips through loadAgents", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-writeagent-"));
+  await writeAgent(cwd, {
+    name: "planner",
+    description: "Plans work",
+    model: "openai/o4-mini",
+    mode: "plan",
+    tools: ["read", "grep"],
+    system: "You plan.",
+  });
+  const a = (await loadAgents(cwd)).get("planner");
+  expect(a).toMatchObject({
+    name: "planner",
+    description: "Plans work",
+    model: "openai/o4-mini",
+    mode: "plan",
+    tools: ["read", "grep"],
+    system: "You plan.",
+  });
+  // The serialized form is valid frontmatter+body.
+  expect(serializeAgent(a!)).toContain("model: openai/o4-mini");
+});
+
+test("setAgentModel persists a model (and clearing it removes the override)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-setmodel-"));
+  // Materialize a built-in (no file yet) with a model override.
+  const explore = defaultAgents().get("explore")!;
+  await setAgentModel(cwd, explore, "ollama/glm-5.2");
+  let a = (await loadAgents(cwd)).get("explore");
+  expect(a?.model).toBe("ollama/glm-5.2");
+  expect(a?.mode).toBe("plan"); // the built-in's other fields are preserved
+  // Clearing (null) drops the model so it inherits again.
+  await setAgentModel(cwd, a!, null);
+  a = (await loadAgents(cwd)).get("explore");
+  expect(a?.model).toBeUndefined();
+});
+
+test("scaffoldAgent creates a new agent once, then no-ops", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-scaffold-"));
+  const first = await scaffoldAgent(cwd, "docs", "openai/gpt-4o");
+  expect(first.created).toBe(true);
+  const a = (await loadAgents(cwd)).get("docs");
+  expect(a?.model).toBe("openai/gpt-4o");
+  expect(a?.mode).toBe("execute");
+  // A second scaffold does not clobber the (possibly edited) file.
+  const second = await scaffoldAgent(cwd, "docs");
+  expect(second.created).toBe(false);
 });

@@ -173,8 +173,9 @@ export const ConfigSchema = z.object({
   subagent: z
     .object({
       maxDepth: z.number().int().positive().default(3),
-      /** Max subagents one agent runs concurrently (bounds each fan-out). */
-      maxParallel: z.number().int().positive().default(4),
+      /** Max subagents one agent runs concurrently (bounds each fan-out). Total
+       * subagent count is unbounded — this is only the concurrency window. */
+      maxParallel: z.number().int().positive().default(8),
       /** Tree-global ceiling on concurrent provider calls (distinct from the
        * logical maxParallel fan-out cap): the adaptive limiter never exceeds this.
        * High by default so it's a no-op for ordinary single-session use. */
@@ -190,7 +191,7 @@ export const ConfigSchema = z.object({
     })
     .default({
       maxDepth: 3,
-      maxParallel: 4,
+      maxParallel: 8,
       providerConcurrency: 16,
       timeoutMs: 300_000,
       verifyMaxAttempts: 2,

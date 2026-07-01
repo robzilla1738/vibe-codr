@@ -12,6 +12,7 @@ import {
   type Logger,
   type Mode,
   type ProviderInfo,
+  type AgentInfo,
   type QueuedItem,
   type UIEvent,
 } from "@vibe/shared";
@@ -49,7 +50,7 @@ import {
   type DoctorCheck,
 } from "./introspect.ts";
 import type { PermissionResolver } from "./permissions.ts";
-import { loadAgents, type NamedAgent } from "./agents.ts";
+import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./agents.ts";
 import {
   loadCommandFiles,
   loadCommandsFrom,
@@ -500,6 +501,12 @@ export class Engine implements EngineClient {
         // The interactive model picker (and `/model sub …`) route here; persisted.
         void this.#setSubagentModel(command.model);
         break;
+      case "set-agent-model":
+        void this.#setAgentModel(command.name, command.model);
+        break;
+      case "create-agent":
+        void this.#createAgent(command.name);
+        break;
       case "set-goal":
         this.#session.setGoal(command.goal);
         break;
@@ -802,6 +809,61 @@ export class Engine implements EngineClient {
       .sort((a, b) => Number(b.configured) - Number(a.configured) || a.id.localeCompare(b.id));
   }
 
+  /** Named subagents + their model/mode, for the `/agents` menu. */
+  listAgents(): AgentInfo[] {
+    return [...this.#agents.values()].map((a) => ({
+      name: a.name,
+      description: a.description,
+      model: a.model ?? null,
+      mode: a.mode ?? "execute",
+    }));
+  }
+
+  /** Reload `.vibe/agents/*.md` into `#agents` after a write. */
+  async #reloadAgents(): Promise<void> {
+    const next = await loadAgents(this.#cwd);
+    this.#agents.clear();
+    for (const [name, agent] of next) this.#agents.set(name, agent);
+  }
+
+  /** Set (or clear) a named agent's model, persist it, and reload the roster. */
+  async #setAgentModel(name: string, model: string | null): Promise<void> {
+    const base = this.#agents.get(name);
+    if (!base) {
+      this.#notice(`No agent named "${name}".`, "warn");
+      return;
+    }
+    try {
+      const path = await setAgentModel(this.#cwd, base, model);
+      await this.#reloadAgents();
+      this.#notice(
+        model ? `Agent "${name}" → ${model}` : `Agent "${name}" model cleared (inherits).  ${path}`,
+      );
+    } catch (err) {
+      this.#notice(`Failed to set agent model: ${(err as Error).message}`, "error");
+    }
+  }
+
+  /** Scaffold a new named-agent file and reload the roster. */
+  async #createAgent(name: string): Promise<void> {
+    const clean = name.trim().replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
+    if (!clean) {
+      this.#notice("Usage: /agents new <name>", "warn");
+      return;
+    }
+    try {
+      const { path, created } = await scaffoldAgent(this.#cwd, clean);
+      await this.#reloadAgents();
+      this.#notice(
+        created
+          ? `Created agent "${clean}" — edit ${path} to customize its prompt/model/tools.`
+          : `Agent "${clean}" already exists (${path}).`,
+      );
+    } catch (err) {
+      this.#notice(`Failed to create agent: ${(err as Error).message}`, "error");
+    }
+  }
+
   #notice(message: string, level: "info" | "warn" | "error" = "info"): void {
     this.#bus.emit({ type: "notice", level, message });
   }
@@ -1064,15 +1126,23 @@ export class Engine implements EngineClient {
       case "quit":
         this.#notice("Press Ctrl-C (or Ctrl-D) to exit.");
         break;
-      case "agents":
-        this.#notice(
-          this.#agents.size
-            ? [...this.#agents.values()]
-                .map((a) => `  ${a.name} — ${a.description}`)
-                .join("\n")
-            : "No named agents. Add .vibe/agents/<name>.md to define one.",
-        );
+      case "agents": {
+        // `/agents new <name>` scaffolds a new named-agent file; bare `/agents`
+        // lists the roster (the TUI opens an interactive menu instead).
+        const m = /^\s*new\s+(.+)$/i.exec(args);
+        if (m) {
+          await this.#createAgent(m[1]!);
+        } else {
+          this.#notice(
+            this.#agents.size
+              ? [...this.#agents.values()]
+                  .map((a) => `  ${a.name} — ${a.description}${a.model ? `  (${a.model})` : ""}`)
+                  .join("\n")
+              : "No named agents. Add .vibe/agents/<name>.md or run /agents new <name>.",
+          );
+        }
         break;
+      }
       case "loop":
         this.#handleLoop(args);
         break;

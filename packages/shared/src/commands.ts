@@ -26,6 +26,13 @@ export type EngineCommand =
       id: string;
       decision: "once" | "always" | "deny";
     }
+  // Resolve a presented plan: accept → switch to execute + start against the plan;
+  // edit → re-plan with the feedback text; keep-planning → dismiss, stay in plan.
+  | {
+      type: "resolve-plan";
+      decision: "accept" | "edit" | "keep-planning";
+      edit?: string;
+    }
   | { type: "shutdown" };
 
 export type EngineCommandType = EngineCommand["type"];

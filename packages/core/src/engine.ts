@@ -283,6 +283,48 @@ export class Engine implements EngineClient {
   }
 
   /**
+   * Resolve a presented plan from the approval modal:
+   * - `accept` → switch to execute, seed the task list from the plan's checklist,
+   *   and kick off a turn against the approved plan (via the existing handoff);
+   * - `edit` → re-enter plan mode with the user's feedback so the model revises it;
+   * - `keep-planning` → dismiss the card and stay in plan mode.
+   */
+  #resolvePlan(decision: "accept" | "edit" | "keep-planning", edit?: string): void {
+    if (decision === "edit") {
+      const feedback = edit?.trim();
+      if (feedback) this.#enqueue(queueLabel(feedback), () => this.#handlePrompt(feedback));
+      return;
+    }
+    if (decision === "keep-planning") {
+      this.#bus.emit({ type: "notice", level: "info", message: "Kept planning — the plan wasn't started." });
+      return;
+    }
+    // accept
+    const plan = this.#lastPlan;
+    if (!plan) return;
+    this.#session.setMode("execute");
+    this.#pendingHandoff = true;
+    this.#seedTasksFromPlan(plan);
+    this.#enqueue("execute plan", () => this.#handlePrompt("Proceed with the approved plan."));
+  }
+
+  /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps. */
+  #seedTasksFromPlan(plan: string): void {
+    const lines = plan.split("\n");
+    let items = lines
+      .map((l) => /^\s*[-*]\s+\[[ xX]?\]\s+(.+)$/.exec(l)?.[1])
+      .filter((t): t is string => !!t);
+    if (!items.length) {
+      items = lines.map((l) => /^\s*\d+\.\s+(.+)$/.exec(l)?.[1]).filter((t): t is string => !!t);
+    }
+    const titles = items
+      .map((t) => t.replace(/\*\*/g, "").replace(/`/g, "").trim())
+      .filter(Boolean)
+      .slice(0, 12);
+    if (titles.length) this.#session.setTasks(titles.map((title) => ({ title, status: "pending" as const })));
+  }
+
+  /**
    * Load project-local resources from disk: named agents, custom slash command
    * files, skills, and plugins (which may register more of any of these).
    * Safe to call once before the first run.
@@ -508,6 +550,9 @@ export class Engine implements EngineClient {
         }
         break;
       }
+      case "resolve-plan":
+        this.#resolvePlan(command.decision, command.edit);
+        break;
       case "shutdown":
         // Kick off the awaitable finalize (session digest + teardown). The CLI
         // also awaits finalize() before process exit so the digest completes.

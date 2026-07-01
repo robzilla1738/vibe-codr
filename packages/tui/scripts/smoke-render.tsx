@@ -360,6 +360,35 @@ check(
   sent.some((c) => c.type === "resolve-permission" && c.decision === "once"),
 );
 
+// 8b) A presented plan renders an interactive approval card; typing revises it.
+sent.length = 0;
+push({
+  type: "plan-presented",
+  sessionId: "smoke",
+  plan: "## Plan\n- [ ] Step one\n- [ ] Step two",
+} as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("plan approval card renders with interactive hints", frame.includes("type changes to revise"));
+await t.mockInput.typeText("also handle errors");
+await settle();
+t.mockInput.pressEnter();
+await settle();
+check(
+  "typing while the plan card is up revises the plan (resolve-plan edit)",
+  sent.some((c) => c.type === "resolve-plan" && c.decision === "edit"),
+);
+// Empty Enter on a fresh plan card accepts & executes it.
+sent.length = 0;
+push({ type: "plan-presented", sessionId: "smoke", plan: "## Plan\n- [ ] One" } as UIEvent);
+await settle();
+t.mockInput.pressEnter();
+await settle();
+check(
+  "empty Enter on the plan card accepts it (resolve-plan accept)",
+  sent.some((c) => c.type === "resolve-plan" && c.decision === "accept"),
+);
+
 // 9) Background-jobs sub-view: a running job + its detected localhost server show
 // up, and `/jobs` (typed + Enter via the command menu) opens the view.
 push({

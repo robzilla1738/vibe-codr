@@ -466,6 +466,11 @@ export function App(props: { engine: EngineClient }) {
     props.engine.send({ type: "resolve-permission", id: head.id, decision });
     setPerms((p) => p.slice(1));
   };
+  // Resolve a presented plan from the approval card, then dismiss it.
+  const answerPlan = (decision: "accept" | "edit" | "keep-planning", edit?: string) => {
+    props.engine.send({ type: "resolve-plan", decision, ...(edit ? { edit } : {}) });
+    setPlan(null);
+  };
 
   // Shift+Tab cycles plan → execute → yolo. `useKeyboard` is a global handler,
   // so it fires even while the input is focused; Shift+Tab arrives as the key
@@ -509,6 +514,21 @@ export function App(props: { engine: EngineClient }) {
       if (key.name === "escape") {
         key.preventDefault?.();
         answerPerm("deny");
+        return;
+      }
+    }
+    // Plan-approval shortcuts: while a plan card is up and the input is empty,
+    // Enter accepts (execute) and Esc keeps planning (dismiss). Typing a message
+    // instead revises the plan (handled in runText) — so letters never collide.
+    if (plan() && !m.open && perms().length === 0 && !draft().trim()) {
+      if (key.name === "return" || key.name === "enter") {
+        key.preventDefault?.();
+        answerPlan("accept");
+        return;
+      }
+      if (key.name === "escape") {
+        key.preventDefault?.();
+        answerPlan("keep-planning");
         return;
       }
     }
@@ -726,6 +746,12 @@ export function App(props: { engine: EngineClient }) {
     // While permission prompts are pending, a typed reply answers the oldest.
     if (perms().length > 0) {
       answerPerm(parsePermissionDecision(text));
+      return;
+    }
+    // A plan card is up: a non-slash message is revision feedback (re-plan), not a
+    // fresh turn. Slash commands (/execute, /model, …) still route normally.
+    if (plan() && !text.startsWith("/")) {
+      answerPlan("edit", text);
       return;
     }
     // `/clear` (and `/new`) reset the conversation — wipe the visible transcript
@@ -1126,7 +1152,9 @@ export function App(props: { engine: EngineClient }) {
             palette={palette()}
             width={contentWidth() - 4}
           />
-          <text fg={palette().muted}>Shift+Tab to execute, or /execute to proceed.</text>
+          <text fg={palette().muted}>
+            {`${GLYPH.check} Enter to accept & execute  ·  type changes to revise  ·  Esc to keep planning`}
+          </text>
         </box>
       </Show>
       {/* Tasks — the live to-do list, just above the input; hides once everything

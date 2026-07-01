@@ -260,8 +260,10 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   answerable with `y`/`a`/`n`. Four themes ship — `default` (black), `light`,
   `contrast`, and `opencode` (warm peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
-  `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools
-  (the model calls `present_plan`; you approve to proceed). **Execute** allows
+  `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools;
+  when the model calls `present_plan` you get an **interactive approval card** —
+  **Enter** accepts & executes (seeding the task list from the plan's checklist),
+  **typing** revises the plan, **Esc** keeps planning. **Execute** allows
   edits/commands, each gated by a glob-based allow/deny/ask **permission layer**.
   **Yolo** runs side-effecting tools without prompting. The mode chip on the
   input's top border is color-coded (ASK blue / PLAN green / YOLO red) so the
@@ -299,14 +301,16 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   a visible, ordered backlog that drains one at a time so history stays
   consistent. `/queue` shows it, `/queue clear` (or aborting) drops what's
   waiting.
-- **Web search & context gathering** — `web_search` works **keyless by default**
-  (DuckDuckGo, no API key); a [TinyFish](https://tinyfish.ai) key
-  (`TINYFISH_API_KEY` / `search.apiKey`) is an optional higher-quality booster
-  tried first. Disable with `search.enabled: false`. The model searches the live
-  web and follows up with `webfetch` (SSRF-guarded, with a wall-clock timeout and
-  a streaming size cap). Search depth is **adaptive and model-controlled** — a
-  quick fact is answered straight from the snippets (one query, no fetch), while a
-  hard question goes deep (more queries, full-page fetches, cross-checking).
+- **Web search & context gathering** — `web_search` works **keyless by default**,
+  fanning out across **DuckDuckGo + Bing** in parallel and quality-ranking the
+  deduped merge (no API key); a [TinyFish](https://tinyfish.ai) key
+  (`TINYFISH_API_KEY` / `search.apiKey`) is an optional higher-quality booster that
+  joins the fan-out. Disable with `search.enabled: false`. The model follows up
+  with `webfetch` (SSRF-guarded, wall-clock timeout, streaming size cap, **PDF** +
+  optional Readability extraction, cache-through). Search depth is **adaptive and
+  model-controlled** — a quick fact is answered straight from the snippets (one
+  query, no fetch), while a hard question goes deep (`deep` query fan-out, full-page
+  fetches, cross-checking).
 - **Code intelligence** — a `repo_map` tool returns a ranked file→symbol map
   (exports, functions, classes, types) so the model can orient on an unfamiliar
   repo or subsystem in one cheap call before blind glob/grep.
@@ -319,9 +323,12 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   "http" | "sse"` for a URL). Server **tools** register as `mcp__<server>__<tool>`
   (honoring `readOnlyHint`), **resources** are reachable via `read_mcp_resource`,
   and **prompts** via `get_mcp_prompt`; `/mcp` shows live per-server status.
+  Remote servers support **OAuth 2.1** (authorization-code + PKCE, tokens persisted
+  and auto-refreshed) and static `headers`; a dropped connection **auto-reconnects
+  with backoff**, and `tools/list_changed` re-registers the server's tools live.
   Servers connect in parallel with a timeout so one slow server can't block
-  startup. Requires the optional `@modelcontextprotocol/sdk` peer dep; failures
-  are skipped, not fatal.
+  startup, and support per-server `enabled` / `timeoutMs` / `cwd`. Requires the
+  optional `@modelcontextprotocol/sdk` peer dep; failures are skipped, not fatal.
 - **Interactive permissions** — side-effecting tools prompt for approval
   (**allow once / always / deny**) under `approvalMode: "ask"` (the default);
   `always` is remembered for the session. Headless runs auto-allow. `auto` mode

@@ -24,20 +24,40 @@ All notable changes to vibe-codr are documented here.
   deterministic **task-DAG scheduler** — `spawn_tasks([{objective,deps,files,
   verify,agent}])` — runs a dependency-ordered plan the engine schedules, with a
   per-task verify→retry pass.
-- **Keyless web search + code intelligence.** `web_search` now works with **no
-  API key** (DuckDuckGo), with TinyFish as an optional booster. A new `repo_map`
-  tool returns a ranked file→symbol map so the model can orient on a codebase in
-  one call. `@`-mentions resolve directories and honor byte-accurate caps.
-- **MCP parity.** Added the **Streamable HTTP** transport (config `transport:
-  http|sse`), MCP **resources** (`read_mcp_resource`), and **prompts**
-  (`get_mcp_prompt`), on top of parallel timeout-bounded connects, live
-  connection status, and `readOnlyHint`-aware permission gating.
+- **Keyless web search + code intelligence.** `web_search` works with **no API
+  key** and now **fans out across DuckDuckGo + Bing in parallel**, then dedupes by
+  canonical URL and quality-ranks the merged pool (ported search-intelligence
+  core); `deep:true` widens the query into complementary phrasings. TinyFish stays
+  an optional booster. `webfetch` extracts **PDFs** (zero-dep) and uses **Mozilla
+  Readability** when installed (degrading to the built-in tag stripper), and both
+  it are backed by a **cache-through store** (per-URL TTL + stale-on-failure). A
+  `repo_map` tool returns a ranked file→symbol map so the model can orient on a
+  codebase in one call. `@`-mentions resolve directories and honor byte-accurate caps.
+- **MCP full parity.** Added the **Streamable HTTP** transport (config `transport:
+  http|sse`), MCP **resources** (`read_mcp_resource`), **prompts**
+  (`get_mcp_prompt`), **OAuth 2.1** (authorization-code + PKCE with locally
+  persisted, auto-refreshed tokens), **auto-reconnect with backoff**, and
+  `tools/list_changed` re-registration — on top of parallel timeout-bounded
+  connects, live connection status, per-server `enabled`/`timeoutMs`/`cwd`, and
+  `readOnlyHint`-aware permission gating.
+- **Interactive plan-approval modal.** A presented plan is now an interactive gate:
+  **Enter accepts & executes** (switching to execute mode, seeding the task list
+  from the plan's checklist, and starting a turn against the approved plan), typing
+  a message **revises** the plan, and **Esc keeps planning**.
 - **Declarative hooks + extensibility.** A config `hooks` block runs shell
   commands / HTTP endpoints on lifecycle events (deny a tool, rewrite its input,
   or notify). Skills and commands now also load from `~/.config/vibe-codr/
   {skills,commands}` (project overrides global), and named agents can declare a
   tool allowlist/denylist. Plans are persisted to `.vibe/plans/`, and switching
   plan→execute injects an explicit approval directive.
+
+### Changed
+- **Testable core (god-object reduction).** The transcript `UIEvent→Block`
+  transform (streaming coalescing, tool-block creation, diff folding, cumulative
+  file deltas) is extracted from `app.tsx` into a pure, unit-tested `reducer.ts`;
+  git introspection moves to a `git-info.ts` runner tested against fixed porcelain
+  output; the TUI's bordered panels share one `layout.ts` chrome token. Behavior
+  and render are unchanged (smoke-verified).
 
 ### Fixed
 - **Correctness hardening (24 verified bugs).** Token-accurate + image-aware

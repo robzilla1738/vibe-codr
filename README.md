@@ -27,17 +27,20 @@ latest) — never hardcoded.
 >   write ownership**, a shared coordination **blackboard**, a tree-global
 >   **adaptive concurrency limiter**, and an opt-in deterministic **task-DAG
 >   scheduler** (`spawn_tasks`) with verify→retry.
-> - **Research** — **keyless web search** (DuckDuckGo, no API key required;
->   TinyFish optional), a `repo_map` code-intelligence tool, and hardened
->   `webfetch` (SSRF-guarded, timeout + size caps).
-> - **MCP** — stdio + Streamable-HTTP/SSE transports, tools, **resources**, and
->   **prompts**.
+> - **Research** — **keyless web search** that fans out across DuckDuckGo + Bing
+>   and quality-ranks the deduped merge (TinyFish optional; `deep` query fan-out),
+>   a `repo_map` code-intelligence tool, and hardened `webfetch` (SSRF-guarded,
+>   timeout + size caps, **PDF** + optional Readability extraction, cache-through).
+> - **MCP** — stdio + Streamable-HTTP/SSE transports, tools, **resources**,
+>   **prompts**, **OAuth 2.1**, and auto-reconnect + `tools/list_changed`.
+> - **Planning** — an interactive **plan-approval modal** (accept & execute,
+>   revise, or keep planning) that seeds the task list from the plan.
 > - **Extensibility** — declarative shell/HTTP **hooks**, project + global
 >   skills/commands, and per-agent tool allowlists.
 >
 > A full slash-command surface (`/status` `/cost` `/config` `/diff` `/recall`
 > `/mcp` `/review` `/doctor` `/export` …) makes every setting and bit of session
-> state reachable. All covered by **488 tests** (including mock-model integration
+> state reachable. All covered by **547 tests** (including mock-model integration
 > tests of the agent loop with zero network) plus a TUI render smoke test and a
 > compiled-binary check.
 >

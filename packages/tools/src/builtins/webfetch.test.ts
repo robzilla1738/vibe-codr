@@ -1,6 +1,8 @@
 import { test, expect, afterEach } from "bun:test";
+import { join } from "node:path";
 import type { ToolContext } from "@vibe/shared";
 import { webfetchTool } from "./webfetch.ts";
+import { createFetchCache } from "./fetch-cache.ts";
 
 function ctx(): ToolContext {
   return {
@@ -122,4 +124,57 @@ test("decodes numeric and named HTML entities", async () => {
   const res = await fetcher().execute({ url: "https://example.com" }, ctx());
   const out = String(res.output);
   expect(out).toContain("a&b & c <tag> ❤ — end");
+});
+
+test("extracts text from a PDF response", async () => {
+  const bytes = new Uint8Array(
+    await Bun.file(join(import.meta.dir, "__fixtures__", "sample.pdf")).arrayBuffer(),
+  );
+  globalThis.fetch = (async () =>
+    new Response(bytes, { status: 200, headers: { "content-type": "application/pdf" } })) as unknown as typeof fetch;
+  const res = await fetcher().execute({ url: "https://example.com/doc.pdf" }, ctx());
+  expect(res.isError).toBeUndefined();
+  const out = String(res.output);
+  expect(out).toContain("[PDF, 1 page]");
+  expect(out).toContain("Hello PDF world");
+});
+
+test("uses an injected Readable extractor for HTML, falling back to htmlToText on null", async () => {
+  stubFetch("<html><body><article>real body</article><nav>menu</nav></body></html>", "text/html");
+  const readable = webfetchTool({ lookup: publicLookup, readable: () => "READABLE ARTICLE" });
+  expect(String((await readable.execute({ url: "https://a.com" }, ctx())).output)).toBe("READABLE ARTICLE");
+
+  stubFetch("<html><body><h1>Fallback</h1></body></html>", "text/html");
+  const nullReadable = webfetchTool({ lookup: publicLookup, readable: () => null });
+  expect(String((await nullReadable.execute({ url: "https://b.com" }, ctx())).output)).toContain("Fallback");
+});
+
+test("cache-through: a repeat fetch of the same URL is served from cache", async () => {
+  const cache = createFetchCache({ ttlMs: 60_000 });
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return new Response(`body ${calls}`, { status: 200, headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  const tool = webfetchTool({ lookup: publicLookup, cache });
+  expect(String((await tool.execute({ url: "https://docs.example.com/x" }, ctx())).output)).toBe("body 1");
+  // Second call is cached — fetch is not hit again.
+  expect(String((await tool.execute({ url: "https://docs.example.com/x" }, ctx())).output)).toBe("body 1");
+  expect(calls).toBe(1);
+});
+
+test("cache-through: stale-on-failure serves the last good copy when the live fetch fails", async () => {
+  const cache = createFetchCache({ ttlMs: 0 }); // always stale after storing → forces re-fetch
+  let mode: "ok" | "fail" = "ok";
+  globalThis.fetch = (async () => {
+    if (mode === "fail") throw new Error("connection refused");
+    return new Response("cached body", { status: 200, headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  const tool = webfetchTool({ lookup: publicLookup, cache });
+  expect(String((await tool.execute({ url: "https://docs.example.com/y" }, ctx())).output)).toBe("cached body");
+  mode = "fail";
+  const stale = await tool.execute({ url: "https://docs.example.com/y" }, ctx());
+  expect(stale.isError).toBeUndefined();
+  expect(String(stale.output)).toContain("served a cached copy");
+  expect(String(stale.output)).toContain("cached body");
 });

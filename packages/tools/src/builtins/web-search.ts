@@ -2,10 +2,12 @@ import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
 import {
   duckDuckGoSearch,
+  bingSearch,
   createCooldown,
   type SearchResult as EngineResult,
   type FetchLike,
 } from "./search-engines.ts";
+import { mergeCandidates, detectDate, expandQueries, type Candidate } from "./searchcore.ts";
 
 const Input = z.object({
   query: z
@@ -24,78 +26,129 @@ const Input = z.object({
     .positive()
     .optional()
     .describe(
-      "Keep only the top N of the provider's ranked results. Omit to keep them " +
-        "all (the default); set a small N for a quick fact to stay tight. One " +
-        "good query usually answers a quick fact — only issue another query when " +
-        "you're genuinely researching a broad topic.",
+      "Keep only the top N ranked/deduped results. Omit to keep the default top " +
+        "set; set a small N for a quick fact to stay tight. One good query usually " +
+        "answers a quick fact — only issue another query when you're genuinely " +
+        "researching a broad topic.",
+    ),
+  deep: z
+    .boolean()
+    .optional()
+    .describe(
+      "Widen recall: fan the query into complementary phrasings across every " +
+        "engine before ranking. Slower — reserve it for broad research, not quick facts.",
     ),
 });
 
-type SearchResult = EngineResult;
-
+/** Default cap on merged results when the caller doesn't specify `maxResults`. */
+const DEFAULT_MAX = 12;
 const ENDPOINT = "https://api.search.tinyfish.ai";
 
 export interface WebSearchOptions {
   /** TinyFish API key. Falls back to `TINYFISH_API_KEY` at call time. */
   apiKey?: string;
-  /** Injectable fetch for the keyless engine (tests). */
+  /** Injectable fetch for the keyless engines (tests). */
   fetchImpl?: FetchLike;
 }
 
 /** Shared per-engine cooldown so a transiently blocking engine is skipped. */
 const cooldown = createCooldown();
 
+/** Test hook: clear the shared engine cooldown so test order can't leak state. */
+export function _resetSearchCooldown(): void {
+  cooldown.clear();
+}
+
+/** One search engine: a name (for cooldown) + a runner over the shared fetch. */
+interface Engine {
+  name: string;
+  run: (query: string) => Promise<EngineResult[]>;
+}
+
 /**
- * Web search with a KEYLESS default. DuckDuckGo's HTML endpoint works with no API
- * key, so `web_search` always functions; TinyFish (free key from
- * agent.tinyfish.ai) is an optional higher-quality booster tried first when a key
- * is configured. Whichever engine returns results wins; the other is the fallback.
+ * Web search with a KEYLESS default that **fans out across engines** (DuckDuckGo
+ * + Bing, plus TinyFish when a key is configured), then **dedupes by canonical
+ * URL and quality-ranks** the merged pool (searchcore). Running two scrapers in
+ * parallel means a single engine's block or parse-break can't take web_search
+ * dark, and the ranker surfaces official/docs/primary sources over noise.
+ * `deep:true` also fans the query into complementary phrasings for broad recall.
+ * The network fetch is injectable so tests stay hermetic.
  */
 export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.infer<typeof Input>> {
   const fetchImpl: FetchLike = opts.fetchImpl ?? ((url, init) => fetch(url, init));
   return {
     name: "web_search",
     description:
-      "Search the web for current information and return ranked results " +
-      "(title, URL, snippet). Use for anything beyond the workspace or your " +
-      "training cutoff. The snippets often already contain the answer (prices, " +
-      "dates, version numbers) — read them first and answer from them; only " +
-      "`webfetch` a result when its snippet isn't enough. One good query usually " +
-      "settles a quick fact — don't reflexively re-search; reserve extra queries " +
-      "for genuinely broad research. Use `recencyDays` for fast-moving topics.",
+      "Search the web for current information and return ranked, deduped results " +
+      "(title, URL, snippet) merged across multiple engines. Use for anything " +
+      "beyond the workspace or your training cutoff. The snippets often already " +
+      "contain the answer (prices, dates, version numbers) — read them first and " +
+      "answer from them; only `webfetch` a result when its snippet isn't enough. " +
+      "One good query usually settles a quick fact — reserve `deep:true` and extra " +
+      "queries for genuinely broad research. Use `recencyDays` for fast-moving topics.",
     inputSchema: Input,
     readOnly: true,
     concurrencySafe: true,
-    async execute({ query, recencyDays, maxResults }, ctx) {
+    async execute({ query, recencyDays, maxResults, deep }, ctx) {
       const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(8000)]);
       const apiKey = process.env.TINYFISH_API_KEY ?? opts.apiKey;
       const now = Date.now();
-      const errors: string[] = [];
+      const engineOpts = recencyDays !== undefined ? { recencyDays } : {};
 
-      // Engines in priority order: TinyFish (if a key is set) then keyless DDG.
-      const engines: { name: string; run: () => Promise<SearchResult[]> }[] = [];
+      // Keyless engines always run; TinyFish joins the pool when a key is set.
+      const engines: Engine[] = [
+        { name: "duckduckgo", run: (q) => duckDuckGoSearch(q, engineOpts, fetchImpl, signal) },
+        { name: "bing", run: (q) => bingSearch(q, engineOpts, fetchImpl, signal) },
+      ];
       if (apiKey) {
-        engines.push({ name: "tinyfish", run: () => tinyFishSearch(query, recencyDays, apiKey, fetchImpl, signal) });
+        engines.unshift({ name: "tinyfish", run: (q) => tinyFishSearch(q, recencyDays, apiKey, fetchImpl, signal) });
       }
-      engines.push({
-        name: "duckduckgo",
-        run: () => duckDuckGoSearch(query, { ...(recencyDays !== undefined ? { recencyDays } : {}) }, fetchImpl, signal),
-      });
 
-      for (const engine of engines) {
-        if (cooldown.blocked(engine.name, now)) continue;
-        try {
-          const all = await engine.run();
-          const results = maxResults ? all.slice(0, maxResults) : all;
-          if (results.length) return { output: formatResults(query, results) };
-        } catch (err) {
-          if (ctx.abortSignal.aborted) return { output: "Search aborted." };
-          const msg = (err as Error).message;
-          if (/\b(429|403|503)\b/.test(msg)) cooldown.trip(engine.name, now);
-          errors.push(`${engine.name}: ${msg}`);
+      // Fan out every (query × engine) pair concurrently; each settles to a
+      // result set or a recorded error so one failure never sinks the batch.
+      const queries = deep ? expandQueries(query) : [query];
+      const runs: Promise<{ engine: string; results?: EngineResult[]; error?: string }>[] = [];
+      for (const q of queries) {
+        for (const engine of engines) {
+          if (cooldown.blocked(engine.name, now)) continue;
+          runs.push(
+            engine.run(q).then(
+              (results) => ({ engine: engine.name, results }),
+              (err) => ({ engine: engine.name, error: (err as Error).message }),
+            ),
+          );
         }
       }
-      if (errors.length) {
+      const settled = await Promise.all(runs);
+      if (ctx.abortSignal.aborted) return { output: "Search aborted." };
+
+      const candidates: Candidate[] = [];
+      const errors: string[] = [];
+      let anyAnswered = false;
+      for (const s of settled) {
+        if (s.results) {
+          anyAnswered = true;
+          for (const [i, r] of s.results.entries()) {
+            candidates.push({
+              title: r.title,
+              url: r.url,
+              snippet: r.snippet,
+              rank: r.position || i + 1,
+              engine: s.engine,
+              ...(detectDate(r.snippet) ? { date: detectDate(r.snippet) } : {}),
+            });
+          }
+        } else if (s.error) {
+          if (/\b(429|403|503)\b/.test(s.error)) cooldown.trip(s.engine, now);
+          errors.push(`${s.engine}: ${s.error}`);
+        }
+      }
+
+      const merged = mergeCandidates(candidates, maxResults ?? DEFAULT_MAX);
+      if (merged.length) return { output: formatResults(query, merged) };
+      // Every engine erroring is a failure; an engine answering with an empty
+      // set is a genuine "no results".
+      if (!anyAnswered && errors.length) {
         return { output: `Search failed (${errors.join("; ")}).`, isError: true };
       }
       return { output: `No results for "${query}".` };
@@ -110,7 +163,7 @@ async function tinyFishSearch(
   apiKey: string,
   fetchImpl: FetchLike,
   signal: AbortSignal,
-): Promise<SearchResult[]> {
+): Promise<EngineResult[]> {
   const url = new URL(ENDPOINT);
   url.searchParams.set("query", query);
   if (recencyDays !== undefined) {
@@ -121,17 +174,19 @@ async function tinyFishSearch(
     const detail = res.status === 401 || res.status === 403 ? " (check your TinyFish API key)" : "";
     throw new Error(`HTTP ${res.status}${detail}`);
   }
-  const data = JSON.parse(await res.text()) as { results?: SearchResult[] };
+  const data = JSON.parse(await res.text()) as { results?: EngineResult[] };
   return data.results ?? [];
 }
 
 /** Render results as a markdown numbered list (title / URL / snippet) — clean for
- * the model AND nicely indented when the TUI renders it as markdown (the list
- * structure keeps each result's URL + snippet aligned, even when wrapped). */
-export function formatResults(query: string, results: SearchResult[]): string {
+ * the model AND nicely indented when the TUI renders it as markdown. Accepts any
+ * shape carrying title/url/snippet (engine results or merged candidates). */
+export function formatResults(
+  query: string,
+  results: { title: string; url: string; snippet: string }[],
+): string {
   const items = results.map(
-    (r, i) =>
-      `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet.replace(/\s+/g, " ").trim()}`,
+    (r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet.replace(/\s+/g, " ").trim()}`,
   );
   return `Search results for "${query}"\n\n${items.join("\n\n")}`;
 }

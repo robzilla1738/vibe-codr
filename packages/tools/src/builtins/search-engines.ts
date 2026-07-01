@@ -97,6 +97,79 @@ function recencyToDf(days: number): string {
   return "y";
 }
 
+/** Bing's recency filter (`ex1:"ez<N>"`): 1=24h, 2=week, 3=month; no year window. */
+function recencyToBingFilter(days: number): string | undefined {
+  if (days <= 1) return "ez1";
+  if (days <= 7) return "ez2";
+  if (days <= 31) return "ez3";
+  return undefined;
+}
+
+/** Bing wraps result URLs in a `/ck/` redirect with a base64url-encoded `u` param. */
+function decodeBingUrl(href: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(href, "https://www.bing.com");
+  } catch {
+    return null;
+  }
+  if (!u.hostname.endsWith("bing.com") || !u.pathname.startsWith("/ck/")) return href;
+  const encoded = u.searchParams.get("u");
+  if (!encoded) return null;
+  const value = encoded.startsWith("a1") ? encoded.slice(2) : encoded;
+  const padded = value + "=".repeat((4 - (value.length % 4)) % 4);
+  try {
+    const decoded = Buffer.from(padded, "base64url").toString("utf8");
+    return decoded.startsWith("http://") || decoded.startsWith("https://") ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a Bing HTML results page into structured results (pure). Each hit is an
+ * `<li class="b_algo">` with an `<h2><a>` link and a `<p>` snippet. */
+export function parseBingHtml(html: string): SearchResult[] {
+  const results: SearchResult[] = [];
+  const blocks = html.split(/<li class="b_algo[^"]*"/i).slice(1);
+  let i = 0;
+  for (const block of blocks) {
+    const link = /<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i.exec(block);
+    if (!link) continue;
+    const url = decodeBingUrl(decodeEntities(link[1] ?? ""));
+    if (!url || !/^https?:\/\//.test(url)) continue;
+    const title = stripTags(link[2] ?? "");
+    if (!title) continue;
+    const sn = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(block);
+    const snippet = sn ? stripTags(sn[1] ?? "") : "";
+    results.push({ position: i + 1, site_name: hostOf(url), title, url, snippet });
+    i++;
+  }
+  return results;
+}
+
+/** Keyless web search via Bing's HTML endpoint (a second scraper so a DDG parse
+ * break or block doesn't take web_search dark). */
+export async function bingSearch(
+  query: string,
+  opts: EngineOptions,
+  fetchImpl: FetchLike,
+  signal?: AbortSignal,
+): Promise<SearchResult[]> {
+  const url = new URL("https://www.bing.com/search");
+  url.searchParams.set("q", query);
+  if (opts.recencyDays !== undefined) {
+    const ez = recencyToBingFilter(opts.recencyDays);
+    if (ez) url.searchParams.set("filters", `ex1:"${ez}"`);
+  }
+  const res = await fetchImpl(url.toString(), {
+    headers: { "user-agent": BROWSER_UA, "accept-language": "en-US,en;q=0.9", accept: "text/html" },
+    ...(signal ? { signal } : {}),
+  });
+  if (!res.ok) throw new Error(`Bing HTTP ${res.status}`);
+  const all = parseBingHtml(await res.text());
+  return opts.maxResults ? all.slice(0, opts.maxResults) : all;
+}
+
 /** Keyless web search via DuckDuckGo's HTML endpoint. */
 export async function duckDuckGoSearch(
   query: string,
@@ -129,6 +202,10 @@ export function createCooldown(windowMs = 60_000) {
     },
     trip(name: string, now: number): void {
       until.set(name, now + windowMs);
+    },
+    /** Clear all cooldowns (test hook, so test order can't leak state). */
+    clear(): void {
+      until.clear();
     },
   };
 }

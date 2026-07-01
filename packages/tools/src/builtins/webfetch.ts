@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
 import { assertFetchAllowed, type FetchPolicy, type Lookup } from "./net-guard.ts";
+import { extractPdfText } from "./pdftext.ts";
+import type { FetchCache } from "./fetch-cache.ts";
 
 const Input = z.object({
   url: z.string().url().describe("URL to fetch."),
@@ -65,7 +67,8 @@ function decodeEntities(s: string): string {
 }
 
 /** HTML -> readable text: drop comments, scripts/styles, and head/nav/footer
- * boilerplate, strip remaining tags, decode entities, collapse whitespace. */
+ * boilerplate, strip remaining tags, decode entities, collapse whitespace. This
+ * is the always-available fallback when Readability isn't installed. */
 function htmlToText(html: string): string {
   const stripped = html
     .replace(/<!--[\s\S]*?-->/g, " ")
@@ -78,14 +81,53 @@ function htmlToText(html: string): string {
   return decodeEntities(stripped).replace(/\s+/g, " ").trim();
 }
 
-/** Read a response body up to `maxBytes`, decoding as UTF-8. Returns the text
- * and whether the body was truncated at the byte cap. */
-async function readCapped(
+/** Extract the main article text with Mozilla Readability, when the optional
+ * peer deps (`@mozilla/readability` + `linkedom`) are installed. Returns null on
+ * any failure so the caller falls back to {@link htmlToText}. The loader is
+ * memoized so a missing dep is probed only once. */
+type ReadableFn = (html: string, url: string) => string | null;
+let readableLoader: Promise<ReadableFn | null> | undefined;
+function loadReadable(): Promise<ReadableFn | null> {
+  if (readableLoader) return readableLoader;
+  readableLoader = (async () => {
+    try {
+      // Non-literal specifiers: absent deps degrade to htmlToText, never throw at boot.
+      const linkedom = (await import("linkedom" as string)) as {
+        parseHTML: (html: string) => { document: unknown };
+      };
+      const readability = (await import("@mozilla/readability" as string)) as {
+        Readability: new (doc: unknown) => { parse: () => { textContent?: string } | null };
+      };
+      return (html: string, _url: string): string | null => {
+        try {
+          const { document } = linkedom.parseHTML(html);
+          const article = new readability.Readability(document).parse();
+          const text = article?.textContent?.replace(/\s+/g, " ").trim();
+          return text && text.length > 0 ? text : null;
+        } catch {
+          return null;
+        }
+      };
+    } catch {
+      return null; // deps not installed
+    }
+  })();
+  return readableLoader;
+}
+
+/** Read a response body up to `maxBytes` as raw bytes. Returns the bytes and
+ * whether the body was truncated at the cap. */
+async function readCappedBytes(
   res: Response,
   maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   const reader = res.body?.getReader();
-  if (!reader) return { text: await res.text(), truncated: false };
+  if (!reader) {
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return buf.length > maxBytes
+      ? { bytes: buf.subarray(0, maxBytes), truncated: true }
+      : { bytes: buf, truncated: false };
+  }
   const chunks: Uint8Array[] = [];
   let total = 0;
   let truncated = false;
@@ -110,7 +152,7 @@ async function readCapped(
     buf.set(c, off);
     off += c.length;
   }
-  return { text: new TextDecoder("utf-8", { fatal: false }).decode(buf), truncated };
+  return { bytes: buf, truncated };
 }
 
 export interface WebfetchOptions extends FetchPolicy {
@@ -120,13 +162,20 @@ export interface WebfetchOptions extends FetchPolicy {
   maxBytes?: number;
   /** Injectable DNS lookup for the SSRF guard (tests). */
   lookup?: Lookup;
+  /** Optional cache-through store (per-URL TTL + stale-on-failure). */
+  cache?: FetchCache;
+  /** Injectable Readable-article extractor (tests). Falls back to htmlToText on null. */
+  readable?: ReadableFn;
 }
 
 /**
  * Fetch a URL and reduce it to text — hardened: an SSRF allowlist (no
  * loopback/link-local/metadata/private hosts by default), redirects followed
  * manually so every hop is re-validated, a wall-clock timeout, and a streaming
- * byte cap so an unbounded response can't hang the turn or OOM the process.
+ * byte cap so an unbounded response can't hang the turn or OOM the process. PDFs
+ * are extracted to text (zero-dep); HTML uses Readability when available and
+ * otherwise a built-in tag-stripper. An optional cache serves repeat/failed
+ * fetches from a per-URL store.
  */
 export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer<typeof Input>> {
   const policy: FetchPolicy = {
@@ -138,21 +187,23 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
   return {
     name: "webfetch",
     description:
-      "Fetch a URL and return its text content (HTML is reduced to plain text). " +
-      "Use when you need the full page — a `web_search` snippet wasn't enough, or " +
-      "you have a specific URL (docs, changelog, raw file) to read in full. Control " +
-      "how much comes back with `maxChars`.",
+      "Fetch a URL and return its text content (HTML is reduced to readable text; " +
+      "PDFs are extracted to text). Use when you need the full page — a `web_search` " +
+      "snippet wasn't enough, or you have a specific URL (docs, changelog, raw file) " +
+      "to read in full. Control how much comes back with `maxChars`.",
     inputSchema: Input,
     readOnly: true,
     concurrencySafe: true,
     async execute({ url, maxChars }, ctx) {
       const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(timeoutMs)]);
-      try {
+
+      // The full extracted text (pre-char-cap) for one URL. Throws on any fetch
+      // failure so the cache can serve a stale copy; the SSRF guard runs INSIDE
+      // (re-checked per redirect hop) so a block is never bypassed by the cache.
+      const fetchAndExtract = async (): Promise<string> => {
         let current = url;
         let res: Response | undefined;
         for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-          // Re-validate every hop, so a benign URL can't redirect into the
-          // metadata service or an internal host.
           await assertFetchAllowed(current, policy, opts.lookup);
           const r = await fetch(current, { signal, redirect: "manual" });
           const location = r.headers.get("location");
@@ -164,29 +215,65 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
           res = r;
           break;
         }
-        if (!res) return { output: `Too many redirects fetching ${url}`, isError: true };
+        if (!res) throw new Error(`Too many redirects fetching ${url}`);
         if (!res.ok) {
           await res.body?.cancel?.().catch(() => {});
-          return { output: `HTTP ${res.status} fetching ${url}`, isError: true };
+          throw new Error(`HTTP ${res.status} fetching ${url}`);
         }
         const contentType = res.headers.get("content-type") ?? "";
-        const { text: body, truncated: byteTruncated } = await readCapped(res, maxBytes);
-        const text = contentType.includes("html") ? htmlToText(body) : body;
+        const { bytes, truncated: byteTruncated } = await readCappedBytes(res, maxBytes);
+        const text = await extractText(contentType, bytes, current, opts.readable);
+        return byteTruncated
+          ? `${text}\n…(response exceeded ${maxBytes} bytes and was truncated)`
+          : text;
+      };
+
+      try {
+        let full: string;
+        let stale = false;
+        if (opts.cache) {
+          const r = await opts.cache.through(url, fetchAndExtract);
+          full = r.text;
+          stale = r.stale;
+        } else {
+          full = await fetchAndExtract();
+        }
+        const prefix = stale ? "(served a cached copy — the live fetch failed)\n\n" : "";
         const cap = maxChars ?? DEFAULT_MAX_CHARS;
-        if (text.length > cap) {
+        if (full.length > cap) {
           return {
-            output: `${text.slice(0, cap)}\n…(truncated ${text.length - cap} more chars; raise maxChars to read further)`,
+            output: `${prefix}${full.slice(0, cap)}\n…(truncated ${full.length - cap} more chars; raise maxChars to read further)`,
           };
         }
-        return {
-          output: byteTruncated
-            ? `${text}\n…(response exceeded ${maxBytes} bytes and was truncated)`
-            : text,
-        };
+        return { output: `${prefix}${full}` };
       } catch (err) {
         if (ctx.abortSignal.aborted) return { output: "Fetch aborted." };
         return { output: `Fetch failed: ${(err as Error).message}`, isError: true };
       }
     },
   };
+}
+
+/** Turn raw response bytes into readable text by content type: PDF → extracted
+ * text; HTML → Readability-or-htmlToText; anything else → decoded verbatim. */
+async function extractText(
+  contentType: string,
+  bytes: Uint8Array,
+  url: string,
+  injectedReadable: ReadableFn | undefined,
+): Promise<string> {
+  const isPdf =
+    /application\/pdf/i.test(contentType) ||
+    (bytes.length >= 5 && "%PDF-".split("").every((c, i) => bytes[i] === c.charCodeAt(0)));
+  if (isPdf) {
+    const pdf = extractPdfText(Buffer.from(bytes));
+    if (!pdf) {
+      throw new Error("PDF has no extractable text (likely scanned/encrypted) — find an HTML source.");
+    }
+    return `[PDF, ${pdf.pages} page${pdf.pages === 1 ? "" : "s"}]\n${pdf.text}`;
+  }
+  const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  if (!contentType.includes("html")) return body;
+  const readable = injectedReadable ?? (await loadReadable());
+  return readable?.(body, url) ?? htmlToText(body);
 }

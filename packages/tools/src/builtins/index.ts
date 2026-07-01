@@ -13,11 +13,15 @@ import { packageInfoTool } from "./package-info.ts";
 import { presentPlanTool } from "./present-plan.ts";
 import { gitTools } from "./git.ts";
 import { BackgroundJobs, backgroundJobTools } from "./jobs.ts";
+import { createFetchCache } from "./fetch-cache.ts";
+
+/** How long a fetched page stays cache-fresh (docs/changelogs get re-read a lot). */
+const WEBFETCH_CACHE_TTL_MS = 5 * 60_000;
 
 export interface BuiltinToolOptions {
-  /** Web search (TinyFish). Omit or set `enabled: false` to leave it out. */
+  /** Web search (keyless by default; a TinyFish key adds a booster engine). */
   search?: { enabled?: boolean; apiKey?: string };
-  /** webfetch SSRF policy + limits (timeout, byte cap). */
+  /** webfetch SSRF policy + limits (timeout, byte cap, cache). */
   webfetch?: WebfetchOptions;
   /** Shared background-job registry; enables `bash background:true` + job tools. */
   jobs?: BackgroundJobs;
@@ -26,13 +30,16 @@ export interface BuiltinToolOptions {
 /** All file/shell/web/plan/git built-in tools (subagent tools are added by core). */
 export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
   const jobs = opts.jobs ?? new BackgroundJobs();
+  // A per-toolset cache-through store so webfetch serves repeat/failed fetches of
+  // the same URL from memory (callers can override via opts.webfetch.cache).
+  const fetchCache = opts.webfetch?.cache ?? createFetchCache({ ttlMs: WEBFETCH_CACHE_TTL_MS });
   const tools: ToolDefinition[] = [
     readTool,
     globTool,
     lsTool,
     grepTool,
     repoMapTool,
-    webfetchTool(opts.webfetch),
+    webfetchTool({ ...opts.webfetch, cache: fetchCache }),
     packageInfoTool,
     writeTool,
     editTool,

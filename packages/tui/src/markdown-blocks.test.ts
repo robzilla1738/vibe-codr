@@ -20,6 +20,31 @@ test("an unterminated (streaming) code fence keeps the rest as code", () => {
   expect(b[1]).toEqual({ kind: "code", lang: "py", lines: ["print(1)", "print(2)"] });
 });
 
+test("ATX headings are split out with their level, between prose", () => {
+  const b = splitMarkdown("intro\n\n## Setup\n\nrun it\n\n### Details\ndeep");
+  expect(b.map((x) => x.kind)).toEqual(["prose", "heading", "prose", "heading", "prose"]);
+  expect(b[1]).toEqual({ kind: "heading", level: 2, text: "Setup" });
+  expect(b[3]).toEqual({ kind: "heading", level: 3, text: "Details" });
+});
+
+test("a lone '#' with no text stays prose (streaming partial)", () => {
+  expect(splitMarkdown("#")).toEqual([{ kind: "prose", text: "#" }]);
+  // ...and becomes a heading once the space + text arrive.
+  expect(splitMarkdown("# Title")).toEqual([{ kind: "heading", level: 1, text: "Title" }]);
+});
+
+test("a '#' inside a code fence is NOT a heading", () => {
+  const b = splitMarkdown("```sh\n# a shell comment\necho hi\n```");
+  expect(b.map((x) => x.kind)).toEqual(["code"]);
+  expect(b[0]).toEqual({ kind: "code", lang: "sh", lines: ["# a shell comment", "echo hi"] });
+});
+
+test("consecutive blockquote lines group into one quote block, marker stripped", () => {
+  const b = splitMarkdown("before\n\n> note one\n> note two\n\nafter");
+  expect(b.map((x) => x.kind)).toEqual(["prose", "quote", "prose"]);
+  expect(b[1]).toEqual({ kind: "quote", lines: ["note one", "note two"] });
+});
+
 test("a GFM table is split out, with alignment, between prose", () => {
   const src = "pick one:\n\n| Name | Size |\n| :-- | --: |\n| Redux | large |\n| Zustand | tiny |\n\ndone";
   const b = splitMarkdown(src);

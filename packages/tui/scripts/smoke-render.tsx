@@ -462,7 +462,7 @@ push({
   type: "assistant-text-delta",
   id: "r",
   delta:
-    "PROSE_ALPHA before.\n\n```ts\nconst RICHCODE = 1;\n```\n\n| Name | Size |\n| --- | --- |\n| Zustand | tiny |\n\nPROSE_OMEGA after.",
+    "## RICHHEAD\n\nPROSE_ALPHA before.\n\n> RICHQUOTE noted.\n\n```ts\nconst RICHCODE = 1;\n```\n\n| Name | Size |\n| --- | --- |\n| Zustand | tiny |\n\nPROSE_OMEGA after.",
 } as UIEvent);
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
 await settle();
@@ -471,6 +471,14 @@ check("rich reply: prose before a code/table block renders", frame.includes("PRO
 check("rich reply: prose after a code/table block renders", frame.includes("PROSE_OMEGA"));
 check("rich reply: the code block renders", frame.includes("RICHCODE"));
 check("rich reply: the table renders (native box-drawing)", frame.includes("Zustand") && frame.includes("│"));
+check("rich reply: the heading renders", frame.includes("RICHHEAD"));
+check("rich reply: the blockquote renders with a gutter bar", frame.includes("RICHQUOTE") && frame.includes("▎"));
+// The heading is painted in the blue accent (the `heading` token), not body white.
+const headingBlue = t
+  .captureSpans()
+  .lines.flatMap((l) => l.spans)
+  .some((s) => s.text.includes("RICHHEAD") && s.fg.b >= s.fg.r && s.fg.b >= s.fg.g && s.fg.b - Math.min(s.fg.r, s.fg.g) > 0.15);
+check("rich reply: the heading is accent-blue", headingBlue);
 
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);

@@ -1,13 +1,15 @@
 /**
- * Split a markdown reply into top-level blocks — prose, fenced code, GFM tables —
- * and render tables to clean box-drawing lines.
+ * Split a markdown reply into top-level blocks — prose, headings, blockquotes,
+ * fenced code, GFM tables — and render tables to clean box-drawing lines.
  *
  * Why: OpenTUI's `<markdown>` renderable has a layout bug where a code/table block
  * blanks its *sibling* prose (even across separate `<markdown>` instances). Since
  * coding replies constantly mix prose with code, that silently ate the prose. So
  * the TUI renders prose via `<markdown>` (which is reliable in isolation, keeping
- * inline bold/italic/code conceal) and renders code + tables itself from `<box>`/
- * `<text>` primitives. This module is the pure (testable, no-OpenTUI) core.
+ * inline bold/italic/code conceal) and renders headings, quotes, code + tables
+ * itself from `<box>`/`<text>` primitives — which also lets us style each element
+ * type explicitly (heading/table-header in the accent, quotes with a gutter, code
+ * in its own tone). This module is the pure (testable, no-OpenTUI) core.
  */
 
 export type Align = "left" | "right" | "center";
@@ -15,7 +17,11 @@ export type Align = "left" | "right" | "center";
 export type MdBlock =
   | { kind: "prose"; text: string }
   | { kind: "code"; lang: string; lines: string[] }
-  | { kind: "table"; rows: string[][]; align: Align[] };
+  | { kind: "table"; rows: string[][]; align: Align[] }
+  /** An ATX heading (`#`..`######`); `level` is 1..6. */
+  | { kind: "heading"; level: number; text: string }
+  /** A `>` blockquote; `lines` are the quoted lines with the marker stripped. */
+  | { kind: "quote"; lines: string[] };
 
 /** A rendered table line, tagged so the UI can color borders/header/rows. */
 export interface TableLine {
@@ -78,6 +84,27 @@ export function splitMarkdown(src: string): MdBlock[] {
       }
       // i now sits on the closing fence (or past EOF for a streaming-open block).
       blocks.push({ kind: "code", lang, lines: code });
+      continue;
+    }
+    // An ATX heading — `#`..`######` + at least one space + text. A lone `#` (no
+    // space yet, mid-stream) stays prose until its text arrives. Headings inside a
+    // fence never reach here (the code branch consumed them above).
+    const heading = /^(#{1,6})[ \t]+(.*)$/.exec(line);
+    if (heading) {
+      flushProse();
+      blocks.push({ kind: "heading", level: heading[1]!.length, text: heading[2]!.trim() });
+      continue;
+    }
+    // A `>` blockquote — gather consecutive quoted lines, stripping the marker.
+    if (/^\s*>/.test(line)) {
+      flushProse();
+      const quoted: string[] = [];
+      while (i < lines.length && /^\s*>/.test(lines[i] ?? "")) {
+        quoted.push((lines[i] ?? "").replace(/^\s*>[ \t]?/, ""));
+        i++;
+      }
+      i--; // step back so the for-loop's ++ lands on the first non-quote line
+      blocks.push({ kind: "quote", lines: quoted });
       continue;
     }
     if (line.includes("|") && isDelimiterRow(lines[i + 1] ?? "")) {

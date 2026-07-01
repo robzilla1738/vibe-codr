@@ -1482,6 +1482,12 @@ function AssistantText(props: {
             // One blank row between blocks (none above the first) for even rhythm.
             <box flexDirection="column" marginTop={i > 0 ? 1 : 0}>
               <Switch>
+                <Match when={block().kind === "heading"}>
+                  <HeadingBlock block={block as () => Extract<MdBlock, { kind: "heading" }>} palette={props.palette} />
+                </Match>
+                <Match when={block().kind === "quote"}>
+                  <QuoteBlock block={block as () => Extract<MdBlock, { kind: "quote" }>} palette={props.palette} />
+                </Match>
                 <Match when={block().kind === "code"}>
                   <CodeBlock block={block as () => Extract<MdBlock, { kind: "code" }>} palette={props.palette} />
                 </Match>
@@ -1511,7 +1517,45 @@ function AssistantText(props: {
   );
 }
 
-/** A fenced code block — monospace lines on a raised panel surface, lang dimmed. */
+/** A markdown heading — bold accent text; h1/h2 get a thin underline rule so the
+ * document structure reads at a glance. Deeper levels are just bold accent text. */
+function HeadingBlock(props: { block: () => Extract<MdBlock, { kind: "heading" }>; palette: Palette }) {
+  const p = props.palette;
+  const b = props.block;
+  const rule = () => (b().level <= 2 ? "─".repeat(Math.max(3, [...b().text].length)) : "");
+  return (
+    <box flexDirection="column">
+      <text fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="word">
+        {b().text}
+      </text>
+      <Show when={rule()}>
+        <text fg={p.border}>{rule()}</text>
+      </Show>
+    </box>
+  );
+}
+
+/** A blockquote — a calm gutter bar with muted, italic quoted text. */
+function QuoteBlock(props: { block: () => Extract<MdBlock, { kind: "quote" }>; palette: Palette }) {
+  const p = props.palette;
+  return (
+    <box flexDirection="column">
+      <For each={props.block().lines}>
+        {(l) => (
+          <box flexDirection="row">
+            <text flexShrink={0} fg={p.gutter}>{"▎ "}</text>
+            <text flexGrow={1} wrapMode="word" fg={p.muted} attributes={TextAttributes.ITALIC}>
+              {l || " "}
+            </text>
+          </box>
+        )}
+      </For>
+    </box>
+  );
+}
+
+/** A fenced code block — monospace lines on a raised panel surface with a calm
+ * left gutter, the language tagged in the accent. */
 function CodeBlock(props: { block: () => Extract<MdBlock, { kind: "code" }>; palette: Palette }) {
   const p = props.palette;
   const lines = () => {
@@ -1519,16 +1563,24 @@ function CodeBlock(props: { block: () => Extract<MdBlock, { kind: "code" }>; pal
     return l.length ? l : [""];
   };
   return (
-    <box flexDirection="column" backgroundColor={p.panel} paddingLeft={1} paddingRight={1}>
+    <box
+      flexDirection="column"
+      backgroundColor={p.panel}
+      border={["left"]}
+      borderColor={p.gutter}
+      paddingLeft={1}
+      paddingRight={1}
+    >
       <Show when={props.block().lang}>
-        <text fg={p.muted}>{props.block().lang}</text>
+        <text fg={p.heading} attributes={TextAttributes.BOLD}>{props.block().lang}</text>
       </Show>
-      <For each={lines()}>{(l) => <text fg={p.tool} wrapMode="none">{l || " "}</text>}</For>
+      <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{l || " "}</text>}</For>
     </box>
   );
 }
 
-/** A GFM table — clean box-drawing, columns aligned, borders muted, header bold. */
+/** A GFM table — clean box-drawing, columns aligned, rules in the border tone, the
+ * header row in the accent and bold. */
 function TableBlock(props: {
   block: () => Extract<MdBlock, { kind: "table" }>;
   palette: Palette;
@@ -1536,12 +1588,14 @@ function TableBlock(props: {
 }) {
   const p = props.palette;
   const lines = () => renderTable(props.block().rows, props.block().align, Math.max(12, props.width));
+  const rowFg = (role: "rule" | "header" | "row") =>
+    role === "rule" ? p.border : role === "header" ? p.heading : p.assistant;
   return (
     <box flexDirection="column">
       <For each={lines()}>
         {(line) => (
           <text
-            fg={line.role === "rule" ? p.muted : p.assistant}
+            fg={rowFg(line.role)}
             attributes={line.role === "header" ? TextAttributes.BOLD : undefined}
             wrapMode="none"
           >

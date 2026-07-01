@@ -88,6 +88,16 @@ export class Toolset {
     this.#tools.set(def.name, def);
   }
 
+  /**
+   * Remove a previously-registered non-builtin tool. Used when an MCP server
+   * re-lists (tools/list_changed) or drops, so stale tools don't linger. Built-in
+   * tools are never removable.
+   */
+  unregister(name: string): void {
+    if (this.#builtins.has(name)) return;
+    this.#tools.delete(name);
+  }
+
   all(): ToolDefinition[] {
     return [...this.#tools.values()];
   }

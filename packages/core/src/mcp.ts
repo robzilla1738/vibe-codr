@@ -5,6 +5,7 @@ import {
   type ToolDefinition,
 } from "@vibe/shared";
 import type { McpServer } from "@vibe/config";
+import { createMcpOAuthProvider } from "./mcp-oauth.ts";
 
 /** One MCP tool as reported by the server (incl. the read-only annotation). */
 export interface McpToolSpec {
@@ -50,6 +51,11 @@ export interface McpClient {
    * `/doctor` stop reporting a crashed server as healthy). Optional; absent =
    * assumed connected. */
   isConnected?(): boolean;
+  /** Subscribe to the server's `notifications/tools/list_changed` (optional). The
+   * hub re-lists + re-registers this server's tools when it fires. */
+  onListChanged?(cb: () => void): void;
+  /** Subscribe to transport close (optional). The hub reconnects with backoff. */
+  onClose?(cb: () => void): void;
   close(): Promise<void>;
 }
 
@@ -59,12 +65,19 @@ export type McpConnect = (name: string, config: McpServer) => Promise<McpClient>
 /** Default per-server connect+list-tools deadline so one hung server can't block boot. */
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 
+/** Reconnect backoff defaults (a dropped server re-dials with exponential backoff). */
+const RECONNECT_DEFAULTS = { baseDelayMs: 1_000, maxDelayMs: 30_000, maxAttempts: 6 };
+
 export interface McpHubDeps {
   registerTool: (def: ToolDefinition) => void;
+  /** Remove a tool (MCP re-list / drop). Optional; absent = tools linger on change. */
+  unregisterTool?: (name: string) => void;
   connect?: McpConnect;
   logger?: Logger;
   /** Per-server connect timeout (ms). Default 15000. */
   connectTimeoutMs?: number;
+  /** Reconnect backoff tuning (mostly for tests). */
+  reconnect?: { baseDelayMs?: number; maxDelayMs?: number; maxAttempts?: number };
 }
 
 /** Reject if `p` doesn't settle within `ms` (so a hung connect is bounded). */
@@ -106,8 +119,11 @@ export interface McpServerStatus {
 /** One configured server's resolved state (client present iff it connected). */
 interface McpEntry {
   name: string;
+  config: McpServer;
   client?: McpClient;
   toolCount: number;
+  /** Exposed tool names currently registered for this server (for re-list/drop). */
+  toolNames: string[];
   resources: McpResource[];
   prompts: McpPrompt[];
   error?: string;
@@ -118,13 +134,18 @@ export class McpHub {
   #connect: McpConnect;
   #log: Logger;
   #connectTimeoutMs: number;
+  #reconnect: Required<NonNullable<McpHubDeps["reconnect"]>>;
   #entries: McpEntry[] = [];
+  #closed = false;
+  /** Servers with a reconnect loop in flight (so a drop storm can't stack loops). */
+  #reconnecting = new Set<string>();
 
   constructor(deps: McpHubDeps) {
     this.#deps = deps;
     this.#connect = deps.connect ?? defaultConnect;
     this.#log = deps.logger ?? createLogger("mcp");
     this.#connectTimeoutMs = deps.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    this.#reconnect = { ...RECONNECT_DEFAULTS, ...deps.reconnect };
   }
 
   /**
@@ -134,19 +155,28 @@ export class McpHub {
    * preserve config order regardless of which connects finish first.
    */
   async start(servers: Record<string, McpServer>): Promise<void> {
-    const entries = Object.entries(servers);
+    // `enabled: false` keeps a server configured but unconnected.
+    const entries = Object.entries(servers).filter(([, c]) => c.enabled !== false);
     const results = await Promise.allSettled(
       entries.map(([name, config]) => this.#connectAndList(name, config)),
     );
     for (let i = 0; i < entries.length; i++) {
-      const name = entries[i]![0];
+      const [name, config] = entries[i]!;
       const r = results[i]!;
       if (r.status === "fulfilled") {
         const { client, tools, resources, prompts } = r.value;
-        for (const spec of tools) {
-          this.#deps.registerTool(toToolDefinition(name, spec, client));
-        }
-        this.#entries.push({ name, client, toolCount: tools.length, resources, prompts });
+        const entry: McpEntry = {
+          name,
+          config,
+          client,
+          toolCount: 0,
+          toolNames: [],
+          resources,
+          prompts,
+        };
+        this.#entries.push(entry);
+        this.#registerServerTools(entry, tools, client);
+        this.#wire(entry, client);
         this.#log.info(
           `connected MCP server "${name}" (${tools.length} tools` +
             `${resources.length ? `, ${resources.length} resources` : ""}` +
@@ -154,7 +184,15 @@ export class McpHub {
         );
       } else {
         const message = (r.reason as Error).message;
-        this.#entries.push({ name, toolCount: 0, resources: [], prompts: [], error: message });
+        this.#entries.push({
+          name,
+          config,
+          toolCount: 0,
+          toolNames: [],
+          resources: [],
+          prompts: [],
+          error: message,
+        });
         this.#log.error(`MCP server "${name}" failed: ${message}`);
       }
     }
@@ -167,6 +205,82 @@ export class McpHub {
     }
   }
 
+  /** Register a server's current tool set, recording the exposed names so a later
+   * re-list or drop can cleanly unregister them. */
+  #registerServerTools(entry: McpEntry, tools: McpToolSpec[], client: McpClient): void {
+    entry.toolNames = tools.map((spec) => mcpToolName(entry.name, spec.name));
+    entry.toolCount = tools.length;
+    for (const spec of tools) this.#deps.registerTool(toToolDefinition(entry.name, spec, client));
+  }
+
+  /** Unregister every tool currently exposed by a server (re-list / drop / close). */
+  #unregisterServerTools(entry: McpEntry): void {
+    if (this.#deps.unregisterTool) {
+      for (const name of entry.toolNames) this.#deps.unregisterTool(name);
+    }
+    entry.toolNames = [];
+    entry.toolCount = 0;
+  }
+
+  /** Wire live-update handlers for a connected client: re-list on tools/list_changed,
+   * reconnect on transport close. No-ops for fakes/transports lacking the hooks. */
+  #wire(entry: McpEntry, client: McpClient): void {
+    client.onListChanged?.(() => void this.#refreshTools(entry.name));
+    client.onClose?.(() => void this.#scheduleReconnect(entry.name));
+  }
+
+  /** Re-list a server's tools (tools/list_changed) and swap the registration. */
+  async #refreshTools(name: string): Promise<void> {
+    const entry = this.#entries.find((e) => e.name === name);
+    if (!entry?.client || this.#closed) return;
+    try {
+      const tools = await withTimeout(
+        entry.client.listTools(),
+        entry.config.timeoutMs ?? this.#connectTimeoutMs,
+        `re-listing tools for MCP server "${name}"`,
+      );
+      this.#unregisterServerTools(entry);
+      this.#registerServerTools(entry, tools, entry.client);
+      this.#log.info(`MCP server "${name}" tool list changed → ${tools.length} tools`);
+    } catch (err) {
+      this.#log.error(`MCP re-list for "${name}" failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Re-dial a dropped server with exponential backoff, re-registering on success. */
+  async #scheduleReconnect(name: string): Promise<void> {
+    const entry = this.#entries.find((e) => e.name === name);
+    if (!entry || this.#closed || this.#reconnecting.has(name)) return;
+    this.#reconnecting.add(name);
+    // The dropped connection's tools are stale — pull them until we're back.
+    this.#unregisterServerTools(entry);
+    entry.client = undefined;
+    entry.error = "disconnected — reconnecting…";
+    const { baseDelayMs, maxDelayMs, maxAttempts } = this.#reconnect;
+    for (let attempt = 0; attempt < maxAttempts && !this.#closed; attempt++) {
+      await new Promise((r) => setTimeout(r, Math.min(baseDelayMs * 2 ** attempt, maxDelayMs)));
+      if (this.#closed) break;
+      try {
+        const { client, tools, resources, prompts } = await this.#connectAndList(name, entry.config);
+        entry.client = client;
+        entry.resources = resources;
+        entry.prompts = prompts;
+        delete entry.error;
+        this.#registerServerTools(entry, tools, client);
+        this.#wire(entry, client);
+        this.#log.info(`MCP server "${name}" reconnected (${tools.length} tools)`);
+        this.#reconnecting.delete(name);
+        return;
+      } catch (err) {
+        this.#log.error(
+          `MCP reconnect to "${name}" failed (attempt ${attempt + 1}/${maxAttempts}): ${(err as Error).message}`,
+        );
+      }
+    }
+    entry.error = "disconnected — reconnect gave up";
+    this.#reconnecting.delete(name);
+  }
+
   async #connectAndList(
     name: string,
     config: McpServer,
@@ -176,15 +290,16 @@ export class McpHub {
     resources: McpResource[];
     prompts: McpPrompt[];
   }> {
+    const deadline = config.timeoutMs ?? this.#connectTimeoutMs;
     const client = await withTimeout(
       this.#connect(name, config),
-      this.#connectTimeoutMs,
+      deadline,
       `connecting to MCP server "${name}"`,
     );
     try {
       const tools = await withTimeout(
         client.listTools(),
-        this.#connectTimeoutMs,
+        deadline,
         `listing tools for MCP server "${name}"`,
       );
       // Resources + prompts are optional capabilities — a server that doesn't
@@ -320,8 +435,10 @@ export class McpHub {
     }));
   }
 
-  /** Close all connected clients. */
+  /** Close all connected clients. Sets `#closed` first so a client's own onclose
+   * (fired during shutdown) can't kick off a reconnect loop. */
   async close(): Promise<void> {
+    this.#closed = true;
     await Promise.all(
       this.#entries.map((e) => e.client?.close().catch(() => undefined)),
     );
@@ -422,7 +539,7 @@ export function renderContent(content: unknown): string {
  * (an optional peer dep). Throws a clear, actionable error if it's not
  * installed — the hub catches it and skips the server.
  */
-const defaultConnect: McpConnect = async (_name, config) => {
+const defaultConnect: McpConnect = async (name, config) => {
   let ClientCtor: new (info: { name: string; version: string }) => McpSdkClient;
   let makeTransport: () => Promise<unknown>;
   // Non-literal specifiers so tsc does not try to resolve the optional peer dep.
@@ -443,11 +560,14 @@ const defaultConnect: McpConnect = async (_name, config) => {
           // Merge over the inherited environment so the server still gets PATH /
           // HOME etc.; `config.env` only adds/overrides specific vars.
           env: { ...process.env, ...(config.env ?? {}) },
+          ...(config.cwd ? { cwd: config.cwd } : {}),
         });
     } else {
-      // Forward configured headers (Authorization / API keys) so authenticated
-      // remote MCP servers can connect.
-      const options = config.headers ? { requestInit: { headers: config.headers } } : undefined;
+      // Transport options: static headers (Authorization / API keys) and/or an
+      // OAuth 2.1 provider so authenticated remote MCP servers can connect.
+      const options: { requestInit?: { headers: Record<string, string> }; authProvider?: unknown } = {};
+      if (config.headers) options.requestInit = { headers: config.headers };
+      if (config.oauth) options.authProvider = createMcpOAuthProvider(name, config.oauth);
       const url = new URL(config.url);
       // Streamable HTTP is the modern default transport; "sse" selects the legacy one.
       if (config.transport === "sse") {
@@ -471,18 +591,27 @@ const defaultConnect: McpConnect = async (_name, config) => {
   }
 
   const client = new ClientCtor({ name: "vibecodr", version: "0.0.0" });
-  // Track live transport health: the SDK fires onclose/onerror when the
-  // connection drops, so `/mcp` and `/doctor` stop reporting a dead server up.
+  // Track live transport health + live-update hooks. The SDK fires onclose/onerror
+  // on a drop (so `/mcp`/`/doctor` stop reporting a dead server up, and the hub
+  // reconnects) and routes un-handled notifications to fallbackNotificationHandler
+  // (so tools/list_changed triggers a re-list).
   let connected = true;
+  const listChangedCbs: (() => void)[] = [];
+  const closeCbs: (() => void)[] = [];
   const lifecycle = client as McpSdkClient & {
     onclose?: () => void;
     onerror?: (err: unknown) => void;
+    fallbackNotificationHandler?: (n: { method?: string }) => Promise<void>;
   };
   lifecycle.onclose = () => {
     connected = false;
+    for (const cb of closeCbs) cb();
   };
   lifecycle.onerror = () => {
     connected = false;
+  };
+  lifecycle.fallbackNotificationHandler = async (n) => {
+    if (n?.method === "notifications/tools/list_changed") for (const cb of listChangedCbs) cb();
   };
   await client.connect(await makeTransport());
   return {
@@ -530,6 +659,12 @@ const defaultConnect: McpConnect = async (_name, config) => {
       return { content };
     },
     isConnected: () => connected,
+    onListChanged(cb) {
+      listChangedCbs.push(cb);
+    },
+    onClose(cb) {
+      closeCbs.push(cb);
+    },
     async close() {
       connected = false;
       await client.close();

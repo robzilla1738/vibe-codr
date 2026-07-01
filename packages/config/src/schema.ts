@@ -99,12 +99,33 @@ export const ModelPriceSchema = z.object({
   cacheWrite: z.number().nonnegative().optional(),
 });
 
+/** OAuth 2.1 for a remote MCP server. When present, the client runs the SDK's
+ * authorization-code + PKCE flow and persists tokens locally (auto-refreshed). */
+export const McpOAuthSchema = z.object({
+  /** Requested scopes. */
+  scopes: z.array(z.string()).optional(),
+  /** Pre-registered client id (skips dynamic client registration). */
+  clientId: z.string().optional(),
+  /** Client name advertised during dynamic registration. */
+  clientName: z.string().optional(),
+  /** Redirect URI the local callback listens on. Default http://localhost:<port>/callback. */
+  redirectUri: z.string().url().optional(),
+  /** Override where tokens are stored (default ~/.config/vibe-codr/mcp/<server>.json). */
+  tokenStore: z.string().optional(),
+});
+
 /** An MCP server: a local stdio process or a remote URL (Streamable HTTP or SSE). */
 export const McpServerSchema = z.union([
   z.object({
     command: z.string(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
+    /** Working directory for the spawned server process. */
+    cwd: z.string().optional(),
+    /** Set false to keep the server configured but not connect it. */
+    enabled: z.boolean().optional(),
+    /** Per-server connect/list deadline (ms). Overrides the hub default. */
+    timeoutMs: z.number().int().positive().optional(),
   }),
   z.object({
     url: z.string().url(),
@@ -113,6 +134,12 @@ export const McpServerSchema = z.union([
     transport: z.enum(["http", "sse"]).optional(),
     /** Static auth/identity headers (e.g. `Authorization: Bearer …`). */
     headers: z.record(z.string(), z.string()).optional(),
+    /** OAuth 2.1 (authorization-code + PKCE). Mutually complementary to `headers`. */
+    oauth: McpOAuthSchema.optional(),
+    /** Set false to keep the server configured but not connect it. */
+    enabled: z.boolean().optional(),
+    /** Per-server connect/list deadline (ms). Overrides the hub default. */
+    timeoutMs: z.number().int().positive().optional(),
   }),
 ]);
 
@@ -277,3 +304,4 @@ export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
 export type HookConfig = z.infer<typeof HookSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type McpServer = z.infer<typeof McpServerSchema>;
+export type McpOAuth = z.infer<typeof McpOAuthSchema>;

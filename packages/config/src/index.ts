@@ -5,6 +5,7 @@ export {
   SearchConfigSchema,
   ModelPriceSchema,
   McpServerSchema,
+  McpOAuthSchema,
 } from "./schema.ts";
 export type {
   Config,
@@ -16,6 +17,7 @@ export type {
   HookConfig,
   ModelPrice,
   McpServer,
+  McpOAuth,
 } from "./schema.ts";
 export {
   loadConfig,

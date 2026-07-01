@@ -176,6 +176,7 @@ export class Engine implements EngineClient {
     this.#checkpoints = new CheckpointManager(this.#cwd);
     this.#mcp = new McpHub({
       registerTool: (def) => this.toolset.register(def),
+      unregisterTool: (name) => this.toolset.unregister(name),
       ...(opts.mcpConnect ? { connect: opts.mcpConnect } : {}),
     });
     this.registry = opts.registry ?? new ProviderRegistry();

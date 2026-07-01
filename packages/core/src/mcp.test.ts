@@ -215,6 +215,116 @@ test("a server without resources/prompts capability degrades cleanly", async () 
   expect(hub.resources()).toEqual([]);
 });
 
+/** A register/unregister sink that tracks the live tool set by name. */
+function registry() {
+  const tools = new Map<string, ToolDefinition>();
+  return {
+    registerTool: (d: ToolDefinition) => void tools.set(d.name, d),
+    unregisterTool: (n: string) => void tools.delete(n),
+    names: () => [...tools.keys()].sort(),
+  };
+}
+
+const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
+
+test("a disabled server is not connected", async () => {
+  let connectCalls = 0;
+  const reg = registry();
+  const hub = new McpHub({
+    ...reg,
+    connect: async () => {
+      connectCalls++;
+      return fakeClient([]);
+    },
+  });
+  await hub.start({ on: { command: "x" }, off: { command: "y", enabled: false } });
+  expect(connectCalls).toBe(1);
+  expect(reg.names()).toEqual(["mcp__on__echo"]);
+  expect(hub.status().map((s) => s.name)).toEqual(["on"]); // disabled server omitted
+});
+
+test("tools/list_changed re-lists and swaps the server's registered tools", async () => {
+  let toolSet: { name: string }[] = [{ name: "a" }];
+  let fire: (() => void) | undefined;
+  const client: McpClient = {
+    listTools: async () => toolSet,
+    callTool: async () => ({ content: "ok" }),
+    onListChanged: (cb) => {
+      fire = cb;
+    },
+    close: async () => {},
+  };
+  const reg = registry();
+  const hub = new McpHub({ ...reg, connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  expect(reg.names()).toEqual(["mcp__demo__a"]);
+
+  // Server gains a tool → re-list registers it.
+  toolSet = [{ name: "a" }, { name: "b" }];
+  fire!();
+  await tick();
+  expect(reg.names()).toEqual(["mcp__demo__a", "mcp__demo__b"]);
+
+  // Server drops a tool → re-list unregisters the stale one.
+  toolSet = [{ name: "b" }];
+  fire!();
+  await tick();
+  expect(reg.names()).toEqual(["mcp__demo__b"]);
+});
+
+test("reconnects with backoff after the transport drops, re-registering tools", async () => {
+  let dials = 0;
+  let closeCb: (() => void) | undefined;
+  const makeClient = (): McpClient => ({
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    onClose: (cb) => {
+      closeCb = cb;
+    },
+    close: async () => {},
+  });
+  const reg = registry();
+  const hub = new McpHub({
+    ...reg,
+    reconnect: { baseDelayMs: 3, maxAttempts: 5 },
+    connect: async () => {
+      dials++;
+      if (dials === 2) throw new Error("still down"); // first reconnect dial fails
+      return makeClient();
+    },
+  });
+  await hub.start({ demo: { command: "x" } });
+  expect(reg.names()).toEqual(["mcp__demo__echo"]);
+
+  closeCb!(); // transport drops
+  await tick(); // let the reconnect loop start + unregister stale tools
+  expect(reg.names()).toEqual([]); // dropped tools pulled immediately
+  expect(hub.status()[0]!.connected).toBe(false);
+
+  await tick(80); // backoff: dial 2 fails, dial 3 succeeds
+  expect(dials).toBe(3);
+  expect(reg.names()).toEqual(["mcp__demo__echo"]); // re-registered on reconnect
+  expect(hub.status()[0]!.connected).toBe(true);
+  await hub.close();
+});
+
+test("a per-server timeout overrides the hub default", async () => {
+  const reg = registry();
+  const hub = new McpHub({
+    ...reg,
+    connectTimeoutMs: 10_000, // hub default is generous
+    connect: async (name) => {
+      if (name === "slow") await new Promise((r) => setTimeout(r, 5_000));
+      return fakeClient([]);
+    },
+  });
+  const t0 = performance.now();
+  // The server's own 30ms timeout fires long before the hub default.
+  await hub.start({ slow: { command: "x", timeoutMs: 30 } });
+  expect(performance.now() - t0).toBeLessThan(2_000);
+  expect(hub.status()[0]!.connected).toBe(false);
+});
+
 test("status reflects a transport that dropped after connecting", async () => {
   let live = true;
   const client: McpClient = {

@@ -1,0 +1,154 @@
+import { dirname } from "node:path";
+import type { Logger } from "@vibe/shared";
+
+/**
+ * In-process TypeScript language-service diagnostics (opencode-style
+ * diagnostics-in-the-loop): after an edit/write to a TS/JS file, real compiler
+ * errors are appended to the tool result, so the model sees "you broke the
+ * types" in the SAME step instead of discovering it a full test run later.
+ *
+ * `typescript` is an optional peer dep (repo convention): absent → the whole
+ * layer degrades to undefined and edits behave exactly as before (run_check
+ * remains the verification path). Services are cached per tsconfig; file
+ * versions bump on each diagnose so the service re-reads only what changed.
+ */
+
+interface TsModule {
+  findConfigFile(searchPath: string, fileExists: (f: string) => boolean, name?: string): string | undefined;
+  readConfigFile(path: string, readFile: (f: string) => string | undefined): { config?: unknown; error?: unknown };
+  parseJsonConfigFileContent(
+    json: unknown,
+    host: unknown,
+    basePath: string,
+  ): { fileNames: string[]; options: unknown; errors: unknown[] };
+  createLanguageService(host: unknown): TsLanguageService;
+  flattenDiagnosticMessageText(text: unknown, newline: string): string;
+  sys: {
+    fileExists(f: string): boolean;
+    readFile(f: string): string | undefined;
+    readDirectory(...args: unknown[]): string[];
+    getCurrentDirectory(): string;
+    useCaseSensitiveFileNames: boolean;
+  };
+  getDefaultLibFilePath(options: unknown): string;
+  ScriptSnapshot: { fromString(s: string): unknown };
+}
+
+interface TsDiagnostic {
+  file?: { fileName: string; getLineAndCharacterOfPosition(pos: number): { line: number; character: number } };
+  start?: number;
+  messageText: unknown;
+  code: number;
+}
+
+interface TsLanguageService {
+  getSyntacticDiagnostics(file: string): TsDiagnostic[];
+  getSemanticDiagnostics(file: string): TsDiagnostic[];
+}
+
+/** Files the TS service can say anything about. */
+const TS_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+/** Cap on rendered diagnostics per call — the first errors are the signal. */
+const MAX_DIAGNOSTICS = 8;
+
+let tsLoader: Promise<TsModule | null> | undefined;
+function loadTs(): Promise<TsModule | null> {
+  tsLoader ??= (async () => {
+    try {
+      // Non-literal specifier: an absent optional dep degrades, never throws at boot.
+      return (await import("typescript" as string)) as unknown as TsModule;
+    } catch {
+      return null;
+    }
+  })();
+  return tsLoader;
+}
+
+interface ServiceEntry {
+  service: TsLanguageService;
+  fileNames: Set<string>;
+  versions: Map<string, number>;
+}
+
+/**
+ * Language-service diagnostics keyed by tsconfig. `diagnose(absPath)` returns a
+ * compact rendered error list for that file, or undefined when TS is
+ * unavailable, the file isn't TS/JS, or there are no errors — callers append it
+ * verbatim to tool output.
+ */
+export class TsDiagnostics {
+  #services = new Map<string, ServiceEntry>();
+  #log: Logger | undefined;
+
+  constructor(log?: Logger) {
+    this.#log = log;
+  }
+
+  /** Whether diagnostics are live (the peer dep resolved). Probes lazily. */
+  async available(): Promise<boolean> {
+    return (await loadTs()) !== null;
+  }
+
+  async diagnose(absPath: string): Promise<string | undefined> {
+    if (!TS_EXT.test(absPath)) return undefined;
+    const ts = await loadTs();
+    if (!ts) return undefined;
+    try {
+      const entry = this.#serviceFor(ts, absPath);
+      if (!entry?.fileNames.has(absPath)) return undefined;
+      // Bump the version so the service re-reads the just-written file.
+      entry.versions.set(absPath, (entry.versions.get(absPath) ?? 0) + 1);
+      const diags = [
+        ...entry.service.getSyntacticDiagnostics(absPath),
+        ...entry.service.getSemanticDiagnostics(absPath),
+      ];
+      if (!diags.length) return undefined;
+      const lines = diags.slice(0, MAX_DIAGNOSTICS).map((d) => {
+        const message = ts.flattenDiagnosticMessageText(d.messageText, " ");
+        if (d.file && d.start !== undefined) {
+          const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
+          return `  ${d.file.fileName}:${line + 1}:${character + 1} TS${d.code}: ${message}`;
+        }
+        return `  TS${d.code}: ${message}`;
+      });
+      const more = diags.length > MAX_DIAGNOSTICS ? `\n  …(${diags.length - MAX_DIAGNOSTICS} more)` : "";
+      return `TypeScript diagnostics (fix before moving on):\n${lines.join("\n")}${more}`;
+    } catch (err) {
+      // Diagnostics are an enhancement — a service failure must never fail an edit.
+      this.#log?.debug(`diagnostics skipped: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
+  #serviceFor(ts: TsModule, absPath: string): ServiceEntry | undefined {
+    const configPath = ts.findConfigFile(dirname(absPath), ts.sys.fileExists, "tsconfig.json");
+    if (!configPath) return undefined;
+    const cached = this.#services.get(configPath);
+    if (cached) return cached;
+
+    const raw = ts.readConfigFile(configPath, ts.sys.readFile);
+    if (!raw.config) return undefined;
+    const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, dirname(configPath));
+    const fileNames = new Set(parsed.fileNames);
+    const versions = new Map<string, number>();
+
+    const host = {
+      getScriptFileNames: () => [...fileNames],
+      getScriptVersion: (f: string) => String(versions.get(f) ?? 0),
+      getScriptSnapshot: (f: string) => {
+        const content = ts.sys.readFile(f);
+        return content === undefined ? undefined : ts.ScriptSnapshot.fromString(content);
+      },
+      getCurrentDirectory: () => dirname(configPath),
+      getCompilationSettings: () => parsed.options,
+      getDefaultLibFileName: (o: unknown) => ts.getDefaultLibFilePath(o),
+      fileExists: ts.sys.fileExists,
+      readFile: ts.sys.readFile,
+      readDirectory: ts.sys.readDirectory,
+      useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
+    };
+    const entry: ServiceEntry = { service: ts.createLanguageService(host), fileNames, versions };
+    this.#services.set(configPath, entry);
+    return entry;
+  }
+}

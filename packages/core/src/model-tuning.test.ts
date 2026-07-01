@@ -81,3 +81,22 @@ test("reasoningSupported is true for reasoning providers, false for local models
   expect(reasoningSupported("ollama/llama3.1")).toBe(false);
   expect(reasoningSupported("lmstudio/qwen")).toBe(false);
 });
+
+test("cache breakpoints: tools + conversation markers are Anthropic-only and config-gated", () => {
+  const config = defaultConfig();
+  const anthropic = buildModelTuning("anthropic/claude-opus-4-8", config);
+  expect(anthropic.cacheSystem).toBe(true);
+  expect(anthropic.cacheTools).toBe(true);
+  expect(anthropic.cacheConversation).toBe(true);
+
+  const openai = buildModelTuning("openai/gpt-5", config);
+  expect(openai.cacheTools).toBe(false);
+  expect(openai.cacheConversation).toBe(false);
+
+  config.caching.cacheTools = false;
+  config.caching.cacheConversation = false;
+  const gated = buildModelTuning("anthropic/claude-opus-4-8", config);
+  expect(gated.cacheSystem).toBe(true); // master switch untouched
+  expect(gated.cacheTools).toBe(false);
+  expect(gated.cacheConversation).toBe(false);
+});

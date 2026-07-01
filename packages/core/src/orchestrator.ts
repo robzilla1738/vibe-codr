@@ -25,6 +25,23 @@ export interface TaskSpec {
   verify?: boolean;
   /** Named agent to specialize the subagent. */
   agent?: string;
+  /** Model tier: "cheap" for scouts/mechanical work, "strong" for
+   * leads/reviewers/verifiers. Resolved to a CONFIG model string (never a
+   * model-invented provider); unset falls back to the subagent.model chain. */
+  tier?: "cheap" | "strong";
+  /** Run the repo's real detected checks (the green-gate) after this task; a red
+   * gate fails the attempt without spending an LLM review call. */
+  check?: boolean;
+  /** Run this task in an isolated git worktree — for parallel writers whose file
+   * sets can't be declared disjoint. Its changes squash-merge back on success
+   * (and the gate/review run on the MERGED main tree); a conflicting merge fails
+   * the task. Ignored when worktrees are unavailable (falls back to shared tree). */
+  worktree?: boolean;
+  /** Run as a best-of-N ensemble in isolated worktrees (when build.ensemble.n>0):
+   * N attempts of the same objective, each with a distinct strategy, judged by an
+   * in-worktree gate — only the winner merges. Expensive; reserve for genuinely
+   * hard tasks. */
+  hard?: boolean;
 }
 
 export type TaskOutcome = "completed" | "failed" | "skipped";
@@ -37,6 +54,12 @@ export interface TaskResult {
   output: string;
   /** How many attempts ran (≥ 1 for a task that started; 0 if skipped). */
   attempts: number;
+  /** Wall-clock the task took, ms — set by the runner on a settled task (absent
+   * on a skipped/seeded-without-timing task). Surfaced on the terminal UIEvent. */
+  durationMs?: number;
+  /** Structured handoff parsed from the report's ```handoff fence, when the
+   * child emitted one — dependents receive these fields verbatim. */
+  handoff?: import("@vibe/shared").Handoff;
 }
 
 /** Runs one task (the caller forks + runs a subagent). Receives the results of
@@ -44,8 +67,15 @@ export interface TaskResult {
 export type RunTask = (spec: TaskSpec, depResults: TaskResult[]) => Promise<TaskResult>;
 
 export interface DagEvents {
-  /** A task changed state (running, or a terminal outcome). */
-  onStatus?: (spec: TaskSpec, status: "running" | TaskOutcome) => void;
+  /** A task changed state (running, or a terminal outcome). On a terminal status
+   * the settled `result` is passed too, so a caller can surface attempts/timing. */
+  onStatus?: (spec: TaskSpec, status: "running" | TaskOutcome, result?: TaskResult) => void;
+  /** Completed results from a PRIOR run (e.g. a --resume'd session's journal):
+   * seeded results pre-populate the map, count as settled for dependency
+   * resolution, and are surfaced via onStatus — so only unfinished tasks re-run.
+   * Only ids present in the current spec set are honored (a stale journal entry
+   * for a removed task is ignored). */
+  seed?: TaskResult[];
 }
 
 /**
@@ -108,6 +138,19 @@ export async function runDag(
   const inflight = new Map<string, Promise<void>>();
   const started = new Set<string>();
 
+  // Seed prior-run completions so a resumed session re-runs only what's left.
+  // Only ids that still exist in this plan are honored, so a stale journal entry
+  // never resurrects a removed task; seeded tasks count as settled + started.
+  if (events.seed?.length) {
+    for (const r of events.seed) {
+      const spec = byId.get(r.id);
+      if (!spec || results.has(r.id)) continue;
+      results.set(r.id, r);
+      started.add(r.id);
+      events.onStatus?.(spec, r.outcome, r);
+    }
+  }
+
   const depResultsOf = (s: TaskSpec): TaskResult[] =>
     s.deps.map((d) => results.get(d)).filter((r): r is TaskResult => r !== undefined);
   const depsAllDone = (s: TaskSpec): boolean =>
@@ -129,7 +172,7 @@ export async function runDag(
           attempts: 0,
         };
         results.set(s.id, result);
-        events.onStatus?.(s, "skipped");
+        events.onStatus?.(s, "skipped", result);
         continue;
       }
       events.onStatus?.(s, "running");
@@ -146,7 +189,7 @@ export async function runDag(
         .then((result) => {
           results.set(s.id, result);
           inflight.delete(s.id);
-          events.onStatus?.(byId.get(s.id)!, result.outcome);
+          events.onStatus?.(byId.get(s.id)!, result.outcome, result);
         });
       inflight.set(s.id, promise);
     }

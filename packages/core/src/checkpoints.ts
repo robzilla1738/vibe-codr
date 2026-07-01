@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createId } from "@vibe/shared";
+import { createId, type GateSummary } from "@vibe/shared";
 
 export interface Checkpoint {
   id: string;
@@ -11,6 +11,11 @@ export interface Checkpoint {
   createdAt: number;
   /** Conversation length at snapshot time, so `/undo` can rewind history too. */
   conversation?: { messages: number; history: number };
+  /** A commit-on-green checkpoint (the real gate passed), as opposed to a
+   * pre-edit safety snapshot. Absent on older/pre-edit entries (back-compat). */
+  green?: boolean;
+  /** The gate summary that produced a green checkpoint (absent otherwise). */
+  gate?: GateSummary;
 }
 
 interface GitResult {
@@ -21,6 +26,10 @@ interface GitResult {
 
 /** Keep at most this many checkpoints; older refs are pruned. */
 const MAX_CHECKPOINTS = 50;
+
+/** Cap on a returned diff (chars) — a large refactor's diff would otherwise
+ * blow the reviewer's context window (the same 20k bound the task reviewer uses). */
+const MAX_DIFF = 20_000;
 
 /**
  * Workspace checkpoints via git plumbing — a safety net for agent edits. Each
@@ -84,10 +93,12 @@ export class CheckpointManager {
     }
   }
 
-  /** Snapshot the working tree. Returns the checkpoint, or null when not a repo. */
+  /** Snapshot the working tree. Returns the checkpoint, or null when not a repo.
+   * `opts` marks a commit-on-green checkpoint (persisted in meta, back-compat). */
   async snapshot(
     label: string,
     conversation?: { messages: number; history: number },
+    opts?: { green?: boolean; gate?: GateSummary },
   ): Promise<Checkpoint | null> {
     if (!(await this.isGitRepo())) return null;
     await this.#ensureLoaded();
@@ -122,6 +133,8 @@ export class CheckpointManager {
       commit,
       createdAt: Date.now(),
       ...(conversation ? { conversation } : {}),
+      ...(opts?.green ? { green: true } : {}),
+      ...(opts?.gate ? { gate: opts.gate } : {}),
     };
     this.#list.push(cp);
     // Prune the oldest checkpoints so refs don't grow without bound.
@@ -205,6 +218,39 @@ export class CheckpointManager {
 
     await this.#save();
     return cp;
+  }
+
+  /**
+   * Unified diff of the CURRENT working tree against a checkpoint's commit
+   * (`fromId`), or HEAD when the checkpoint is unknown/omitted. The tree is
+   * staged into a THROWAWAY index (GIT_INDEX_FILE — never the user's) so that
+   * new/untracked files show up in the diff: a plain `git diff <commit>` omits
+   * them, but the reviewer must see added files. Capped at 20k chars with a
+   * marker. Returns "" outside a repo or on any git error (best-effort).
+   */
+  async diffFrom(fromId: string | undefined, opts: { max?: number } = {}): Promise<string> {
+    if (!(await this.isGitRepo())) return "";
+    await this.#ensureLoaded();
+    const base = fromId ? this.#list.find((c) => c.id === fromId)?.commit : undefined;
+    const ref = base ?? "HEAD";
+    const id = createId("diff");
+    const indexFile = join(tmpdir(), `vibecodr-diff-${id}`);
+    const env = { GIT_INDEX_FILE: indexFile };
+    try {
+      // Stage everything into the throwaway index, then diff the base commit
+      // against it — this is base→working-tree, including untracked new files,
+      // without ever touching the user's real staging area.
+      const add = await this.#git(["add", "-A"], env);
+      if (!add.ok) return "";
+      const r = await this.#git(["diff", "--cached", ref], env);
+      if (!r.ok) return "";
+      const max = opts.max ?? MAX_DIFF;
+      return r.stdout.length > max
+        ? `${r.stdout.slice(0, max)}\n…(diff truncated at ${max} chars)`
+        : r.stdout;
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => undefined);
+    }
   }
 
   /** Checkpoints, newest last. */

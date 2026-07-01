@@ -453,3 +453,70 @@ test("Engine planning: resolve-plan edit re-plans with feedback; keep-planning s
   engine.send({ type: "shutdown" });
   await collector;
 });
+
+test("Engine: a fresh top-level prompt clears the blackboard (turn-1 note gone in turn 2)", async () => {
+  // Regression: the blackboard was created once per engine and never cleared, so a
+  // stale coordination note ("taking auth.ts") from an early turn leaked into an
+  // unrelated fan-out many turns later. Each user-submitted prompt must start a
+  // fresh coordination context. (post_note/read_notes are offered at depth 0
+  // because subagents are available — maxDepth 3 > 0.)
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-board-reset-"));
+  const toolCall = (id: string, name: string, input: unknown) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: id, toolName: name, input: JSON.stringify(input) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]);
+  const textStep = (t: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: t },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]);
+  const steps = [
+    // Turn 1: post a claim, then read the board back (should show the claim), then finish.
+    toolCall("c1", "post_note", { note: "taking auth.ts", kind: "claim" }),
+    toolCall("c2", "read_notes", {}),
+    textStep("turn one done"),
+    // Turn 2: just read the board — it must be empty (cleared at submit).
+    toolCall("c3", "read_notes", {}),
+    textStep("turn two done"),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  engine.send({ type: "submit-prompt", text: "turn one" });
+  await engine.whenIdle();
+  engine.send({ type: "submit-prompt", text: "turn two" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  const reads = events
+    .filter(
+      (e): e is Extract<UIEvent, { type: "tool-call-finished" }> =>
+        e.type === "tool-call-finished" && e.toolName === "read_notes",
+    )
+    .map((e) => String(e.output));
+  expect(reads).toHaveLength(2);
+  // Turn 1's read_notes sees the claim (with its kind tag rendered).
+  expect(reads[0]).toContain("taking auth.ts");
+  expect(reads[0]).toContain("[CLAIM]");
+  // Turn 2 started a fresh coordination context — the turn-1 note is gone.
+  expect(reads[1]).toContain("No shared notes yet.");
+  expect(reads[1]).not.toContain("taking auth.ts");
+});

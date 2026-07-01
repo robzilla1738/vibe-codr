@@ -80,9 +80,16 @@ export interface SaveMemoryInput {
 }
 
 /**
- * Append a fact to the dated memory file for its scope (`YYYY-MM-DD.md`),
- * creating a day heading on first write so chunking groups the day's entries.
- * Returns a display path. `now` is injectable for deterministic tests.
+ * Append a fact to the dated memory file for its scope (`YYYY-MM-DD.md`).
+ *
+ * Each fact gets its OWN `## HH:MM:SS — <fact>` heading under the day's `# Memory`
+ * title, so `chunkMarkdown`'s heading-based splitter yields one chunk PER FACT
+ * rather than collapsing a whole day into a single chunk. A day-blob chunk both
+ * dilutes each fact's embedding across every unrelated topic saved that day and
+ * makes recall return the entire day instead of the matching fact (audit
+ * finding). The format stays human-readable: a dated title, then one timestamped
+ * section per fact with its tags. Returns a display path. `now` is injectable for
+ * deterministic tests.
  */
 export async function appendMemory(
   cwd: string,
@@ -93,10 +100,13 @@ export async function appendMemory(
   const dir = scope === "global" ? globalMemoryDir() : projectMemoryDir(cwd);
   await mkdir(dir, { recursive: true });
   const date = now.toISOString().slice(0, 10);
-  const time = now.toISOString().slice(11, 16);
+  const time = now.toISOString().slice(11, 19); // HH:MM:SS — second precision cuts
   const path = join(dir, `${date}.md`);
-  const tags = input.tags?.length ? ` _(${input.tags.join(", ")})_` : "";
-  const entry = `- ${time} — ${input.fact.trim()}${tags}\n`;
+  const tags = input.tags?.length ? `\n_(${input.tags.join(", ")})_` : "";
+  // One heading per fact → one chunk per fact. The trailing blank line keeps
+  // sections visually separated and the fact text lives in the heading so the
+  // chunk is self-describing.
+  const entry = `## ${time} — ${input.fact.trim()}${tags}\n\n`;
   // The whole read → build → write must be atomic against a concurrent save to
   // the same file, or the two racing writes drop one entry.
   await serializeByPath(path, async () => {

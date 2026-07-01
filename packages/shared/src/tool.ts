@@ -20,10 +20,13 @@ export interface PermissionResult {
   reason?: string;
 }
 
-/** Evaluates whether a side-effecting tool call may proceed. */
+/** Evaluates whether a side-effecting tool call may proceed. `fallback`
+ * overrides the unmatched-rule default (network read-only tools default to
+ * allow instead of the interactive approvalMode). */
 export type CheckPermission = (
   toolName: string,
   input: unknown,
+  opts?: { fallback?: "allow" | "deny" | "ask" },
 ) => Promise<PermissionResult> | PermissionResult;
 
 /** Runtime context handed to a tool's `execute`. */
@@ -44,6 +47,13 @@ export interface ToolContext {
    * unit tests, where the tool runs its mutation directly.
    */
   lockFile?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
+  /**
+   * Compiler diagnostics for a just-mutated file (set by core when a language
+   * service is available). edit/write append the result to their output so the
+   * model sees "you broke the types" in the SAME step. Returns undefined when
+   * the file is clean or diagnostics don't apply.
+   */
+  diagnose?: (absPath: string) => Promise<string | undefined>;
 }
 
 /** Result returned by a tool execution. */
@@ -69,6 +79,11 @@ export interface ToolDefinition<Input = any> {
   inputSchema: ZodType<Input> | JsonSchema;
   readOnly: boolean;
   concurrencySafe?: boolean;
+  /** The tool reaches the NETWORK (webfetch/web_search/…). Read-only network
+   * tools skip the interactive approval prompt (their default is allow) but,
+   * unlike pure local reads, they DO consult the permission rules — so a
+   * `{tool:"webfetch", action:"deny"}` policy can actually govern egress. */
+  network?: boolean;
   /** If set, the tool is only available in these modes (default: all). */
   modes?: Mode[];
   execute: (input: Input, ctx: ToolContext) => Promise<ToolResult>;

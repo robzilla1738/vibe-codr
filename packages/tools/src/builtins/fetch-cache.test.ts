@@ -56,3 +56,36 @@ test("evicts least-recently-used entries past maxEntries", async () => {
   });
   expect(bCalls).toBe(1);
 });
+
+test("concurrent identical fetches coalesce into one produce() call", async () => {
+  const cache = createFetchCache({ ttlMs: 60_000 });
+  let calls = 0;
+  let release!: (v: string) => void;
+  const gate = new Promise<string>((r) => (release = r));
+  const produce = () => {
+    calls++;
+    return gate;
+  };
+  const [a, b, c] = [cache.through("u", produce), cache.through("u", produce), cache.through("u", produce)];
+  release("shared");
+  const results = await Promise.all([a, b, c]);
+  expect(calls).toBe(1);
+  expect(results.every((r) => r.text === "shared")).toBe(true);
+});
+
+test("a failed in-flight fetch is evicted so the next attempt retries", async () => {
+  const cache = createFetchCache({ ttlMs: 60_000 });
+  let calls = 0;
+  await expect(
+    cache.through("u", async () => {
+      calls++;
+      throw new Error("boom");
+    }),
+  ).rejects.toThrow("boom");
+  const ok = await cache.through("u", async () => {
+    calls++;
+    return "recovered";
+  });
+  expect(calls).toBe(2);
+  expect(ok.text).toBe("recovered");
+});

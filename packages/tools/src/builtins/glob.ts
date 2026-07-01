@@ -1,5 +1,7 @@
 import { Glob } from "bun";
 import { z } from "zod";
+import { join } from "node:path";
+import { stat } from "node:fs/promises";
 import type { ToolDefinition } from "@vibe/shared";
 
 const Input = z.object({
@@ -10,7 +12,7 @@ const Input = z.object({
 export const globTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "glob",
   description:
-    "Find files by glob pattern. Returns matching paths relative to the search directory.",
+    "Find files by glob pattern (newest-first by modification time, node_modules/.git excluded). Returns matching paths relative to the search directory.",
   inputSchema: Input,
   readOnly: true,
   concurrencySafe: true,
@@ -21,6 +23,9 @@ export const globTool: ToolDefinition<z.infer<typeof Input>> = {
     const matches: string[] = [];
     let truncated = false;
     for await (const file of glob.scan({ cwd: searchDir, dot: false })) {
+      // Bun's Glob doesn't auto-ignore these, so a broad "**/*.ts" would otherwise
+      // drown real results in dependencies / VCS internals.
+      if (file.includes("node_modules/") || file === ".git" || file.startsWith(".git/")) continue;
       matches.push(file);
       // Probe for one MORE than the cap so a directory with exactly `LIMIT`
       // matches isn't falsely flagged truncated (the old `>= LIMIT` broke early).
@@ -30,7 +35,16 @@ export const globTool: ToolDefinition<z.infer<typeof Input>> = {
       }
     }
     if (!matches.length) return { output: "(no matches)" };
-    const shown = matches.slice(0, LIMIT);
+    // Sort newest-first by mtime — the "what did I just touch" intent. A stat that
+    // fails (a file removed mid-scan) sorts last via a 0 timestamp.
+    const timed = await Promise.all(
+      matches.map(async (f) => ({
+        f,
+        mtime: await stat(join(searchDir, f)).then((s) => s.mtimeMs).catch(() => 0),
+      })),
+    );
+    timed.sort((a, b) => b.mtime - a.mtime);
+    const shown = timed.slice(0, LIMIT).map((x) => x.f);
     const note = truncated
       ? `\n…(truncated at ${LIMIT} matches; narrow the pattern)`
       : "";

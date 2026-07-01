@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
@@ -50,4 +50,29 @@ test("exactly 1000 matches is NOT flagged truncated (boundary)", async () => {
   const lines = (r.output as string).split("\n");
   expect(lines.length).toBe(1000); // all 1000, no spurious marker line
   expect(r.output as string).not.toContain("truncated");
+});
+
+test("results are sorted newest-first by mtime", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-glob-mtime-"));
+  await Bun.write(join(cwd, "old.ts"), "");
+  await Bun.write(join(cwd, "mid.ts"), "");
+  await Bun.write(join(cwd, "new.ts"), "");
+  // Assign explicit, well-separated mtimes so ordering is deterministic.
+  utimesSync(join(cwd, "old.ts"), new Date(1_000_000), new Date(1_000_000));
+  utimesSync(join(cwd, "mid.ts"), new Date(2_000_000), new Date(2_000_000));
+  utimesSync(join(cwd, "new.ts"), new Date(3_000_000), new Date(3_000_000));
+  const r = await globTool.execute({ pattern: "*.ts" }, ctx(cwd));
+  expect((r.output as string).split("\n")).toEqual(["new.ts", "mid.ts", "old.ts"]);
+});
+
+test("excludes node_modules and .git by default", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-glob-excl-"));
+  await Bun.write(join(cwd, "app.ts"), "");
+  await Bun.write(join(cwd, "node_modules", "dep", "index.ts"), "");
+  await Bun.write(join(cwd, ".git", "hooks", "pre-commit.ts"), "");
+  const r = await globTool.execute({ pattern: "**/*.ts" }, ctx(cwd));
+  const files = (r.output as string).split("\n");
+  expect(files).toContain("app.ts");
+  expect(files.some((f) => f.includes("node_modules/"))).toBe(false);
+  expect(files.some((f) => f.startsWith(".git/"))).toBe(false);
 });

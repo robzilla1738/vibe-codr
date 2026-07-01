@@ -1,8 +1,48 @@
 import { readdir } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { join } from "node:path";
 import type { Message, Part } from "@vibe/shared";
 import { SessionStore, type SessionMeta } from "./store.ts";
 import { queryTerms, rankBm25 } from "./bm25.ts";
+
+/**
+ * Module-level scan cache: `recall` used to re-list AND re-read every session's
+ * `history.jsonl` on every query, which is O(all sessions) disk work per search.
+ * We cache each session's parsed history keyed by the absolute history-file path,
+ * validated by its on-disk `mtimeMs`: an unchanged file is served from memory,
+ * and only a file whose mtime moved is re-read + re-parsed. Results stay
+ * byte-identical to a cold read (same parsed messages → same BM25 ranking).
+ */
+interface CachedHistory {
+  mtimeMs: number;
+  messages: Message[];
+}
+const scanCache = new Map<string, CachedHistory>();
+
+/** Test hook: wipe the scan cache so tests don't leak state across cases. */
+export function _resetRecallCache(): void {
+  scanCache.clear();
+}
+
+/**
+ * Load a session's UI history, serving from the mtime-keyed cache when the file
+ * hasn't changed. A missing/unreadable history file yields `[]` (uncached, since
+ * there's no mtime to key on) — mirroring `SessionStore.loadHistory`.
+ */
+async function loadHistoryCached(cwd: string, store: SessionStore, id: string): Promise<Message[]> {
+  const path = join(cwd, ".vibe", "sessions", id, "history.jsonl");
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(path).mtimeMs;
+  } catch {
+    return [];
+  }
+  const cached = scanCache.get(path);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.messages;
+  const messages = await store.loadHistory(id).catch(() => [] as Message[]);
+  scanCache.set(path, { mtimeMs, messages });
+  return messages;
+}
 
 /**
  * Session memory ("recall"): a lexical, dependency-free search across every
@@ -103,7 +143,7 @@ export async function searchSessions(
     const meta = metas[m]!;
     if (opts.excludeId && meta.id === opts.excludeId) continue;
     const recencyBonus = (metas.length - m) / (metas.length * 2 + 1); // < 0.5
-    const history = await store.loadHistory(meta.id).catch(() => [] as Message[]);
+    const history = await loadHistoryCached(cwd, store, meta.id);
     for (const msg of history) {
       const text = messageText(msg.parts);
       if (!text) continue;

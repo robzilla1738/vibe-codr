@@ -151,3 +151,68 @@ test("formatResults numbers results and collapses snippet whitespace", () => {
   expect(out).toContain("1. T");
   expect(out).toContain("a b c");
 });
+
+// ---------------------------------------------------------------- research-grade search
+
+test("zero results retries once with the reformulated keyword core, annotated", async () => {
+  _resetSearchCooldown();
+  const queries: string[] = [];
+  const fetchImpl: FetchLike = async (url) => {
+    const q = new URL(String(url)).searchParams.get("q") ?? "";
+    queries.push(q);
+    // The over-constrained quoted query gets nothing; the keyword core hits.
+    const hit = !q.includes('"');
+    const html = hit
+      ? `<a class="result__a" href="https://docs.example.com/x">Doc</a><a class="result__snippet">the answer lives here</a>`
+      : "<html>no results</html>";
+    return new Response(html, { headers: { "content-type": "text/html" } });
+  };
+  const res = await webSearchTool({ fetchImpl }).execute(
+    { query: '"impossibly overconstrained exotic phrasing" site:nowhere.invalid' },
+    ctx(),
+  );
+  const out = String(res.output);
+  expect(out).toContain("reformulated to");
+  expect(out).toContain("docs.example.com");
+  // The second wave actually used the keyword core (operators stripped).
+  expect(queries.some((q) => !q.includes("site:") && !q.includes('"'))).toBe(true);
+});
+
+test("deep mode fetches top pages and returns dated, quotable passages", async () => {
+  _resetSearchCooldown();
+  const fetchImpl: FetchLike = async () => {
+    const html =
+      `<a class="result__a" href="https://blog.example.com/release">Release notes</a>` +
+      `<a class="result__snippet">version news</a>`;
+    return new Response(html, { headers: { "content-type": "text/html" } });
+  };
+  const res = await webSearchTool({
+    fetchImpl,
+    enrichFetch: async () =>
+      "Published 2025-11-02. The framework version 9 release introduces the new compiler. " +
+      "Migration from version 8 requires the codemod. ".repeat(10),
+  }).execute({ query: "framework version 9 release compiler", deep: true }, ctx());
+  const out = String(res.output);
+  expect(out).toContain("Deep search results");
+  expect(out).toContain("> "); // quoted passages present
+  expect(out).toContain("version 9 release");
+  expect(out).toContain("(2025-11-02)"); // date detected from page content
+});
+
+test("a dead page in deep mode degrades to its snippet instead of failing the search", async () => {
+  _resetSearchCooldown();
+  const fetchImpl: FetchLike = async () => {
+    const html =
+      `<a class="result__a" href="https://dead.example.com/gone">Dead page</a>` +
+      `<a class="result__snippet">still-useful snippet</a>`;
+    return new Response(html, { headers: { "content-type": "text/html" } });
+  };
+  const res = await webSearchTool({
+    fetchImpl,
+    enrichFetch: async () => {
+      throw new Error("HTTP 404");
+    },
+  }).execute({ query: "anything", deep: true }, ctx());
+  expect(res.isError).toBeUndefined();
+  expect(String(res.output)).toContain("still-useful snippet");
+});

@@ -12,6 +12,9 @@ export interface SessionMeta {
   tasks?: Task[];
   /** Cumulative token usage + accrued cost at the time of the last save. */
   usage?: { inputTokens: number; outputTokens: number; costUSD?: number };
+  /** The proactively-recalled context block, so a resumed session keeps the
+   * same injected memory instead of silently dropping (or re-deriving) it. */
+  recalledContext?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -49,11 +52,17 @@ export class SessionStore {
       [join(dir, "messages.jsonl"), modelMessages.map((m) => JSON.stringify(m)).join("\n")],
       [join(dir, "history.jsonl"), history.map((m) => JSON.stringify(m)).join("\n")],
     ];
-    // Atomic-ish save: write all temp files first, then rename each into place
-    // (rename is atomic on POSIX). A crash mid-save leaves the previous good
-    // files intact instead of a half-written, mutually-inconsistent set.
+    // Atomic save with ORDERED renames: write all temp files first, then rename
+    // (atomic on POSIX) in a deliberate sequence — messages.jsonl (the
+    // authoritative model context) first, history.jsonl (the UI view) next,
+    // meta.json LAST. Parallel renames could crash into an arbitrary mix; the
+    // ordering turns every crash window into a monotone state: the authoritative
+    // transcript is never older than what meta/history claim, so a resumed
+    // session at worst shows a slightly stale UI view — never a corrupt seed.
     await Promise.all(files.map(([path, content]) => Bun.write(`${path}.tmp`, content)));
-    await Promise.all(files.map(([path]) => rename(`${path}.tmp`, path)));
+    await rename(`${join(dir, "messages.jsonl")}.tmp`, join(dir, "messages.jsonl"));
+    await rename(`${join(dir, "history.jsonl")}.tmp`, join(dir, "history.jsonl"));
+    await rename(`${join(dir, "meta.json")}.tmp`, join(dir, "meta.json"));
   }
 
   async load(id: string): Promise<PersistedSession | null> {

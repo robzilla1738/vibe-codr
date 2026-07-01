@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Glob } from "bun";
-import { extname, join } from "node:path";
+import { statSync } from "node:fs";
+import { dirname, extname, join, normalize } from "node:path";
 import type { ToolDefinition } from "@vibe/shared";
 
 const Input = z.object({
@@ -86,14 +87,57 @@ export function extractSymbols(content: string, ext: string): string[] {
   return out;
 }
 
-/** Rank files so the most orienting ones (entrypoints, shallow paths) come first. */
-export function rankFiles(files: string[]): string[] {
+/**
+ * Relative import specifiers a file declares (JS/TS `from "./x"` / `require` /
+ * dynamic `import()`, Python `from .x import`). Package imports are ignored —
+ * only intra-repo edges feed the reference graph.
+ */
+export function parseImports(content: string, ext: string): string[] {
+  const e = ext.toLowerCase();
+  const specs: string[] = [];
+  if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(e)) {
+    for (const m of content.matchAll(
+      /(?:from\s+|require\(\s*|import\(\s*)["'](\.{1,2}\/[^"']+)["']/g,
+    )) {
+      if (m[1]) specs.push(m[1]);
+    }
+  } else if (e === ".py") {
+    for (const m of content.matchAll(/^from\s+(\.[\w.]*)\s+import\b/gm)) {
+      if (m[1]) specs.push(m[1]);
+    }
+  }
+  return specs;
+}
+
+/** Resolve a relative JS/TS import spec against the importing file to a repo
+ * file present in `known` (tries the spec, +extensions, /index variants). */
+function resolveImport(fromFile: string, spec: string, known: Set<string>): string | undefined {
+  const base = normalize(join(dirname(fromFile), spec)).replaceAll("\\", "/");
+  const candidates = [
+    base,
+    ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => `${base}${ext}`),
+    ...["/index.ts", "/index.tsx", "/index.js"].map((ix) => `${base}${ix}`),
+    // `./x.ts` written with its extension already, or `./x.js` referring to x.ts
+    base.replace(/\.js$/, ".ts"),
+  ];
+  return candidates.find((c) => known.has(c));
+}
+
+/**
+ * Rank files so the most orienting ones come first: import in-degree (how many
+ * repo files reference this one — the strongest "this is load-bearing" signal),
+ * fused with the entrypoint-name and shallow-path heuristics; tests last.
+ * `inDegree` is optional so the pure heuristic ranking still works alone.
+ */
+export function rankFiles(files: string[], inDegree?: Map<string, number>): string[] {
   const score = (f: string): number => {
     const depth = f.split("/").length;
     const base = f.split("/").pop() ?? f;
     let s = depth; // shallower is better (lower score sorts first)
     if (/^(index|main|mod|lib|app)\./.test(base)) s -= 5; // entrypoints first
-    if (/\.(test|spec)\./.test(base)) s += 5; // tests last
+    if (/\.(test|spec)\./.test(base)) s += 25; // tests last, even when imported
+    const refs = inDegree?.get(f) ?? 0;
+    if (refs > 0) s -= Math.min(6, 1 + Math.log2(refs) * 2); // referenced = load-bearing
     return s;
   };
   return [...files].sort((a, b) => score(a) - score(b) || a.localeCompare(b));
@@ -128,43 +172,137 @@ async function listFiles(cwd: string, sub: string | undefined): Promise<string[]
   return files;
 }
 
+interface FileEntry {
+  mtimeMs: number;
+  symbols: string[];
+  imports: string[];
+}
+
+/** Per-workspace incremental cache: only files whose mtime changed are re-read
+ * on subsequent calls (the tool used to re-read up to 150 files every call). */
+const mapCache = new Map<string, Map<string, FileEntry>>();
+
+/** Test hook: drop the incremental cache so tests can't leak state. */
+export function _resetRepoMapCache(): void {
+  mapCache.clear();
+}
+
+export interface RepoMapResult {
+  /** Rendered `path\n  symbol` blocks, budget-bounded. */
+  text: string;
+  /** How many files carry declarations (before the budget cut). */
+  fileCount: number;
+  truncated: boolean;
+}
+
+/**
+ * Build a ranked, token/char-budgeted symbol map of the workspace. Shared by
+ * the `repo_map` tool and the engine's subagent-kickoff injection, so both see
+ * the same map. Incremental: unchanged files (by mtime) are served from cache.
+ */
+export async function buildRepoMap(
+  cwd: string,
+  opts: { path?: string; maxFiles?: number; charBudget?: number } = {},
+): Promise<RepoMapResult> {
+  const all = await listFiles(cwd, opts.path);
+  if (!all.length) return { text: "", fileCount: 0, truncated: false };
+
+  const cacheKey = cwd;
+  let cache = mapCache.get(cacheKey);
+  if (!cache) {
+    cache = new Map();
+    mapCache.set(cacheKey, cache);
+  }
+
+  const known = new Set(all);
+  const entries = new Map<string, FileEntry>();
+  for (const file of all) {
+    const full = join(cwd, file);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = statSync(full).mtimeMs;
+    } catch {
+      continue; // listed but unreadable — skip
+    }
+    const cached = cache.get(file);
+    if (cached && cached.mtimeMs === mtimeMs) {
+      entries.set(file, cached);
+      continue;
+    }
+    const content = await Bun.file(full).text().catch(() => "");
+    if (!content) continue;
+    const ext = extname(file);
+    const entry: FileEntry = {
+      mtimeMs,
+      symbols: extractSymbols(content, ext),
+      imports: parseImports(content, ext),
+    };
+    cache.set(file, entry);
+    entries.set(file, entry);
+  }
+  // Drop cache entries for files that no longer exist (keeps the cache honest).
+  for (const key of cache.keys()) {
+    if (!known.has(key)) cache.delete(key);
+  }
+
+  // Reference graph: count how many files import each file.
+  const inDegree = new Map<string, number>();
+  for (const [file, entry] of entries) {
+    for (const spec of entry.imports) {
+      const target = resolveImport(file, spec, known);
+      if (target && target !== file) inDegree.set(target, (inDegree.get(target) ?? 0) + 1);
+    }
+  }
+
+  const ranked = rankFiles([...entries.keys()], inDegree).slice(0, opts.maxFiles ?? DEFAULT_MAX_FILES);
+  let budget = opts.charBudget ?? CHAR_BUDGET;
+  const blocks: string[] = [];
+  let withSymbols = 0;
+  let truncated = false;
+  for (const file of ranked) {
+    const symbols = entries.get(file)?.symbols ?? [];
+    if (!symbols.length) continue;
+    withSymbols++;
+    const block = `${file}\n${symbols.map((s) => `  ${s}`).join("\n")}`;
+    if (budget - block.length < 0) {
+      truncated = true;
+      break;
+    }
+    budget -= block.length;
+    blocks.push(block);
+  }
+  return {
+    text: blocks.join("\n\n"),
+    fileCount: withSymbols,
+    truncated: truncated || ranked.length < entries.size,
+  };
+}
+
 export const repoMapTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "repo_map",
   description:
-    "Get a structural map of the codebase — a ranked list of source files with their top-level declarations (exports, functions, classes, types). Use this FIRST to orient on an unfamiliar repo or subsystem before blind glob/grep: it shows where things live in one cheap call. Narrow with `path` for a focused subtree.",
+    "Get a structural map of the codebase — a ranked list of source files with their top-level declarations (exports, functions, classes, types), ordered by how load-bearing each file is (import references + entrypoints). Use this FIRST to orient on an unfamiliar repo or subsystem before blind glob/grep: it shows where things live in one cheap call. Narrow with `path` for a focused subtree.",
   inputSchema: Input,
   readOnly: true,
   concurrencySafe: true,
   async execute({ path, maxFiles }, ctx) {
-    const all = await listFiles(ctx.cwd, path);
-    if (!all.length) {
-      return { output: `No tracked source files found${path ? ` under ${path}` : ""}.` };
+    const result = await buildRepoMap(ctx.cwd, {
+      ...(path ? { path } : {}),
+      ...(maxFiles ? { maxFiles } : {}),
+    });
+    if (!result.text) {
+      const all = await listFiles(ctx.cwd, path);
+      return {
+        output: all.length
+          ? `Mapped ${all.length} file(s) but found no top-level declarations.`
+          : `No tracked source files found${path ? ` under ${path}` : ""}.`,
+      };
     }
-    const ranked = rankFiles(all);
-    const limit = maxFiles ?? DEFAULT_MAX_FILES;
-    const considered = ranked.slice(0, limit);
-    let budget = CHAR_BUDGET;
-    const blocks: string[] = [];
-    for (const file of considered) {
-      if (budget <= 0) break;
-      const content = await Bun.file(join(ctx.cwd, file)).text().catch(() => "");
-      if (!content) continue;
-      const symbols = extractSymbols(content, extname(file));
-      if (!symbols.length) continue;
-      const block = `${file}\n${symbols.map((s) => `  ${s}`).join("\n")}`;
-      budget -= block.length;
-      blocks.push(block);
-    }
-    if (!blocks.length) {
-      return { output: `Mapped ${all.length} file(s) but found no top-level declarations.` };
-    }
-    const omitted = all.length - considered.length;
-    const note =
-      omitted > 0
-        ? `\n\n…(${omitted} more file(s) not shown; pass a \`path\` to focus or raise \`maxFiles\`)`
-        : "";
+    const note = result.truncated
+      ? `\n\n…(more files not shown; pass a \`path\` to focus or raise \`maxFiles\`)`
+      : "";
     return {
-      output: `Repository map — ${blocks.length} file(s) with declarations${path ? ` under ${path}` : ""}:\n\n${blocks.join("\n\n")}${note}`,
+      output: `Repository map — ${result.fileCount} file(s) with declarations${path ? ` under ${path}` : ""}:\n\n${result.text}${note}`,
     };
   },
 };

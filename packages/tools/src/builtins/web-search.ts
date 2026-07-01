@@ -7,7 +7,18 @@ import {
   type SearchResult as EngineResult,
   type FetchLike,
 } from "./search-engines.ts";
-import { mergeCandidates, detectDate, expandQueries, type Candidate } from "./searchcore.ts";
+import {
+  mergeCandidates,
+  detectDate,
+  expandQueries,
+  reformulate,
+  selectPassages,
+  scorePage,
+  passageBonus,
+  queryTerms,
+  type Candidate,
+} from "./searchcore.ts";
+import { guardedFetchText } from "./webfetch.ts";
 
 const Input = z.object({
   query: z
@@ -49,6 +60,9 @@ export interface WebSearchOptions {
   apiKey?: string;
   /** Injectable fetch for the keyless engines (tests). */
   fetchImpl?: FetchLike;
+  /** Injectable deep-mode page fetcher (tests). Defaults to the hardened
+   * guardedFetchText pipeline (SSRF-pinned, byte-capped). */
+  enrichFetch?: (url: string, signal: AbortSignal) => Promise<string>;
 }
 
 /** Shared per-engine cooldown so a transiently blocking engine is skipped. */
@@ -88,9 +102,10 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
       "queries for genuinely broad research. Use `recencyDays` for fast-moving topics.",
     inputSchema: Input,
     readOnly: true,
+    network: true,
     concurrencySafe: true,
     async execute({ query, recencyDays, maxResults, deep }, ctx) {
-      const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(8000)]);
+      const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(deep ? 20_000 : 8_000)]);
       const apiKey = process.env.TINYFISH_API_KEY ?? opts.apiKey;
       const now = Date.now();
       const engineOpts = recencyDays !== undefined ? { recencyDays } : {};
@@ -106,54 +121,158 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
 
       // Fan out every (query × engine) pair concurrently; each settles to a
       // result set or a recorded error so one failure never sinks the batch.
-      const queries = deep ? expandQueries(query) : [query];
-      const runs: Promise<{ engine: string; results?: EngineResult[]; error?: string }>[] = [];
-      for (const q of queries) {
-        for (const engine of engines) {
-          if (cooldown.blocked(engine.name, now)) continue;
-          runs.push(
-            engine.run(q).then(
-              (results) => ({ engine: engine.name, results }),
-              (err) => ({ engine: engine.name, error: (err as Error).message }),
-            ),
-          );
+      const runFanout = async (queries: string[]) => {
+        const runs: Promise<{ engine: string; results?: EngineResult[]; error?: string }>[] = [];
+        for (const q of queries) {
+          for (const engine of engines) {
+            if (cooldown.blocked(engine.name, now)) continue;
+            runs.push(
+              engine.run(q).then(
+                (results) => ({ engine: engine.name, results }),
+                (err) => ({ engine: engine.name, error: (err as Error).message }),
+              ),
+            );
+          }
         }
-      }
-      const settled = await Promise.all(runs);
+        return Promise.all(runs);
+      };
+
+      const collect = (settled: { engine: string; results?: EngineResult[]; error?: string }[]) => {
+        const candidates: Candidate[] = [];
+        const errors: string[] = [];
+        let anyAnswered = false;
+        for (const s of settled) {
+          if (s.results) {
+            anyAnswered = true;
+            for (const [i, r] of s.results.entries()) {
+              candidates.push({
+                title: r.title,
+                url: r.url,
+                snippet: r.snippet,
+                rank: r.position || i + 1,
+                engine: s.engine,
+                ...(detectDate(r.snippet) ? { date: detectDate(r.snippet) } : {}),
+              });
+            }
+          } else if (s.error) {
+            if (/\b(429|403|503)\b/.test(s.error)) cooldown.trip(s.engine, now);
+            errors.push(`${s.engine}: ${s.error}`);
+          }
+        }
+        return { candidates, errors, anyAnswered };
+      };
+
+      let { candidates, errors, anyAnswered } = collect(
+        await runFanout(deep ? expandQueries(query) : [query]),
+      );
       if (ctx.abortSignal.aborted) return { output: "Search aborted." };
 
-      const candidates: Candidate[] = [];
-      const errors: string[] = [];
-      let anyAnswered = false;
-      for (const s of settled) {
-        if (s.results) {
-          anyAnswered = true;
-          for (const [i, r] of s.results.entries()) {
-            candidates.push({
-              title: r.title,
-              url: r.url,
-              snippet: r.snippet,
-              rank: r.position || i + 1,
-              engine: s.engine,
-              ...(detectDate(r.snippet) ? { date: detectDate(r.snippet) } : {}),
-            });
-          }
-        } else if (s.error) {
-          if (/\b(429|403|503)\b/.test(s.error)) cooldown.trip(s.engine, now);
-          errors.push(`${s.engine}: ${s.error}`);
+      // Zero results with live engines → retry ONCE with the keyword core (a
+      // quoted phrase or operator-heavy query often over-constrains recall).
+      let reformulatedTo: string | undefined;
+      if (!candidates.length && anyAnswered) {
+        const alt = reformulate(query);
+        if (alt) {
+          reformulatedTo = alt;
+          const second = collect(await runFanout([alt]));
+          candidates = second.candidates;
+          errors = errors.concat(second.errors);
+          anyAnswered = anyAnswered || second.anyAnswered;
         }
       }
 
       const merged = mergeCandidates(candidates, maxResults ?? DEFAULT_MAX);
-      if (merged.length) return { output: formatResults(query, merged) };
+      const note = reformulatedTo ? `(no results for the original phrasing — reformulated to "${reformulatedTo}")\n` : "";
+      if (merged.length && deep) {
+        const enriched = await deepEnrich(query, merged, signal, opts.enrichFetch);
+        if (ctx.abortSignal.aborted) return { output: "Search aborted." };
+        return { output: `${note}${formatDeepResults(query, enriched)}` };
+      }
+      if (merged.length) return { output: `${note}${formatResults(query, merged)}` };
       // Every engine erroring is a failure; an engine answering with an empty
       // set is a genuine "no results".
       if (!anyAnswered && errors.length) {
         return { output: `Search failed (${errors.join("; ")}).`, isError: true };
       }
-      return { output: `No results for "${query}".` };
+      return { output: `No results for "${query}"${reformulatedTo ? ` (also tried "${reformulatedTo}")` : ""}.` };
     },
   };
+}
+
+/** How many top-ranked pages deep mode fetches for passage extraction. */
+const DEEP_FETCH_PAGES = 8;
+/** Byte cap per enrichment fetch — we want passages, not whole sites. */
+const DEEP_FETCH_BYTES = 512_000;
+
+interface EnrichedCandidate extends Candidate {
+  passages?: string[];
+}
+
+/** A bare github repo URL serves its content via the README — fetch that raw
+ * (10× less markup than the HTML page). */
+function enrichmentUrl(url: string): string {
+  const m = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/?$/.exec(url);
+  return m ? `https://raw.githubusercontent.com/${m[1]}/${m[2]}/HEAD/README.md` : url;
+}
+
+/**
+ * Deep-mode enrichment (the research-quality differentiator): fetch the top
+ * merged pages through the SAME hardened pipeline webfetch uses (SSRF-pinned,
+ * byte-capped), extract dated query-scored quotable passages, and re-rank by
+ * content quality — so a deep search returns groundable quotes, not just
+ * snippets. Failures degrade per-page; a dead link simply keeps its snippet.
+ */
+async function deepEnrich(
+  query: string,
+  merged: Candidate[],
+  signal: AbortSignal,
+  enrichFetch?: (url: string, signal: AbortSignal) => Promise<string>,
+): Promise<EnrichedCandidate[]> {
+  const fetchPage =
+    enrichFetch ?? ((url: string, s: AbortSignal) => guardedFetchText(url, { signal: s, maxBytes: DEEP_FETCH_BYTES }));
+  const terms = queryTerms(query);
+  const enriched = await Promise.all(
+    merged.slice(0, DEEP_FETCH_PAGES).map(async (c): Promise<EnrichedCandidate & { score: number }> => {
+      try {
+        const text = await fetchPage(enrichmentUrl(c.url), signal);
+        const passages = selectPassages(text, query, 2).map((p) => p.text);
+        const date = detectDate(text.slice(0, 4_000)) ?? c.date;
+        const score =
+          scorePage(
+            { url: c.url, domain: safeHost(c.url), title: c.title, text, ...(date ? { date } : {}) },
+            terms,
+          ) + passageBonus(selectPassages(text, query, 1));
+        return { ...c, ...(date ? { date } : {}), passages, score };
+      } catch {
+        return { ...c, score: 0 }; // page dead/blocked — keep the snippet-only entry
+      }
+    }),
+  );
+  const rest: (EnrichedCandidate & { score: number })[] = merged
+    .slice(DEEP_FETCH_PAGES)
+    .map((c) => ({ ...c, score: 0 }));
+  return [...enriched, ...rest].sort((a, b) => b.score - a.score);
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
+/** Render deep results: ranked entries with quotable passages as `> quote`
+ * lines, so downstream claims can cite actual page content. */
+export function formatDeepResults(query: string, results: EnrichedCandidate[]): string {
+  const items = results.map((r, i) => {
+    const head = `${i + 1}. ${r.title}${r.date ? ` (${r.date})` : ""}\n   ${r.url}\n   ${r.snippet.replace(/\s+/g, " ").trim()}`;
+    const quotes = (r.passages ?? [])
+      .map((p) => `   > ${p.replace(/\s+/g, " ").trim().slice(0, 500)}`)
+      .join("\n");
+    return quotes ? `${head}\n${quotes}` : head;
+  });
+  return `Deep search results for "${query}" (passages quoted from the pages themselves)\n\n${items.join("\n\n")}`;
 }
 
 /** TinyFish engine (the optional booster). Throws on HTTP error. */

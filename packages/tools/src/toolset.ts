@@ -46,6 +46,8 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
   afterTool?: (toolName: string, output: unknown) => void | Promise<void>;
   /** Per-file write lock shared across the whole session tree (see ToolContext). */
   lockFile?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
+  /** Compiler diagnostics for a just-mutated file (see ToolContext.diagnose). */
+  diagnose?: (absPath: string) => Promise<string | undefined>;
   /**
    * Record whether a tool call ended in a (handled) error, keyed by toolCallId.
    * Handled errors are returned to the model as ordinary string results, so the
@@ -124,17 +126,22 @@ export class Toolset {
     return this.forMode(mode).map((t) => t.name);
   }
 
-  /** Build the AI-SDK `tools` map for `mode`, bound to the session context. */
-  aiTools(mode: Mode, base: ToolRuntimeBase): Record<string, Tool> {
+  /** Build the AI-SDK `tools` map for `mode`, bound to the session context.
+   * Pass `serialize` to share ONE mutation lock with tools registered outside
+   * this map (per-session tools like save_memory/run_check) — otherwise those
+   * would run unserialized next to edit/write/bash. */
+  aiTools(mode: Mode, base: ToolRuntimeBase, serialize?: SerialLock): Record<string, Tool> {
     // One lock shared by every tool built here, so non-concurrency-safe tools
     // (edit/write/bash/git/…) run one-at-a-time even when the model emits them as
-    // parallel calls within a single step (the AI SDK runs a step's tool calls
-    // via Promise.all — without this, two edits to the same file would race and
-    // silently drop one). Read-only / concurrency-safe tools still run freely.
-    const serialize = createSerialLock();
+    // parallel calls in one step (the AI SDK runs a step's tool calls via
+    // Promise.all — without this, two edits to the same file would race and
+    // silently drop one). The lock's SCOPE is the whole turn (aiTools is built
+    // once per Session.run), which is strictly safer than per-step. Read-only /
+    // concurrency-safe tools still run freely.
+    const lock = serialize ?? createSerialLock();
     const map: Record<string, Tool> = {};
     for (const def of this.forMode(mode)) {
-      map[def.name] = toAISDKTool(def, base, serialize);
+      map[def.name] = toAISDKTool(def, base, lock);
     }
     return map;
   }
@@ -144,6 +151,9 @@ export class Toolset {
 export function isConcurrencySafe(def: ToolDefinition): boolean {
   return def.concurrencySafe === true || def.readOnly === true;
 }
+
+/** The FIFO mutation lock shared by a turn's non-concurrency-safe tools. */
+export type SerialLock = <T>(fn: () => Promise<T>) => Promise<T>;
 
 /**
  * A FIFO async lock: `run(fn)` executes `fn` only after every previously-queued
@@ -317,9 +327,17 @@ export function toAISDKTool(
       if (verdict.input !== undefined) effectiveInput = verdict.input;
     }
 
-    // Gate side-effecting tools through the permission layer.
-    if (!def.readOnly && base.checkPermission) {
-      const decision = await base.checkPermission(def.name, effectiveInput);
+    // Gate side-effecting tools through the permission layer — and NETWORK
+    // tools too, even when read-only: a read-only flag used to bypass the gate
+    // entirely, so a deny/ask rule on webfetch/web_search could never fire and
+    // egress was ungovernable. Network reads keep their frictionless default
+    // (fallback allow — no prompt), but configured rules now apply.
+    if ((!def.readOnly || def.network) && base.checkPermission) {
+      const decision = await base.checkPermission(
+        def.name,
+        effectiveInput,
+        def.readOnly && def.network ? { fallback: "allow" } : {},
+      );
       if (!decision.allowed) {
         const reason = decision.reason ?? "denied";
         base.emit({
@@ -332,7 +350,20 @@ export function toAISDKTool(
       }
     }
 
-    const result = await def.execute(effectiveInput, ctx);
+    // A THROW must land in the same error contract as a returned isError —
+    // without this, a FileOwnedError (or any unexpected throw) skipped the
+    // `ERROR:` prefix and the recordToolResult side-channel, so the UI showed
+    // a failed call as successful and the model lost the recovery guidance.
+    let result: Awaited<ReturnType<typeof def.execute>>;
+    try {
+      result = await def.execute(effectiveInput, ctx);
+    } catch (err) {
+      // A cancellation is not a tool failure — let it propagate so the turn's
+      // abort semantics stay intact.
+      if (ctx.abortSignal.aborted || (err as { name?: string })?.name === "AbortError") throw err;
+      base.recordToolResult?.(options.toolCallId, true);
+      return `ERROR: ${def.name} threw: ${(err as Error)?.message ?? String(err)}`;
+    }
     await base.afterTool?.(def.name, result.output);
     base.recordToolResult?.(options.toolCallId, result.isError === true);
     if (result.isError) {

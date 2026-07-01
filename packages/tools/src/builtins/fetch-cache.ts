@@ -28,6 +28,10 @@ export interface FetchCacheOptions {
 
 export function createFetchCache(opts: FetchCacheOptions): FetchCache {
   const entries = new Map<string, { text: string; storedAt: number }>();
+  // Coalesce concurrent identical fetches: parallel subagents asking for the
+  // same URL at the same moment share ONE network call instead of racing N.
+  // The in-flight promise is evicted on settle-with-error so transients retry.
+  const inflight = new Map<string, Promise<string>>();
   const maxEntries = opts.maxEntries ?? 256;
   const clock = opts.now ?? (() => Date.now());
 
@@ -42,13 +46,29 @@ export function createFetchCache(opts: FetchCacheOptions): FetchCache {
         return { text: hit.text, stale: false };
       }
       try {
-        const text = await produce();
-        entries.set(key, { text, storedAt: now });
-        while (entries.size > maxEntries) {
-          const oldest = entries.keys().next().value;
-          if (oldest === undefined) break;
-          entries.delete(oldest);
+        let pending = inflight.get(key);
+        if (!pending) {
+          // The FIRST caller owns cache bookkeeping, INSIDE the async wrapper so
+          // the entry is stored and the in-flight slot cleared BEFORE the promise
+          // settles for any awaiter — otherwise a follow-up call in the next
+          // microtask could join an already-settled (possibly TTL-stale) flight.
+          pending = (async () => {
+            try {
+              const text = await produce();
+              entries.set(key, { text, storedAt: clock() });
+              while (entries.size > maxEntries) {
+                const oldest = entries.keys().next().value;
+                if (oldest === undefined) break;
+                entries.delete(oldest);
+              }
+              return text;
+            } finally {
+              inflight.delete(key);
+            }
+          })();
+          inflight.set(key, pending);
         }
+        const text = await pending;
         return { text, stale: false };
       } catch (err) {
         // Stale-on-failure: a transient error shouldn't lose a good prior copy.
@@ -58,6 +78,7 @@ export function createFetchCache(opts: FetchCacheOptions): FetchCache {
     },
     clear() {
       entries.clear();
+      inflight.clear();
     },
   };
 }

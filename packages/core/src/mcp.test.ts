@@ -434,3 +434,22 @@ test("status reflects a transport that dropped after connecting", async () => {
   expect(hub.status()[0]!.connected).toBe(false);
   expect(hub.status()[0]!.toolCount).toBe(1);
 });
+
+test("MCP tool calls thread the turn's abort signal and a per-call deadline", async () => {
+  let seenOpts: { signal?: AbortSignal; timeoutMs?: number } | undefined;
+  const client: McpClient = {
+    listTools: async () => [{ name: "slow_tool" }],
+    callTool: async (_name, _args, opts) => {
+      seenOpts = opts;
+      return { content: [{ type: "text", text: "ok" }] };
+    },
+    close: async () => {},
+  };
+  const def = toToolDefinition("srv", { name: "slow_tool" }, client);
+  const controller = new AbortController();
+  await def.execute({}, {
+    cwd: "/", sessionId: "s", toolCallId: "t", emit: () => {}, abortSignal: controller.signal,
+  });
+  expect(seenOpts?.signal).toBe(controller.signal);
+  expect(seenOpts?.timeoutMs).toBeGreaterThan(0);
+});

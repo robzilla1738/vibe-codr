@@ -103,7 +103,9 @@ export function formatCost(
   return `Session cost\n${rows(lines)}`;
 }
 
-const SECRET_KEYS = new Set(["apiKey", "tokenFile", "tokenPath"]);
+// `tokenFile`/`tokenPath` are filesystem paths (not credentials) — masking them
+// hid useful debugging info from /config while protecting nothing.
+const SECRET_KEYS = new Set(["apiKey"]);
 /** Whole maps whose *values* are sensitive: MCP `env`, and HTTP `headers`
  * (Authorization, account ids, etc). Every value under these is masked. */
 const MASK_VALUES_UNDER = new Set(["env", "headers"]);

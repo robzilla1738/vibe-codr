@@ -1,5 +1,6 @@
 import { z } from "zod";
-import type { JobInfo, ToolDefinition } from "@vibe/shared";
+import { drainTextStream, type JobInfo, type ToolDefinition } from "@vibe/shared";
+import { killTree } from "./process-tree.ts";
 
 interface Job {
   id: string;
@@ -63,39 +64,35 @@ export class BackgroundJobs {
     this.#jobs.set(job.id, job);
     this.#onChange?.();
 
-    const pump = async (stream: ReadableStream<Uint8Array>) => {
-      // One decoder per stream with streaming mode so multibyte UTF-8 split
-      // across chunk boundaries isn't corrupted into `�`.
-      const decoder = new TextDecoder();
-      const append = (text: string) => {
-        if (!text) return;
-        job.output += text;
-        if (job.output.length > 100_000) job.output = job.output.slice(-100_000);
-        // Surface a newly-bound dev-server URL as soon as it's printed. MERGE new
-        // URLs into the sticky list rather than replacing it from the (truncated)
-        // buffer — otherwise a server URL printed early scrolls out of the 100k
-        // window and vanishes from `/jobs` while the server is still running.
-        let added = false;
-        for (const url of detectServers(job.output)) {
-          if (!job.servers.includes(url)) {
-            job.servers.push(url);
-            // Bound the sticky list: a job that logs many distinct URLs (ephemeral
-            // ports, request paths) must not grow it without limit. Keep the most
-            // recent — real dev-server URLs are stable and stay.
-            if (job.servers.length > MAX_SERVERS) job.servers.shift();
-            added = true;
-          }
+    // Keep the last 100k chars as a rolling tail (no marker — the UI adds a `…`
+    // prefix at display time via `tail()`) and surface dev-server URLs live.
+    const append = (text: string) => {
+      job.output += text;
+      if (job.output.length > 100_000) job.output = job.output.slice(-100_000);
+      // Surface a newly-bound dev-server URL as soon as it's printed. MERGE new
+      // URLs into the sticky list rather than replacing it from the (truncated)
+      // buffer — otherwise a server URL printed early scrolls out of the 100k
+      // window and vanishes from `/jobs` while the server is still running.
+      let added = false;
+      for (const url of detectServers(job.output)) {
+        if (!job.servers.includes(url)) {
+          job.servers.push(url);
+          // Bound the sticky list: a job that logs many distinct URLs (ephemeral
+          // ports, request paths) must not grow it without limit. Keep the most
+          // recent — real dev-server URLs are stable and stay.
+          if (job.servers.length > MAX_SERVERS) job.servers.shift();
+          added = true;
         }
-        if (added) this.#onChange?.();
-      };
-      for await (const chunk of stream) append(decoder.decode(chunk, { stream: true }));
-      append(decoder.decode()); // flush trailing bytes
+      }
+      if (added) this.#onChange?.();
     };
     // Fire-and-forget pumps: a stream error (e.g. broken pipe) must not become
     // an unhandled rejection — record it in the job's output instead.
-    Promise.all([pump(proc.stdout), pump(proc.stderr)]).catch((err) => {
-      job.output += `\n[stream error: ${(err as Error).message}]`;
-    });
+    Promise.all([drainTextStream(proc.stdout, append), drainTextStream(proc.stderr, append)]).catch(
+      (err) => {
+        job.output += `\n[stream error: ${(err as Error).message}]`;
+      },
+    );
     proc.exited
       .then((code) => {
         if (job.status === "running") job.status = "exited";
@@ -134,11 +131,19 @@ export class BackgroundJobs {
     const job = this.#jobs.get(id);
     if (!job) return false;
     if (job.status === "running") {
-      job.proc.kill();
+      killTree(job.proc.pid);
       job.status = "killed";
       this.#onChange?.();
     }
     return true;
+  }
+
+  /** Reap every still-running job (process teardown) — a background dev server
+   * must not outlive the CLI as an orphan. */
+  killAll(): void {
+    for (const [id, job] of this.#jobs) {
+      if (job.status === "running") this.kill(id);
+    }
   }
 }
 

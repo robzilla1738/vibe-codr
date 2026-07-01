@@ -55,10 +55,26 @@ test("high-volume output is capped (retained buffer bounded during streaming)", 
     ctx(cwd()),
   );
   const output = String(r.output);
-  expect(output).toContain("…(truncated)");
+  expect(output).toContain("chars omitted"); // the head+tail elision marker
   // The captured output stays near the cap (status line + 30k + marker), nowhere
   // near the ~1.2MB the command produced.
   expect(output.length).toBeLessThan(31_000);
+});
+
+test("a trailing error line survives truncation (head+tail keep)", async () => {
+  // A failing build prints its error LAST; a head-only cap would drop exactly
+  // that line. Flood stdout well past the 30k cap, then print a final marker
+  // line — it's on the same stream, so it's guaranteed to arrive last.
+  const r = await bashTool().execute(
+    {
+      command:
+        "for i in $(seq 1 2000); do echo 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done; echo 'TRAILING_ERROR_LINE_zzz'",
+    },
+    ctx(cwd()),
+  );
+  const output = String(r.output);
+  expect(output).toContain("chars omitted"); // it WAS truncated…
+  expect(output).toContain("TRAILING_ERROR_LINE_zzz"); // …but the last line survived
 });
 
 test("a command that exceeds its timeout is reported as a timeout, not a bare exit code", async () => {

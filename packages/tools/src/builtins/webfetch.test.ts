@@ -247,3 +247,92 @@ test("pinning preserves embedded credentials (Basic auth) in the URL", async () 
   );
   expect(seenUrl).toBe("https://user:pass@93.184.216.34/secure"); // creds kept, IP pinned
 });
+
+// ---------------------------------------------------------------- research-grade fetch
+
+import { decodeCharset, htmlToText, looksLikeShell } from "./webfetch.ts";
+
+test("requests carry a browser-like User-Agent (UA-less clients get 403'd)", async () => {
+  let ua = "";
+  globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
+    ua = (init?.headers as Record<string, string>)?.["user-agent"] ?? "";
+    return new Response("ok", { headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  await fetcher().execute({ url: "https://example.com/" }, ctx());
+  expect(ua).toContain("Mozilla/5.0");
+  expect(ua).toContain("vibecodr"); // honest about who we are, for server logs
+});
+
+test("decodeCharset honors Content-Type charset and meta-charset sniffing", () => {
+  // windows-1252: 0x92 is a curly apostrophe.
+  const cp1252 = new Uint8Array([0x92]);
+  expect(decodeCharset(cp1252, "text/html; charset=windows-1252")).toBe("’");
+  // UTF-8 bytes misdeclared as nothing: sniff the meta tag.
+  const withMeta = new TextEncoder().encode('<html><head><meta charset="utf-8"></head>é</html>');
+  expect(decodeCharset(withMeta, "text/html")).toContain("é");
+  // Unknown label degrades to UTF-8 without throwing.
+  expect(decodeCharset(new TextEncoder().encode("plain"), "text/html; charset=bogus-enc")).toBe("plain");
+});
+
+test("htmlToText preserves headings, lists, and code blocks as markdown-ish structure", () => {
+  const html = `<html><body>
+    <h1>Install</h1>
+    <p>Run the following:</p>
+    <pre><code>bun add   thing</code></pre>
+    <h2>Options</h2>
+    <ul><li>fast</li><li>safe</li></ul>
+  </body></html>`;
+  const text = htmlToText(html);
+  expect(text).toContain("# Install");
+  expect(text).toContain("## Options");
+  expect(text).toContain("- fast");
+  expect(text).toContain("- safe");
+  // Code block fenced with inner whitespace preserved verbatim.
+  expect(text).toContain("```\nbun add   thing\n```");
+  // No wall-of-words collapse: headings sit on their own lines.
+  expect(text).not.toMatch(/Install Run the following/);
+});
+
+test("a paywall/anti-bot shell is flagged, never silently returned as content", async () => {
+  stubFetch("<html><body>Checking your browser… enable JavaScript to continue</body></html>", "text/html");
+  const res = await webfetchTool({
+    lookup: publicLookup,
+    waybackLookup: async () => null, // no archive copy available
+  }).execute({ url: "https://example.com/article" }, ctx());
+  expect(String(res.output)).toContain("paywall/anti-bot shell");
+  expect(looksLikeShell("Checking your browser… enable JavaScript")).toBe(true);
+  expect(looksLikeShell("A real article. ".repeat(200))).toBe(false);
+});
+
+test("a 404 recovers via the Wayback snapshot, clearly labeled as archived", async () => {
+  let call = 0;
+  globalThis.fetch = (async (u: unknown) => {
+    call++;
+    // The snapshot fetch is DNS-pinned (hostname replaced by the verified IP),
+    // so match on the snapshot PATH, not the archive hostname.
+    if (String(u).includes("/web/2024/")) {
+      return new Response("the original article text", { headers: { "content-type": "text/plain" } });
+    }
+    return new Response("gone", { status: 404 });
+  }) as unknown as typeof fetch;
+  const res = await webfetchTool({
+    lookup: publicLookup,
+    waybackLookup: async () => ({ url: "https://web.archive.org/web/2024/https://example.com/dead", timestamp: "20240115000000" }),
+  }).execute({ url: "https://example.com/dead" }, ctx());
+  expect(res.isError).toBeUndefined();
+  expect(String(res.output)).toContain("archived copy from the Wayback Machine, 2024-01-15");
+  expect(String(res.output)).toContain("the original article text");
+  expect(call).toBeGreaterThanOrEqual(2);
+});
+
+test("an SSRF-guard rejection does NOT consult the Wayback Machine (no URL leak)", async () => {
+  let waybackAsked = false;
+  const res = await webfetchTool({
+    waybackLookup: async () => {
+      waybackAsked = true;
+      return null;
+    },
+  }).execute({ url: "http://169.254.169.254/latest/meta-data/" }, ctx());
+  expect(res.isError).toBe(true);
+  expect(waybackAsked).toBe(false);
+});

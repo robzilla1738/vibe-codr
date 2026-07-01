@@ -1,4 +1,5 @@
 import { Glob } from "bun";
+import { readCappedText } from "@vibe/shared";
 import type { HookConfig } from "@vibe/config";
 import type { HookBus, HookName, HookHandler } from "@vibe/plugins";
 
@@ -55,27 +56,20 @@ export async function defaultExec(
     stdout: "pipe",
     stderr: "ignore",
   });
-  const reader = proc.stdout.getReader();
-  const decoder = new TextDecoder();
-  let out = "";
+  const abort = new AbortController();
   const timer = setTimeout(() => {
     proc.kill(); // best-effort SIGTERM the shell (a detached child may linger)
-    void reader.cancel().catch(() => undefined); // unblock the pending read()
+    abort.abort(); // cancel the read too, to unblock a read wedged on the pipe
   }, timeoutMs);
   try {
-    while (out.length < MAX_HOOK_OUTPUT) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) out += decoder.decode(value, { stream: true });
-    }
-    out += decoder.decode();
-  } catch {
-    /* reader cancelled by the timeout — parse whatever we captured */
+    const { text } = await readCappedText(proc.stdout, {
+      cap: MAX_HOOK_OUTPUT,
+      signal: abort.signal,
+    });
+    return parseHookOutput(text.trim());
   } finally {
     clearTimeout(timer);
-    void reader.cancel().catch(() => undefined);
   }
-  return parseHookOutput(out.trim());
 }
 
 /** Default HTTP runner: POST JSON, parse JSON response. */

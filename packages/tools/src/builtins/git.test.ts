@@ -104,16 +104,25 @@ test("git_push fails clearly when there is no remote", async () => {
   expect(String(r.output).length).toBeGreaterThan(0);
 });
 
-test("a very large diff is bounded in memory (read is capped, not the whole file)", async () => {
+test("a very large diff is bounded in memory, keeping head AND the trailing tail", async () => {
   const cwd = await initRepo();
   // ~5MB of new content, staged so it shows in `git diff --staged` → a huge diff.
-  // The wrapper must not materialize it all; the display is capped + marked.
-  const big = Array.from({ length: 120_000 }, (_, i) => `line ${i} ${"x".repeat(30)}`).join("\n");
+  // The wrapper must not materialize it all; the display is capped + marked. The
+  // LAST line is distinctive: a diff's tail (a conflict marker, an error printed
+  // last) has to survive — head+tail keep at both the read and the display cap.
+  const big = [
+    ...Array.from({ length: 120_000 }, (_, i) => `line ${i} ${"x".repeat(30)}`),
+    "TRAILING_ERROR_LINE_zzz",
+  ].join("\n");
   await Bun.write(join(cwd, "big.txt"), big);
   await Bun.spawn(["git", "add", "-A"], { cwd }).exited;
   const r = await gitDiffTool.execute({ staged: true }, ctx(cwd));
   const out = String(r.output);
-  expect(out).toContain("truncated");
+  expect(out).toContain("chars omitted"); // the head+tail elision marker
+  // The diff's START is still shown…
+  expect(out).toContain("line 0 ");
+  // …and so is its END — a head-only cap would have dropped this trailing line.
+  expect(out).toContain("TRAILING_ERROR_LINE_zzz");
   // Bounded well under the 5MB the diff would be (read cap 64k + display cap 20k).
   expect(out.length).toBeLessThan(70_000);
 });

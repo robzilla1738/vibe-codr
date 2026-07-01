@@ -1,6 +1,6 @@
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
-import { generateObject } from "ai";
+import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import {
   createId,
@@ -8,12 +8,14 @@ import {
   type EngineClient,
   type EngineCommand,
   type EngineSnapshot,
+  type GateSummary,
   type GitInfo,
   type Logger,
   type Mode,
   type ProviderInfo,
   type AgentInfo,
   type QueuedItem,
+  type RepoProfile,
   type UIEvent,
 } from "@vibe/shared";
 import type { Config } from "@vibe/config";
@@ -24,7 +26,7 @@ import {
   probeOllamaContextWindow,
   type ModelInfo,
 } from "@vibe/providers";
-import { Toolset, builtinTools, createFileLock, BackgroundJobs } from "@vibe/tools";
+import { Toolset, builtinTools, buildRepoMap, createFileLock, BackgroundJobs } from "@vibe/tools";
 import type { ModelPrice } from "@vibe/config";
 import {
   HookBus,
@@ -34,23 +36,22 @@ import {
   parseSlash,
 } from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
-import { Session } from "./session.ts";
-import { helpText, formatModelList, initProject, BUILTIN_COMMANDS } from "./commands.ts";
-import {
-  formatStatus,
-  formatContextUsage,
-  formatCost,
-  formatConfig,
-  formatTools,
-  formatMcp,
-  formatPermissions,
-  formatNamedList,
-  formatTranscript,
-  formatDoctor,
-  type DoctorCheck,
-} from "./introspect.ts";
+import { Session, isReviewClean } from "./session.ts";
+import { BUILTIN_COMMANDS } from "./commands.ts";
 import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./agents.ts";
+import { resolveRepoProfile } from "./build/profile.ts";
+import {
+  runGate,
+  pickChecks,
+  formatGateFailure,
+  formatGateOutcome,
+} from "./build/gate.ts";
+import { scanStubs, formatStubFindings } from "./build/stubscan.ts";
+import { isWebApp } from "./build/codeintel.ts";
+import { browserVerify, formatBrowserVerify } from "./build/browser-verify.ts";
+import { gitPrepare, gitCommitGreen } from "./build/gitops.ts";
+import { TsDiagnostics } from "./diagnostics.ts";
 import {
   loadCommandFiles,
   loadCommandsFrom,
@@ -61,19 +62,24 @@ import {
 } from "./loaders.ts";
 import { LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
-import { searchSessions, formatRecall } from "./recall.ts";
-import { formatMemoryHits } from "./memory-search.ts";
 import { MemoryService } from "./memory-service.ts";
 import { createLimiter, type Limiter } from "./limiter.ts";
 import { createBlackboard } from "./blackboard.ts";
 import { registerConfigHooks } from "./config-hooks.ts";
-import { loadMemorySources, loadProjectMemory, formatMemory } from "./memory.ts";
-import { reasoningSupported } from "./model-tuning.ts";
+import { loadProjectMemory } from "./memory.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
 import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
 import { runVerify } from "./verify.ts";
+import { withRetry } from "./retry.ts";
 import { expandMentions } from "./mentions.ts";
+import {
+  handleSlash,
+  handleApprovals,
+  setMainModel,
+  setSubagentModel,
+  type EngineHandle,
+} from "./engine-commands.ts";
 
 export interface EngineOptions {
   config: Config;
@@ -139,6 +145,9 @@ export class Engine implements EngineClient {
   #limiter!: Limiter;
   /** Shared coordination board for parallel subagents, shared across the tree. */
   #blackboard = createBlackboard();
+  /** In-process TS language service (lazy; no-op without the optional dep) —
+   * edit/write append its diagnostics so type errors surface in the same step. */
+  #diagnostics = new TsDiagnostics();
   #loop: LoopController | undefined;
   /** The session running the current loop iteration, so a stop can abort it. */
   #loopSession: Session | undefined;
@@ -161,6 +170,20 @@ export class Engine implements EngineClient {
    * its own "stop here" as an instruction to halt. */
   #pendingHandoff = false;
   #verifyAttempts = 0;
+  /** Bounded red→fix→re-gate rounds for the green-gate, per user prompt (reset
+   * on submit-prompt alongside #verifyAttempts). */
+  #gateRounds = 0;
+  /** Bounded adversarial-diff-review→fix rounds, per user prompt (reset on submit). */
+  #reviewRounds = 0;
+  /** The pre-edit checkpoint id for the CURRENT turn — the base the diff reviewer
+   * diffs against. Set in #handlePrompt; undefined when no checkpoint was taken. */
+  #turnCheckpointId: string | undefined;
+  /** Branch-mode commit-on-green: gitPrepare's verdict, cached once per session
+   * (null = not yet attempted). A refusal disables branch commits for the session
+   * and never re-checks (the work branch is checked out ONCE, then we stay on it). */
+  #branchPrepared: boolean | null = null;
+  /** Lazily-built delegation handle for the slash-command module. */
+  #commandHandle: EngineHandle | undefined;
 
   constructor(opts: EngineOptions) {
     this.#config = opts.config;
@@ -242,6 +265,7 @@ export class Engine implements EngineClient {
       fileLock: this.#fileLock,
       limiter: this.#limiter,
       blackboard: this.#blackboard,
+      diagnostics: this.#diagnostics,
       skills: this.skills,
       hooks: this.hooks,
       store: this.#store,
@@ -254,6 +278,9 @@ export class Engine implements EngineClient {
             initialModelMessages: resume.modelMessages,
             initialHistory: resume.history,
             ...(resume.meta.tasks ? { initialTasks: resume.meta.tasks } : {}),
+            ...(resume.meta.recalledContext
+              ? { initialRecalledContext: resume.meta.recalledContext }
+              : {}),
             ...(resume.meta.usage
               ? {
                   initialUsage: resume.meta.usage,
@@ -265,6 +292,9 @@ export class Engine implements EngineClient {
           }
         : {}),
     });
+    // A resumed session that already carries a recalled block must not run
+    // proactive recall again (it would stack a second, possibly divergent one).
+    if (resume?.meta.recalledContext) this.#proactiveRecallDone = true;
 
     // Watch our own (fan-out) event stream to capture a presented plan: persist
     // it to .vibe/plans and remember it for the plan→execute handoff. A separate
@@ -275,6 +305,38 @@ export class Engine implements EngineClient {
   async #watchInternalEvents(): Promise<void> {
     for await (const event of this.#bus.subscribe()) {
       if (event.type === "plan-presented") await this.#onPlanPresented(event.plan);
+    }
+  }
+
+  /** Engine-side per-session state that must survive --resume but belongs to
+   * the ENGINE, not the conversation: today just the armed plan handoff. */
+  #engineStatePath(): string {
+    return join(this.#cwd, ".vibe", "sessions", this.#session.id, "engine.json");
+  }
+
+  async #persistEngineState(): Promise<void> {
+    try {
+      await mkdir(join(this.#cwd, ".vibe", "sessions", this.#session.id), { recursive: true });
+      await Bun.write(this.#engineStatePath(), JSON.stringify({ pendingHandoff: this.#pendingHandoff }));
+    } catch {
+      /* best-effort — losing this on a crash only loses one convenience flag */
+    }
+  }
+
+  /** Restore engine-side state + the last presented plan on --resume. */
+  async #restoreEngineState(): Promise<void> {
+    try {
+      const state = (await Bun.file(this.#engineStatePath()).json()) as { pendingHandoff?: boolean };
+      if (state.pendingHandoff) this.#pendingHandoff = true;
+    } catch {
+      /* absent/corrupt → nothing to restore */
+    }
+    try {
+      const plan = await Bun.file(join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`)).text();
+      // Strip the "# Plan — <id>" header the writer prepends.
+      this.#lastPlan = plan.replace(/^# Plan — [^\n]*\n+/, "").trim() || undefined;
+    } catch {
+      /* no persisted plan */
     }
   }
 
@@ -395,12 +457,53 @@ export class Engine implements EngineClient {
     );
     this.#session.setMemory(this.#memory);
 
+    // Deterministic repo recon: ONE batched probe (ledger-bootstrapped) whose
+    // profile rides every prompt + subagent kickoff in the tree, so no agent
+    // ever guesses this repo's build/test commands. Never throws — worst case
+    // is an empty profile and everything behaves as before.
+    await this.#runRecon();
+
     // Connect MCP servers last so their tools join the same registry.
     await this.#mcp.start(this.#config.mcp.servers);
+
+    // Restore engine-side per-session state (armed plan handoff + the last
+    // presented plan) so a --resume picks up exactly where approval left off.
+    await this.#restoreEngineState();
 
     // Seed the header's git context (branch/dirty/ahead-behind/worktree) so it's
     // in the first snapshot; cheap, and only at startup.
     await this.#emitGit();
+  }
+
+  /** Recon the working directory and attach the profile + symbol map to the
+   * live session (forks inherit both). Fills `verify.command` from detected
+   * commands when the user hasn't set one, so auto-verify and `/verify` work
+   * out of the box. Best-effort; recon failure degrades to no profile. */
+  async #runRecon(): Promise<void> {
+    if (!this.#config.build.enabled || !this.#config.build.recon.enabled) return;
+    try {
+      const { profile, ledgerFilled } = await resolveRepoProfile(this.#cwd, {
+        ledger: this.#config.build.recon.ledger,
+      });
+      // The symbol map is built once here (mtime-cached upstream, so a rebuild
+      // on the next session is incremental) and injected into subagent kickoffs.
+      // The profile itself lives on the session (session.repoProfile) — the one
+      // place the whole tree, run_check, and the green-gate read it from.
+      const map = profile.greenfield ? undefined : await buildRepoMap(this.#cwd).catch(() => undefined);
+      this.#session.setRepoProfile(profile, map?.text || undefined);
+      if (!this.#config.verify.command) {
+        const detected = [profile.commands.typecheck, profile.commands.test].filter(Boolean);
+        if (detected.length) {
+          this.#config.verify.command = detected.join(" && ");
+          this.#log.info(`verify.command filled from recon: ${this.#config.verify.command}`);
+        }
+      }
+      if (ledgerFilled.length) {
+        this.#log.info(`recon: ledger filled ${ledgerFilled.join(", ")} from a prior green run`);
+      }
+    } catch (err) {
+      this.#log.debug(`recon skipped: ${(err as Error).message}`);
+    }
   }
 
   events(): AsyncIterable<UIEvent> {
@@ -440,7 +543,9 @@ export class Engine implements EngineClient {
 
   async #doFinalize(): Promise<void> {
     try {
-      if (this.#config.memory.sessionDigest && this.#memory) {
+      // Digests are for INTERACTIVE sessions: a headless `-p` one-shot must not
+      // pay an extra model call (cost + latency) on every scripted invocation.
+      if (this.#config.memory.sessionDigest && this.#memory && this.#interactive) {
         const digest = await this.#session.buildDigest();
         if (digest) {
           const path = await this.#memory.save({ fact: digest, tags: ["session-digest"] });
@@ -455,6 +560,9 @@ export class Engine implements EngineClient {
     // Unblock any in-flight permission prompts so nothing hangs.
     for (const resolve of this.#pendingPermissions.values()) resolve("deny");
     this.#pendingPermissions.clear();
+    // Reap surviving background jobs (dev servers etc.) — the process is going
+    // away; leaving them orphaned made every `bash background:true` a leak.
+    this.#jobs.killAll?.();
     await this.#mcp.close();
     this.#memory?.close();
     this.#bus.close();
@@ -480,13 +588,24 @@ export class Engine implements EngineClient {
   send(command: EngineCommand): void {
     switch (command.type) {
       case "submit-prompt": {
-        // A fresh user prompt resets the auto-verify retry budget.
+        // A fresh user prompt resets the auto-verify retry budget AND the
+        // green-gate / diff-review round budgets (both bounded per user prompt).
         this.#verifyAttempts = 0;
+        this.#gateRounds = 0;
+        this.#reviewRounds = 0;
+        // …and starts a fresh coordination context: the blackboard is per-fan-out
+        // scratch (claims, transient decisions), NOT durable state — the task list
+        // and long-term memory carry that. Clearing here (not on loop iterations,
+        // verify-fix turns, or the plan handoff, which don't route through
+        // submit-prompt) stops a stale note like "taking auth.ts" from turn 1
+        // leaking into an unrelated fan-out many turns later.
+        this.#blackboard.clear();
         // Capture any armed plan handoff NOW and bind it to THIS prompt's job, so
         // it can't be stolen by an unrelated prompt that was queued ahead of it
         // (the flag used to be read at turn-run time — see #handlePrompt).
         const handoff = this.#pendingHandoff;
         this.#pendingHandoff = false;
+        if (handoff) void this.#persistEngineState();
         this.#enqueue(queueLabel(command.text), () =>
           this.#handlePrompt(command.text, { handoff }),
         );
@@ -498,7 +617,12 @@ export class Engine implements EngineClient {
         const approvingPlan =
           this.#session.mode === "plan" && command.mode === "execute" && this.#lastPlan !== undefined;
         this.#session.setMode(command.mode);
-        if (approvingPlan) this.#pendingHandoff = true;
+        if (approvingPlan) {
+          this.#pendingHandoff = true;
+          // Persist the armed handoff so quitting between approval and the next
+          // prompt doesn't drop the approval on --resume.
+          void this.#persistEngineState();
+        }
         break;
       }
       case "set-approvals":
@@ -506,16 +630,16 @@ export class Engine implements EngineClient {
         // take effect at once so the next turn sees the new approval policy.
         // Quiet: the Shift+Tab toggle is reflected by the header pill, so it
         // shouldn't flood the transcript with approval-mode notices.
-        this.#handleApprovals(command.mode, true);
+        handleApprovals(this.#getCommandHandle(), command.mode, true);
         break;
       case "set-model":
         // Persist too, so the choice is remembered across sessions (the menu and
         // any direct sender route here; `/model …` goes through the slash router).
-        void this.#setMainModel(command.model);
+        void setMainModel(this.#getCommandHandle(), command.model);
         break;
       case "set-subagent-model":
         // The interactive model picker (and `/model sub …`) route here; persisted.
-        void this.#setSubagentModel(command.model);
+        void setSubagentModel(this.#getCommandHandle(), command.model);
         break;
       case "set-agent-model":
         void this.#setAgentModel(command.name, command.model);
@@ -728,13 +852,17 @@ export class Engine implements EngineClient {
     // tick never executes concurrently with a user prompt (which would race
     // file writes and interleave output). `#loopSession` is exposed so `/loop
     // stop` / shutdown can abort the turn that's actually in flight.
-    return new Promise<string>((resolve) => {
+    return new Promise<string>((resolve, reject) => {
       this.#enqueue(`loop: ${queueLabel(text)}`, async () => {
         const session = this.#buildSession();
         this.#loopSession = session;
         try {
           await session.run(text);
           resolve(session.lastAssistantText());
+        } catch (err) {
+          // Without this reject, a job that throws before resolve() would leave
+          // the LoopController awaiting forever — a silent, permanent hang.
+          reject(err as Error);
         } finally {
           this.#loopSession = undefined;
         }
@@ -742,23 +870,32 @@ export class Engine implements EngineClient {
     });
   }
 
-  /** Evaluate a loop's --until condition with a cheap structured call. */
+  /** Evaluate a loop's --until condition with a cheap structured call. Rides
+   * the same resilience rails as every other provider call — retry on
+   * transients, the tree-global limiter, and a hard deadline so a wedged
+   * provider can't stall the loop forever (it used to have none of these). */
   async #evaluateCondition(
     result: string,
     condition: string,
   ): Promise<{ done: boolean; reason: string }> {
-    const model = await this.registry.resolveModel(
-      this.#session.model,
-      this.#config,
+    const model = await withRetry(
+      () => this.registry.resolveModel(this.#session.model, this.#config),
+      { maxAttempts: this.#config.retry.maxAttempts, baseDelayMs: this.#config.retry.baseDelayMs },
     );
-    const { object } = await generateObject({
-      model,
-      schema: z.object({ done: z.boolean(), reason: z.string() }),
-      prompt:
-        `You are checking whether a stop condition has been satisfied.\n` +
-        `Condition: ${condition}\n\nMost recent result:\n${result}\n\n` +
-        `Return done=true only if the condition is clearly satisfied.`,
-    });
+    const { object } = await this.#limiter.run(
+      () =>
+        generateObject({
+          model,
+          schema: z.object({ done: z.boolean(), reason: z.string() }),
+          abortSignal: AbortSignal.timeout(60_000),
+          maxRetries: this.#config.retry.maxAttempts,
+          prompt:
+            `You are checking whether a stop condition has been satisfied.\n` +
+            `Condition: ${condition}\n\nMost recent result:\n${result}\n\n` +
+            `Return done=true only if the condition is clearly satisfied.`,
+        }),
+      AbortSignal.timeout(90_000),
+    );
     return object;
   }
 
@@ -899,335 +1036,78 @@ export class Engine implements EngineClient {
     }
   }
 
-  /** A trailing hint when a model's provider has no usable credentials yet. */
-  #providerKeyHint(modelId: string): string {
-    const provider = modelId.split("/")[0] ?? "";
-    if (!provider || this.registry.isConfigured(provider, this.#config)) return "";
-    return ` — note: no API key for "${provider}" yet; add one with /model key ${provider} <key>`;
-  }
-
-  /** Switch the main model live on the session AND persist it (remembered). */
-  async #setMainModel(id: string): Promise<void> {
-    this.#session.setModel(id);
-    this.#config.model = id;
-    await this.#persistConfig({ model: id });
-    this.#notice(`Model → ${id}${this.#providerKeyHint(id)}`);
-  }
-
-  /** Set (or, with a falsy id, clear → inherit main) the dedicated subagent model,
-   * persisted. Shared by `/model sub …` and the `set-subagent-model` command. */
-  async #setSubagentModel(target: string | null): Promise<void> {
-    const id = target?.trim();
-    if (!id) {
-      this.#config.subagent.model = undefined;
-      await this.#persistConfig({ subagent: { model: null } });
-      this.#notice(
-        `Subagent model cleared — subagents inherit the main model (${this.#session.model}).`,
-      );
-      return;
-    }
-    this.#config.subagent.model = id;
-    await this.#persistConfig({ subagent: { model: id } });
-    this.#notice(`Subagent model → ${id}${this.#providerKeyHint(id)}`);
-  }
-
   /**
-   * `/model` router — everything model/provider in one place, all persisted:
-   *   /model                       → show main + subagent model and the cheatsheet
-   *   /model <provider/id>         → switch the main model (cross-provider)
-   *   /model sub <provider/id>     → set the subagent model (any provider)
-   *   /model sub clear             → subagents inherit the main model again
-   *   /model key <provider> <key>  → save/replace a provider API key
+   * Build the delegation handle handed to the slash-command module
+   * (`engine-commands.ts`). All private state stays here; the handle exposes
+   * only the live accessors + operations those handlers touch (see EngineHandle).
    */
-  async #handleModelCommand(args: string): Promise<void> {
-    const raw = args.trim();
-    if (!raw) {
-      const sub = this.#config.subagent.model;
-      this.#notice(
-        `Main model:     ${this.#session.model}\n` +
-          `Subagent model: ${sub ?? `inherits main (${this.#session.model})`}\n\n` +
-          `Switch main:    /model <provider/id>\n` +
-          `Subagent model: /model sub <provider/id>   ·   /model sub clear\n` +
-          `Add a key:      /model key <provider> <api-key>\n` +
-          `List models:    /models`,
-      );
-      return;
-    }
-    const parts = raw.split(/\s+/);
-    const verb = (parts[0] ?? "").toLowerCase();
-
-    if (verb === "sub" || verb === "subagent") {
-      const target = parts.slice(1).join(" ").trim();
-      const clear =
-        !target || ["clear", "none", "inherit", "reset", "main"].includes(target.toLowerCase());
-      await this.#setSubagentModel(clear ? null : target);
-      return;
-    }
-
-    if (verb === "key") {
-      const provider = parts[1];
-      const key = parts.slice(2).join(" ").trim();
-      if (!provider || !key) {
-        this.#notice("Usage: /model key <provider> <api-key>", "warn");
-        return;
-      }
-      if (!this.registry.list().some((d) => d.id === provider)) {
-        this.#notice(
-          `Unknown provider "${provider}". Known providers: ${this.registry
-            .list()
-            .map((d) => d.id)
-            .join(", ")}.`,
-          "warn",
-        );
-        return;
-      }
-      this.#config.providers[provider] = {
-        ...(this.#config.providers[provider] ?? {}),
-        apiKey: key,
-      };
-      await this.#persistConfig({ providers: { [provider]: { apiKey: key } } });
-      this.#notice(
-        `Saved API key for ${provider} (…${key.slice(-4)}) — remembered across sessions.`,
-      );
-      return;
-    }
-
-    // Anything else is a model id for the main model.
-    await this.#setMainModel(raw);
+  #buildCommandHandle(): EngineHandle {
+    const engine = this;
+    return {
+      get config() {
+        return engine.#config;
+      },
+      get session() {
+        return engine.#session;
+      },
+      get cwd() {
+        return engine.#cwd;
+      },
+      get commands() {
+        return engine.commands;
+      },
+      get skills() {
+        return engine.skills;
+      },
+      get catalog() {
+        return engine.catalog;
+      },
+      get toolset() {
+        return engine.toolset;
+      },
+      get registry() {
+        return engine.registry;
+      },
+      get agents() {
+        return engine.#agents;
+      },
+      get memory() {
+        return engine.#memory;
+      },
+      get checkpoints() {
+        return engine.#checkpoints;
+      },
+      get store() {
+        return engine.#store;
+      },
+      notice: (message, level) => engine.#notice(message, level),
+      emit: (event) => engine.#bus.emit(event),
+      send: (command) => engine.send(command),
+      persistConfig: (patch) => engine.#persistConfig(patch),
+      handlePrompt: (text, opts) => engine.#handlePrompt(text, opts),
+      resetVerifyAttempts: () => {
+        engine.#verifyAttempts = 0;
+      },
+      runVerifyCommand: (command) => engine.#runVerifyCommand(command),
+      refreshProjectMemory: () => engine.#refreshProjectMemory(),
+      createAgent: (name) => engine.#createAgent(name),
+      handleLoop: (args) => engine.#handleLoop(args),
+      listModels: () => engine.listModels(),
+      resolveContextWindow: (model) => engine.#resolveContextWindow(model),
+      resolvePricing: (model) => engine.#resolvePricing(model),
+      mcpStatus: () => engine.#mcp.status(),
+      git: (args) => engine.#git(args),
+    };
   }
 
-  async #handleSlash(name: string, args: string): Promise<void> {
-    // Plugin/file commands take precedence over built-ins of the same name —
-    // except a small set of safety-critical built-ins, which can't be shadowed
-    // (a stray `.vibe/commands/undo.md` must not disable real `/undo`).
-    if (RESERVED_SLASH.has(name) && this.commands.get(name)) {
-      this.#notice(`Ignoring custom /${name}: it shadows a protected built-in.`, "warn");
-    }
-    const custom = RESERVED_SLASH.has(name) ? undefined : this.commands.get(name);
-    if (custom) {
-      const result = custom.run(args);
-      if (result.kind === "prompt") {
-        // Treat an expanded command like a user prompt: checkpoint, hooks,
-        // and auto-verify all apply, and it starts a fresh verify budget.
-        this.#verifyAttempts = 0;
-        await this.#handlePrompt(result.text);
-      } else if (result.kind === "command") this.send(result.command);
-      else this.#notice(result.message);
-      return;
-    }
+  /** Lazily-built, cached command handle (built once, reused). */
+  #getCommandHandle(): EngineHandle {
+    return (this.#commandHandle ??= this.#buildCommandHandle());
+  }
 
-    switch (name) {
-      case "help":
-        this.#notice(helpText(this.commands.list()));
-        break;
-      case "model":
-        await this.#handleModelCommand(args);
-        break;
-      case "models": {
-        // `/models refresh` force-pulls the models.dev catalog (bypassing the 24h
-        // cache) so a just-released model's metadata shows up immediately.
-        if (args.trim().toLowerCase() === "refresh") {
-          this.#notice("Refreshing model catalog…");
-          const count = await this.catalog.refresh();
-          this.#notice(`Model catalog refreshed (${count} models known).`);
-        }
-        this.#notice("Fetching models…");
-        this.#notice(formatModelList(await this.listModels()));
-        break;
-      }
-      case "plan":
-        this.#session.setMode("plan");
-        break;
-      case "execute":
-        this.#session.setMode("execute");
-        break;
-      case "goal":
-        this.#session.setGoal(args || null);
-        this.#notice(args ? `Goal set: ${args}` : "Goal cleared.");
-        break;
-      case "clear":
-      case "new":
-        // `session.clear()` already emits the "Conversation cleared." notice —
-        // don't emit a second one here (that showed the message twice).
-        this.#session.clear();
-        break;
-      case "status":
-        this.#notice(await this.#statusText());
-        break;
-      case "context": {
-        const window = await this.#resolveContextWindow(this.#session.model);
-        const used = this.#session.contextTokens;
-        const threshold = this.#config.compaction.threshold;
-        const lines = [
-          `Context window for ${this.#session.model}:`,
-          `  ${formatContextUsage(used, window)}`,
-          `  messages: ${this.#session.messageCount}`,
-          window
-            ? `  auto-compaction triggers at ${Math.round(threshold * 100)}% (~${Math.round((threshold * window) / 1000)}k tokens). Run /compact to do it now.`
-            : "  context window unknown for this model; using a 128k default for compaction.",
-        ];
-        this.#notice(lines.join("\n"));
-        break;
-      }
-      case "cost":
-        this.#notice(
-          formatCost(
-            this.#session.snapshot().usage,
-            this.#session.model,
-            await this.#resolvePricing(this.#session.model),
-          ),
-        );
-        break;
-      case "config":
-        this.#notice(formatConfig(this.#config));
-        break;
-      case "tools":
-        this.#notice(
-          formatTools(this.toolset.forMode(this.#session.mode), this.#session.mode),
-        );
-        break;
-      case "skills":
-        this.#notice(
-          formatNamedList(
-            "Skills (call /<name> or the model uses use_skill):",
-            this.skills.list().map((s) => ({ name: s.name, description: s.description })),
-            "No skills. Add .vibe/skills/<name>/SKILL.md to define one.",
-          ),
-        );
-        break;
-      case "commands":
-        this.#notice(
-          formatNamedList(
-            "Custom commands:",
-            this.commands.list().map((c) => ({
-              name: c.name,
-              description: `${c.description} (${c.source})`,
-            })),
-            "No custom commands. Add .vibe/commands/<name>.md to define one.",
-          ),
-        );
-        break;
-      case "mcp":
-        this.#notice(
-          formatMcp(this.#mcp.status(), Object.keys(this.#config.mcp.servers)),
-        );
-        break;
-      case "permissions":
-        this.#notice(
-          formatPermissions(this.#config.permissions, this.#config.approvalMode),
-        );
-        break;
-      case "approvals":
-        this.#handleApprovals(args);
-        break;
-      case "reasoning":
-        this.#handleReasoning(args);
-        break;
-      case "theme":
-        this.#handleTheme(args);
-        break;
-      case "accent":
-        this.#handleAccent(args);
-        break;
-      case "diff":
-        await this.#handleDiff();
-        break;
-      case "review":
-        await this.#handleReview();
-        break;
-      case "resume":
-        await this.#handleResume();
-        break;
-      case "export":
-        await this.#handleExport(args);
-        break;
-      case "doctor":
-        await this.#handleDoctor();
-        break;
-      case "exit":
-      case "quit":
-        this.#notice("Press Ctrl-C (or Ctrl-D) to exit.");
-        break;
-      case "agents": {
-        // `/agents new <name>` scaffolds a new named-agent file; bare `/agents`
-        // lists the roster (the TUI opens an interactive menu instead).
-        const m = /^\s*new\s+(.+)$/i.exec(args);
-        if (m) {
-          await this.#createAgent(m[1]!);
-        } else {
-          this.#notice(
-            this.#agents.size
-              ? [...this.#agents.values()]
-                  .map((a) => `  ${a.name} — ${a.description}${a.model ? `  (${a.model})` : ""}`)
-                  .join("\n")
-              : "No named agents. Add .vibe/agents/<name>.md or run /agents new <name>.",
-          );
-        }
-        break;
-      }
-      case "loop":
-        this.#handleLoop(args);
-        break;
-      case "undo":
-        await this.#handleUndo();
-        break;
-      case "checkpoints":
-        await this.#handleCheckpoints();
-        break;
-      case "verify":
-        await this.#handleVerify();
-        break;
-      case "compact":
-        this.send({ type: "compact" });
-        break;
-      case "recall": {
-        if (!args.trim()) {
-          this.#notice("Usage: /recall <text to find in saved memory + past sessions>", "warn");
-          break;
-        }
-        if (this.#memory) {
-          const hits = await this.#memory.search(args.trim());
-          this.#notice(formatMemoryHits(args.trim(), hits));
-        } else {
-          const hits = await searchSessions(this.#cwd, args, { excludeId: this.#session.id });
-          this.#notice(formatRecall(args.trim(), hits));
-        }
-        break;
-      }
-      case "memory":
-        this.#notice(formatMemory(await loadMemorySources(this.#cwd)));
-        break;
-      case "init": {
-        const created = await initProject(this.#cwd);
-        this.#notice(
-          created.length
-            ? `Created: ${created.join(", ")}`
-            : "Project already initialized.",
-        );
-        // Pick up the just-scaffolded VIBE.md immediately — the cached
-        // #projectMemory was captured at startup and would otherwise ignore it
-        // until restart.
-        await this.#refreshProjectMemory();
-        break;
-      }
-      default: {
-        // A skill can be invoked directly as `/skillname [task]`: load its full
-        // body and run it like a prompt (the user-initiated analogue of the
-        // model's `use_skill`). Built-ins and custom commands above take
-        // precedence, so a skill can't shadow them.
-        const skill = this.skills.get(name);
-        if (skill) {
-          const body = await skill.load();
-          const task = args.trim() ? `\n\nTask: ${args.trim()}` : "";
-          this.#verifyAttempts = 0;
-          await this.#handlePrompt(
-            `Use the "${skill.name}" skill.${task}\n\n# Skill: ${skill.name}\n\n${body}`,
-          );
-          break;
-        }
-        this.#notice(`Unknown command: /${name}`, "warn");
-      }
-    }
+  /** Route a slash command through the slash-command module. */
+  #handleSlash(name: string, args: string): Promise<void> {
+    return handleSlash(this.#getCommandHandle(), name, args);
   }
 
   #handleLoop(args: string): void {
@@ -1337,7 +1217,9 @@ export class Engine implements EngineClient {
         `now (your earlier "stop here" no longer applies).${text.trim() ? `\n\n${text}` : ""}`;
       this.#notice("Executing the approved plan…");
     }
-    // Snapshot the workspace before an edit turn so /undo can roll it back.
+    // Snapshot the workspace before an edit turn so /undo can roll it back — and
+    // remember its id as the base the diff reviewer diffs THIS turn against.
+    this.#turnCheckpointId = undefined;
     if (this.#config.checkpoints.enabled && this.#session.mode === "execute") {
       // Capture the conversation length too, so /undo can rewind history to
       // before this turn (otherwise the model still "remembers" undone edits).
@@ -1346,6 +1228,7 @@ export class Engine implements EngineClient {
         this.#session.conversationMark(),
       );
       if (cp) {
+        this.#turnCheckpointId = cp.id;
         this.#bus.emit({ type: "checkpoint-created", id: cp.id, label: cp.label });
       }
     }
@@ -1368,32 +1251,270 @@ export class Engine implements EngineClient {
       }
     }
     await this.#session.run(expanded.text, expanded.images, isHandoff ? { display: null } : {});
-    await this.#maybeVerify();
+    await this.#afterTurn();
     // The turn may have touched the working tree — refresh the header's git state.
     void this.#emitGit();
   }
 
   /**
-   * Auto-verify: after an edit turn, run the verify command; on failure, feed
-   * the output back as a follow-up so the agent self-corrects (capped retries).
+   * Post-turn verification dispatch (same call site + gating as the old
+   * `#maybeVerify`). The engine-owned GREEN-GATE is the primary path: when build
+   * intelligence is on and the recon profile has runnable check commands, run
+   * the repo's REAL checks, then commit-on-green + adversarially review the diff.
+   * With build/gate disabled — or when no trustworthy check command exists — it
+   * falls back to the legacy `verify.command`/`verify.auto` loop verbatim, and
+   * only surfaces the "not machine-verified" honesty notice when NOTHING checked
+   * the work (never silently green).
    */
-  async #maybeVerify(): Promise<void> {
+  async #afterTurn(): Promise<void> {
+    const build = this.#config.build;
+    if (!(build.enabled && build.gate.enabled)) {
+      // Build intelligence off (or gate disabled): legacy verify behavior verbatim.
+      await this.#maybeVerify();
+      return;
+    }
+    // The gate runs on the same terms the legacy verify did: only after a
+    // mutating execute turn the user didn't interrupt. (/loop iterations run on
+    // an ephemeral session and never route through #handlePrompt, so they never
+    // reach the gate — inherited from this call site.)
+    if (!this.#turnIsGateable()) return;
+
+    const profile = this.#session.repoProfile;
+    const runnable = profile ? pickChecks(profile, build.gate.checks) : [];
+    if (!profile || !runnable.length) {
+      // No trustworthy check command for the gate. Fall back to a configured
+      // legacy verify command if one exists (recon fills verify.command); only
+      // when NOTHING machine-verified the work do we say so — never silently green.
+      const verified = await this.#maybeVerify();
+      if (!verified) {
+        this.#notice(
+          "Gate: UNVERIFIED — no build/test command detected, so this turn's work was not machine-verified.",
+          "info",
+        );
+      }
+      return;
+    }
+    await this.#runGate(profile);
+  }
+
+  /** The shared gating for post-turn verification: a mutating execute turn the
+   * user didn't interrupt (matches the legacy `#maybeVerify` guards). */
+  #turnIsGateable(): boolean {
+    return (
+      this.#session.mode === "execute" &&
+      this.#session.didMutate &&
+      !this.#session.interrupted
+    );
+  }
+
+  /**
+   * Run the real green-gate once against the (quiescent) tree, then act on the
+   * outcome: RED enqueues ONE bounded fix turn (formatGateFailure), GREEN commits
+   * on green + runs the adversarial diff review, UNVERIFIED just notices honestly.
+   */
+  async #runGate(profile: RepoProfile): Promise<void> {
+    const gate = this.#config.build.gate;
+    const summary = await runGate(this.#cwd, profile, this.#gateRounds, {
+      checks: gate.checks,
+      timeoutSec: gate.timeoutSec,
+    });
+    if (summary.outcome === "unverified") {
+      // pickChecks found commands but the gate produced no verdict (every check
+      // aborted / no output) — still honest, never green.
+      this.#notice(formatGateOutcome(summary), "info");
+      return;
+    }
+    if (summary.outcome === "red") {
+      if (this.#gateRounds >= gate.maxRounds) {
+        this.#notice(
+          `${formatGateOutcome(summary)} — still red after ${gate.maxRounds} fix round(s); stopping.`,
+          "warn",
+        );
+        return;
+      }
+      this.#gateRounds += 1;
+      this.#notice(formatGateOutcome(summary), "warn");
+      this.#enqueue("gate-fix", () =>
+        this.#handlePrompt(formatGateFailure(summary, gate.maxRounds)),
+      );
+      return;
+    }
+    // GREEN.
+    this.#notice(formatGateOutcome(summary), "info");
+    await this.#commitOnGreen(summary);
+    // Runtime visual verification (web apps only): boot the app headless and
+    // find what green checks can't — console errors + dead controls. Its
+    // findings ride the SAME adversarial-review fix budget as the diff review.
+    const visual = await this.#maybeVisualVerify(profile);
+    await this.#maybeReview(visual);
+  }
+
+  /**
+   * Runtime visual verification of a green web app. Best-effort and bounded
+   * (90s wall clock): boots the dev server, renders it headless, and collects
+   * console errors + dead controls. Returns a compact findings block ONLY when
+   * the check ran AND found real issues (so it feeds a fix turn); otherwise it
+   * notices the result and returns undefined. A silent skip (not a web app,
+   * playwright absent, aborted) is invisible except in the debug log.
+   */
+  async #maybeVisualVerify(profile: RepoProfile): Promise<string | undefined> {
+    if (!this.#config.build.visualVerify || !isWebApp(profile)) return undefined;
+    let result: Awaited<ReturnType<typeof browserVerify>>;
+    try {
+      result = await browserVerify(this.#cwd, profile, {
+        signal: AbortSignal.timeout(90_000),
+        log: this.#log,
+      });
+    } catch (err) {
+      this.#log.debug(`visual verify skipped: ${(err as Error).message}`);
+      return undefined;
+    }
+    if (!result) return undefined; // silently skipped (not applicable / unavailable)
+    const block = formatBrowserVerify(result);
+    const hasFindings = result.ran && (result.consoleErrors.length > 0 || result.deadControls.length > 0);
+    this.#notice(block, hasFindings ? "warn" : "info");
+    return hasFindings ? block : undefined;
+  }
+
+  /**
+   * Commit-on-green. Default "checkpoint" mode writes a hidden-ref GREEN snapshot
+   * (dirty-tree-safe, never touches the user's branch). "branch" mode checks out
+   * a work branch ONCE per session then commits after each green gate. "off" skips.
+   */
+  async #commitOnGreen(summary: GateSummary): Promise<void> {
+    const mode = this.#config.build.commit.mode;
+    if (mode === "off") return;
+    const label = greenLabel(summary);
+    if (mode === "checkpoint") {
+      const cp = await this.#checkpoints.snapshot(label, this.#session.conversationMark(), {
+        green: true,
+        gate: summary,
+      });
+      if (cp) this.#bus.emit({ type: "checkpoint-created", id: cp.id, label: cp.label });
+      return;
+    }
+    await this.#commitOnGreenBranch(label);
+  }
+
+  /** Branch-mode commit-on-green: prepare the work branch once (cache the verdict;
+   * a refusal notices once and disables branch commits for the session), then
+   * commit the green tree. NEVER toggles the user's branch per-commit. */
+  async #commitOnGreenBranch(label: string): Promise<void> {
+    if (this.#branchPrepared === null) {
+      const prep = await gitPrepare(this.#cwd, {
+        branch: this.#config.build.commit.branchPrefix + this.#session.id,
+      });
+      this.#branchPrepared = prep.ok;
+      this.#notice(
+        prep.ok
+          ? `Green commits: on work branch ${prep.branch}.`
+          : `Green commits disabled: ${prep.reason ?? "git prepare refused"}.`,
+        prep.ok ? "info" : "warn",
+      );
+    }
+    if (!this.#branchPrepared) return;
+    const sha = await gitCommitGreen(this.#cwd, `vibecodr ${label}`);
+    if (sha) this.#notice(`Committed green checkpoint ${sha}.`, "info");
+  }
+
+  /**
+   * Adversarial diff review after a GREEN gate. Diffs THIS turn's work (the
+   * pre-turn checkpoint base, or a plain working-tree diff as fallback), scans it
+   * for stub/dead-code signals, and asks the model to judge the diff ALONE
+   * (single-shot generateText — it reads no files, but the diff is the evidence).
+   * NOT clean → one bounded fix turn with the reviewer's feedback. Bounded by
+   * review.maxRounds per user prompt; best-effort (a failure never blocks a turn).
+   */
+  async #maybeReview(visualFindings?: string): Promise<void> {
+    const review = this.#config.build.review;
+    if (!review.enabled || this.#reviewRounds >= review.maxRounds) return;
+
+    // The REAL diff of this turn's work. Prefer the pre-turn checkpoint base (the
+    // engine snapshots before every edit turn); fall back to a plain working-tree
+    // diff when checkpoints weren't taken (not a repo / checkpoints disabled).
+    let diff: string;
+    if (this.#turnCheckpointId) {
+      diff = await this.#checkpoints.diffFrom(this.#turnCheckpointId);
+    } else {
+      const r = await spawnGit(this.#cwd, ["diff"]);
+      diff = r.ok ? r.stdout : "";
+    }
+    // Nothing to act on: no diff to review AND no runtime findings to fix.
+    if (!diff.trim() && !visualFindings) return;
+    // Cap the fallback path too (diffFrom already caps its own output).
+    if (diff.length > REVIEW_DIFF_CAP) {
+      diff = `${diff.slice(0, REVIEW_DIFF_CAP)}\n…(diff truncated at ${REVIEW_DIFF_CAP} chars)`;
+    }
+
+    // Adversarial diff review of this turn's changes (skipped when there's no
+    // diff — e.g. runtime-only findings). The reviewer also sees the visual
+    // findings, so ONE review covers static diff + runtime issues.
+    let reviewFlagged = "";
+    if (diff.trim()) {
+      const stubBlock = review.stubScan ? formatStubFindings(scanStubs(diff)) : "";
+      const model = await this.registry
+        .resolveModel(this.#session.model, this.#config)
+        .catch(() => undefined);
+      if (!model) {
+        // No model to review the diff with. Runtime findings still warrant a fix;
+        // a pure diff review with nothing to run against just bows out (as before).
+        if (!visualFindings) return;
+      } else {
+        try {
+          const { text } = await generateText({
+            model,
+            prompt: buildReviewPrompt(diff, stubBlock, visualFindings),
+          });
+          if (!isReviewClean(text)) reviewFlagged = text;
+        } catch {
+          if (!visualFindings) return; // best-effort — bow out unless runtime findings exist
+        }
+      }
+    }
+
+    // Runtime findings (dead controls / console errors) are ground truth, so
+    // they force a fix turn even when the diff reviewer comes back clean.
+    if (!reviewFlagged && !visualFindings) {
+      this.#notice("Diff review: clean — no issues flagged.", "info");
+      return;
+    }
+    this.#reviewRounds += 1;
+    this.#notice(
+      reviewFlagged && visualFindings
+        ? "Diff review + visual check flagged issues; queuing a fix turn."
+        : reviewFlagged
+          ? "Diff review flagged issues; queuing a fix turn."
+          : "Visual check flagged issues; queuing a fix turn.",
+      "warn",
+    );
+    this.#enqueue("review-fix", () =>
+      this.#handlePrompt(buildReviewFixPrompt(reviewFlagged, visualFindings)),
+    );
+  }
+
+  /**
+   * Auto-verify (legacy path): after an edit turn, run the verify command; on
+   * failure, feed the output back as a follow-up so the agent self-corrects
+   * (capped retries). Returns whether the command actually RAN — so the gate path
+   * can tell "machine-verified by a legacy command" from "nothing checked it".
+   */
+  async #maybeVerify(): Promise<boolean> {
     const { command, auto, maxRetries } = this.#config.verify;
-    if (!auto || !command) return;
-    if (this.#session.mode !== "execute" || !this.#session.didMutate) return;
+    if (!auto || !command) return false;
+    if (this.#session.mode !== "execute" || !this.#session.didMutate) return false;
     // The user interrupted this turn (Esc / steer) — don't run verify against a
     // half-applied edit and enqueue an unsolicited "verification failed, fix it"
     // turn behind whatever they steered to.
-    if (this.#session.interrupted) return;
+    if (this.#session.interrupted) return false;
 
     const result = await this.#runVerifyCommand(command);
-    if (result.ok) return;
+    if (result.ok) return true;
     if (this.#verifyAttempts >= maxRetries) {
       this.#notice(
         `Verification still failing after ${maxRetries} attempt(s); stopping auto-fix.`,
         "warn",
       );
-      return;
+      return true;
     }
     this.#verifyAttempts += 1;
     this.#enqueue("verify-fix", () =>
@@ -1402,6 +1523,7 @@ export class Engine implements EngineClient {
           `Fix the cause and keep changes minimal.`,
       ),
     );
+    return true;
   }
 
   /** Run the verify command, emitting start/finish events. */
@@ -1414,334 +1536,6 @@ export class Engine implements EngineClient {
       output: result.output,
     });
     return result;
-  }
-
-  /** `/verify` — run the verify command on demand. */
-  async #handleVerify(): Promise<void> {
-    const command = this.#config.verify.command;
-    if (!command) {
-      this.#notice(
-        'No verify command configured. Set `verify.command` (e.g. "bun run typecheck && bun test").',
-        "warn",
-      );
-      return;
-    }
-    const result = await this.#runVerifyCommand(command);
-    this.#notice(result.ok ? "Verification passed." : "Verification failed.");
-  }
-
-  /** `/undo` — restore the most recent checkpoint. */
-  async #handleUndo(): Promise<void> {
-    if (!(await this.#checkpoints.isGitRepo())) {
-      this.#notice("Checkpoints need a git repository; nothing to undo.", "warn");
-      return;
-    }
-    const cp = await this.#checkpoints.undo();
-    if (!cp) {
-      this.#notice("No checkpoint to undo.");
-      return;
-    }
-    // Roll the conversation back to match the restored files so the model no
-    // longer believes the undone edits exist.
-    if (cp.conversation) this.#session.rewindConversation(cp.conversation);
-    this.#bus.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
-    this.#notice(`Reverted to checkpoint: ${cp.label}`);
-  }
-
-  /** `/checkpoints` — list saved checkpoints. */
-  async #handleCheckpoints(): Promise<void> {
-    const list = await this.#checkpoints.list();
-    this.#notice(
-      list.length
-        ? `Checkpoints (newest last):\n${list.map((c) => `  ${c.label}`).join("\n")}`
-        : "No checkpoints yet. One is taken before each edit turn (git repos).",
-    );
-  }
-
-  /** `/status` — render the live session overview. */
-  async #statusText(): Promise<string> {
-    const tools = this.toolset.all();
-    const contextWindow = await this.#resolveContextWindow(this.#session.model);
-    return formatStatus({
-      contextTokens: this.#session.contextTokens,
-      ...(contextWindow ? { contextWindow } : {}),
-      sessionId: this.#session.id,
-      model: this.#session.model,
-      mode: this.#session.mode,
-      approvalMode: this.#config.approvalMode,
-      goal: this.#session.goal,
-      cwd: this.#cwd,
-      toolCount: tools.length,
-      readOnlyCount: tools.filter((t) => t.readOnly).length,
-      mcpServerCount: Object.keys(this.#config.mcp.servers).length,
-      skillCount: this.skills.list().length,
-      commandCount: this.commands.list().length,
-      agentCount: this.#agents.size,
-      usage: this.#session.snapshot().usage,
-    });
-  }
-
-  /** `/approvals [ask|auto]` — show or switch the default approval mode. */
-  #handleApprovals(args: string, quiet = false): void {
-    const next = args.trim().toLowerCase();
-    if (!next) {
-      this.#notice(`Approval mode: ${this.#config.approvalMode}. Use /approvals <ask|auto>.`);
-      return;
-    }
-    if (next !== "ask" && next !== "auto") {
-      this.#notice("Usage: /approvals <ask|auto>", "warn");
-      return;
-    }
-    // No-op if unchanged — avoids spamming the transcript when Shift+Tab cycles
-    // through modes that resolve to the same approval setting.
-    if (next === this.#config.approvalMode) return;
-    // Mutating the shared config object is picked up on the next turn, where the
-    // PermissionChecker's default action is derived from approvalMode.
-    this.#config.approvalMode = next;
-    this.#bus.emit({ type: "approvals-changed", mode: next });
-    // `quiet` (the Shift+Tab mode toggle) relies on the header pill + input
-    // border for feedback; an explicit `/approvals <v>` gets a one-line confirm.
-    if (!quiet) this.#notice(`Approvals: ${next}`);
-  }
-
-  /** `/reasoning [low|medium|high|off]` — show or set the reasoning effort. */
-  #handleReasoning(args: string): void {
-    const next = args.trim().toLowerCase();
-    if (!next) {
-      this.#notice(
-        `Reasoning effort: ${this.#config.reasoning.effort ?? "default"}. Use /reasoning <low|medium|high|off>.`,
-      );
-      return;
-    }
-    if (next === "off" || next === "none") {
-      delete this.#config.reasoning.effort;
-      void this.#persistConfig({ reasoning: { effort: null } });
-      this.#notice("Reasoning effort cleared (provider default).");
-      return;
-    }
-    if (next !== "low" && next !== "medium" && next !== "high") {
-      this.#notice("Usage: /reasoning <low|medium|high|off>", "warn");
-      return;
-    }
-    this.#config.reasoning.effort = next;
-    void this.#persistConfig({ reasoning: { effort: next } });
-    if (reasoningSupported(this.#session.model)) {
-      this.#notice(`Reasoning effort: ${next}.`);
-    } else {
-      this.#notice(
-        `Reasoning effort: ${next}. Note: ${this.#session.model} likely ignores it (local/non-reasoning model).`,
-        "warn",
-      );
-    }
-  }
-
-  /** `/theme [name]` — show or set the UI theme. */
-  #handleTheme(args: string): void {
-    const next = args.trim();
-    if (!next) {
-      this.#notice(
-        `Theme: ${this.#config.theme}. Available: default, light, contrast, opencode. Use /theme <name>.`,
-      );
-      return;
-    }
-    // Validate before confirming so we don't report success for a name that
-    // silently falls back to the default palette. (Mirrors tui's THEME_NAMES;
-    // core can't import the UI package, so the known set is kept in sync here.)
-    if (!KNOWN_THEMES.has(next)) {
-      this.#notice(
-        `Unknown theme "${next}". Available: default, light, contrast, opencode.`,
-        "warn",
-      );
-      return;
-    }
-    this.#config.theme = next;
-    void this.#persistConfig({ theme: next });
-    this.#bus.emit({ type: "theme-changed", theme: next });
-    this.#notice(`Theme set to "${next}".`);
-  }
-
-  /** `/accent [hex]` — show or set the UI accent color. */
-  #handleAccent(args: string): void {
-    const next = args.trim();
-    if (!next) {
-      const cur = this.#config.accentColor || "theme default (neutral white)";
-      this.#notice(`Accent: ${cur}. Use /accent <hex>, e.g. /accent #7aa2f7.`);
-      return;
-    }
-    if (!/^#?[0-9a-fA-F]{6}$/.test(next)) {
-      this.#notice(`Invalid color "${next}". Use a 6-digit hex, e.g. #bb9af7.`, "warn");
-      return;
-    }
-    const hex = next.startsWith("#") ? next : `#${next}`;
-    this.#config.accentColor = hex;
-    void this.#persistConfig({ accentColor: hex });
-    this.#bus.emit({ type: "accent-changed", accent: hex });
-    this.#notice(`Accent set to ${hex}.`);
-  }
-
-  /** `/diff` — show the working-tree diff (git). */
-  async #handleDiff(): Promise<void> {
-    if (!(await this.#checkpoints.isGitRepo())) {
-      this.#notice("Not a git repository; nothing to diff.", "warn");
-      return;
-    }
-    const out = await this.#git(["--no-pager", "diff", "--stat", "HEAD"]);
-    const full = await this.#git(["--no-pager", "diff", "HEAD"]);
-    const body = full.stdout.trim();
-    if (!body) {
-      this.#notice("No changes in the working tree.");
-      return;
-    }
-    const capped =
-      body.length > 8000 ? `${body.slice(0, 8000)}\n…(diff truncated)` : body;
-    this.#notice(`${out.stdout.trim()}\n\n${capped}`);
-  }
-
-  /** `/review` — ask the model to review the current working-tree changes. */
-  async #handleReview(): Promise<void> {
-    if (!(await this.#checkpoints.isGitRepo())) {
-      this.#notice("Not a git repository; nothing to review.", "warn");
-      return;
-    }
-    const diff = (await this.#git(["--no-pager", "diff", "HEAD"])).stdout.trim();
-    if (!diff) {
-      this.#notice("No changes in the working tree to review.");
-      return;
-    }
-    this.#verifyAttempts = 0;
-    await this.#handlePrompt(
-      "Review the current working-tree changes for correctness, bugs, missed edge " +
-        "cases, and style consistency with the surrounding code. Be concrete and " +
-        "cite file/line where possible. Here is the diff:\n\n```diff\n" +
-        diff +
-        "\n```",
-    );
-  }
-
-  /** `/resume` — list saved sessions (resume one with `--resume <id>`). */
-  async #handleResume(): Promise<void> {
-    const metas = await this.#store.list();
-    if (!metas.length) {
-      this.#notice("No saved sessions yet.");
-      return;
-    }
-    const lines = metas.slice(0, 20).map((m) => {
-      const when = new Date(m.updatedAt).toISOString().replace("T", " ").slice(0, 16);
-      const goal = m.goal ? ` — ${m.goal.slice(0, 50)}` : "";
-      return `  ${m.id}  ${when}  ${m.model}${goal}`;
-    });
-    this.#notice(
-      `Saved sessions (restart with \`vibecodr --resume <id>\`):\n${lines.join("\n")}`,
-    );
-  }
-
-  /** `/export [path]` — write the conversation as a Markdown transcript. */
-  async #handleExport(args: string): Promise<void> {
-    const snap = this.#session.snapshot();
-    if (!snap.history.length) {
-      this.#notice("Nothing to export yet — the conversation is empty.");
-      return;
-    }
-    const md = formatTranscript(snap.history, {
-      sessionId: snap.sessionId,
-      model: snap.model,
-      goal: snap.goal,
-    });
-    const path = args.trim()
-      ? resolve(this.#cwd, args.trim())
-      : join(this.#cwd, `vibe-export-${snap.sessionId}.md`);
-    try {
-      await Bun.write(path, md);
-      this.#notice(`Exported ${snap.history.length} message(s) to ${path}`);
-    } catch (err) {
-      this.#notice(`Export failed: ${(err as Error).message}`, "error");
-    }
-  }
-
-  /** `/doctor` — environment health check (keys, git, MCP, verify, search). */
-  async #handleDoctor(): Promise<void> {
-    const checks: DoctorCheck[] = [];
-
-    const providerId = this.#session.model.split("/")[0] ?? "";
-    const def = this.registry.get(providerId);
-    const configured = this.registry.isConfigured(providerId, this.#config);
-    const envHint =
-      def?.auth.env.length ? def.auth.env.join(" or ") : `${providerId.toUpperCase()}_API_KEY`;
-    checks.push({
-      label: "provider",
-      ok: configured,
-      detail: configured
-        ? `${providerId}: credentials found`
-        : `${providerId}: no API key (set ${envHint} or providers.${providerId}.apiKey)`,
-    });
-
-    // The provider SDKs are optional peer deps that only fail at first call.
-    // Probe that the active provider's SDK actually resolves so /doctor doesn't
-    // show all-green and then throw "install @ai-sdk/…" on the first turn.
-    if (def) {
-      let sdkOk = true;
-      let sdkDetail = `${providerId} SDK loaded`;
-      try {
-        await def.create("__doctor_probe__", { apiKey: "probe" });
-      } catch (err) {
-        sdkOk = false;
-        sdkDetail = (err as Error).message;
-      }
-      checks.push({ label: "provider sdk", ok: sdkOk, detail: sdkDetail });
-    }
-
-    const configuredProviders = this.registry
-      .list()
-      .filter((p) => this.registry.isConfigured(p.id, this.#config))
-      .map((p) => p.id);
-    checks.push({
-      label: "providers",
-      ok: configuredProviders.length > 0,
-      detail: configuredProviders.length
-        ? `configured: ${configuredProviders.join(", ")}`
-        : "no providers configured",
-    });
-
-    const isGit = await this.#checkpoints.isGitRepo();
-    checks.push({
-      label: "git",
-      ok: isGit,
-      detail: isGit ? "repository detected (checkpoints/undo enabled)" : "not a git repo (no checkpoints)",
-    });
-
-    const mcpNames = Object.keys(this.#config.mcp.servers);
-    if (mcpNames.length) {
-      const failed = this.#mcp.status().filter((s) => !s.connected);
-      checks.push({
-        label: "mcp",
-        ok: failed.length === 0,
-        detail: failed.length
-          ? `${failed.length}/${mcpNames.length} server(s) failed`
-          : `${mcpNames.length} server(s) connected`,
-      });
-    } else {
-      checks.push({ label: "mcp", ok: null, detail: "no servers configured" });
-    }
-
-    checks.push({
-      label: "verify",
-      ok: this.#config.verify.command ? true : null,
-      detail: this.#config.verify.command ?? "no verify command set",
-    });
-
-    const searchOk = this.#config.search.enabled;
-    const searchKey = this.#config.search.apiKey || process.env.TINYFISH_API_KEY;
-    checks.push({
-      label: "web search",
-      ok: searchOk ? Boolean(searchKey) : null,
-      detail: !searchOk
-        ? "disabled"
-        : searchKey
-          ? "enabled, key present"
-          : "enabled but no TINYFISH_API_KEY (searches will fail)",
-    });
-
-    this.#notice(formatDoctor(checks));
   }
 
   /** Run a git command in the workspace (thin wrapper over the shared runner). */
@@ -1775,16 +1569,69 @@ export class Engine implements EngineClient {
   }
 }
 
-/** Selectable UI theme names (kept in sync with `@vibe/tui`'s THEME_NAMES). */
-const KNOWN_THEMES = new Set(["default", "dark", "light", "contrast", "opencode"]);
-
-/** Safety-critical built-in slash commands a custom command must not shadow.
- * Only names with a real built-in handler belong here — listing a phantom (there
- * is no `/redo`) would block a user's own `/redo` while offering no replacement. */
-const RESERVED_SLASH = new Set(["undo", "clear", "new", "compact", "exit", "quit"]);
-
 /** A short one-line label for a queued prompt. */
 function queueLabel(text: string): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > 48 ? `${oneLine.slice(0, 47)}…` : oneLine;
+}
+
+/** Cap on the diff handed to the single-shot reviewer (chars) — the same bound
+ * the task reviewer + checkpoints.diffFrom use, so a large refactor's diff can't
+ * blow the review turn's context window. */
+const REVIEW_DIFF_CAP = 20_000;
+
+/** The green checkpoint / commit label, e.g. "green: typecheck ✓ test ✓ 142/142". */
+function greenLabel(summary: GateSummary): string {
+  const parts = summary.checks.map(
+    (c) => `${c.check} ✓${c.total ? ` ${c.total - c.failed}/${c.total}` : ""}`,
+  );
+  return `green: ${parts.join(" ")}`.trim();
+}
+
+/** The adversarial-diff-review prompt. Mirrors the orchestrator's #reviewTask
+ * contract, but single-shot: the reviewer has NO file access, so it judges the
+ * diff alone and flags anything suspicious for the main agent to re-check. */
+function buildReviewPrompt(diff: string, stubBlock: string, visualBlock?: string): string {
+  return (
+    "You are an adversarial code reviewer. A coding agent just made changes and the " +
+    "repo's REAL checks (typecheck/test/build) are already GREEN. Judge the DIFF BELOW " +
+    "ALONE — you have no file access — and flag what green checks can't catch: dead or " +
+    "unfinished code, stubs, wrong logic, missing error handling, or changes that don't " +
+    "match the apparent intent. Judge from the diff alone; flag anything suspicious for " +
+    "the main agent to re-check.\n\n" +
+    "```diff\n" +
+    diff +
+    "\n```\n" +
+    (stubBlock
+      ? `\nDeterministic stub-scan flagged these ADDED lines (advisory — some are false positives):\n${stubBlock}\n`
+      : "") +
+    (visualBlock
+      ? `\nA runtime visual check of the rendered app also reported (dead controls = clicked with no observable effect):\n${visualBlock}\n`
+      : "") +
+    "\nReport concrete issues, each as `path:line — problem`. If the diff is correct and " +
+    "complete, reply with exactly REVIEW-CLEAN on its own line."
+  );
+}
+
+/** The fix-turn prompt combining adversarial diff-review output and/or runtime
+ * visual-check findings. With only the review output it reproduces the original
+ * single-source prompt verbatim. */
+function buildReviewFixPrompt(reviewOut: string, visualFindings?: string): string {
+  const parts: string[] = [];
+  if (reviewOut) {
+    parts.push(
+      "An adversarial review of your diff (the engine's REAL changes this turn) flagged " +
+        "issues. Verify each against the ACTUAL files, fix genuine problems, and keep changes minimal:\n\n" +
+        reviewOut,
+    );
+  }
+  if (visualFindings) {
+    parts.push(
+      "A runtime visual check booted the app and found the issues below. Dead controls were " +
+        "clicked with NO observable effect (no navigation, DOM change, network request, or dialog) — " +
+        "wire them up or remove them, and fix the console errors. Verify against the ACTUAL files:\n\n" +
+        visualFindings,
+    );
+  }
+  return parts.join("\n\n");
 }

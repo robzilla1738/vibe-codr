@@ -647,3 +647,103 @@ test("compaction frees the reported context immediately (no stale provider count
   );
   expect(events.some((e) => e.type === "compacted")).toBe(true);
 });
+
+test("the compaction summarizer uses the sectioned contract and caps its input", async () => {
+  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const reply = (text: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: text },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+    ]);
+  const prompts: string[] = [];
+  const model = new MockLanguageModelV2({
+    doStream: async () => reply("x".repeat(9_000)) as never,
+    doGenerate: async (options) => {
+      const p = (options as { prompt: { content: unknown }[] }).prompt;
+      prompts.push(JSON.stringify(p));
+      return {
+        content: [{ type: "text", text: "## STATE\nok" }],
+        finishReason: "stop" as const,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        warnings: [],
+      };
+    },
+  });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    getContextWindow: async () => 128_000,
+  });
+  // 8 turns × 9k chars of reply → far over the 24k summarizer cap.
+  for (let i = 0; i < 8; i++) await session.run(`turn ${i}`);
+  await session.compact();
+
+  expect(prompts).toHaveLength(1);
+  const prompt = prompts[0]!;
+  // Sectioned contract present.
+  for (const section of ["## STATE", "## DECISIONS", "## FILES TOUCHED", "## VERIFIED FACTS", "## OPEN THREADS"]) {
+    expect(prompt).toContain(section);
+  }
+  // Input capped: the omission marker is present and the prompt is bounded well
+  // below the raw ~50k+ transcript (24k cap + instruction overhead + JSON escaping).
+  expect(prompt).toContain("chars of mid-conversation omitted");
+  expect(prompt.length).toBeLessThan(40_000);
+});
+
+test("model failover: an unresolvable primary switches to the first working fallback, visibly", async () => {
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "answered on the fallback" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never,
+  });
+  // Registry knows only "mock" — resolving "deadprov/x" throws; fallback chain
+  // lists another dead one first, then the working mock model.
+  const config = defaultConfig();
+  config.retry = { maxAttempts: 0, baseDelayMs: 0 };
+  config.modelFallbacks = ["alsodead/y", "mock/test"];
+  const bus = new EventBus();
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "deadprov/x",
+    mode: "execute",
+  });
+  const events = await collect(bus, () => session.run("hello"));
+  expect(session.lastError).toBeNull();
+  expect(session.model).toBe("mock/test"); // switched, not silently substituted
+  expect(events.some((e) => e.type === "model-changed" && e.model === "mock/test")).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("failing over"))).toBe(true);
+});
+
+test("model failover: no resolvable fallback keeps the original error", async () => {
+  const config = defaultConfig();
+  config.retry = { maxAttempts: 0, baseDelayMs: 0 };
+  config.modelFallbacks = ["alsodead/y"];
+  const session = new Session({
+    config,
+    registry: new ProviderRegistry([]),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "deadprov/x",
+    mode: "execute",
+  });
+  await session.run("hello");
+  expect(session.lastError).toBeTruthy();
+});

@@ -11,6 +11,12 @@ export interface ModelTuning {
   providerOptions?: Record<string, Record<string, unknown>>;
   /** Deliver the system prompt as a cached message (Anthropic prompt caching). */
   cacheSystem: boolean;
+  /** Mark the tool block with a cache breakpoint (tools are large and stable —
+   * without this every step re-bills every schema). Anthropic only. */
+  cacheTools: boolean;
+  /** Mark the trailing conversation message so each turn's prefix is a cache
+   * hit for the next. Anthropic only. */
+  cacheConversation: boolean;
 }
 
 /** Marker the AI SDK forwards as Anthropic `cache_control: {type:"ephemeral"}`. */
@@ -97,9 +103,14 @@ export function buildModelTuning(modelString: string, config: Config): ModelTuni
       break;
   }
 
+  // Caching markers are an Anthropic feature; other providers cache server-side.
+  // Budget check: system(1) + tools(1) + conversation(1) = 3 of Anthropic's 4
+  // allowed breakpoints — the validator never has to drop one.
+  const anthropicCaching = config.caching.enabled && provider === "anthropic";
   return {
     providerOptions: Object.keys(opts).length ? opts : undefined,
-    // Caching markers are an Anthropic feature; other providers cache server-side.
-    cacheSystem: config.caching.enabled && provider === "anthropic",
+    cacheSystem: anthropicCaching,
+    cacheTools: anthropicCaching && config.caching.cacheTools,
+    cacheConversation: anthropicCaching && config.caching.cacheConversation,
   };
 }

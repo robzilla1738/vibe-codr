@@ -32,12 +32,17 @@ export interface McpPrompt {
   arguments?: { name: string; description?: string; required?: boolean }[];
 }
 
+/** Per-tool-call deadline: parity with the built-ins' bounded execution — a
+ * hung MCP server call must not wedge the turn (Esc also now cancels it). */
+export const MCP_CALL_TIMEOUT_MS = 120_000;
+
 /** A connected MCP server, reduced to what the hub needs. */
 export interface McpClient {
   listTools(): Promise<McpToolSpec[]>;
   callTool(
     name: string,
     args: unknown,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<{ content: unknown; isError?: boolean }>;
   /** List the server's resources (optional capability). */
   listResources?(): Promise<McpResource[]>;
@@ -231,7 +236,7 @@ export class McpHub {
     const names: string[] = [];
     for (const spec of tools) {
       let name = mcpToolName(entry.name, spec.name);
-      if (used.has(name)) name = withHashSuffix(name, djb2(`${entry.name} ${spec.name}`));
+      if (used.has(name)) name = withHashSuffix(name, djb2(`${entry.name}\u0000${spec.name}`));
       used.add(name);
       names.push(name);
       this.#deps.registerTool(toToolDefinition(entry.name, spec, client, name));
@@ -532,8 +537,11 @@ export function toToolDefinition(
     // Honor the server's readOnlyHint: a genuinely read-only MCP tool skips the
     // permission gate and works in plan mode. Default conservative (false).
     readOnly: spec.annotations?.readOnlyHint === true,
-    execute: async (args) => {
-      const res = await client.callTool(spec.name, args);
+    execute: async (args, ctx) => {
+      const res = await client.callTool(spec.name, args, {
+        signal: ctx.abortSignal,
+        timeoutMs: MCP_CALL_TIMEOUT_MS,
+      });
       return { output: renderContent(res.content), isError: res.isError };
     },
   };
@@ -673,11 +681,21 @@ const defaultConnect: McpConnect = async (name, config) => {
         ...(t.annotations ? { annotations: t.annotations } : {}),
       }));
     },
-    async callTool(name, args) {
-      const res = await client.callTool({
-        name,
-        arguments: (args ?? {}) as Record<string, unknown>,
-      });
+    async callTool(name, args, opts) {
+      // Thread the turn's abort signal + a per-call deadline into the SDK so
+      // Esc actually cancels a hung MCP tool (it used to be uncancellable) and
+      // a wedged server can't hold the turn hostage.
+      const res = await client.callTool(
+        {
+          name,
+          arguments: (args ?? {}) as Record<string, unknown>,
+        },
+        undefined,
+        {
+          ...(opts?.signal ? { signal: opts.signal } : {}),
+          ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+        },
+      );
       return { content: res.content, isError: Boolean(res.isError) };
     },
     async listResources() {
@@ -732,10 +750,14 @@ interface McpSdkClient {
       annotations?: { readOnlyHint?: boolean };
     }[];
   }>;
-  callTool(req: {
-    name: string;
-    arguments: Record<string, unknown>;
-  }): Promise<{ content: unknown; isError?: boolean }>;
+  callTool(
+    req: {
+      name: string;
+      arguments: Record<string, unknown>;
+    },
+    resultSchema?: unknown,
+    options?: { signal?: AbortSignal; timeout?: number },
+  ): Promise<{ content: unknown; isError?: boolean }>;
   listResources(): Promise<{
     resources?: { uri: string; name?: string; description?: string; mimeType?: string }[];
   }>;

@@ -1,3 +1,5 @@
+import { readCappedText } from "@vibe/shared";
+
 export interface VerifyResult {
   ok: boolean;
   /** Combined stdout/stderr, capped for feeding back to the model. */
@@ -6,26 +8,9 @@ export interface VerifyResult {
 
 const MAX_OUTPUT = 8000;
 /** Read each stream up to this many chars (well above the display cap) so a
- * runaway verify command can't buffer gigabytes before the cap is applied. */
+ * runaway verify command can't buffer gigabytes before the cap is applied. The
+ * shared reader stops + cancels at this head cap, so the writer exits on SIGPIPE. */
 const MAX_STREAM = 64_000;
-
-/** Read a stream up to `max` chars, then cancel it (the writer exits on the pipe). */
-async function readCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let out = "";
-  try {
-    while (out.length < max) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) out += decoder.decode(value, { stream: true });
-    }
-    out += decoder.decode();
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  return out;
-}
 
 /**
  * Run the project's verification command (typecheck/tests/lint) in `cwd` and
@@ -46,11 +31,11 @@ export async function runVerify(
     ...(signal ? { signal } : {}),
   });
   const [stdout, stderr] = await Promise.all([
-    readCapped(proc.stdout, MAX_STREAM),
-    readCapped(proc.stderr, MAX_STREAM),
+    readCappedText(proc.stdout, { cap: MAX_STREAM }),
+    readCappedText(proc.stderr, { cap: MAX_STREAM }),
   ]);
   const code = await proc.exited;
-  const combined = `${stdout}${stderr}`.trim();
+  const combined = `${stdout.text}${stderr.text}`.trim();
   const output =
     combined.length > MAX_OUTPUT
       ? `${combined.slice(0, MAX_OUTPUT)}\n…(truncated)`

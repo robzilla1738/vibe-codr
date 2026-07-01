@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
+import { recordSeen } from "./freshness.ts";
 
 const Input = z.object({
   path: z.string().describe("File path, absolute or relative to the cwd."),
@@ -21,7 +22,8 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
   readOnly: true,
   concurrencySafe: true,
   async execute({ path, offset, limit }, ctx) {
-    const file = Bun.file(resolve(ctx.cwd, path));
+    const full = resolve(ctx.cwd, path);
+    const file = Bun.file(full);
     if (!(await file.exists())) {
       return { output: `File not found: ${path}`, isError: true };
     }
@@ -36,6 +38,10 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
       };
     }
     const text = await file.text();
+    // The model has now seen this file's on-disk state; record its mtime so a
+    // later edit/write can detect an external change since this read (stale-write
+    // guard). Recorded for empty/truncated reads too — the model still saw them.
+    recordSeen(ctx.sessionId, full);
     if (text === "") return { output: "(empty file)" };
     const lines = text.split("\n");
     const start = offset ?? 0;

@@ -111,3 +111,23 @@ test("save leaves no .tmp files behind", async () => {
   const files = readdirSync(join(cwd, ".vibe", "sessions", a.meta.id));
   expect(files.some((f) => f.endsWith(".tmp"))).toBe(false);
 });
+
+test("meta round-trips the recalled-context block for --resume fidelity", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-recall-"));
+  const store = new SessionStore(cwd);
+  await store.save(
+    {
+      id: "ses_r",
+      model: "m/x",
+      mode: "execute",
+      goal: null,
+      recalledContext: "- we decided to use bun everywhere",
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    [],
+    [],
+  );
+  const loaded = await store.load("ses_r");
+  expect(loaded?.meta.recalledContext).toBe("- we decided to use bun everywhere");
+});

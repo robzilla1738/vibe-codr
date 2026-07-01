@@ -2,11 +2,14 @@ export {
   Toolset,
   toAISDKTool,
   createSemaphore,
+  createSerialLock,
   createFileLock,
   FileOwnedError,
   type FileLock,
+  type SerialLock,
   type ToolRuntimeBase,
 } from "./toolset.ts";
+export { buildRepoMap, type RepoMapResult } from "./builtins/repo-map.ts";
 export {
   builtinTools,
   type BuiltinToolOptions,
@@ -24,3 +27,4 @@ export {
 } from "./builtins/index.ts";
 export type { WebSearchOptions } from "./builtins/web-search.ts";
 export { unifiedDiff, type DiffResult } from "./diff.ts";
+export { killTree, processTree } from "./builtins/process-tree.ts";

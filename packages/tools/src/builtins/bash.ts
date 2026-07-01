@@ -1,6 +1,7 @@
 import { z } from "zod";
-import type { ToolDefinition } from "@vibe/shared";
+import { CappedText, drainTextStream, omittedMarker, type ToolDefinition } from "@vibe/shared";
 import type { BackgroundJobs } from "./jobs.ts";
+import { killTree } from "./process-tree.ts";
 
 const Input = z.object({
   command: z.string().describe("Shell command to execute."),
@@ -18,7 +19,9 @@ const Input = z.object({
 });
 
 const DEFAULT_TIMEOUT = 120_000;
-/** Head cap on the model-facing captured output (bounds memory during streaming). */
+/** Cap on the model-facing captured output (bounds memory during streaming). Kept
+ * as head+tail rather than head-only: a failing build prints its error LAST, so
+ * dropping the tail would hide exactly the line the model needs to see. */
 const OUTPUT_CAP = 30_000;
 
 /** Build the bash tool. A shared job registry enables `background: true`. */
@@ -56,47 +59,32 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        proc.kill();
+        killTree(proc.pid);
       }, limit);
 
-      let out = "";
-      // Bound the retained buffer to the head cap DURING streaming, not after: a
+      // Bound the retained buffer to the cap DURING streaming, not after: a
       // high-volume command (`yes`, a chatty build) is drained as fast as it's
-      // produced, so an unbounded `out` grows to gigabytes before the process
+      // produced, so an unbounded buffer grows to gigabytes before the process
       // exits and OOM-crashes the turn. We still forward every chunk to the UI
-      // (progress is transient); only the model-facing capture is capped.
-      let capped = false;
-      const pump = async (stream: ReadableStream<Uint8Array>) => {
-        // One decoder per stream with streaming mode so a multibyte UTF-8
-        // character split across chunk boundaries isn't corrupted into `�`.
-        const decoder = new TextDecoder();
-        const emit = (text: string) => {
-          if (!text) return;
+      // (progress is transient); only the model-facing capture is capped. Both
+      // streams share one buffer so their interleaving is preserved.
+      const out = new CappedText({ cap: OUTPUT_CAP, keep: "head+tail", marker: omittedMarker });
+      const pump = (stream: ReadableStream<Uint8Array>) =>
+        drainTextStream(stream, (chunk) => {
           ctx.emit({
             type: "tool-call-progress",
             sessionId: ctx.sessionId,
             toolCallId: ctx.toolCallId,
-            chunk: text,
+            chunk,
           });
-          if (out.length >= OUTPUT_CAP) {
-            capped = true;
-            return;
-          }
-          out += text;
-          if (out.length > OUTPUT_CAP) {
-            out = out.slice(0, OUTPUT_CAP);
-            capped = true;
-          }
-        };
-        for await (const chunk of stream) emit(decoder.decode(chunk, { stream: true }));
-        emit(decoder.decode()); // flush any buffered trailing bytes
-      };
+          out.push(chunk);
+        });
 
       await Promise.all([pump(proc.stdout), pump(proc.stderr)]);
       const code = await proc.exited;
       clearTimeout(timer);
 
-      const trimmed = capped ? `${out}\n…(truncated)` : out;
+      const trimmed = out.toString();
       const status = timedOut
         ? `timed out after ${limit}ms (process killed; rerun with a larger timeoutMs or background:true)`
         : `exit ${code}`;

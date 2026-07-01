@@ -17,9 +17,13 @@ export const ProviderConfigSchema = z.object({
   headers: z.record(z.string(), z.string()).optional(),
 });
 
-/** allow/deny/ask policy for a tool, matched by glob on the tool name. */
+/** allow/deny/ask policy for a tool. `tool` globs the tool name; the optional
+ * `match` globs the call's CONTENT (bash command, file path, URL) so policy can
+ * say `{tool:"bash", match:"git push*", action:"deny"}`. Among matching rules,
+ * deny > ask > allow regardless of order. */
 export const PermissionRuleSchema = z.object({
   tool: z.string(),
+  match: z.string().optional(),
   action: z.enum(["allow", "deny", "ask"]),
 });
 
@@ -70,8 +74,10 @@ export const HookSchema = z.object({
 
 /** Long-term memory configuration (semantic recall + write-path + injection). */
 export const MemoryConfigSchema = z.object({
-  /** Semantic (embedding) recall fused with lexical BM25. Degrades to lexical
-   * when no embedder is available, so this is safe to leave enabled. */
+  /** Semantic (embedding) recall fused with lexical BM25. NOTE: the default
+   * "local" model needs the optional `@huggingface/transformers` dep installed —
+   * without it recall silently runs lexical-only (BM25), which still works well.
+   * `/doctor` reports which mode is active. */
   semantic: z
     .object({
       enabled: z.boolean().default(true),
@@ -80,12 +86,13 @@ export const MemoryConfigSchema = z.object({
       model: z.string().default("local"),
     })
     .default({ enabled: true, model: "local" }),
-  /** Inject a goal-seeded "relevant past context" block at session start. Off by
-   * default (it changes prompt content and cache keys); opt in for continuity. */
-  proactiveRecall: z.boolean().default(false),
-  /** Write a short {goal,status,summary,decisions} digest at session end for
-   * future recall. Off by default. */
-  sessionDigest: z.boolean().default(false),
+  /** Inject a goal-seeded "relevant past context" block at session start.
+   * ON by default — bounded (top 3 hits, 300 chars each), so the continuity
+   * win outweighs the prompt-cache churn. */
+  proactiveRecall: z.boolean().default(true),
+  /** Write a short digest at session end for future recall. ON by default —
+   * one cheap model call per session buys cross-session continuity. */
+  sessionDigest: z.boolean().default(true),
 });
 
 /** Manual price override for a model, in USD per 1,000,000 tokens. */
@@ -95,7 +102,8 @@ export const ModelPriceSchema = z.object({
   /** Price of a cached-input (prompt-cache read) token. Defaults to `input` when
    * unset, so cost is never understated for a model without a known cache rate. */
   cacheRead: z.number().nonnegative().optional(),
-  /** Price of writing the prompt cache (reserved; not yet billed separately). */
+  /** Price of writing the prompt cache (Anthropic bills ~1.25x input).
+   * Defaults to `input` when unset — never understated to zero. */
   cacheWrite: z.number().nonnegative().optional(),
 });
 
@@ -146,18 +154,25 @@ export const McpServerSchema = z.union([
 export const ConfigSchema = z.object({
   /** Default model string, e.g. "anthropic/claude-opus-4-8" or "lmstudio/<id>". */
   model: z.string().default("anthropic/claude-opus-4-8"),
+  /** Failover chain: when the active model can't be RESOLVED (missing key,
+   * unknown provider/model), the session switches to the first resolvable
+   * entry — with a visible notice + model-changed event — instead of dying.
+   * Request-time failures still ride the retry policy. */
+  modelFallbacks: z.array(z.string()).default([]),
   /** Start mode. */
   mode: z.enum(["plan", "execute"]).default("execute"),
   /** Hard cap on agentic steps per turn. */
   maxSteps: z.number().int().positive().default(64),
   /** Per-provider credential/baseURL overrides (env vars take precedence). */
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
-  /** Tool permission rules, evaluated in order; first match wins. */
+  /** Tool permission rules. Among matching rules: deny > ask > allow. */
   permissions: z.array(PermissionRuleSchema).default([]),
   /**
    * Default handling for side-effecting tools with no matching rule:
    * `ask` prompts interactively (auto-allowed when non-interactive),
-   * `auto` runs them without asking. Read-only tools are never gated.
+   * `auto` runs them without asking. Pure read-only tools are never gated;
+   * network read-only tools (webfetch/web_search/…) skip the prompt but DO
+   * honor explicit permission rules, so policy can govern egress.
    */
   approvalMode: z.enum(["ask", "auto"]).default("ask"),
   /** UI theme name. */
@@ -173,9 +188,12 @@ export const ConfigSchema = z.object({
   subagent: z
     .object({
       maxDepth: z.number().int().positive().default(3),
-      /** Max subagents one agent runs concurrently (bounds each fan-out). Total
-       * subagent count is unbounded — this is only the concurrency window. */
+      /** Max subagents one agent runs concurrently (bounds each fan-out). */
       maxParallel: z.number().int().positive().default(8),
+      /** Hard ceiling on TOTAL subagents spawned across a session tree — the
+       * backstop against a runaway model spawning children forever (the cost
+       * budget was previously the only guard). Generous by design. */
+      maxTotal: z.number().int().positive().default(200),
       /** Tree-global ceiling on concurrent provider calls (distinct from the
        * logical maxParallel fan-out cap): the adaptive limiter never exceeds this.
        * High by default so it's a no-op for ordinary single-session use. */
@@ -192,20 +210,127 @@ export const ConfigSchema = z.object({
     .default({
       maxDepth: 3,
       maxParallel: 8,
+      maxTotal: 200,
       providerConcurrency: 16,
       timeoutMs: 300_000,
       verifyMaxAttempts: 2,
     }),
-  /** Deterministic task-DAG orchestration (the `spawn_tasks` tool). Off by
-   * default — the inline `spawn_subagent` path is unchanged; enable to let the
-   * model submit a dependency-ordered plan the engine schedules. */
-  orchestration: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
+  /** Deterministic task-DAG orchestration (the `spawn_tasks` tool). ON by
+   * default — the model can submit a whole dependency-ordered plan the engine
+   * schedules (parallel where possible, verify→retry, structured handoffs);
+   * the inline `spawn_subagent` path is unchanged. Disable to hide the tool. */
+  orchestration: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
+  /**
+   * Engine-owned build intelligence (all default-on, per-feature kill-switches):
+   * deterministic repo recon injected into every agent's prompt, the `run_check`
+   * tool, a real green-gate after mutating turns, green checkpoints, adversarial
+   * diff review, and worktree isolation for parallel writer tasks.
+   */
+  build: z
+    .object({
+      /** Master switch — off restores the legacy verify.auto-only behavior. */
+      enabled: z.boolean().default(true),
+      /** After a green gate on a web app, boot the dev server headless and check
+       * what static gates can't: does it render, is the console clean, and does
+       * every visible control DO something. Needs the optional `playwright` peer
+       * dep — absent, it degrades to a silent skip. */
+      visualVerify: z.boolean().default(true),
+      recon: z
+        .object({
+          enabled: z.boolean().default(true),
+          /** Bootstrap recon from the cross-run ledger (.vibe/ledger.jsonl). */
+          ledger: z.boolean().default(true),
+        })
+        .default({ enabled: true, ledger: true }),
+      gate: z
+        .object({
+          enabled: z.boolean().default(true),
+          /** Bounded red→fix→re-gate rounds per user prompt. */
+          maxRounds: z.number().int().min(0).max(10).default(2),
+          /** Which detected checks the gate runs (fail-fast order is fixed:
+           * typecheck → test → build → lint). */
+          checks: z
+            .array(z.enum(["build", "typecheck", "test", "lint"]))
+            .default(["typecheck", "test", "build"]),
+          /** Per-check wall clock (seconds). */
+          timeoutSec: z.number().int().positive().default(600),
+        })
+        .default({ enabled: true, maxRounds: 2, checks: ["typecheck", "test", "build"], timeoutSec: 600 }),
+      commit: z
+        .object({
+          /** "checkpoint" (default): a passing gate writes a hidden-ref GREEN
+           * checkpoint — dirty-tree-safe, never touches the user's branch.
+           * "branch": agentswarm-style commits on a work branch (refuses a dirty
+           * real repo). "off": no commit-on-green. */
+          mode: z.enum(["checkpoint", "branch", "off"]).default("checkpoint"),
+          branchPrefix: z.string().default("vibe/"),
+        })
+        .default({ mode: "checkpoint", branchPrefix: "vibe/" }),
+      review: z
+        .object({
+          /** Adversarial diff review of the session's work once the gate is green. */
+          enabled: z.boolean().default(true),
+          maxRounds: z.number().int().min(0).max(5).default(1),
+          /** Feed deterministic stub-scan findings (dead handlers, href="#", …)
+           * into the review as advisory input. */
+          stubScan: z.boolean().default(true),
+        })
+        .default({ enabled: true, maxRounds: 1, stubScan: true }),
+      /** Allow `worktree: true` tasks to run in isolated git worktrees. */
+      worktrees: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
+      /** Best-of-N ensemble for `hard` tasks (N parallel worktree attempts,
+       * gate-judged). 0 = off (the default — token-expensive). */
+      ensemble: z.object({ n: z.number().int().min(0).max(5).default(0) }).default({ n: 0 }),
+      /** Model tiers for task routing (TaskSpec.tier). Unset tiers fall back to
+       * subagent.model → the parent's model. Must reference configured providers. */
+      models: z
+        .object({ cheap: z.string().optional(), strong: z.string().optional() })
+        .default({}),
+    })
+    .default({
+      enabled: true,
+      visualVerify: true,
+      recon: { enabled: true, ledger: true },
+      gate: { enabled: true, maxRounds: 2, checks: ["typecheck", "test", "build"], timeoutSec: 600 },
+      commit: { mode: "checkpoint", branchPrefix: "vibe/" },
+      review: { enabled: true, maxRounds: 1, stubScan: true },
+      worktrees: { enabled: true },
+      ensemble: { n: 0 },
+      models: {},
+    }),
   compaction: z
     .object({
-      /** Fraction of context window at which to auto-compact. */
+      /** Fraction of context window at which to auto-compact (LLM summary). */
       threshold: z.number().min(0.1).max(0.95).default(0.75),
+      /**
+       * Mid-turn microcompaction: bulky tool results are offloaded to session
+       * artifacts (preview + path left in context, retrievable via `read`) when
+       * fill crosses `threshold` — BELOW the summary threshold, so the lossless
+       * mechanism runs first and summarization stays the last resort.
+       */
+      offload: z
+        .object({
+          enabled: z.boolean().default(true),
+          threshold: z.number().min(0.1).max(0.9).default(0.6),
+          /** Results at or above this many chars are offload-eligible. */
+          maxResultBytes: z.number().int().positive().default(16_384),
+          /** Inline preview kept in context per offloaded result. */
+          previewBytes: z.number().int().positive().default(2_048),
+          /** Never offload the most recent N tool results (the live working set). */
+          keepLiveResults: z.number().int().min(0).default(2),
+        })
+        .default({
+          enabled: true,
+          threshold: 0.6,
+          maxResultBytes: 16_384,
+          previewBytes: 2_048,
+          keepLiveResults: 2,
+        }),
     })
-    .default({ threshold: 0.75 }),
+    .default({
+      threshold: 0.75,
+      offload: { enabled: true, threshold: 0.6, maxResultBytes: 16_384, previewBytes: 2_048, keepLiveResults: 2 },
+    }),
   /**
    * Long-term memory: semantic (embedding) recall on top of the lexical BM25
    * scorer, an agent write-path, and optional proactive injection. Everything
@@ -214,8 +339,8 @@ export const ConfigSchema = z.object({
    */
   memory: MemoryConfigSchema.default({
     semantic: { enabled: true, model: "local" },
-    proactiveRecall: false,
-    sessionDigest: false,
+    proactiveRecall: true,
+    sessionDigest: true,
   }),
   /** Web search. Enabled by default and works KEYLESS (DuckDuckGo); a TinyFish
    * key (search.apiKey / $TINYFISH_API_KEY) is an optional higher-quality booster. */
@@ -276,7 +401,15 @@ export const ConfigSchema = z.object({
    * with provider cache markers (Anthropic) so repeated turns reuse it instead
    * of re-billing the full prompt each step.
    */
-  caching: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
+  caching: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Cache breakpoint on the tool block (schemas are large and stable). */
+      cacheTools: z.boolean().default(true),
+      /** Cache breakpoint on the trailing conversation prefix each turn. */
+      cacheConversation: z.boolean().default(true),
+    })
+    .default({ enabled: true, cacheTools: true, cacheConversation: true }),
   /**
    * Spend guard. When cumulative session cost crosses `limitUSD`, `warn` emits a
    * notice; `stop` also aborts the turn. No limit set = unbounded.

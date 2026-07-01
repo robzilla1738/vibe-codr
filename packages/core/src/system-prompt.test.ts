@@ -34,6 +34,20 @@ test("the base prompt carries a terminal output-formatting doctrine", () => {
   expect(out).toMatch(/flanking/); // the *-against-$/digit failure mode
 });
 
+test("the prompt teaches the native data views (chart/pie/line/weather/sources)", () => {
+  // Present in both modes so charts/weather/etc. render natively out of the box
+  // instead of the model building an HTML file or plain text.
+  for (const mode of ["plan", "execute"] as const) {
+    const out = composeSystemPrompt({ mode, goal: null });
+    expect(out).toMatch(/RICH DATA VIEWS/);
+    for (const fence of ["```chart", "```pie", "```line", "```weather", "```sources"]) {
+      expect(out).toContain(fence);
+    }
+    // The critical instruction: don't build HTML/a file for these unless asked.
+    expect(out).toMatch(/do NOT build an HTML|explicitly asks for/i);
+  }
+});
+
 test("the goal is injected as a north-star block", () => {
   const out = composeSystemPrompt({ mode: "execute", goal: "ship v1" });
   expect(out).toContain("NORTH-STAR GOAL: ship v1");
@@ -110,4 +124,34 @@ test("project memory is included when present", () => {
     projectMemory: "This is a Bun monorepo.",
   });
   expect(out).toContain("This is a Bun monorepo.");
+});
+
+test("repo facts (recon) are injected before the goal", () => {
+  const out = composeSystemPrompt({
+    mode: "execute",
+    goal: "ship it",
+    repoFacts: "REPO FACTS (deterministic recon): test=`bun test`",
+  });
+  expect(out).toContain("REPO FACTS");
+  expect(out.indexOf("REPO FACTS")).toBeLessThan(out.indexOf("NORTH-STAR GOAL"));
+  // Absent when not provided.
+  expect(composeSystemPrompt({ mode: "execute", goal: null })).not.toContain("REPO FACTS");
+});
+
+test("the live task list is re-injected every turn with status marks", () => {
+  const out = composeSystemPrompt({
+    mode: "execute",
+    goal: null,
+    tasks: [
+      { title: "read the code", status: "completed" },
+      { title: "write the fix", status: "in_progress" },
+      { title: "run the tests", status: "pending" },
+    ],
+  });
+  expect(out).toContain("CURRENT TASKS");
+  expect(out).toContain("[x] read the code");
+  expect(out).toContain("[~] write the fix");
+  expect(out).toContain("[ ] run the tests");
+  // No block for an empty list.
+  expect(composeSystemPrompt({ mode: "execute", goal: null, tasks: [] })).not.toContain("CURRENT TASKS");
 });

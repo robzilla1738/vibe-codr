@@ -1,28 +1,13 @@
 import { z } from "zod";
+import { capText, omittedMarker, readCappedText } from "@vibe/shared";
 import type { ToolContext, ToolDefinition } from "@vibe/shared";
 
-/** Ceiling on bytes read from each git stream, well above the 20k display cap so
+/** Ceiling on chars read from each git stream, well above the 20k display cap so
  * nothing legitimate is lost — but bounded so a pathological `git diff` of a
- * multi-GB change can't be fully materialized in memory before `cap()` trims it. */
+ * multi-GB change can't be fully materialized in memory before `cap()` trims it.
+ * Kept as head+tail: git output whose tail matters (a diff's last hunk, an error
+ * printed last) must survive to the display cap, which is itself head+tail. */
 const MAX_GIT_STREAM = 64_000;
-
-/** Read a stream up to `max` chars, then cancel it (git exits on the broken pipe). */
-async function readCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let out = "";
-  try {
-    while (out.length < max) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) out += decoder.decode(value, { stream: true });
-    }
-    out += decoder.decode();
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  return out;
-}
 
 /** Run a git subcommand in the session cwd; returns combined output + exit code. */
 async function git(args: string[], ctx: ToolContext): Promise<{ code: number; out: string }> {
@@ -32,17 +17,20 @@ async function git(args: string[], ctx: ToolContext): Promise<{ code: number; ou
     stderr: "pipe",
     signal: ctx.abortSignal,
   });
+  const capOpts = { cap: MAX_GIT_STREAM, keep: "head+tail" as const, marker: omittedMarker };
   const [stdout, stderr, code] = await Promise.all([
-    readCapped(proc.stdout, MAX_GIT_STREAM),
-    readCapped(proc.stderr, MAX_GIT_STREAM),
+    readCappedText(proc.stdout, capOpts),
+    readCappedText(proc.stderr, capOpts),
     proc.exited,
   ]);
-  const out = (stdout + stderr).trim();
+  const out = (stdout.text + stderr.text).trim();
   return { code, out };
 }
 
-function cap(s: string, max = 20_000): string {
-  return s.length > max ? `${s.slice(0, max)}\n…(truncated)` : s;
+/** Model-facing display cap for diff/log output. Head+tail so a huge diff still
+ * shows both its start and its end (where a conflict/error tends to land). */
+function cap(s: string): string {
+  return capText(s, { cap: 20_000, keep: "head+tail", marker: omittedMarker });
 }
 
 export const gitStatusTool: ToolDefinition<Record<string, never>> = {

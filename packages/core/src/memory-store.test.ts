@@ -3,8 +3,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendMemory, gatherMemoryDocs } from "./memory-store.ts";
+import { chunkMarkdown } from "./chunk.ts";
 
-test("appendMemory writes a dated file with a single day header, then appends", async () => {
+test("appendMemory writes a single day header, then one heading per fact", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-"));
   const now = new Date("2026-06-30T14:05:00Z");
   const path = await appendMemory(dir, { fact: "the project uses Postgres" }, now);
@@ -18,6 +19,33 @@ test("appendMemory writes a dated file with a single day header, then appends", 
   expect(text).toContain("(ui)");
   // The day header is written once, not per entry.
   expect(text.match(/# Memory/g)).toHaveLength(1);
+  // Each fact gets its own `## ` heading so chunking splits per fact (not a day blob).
+  expect(text.match(/^## /gm)).toHaveLength(2);
+});
+
+test("each saved fact becomes its own chunk (no day-blob dilution)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-chunk-"));
+  const facts = ["uses Postgres via Neon", "Tailwind dark theme", "deploys on Fly.io"];
+  // Same day, distinct seconds so each fact gets a distinct timestamped heading.
+  await appendMemory(dir, { fact: facts[0]! }, new Date("2026-06-30T14:00:01Z"));
+  await appendMemory(dir, { fact: facts[1]! }, new Date("2026-06-30T14:00:02Z"));
+  await appendMemory(dir, { fact: facts[2]! }, new Date("2026-06-30T14:00:03Z"));
+
+  const source = ".vibe/memory/2026-06-30.md";
+  const md = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  const chunks = chunkMarkdown(source, md);
+
+  // At least one chunk per fact (a small day-title chunk may also be present).
+  expect(chunks.length).toBeGreaterThanOrEqual(3);
+  // Each fact lands in EXACTLY one chunk, and that chunk carries ONLY its fact —
+  // proving per-fact isolation rather than a diluted day-blob chunk.
+  for (const fact of facts) {
+    const matching = chunks.filter((c) => c.text.includes(fact));
+    expect(matching).toHaveLength(1);
+    for (const other of facts) {
+      if (other !== fact) expect(matching[0]!.text).not.toContain(other);
+    }
+  }
 });
 
 test("gatherMemoryDocs reads saved project memory as indexable docs", async () => {
@@ -45,7 +73,7 @@ test("concurrent saves to the same dated file don't lose entries (atomic append)
   );
   const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
   for (let i = 0; i < N; i++) expect(text).toContain(`fact number ${i}`);
-  // Exactly N entries and a single day header.
-  expect(text.match(/^- /gm)).toHaveLength(N);
+  // Exactly N per-fact headings and a single day header.
+  expect(text.match(/^## /gm)).toHaveLength(N);
   expect(text.match(/# Memory/g)).toHaveLength(1);
 });

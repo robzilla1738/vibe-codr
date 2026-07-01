@@ -5,38 +5,44 @@ import {
   type ModelMessage,
   type LanguageModel,
 } from "ai";
-import { z } from "zod";
 import {
   createId,
   type EngineSnapshot,
   type Message,
   type Mode,
   type Part,
+  type RepoProfile,
   type Task,
   type TaskStatus,
-  type ToolDefinition,
   type UIEvent,
   type Usage,
 } from "@vibe/shared";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Config, ModelPrice } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
 import {
   type Toolset,
   toAISDKTool,
-  createSemaphore,
+  createSerialLock,
   type ToolRuntimeBase,
   type FileLock,
 } from "@vibe/tools";
 import type { HookBus, SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
-import { EventBus as EventBusImpl } from "./event-bus.ts";
 import { composeSystemPrompt } from "./system-prompt.ts";
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages, estimateTokens } from "./compaction.ts";
+import { SourceLedger, harvestUrls, RESEARCH_TOOL_NAMES } from "./source-ledger.ts";
+import {
+  applyOffloads,
+  planOffloads,
+  resultText as offloadResultText,
+  type OffloadRecord,
+} from "./microcompaction.ts";
+import { formatRepoFacts } from "./build/profile.ts";
 import type { SessionStore } from "./store.ts";
-import { searchSessions, formatRecall } from "./recall.ts";
-import { formatMemoryHits } from "./memory-search.ts";
 import type { MemoryService } from "./memory-service.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 import {
@@ -47,14 +53,24 @@ import {
 import type { ImageAttachment } from "./mentions.ts";
 import { withRetry } from "./retry.ts";
 import type { Limiter } from "./limiter.ts";
-import { type Blackboard, formatNotes } from "./blackboard.ts";
+import type { Blackboard } from "./blackboard.ts";
 import {
-  validateDag,
-  runDag,
-  formatTaskResults,
-  type TaskSpec,
-  type TaskResult,
-} from "./orchestrator.ts";
+  OrchestratorRunner,
+  type SessionHandle,
+} from "./orchestration/orchestrator-runner.ts";
+export { isReviewClean } from "./orchestration/orchestrator-runner.ts";
+import { type ReportStore, buildReadReportTool } from "./orchestration/report-store.ts";
+import type { TsDiagnostics } from "./diagnostics.ts";
+import {
+  buildUseSkillTool,
+  buildRecallTool,
+  buildRunCheckTool,
+  buildSaveMemoryTool,
+  buildPostNoteTool,
+  buildReadNotesTool,
+  buildTasksTool,
+  type SessionToolsHandle,
+} from "./session-tools.ts";
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
@@ -63,19 +79,10 @@ const COMPACT_KEEP_RECENT = 6;
  * so a resumed/long session compacts before the real prompt blows the window.
  * Capped to 10% of the window at the call site for small local-model contexts. */
 const COMPACT_OVERHEAD_MARGIN = 12_000;
-
-// A subagent's final answer lands verbatim in the PARENT's prompt, so — like
-// every other context-producing tool — it must be bounded: a verbose or runaway
-// child (and a parent can fan out `maxParallel` of them in one step) would
-// otherwise flood the parent's context window and risk a 400 on the next turn.
-// Generous, since a consolidated report is high-value, but capped. The UI still
-// gets the full text via the `subagent-finished` event.
-const MAX_SUBAGENT_OUTPUT = 32_000;
-function capSubagentOutput(s: string): string {
-  return s.length > MAX_SUBAGENT_OUTPUT
-    ? `${s.slice(0, MAX_SUBAGENT_OUTPUT)}\n…(subagent output truncated at ${MAX_SUBAGENT_OUTPUT} chars; ask it for a more focused subtask if you need the rest)`
-    : s;
-}
+/** Cap on the summarizer's own input (chars) — same bound buildDigest uses.
+ * Compaction fires when context is near-full, so an uncapped transcript would
+ * make the summarize call itself risk the window. */
+const SUMMARY_INPUT_CAP = 24_000;
 
 export interface SessionDeps {
   config: Config;
@@ -95,6 +102,13 @@ export interface SessionDeps {
   toolFilter?: { allow?: string[]; deny?: string[] };
   /** Named subagents available to spawn. */
   agents?: Map<string, NamedAgent>;
+  /** Deterministic repo recon (build/profile.ts), set by the engine after
+   * bootstrap. Rides `...this.#deps` into every fork, so the whole session tree
+   * knows the repo's REAL build/test commands without re-probing. */
+  repoProfile?: RepoProfile;
+  /** Token-budgeted repo symbol map (built once by the engine, mtime-cached
+   * upstream) injected into subagent kickoffs so children orient instantly. */
+  repoMap?: string;
   /** Per-file write CLAIM registry shared across the session tree (set by the
    * engine). Forks inherit it via `...this.#deps`; each session injects its own
    * id as the owner, so a concurrent write from a different subagent to a file
@@ -117,6 +131,18 @@ export interface SessionDeps {
   /** Shared coordination board for parallel subagents (post_note / read_notes),
    * shared across the tree like the file lock. */
   blackboard?: Blackboard;
+  /** Tree-shared store of finished orchestrator task reports: `read_report`
+   * reads it, the runner fills it as tasks settle. Created lazily by the root
+   * runner when absent; forks inherit the SAME object via `...this.#deps`, so a
+   * dependent task (a fork) can pull a dependency's FULL report. */
+  reportStore?: ReportStore;
+  /** In-process TS language service (engine-owned, tree-shared via forks):
+   * edit/write append its diagnostics to their output. Absent → no-op. */
+  diagnostics?: TsDiagnostics;
+  /** Tree-global spawn ledger: total subagents spawned across the session tree,
+   * the backstop against a runaway model (capped at subagent.maxTotal). Created
+   * lazily by the root runner; forks inherit the SAME object via `...this.#deps`. */
+  spawnCounter?: { used: number };
   id?: string;
   /** Persistence backend; when set, the session is saved after each turn. */
   store?: SessionStore;
@@ -129,6 +155,8 @@ export interface SessionDeps {
   initialUsage?: TokenTotals;
   /** Seed accrued cost (USD) when resuming a persisted session. */
   initialCostUSD?: number;
+  /** Seed the recalled-context block when resuming a persisted session. */
+  initialRecalledContext?: string;
   createdAt?: number;
   /** Resolve the active model's context window (for compaction). */
   getContextWindow?: (model: string) => Promise<number | undefined>;
@@ -168,10 +196,11 @@ export class Session {
   /** Proactively-recalled context injected into the system prompt (opt-in). */
   #recalledContext: string | undefined;
   #abort = new AbortController();
-  /** Bounds how many subagents this session runs concurrently (each fan-out).
-   * Per-session, not tree-global, so a parent awaiting its children can't
-   * deadlock against the cap. */
-  #childGate: <T>(fn: () => Promise<T>) => Promise<T>;
+  /** The subagent / task-DAG machinery (spawn_subagent, spawn_tasks, the fork →
+   * run → review → retry pipeline). Owns the per-session fan-out gate. */
+  #runner: OrchestratorRunner;
+  /** The narrow view of this session handed to the runner + leaf tool factories. */
+  #handle: SessionHandle & SessionToolsHandle;
   /** The last turn's fatal error message, if any (null on success). Lets a
    * parent detect a failed subagent — the child runs on an isolated bus so its
    * `engine-error` never reaches the parent UI. */
@@ -186,6 +215,20 @@ export class Session {
    * error flag; this side-channel lets `#consume` mark them correctly. Keyed by
    * toolCallId; populated by the tool adapter before the result part is emitted. */
   #toolCallErrors = new Map<string, boolean>();
+  /** Tool results offloaded to session artifacts (mid-turn microcompaction),
+   * keyed by toolCallId. In-memory only: persisted messages carry the previews
+   * themselves, so `--resume` needs no extra state. */
+  #offloaded = new Map<string, OffloadRecord>();
+  /** The provider's real system+tools+cache overhead beyond the message-text
+   * estimate, measured from step usage — anchors the mid-turn fill projection
+   * (the raw estimate can't see prompt scaffolding). */
+  #overheadTokens = 0;
+  /** This session's web-source ledger: URLs harvested from web_search/webfetch/
+   * crawl_docs results, deduped + stably numbered. Injected into the system
+   * prompt so the model cites `[n]` consistently, and shown by `/sources`. A
+   * fresh instance per Session — forks (new Session) get their own, never the
+   * parent's, so a subagent's reads don't re-harvest into the parent. */
+  #sources = new SourceLedger();
 
   constructor(deps: SessionDeps) {
     this.#deps = deps;
@@ -201,8 +244,52 @@ export class Session {
       outputTokens: deps.initialUsage?.outputTokens ?? 0,
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
+    this.#recalledContext = deps.initialRecalledContext;
     this.#createdAt = deps.createdAt ?? Date.now();
-    this.#childGate = createSemaphore(deps.config.subagent.maxParallel);
+    this.#handle = this.#buildHandle();
+    this.#runner = new OrchestratorRunner(this.#handle);
+  }
+
+  /** The narrow, live view of this session the runner + leaf tool factories use.
+   * Getters keep mode/model/goal in sync as the session mutates them. */
+  #buildHandle(): SessionHandle & SessionToolsHandle {
+    const self = this;
+    return {
+      get id() {
+        return self.id;
+      },
+      get model() {
+        return self.model;
+      },
+      get mode() {
+        return self.mode;
+      },
+      get goal() {
+        return self.goal;
+      },
+      get depth() {
+        return self.depth;
+      },
+      get deps() {
+        return self.#deps;
+      },
+      fork: (overrides) => self.fork(overrides),
+      onChildSettled: (child) => self.#foldChildUsage(child),
+      setTasks: (incoming) => self.setTasks(incoming),
+    };
+  }
+
+  /** Fold a settled subagent's mutation flag + usage + cost up into this session
+   * (the child runs on an isolated bus), so auto-verify, `/cost`, and the spend
+   * guard all account for delegated work. */
+  #foldChildUsage(child: Session): void {
+    // A child that actually mutated the workspace makes THIS turn a mutating one
+    // (so auto-verify runs); a read-only investigation child does not.
+    if (child.didMutate) this.#turnMutated = true;
+    addUsage(this.#usage, child.usage);
+    this.#costUSD += child.costUSD;
+    this.#deps.bus.emit({ type: "usage-updated", sessionId: this.id, usage: this.#usageSnapshot() });
+    this.#enforceBudget();
   }
 
   snapshot(): EngineSnapshot {
@@ -284,6 +371,11 @@ export class Session {
     return this.#tasks;
   }
 
+  /** This session's web-source ledger (for `/sources` and diagnostics). */
+  get sources(): SourceLedger {
+    return this.#sources;
+  }
+
   /** Whether the most recent turn ran a side-effecting (non-read-only) tool. */
   get didMutate(): boolean {
     return this.#turnMutated;
@@ -315,6 +407,19 @@ export class Session {
    * session is constructed, once the embedder has been resolved). */
   setMemory(memory: MemoryService): void {
     this.#deps.memory = memory;
+  }
+
+  /** Attach the deterministic repo recon (computed asynchronously by the
+   * engine's bootstrap). Lands on #deps so forks spawned afterwards inherit it
+   * and every subsequent turn's prompt carries the REPO FACTS block. */
+  setRepoProfile(profile: RepoProfile, repoMap?: string): void {
+    this.#deps.repoProfile = profile;
+    if (repoMap !== undefined) this.#deps.repoMap = repoMap;
+  }
+
+  /** The active repo recon, if the engine attached one. */
+  get repoProfile(): RepoProfile | undefined {
+    return this.#deps.repoProfile;
   }
 
   /** Set the proactively-recalled context block injected into the system prompt
@@ -351,6 +456,43 @@ export class Session {
    * or a deep fan-out that over-subscribes the tree-global ceiling deadlocks. */
   #withLimiter<T>(fn: () => Promise<T>): Promise<T> {
     return this.#deps.limiter ? this.#deps.limiter.run(fn, this.#abort.signal) : fn();
+  }
+
+  /**
+   * Resolve the active model, failing over through `config.modelFallbacks` when
+   * the primary can't be resolved (missing key / unknown provider). A successful
+   * fallback SWITCHES the session's model (visible: notice + model-changed) —
+   * silent per-turn substitution would misreport cost/context and surprise the
+   * user harder than an explicit switch.
+   */
+  async #resolveWithFallback(
+    registry: ProviderRegistry,
+    config: Config,
+  ): Promise<LanguageModel> {
+    const retryOpts = {
+      maxAttempts: config.retry.maxAttempts,
+      baseDelayMs: config.retry.baseDelayMs,
+    };
+    try {
+      return await withRetry(() => registry.resolveModel(this.model, config), retryOpts);
+    } catch (primaryErr) {
+      for (const fallback of config.modelFallbacks) {
+        if (fallback === this.model) continue;
+        try {
+          const resolved = await withRetry(() => registry.resolveModel(fallback, config), retryOpts);
+          this.#deps.bus.emit({
+            type: "notice",
+            level: "warn",
+            message: `Model ${this.model} unavailable (${(primaryErr as Error).message}) — failing over to ${fallback}.`,
+          });
+          this.setModel(fallback);
+          return resolved;
+        } catch {
+          /* try the next fallback */
+        }
+      }
+      throw primaryErr;
+    }
   }
 
   /** A marker of the current conversation length (for checkpoint rollback). */
@@ -404,352 +546,9 @@ export class Session {
   lastAssistantText(): string {
     for (let i = this.#history.length - 1; i >= 0; i--) {
       const m = this.#history[i];
-      if (m && m.role === "assistant") {
-        return m.parts
-          .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
-          .map((p) => p.text)
-          .join("");
-      }
+      if (m && m.role === "assistant") return messageText(m);
     }
     return "";
-  }
-
-  /** Build the per-session `spawn_subagent` tool (closes over this session). */
-  #spawnTool(): ToolDefinition<{
-    prompt: string;
-    agent?: string;
-    mode?: Mode;
-  }> {
-    const Input = z.object({
-      prompt: z
-        .string()
-        .describe(
-          "The complete, self-contained subtask. The subagent sees none of this " +
-            "conversation — inline the objective, exact files/paths, and success criteria.",
-        ),
-      agent: z
-        .string()
-        .optional()
-        .describe("Named agent to specialize the subagent (see the roster in the system prompt)."),
-      mode: z.enum(["plan", "execute"]).optional(),
-    });
-    // NOTE: there is deliberately no `model` parameter. The subagent's model is a
-    // user *setting* — `subagent.model` (or a named agent's own `model`), falling
-    // back to the parent's model — never something the model picks per call. A
-    // model that invented `model:"gpt-4"` here would spawn a child on a provider
-    // the user hasn't configured (the Ollama-Cloud "gpt-4 subagent" bug).
-    return {
-      name: "spawn_subagent",
-      description:
-        "Delegate a self-contained subtask to a fresh subagent with its own context " +
-        "window; it returns only its final answer. Issue several calls in ONE step to " +
-        "run them in parallel — give each a disjoint set of files. While you are " +
-        "planning (read-only), subagents are read-only too (investigation only).",
-      inputSchema: Input,
-      // The spawn itself touches nothing — the child's own tools gate their side
-      // effects individually — so don't make orchestration prompt for permission.
-      readOnly: true,
-      concurrencySafe: true,
-      execute: async ({ prompt, agent, mode }, ctx) => {
-        const named = agent ? this.#deps.agents?.get(agent) : undefined;
-        if (agent && !named) {
-          return { output: `Unknown agent "${agent}". Run /agents to list them.`, isError: true };
-        }
-        // While planning the parent is read-only, so any child is coerced to plan
-        // below. A named agent declared for execute (it writes / runs commands)
-        // can't do its job under that constraint — coercing it would just burn a
-        // turn on a child instructed to edit files it has no tools to touch. The
-        // plan-mode roster already hides such agents (only `mode === "plan"` is
-        // advertised); reject one named explicitly here too, pointing at the
-        // read-only agents the model CAN delegate to. (An explicit `mode:"execute"`
-        // request without a named agent is still safely coerced — see below.)
-        if (this.mode === "plan" && named && named.mode !== "plan") {
-          const readOnly = [...(this.#deps.agents?.values() ?? [])]
-            .filter((a) => a.mode === "plan")
-            .map((a) => a.name);
-          const suggestion = readOnly.length
-            ? ` Use a read-only agent (${readOnly.join(", ")})`
-            : " Investigate read-only without a named agent";
-          return {
-            output:
-              `Agent "${agent}" runs in execute mode (it writes or runs commands) ` +
-              `and can't run while planning, which is read-only.${suggestion}, or ` +
-              `delegate it once you switch to execute mode.`,
-            isError: true,
-          };
-        }
-        const child = this.#forkChild(named, mode);
-        this.#deps.bus.emit({
-          type: "subagent-started",
-          sessionId: this.id,
-          subagentId: child.id,
-          prompt,
-        });
-        const { timedOut } = await this.#runChildToCompletion(child, prompt, ctx.abortSignal);
-        const outcome = this.#childOutcome(child, timedOut);
-        this.#deps.bus.emit({
-          type: "subagent-finished",
-          sessionId: this.id,
-          subagentId: child.id,
-          result: outcome.event,
-        });
-        return { output: capSubagentOutput(outcome.text), ...(outcome.isError ? { isError: true } : {}) };
-      },
-    };
-  }
-
-  /**
-   * Build the per-session `spawn_tasks` tool: submit a dependency-ordered plan
-   * the engine schedules deterministically (the agentswarm Executor pattern).
-   */
-  #spawnTasksTool(): ToolDefinition<{
-    tasks: {
-      id: string;
-      objective: string;
-      deps?: string[];
-      files?: string[];
-      verify?: boolean;
-      agent?: string;
-    }[];
-  }> {
-    const TaskInput = z.object({
-      id: z.string().describe("Stable id, referenced by other tasks' `deps`."),
-      objective: z
-        .string()
-        .describe("The complete, self-contained subtask (the subagent sees none of this conversation)."),
-      deps: z.array(z.string()).optional().describe("Ids of tasks that must finish before this one starts."),
-      files: z.array(z.string()).optional().describe("Files this task owns (give each task a DISJOINT set)."),
-      verify: z.boolean().optional().describe("Run a review→retry pass after this task."),
-      agent: z.string().optional().describe("Named agent to specialize the subagent."),
-    });
-    return {
-      name: "spawn_tasks",
-      description:
-        "Submit a whole plan of subtasks as a dependency graph; the engine runs it deterministically — every task whose dependencies are done starts immediately (parallel where possible), dependents unlock as inputs complete, and a task whose dependency failed is skipped. Prefer this over many separate spawn_subagent calls for multi-step work: declare `deps` for ordering, disjoint `files` per task, and `verify:true` on a task to have it reviewed and retried. Each task is a fresh subagent; it returns a consolidated report.",
-      inputSchema: z.object({ tasks: z.array(TaskInput).min(1) }),
-      readOnly: true,
-      concurrencySafe: true,
-      execute: async ({ tasks }, ctx) => {
-        const specs: TaskSpec[] = tasks.map((t) => ({
-          id: t.id,
-          objective: t.objective,
-          deps: t.deps ?? [],
-          ...(t.files ? { files: t.files } : {}),
-          ...(t.verify ? { verify: t.verify } : {}),
-          ...(t.agent ? { agent: t.agent } : {}),
-        }));
-        const dagError = validateDag(specs);
-        if (dagError) return { output: `Invalid task plan: ${dagError}`, isError: true };
-        for (const s of specs) {
-          const err = this.#validateAgentForTask(s.agent);
-          if (err) return { output: `Task "${s.id}": ${err}`, isError: true };
-        }
-        const results = await runDag(
-          specs,
-          (spec, depResults) => this.#runTask(spec, depResults, ctx.abortSignal),
-          {
-            onStatus: (spec, status) =>
-              this.#deps.bus.emit({
-                type: "orchestration-task",
-                sessionId: this.id,
-                taskId: spec.id,
-                objective: spec.objective,
-                status,
-              }),
-          },
-        );
-        return { output: capSubagentOutput(formatTaskResults(results)) };
-      },
-    };
-  }
-
-  /** Validate a task's named agent against the current mode (mirrors spawn_subagent). */
-  #validateAgentForTask(agent: string | undefined): string | null {
-    if (!agent) return null;
-    const named = this.#deps.agents?.get(agent);
-    if (!named) return `unknown agent "${agent}". Run /agents to list them.`;
-    if (this.mode === "plan" && named.mode !== "plan") {
-      return `agent "${agent}" runs in execute mode and can't run while planning.`;
-    }
-    return null;
-  }
-
-  /** Run one orchestrator task: fork a subagent, thread in dependency results +
-   * coordination, and (when `verify`) review→retry up to verifyMaxAttempts. */
-  async #runTask(
-    spec: TaskSpec,
-    depResults: TaskResult[],
-    parentSignal: AbortSignal | undefined,
-  ): Promise<TaskResult> {
-    const named = spec.agent ? this.#deps.agents?.get(spec.agent) : undefined;
-    const maxAttempts = spec.verify ? Math.max(1, this.#deps.config.subagent.verifyMaxAttempts) : 1;
-    let feedback = "";
-    let attempts = 0;
-    while (attempts < maxAttempts) {
-      attempts++;
-      const child = this.#forkChild(named, undefined);
-      this.#deps.bus.emit({
-        type: "subagent-started",
-        sessionId: this.id,
-        subagentId: child.id,
-        prompt: spec.objective,
-      });
-      const { timedOut } = await this.#runChildToCompletion(
-        child,
-        buildTaskKickoff(spec, depResults, feedback),
-        parentSignal,
-      );
-      const outcome = this.#childOutcome(child, timedOut);
-      this.#deps.bus.emit({
-        type: "subagent-finished",
-        sessionId: this.id,
-        subagentId: child.id,
-        result: outcome.event,
-      });
-      if (outcome.isError) {
-        return { id: spec.id, objective: spec.objective, outcome: "failed", output: outcome.text, attempts };
-      }
-      // A task that did nothing on its FIRST attempt has nothing to verify → done.
-      // But on a RETRY (feedback set), a non-mutating child leaves the previous
-      // attempt's REJECTED edits on disk — don't short-circuit to "completed" and
-      // drop the reviewer's feedback; fall through to re-review so outstanding
-      // issues still gate completion.
-      if (!spec.verify || (!child.didMutate && !feedback)) {
-        return { id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts };
-      }
-      const review = await this.#reviewTask(spec, outcome.text, parentSignal);
-      if (review.clean) {
-        return { id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts };
-      }
-      feedback = review.feedback;
-    }
-    return {
-      id: spec.id,
-      objective: spec.objective,
-      outcome: "failed",
-      output: `Verification still failing after ${attempts} attempt(s):\n${feedback}`,
-      attempts,
-    };
-  }
-
-  /** Run the built-in read-only `review` agent over a finished task's work. */
-  async #reviewTask(
-    spec: TaskSpec,
-    work: string,
-    parentSignal: AbortSignal | undefined,
-  ): Promise<{ clean: boolean; feedback: string }> {
-    const reviewAgent = this.#deps.agents?.get("review");
-    const child = this.#forkChild(reviewAgent, "plan"); // review is read-only
-    const prompt =
-      `Review the work done for this task. Objective: ${spec.objective}\n` +
-      (spec.files?.length ? `Files: ${spec.files.join(", ")}\n` : "") +
-      `\nThe agent reported:\n${work}\n\n` +
-      "Verify against the ACTUAL files (don't trust the report). Report concrete issues as " +
-      "`path:line — problem`, or reply exactly REVIEW-CLEAN if the work is correct and complete.";
-    await this.#runChildToCompletion(child, prompt, parentSignal);
-    const out = child.lastAssistantText();
-    return { clean: isReviewClean(out), feedback: out || "(reviewer produced no output)" };
-  }
-
-  /**
-   * Fork a subagent child for delegated work (shared by spawn_subagent and the
-   * orchestrator). Resolves the named agent's mode/model/system and coerces the
-   * child to plan mode when the parent is planning. The model is a *setting*
-   * (named agent → subagent.model → parent), never model-chosen per call.
-   */
-  #forkChild(named: NamedAgent | undefined, requestedMode: Mode | undefined): Session {
-    const childMode: Mode =
-      this.mode === "plan" ? "plan" : (requestedMode ?? named?.mode ?? "execute");
-    return this.fork({
-      bus: new EventBusImpl(), // isolate the subagent's fine-grained stream
-      model: named?.model ?? this.#deps.config.subagent.model ?? this.model,
-      mode: childMode,
-      goal: this.goal,
-      depth: this.depth + 1,
-      ...(named?.system ? { extraSystem: [named.system] } : {}),
-      // A named agent's tool allowlist/denylist restricts the child's tools.
-      ...(named?.tools || named?.denyTools
-        ? { toolFilter: { ...(named.tools ? { allow: named.tools } : {}), ...(named.denyTools ? { deny: named.denyTools } : {}) } }
-        : {}),
-    });
-  }
-
-  /**
-   * Run a forked child to completion through the fan-out gate + per-subagent
-   * wall-clock timeout, propagating a parent abort and folding the child's
-   * usage/cost up into this session. Returns whether the timeout fired.
-   */
-  async #runChildToCompletion(
-    child: Session,
-    prompt: string,
-    parentSignal: AbortSignal | undefined,
-  ): Promise<{ timedOut: boolean }> {
-    const onAbort = () => child.abort();
-    parentSignal?.addEventListener("abort", onAbort, { once: true });
-    let timedOut = false;
-    try {
-      // Bound concurrent fan-out: at most `subagent.maxParallel` children run at
-      // once; extras queue. Parallel calls in one step share this gate.
-      await this.#childGate(() => {
-        // If the user aborted while this child was still queued, don't burn a
-        // model call — the parent turn is already unwinding.
-        if (parentSignal?.aborted) return Promise.resolve();
-        // Wall-clock guard: a hung provider stream can't wedge the gate forever.
-        const timeoutMs = this.#deps.config.subagent.timeoutMs;
-        if (!timeoutMs) return child.run(prompt);
-        const timer = setTimeout(() => {
-          timedOut = true;
-          child.abort();
-        }, timeoutMs);
-        return child.run(prompt).finally(() => clearTimeout(timer));
-      });
-    } finally {
-      parentSignal?.removeEventListener("abort", onAbort);
-    }
-    // A child that actually mutated the workspace makes THIS turn a mutating one
-    // (so auto-verify runs); a read-only investigation child does not.
-    if (child.didMutate) this.#turnMutated = true;
-    // Fold the child's tokens + cost into the parent so `/cost` + the spend guard
-    // account for delegated work (the child runs on an isolated bus).
-    addUsage(this.#usage, child.usage);
-    this.#costUSD += child.costUSD;
-    this.#deps.bus.emit({ type: "usage-updated", sessionId: this.id, usage: this.#usageSnapshot() });
-    this.#enforceBudget();
-    return { timedOut };
-  }
-
-  /** Normalize a finished child into a model-facing text + error flag + a short
-   * event label, salvaging any partial output on timeout/failure. */
-  #childOutcome(
-    child: Session,
-    timedOut: boolean,
-  ): { text: string; isError: boolean; event: string } {
-    const partial = child.lastAssistantText();
-    if (timedOut) {
-      const secs = Math.round(this.#deps.config.subagent.timeoutMs / 1000);
-      return {
-        text:
-          `Subagent timed out after ${secs}s and was stopped.` +
-          (partial ? `\n\nPartial output before timeout:\n${partial}` : ""),
-        isError: true,
-        event: `timed out after ${secs}s`,
-      };
-    }
-    if (child.lastError) {
-      return {
-        text: partial
-          ? `Subagent failed: ${child.lastError}\n\nPartial output before failure:\n${partial}`
-          : `Subagent failed: ${child.lastError}`,
-        isError: true,
-        event: `failed: ${child.lastError}`,
-      };
-    }
-    const text =
-      partial ||
-      (child.didMutate
-        ? "(subagent completed via tool calls but produced no written summary)"
-        : "(subagent produced no output)");
-    return { text, isError: false, event: text };
   }
 
   /**
@@ -769,35 +568,6 @@ export class Session {
       tasks: this.#tasks,
     });
     return this.#tasks;
-  }
-
-  /** Build the per-session `update_tasks` tool (closes over this session). */
-  #tasksTool(): ToolDefinition<{
-    tasks: { title: string; status: TaskStatus }[];
-  }> {
-    const Task = z.object({
-      title: z.string().describe("Short imperative description of the task."),
-      status: z
-        .enum(["pending", "in_progress", "completed"])
-        .describe("Exactly one task should be in_progress at a time."),
-    });
-    return {
-      name: "update_tasks",
-      description:
-        "Record and update your working task list for a multi-step request. " +
-        "Pass the COMPLETE list every time (it replaces the previous one). " +
-        "Keep exactly one task in_progress, mark tasks completed as you finish " +
-        "them, and add new tasks as they emerge. Use this to plan and to show " +
-        "the user live progress on non-trivial work.",
-      inputSchema: z.object({ tasks: z.array(Task) }),
-      readOnly: true,
-      concurrencySafe: false,
-      execute: async ({ tasks }) => {
-        const updated = this.setTasks(tasks);
-        const done = updated.filter((t) => t.status === "completed").length;
-        return { output: `Task list updated (${done}/${updated.length} complete).` };
-      },
-    };
   }
 
   /** Execute one agentic turn for `input`. Resolves when the turn ends. */
@@ -844,10 +614,7 @@ export class Session {
       userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
       histRef = this.#history[this.#history.length - 1];
 
-      const model = await withRetry(() => registry.resolveModel(this.model, config), {
-        maxAttempts: config.retry.maxAttempts,
-        baseDelayMs: config.retry.baseDelayMs,
-      });
+      const model = await this.#resolveWithFallback(registry, config);
       if (this.#aborted()) {
         this.#interrupted = true;
         return;
@@ -878,10 +645,20 @@ export class Session {
               .filter((a) => this.mode !== "plan" || a.mode === "plan")
               .map((a) => `${a.name} — ${a.description}`)
           : [];
+      const repoFacts = this.#deps.repoProfile ? formatRepoFacts(this.#deps.repoProfile) : undefined;
+      // The sources gathered so far this session (bounded to ~2k chars) — so the
+      // model can cite them by their stable [n] consistently across turns.
+      const sources = this.#sources.size ? this.#sources.format() : undefined;
       const system = composeSystemPrompt({
         mode: this.mode,
         cwd: this.#deps.cwd,
         goal: this.goal,
+        ...(repoFacts ? { repoFacts } : {}),
+        ...(sources ? { sources } : {}),
+        // Re-inject the live task list every turn so it survives compaction
+        // deterministically (the transcript's update_tasks calls may be
+        // summarized away; #tasks is the authority).
+        ...(this.#tasks.length ? { tasks: this.#tasks } : {}),
         projectMemory: this.#deps.projectMemory,
         ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
         pluginBlocks: this.#deps.extraSystem,
@@ -912,8 +689,14 @@ export class Session {
                 this.#deps.fileLock!(absPath, fn, this.id),
             }
           : {}),
-        checkPermission: (name: string, input: unknown) =>
-          checker.check(name, input),
+        // Compiler feedback in the same step: edit/write append fresh
+        // diagnostics for the file they just mutated (no-op when the optional
+        // `typescript` dep is absent — the service resolves lazily).
+        ...(this.#deps.diagnostics
+          ? { diagnose: (absPath: string) => this.#deps.diagnostics!.diagnose(absPath) }
+          : {}),
+        checkPermission: (name: string, input: unknown, opts?: { fallback?: "allow" | "deny" | "ask" }) =>
+          checker.check(name, input, opts),
         ...(hooks
           ? {
               beforeTool: async (toolName: string, input: unknown) => {
@@ -928,39 +711,65 @@ export class Session {
           : {}),
       };
 
-      const tools = toolset.aiTools(this.mode, base);
+      // ONE mutation lock for the whole turn, shared by the toolset map AND the
+      // per-session tools below — a manually-registered mutating tool
+      // (save_memory, run_check) must serialize with edit/write/bash, not race them.
+      const serialize = createSerialLock();
+      const tools = toolset.aiTools(this.mode, base, serialize);
       // The task list is available in both modes: the model can lay out tasks
       // while planning, and they carry over into execution.
-      tools.update_tasks = toAISDKTool(this.#tasksTool(), base);
+      tools.update_tasks = toAISDKTool(buildTasksTool(this.#handle), base, serialize);
       // Offer spawning in both modes (plan-mode children are coerced read-only),
       // bounded by recursion depth.
       if (subagentsAvailable) {
-        tools.spawn_subagent = toAISDKTool(this.#spawnTool(), base);
-        // Deterministic task-DAG orchestration (opt-in): in addition to one-off
-        // spawn_subagent, offer spawn_tasks so the model can submit a whole
-        // dependency-ordered plan the engine schedules.
+        tools.spawn_subagent = toAISDKTool(this.#runner.spawnTool(), base, serialize);
+        // Deterministic task-DAG orchestration (default-on): in addition to
+        // one-off spawn_subagent, offer spawn_tasks so the model can submit a
+        // whole dependency-ordered plan the engine schedules.
         if (config.orchestration.enabled) {
-          tools.spawn_tasks = toAISDKTool(this.#spawnTasksTool(), base);
+          tools.spawn_tasks = toAISDKTool(this.#runner.spawnTasksTool(), base, serialize);
         }
+      }
+      // read_report: pull a finished orchestrator task's FULL report by id.
+      // Offered to the planner (alongside spawn_tasks) AND to any depth>0 child
+      // (a dependent task pulling its dependency's complete write-up — that child
+      // may itself be beyond maxDepth, so it's gated on depth, not
+      // subagentsAvailable). The store is tree-shared, created by the root runner.
+      if (
+        config.orchestration.enabled &&
+        this.#deps.reportStore &&
+        (subagentsAvailable || this.depth > 0)
+      ) {
+        tools.read_report = toAISDKTool(buildReadReportTool(this.#deps.reportStore), base, serialize);
       }
       // Progressive disclosure: expose use_skill when skills are available.
       if (skills?.list().length) {
-        tools.use_skill = toAISDKTool(this.#useSkillTool(), base);
+        tools.use_skill = toAISDKTool(buildUseSkillTool(this.#handle), base, serialize);
       }
       // Long-term memory: let the model search prior context on demand, and —
       // when memory is wired and we're not in read-only plan mode — persist
       // durable facts for future sessions.
-      tools.recall_memory = toAISDKTool(this.#recallTool(), base);
+      tools.recall_memory = toAISDKTool(buildRecallTool(this.#handle), base, serialize);
       if (this.#deps.memory && this.mode !== "plan") {
-        tools.save_memory = toAISDKTool(this.#saveMemoryTool(), base);
+        tools.save_memory = toAISDKTool(buildSaveMemoryTool(this.#handle), base, serialize);
+      }
+      // The repo's real checks as a first-class verdict tool. Execute-mode only
+      // (running a build/test suite mutates the workspace) and only when recon
+      // actually detected commands — never offer a tool that can only error.
+      if (
+        this.mode !== "plan" &&
+        this.#deps.repoProfile &&
+        Object.keys(this.#deps.repoProfile.commands).length
+      ) {
+        tools.run_check = toAISDKTool(buildRunCheckTool(this.#handle), base, serialize);
       }
       // Cross-agent coordination board: offer post_note/read_notes whenever this
       // agent is part of a multi-agent tree — a subagent worker (depth > 0) or a
       // root that can still delegate — so siblings can coordinate, but a plain
       // single-agent turn with no one to coordinate with isn't cluttered.
       if (this.#deps.blackboard && (this.depth > 0 || subagentsAvailable)) {
-        tools.post_note = toAISDKTool(this.#postNoteTool(), base);
-        tools.read_notes = toAISDKTool(this.#readNotesTool(), base);
+        tools.post_note = toAISDKTool(buildPostNoteTool(this.#handle), base, serialize);
+        tools.read_notes = toAISDKTool(buildReadNotesTool(this.#handle), base, serialize);
       }
 
       // Per-agent tool restriction (from a named agent's frontmatter): keep only
@@ -981,12 +790,33 @@ export class Session {
       // it into a superset (below) so cost, the live context %, and the compaction
       // trigger all reflect the true prompt size rather than the uncached slice.
       const foldCachedIntoInput = cacheTokensDisjointFromInput(this.model);
-      const messages: ModelMessage[] = tuning.cacheSystem
+      let outgoing: ModelMessage[] = tuning.cacheSystem
         ? [
             { role: "system", content: system, providerOptions: ANTHROPIC_CACHE_CONTROL },
             ...this.#modelMessages,
           ]
         : this.#modelMessages;
+      // Second breakpoint: the trailing conversation message, so this turn's
+      // whole prefix is a cache hit on the next step/turn. Applied to a COPY —
+      // the stored history must not accumulate markers (Anthropic caps
+      // breakpoints at 4; system + tools + this = 3).
+      if (tuning.cacheConversation && outgoing.length > 1) {
+        const last = outgoing[outgoing.length - 1]!;
+        outgoing = [
+          ...outgoing.slice(0, -1),
+          { ...last, providerOptions: { ...last.providerOptions, ...ANTHROPIC_CACHE_CONTROL } } as ModelMessage,
+        ];
+      }
+      const messages: ModelMessage[] = outgoing;
+      // Third breakpoint: the tool block. Tool schemas are big and perfectly
+      // stable within a turn — without a marker every step re-bills all of them.
+      if (tuning.cacheTools) {
+        const names = Object.keys(tools);
+        const lastTool = names[names.length - 1];
+        if (lastTool && tools[lastTool]) {
+          (tools[lastTool] as { providerOptions?: unknown }).providerOptions = ANTHROPIC_CACHE_CONTROL;
+        }
+      }
 
       await this.#withLimiter(async () => {
       const result = streamText({
@@ -1000,6 +830,45 @@ export class Session {
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: this.#abort.signal,
         maxRetries: config.retry.maxAttempts,
+        // Mid-turn microcompaction: before each step, project the fill and
+        // offload bulky/superseded tool results (full text → session artifact,
+        // preview + path stays in the prompt). prepareStep edits are EPHEMERAL
+        // (never written back into response.messages), so a durable pass runs
+        // again at end-of-turn — this hook just keeps a long turn under the
+        // window RIGHT NOW. Failures degrade to the untrimmed prompt; a throw
+        // here would fail the whole turn.
+        prepareStep: async ({ messages: stepMessages }) => {
+          try {
+            const offload = config.compaction.offload;
+            if (!offload.enabled || this.#aborted()) {
+              return this.#offloaded.size
+                ? { messages: applyOffloads(stepMessages, this.#offloaded, offload.previewBytes) }
+                : undefined;
+            }
+            const projected = estimateTokens(stepMessages) + this.#overheadTokens;
+            const limit = offload.threshold * this.#contextWindow;
+            if (projected >= limit) {
+              const plan = planOffloads(stepMessages, {
+                maxResultBytes: offload.maxResultBytes,
+                keepLiveResults: offload.keepLiveResults,
+                // Free enough to land comfortably under the threshold (chars ≈ 4/token).
+                targetChars: Math.max(0, (projected - limit * 0.85) * 4),
+                existing: new Set(this.#offloaded.keys()),
+              });
+              for (const ref of plan) await this.#writeOffload(ref, stepMessages);
+            }
+            return this.#offloaded.size
+              ? { messages: applyOffloads(stepMessages, this.#offloaded, offload.previewBytes) }
+              : undefined;
+          } catch (err) {
+            bus.emit({
+              type: "notice",
+              level: "warn",
+              message: `context offload skipped: ${(err as Error).message}`,
+            });
+            return undefined;
+          }
+        },
         onError: ({ error }) => {
           bus.emit({
             type: "notice",
@@ -1014,14 +883,23 @@ export class Session {
               >,
             }
           : {}),
-        onStepFinish: ({ usage }) => {
+        onStepFinish: ({ usage, providerMetadata }) => {
           const stepUsage = normalizeUsage(usage);
+          // Cache WRITES are a third disjoint slice on Anthropic — invisible in
+          // normalized usage, only in providerMetadata. Without folding them the
+          // first (cache-creating) step under-reports both context fill and cost.
+          const cacheWrites = foldCachedIntoInput
+            ? Number(
+                (providerMetadata as { anthropic?: { cacheCreationInputTokens?: unknown } } | undefined)
+                  ?.anthropic?.cacheCreationInputTokens ?? 0,
+              ) || 0
+            : 0;
           // Restore the `cached ⊆ input` invariant for providers (Anthropic) that
           // report the two disjoint, so the accounting below (cost, context fill,
           // compaction) sees the full prompt size instead of only the new tokens.
-          if (foldCachedIntoInput && stepUsage?.cachedInputTokens) {
+          if (foldCachedIntoInput && stepUsage && (stepUsage.cachedInputTokens || cacheWrites)) {
             stepUsage.inputTokens =
-              (stepUsage.inputTokens ?? 0) + stepUsage.cachedInputTokens;
+              (stepUsage.inputTokens ?? 0) + (stepUsage.cachedInputTokens ?? 0) + cacheWrites;
           }
           bus.emit({
             type: "step-finished",
@@ -1037,6 +915,13 @@ export class Session {
           // schemas, so it read far too low.
           if (stepUsage?.inputTokens) {
             this.#lastInputTokens = stepUsage.inputTokens;
+            // Anchor the mid-turn fill projection: the delta between the real
+            // prompt size and the message-text estimate IS the system+tools
+            // overhead the estimate can't see.
+            this.#overheadTokens = Math.max(
+              0,
+              stepUsage.inputTokens - estimateTokens(this.#modelMessages),
+            );
             bus.emit({
               type: "context-updated",
               sessionId: this.id,
@@ -1051,6 +936,7 @@ export class Session {
             stepUsage?.outputTokens ?? 0,
             this.#price,
             stepUsage?.cachedInputTokens ?? 0,
+            cacheWrites,
           );
           bus.emit({
             type: "usage-updated",
@@ -1071,6 +957,10 @@ export class Session {
       try {
         const response = await result.response;
         this.#modelMessages.push(...response.messages);
+        // prepareStep's offloads were ephemeral (the SDK re-records full tool
+        // results in response.messages) — make them durable so the persisted
+        // session and the NEXT turn's prompt carry the previews, not the blobs.
+        this.#applyDurableOffloads();
         responseOk = true;
       } finally {
         if (assistant) {
@@ -1078,20 +968,14 @@ export class Session {
           // On failure the authoritative model messages never arrived; record
           // the partial assistant text so model context matches UI history.
           if (!responseOk) {
-            const text = assistant.parts
-              .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
-              .map((p) => p.text)
-              .join("");
+            const text = messageText(assistant);
             if (text) this.#modelMessages.push({ role: "assistant", content: text });
           }
         }
       }
       // Notify plugins of the completed assistant message (best-effort).
       if (this.#deps.hooks && assistant) {
-        const text = assistant.parts
-          .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
-          .map((p) => p.text)
-          .join("");
+        const text = messageText(assistant);
         if (text) await this.#deps.hooks.run("assistant.message", { sessionId: this.id, text });
       }
       });
@@ -1178,8 +1062,47 @@ export class Session {
     }
   }
 
+  /** Persist one tool result to a session artifact and record it as offloaded.
+   * Idempotent per callId; a write failure simply skips the offload. */
+  async #writeOffload(
+    ref: { callId: string; toolName: string; messageIndex: number },
+    messages: ModelMessage[],
+  ): Promise<void> {
+    if (this.#offloaded.has(ref.callId)) return;
+    const msg = messages[ref.messageIndex];
+    if (msg?.role !== "tool" || !Array.isArray(msg.content)) return;
+    const part = (msg.content as { type?: string; toolCallId?: string; output?: { type?: string; value?: unknown } }[]).find(
+      (p) => p?.type === "tool-result" && p.toolCallId === ref.callId,
+    );
+    if (!part) return;
+    const full = offloadResultText(part.output);
+    if (!full) return;
+    try {
+      const rel = join(".vibe", "sessions", this.id, "tool-results", `${ref.callId.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 64)}.txt`);
+      const abs = join(this.#deps.cwd, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, full, "utf8");
+      this.#offloaded.set(ref.callId, { path: rel, toolName: ref.toolName, fullChars: full.length });
+    } catch {
+      /* offloading is an enhancement — a failed write must never fail the turn */
+    }
+  }
+
+  /** Fold the ephemeral prepareStep offloads into the DURABLE message history
+   * (prepareStep edits never reach response.messages). Runs at end-of-turn and
+   * before compaction, so persisted sessions carry the previews. */
+  #applyDurableOffloads(): void {
+    if (!this.#offloaded.size) return;
+    this.#modelMessages = applyOffloads(
+      this.#modelMessages,
+      this.#offloaded,
+      this.#deps.config.compaction.offload.previewBytes,
+    );
+  }
+
   /** Summarize older context when over the threshold (or when forced). */
   async #maybeCompact(model: LanguageModel, force: boolean): Promise<void> {
+    this.#applyDurableOffloads();
     const contextWindow =
       (await this.#deps.getContextWindow?.(this.model)) ??
       DEFAULT_CONTEXT_WINDOW;
@@ -1246,15 +1169,34 @@ export class Session {
   }
 
   async #summarize(model: LanguageModel, messages: ModelMessage[]): Promise<string> {
-    const transcript = messages
+    const raw = messages
       .map((m) => `${m.role}: ${contentToText(m.content)}`)
       .join("\n");
+    // Cap the summarizer's own input: compaction fires when the context is
+    // near-full, so the uncapped transcript WAS the overflowing history — the
+    // summarize call itself could blow the window. Keep head + tail (the
+    // opening goal and the most recent decisions matter most; the middle is
+    // what summaries exist to compress).
+    const cap = SUMMARY_INPUT_CAP;
+    const transcript =
+      raw.length > cap
+        ? `${raw.slice(0, Math.floor(cap * 0.4))}\n…[${raw.length - cap} chars of mid-conversation omitted]…\n${raw.slice(-Math.floor(cap * 0.6))}`
+        : raw;
     const { text } = await this.#withLimiter(() =>
       generateText({
         model,
+        // A sectioned contract instead of free-text: the summary replaces real
+        // history, so it must deterministically preserve the load-bearing
+        // categories (what a resumed model needs to keep acting correctly).
         prompt:
-          "Summarize the following conversation excerpt for an AI coding agent. " +
-          "Preserve decisions made, facts learned, file paths touched, and any open tasks. Be concise.\n\n" +
+          "Summarize this coding-agent conversation excerpt into EXACTLY these sections " +
+          "(omit a section only if truly empty). Be concise and factual — the summary " +
+          "replaces the original history, so anything you drop is gone.\n" +
+          "## STATE — where things stand right now\n" +
+          "## DECISIONS — choices made and why\n" +
+          "## FILES TOUCHED — path: what changed\n" +
+          "## VERIFIED FACTS — things confirmed by reading/running (not assumed)\n" +
+          "## OPEN THREADS — unfinished work / next steps\n\n" +
           transcript,
         // Make compaction interruptible — an Esc during a long summarize shouldn't
         // be ignored (the same controller the turn/`/compact` runs under).
@@ -1276,6 +1218,7 @@ export class Session {
           goal: this.goal,
           tasks: this.#tasks,
           usage: { ...this.#usage, costUSD: this.#costUSD },
+          ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
           createdAt: this.#createdAt,
           updatedAt: Date.now(),
         },
@@ -1319,127 +1262,6 @@ export class Session {
       goal: overrides.goal ?? null,
       ...overrides,
     });
-  }
-
-  /** Build the `use_skill` tool that loads a skill's full body into context. */
-  #useSkillTool(): ToolDefinition<{ name: string }> {
-    const skills = this.#deps.skills;
-    return {
-      name: "use_skill",
-      description:
-        "Load the full instructions for a named skill before performing a task it applies to. Call this when a listed skill is relevant.",
-      inputSchema: z.object({
-        name: z.string().describe("The skill name to load."),
-      }),
-      readOnly: true,
-      execute: async ({ name }) => {
-        const skill = skills?.get(name);
-        if (!skill) {
-          return { output: `Unknown skill "${name}".`, isError: true };
-        }
-        const body = await skill.load();
-        return { output: `# Skill: ${skill.name}\n\n${body}` };
-      },
-    };
-  }
-
-  /** Build the read-only `recall_memory` tool: hybrid search over saved memory +
-   * past sessions when a MemoryService is wired; lexical session search otherwise. */
-  #recallTool(): ToolDefinition<{ query: string; limit?: number }> {
-    const cwd = this.#deps.cwd;
-    const selfId = this.id;
-    const memory = this.#deps.memory;
-    return {
-      name: "recall_memory",
-      description:
-        "Search long-term memory — saved facts/decisions and past vibe-codr sessions — for relevant prior context. Use this when the user references earlier work, asks 'what did we decide', or you need context beyond the current conversation.",
-      inputSchema: z.object({
-        query: z.string().describe("What to look for in saved memory and past sessions."),
-        limit: z.number().int().positive().max(20).optional().describe("Max matches (default 8)."),
-      }),
-      readOnly: true,
-      concurrencySafe: true,
-      execute: async ({ query, limit }) => {
-        if (memory) {
-          const hits = await memory.search(query, limit ?? 8);
-          return { output: formatMemoryHits(query, hits) };
-        }
-        const hits = await searchSessions(cwd, query, {
-          excludeId: selfId,
-          ...(limit ? { limit } : {}),
-        });
-        return { output: formatRecall(query, hits) };
-      },
-    };
-  }
-
-  /** Build the `save_memory` write tool: persist a durable fact to long-term
-   * memory (permission-gated, since it writes a file). */
-  #saveMemoryTool(): ToolDefinition<{
-    fact: string;
-    scope?: "project" | "global";
-    tags?: string[];
-  }> {
-    const memory = this.#deps.memory;
-    return {
-      name: "save_memory",
-      description:
-        "Persist a durable fact, decision, or user preference to long-term memory so future sessions can recall it (architecture choices, conventions, gotchas, stable preferences). Use sparingly — not for transient task state, which the task list already tracks. Choose scope: 'project' for this repo, 'global' for things true across all the user's projects.",
-      inputSchema: z.object({
-        fact: z.string().min(1).describe("The fact to remember, as one concise self-contained statement."),
-        scope: z.enum(["project", "global"]).optional().describe("project (this repo, default) or global (all projects)."),
-        tags: z.array(z.string()).optional().describe("Optional tags for grouping."),
-      }),
-      readOnly: false,
-      concurrencySafe: false,
-      execute: async ({ fact, scope, tags }) => {
-        if (!memory) {
-          return { output: "Memory is not available in this session.", isError: true };
-        }
-        const path = await memory.save({ fact, ...(scope ? { scope } : {}), ...(tags ? { tags } : {}) });
-        return { output: `Saved to ${path}. It will surface via recall_memory when relevant.` };
-      },
-    };
-  }
-
-  /** Build the `post_note` tool: share a coordination note with sibling agents. */
-  #postNoteTool(): ToolDefinition<{ note: string }> {
-    const board = this.#deps.blackboard;
-    const from = this.depth === 0 ? "lead" : `sub:${this.id.slice(-4)}`;
-    return {
-      name: "post_note",
-      description:
-        "Share a short coordination note with the other agents working in parallel (a decision you made, an interface you settled, a file you're taking, a conflict you hit). Other agents see it via read_notes. Keep it terse and factual.",
-      inputSchema: z.object({
-        note: z.string().min(1).describe("The note to share (one short factual line)."),
-      }),
-      readOnly: true,
-      concurrencySafe: true,
-      execute: async ({ note }) => {
-        if (!board) return { output: "No shared board in this session.", isError: true };
-        board.post(from, note);
-        return { output: "Posted to the shared board." };
-      },
-    };
-  }
-
-  /** Build the `read_notes` tool: read what sibling agents have shared. */
-  #readNotesTool(): ToolDefinition<{ limit?: number }> {
-    const board = this.#deps.blackboard;
-    return {
-      name: "read_notes",
-      description:
-        "Read the coordination notes other parallel agents have shared (decisions, claimed files, conflicts). Check this before and during delegated work to avoid duplicating or contradicting a sibling.",
-      inputSchema: z.object({
-        limit: z.number().int().positive().max(100).optional().describe("Max recent notes (default all)."),
-      }),
-      readOnly: true,
-      concurrencySafe: true,
-      execute: async ({ limit }) => {
-        if (!board) return { output: "No shared board in this session." };
-        return { output: formatNotes(board.read(limit)) };
-      },
-    };
   }
 
   #pushUser(input: string, images: ImageAttachment[] = [], display?: string | null): void {
@@ -1528,13 +1350,26 @@ export class Session {
           // it here, not as `tool-error`. Recover the real status from the
           // adapter's side-channel so the UI doesn't render a denied write as a
           // successful tool call.
+          const isError = this.#toolCallErrors.get(part.toolCallId) ?? false;
+          // Harvest sources: on a SUCCESSFUL research-tool result, extract the
+          // URLs it surfaced and record them in the session's source ledger
+          // (deduped + stably numbered), so later turns can cite them by [n].
+          if (!isError && RESEARCH_TOOL_NAMES.has(part.toolName)) {
+            const text =
+              typeof part.output === "string"
+                ? part.output
+                : offloadResultText(part.output as { type?: string; value?: unknown });
+            for (const url of harvestUrls(text)) {
+              this.#sources.record({ url, via: part.toolName });
+            }
+          }
           bus.emit({
             type: "tool-call-finished",
             sessionId: this.id,
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             output: part.output,
-            isError: this.#toolCallErrors.get(part.toolCallId) ?? false,
+            isError,
           });
           break;
         }
@@ -1573,29 +1408,12 @@ export class Session {
   }
 }
 
-/** Compose the self-contained kickoff prompt for an orchestrator task: the
- * objective, owned files, prerequisite results, coordination reminder, and (on a
- * verify retry) the reviewer's feedback. */
-function buildTaskKickoff(spec: TaskSpec, depResults: TaskResult[], feedback: string): string {
-  const parts: string[] = [spec.objective];
-  if (spec.files?.length) {
-    parts.push(
-      `Files you own (edit only these; the engine hard-rejects writes to a file another task owns): ${spec.files.join(", ")}`,
-    );
-  }
-  if (depResults.length) {
-    const summaries = depResults
-      .map((d) => `- [${d.id}] ${d.output.replace(/\s+/g, " ").trim().slice(0, 1_000)}`)
-      .join("\n");
-    parts.push(`Results from the prerequisite tasks you depend on:\n${summaries}`);
-  }
-  parts.push(
-    "You're one task in a coordinated plan. Use read_notes/post_note to see and share decisions with sibling tasks. Be self-contained, then report what you did and any follow-ups. Done only when the objective is fully met.",
-  );
-  if (feedback) {
-    parts.push(`A previous attempt was reviewed and needs fixing before this is acceptable:\n${feedback}`);
-  }
-  return parts.join("\n\n");
+/** The concatenated text of a message's text parts (dropping non-text parts). */
+function messageText(message: Message): string {
+  return message.parts
+    .filter((p): p is Extract<Part, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("");
 }
 
 /**
@@ -1609,27 +1427,37 @@ function contentToText(content: unknown): string {
   if (Array.isArray(content)) {
     return content
       .map((part) => {
-        const p = part as { type?: string; text?: string };
+        const p = part as {
+          type?: string;
+          text?: string;
+          toolName?: string;
+          input?: unknown;
+          output?: unknown;
+        };
         if (p?.type === "text") return p.text ?? "";
         if (p?.type === "image") return "[image]";
         if (p?.type === "file") return "[file]";
+        // Tool parts: render the meaningful fields, not the raw part JSON —
+        // `JSON.stringify` of a tool-result wrapped every quote in escapes and
+        // doubled the token cost of the summarizer/digest prompts for nothing.
+        if (p?.type === "tool-call") {
+          return `[called ${p.toolName ?? "tool"}(${typeof p.input === "string" ? p.input : JSON.stringify(p.input ?? {})})]`;
+        }
+        if (p?.type === "tool-result") {
+          const out = p.output as { value?: unknown } | string | undefined;
+          const text =
+            typeof out === "string"
+              ? out
+              : typeof (out as { value?: unknown })?.value === "string"
+                ? String((out as { value: string }).value)
+                : JSON.stringify(out ?? "");
+          return `[${p.toolName ?? "tool"} → ${text.slice(0, 2_000)}]`;
+        }
         return JSON.stringify(part);
       })
       .join(" ");
   }
   return JSON.stringify(content);
-}
-
-/**
- * Whether a task reviewer's output is a CLEAN verdict. Requires `REVIEW-CLEAN` as
- * its own verdict at the start of a line — NOT a bare substring — so an
- * adversarial reviewer that writes "NOT REVIEW-CLEAN — path:line — problem" (or
- * "this is not REVIEW-CLEAN") is treated as feedback, not a pass whose concrete
- * issues get silently discarded. Biased to a re-review (false negative) over
- * shipping rejected work (false positive).
- */
-export function isReviewClean(out: string): boolean {
-  return /(^|\n)\s*REVIEW-CLEAN\b/.test(out);
 }
 
 function appendText(message: Message, delta: string): void {

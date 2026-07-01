@@ -54,3 +54,25 @@ export { createLogger } from "./logger.ts";
 // Utilities
 export { createId } from "./id.ts";
 export { AsyncQueue } from "./async-queue.ts";
+
+// Stream reading + truncation
+export type { KeepPolicy, CapOptions } from "./stream.ts";
+export {
+  CappedText,
+  omittedMarker,
+  drainTextStream,
+  readCappedText,
+  capText,
+  readCappedBytes,
+} from "./stream.ts";
+
+// Build intelligence (deterministic recon / checks / gate / handoffs)
+export type {
+  CodeCommands,
+  CheckName,
+  RepoProfile,
+  CheckSignal,
+  GateSummary,
+  Handoff,
+  StubFinding,
+} from "./build.ts";

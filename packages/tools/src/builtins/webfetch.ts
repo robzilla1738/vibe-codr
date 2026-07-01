@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isIP } from "node:net";
-import type { ToolDefinition } from "@vibe/shared";
+import { readCappedBytes, type ToolDefinition } from "@vibe/shared";
 import { assertFetchAllowed, type FetchPolicy, type Lookup } from "./net-guard.ts";
 import { extractPdfText } from "./pdftext.ts";
 import type { FetchCache } from "./fetch-cache.ts";
@@ -67,19 +67,64 @@ function decodeEntities(s: string): string {
   });
 }
 
-/** HTML -> readable text: drop comments, scripts/styles, and head/nav/footer
- * boilerplate, strip remaining tags, decode entities, collapse whitespace. This
- * is the always-available fallback when Readability isn't installed. */
-function htmlToText(html: string): string {
-  const stripped = html
+/**
+ * HTML -> structure-preserving markdown-ish text: headings become `#` lines,
+ * list items become `- ` bullets, `<pre>` blocks become fenced code, and block
+ * boundaries become newlines — instead of collapsing the whole document into
+ * one wall of whitespace-mashed words (which destroyed the heading/list/code
+ * structure models need to comprehend docs pages). Dependency-free.
+ */
+export function htmlToText(html: string): string {
+  let s = html
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<head[\s\S]*?<\/head>/gi, " ")
     .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
     .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+    .replace(/<(?:aside|template)[\s\S]*?<\/(?:aside|template)>/gi, " ");
+  // Code blocks first (their inner whitespace must survive verbatim).
+  s = s.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, body: string) => {
+    const code = decodeEntities(body.replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
+    return `\n\`\`\`\n${code}\n\`\`\`\n`;
+  });
+  // Headings → markdown heading lines.
+  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level: string, body: string) => {
+    const text = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n";
+  });
+  // List items → bullets; block-level closers → line breaks; cells → separators.
+  s = s
+    .replace(/<li[^>]*>/gi, "\n- ")
+    .replace(/<\/(?:p|div|section|article|li|ul|ol|table|blockquote|figure)>/gi, "\n")
+    .replace(/<(?:br|hr)\s*\/?>/gi, "\n")
+    .replace(/<\/t[dh]>/gi, " | ")
+    .replace(/<\/tr>/gi, "\n")
     .replace(/<[^>]+>/g, " ");
-  return decodeEntities(stripped).replace(/\s+/g, " ").trim();
+  // Collapse whitespace per line (never across lines), keep fenced code intact.
+  const parts = s.split(/(```[\s\S]*?```)/);
+  const cleaned = parts
+    .map((part, i) =>
+      i % 2 === 1
+        ? part // inside a fence — verbatim
+        : decodeEntities(part)
+            .split("\n")
+            .map((line) => line.replace(/[ \t]+/g, " ").trim())
+            .join("\n")
+            .replace(/\n{3,}/g, "\n\n"),
+    )
+    .join("\n");
+  return cleaned.trim();
+}
+
+/** Markers that make a tiny page read as a paywall / anti-bot shell rather than
+ * real content — flagged so a login wall never silently becomes a "fact". */
+const SHELL_MARKERS =
+  /enable javascript|verify you are (a )?human|captcha|cloudflare|access denied|subscribe to (read|continue)|sign in to (read|continue)|are you a robot|attention required|checking your browser/i;
+
+/** True when the extracted text looks like a blocker shell, not the article. */
+export function looksLikeShell(text: string): boolean {
+  return text.length < 1_200 && SHELL_MARKERS.test(text);
 }
 
 /** Extract the main article text with Mozilla Readability, when the optional
@@ -102,7 +147,16 @@ function loadReadable(): Promise<ReadableFn | null> {
       return (html: string, _url: string): string | null => {
         try {
           const { document } = linkedom.parseHTML(html);
-          const article = new readability.Readability(document).parse();
+          const article = new readability.Readability(document).parse() as {
+            content?: string;
+            textContent?: string;
+          } | null;
+          // Prefer the article's HTML through the structure-preserving converter
+          // (headings/lists/code survive); fall back to flat textContent.
+          if (article?.content) {
+            const md = htmlToText(article.content);
+            if (md.length > 0) return md;
+          }
           const text = article?.textContent?.replace(/\s+/g, " ").trim();
           return text && text.length > 0 ? text : null;
         } catch {
@@ -117,43 +171,17 @@ function loadReadable(): Promise<ReadableFn | null> {
 }
 
 /** Read a response body up to `maxBytes` as raw bytes. Returns the bytes and
- * whether the body was truncated at the cap. */
-async function readCappedBytes(
+ * whether the body was truncated at the cap. Streams via the shared byte reader
+ * when a body stream is present; falls back to `arrayBuffer()` when it isn't. */
+async function readBodyCapped(
   res: Response,
   maxBytes: number,
 ): Promise<{ bytes: Uint8Array; truncated: boolean }> {
-  const reader = res.body?.getReader();
-  if (!reader) {
-    const buf = new Uint8Array(await res.arrayBuffer());
-    return buf.length > maxBytes
-      ? { bytes: buf.subarray(0, maxBytes), truncated: true }
-      : { bytes: buf, truncated: false };
-  }
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let truncated = false;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    if (total + value.length > maxBytes) {
-      const room = Math.max(0, maxBytes - total);
-      if (room) chunks.push(value.subarray(0, room));
-      total += room;
-      truncated = true;
-      await reader.cancel().catch(() => {});
-      break;
-    }
-    chunks.push(value);
-    total += value.length;
-  }
-  const buf = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    buf.set(c, off);
-    off += c.length;
-  }
-  return { bytes: buf, truncated };
+  if (res.body) return readCappedBytes(res.body, maxBytes);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  return buf.length > maxBytes
+    ? { bytes: buf.subarray(0, maxBytes), truncated: true }
+    : { bytes: buf, truncated: false };
 }
 
 export interface WebfetchOptions extends FetchPolicy {
@@ -167,6 +195,30 @@ export interface WebfetchOptions extends FetchPolicy {
   cache?: FetchCache;
   /** Injectable Readable-article extractor (tests). Falls back to htmlToText on null. */
   readable?: ReadableFn;
+  /** Injectable Wayback snapshot lookup (tests). Returns the snapshot URL +
+   * timestamp for a dead page, or null when none exists. Defaults to the
+   * archive.org availability API. */
+  waybackLookup?: (url: string, signal: AbortSignal) => Promise<{ url: string; timestamp?: string } | null>;
+}
+
+/** Query archive.org for the closest snapshot of `url`. Best-effort. */
+async function defaultWaybackLookup(
+  url: string,
+  signal: AbortSignal,
+): Promise<{ url: string; timestamp?: string } | null> {
+  try {
+    const api = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
+    const res = await fetch(api, { signal, headers: { "user-agent": USER_AGENT } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      archived_snapshots?: { closest?: { available?: boolean; url?: string; timestamp?: string } };
+    };
+    const snap = data.archived_snapshots?.closest;
+    if (!snap?.available || !snap.url) return null;
+    return { url: snap.url, ...(snap.timestamp ? { timestamp: snap.timestamp } : {}) };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -194,43 +246,67 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
       "to read in full. Control how much comes back with `maxChars`.",
     inputSchema: Input,
     readOnly: true,
+    network: true,
     concurrencySafe: true,
     async execute({ url, maxChars }, ctx) {
       const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(timeoutMs)]);
 
-      // The full extracted text (pre-char-cap) for one URL. Throws on any fetch
-      // failure so the cache can serve a stale copy; the SSRF guard runs INSIDE
-      // (re-checked per redirect hop) so a block is never bypassed by the cache.
+      // Fetch ONE url through the shared guard/redirect/extract pipeline (also
+      // used by web_search's deep-mode enrichment, so both surfaces get the
+      // same SSRF pinning). Throws on any failure; the guard runs INSIDE so a
+      // block is never bypassed by the cache or the Wayback fallback.
+      const fetchOne = (startUrl: string): Promise<string> =>
+        guardedFetchText(startUrl, {
+          policy,
+          maxBytes,
+          signal,
+          ...(opts.lookup ? { lookup: opts.lookup } : {}),
+          ...(opts.readable ? { readable: opts.readable } : {}),
+        });
+
+      // Ask the Wayback Machine for the closest snapshot and fetch it (through
+      // the same guarded pipeline). Returns null when there's no usable copy —
+      // callers keep their original failure. Labeled so an archived copy is
+      // never mistaken for the live page.
+      const fetchWayback = async (): Promise<string | null> => {
+        try {
+          const snap = await (opts.waybackLookup ?? defaultWaybackLookup)(url, signal);
+          if (!snap) return null;
+          const text = await fetchOne(snap.url.replace(/^http:/, "https:"));
+          const when = snap.timestamp
+            ? `${snap.timestamp.slice(0, 4)}-${snap.timestamp.slice(4, 6)}-${snap.timestamp.slice(6, 8)}`
+            : "unknown date";
+          return `[archived copy from the Wayback Machine, ${when} — the live page was unavailable]\n\n${text}`;
+        } catch {
+          return null;
+        }
+      };
+
+      // The full extracted text (pre-char-cap) for one URL, with recovery: a
+      // 4xx/5xx live page falls back to the closest Wayback snapshot, and a
+      // paywall/anti-bot shell is flagged (and upgraded to the archive when
+      // the archive has more) — a login wall must never read as the article.
+      // The fallback fires ONLY on an HTTP-status failure: an SSRF-guard
+      // rejection must propagate untouched (asking archive.org about a blocked
+      // internal URL would leak it and sidestep the policy), and so must
+      // aborts/timeouts.
       const fetchAndExtract = async (): Promise<string> => {
-        let current = url;
-        let res: Response | undefined;
-        for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-          const target = await assertFetchAllowed(current, policy, opts.lookup);
-          // Connect to the exact IP the guard verified (when it resolved a
-          // hostname), keeping the original Host header + TLS SNI, so a DNS rebind
-          // can't point the actual connection at a private address. IP-literal /
-          // opted-in targets have no pinnedIp and fetch the URL as-is.
-          const r = await fetch(pinnedUrl(target.url, target.pinnedIp), pinnedInit(target, signal));
-          const location = r.headers.get("location");
-          if (r.status >= 300 && r.status < 400 && location) {
-            await r.body?.cancel?.().catch(() => {});
-            current = new URL(location, current).toString();
-            continue;
+        let live: string;
+        try {
+          live = await fetchOne(url);
+        } catch (err) {
+          if (/^HTTP \d+ fetching /.test((err as Error).message ?? "")) {
+            const archived = await fetchWayback();
+            if (archived) return archived;
           }
-          res = r;
-          break;
+          throw err;
         }
-        if (!res) throw new Error(`Too many redirects fetching ${url}`);
-        if (!res.ok) {
-          await res.body?.cancel?.().catch(() => {});
-          throw new Error(`HTTP ${res.status} fetching ${url}`);
+        if (looksLikeShell(live)) {
+          const archived = await fetchWayback();
+          if (archived && archived.length > live.length * 2) return archived;
+          return `(warning: this page looks like a paywall/anti-bot shell — the text below may not be the real content)\n\n${live}`;
         }
-        const contentType = res.headers.get("content-type") ?? "";
-        const { bytes, truncated: byteTruncated } = await readCappedBytes(res, maxBytes);
-        const text = await extractText(contentType, bytes, current, opts.readable);
-        return byteTruncated
-          ? `${text}\n…(response exceeded ${maxBytes} bytes and was truncated)`
-          : text;
+        return live;
       };
 
       try {
@@ -259,6 +335,60 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
   };
 }
 
+/** Options for one guarded fetch (the shared pipeline behind webfetch and
+ * web_search deep-mode enrichment). */
+export interface GuardedFetchOptions {
+  policy?: FetchPolicy;
+  lookup?: Lookup;
+  maxBytes?: number;
+  signal: AbortSignal;
+  readable?: ReadableFn;
+  /** Return the charset-decoded body VERBATIM (no HTML→text reduction) — for
+   * callers that need the markup itself (link discovery in a crawler). */
+  raw?: boolean;
+}
+
+/**
+ * Fetch one URL through the full hardened pipeline — SSRF guard re-validated on
+ * every redirect hop, connection pinned to the guard-verified IP (Host + SNI
+ * preserved), streaming byte cap, content-type-aware text extraction. Throws on
+ * any failure. This is THE way to pull web text; never fetch a model-supplied
+ * URL without it.
+ */
+export async function guardedFetchText(startUrl: string, opts: GuardedFetchOptions): Promise<string> {
+  const policy = opts.policy ?? {};
+  const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+  let current = startUrl;
+  let res: Response | undefined;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const target = await assertFetchAllowed(current, policy, opts.lookup);
+    // Connect to the exact IP the guard verified (when it resolved a hostname),
+    // keeping the original Host header + TLS SNI, so a DNS rebind can't point
+    // the actual connection at a private address. IP-literal / opted-in targets
+    // have no pinnedIp and fetch the URL as-is.
+    const r = await fetch(pinnedUrl(target.url, target.pinnedIp), pinnedInit(target, opts.signal));
+    const location = r.headers.get("location");
+    if (r.status >= 300 && r.status < 400 && location) {
+      await r.body?.cancel?.().catch(() => {});
+      current = new URL(location, current).toString();
+      continue;
+    }
+    res = r;
+    break;
+  }
+  if (!res) throw new Error(`Too many redirects fetching ${startUrl}`);
+  if (!res.ok) {
+    await res.body?.cancel?.().catch(() => {});
+    throw new Error(`HTTP ${res.status} fetching ${startUrl}`);
+  }
+  const contentType = res.headers.get("content-type") ?? "";
+  const { bytes, truncated: byteTruncated } = await readBodyCapped(res, maxBytes);
+  const text = opts.raw
+    ? decodeCharset(bytes, contentType)
+    : await extractText(contentType, bytes, current, opts.readable);
+  return byteTruncated ? `${text}\n…(response exceeded ${maxBytes} bytes and was truncated)` : text;
+}
+
 /** The URL to actually connect to: the guard-verified IP (bracketed for IPv6)
  * when a hostname was resolved, else the original URL. */
 function pinnedUrl(u: URL, pinnedIp?: string): string {
@@ -272,13 +402,26 @@ function pinnedUrl(u: URL, pinnedIp?: string): string {
   return `${u.protocol}//${auth}${hostPart}${port}${u.pathname}${u.search}`;
 }
 
+/** A current, honest browser-like UA — many sites 403 a UA-less client, and an
+ * obviously-fake UA gets bot-walled harder. Includes the tool name for operators
+ * reading their logs. */
+const USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 vibecodr";
+
 /** Fetch init that preserves virtual-host routing + TLS identity when connecting
  * by a pinned IP: the original Host header, and (for HTTPS) the SNI/cert hostname
  * via Bun's `tls.serverName`, so cert validation still checks the real hostname. */
 function pinnedInit(target: { url: URL; pinnedIp?: string }, signal: AbortSignal): RequestInit {
-  const base = { signal, redirect: "manual" as const };
+  const base = {
+    signal,
+    redirect: "manual" as const,
+    headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml,application/pdf,*/*" },
+  };
   if (!target.pinnedIp) return base;
-  const init = { ...base, headers: { host: target.url.host } } as RequestInit & {
+  const init = {
+    ...base,
+    headers: { ...base.headers, host: target.url.host },
+  } as RequestInit & {
     tls?: { serverName: string };
   };
   if (target.url.protocol === "https:") init.tls = { serverName: target.url.hostname };
@@ -303,8 +446,39 @@ async function extractText(
     }
     return `[PDF, ${pdf.pages} page${pdf.pages === 1 ? "" : "s"}]\n${pdf.text}`;
   }
-  const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  const body = decodeCharset(bytes, contentType);
   if (!contentType.includes("html")) return body;
   const readable = injectedReadable ?? (await loadReadable());
   return readable?.(body, url) ?? htmlToText(body);
+}
+
+/**
+ * Decode response bytes honoring the declared charset — the Content-Type
+ * `charset=` parameter first, then an HTML `<meta charset>` sniff of the head —
+ * instead of assuming UTF-8 (which turned Shift-JIS / windows-1252 pages into
+ * mojibake). An unknown label degrades to UTF-8, never throws.
+ */
+export function decodeCharset(bytes: Uint8Array, contentType: string): string {
+  let label = /charset=["']?([\w-]+)/i.exec(contentType)?.[1];
+  if (!label) {
+    // Sniff the first 2KB (spec-sanctioned window) decoded as latin1 — charset
+    // declarations are ASCII, so this is safe for finding the label.
+    const head = new TextDecoder("latin1" as ConstructorParameters<typeof TextDecoder>[0]).decode(
+      bytes.subarray(0, 2048),
+    );
+    label =
+      /<meta[^>]+charset=["']?([\w-]+)/i.exec(head)?.[1] ??
+      /<\?xml[^>]+encoding=["']([\w-]+)/i.exec(head)?.[1];
+  }
+  if (label && !/^utf-?8$/i.test(label)) {
+    try {
+      return new TextDecoder(
+        label.toLowerCase() as ConstructorParameters<typeof TextDecoder>[0],
+        { fatal: false },
+      ).decode(bytes);
+    } catch {
+      /* unknown label — fall through to UTF-8 */
+    }
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
 }

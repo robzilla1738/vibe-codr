@@ -32,14 +32,23 @@ export function computeCost(
   outputTokens: number,
   price: ModelPrice | undefined,
   cachedInputTokens = 0,
+  cacheWriteTokens = 0,
 ): number {
   if (!price) return 0;
+  const writes = Math.max(0, cacheWriteTokens);
+  // `inputTokens` arrives as the folded superset (uncached + cache reads +
+  // cache writes); peel the specially-priced slices off it.
   const cached = Math.min(Math.max(0, cachedInputTokens), inputTokens);
-  const uncached = inputTokens - cached;
+  const uncached = Math.max(0, inputTokens - cached - writes);
   const inCost = price.input ? (uncached / 1_000_000) * price.input : 0;
   // Cached reads bill at the cache-read rate; fall back to the full input rate.
   const cacheRate = price.cacheRead ?? price.input;
   const cacheCost = cacheRate ? (cached / 1_000_000) * cacheRate : 0;
+  // Cache WRITES bill at the cache-write rate (Anthropic: 1.25x input); fall
+  // back to the input rate — never understate to zero like before, when
+  // cache-creation tokens were invisible to cost entirely.
+  const writeRate = price.cacheWrite ?? price.input;
+  const writeCost = writeRate ? (writes / 1_000_000) * writeRate : 0;
   const outCost = price.output ? (outputTokens / 1_000_000) * price.output : 0;
-  return inCost + cacheCost + outCost;
+  return inCost + cacheCost + writeCost + outCost;
 }

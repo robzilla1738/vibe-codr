@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "@vibe/shared";
 import { unifiedDiff } from "../diff.ts";
 import { withFileLock } from "../toolset.ts";
+import { assertFresh, recordSeen } from "./freshness.ts";
 
 const SingleEdit = z.object({
   oldString: z.string().describe("Exact text to replace."),
@@ -116,6 +117,18 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
         return { output: `File not found: ${path}`, isError: true };
       }
 
+      // Stale-write guard: if this session read the file earlier and it changed
+      // on disk since (an external edit), refuse — oldString might still match a
+      // now-outdated view and silently clobber someone else's change. Checked
+      // INSIDE the lock so a concurrent subagent's write can't slip in between
+      // this check and our read-modify-write.
+      if (assertFresh(ctx.sessionId, full).stale) {
+        return {
+          output: `${path} changed on disk since you last read it (external edit?). Re-read it first, then re-apply your change.`,
+          isError: true,
+        };
+      }
+
       const before = await file.text();
       // Apply against an in-memory buffer; write only if every edit succeeds.
       let buffer = before;
@@ -135,6 +148,9 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
       }
 
       await Bun.write(full, buffer);
+      // Advance the freshness baseline to our own write's mtime so the next edit
+      // in this session doesn't mistake our change for an external one.
+      recordSeen(ctx.sessionId, full);
       const diff = unifiedDiff(before, buffer);
       ctx.emit({
         type: "file-changed",
@@ -146,8 +162,11 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
         added: diff.added,
         removed: diff.removed,
       });
+      // Compiler feedback in the SAME step: when core wired a language service,
+      // fresh diagnostics for the edited file ride along with the diff.
+      const diag = await ctx.diagnose?.(full).catch(() => undefined);
       return {
-        output: `Edited ${path} (+${diff.added} -${diff.removed})\n${capDiff(diff.text)}`,
+        output: `Edited ${path} (+${diff.added} -${diff.removed})\n${capDiff(diff.text)}${diag ? `\n\n${diag}` : ""}`,
       };
     });
   },

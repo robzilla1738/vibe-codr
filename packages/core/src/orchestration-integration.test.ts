@@ -1,12 +1,28 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterAll } from "bun:test";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
+
+// A fresh cwd per session so the orchestration journal (now written under
+// `.vibe/orchestration/` on every task settle) never lands in the real repo or
+// bleeds a stale seed across tests.
+const tmpDirs: string[] = [];
+function tmpCwd(): string {
+  const d = mkdtempSync(join(tmpdir(), "vibe-orch-"));
+  tmpDirs.push(d);
+  return d;
+}
+afterAll(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+});
 
 function mockRegistry(model: MockLanguageModelV2) {
   return new ProviderRegistry([
@@ -70,7 +86,7 @@ test("spawn_tasks runs a dependency-ordered plan and returns a consolidated repo
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
-    cwd: process.cwd(),
+    cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
   });
@@ -126,7 +142,7 @@ test("spawn_tasks rejects an invalid plan (dependency cycle) without running any
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
-    cwd: process.cwd(),
+    cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
   });
@@ -148,19 +164,35 @@ test("spawn_tasks is only offered when orchestration is enabled", async () => {
       return textStep("ok") as never;
     },
   });
-  // Disabled (default): spawn_subagent present, spawn_tasks absent.
-  const off = new Session({
+  // Enabled (the default): both delegation tools are offered.
+  const on = new Session({
     config: defaultConfig(),
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
-    cwd: process.cwd(),
+    cwd: tmpCwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  await on.run("hi");
+  expect(toolNames[0]).toContain("spawn_subagent");
+  expect(toolNames[0]).toContain("spawn_tasks");
+
+  // Explicitly disabled: spawn_subagent stays, spawn_tasks is hidden.
+  const offConfig = defaultConfig();
+  offConfig.orchestration = { enabled: false };
+  const off = new Session({
+    config: offConfig,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
   });
   await off.run("hi");
-  expect(toolNames[0]).toContain("spawn_subagent");
-  expect(toolNames[0]).not.toContain("spawn_tasks");
+  expect(toolNames[1]).toContain("spawn_subagent");
+  expect(toolNames[1]).not.toContain("spawn_tasks");
 });
 
 test("isReviewClean requires the verdict on its own line, not a bare substring", () => {
@@ -235,7 +267,7 @@ test("a verify task whose retry makes no changes is NOT falsely marked completed
     registry: mockRegistry(model),
     toolset: new Toolset([touchTool]),
     bus,
-    cwd: process.cwd(),
+    cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
   });

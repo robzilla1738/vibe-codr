@@ -1,10 +1,13 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
+import { utimesSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@vibe/shared";
 import { SessionStore } from "./store.ts";
-import { searchSessions, formatRecall } from "./recall.ts";
+import { searchSessions, formatRecall, _resetRecallCache } from "./recall.ts";
+
+beforeEach(() => _resetRecallCache());
 
 function msg(role: Message["role"], text: string): Message {
   return { id: `m_${role}_${text.slice(0, 4)}`, role, parts: [{ type: "text", text }], createdAt: 1 };
@@ -88,6 +91,38 @@ test("a rarer (higher-IDF) term outranks a ubiquitous one", async () => {
   );
   const hits = await searchSessions(dir, "zylphqx config");
   expect(hits[0]!.sessionId).toBe("rare");
+});
+
+test("serves an unchanged session from the scan cache, and re-reads on mtime change", async () => {
+  const dir = await seed();
+  const historyPath = join(dir, ".vibe", "sessions", "ses_a", "history.jsonl");
+  const FIXED = new Date(1_600_000_000_000);
+
+  // Pin a known mtime, then run the first search to populate the cache.
+  utimesSync(historyPath, FIXED, FIXED);
+  expect((await searchSessions(dir, "JSONC"))[0]!.sessionId).toBe("ses_a");
+
+  // Rewrite the history with content that NO LONGER contains "JSONC", but restore
+  // the identical mtime so the cache considers the file unchanged.
+  const unrelated = JSON.stringify({
+    id: "m_x",
+    role: "user",
+    parts: [{ type: "text", text: "totally unrelated kubernetes helm content" }],
+    createdAt: 1,
+  });
+  writeFileSync(historyPath, `${unrelated}\n`);
+  utimesSync(historyPath, FIXED, FIXED);
+  expect(statSync(historyPath).mtimeMs).toBe(FIXED.getTime()); // sanity: mtime restored
+
+  // Same mtime → served from cache → still matches the ORIGINAL (cached) content.
+  const cached = await searchSessions(dir, "JSONC");
+  expect(cached.length).toBeGreaterThan(0);
+  expect(cached[0]!.sessionId).toBe("ses_a");
+
+  // Bump the mtime → cache invalidated → re-reads the NEW content (no "JSONC").
+  const LATER = new Date(1_600_000_100_000);
+  utimesSync(historyPath, LATER, LATER);
+  expect(await searchSessions(dir, "JSONC")).toEqual([]);
 });
 
 test("formatRecall renders matches and a clear no-match message", async () => {

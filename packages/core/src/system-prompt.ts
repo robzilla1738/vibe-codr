@@ -1,4 +1,4 @@
-import type { Mode } from "@vibe/shared";
+import type { Mode, TaskStatus } from "@vibe/shared";
 
 export interface SystemPromptInputs {
   mode: Mode;
@@ -6,11 +6,21 @@ export interface SystemPromptInputs {
    * run `pwd` to orient and never guesses (hallucinates) an absolute path. */
   cwd?: string;
   goal: string | null;
+  /** Pre-rendered "REPO FACTS" block from deterministic recon (build/profile.ts)
+   * — the repo's real build/test commands, so no agent ever guesses them. */
+  repoFacts?: string;
+  /** The live task list, re-injected every turn so it survives compaction
+   * deterministically instead of via the summarizer's whim. */
+  tasks?: { title: string; status: TaskStatus }[];
   /** Project memory (VIBE.md / AGENTS.md / CLAUDE.md) contents, if present. */
   projectMemory?: string;
   /** Proactively-recalled relevant past context (saved memory / prior sessions),
    * injected at session start when `memory.proactiveRecall` is enabled. */
   recalledContext?: string;
+  /** Pre-rendered "sources gathered this session" list (`[n] url — title`),
+   * injected so the model can cite web sources by their stable `[n]` across
+   * turns. Built from the session's SourceLedger; omitted when empty. */
+  sources?: string;
   /** Skill name/description lines for progressive disclosure. */
   skillDescriptions?: string[];
   /** Extra blocks contributed by plugins. */
@@ -36,6 +46,7 @@ Gather web context in proportion to the question — you decide the depth: fast 
 - Hard or high-stakes questions (a library's latest stable version and compatibility, an API's current shape, evaluating or upgrading a dependency, anything where being wrong is costly) deserve real depth: issue as many distinct queries as the problem needs, \`webfetch\` the best sources in full (official docs, changelogs, release notes), and cross-check across sources before you conclude. Be thorough when thoroughness is warranted.
 - One query at a time: read each result set before searching again — don't fire reworded variants of the same question; refine only when the first results genuinely miss. Use \`recencyDays\` for fast-moving topics.
 - For package/runtime versions and dependency currency, prefer \`package_info\` (npm/PyPI — the authoritative latest) and official docs over blog posts. To check whether a project is up to date, read its manifest (package.json / pyproject.toml), then look up the real latest with \`package_info\`.
+- CITE YOUR SOURCES. When a substantive claim rests on something you read on the web, cite it inline as \`[n]\` and end the answer with a \`sources\` fenced block (see RICH DATA VIEWS) listing those sources. The \`[n]\` numbers match the gathered-sources list injected below when one is present — reuse those exact numbers so citations stay consistent across turns.
 
 For any non-trivial, multi-step request, maintain a task list with the \`update_tasks\` tool: lay out the steps up front, keep exactly one task in_progress, and mark each completed as you go. This keeps you focused and shows the user live progress. Skip it for simple, single-step requests.`;
 
@@ -55,6 +66,45 @@ const PLAN_DELEGATION = `DELEGATING TO SUBAGENTS (read-only). While planning you
 - Give each scout a self-contained prompt and a focused, disjoint area to investigate — it sees none of this conversation.
 - Use this when the question is wide (many files/subsystems); for a quick, local lookup just read the files yourself.`;
 
+const DATA_VIEWS = `RICH DATA VIEWS. The terminal UI renders certain fenced code blocks as live, native visualizations. When the answer is data of a matching shape, emit the view INLINE with the real data you gathered — do NOT build an HTML page, screenshot, image, or external script/file for these, and do NOT hand-draw them, UNLESS the user explicitly asks for a standalone/exportable/HTML artifact.
+
+- Bar chart — comparing magnitudes across categories. Fence \`chart\`; one \`Label: value\` per line (value may carry \`$\`, \`%\`, or a k/m/b/t suffix); optional \`# Title\` first line.
+  \`\`\`chart
+  # Market cap (USD)
+  Bitcoin: $1.2T
+  Ethereum: $190B
+  Solana: $62B
+  \`\`\`
+- Pie chart — share / composition / "% of a whole". Fence \`pie\`; \`Label: value\` per line.
+  \`\`\`pie
+  Bitcoin: 54
+  Ethereum: 17
+  Others: 29
+  \`\`\`
+- Line chart — a trend or time series. Fence \`line\`; a row of numbers (or \`label: n,n,n\` for multiple series); optional \`# Title\`.
+  \`\`\`line
+  # BTC 14-day
+  52 53 51 55 58 57 60 62 59 63 66 64 68 71
+  \`\`\`
+- Weather card — ANY weather question. Fence \`weather\`; \`key: value\` lines: location, temp, condition, high, low, humidity, wind, and optional \`forecast: Mon 68/54 Sunny; Tue 70/55 Clear; …\`.
+  \`\`\`weather
+  location: San Francisco, CA
+  temp: 62°F
+  condition: Partly Cloudy
+  high: 68
+  low: 54
+  humidity: 71%
+  wind: 12 mph
+  forecast: Mon 68/54 Sunny; Tue 70/55 Clear; Wed 65/53 Cloudy
+  \`\`\`
+- Source cards — when you cite web sources. Fence \`sources\`; one \`Title | domain.com | one-line snippet\` per line.
+  \`\`\`sources
+  Bitcoin hits new high | coindesk.com | BTC surged past $58k on ETF inflows.
+  The Merge explained | ethereum.org | Ethereum's 2022 move to proof-of-stake.
+  \`\`\`
+
+Pick the view that fits the question: comparison → \`chart\`, composition/share → \`pie\`, trend/time-series → \`line\`, weather → \`weather\`, citations → \`sources\`. If none fits, answer normally (prose, a markdown pipe table, or a code block). Only reach for HTML/a file/a script when the user explicitly asks for one.`;
+
 const PLAN_MODE = `MODE: PLAN. You are in read-only planning mode. You may inspect the workspace but MUST NOT modify files or run side-effecting commands. Produce a clear, concrete plan and call \`present_plan\` when ready.`;
 
 const EXECUTE_MODE = `MODE: EXECUTE. You may read and modify the workspace and run commands. Verify your work as you go.`;
@@ -63,6 +113,9 @@ const EXECUTE_MODE = `MODE: EXECUTE. You may read and modify the workspace and r
 export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   const sections: string[] = [BASE];
   sections.push(inputs.mode === "plan" ? PLAN_MODE : EXECUTE_MODE);
+  // How to render data answers (charts / pie / weather / sources) natively instead
+  // of building HTML files or plain text — so rich views trigger out of the box.
+  sections.push(DATA_VIEWS);
 
   // Tell the model where it is. Without this it guesses absolute paths (e.g.
   // writing to a hallucinated `/Users/someone/...`) and burns a whole step
@@ -74,9 +127,26 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
     );
   }
 
+  // Deterministic recon facts sit right after the environment: they orient the
+  // model on HOW to build/verify before any task-specific context.
+  if (inputs.repoFacts) {
+    sections.push(inputs.repoFacts);
+  }
+
   if (inputs.goal) {
     sections.push(
       `NORTH-STAR GOAL: ${inputs.goal}\nKeep every action aligned with this goal; before finishing, confirm it is advanced.`,
+    );
+  }
+  // The authoritative in-memory task list, rendered fresh every turn — after a
+  // compaction the transcript's update_tasks calls may be summarized away, so
+  // this is what keeps the model anchored to its own plan.
+  if (inputs.tasks?.length) {
+    const mark = (s: TaskStatus) => (s === "completed" ? "[x]" : s === "in_progress" ? "[~]" : "[ ]");
+    sections.push(
+      `CURRENT TASKS (your live task list — keep exactly one in_progress; update with \`update_tasks\`):\n${inputs.tasks
+        .map((t) => `${mark(t.status)} ${t.title}`)
+        .join("\n")}`,
     );
   }
   if (inputs.projectMemory) {
@@ -85,6 +155,13 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   if (inputs.recalledContext) {
     sections.push(
       `RELEVANT PAST CONTEXT (recalled from long-term memory — may be incomplete or stale; verify against the current workspace before relying on it):\n${inputs.recalledContext}`,
+    );
+  }
+  // The web sources gathered so far this session, with their stable [n] indices,
+  // so citations reference the same numbers turn after turn.
+  if (inputs.sources) {
+    sections.push(
+      `SOURCES GATHERED THIS SESSION (web pages you've already pulled via web_search/webfetch/crawl_docs — cite the relevant ones inline by their [n] and list them in a \`sources\` block when you rely on them; keep these numbers stable):\n${inputs.sources}`,
     );
   }
   if (inputs.subagentsAvailable) {

@@ -11,6 +11,7 @@ import {
   createFileLock,
   isConcurrencySafe,
   canonicalLockKey,
+  toAISDKTool,
 } from "./toolset.ts";
 import { builtinTools } from "./builtins/index.ts";
 
@@ -358,4 +359,54 @@ test("createFileLock rejects a concurrent different-agent write to the same new 
   );
   releaseA();
   await aRun;
+});
+
+test("a THROWN tool error is normalized into the ERROR contract (not a raw throw)", async () => {
+  const throwing: ToolDefinition = {
+    name: "boomer",
+    description: "throws",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => {
+      throw new Error("file is owned by another agent");
+    },
+  };
+  const errors: [string, boolean][] = [];
+  const aiTool = toAISDKTool(throwing, {
+    cwd: "/",
+    sessionId: "s",
+    emit: () => {},
+    recordToolResult: (id, isError) => errors.push([id, isError]),
+  });
+  const out = await (aiTool as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute(
+    {},
+    { toolCallId: "t1", abortSignal: new AbortController().signal },
+  );
+  expect(String(out)).toContain("ERROR: boomer threw: file is owned by another agent");
+  expect(errors).toEqual([["t1", true]]);
+});
+
+test("an abort-driven throw still propagates (cancellation is not a tool failure)", async () => {
+  const controller = new AbortController();
+  const aborter: ToolDefinition = {
+    name: "aborter",
+    description: "aborts",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => {
+      controller.abort();
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    },
+  };
+  const aiTool = toAISDKTool(aborter, { cwd: "/", sessionId: "s", emit: () => {} });
+  await expect(
+    (aiTool as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute(
+      {},
+      { toolCallId: "t1", abortSignal: controller.signal },
+    ),
+  ).rejects.toThrow("aborted");
 });

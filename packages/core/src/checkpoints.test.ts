@@ -163,4 +163,61 @@ test("non-git directories are a safe no-op", async () => {
   expect(await cp.isGitRepo()).toBe(false);
   expect(await cp.snapshot("x")).toBeNull();
   expect(await cp.undo()).toBeNull();
+  expect(await cp.diffFrom(undefined)).toBe("");
+});
+
+test("snapshot persists green + gate meta (back-compat: old entries lack them)", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  const gate = {
+    outcome: "green" as const,
+    round: 0,
+    checks: [
+      { check: "test" as const, command: "bun test", pass: true, failed: 0, total: 3, firstFailures: [], durationMs: 5 },
+    ],
+  };
+  await cp.snapshot("green: test ✓ 3/3", undefined, { green: true, gate });
+
+  // A fresh manager reads the persisted meta from disk (what the engine's tests do).
+  const fresh = await new CheckpointManager(dir).list();
+  const greenCp = fresh.find((c) => c.green);
+  expect(greenCp).toBeDefined();
+  expect(greenCp!.label).toBe("green: test ✓ 3/3");
+  expect(greenCp!.gate?.outcome).toBe("green");
+});
+
+test("diffFrom returns a hunk of the working tree vs a checkpoint (incl. new files)", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  const base = await cp.snapshot("base");
+  expect(base).not.toBeNull();
+
+  // Modify a tracked file and create a brand-new untracked one.
+  await Bun.write(join(dir, "a.txt"), "CHANGED LINE\n");
+  await Bun.write(join(dir, "brand-new.ts"), "export const added = 1;\n");
+
+  const diff = await cp.diffFrom(base!.id);
+  expect(diff).toContain("a.txt");
+  expect(diff).toContain("CHANGED LINE");
+  // A plain `git diff <commit>` would omit the untracked file; the throwaway-index
+  // staging in diffFrom means added files show up too.
+  expect(diff).toContain("brand-new.ts");
+  expect(diff).toContain("export const added = 1;");
+
+  // The user's real index is untouched (a.txt shows as modified-but-unstaged).
+  const proc = Bun.spawn(["git", "status", "--porcelain"], { cwd: dir, stdout: "pipe" });
+  const status = await new Response(proc.stdout).text();
+  await proc.exited;
+  expect(status).toContain(" M a.txt");
+});
+
+test("diffFrom caps a giant diff with a truncation marker", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  const base = await cp.snapshot("base");
+  await Bun.write(join(dir, "huge.txt"), `${"x".repeat(50_000)}\n`);
+
+  const diff = await cp.diffFrom(base!.id, { max: 2_000 });
+  expect(diff).toContain("diff truncated at 2000 chars");
+  expect(diff.length).toBeLessThan(2_100);
 });

@@ -1,13 +1,17 @@
 import { isOverloadError } from "./retry.ts";
 
 /**
- * A tree-global adaptive concurrency gate in front of EVERY provider call. It
- * bounds how many model requests are in flight across the whole session tree at
- * once (distinct from the logical `subagent.maxParallel` fan-out cap), so a deep
- * fan-out can't stampede the provider — and it adapts: AIMD (additive increase,
- * multiplicative decrease) lowers the ceiling on 429/overloaded and recovers it
- * gradually. The default ceiling is high enough to be a no-op for ordinary
- * single-session use (one in-flight call out of N slots → never waits).
+ * A tree-global adaptive concurrency gate on agent TURNS. Honesty note: the
+ * session wraps its entire multi-step `streamText` turn (provider calls AND
+ * the tool executions between them) in one slot — so this bounds concurrent
+ * *turns*, which is an over-approximation of concurrent provider requests (a
+ * slot is held while a long bash/test run executes). That is deliberate: with
+ * the single-streamText loop there is no per-request seam to gate on, and
+ * whole-turn gating still prevents the failure it exists for — a deep fan-out
+ * stampeding the provider. AIMD (additive increase, multiplicative decrease)
+ * lowers the ceiling on 429/overloaded and recovers it gradually. The default
+ * ceiling is high enough to be a no-op for ordinary single-session use.
+ * (True per-request gating would need a fetch-level wrapper — future work.)
  */
 export interface Limiter {
   /**

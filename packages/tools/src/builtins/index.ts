@@ -9,6 +9,7 @@ import { editTool } from "./edit.ts";
 import { webfetchTool, type WebfetchOptions } from "./webfetch.ts";
 import { repoMapTool } from "./repo-map.ts";
 import { webSearchTool } from "./web-search.ts";
+import { crawlDocsTool } from "./crawl-docs.ts";
 import { packageInfoTool } from "./package-info.ts";
 import { presentPlanTool } from "./present-plan.ts";
 import { gitTools } from "./git.ts";
@@ -50,6 +51,20 @@ export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
   ];
   if (opts.search?.enabled !== false) {
     tools.push(webSearchTool({ apiKey: opts.search?.apiKey }));
+    // Same policy as webfetch: the crawler runs the identical hardened pipeline.
+    tools.push(
+      crawlDocsTool({
+        ...(opts.webfetch?.allowPrivateHosts || opts.webfetch?.allowHosts
+          ? {
+              policy: {
+                ...(opts.webfetch.allowPrivateHosts ? { allowPrivateHosts: true } : {}),
+                ...(opts.webfetch.allowHosts ? { allowHosts: opts.webfetch.allowHosts } : {}),
+              },
+            }
+          : {}),
+        ...(opts.webfetch?.lookup ? { lookup: opts.webfetch.lookup } : {}),
+      }),
+    );
   }
   return tools;
 }
@@ -64,6 +79,7 @@ export {
   editTool,
   webfetchTool,
   webSearchTool,
+  crawlDocsTool,
   packageInfoTool,
   presentPlanTool,
   repoMapTool,

@@ -67,7 +67,7 @@ test("formatConfig masks secrets, including MCP env and HTTP headers", () => {
   const config = ConfigSchema.parse({
     providers: {
       anthropic: { apiKey: "sk-secret-123" },
-      codex: { headers: { Authorization: "Bearer header-secret" } },
+      codex: { headers: { Authorization: "Bearer header-secret" }, tokenFile: "~/.codex/auth.json" },
     },
     search: { enabled: true, apiKey: "tf-secret" },
     mcp: {
@@ -84,6 +84,9 @@ test("formatConfig masks secrets, including MCP env and HTTP headers", () => {
   expect(out).toContain("***");
   // Non-secret structure is preserved.
   expect(out).toContain("npx");
+  // tokenFile/tokenPath are filesystem paths, not credentials — they must stay
+  // visible so /config remains useful for debugging auth resolution.
+  expect(out).toContain("~/.codex/auth.json");
 });
 
 test("formatTools groups read-only vs side-effecting", () => {

@@ -111,6 +111,7 @@ export const packageInfoTool: ToolDefinition<z.infer<typeof Input>> = {
     "range, then call this to compare against the real latest.",
   inputSchema: Input,
   readOnly: true,
+    network: true,
   concurrencySafe: true,
   async execute({ name, ecosystem = "npm" }, ctx: ToolContext) {
     const signal = withTimeout(ctx.abortSignal);

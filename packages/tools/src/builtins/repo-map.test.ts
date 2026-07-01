@@ -1,9 +1,19 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { test, expect, beforeEach } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext } from "@vibe/shared";
-import { repoMapTool, extractSymbols, rankFiles, isCodeFile } from "./repo-map.ts";
+import {
+  repoMapTool,
+  extractSymbols,
+  rankFiles,
+  isCodeFile,
+  parseImports,
+  buildRepoMap,
+  _resetRepoMapCache,
+} from "./repo-map.ts";
+
+beforeEach(() => _resetRepoMapCache());
 
 function ctx(cwd: string): ToolContext {
   return { cwd, sessionId: "s", emit: () => {}, toolCallId: "t", abortSignal: new AbortController().signal };
@@ -45,6 +55,59 @@ test("isCodeFile recognizes source extensions only", () => {
   expect(isCodeFile("a.py")).toBe(true);
   expect(isCodeFile("README.md")).toBe(false);
   expect(isCodeFile("data.json")).toBe(false);
+});
+
+test("parseImports finds relative JS/TS and Python imports, ignores packages", () => {
+  const ts = parseImports(
+    [
+      "import { a } from './a.ts';",
+      "import b from '../lib/b';",
+      "const c = require('./c');",
+      "const d = await import('./d');",
+      "import { z } from 'zod';", // package — ignored
+    ].join("\n"),
+    ".ts",
+  );
+  expect(ts).toEqual(["./a.ts", "../lib/b", "./c", "./d"]);
+  expect(parseImports("from .helpers import x\nimport os", ".py")).toEqual([".helpers"]);
+});
+
+test("import in-degree outranks the path heuristic: a deep but heavily-referenced file rises", () => {
+  const inDegree = new Map([["src/deep/nested/core.ts", 8]]);
+  const ranked = rankFiles(["src/shallow.ts", "src/deep/nested/core.ts"], inDegree);
+  expect(ranked[0]).toBe("src/deep/nested/core.ts");
+});
+
+test("buildRepoMap ranks referenced files up and serves unchanged files from cache", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-repomap-graph-"));
+  mkdirSync(join(dir, "src", "lib"), { recursive: true });
+  // hub.ts is imported by two files → should outrank its siblings.
+  writeFileSync(join(dir, "src", "lib", "hub.ts"), "export function hub() {}\n");
+  writeFileSync(join(dir, "src", "a.ts"), "import { hub } from './lib/hub.ts';\nexport function a() {}\n");
+  writeFileSync(join(dir, "src", "b.ts"), "import { hub } from './lib/hub';\nexport function b() {}\n");
+
+  const first = await buildRepoMap(dir);
+  const hubIdx = first.text.indexOf("src/lib/hub.ts");
+  expect(hubIdx).toBeGreaterThanOrEqual(0);
+  expect(hubIdx).toBeLessThan(first.text.indexOf("src/a.ts"));
+
+  // Mutate a file (bump mtime) and rebuild: the changed file re-extracts, the map updates.
+  writeFileSync(join(dir, "src", "a.ts"), "export function aChanged() {}\n");
+  const future = Date.now() / 1000 + 5;
+  utimesSync(join(dir, "src", "a.ts"), future, future);
+  const second = await buildRepoMap(dir);
+  expect(second.text).toContain("aChanged");
+});
+
+test("buildRepoMap respects the char budget with an explicit truncated flag", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-repomap-budget-"));
+  mkdirSync(join(dir, "src"), { recursive: true });
+  for (let i = 0; i < 20; i++) {
+    writeFileSync(join(dir, "src", `f${i}.ts`), `export function fn${i}() {}\nexport const V${i} = ${i};\n`);
+  }
+  const res = await buildRepoMap(dir, { charBudget: 200 });
+  expect(res.truncated).toBe(true);
+  expect(res.text.length).toBeLessThanOrEqual(220);
 });
 
 test("repo_map produces a declaration map for a directory (no git)", async () => {

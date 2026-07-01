@@ -83,6 +83,11 @@ export type UIEvent =
       taskId: string;
       objective: string;
       status: "running" | "completed" | "failed" | "skipped";
+      /** How many attempts the task ran (present on a terminal status). Optional
+       * so the TUI needs no change — a reader that ignores it still works. */
+      attempts?: number;
+      /** Wall-clock the task took, ms (present on a terminal status). Optional. */
+      durationMs?: number;
     }
   | {
       type: "queue-changed";
@@ -112,6 +117,10 @@ export type UIEvent =
   | { type: "verify-finished"; ok: boolean; output: string }
   | { type: "compacted"; sessionId: string; freedTokens: number }
   | { type: "subagent-started"; sessionId: string; subagentId: string; prompt: string }
+  /** Live one-line activity from a RUNNING subagent (its bus is otherwise
+   * isolated): "$ bun test", "edit src/app.ts", … — so a minutes-long fan-out
+   * shows what each child is doing right now, not just started/finished. */
+  | { type: "subagent-activity"; sessionId: string; subagentId: string; label: string }
   | { type: "subagent-finished"; sessionId: string; subagentId: string; result: string }
   | { type: "loop-tick"; loopId: string; iteration: number }
   | { type: "loop-stopped"; loopId: string; reason: string }

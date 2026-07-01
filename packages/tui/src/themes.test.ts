@@ -29,6 +29,26 @@ test("the opencode theme ships with its signature warm primary", () => {
   expect(oc.delBg).not.toBe(oc.panel);
 });
 
+test("the default theme is Blue 300 accented and defines the new text tokens", () => {
+  const d = getTheme("default");
+  expect(d.primary).toBe("#70cbf4");
+  expect(d.accent).toBe("#70cbf4");
+  expect(d.heading).toBe("#70cbf4");
+  // gutter/code are their own tones, distinct from the accent and from borders.
+  expect(d.gutter).not.toBe(d.primary);
+  expect(d.gutter).not.toBe(d.border);
+  expect(d.code).not.toBe(d.primary);
+});
+
+test("every theme defines the new gutter/heading/code text tokens", () => {
+  for (const name of THEME_NAMES) {
+    const p = getTheme(name);
+    for (const k of ["gutter", "heading", "code"] as const) {
+      expect(p[k]).toMatch(/^#[0-9a-f]{6}$/);
+    }
+  }
+});
+
 test("every theme defines a full palette of color strings", () => {
   const keys = Object.keys(getTheme("default"));
   for (const name of THEME_NAMES) {

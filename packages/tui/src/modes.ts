@@ -53,11 +53,11 @@ export function modeLabel(m: UiMode): string {
  * The mode color — shown on the input's mode chip (the `ASK`/`PLAN`/`YOLO` title
  * on its top border), and the only mode-driven hue in the UI. Fixed (not
  * theme-derived) so the mode reads identically everywhere: ASK (execute, every
- * action gated by a prompt) = blue, PLAN (read-only) = green, YOLO (no prompts) =
- * red. Tokyo-night family, so it sits cleanly on the neutral chrome.
+ * action gated by a prompt) = Blue 300 (matching the brand accent), PLAN
+ * (read-only) = green, YOLO (no prompts) = red. Sits cleanly on the neutral chrome.
  */
 export const MODE_COLORS: Record<UiMode, string> = {
-  execute: "#7aa2f7", // ASK — blue
+  execute: "#70cbf4", // ASK — Blue 300 (aligned to the brand accent)
   plan: "#9ece6a", // PLAN — green
   yolo: "#f7768e", // YOLO — red
 };

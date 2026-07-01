@@ -41,7 +41,7 @@ import { renderTable, splitMarkdown, type MdBlock } from "./markdown-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
-import { rainbowAt, rainbowSpans, rotateHue } from "./rainbow.ts";
+import { brandSpans } from "./gradient.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { getTheme, type Palette } from "./themes.ts";
@@ -61,9 +61,6 @@ import {
   type TranscriptAction,
 } from "./reducer.ts";
 import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
-
-/** Ticks per full hue sweep of the working spinner (≈2.5s at the 90ms tick). */
-const SPINNER_CYCLE = 28;
 
 /** The chat column's maximum width. At or below this the column fills the
  * terminal; above it the column stays centered with quiet side gutters
@@ -194,11 +191,11 @@ export function App(props: { engine: EngineClient }) {
   // The goal (★) shown in the header's second row; updated via /goal.
   const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
   const cwd = shortCwd();
-  // The neutral chrome accent: a soft white by default (the DEFAULT palette's
-  // primary), overridable to a single hue via `/accent <hex>`. Used for panel
-  // titles, the input frame, the `❯` user marker, and the caret. The vivid color
-  // lives elsewhere — the rainbow wordmark, the mode chip, the spinner, and the
-  // per-agent/per-step rotation.
+  // The chrome accent: Blue 300 by default (the DEFAULT palette's primary),
+  // overridable to any hue via `/accent <hex>`. Reserved for titles + markers —
+  // panel titles, the `❯` user marker + gutter, the active task/step, the selected
+  // menu row, and the caret — plus the wordmark sweep and the spinner. Box borders
+  // stay neutral grey (`palette().border`).
   const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
   const brand = () => accentColor() || palette().primary;
   // The mode chip on the input's top border — the one mode-driven hue in the UI:
@@ -956,24 +953,24 @@ export function App(props: { engine: EngineClient }) {
                       <Show
                         when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 12}
                         fallback={
-                          <text fg={rainbowAt(0.5)} attributes={TextAttributes.BOLD}>{"◆ Vibe Codr"}</text>
+                          <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ Vibe Codr"}</text>
                         }
                       >
                         {/* Native ASCII-font wordmark (medium terminals, where the
-                            block art doesn't fit) — a single vivid rainbow-mid hue
-                            (per-character gradient isn't available on this renderable). */}
-                        <ascii_font text="VIBE CODR" font="slick" color={rainbowAt(0.5)} />
+                            block art doesn't fit) — the flat brand accent (a
+                            per-character gradient isn't available on this renderable). */}
+                        <ascii_font text="VIBE CODR" font="slick" color={brand()} />
                       </Show>
                     }
                   >
-                    {/* ░██ block wordmark with a clean left→right rainbow gradient:
-                        each row is a line of per-character <span>s colored by COLUMN
-                        position, so column i shares a hue across every row and the
-                        whole block reads as one smooth sweep (red→violet), not
-                        per-letter confetti. Static (rendered once on the idle
-                        splash) — no idle timer. */}
+                    {/* ░██ block wordmark with a clean left→right single-hue blue
+                        sweep: each row is a line of per-character <text>s colored by
+                        COLUMN position, so column i shares a ramp position across
+                        every row and the whole block reads as one smooth light→deep
+                        blue fade, not per-letter confetti. Follows `/accent`. Static
+                        (rendered once on the idle splash) — no idle timer. */}
                     <For each={WORDMARK}>
-                      {(line) => <RainbowLine line={line} cols={WORDMARK_COLS} />}
+                      {(line) => <BrandLine line={line} cols={WORDMARK_COLS} hue={brand()} />}
                     </For>
                   </Show>
                 </box>
@@ -1101,7 +1098,7 @@ export function App(props: { engine: EngineClient }) {
                     palette={palette()}
                     style={mdStyle}
                     chained={chained()}
-                    hue={rotateHue(index)}
+                    hue={palette().gutter}
                     onToggle={(id) => anchoredToggle(() => toggle(id))}
                   />
                 </Show>
@@ -1119,13 +1116,13 @@ export function App(props: { engine: EngineClient }) {
         </Show>
       </box>
 
-      {/* Live working indicator — the braille spinner glyph cycles through the
-          rainbow (animated via `tick`, which only advances while a turn runs), the
+      {/* Live working indicator — the braille spinner glyph animates via `tick`
+          (which only advances while a turn runs) in the flat brand accent; the
           elapsed/interrupt label stays muted for readability. Hidden while a
           permission card is up (the card is the active affordance then). */}
       <Show when={working() && perms().length === 0}>
         <box flexDirection="row" flexShrink={0} marginTop={1}>
-          <text fg={rainbowAt((tick() % SPINNER_CYCLE) / SPINNER_CYCLE)}>
+          <text fg={brand()}>
             {spinnerFrame(tick())}
           </text>
           <text fg={palette().muted}>
@@ -1186,21 +1183,21 @@ export function App(props: { engine: EngineClient }) {
           titleColor={brand()}
         >
           <For each={subagents()}>
-            {(s, i) => {
+            {(s) => {
               const open = () => expandedSubs().has(s.id);
-              // Each subagent gets a stable rainbow hue by its fan-out index, so
-              // concurrent agents are visually distinguishable; the colored glyph
-              // carries that identity even after it finishes. The prompt text stays
-              // muted once done so finished rows recede.
-              const hue = () => rotateHue(i());
-              const fg = () => (s.status === "running" ? hue() : palette().muted);
+              // Calm single tone (no rainbow rotation): a running agent's glyph is
+              // the brand accent (alive), a finished one recedes to the muted gutter
+              // tone. The prompt text reads in the body color while running and
+              // dims to muted once done so finished rows recede.
+              const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
+              const fg = () => (s.status === "running" ? palette().assistant : palette().muted);
               const oneLine = () =>
                 truncate(firstLine(s.prompt) ?? s.prompt, Math.max(24, contentWidth() - 14));
               return (
                 <box flexDirection="column" onMouseDown={() => toggleSub(s.id)}>
                   <box flexDirection="row" gap={1}>
                     <text flexShrink={0} fg={palette().muted}>{open() ? "▾" : "▸"}</text>
-                    <text flexShrink={0} fg={hue()}>
+                    <text flexShrink={0} fg={glyphFg()}>
                       {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
                     </text>
                     <Show
@@ -1340,14 +1337,14 @@ export function App(props: { engine: EngineClient }) {
           </Show>
         </box>
       </Show>
-      {/* Text input — a clean WHITE frame (neutral chrome) with the text inside, on
-          the black backdrop (NO fill): the box sets no background and the input is
-          transparent, so there's no grey surface at all. The only color here is the
-          mode CHIP on the top edge — the `ASK`/`PLAN`/`YOLO` word — in the mode hue
-          (ASK blue · PLAN green · YOLO red). */}
+      {/* Text input — a clean neutral-grey frame with the text inside, on the black
+          backdrop (NO fill): the box sets no background and the input is
+          transparent, so there's no grey surface at all. Color here is on the
+          markers only — the mode CHIP on the top edge (the `ASK`/`PLAN`/`YOLO` word
+          in the mode hue: ASK blue · PLAN green · YOLO red) and the blue caret. */}
       <box
         border
-        borderColor={brand()}
+        borderColor={palette().border}
         title={` ${modeWord()} `}
         titleColor={accent()}
         // COLUMN, not row: in a row the input only grows horizontally and shows a
@@ -1427,17 +1424,18 @@ function SegRow(props: { segs: Seg[]; center?: boolean; marginTop?: number }) {
 }
 
 /**
- * One wordmark row as a left→right rainbow gradient: a flex ROW of one `<text>`
- * per character, each colored by its COLUMN position (`cols` = the full block
- * width, so every row shares the same hue per column → one clean sweep, not
- * per-letter confetti). This is the same per-`<text fg>` mechanism `SegRow` uses
- * — OpenTUI applies `fg` reliably on a `<text>`, whereas inline `<span fg>`
+ * One wordmark row as a left→right single-hue blue fade: a flex ROW of one
+ * `<text>` per character, each colored by its COLUMN position (`cols` = the full
+ * block width, so every row shares the same ramp position per column → one clean
+ * light→deep sweep, not per-letter confetti). `hue` is the live accent so the
+ * sweep follows `/accent`. This is the same per-`<text fg>` mechanism `SegRow`
+ * uses — OpenTUI applies `fg` reliably on a `<text>`, whereas inline `<span fg>`
  * children do not paint. Static (rendered once on the idle splash), so the
  * per-character node count is fine. Empty rows render a single space to keep
  * their height.
  */
-function RainbowLine(props: { line: string; cols: number }) {
-  const cells = () => rainbowSpans(props.line || " ", props.cols);
+function BrandLine(props: { line: string; cols: number; hue: string }) {
+  const cells = () => brandSpans(props.line || " ", props.cols, props.hue);
   return (
     <box flexDirection="row" flexShrink={0}>
       <For each={cells()}>
@@ -1566,7 +1564,7 @@ function ToolBlockView(props: {
   style: SyntaxStyle | undefined;
   /** This row follows another visible tool row → stack flush (no top gap). */
   chained?: boolean;
-  /** Per-step rainbow hue for the leading marker (rotates down the transcript). */
+  /** The calm gutter tone for the leading left-border marker (one flat tone). */
   hue: string;
   onToggle: (id: number) => void;
 }) {
@@ -1584,11 +1582,11 @@ function ToolBlockView(props: {
   return (
     <box
       id={`tool-${b().id}`}
-      // The per-step rainbow hue is the LEFT-BORDER gutter — anchored at the
-      // column's left edge so it lines up exactly with the user-message gutter and
-      // the input frame (all at x=0). Chained steps stack flush, so a run of tool
-      // calls reads as one continuous colored thread. (A thin `│` vs the user
-      // gutter's heavy `┃`, so they're aligned but distinct.)
+      // The calm gutter tone is the LEFT-BORDER marker — anchored at the column's
+      // left edge so it lines up exactly with the user-message gutter and the input
+      // frame (all at x=0). Chained steps stack flush, so a run of tool calls reads
+      // as one continuous quiet thread. (A thin `│` vs the user gutter's heavy `┃`,
+      // so they're aligned but distinct.)
       border={["left"]}
       borderColor={props.hue}
       flexDirection="column"

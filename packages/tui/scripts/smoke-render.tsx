@@ -102,18 +102,23 @@ check("input shows the placeholder", frame.includes("Send a message"));
 check("input border shows the ASK mode", frame.includes("ASK"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));
 
-// The wordmark must be an actual rainbow GRADIENT (many distinct per-column
-// colors), not a flat fill. captureCharFrame is color-blind, so inspect the
-// per-span fg via captureSpans. This guards the regression where inline <span>
-// fg didn't paint and the whole wordmark rendered white.
+// The wordmark must be a single-hue BLUE gradient: many distinct per-column
+// colors (a real sweep, not a flat fill) that are ALL blue-dominant (no rainbow).
+// captureCharFrame is color-blind, so inspect the per-span fg via captureSpans.
+// This guards both the regression where inline fg didn't paint (all white) and a
+// reintroduction of the multi-hue rainbow.
 const wordmarkColors = new Set<string>();
+let wordmarkAllBlue = true;
 for (const line of t.captureSpans().lines) {
   if (!line.spans.some((s) => s.text.includes("░") || s.text.includes("█"))) continue;
   for (const s of line.spans) {
-    if (s.text.trim()) wordmarkColors.add(`${s.fg.r},${s.fg.g},${s.fg.b}`);
+    if (!s.text.trim()) continue;
+    wordmarkColors.add(`${s.fg.r},${s.fg.g},${s.fg.b}`);
+    if (s.fg.b < s.fg.r || s.fg.b < s.fg.g) wordmarkAllBlue = false;
   }
 }
-check(`wordmark is a rainbow gradient (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
+check(`wordmark is a single-hue blue gradient (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
+check("wordmark colors are all blue-dominant (no rainbow)", wordmarkAllBlue);
 // The default theme paints a BLACK background — guards the regression where a
 // persisted `theme: light` (or a non-black default) turned the whole UI white.
 const bgBlack = t
@@ -147,15 +152,17 @@ check("streamed assistant reply renders", frame.includes("42"));
 check("assistant bold markers are concealed (no raw **)", !frame.includes("**"));
 // A turn is in flight (no turn-finished yet) → the working spinner shows.
 check("working indicator renders while a turn runs", frame.includes("Working"));
-// The spinner glyph cycles through the rainbow — assert the braille glyph span
-// carries a SATURATED fg (channel spread), not the muted/white default. Same
-// per-<text fg> mechanism the subagent/tool-step rainbows use.
+// The spinner glyph is the flat brand accent — assert the braille glyph span
+// carries a SATURATED, blue-dominant fg (not the muted/white default, and not the
+// old rainbow). Same per-<text fg> mechanism the wordmark uses.
 const saturated = (fg: { r: number; g: number; b: number }) =>
   Math.max(fg.r, fg.g, fg.b) - Math.min(fg.r, fg.g, fg.b) > 0.2;
-const spinnerColored = t
+const spinnerBlue = t
   .captureSpans()
-  .lines.some((l) => l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg)));
-check("working spinner glyph is rainbow-colored", spinnerColored);
+  .lines.some((l) =>
+    l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg) && s.fg.b >= s.fg.r && s.fg.b >= s.fg.g),
+  );
+check("working spinner glyph is brand-blue", spinnerBlue);
 
 // 4) A tool call renders with its icon + summary, and its output is condensed.
 push({ type: "tool-call-started", toolCallId: "t1", toolName: "read", input: { path: "x" } } as UIEvent);

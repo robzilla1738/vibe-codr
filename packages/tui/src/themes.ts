@@ -36,16 +36,25 @@ export interface Palette {
   /** Subtle background tints behind diff added/removed lines. */
   addBg: string;
   delBg: string;
+  /** Calm left-gutter tone for tool-step + subagent threads (one flat tone, no
+   * per-step rotation). */
+  gutter: string;
+  /** Markdown headings + table header row. */
+  heading: string;
+  /** Fenced code-block text (distinct from the vivid chrome accent). */
+  code: string;
 }
 
-/** Black + monochrome dark palette (the default). */
-// Black background + monochrome white/grey CHROME (titles, markers, carets, the
-// input frame), with color reserved for four deliberate zones: the rainbow
-// wordmark, the mode chip on the input border (ASK blue / PLAN green / YOLO red),
-// the animated working spinner, and the per-agent/per-step rainbow rotation.
-// Neutral charcoal surfaces (panel/elevated) are raised on the black; green/red
-// stay functional on diffs, amber on warnings. The chrome accent (`primary`) is a
-// soft white — override it with a single hue via `accentColor` / `/accent <hex>`.
+/** Black + Blue-300 dark palette (the default). */
+// Black background + neutral grey CHROME BORDERS (input frame, panels), with a
+// single Blue 300 (#70cbf4) ACCENT reserved for titles + markers: panel titles,
+// the `❯` user marker + gutter, the active task/step, the selected menu row, the
+// input caret, and the mode chip (ASK blue / PLAN green / YOLO red). The wordmark
+// sweeps a light→deep shade of that same blue; tool/subagent threads share one
+// calm muted `gutter` tone (no rainbow rotation). Neutral charcoal surfaces
+// (panel/elevated) are raised on the black; green/red stay functional on diffs,
+// amber on warnings. Override the accent with any hue via `accentColor` /
+// `/accent <hex>` — the wordmark sweep follows it.
 const DEFAULT: Palette = {
   user: "#e6e6e6",
   assistant: "#e6e6e6",
@@ -57,23 +66,25 @@ const DEFAULT: Palette = {
   del: "#f7768e",
   ctx: "#8a8a92",
   taskDone: "#6a6a72",
-  taskActive: "#bb9af7",
+  taskActive: "#70cbf4",
   taskPending: "#e6e6e6",
-  accent: "#e6e6e6",
-  // Neutral chrome accent: a soft white used for panel titles, the input frame,
-  // the `❯` user marker, and the caret. Color lives in the wordmark / mode chip /
-  // spinner / per-agent rotation, not here. Override with a single hue via
-  // accentColor / `/accent <hex>`.
-  primary: "#e6e6e6",
+  accent: "#70cbf4",
+  // Blue 300 chrome accent: panel titles, the `❯` user marker + gutter, active
+  // task/step, the selected menu row, and the caret. Borders stay neutral grey.
+  // Override with a single hue via accentColor / `/accent <hex>`.
+  primary: "#70cbf4",
   border: "#34343a",
   muted: "#8a8a92",
   background: "#000000",
   panel: "#161618",
   elevated: "#1e1e22",
-  selBg: "#2a2a30",
+  selBg: "#22333d",
   selFg: "#e6e6e6",
   addBg: "#15231a",
   delBg: "#26171c",
+  gutter: "#3f5766",
+  heading: "#70cbf4",
+  code: "#9cdcfe",
 };
 
 /** Light palette for bright terminals. */
@@ -101,6 +112,9 @@ const LIGHT: Palette = {
   selFg: "#1a2540",
   addBg: "#e4f0e0",
   delBg: "#f6e0e6",
+  gutter: "#9aa7b5",
+  heading: "#2959aa",
+  code: "#0f5e78",
 };
 
 /** High-contrast palette for accessibility. */
@@ -128,6 +142,9 @@ const CONTRAST: Palette = {
   selFg: "#ffffff",
   addBg: "#003000",
   delBg: "#3a0000",
+  gutter: "#7fa8c0",
+  heading: "#00d7ff",
+  code: "#87e5ff",
 };
 
 /**
@@ -159,6 +176,9 @@ const OPENCODE: Palette = {
   selFg: "#eeeeee",
   addBg: "#20303b",
   delBg: "#37222c",
+  gutter: "#544c44",
+  heading: "#fab283",
+  code: "#56b6c2",
 };
 
 export const THEMES: Record<string, Palette> = {

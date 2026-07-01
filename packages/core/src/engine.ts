@@ -69,6 +69,7 @@ import { loadMemorySources, loadProjectMemory, formatMemory } from "./memory.ts"
 import { reasoningSupported } from "./model-tuning.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
+import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
 import { runVerify } from "./verify.ts";
 import { expandMentions } from "./mentions.ts";
 
@@ -1584,49 +1585,15 @@ export class Engine implements EngineClient {
     this.#notice(formatDoctor(checks));
   }
 
-  /** Run a git command in the workspace, returning trimmed stdout/stderr. */
-  async #git(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-    const proc = Bun.spawn(["git", ...args], {
-      cwd: this.#cwd,
-      stdout: "pipe",
-      stderr: "pipe",
-      stdin: "ignore",
-    });
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const code = await proc.exited;
-    return { ok: code === 0, stdout, stderr };
-  }
-
-  /** Best-effort working-tree git state for the header (undefined outside a repo). */
-  async #gitInfo(): Promise<GitInfo | undefined> {
-    const branchRes = await this.#git(["rev-parse", "--abbrev-ref", "HEAD"]);
-    if (!branchRes.ok) return undefined; // not a repo
-    const branch = branchRes.stdout.trim() || "HEAD";
-    const [status, counts, gitDir, commonDir] = await Promise.all([
-      this.#git(["status", "--porcelain"]),
-      this.#git(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]),
-      this.#git(["rev-parse", "--git-dir"]),
-      this.#git(["rev-parse", "--git-common-dir"]),
-    ]);
-    const dirty = status.ok
-      ? status.stdout.split("\n").filter((l) => l.trim().length > 0).length
-      : 0;
-    // `@{upstream}` fails with no upstream — treat as 0/0.
-    const [behind, ahead] = counts.ok
-      ? counts.stdout.trim().split(/\s+/).map((n) => Number(n) || 0)
-      : [0, 0];
-    // Inside a linked worktree the per-worktree git-dir differs from the common dir.
-    const worktree = gitDir.ok && commonDir.ok && gitDir.stdout.trim() !== commonDir.stdout.trim();
-    return { branch, dirty, ahead: ahead ?? 0, behind: behind ?? 0, worktree };
+  /** Run a git command in the workspace (thin wrapper over the shared runner). */
+  #git(args: string[]): Promise<GitRunResult> {
+    return spawnGit(this.#cwd, args);
   }
 
   /** Recompute git state, cache it for the snapshot, and broadcast to the UI. */
   async #emitGit(): Promise<void> {
     try {
-      const git = await this.#gitInfo();
+      const git = await readGitInfo(this.#cwd);
       if (git) {
         this.#gitState = git;
         this.#bus.emit({ type: "git-updated", sessionId: this.#session.id, git });

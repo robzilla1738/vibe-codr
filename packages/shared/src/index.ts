@@ -12,6 +12,8 @@ export type {
   EngineSnapshot,
   GitInfo,
   JobInfo,
+  ModelSummary,
+  ProviderInfo,
 } from "./types.ts";
 
 // UI events (engine -> UI)

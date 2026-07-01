@@ -56,6 +56,13 @@ const engine: EngineClient = {
       { id: "o4-mini", providerId: "openai", contextWindow: 200000 },
     ];
   },
+  listProviders() {
+    return [
+      { id: "openai", configured: true, keyless: false, env: ["OPENAI_API_KEY"] },
+      { id: "ollama", configured: true, keyless: true, env: [] },
+      { id: "anthropic", configured: false, keyless: false, env: ["ANTHROPIC_API_KEY"] },
+    ];
+  },
   async *events() {
     while (true) {
       if (queue.length) {
@@ -370,6 +377,28 @@ if (pickRow >= 0) {
     sent.some((c) => c.type === "set-model" && c.model === "openai/o4-mini"),
   );
 }
+
+// 7d) The `/providers` menu lists providers with configured status, and choosing
+// an unconfigured one prefills the key-entry line.
+t.mockInput.pressEscape();
+await settle();
+await t.mockInput.typeText("/providers ");
+await settle();
+await settle(); // let listProviders() resolve
+frame = t.captureCharFrame();
+check("providers menu lists a configured provider (✓)", frame.includes("✓") && frame.includes("openai"));
+check("providers menu flags an unconfigured provider (○)", frame.includes("○") && frame.includes("anthropic"));
+const provRow = t.captureCharFrame().split("\n").findIndex((l) => l.includes("anthropic"));
+if (provRow >= 0) {
+  await t.mockMouse.click(12, provRow);
+  await settle();
+  check(
+    "choosing an unconfigured provider prefills the key entry",
+    t.captureCharFrame().includes("/model key anthropic"),
+  );
+}
+t.mockInput.pressEscape();
+await settle();
 
 // 8) A permission request renders as a card and a typed y/a/n answers it.
 sent.length = 0;

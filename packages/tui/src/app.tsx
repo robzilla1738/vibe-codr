@@ -31,6 +31,7 @@ import type {
   GitInfo,
   JobInfo,
   ModelSummary,
+  ProviderInfo,
   SessionUsage,
   Task,
   UIEvent,
@@ -205,6 +206,9 @@ export function App(props: { engine: EngineClient }) {
   // then cached for the session). `null` = not fetched yet → show "Fetching…".
   const [models, setModels] = createSignal<ModelSummary[] | null>(null);
   const [modelsLoading, setModelsLoading] = createSignal(false);
+  // The provider list for the `/providers` menu (fetched lazily on first open).
+  const [providers, setProviders] = createSignal<ProviderInfo[] | null>(null);
+  const [providersLoading, setProvidersLoading] = createSignal(false);
   // Current settings tracked reactively so the value submenus can mark the active
   // choice (theme/accent come back as events; subagent-model + reasoning have no
   // event, so we also update them optimistically when chosen here).
@@ -241,6 +245,11 @@ export function App(props: { engine: EngineClient }) {
   createEffect(() => {
     if (modelPickerQuery() === null) setModelTarget("main");
   });
+  // `/providers [filter]` → the provider list menu (configured status + key entry).
+  const providersPickerQuery = (): string | null => {
+    const m = /^\/providers?(?:\s+(.*))?$/is.exec(draft());
+    return m ? (m[1] ?? "").trim() : null;
+  };
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -324,6 +333,31 @@ export function App(props: { engine: EngineClient }) {
         });
       return { open: rows.length > 0, loading: false, kind: "models" as const, title, hint, rows };
     }
+    const provQuery = providersPickerQuery();
+    if (provQuery !== null) {
+      const title = "providers · Enter to configure";
+      const hint = "✓ configured   ○ needs a key";
+      const all = providers();
+      if (all === null) return { open: true, loading: true, kind: "providers" as const, title, hint, rows: [] as MenuRow[] };
+      const q = provQuery.toLowerCase();
+      const rows: MenuRow[] = all
+        .filter((p) => !q || p.id.includes(q))
+        .map((p) => {
+          const status = p.keyless
+            ? "keyless · local"
+            : p.configured
+              ? `key set · ${p.env[0] ?? ""}`
+              : `no key — set ${p.env[0] ?? "key"}`;
+          return {
+            // The ✓/○ in the text conveys status; no ● (that marks a "current" pick).
+            text: `${p.configured ? "✓" : "○"} ${p.id.padEnd(12)} ${status}`,
+            // Configured/keyless → browse its models; unconfigured → prefill the key
+            // entry (reuses the existing `/model key <provider> …` engine path).
+            choose: () => setDraft(p.configured ? `/model ${p.id}/` : `/model key ${p.id} `),
+          } satisfies MenuRow;
+        });
+      return { open: rows.length > 0, loading: false, kind: "providers" as const, title, hint, rows };
+    }
     const st = paletteState(draft());
     if (!st.open) return { open: false, loading: false, kind: "command" as const, title: "", hint: "", rows: [] as MenuRow[] };
     if (st.mode === "command") {
@@ -374,6 +408,17 @@ export function App(props: { engine: EngineClient }) {
         .then((list) => setModels(list ?? []))
         .catch(() => setModels([]))
         .finally(() => setModelsLoading(false));
+    }
+  });
+
+  // Lazily fetch the provider list the first time the `/providers` menu opens.
+  createEffect(() => {
+    if (providersPickerQuery() !== null && providers() === null && !providersLoading()) {
+      setProvidersLoading(true);
+      void Promise.resolve(props.engine.listProviders?.() ?? [])
+        .then((list) => setProviders(list ?? []))
+        .catch(() => setProviders([]))
+        .finally(() => setProvidersLoading(false));
     }
   });
 
@@ -533,6 +578,13 @@ export function App(props: { engine: EngineClient }) {
     if (key.name === "escape" && !m.open && working() && perms().length === 0) {
       key.preventDefault?.();
       props.engine.send({ type: "abort" });
+      return;
+    }
+    // Otherwise Esc clears a half-typed draft (e.g. a prefilled `/model key …` from
+    // the providers menu) so the input returns to empty in one keystroke.
+    if (key.name === "escape" && !m.open && !working() && draft().trim()) {
+      key.preventDefault?.();
+      setDraft("");
       return;
     }
     if (!m.open) return; // menu closed → let the input handle keys normally
@@ -1319,7 +1371,7 @@ export function App(props: { engine: EngineClient }) {
             <text fg={palette().heading}>{`  ${menuView()?.hint}`}</text>
           </Show>
           <Show when={menuView()?.loading}>
-            <text fg={palette().muted}>{"  Fetching models…"}</text>
+            <text fg={palette().muted}>{"  Loading…"}</text>
           </Show>
           <For each={menuView()?.rows ?? []}>
             {/* Hover highlights, click selects + runs (index-based, so a click works

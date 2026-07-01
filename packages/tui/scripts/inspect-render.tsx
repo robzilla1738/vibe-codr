@@ -37,6 +37,14 @@ const engine: EngineClient = {
       { id: "glm-5.2", providerId: "ollama", contextWindow: 128000 },
     ];
   },
+  listProviders() {
+    return [
+      { id: "openai", configured: true, keyless: false, env: ["OPENAI_API_KEY"] },
+      { id: "ollama", configured: true, keyless: true, env: [] },
+      { id: "anthropic", configured: false, keyless: false, env: ["ANTHROPIC_API_KEY"] },
+      { id: "groq", configured: false, keyless: false, env: ["GROQ_API_KEY"] },
+    ];
+  },
   async *events() {
     while (true) {
       if (queue.length) {
@@ -101,6 +109,14 @@ console.log(t.captureCharFrame());
 
 banner("5) MODEL PICKER — Tab → SUBAGENTS target");
 t.mockInput.pressTab();
+await settle();
+console.log(t.captureCharFrame());
+
+banner("6) PROVIDERS MENU (configured status + key entry)");
+t.mockInput.pressEscape();
+await settle();
+await t.mockInput.typeText("/providers ");
+await settle();
 await settle();
 console.log(t.captureCharFrame());
 

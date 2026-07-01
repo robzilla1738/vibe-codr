@@ -28,6 +28,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
   // Model & mode
   { name: "model", description: "Pick the model (Tab: main ⇄ subagents · /model refresh)", arg: "[filter]" },
+  { name: "providers", description: "Providers + keys (Enter to configure)", arg: "[filter]" },
   { name: "plan", description: "Switch to read-only plan mode" },
   { name: "execute", description: "Switch to execute mode" },
   { name: "approvals", description: "Set approval mode", values: ["ask", "auto"] },

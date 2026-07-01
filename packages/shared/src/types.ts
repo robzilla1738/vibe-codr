@@ -52,6 +52,19 @@ export interface ModelSummary {
   contextWindow?: number;
 }
 
+/** A provider the UI can offer in the `/providers` menu — its id, whether it has
+ * usable credentials (or is keyless), and the env var(s) that supply its key. */
+export interface ProviderInfo {
+  /** Provider id (e.g. `openai`, `anthropic`, `ollama`). */
+  id: string;
+  /** Has a usable key (env / config / token file) or is keyless. */
+  configured: boolean;
+  /** Needs no key (e.g. a local endpoint). */
+  keyless: boolean;
+  /** The env var name(s) that supply this provider's key (for the "set a key" hint). */
+  env: string[];
+}
+
 /** A prompt or command waiting in (or running at the head of) the engine queue. */
 export interface QueuedItem {
   id: string;

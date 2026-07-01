@@ -1,4 +1,4 @@
-import type { Mode, EngineSnapshot, ModelSummary } from "./types.ts";
+import type { Mode, EngineSnapshot, ModelSummary, ProviderInfo } from "./types.ts";
 import type { UIEvent } from "./events.ts";
 
 /**
@@ -50,4 +50,7 @@ export interface EngineClient {
   snapshot(): EngineSnapshot;
   /** Models across the configured providers, for the interactive `/model` picker. */
   listModels(): Promise<ModelSummary[]>;
+  /** All known providers + whether each is configured, for the `/providers` menu.
+   * Optional so a minimal client (tests) can omit it. */
+  listProviders?(): ProviderInfo[] | Promise<ProviderInfo[]>;
 }

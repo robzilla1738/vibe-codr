@@ -11,6 +11,7 @@ import {
   type GitInfo,
   type Logger,
   type Mode,
+  type ProviderInfo,
   type QueuedItem,
   type UIEvent,
 } from "@vibe/shared";
@@ -785,6 +786,20 @@ export class Engine implements EngineClient {
   async listModels(): Promise<ModelInfo[]> {
     const live = await this.registry.listConfiguredModels(this.#config);
     return this.catalog.enrich(live);
+  }
+
+  /** Every known provider + whether it's configured, for the `/providers` menu.
+   * Configured (usable) providers sort first, then alphabetically. */
+  listProviders(): ProviderInfo[] {
+    return this.registry
+      .list()
+      .map((d) => ({
+        id: d.id,
+        configured: this.registry.isConfigured(d.id, this.#config),
+        keyless: d.auth.keyless ?? false,
+        env: d.auth.env,
+      }))
+      .sort((a, b) => Number(b.configured) - Number(a.configured) || a.id.localeCompare(b.id));
   }
 
   #notice(message: string, level: "info" | "warn" | "error" = "info"): void {

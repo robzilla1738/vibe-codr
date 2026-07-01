@@ -47,6 +47,20 @@ test("stderr is captured alongside stdout", async () => {
   expect(String(r.output)).toContain("oops");
 });
 
+test("high-volume output is capped (retained buffer bounded during streaming)", async () => {
+  // Emit ~1MB of output; the captured buffer must stay bounded (not grow to the
+  // full volume in memory) and be marked truncated. 20000 lines of 60 chars.
+  const r = await bashTool().execute(
+    { command: "yes 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' | head -20000" },
+    ctx(cwd()),
+  );
+  const output = String(r.output);
+  expect(output).toContain("…(truncated)");
+  // The captured output stays near the cap (status line + 30k + marker), nowhere
+  // near the ~1.2MB the command produced.
+  expect(output.length).toBeLessThan(31_000);
+});
+
 test("a command that exceeds its timeout is reported as a timeout, not a bare exit code", async () => {
   // A killed process exits with a SIGTERM code (143); without the explicit
   // timeout marker the model can't tell that apart from a real failure.

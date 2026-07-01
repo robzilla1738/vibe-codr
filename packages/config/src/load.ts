@@ -157,14 +157,30 @@ function mergeForWrite(
  * model/provider/key changes outside any project. A `null` value in `patch`
  * deletes that key (clearing a setting). Returns the object that was written.
  */
-export async function writeGlobalConfig(
+/** Serializes concurrent global-config writes. The engine fires `#persistConfig`
+ * without awaiting, so two rapid settings changes (e.g. `/model` then `/reasoning`)
+ * would otherwise both read the same `existing` and the later write would clobber
+ * the earlier one's key. Chaining makes each write see the prior write's result. */
+let writeChain: Promise<unknown> = Promise.resolve();
+
+export function writeGlobalConfig(
   patch: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const path = globalConfigPath();
-  const existing = (await readConfigFile(path)) ?? {};
-  const merged = mergeForWrite(existing, patch);
-  await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
-  return merged;
+  const run = async (): Promise<Record<string, unknown>> => {
+    const path = globalConfigPath();
+    const existing = (await readConfigFile(path)) ?? {};
+    const merged = mergeForWrite(existing, patch);
+    await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
+    return merged;
+  };
+  const result = writeChain.then(run, run);
+  // Advance the chain past this write's settlement, swallowing errors so one
+  // failed write doesn't wedge every subsequent persist.
+  writeChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 /**
@@ -192,10 +208,17 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
         .join("; ")}`,
     );
   }
-  return result.data;
+  // Deep-clone: Zod's object/array `.default()` values are SHARED by reference
+  // across every parse, so without this two loaded configs (or two defaultConfig()
+  // calls) would alias the same nested `providers`/`mcp.servers`/`webfetch.
+  // allowHosts` — the engine mutates several of these (e.g. `/model key` writes
+  // `providers[id]`), which would then leak across configs (and pollute tests).
+  return structuredClone(result.data);
 }
 
 /** Synchronous defaults, useful for tests and headless boot before disk read. */
 export function defaultConfig(): Config {
-  return ConfigSchema.parse({});
+  // Clone so each caller gets an independent config (see loadConfig above) —
+  // otherwise every defaultConfig() shares the schema's default object instances.
+  return structuredClone(ConfigSchema.parse({}));
 }

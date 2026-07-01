@@ -10,8 +10,15 @@ import { isOverloadError } from "./retry.ts";
  * single-session use (one in-flight call out of N slots → never waits).
  */
 export interface Limiter {
-  /** Run `fn` once a slot is free; record success/overload to adapt the ceiling. */
-  run<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * Run `fn` once a slot is free; record success/overload to adapt the ceiling.
+   * If `signal` is provided and aborts while this call is still QUEUED (waiting
+   * for a slot), the wait is abandoned and the returned promise rejects with an
+   * AbortError — critical so a subagent whose wall-clock timeout fires while it's
+   * blocked on `acquire()` can unwind instead of wedging its ancestors' slots
+   * (which held tree-globally would otherwise deadlock a deep fan-out).
+   */
+  run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T>;
   /** Current concurrency ceiling. */
   readonly limit: number;
   /** Currently in-flight count. */
@@ -49,12 +56,32 @@ export function createLimiter(opts: LimiterOptions = {}): Limiter {
       waiters.shift()!();
     }
   };
-  const acquire = (): Promise<void> => {
+  const abortError = (): Error => {
+    const e = new Error("The operation was aborted.");
+    e.name = "AbortError";
+    return e;
+  };
+  const acquire = (signal?: AbortSignal): Promise<void> => {
+    if (signal?.aborted) return Promise.reject(abortError());
     if (active < limit) {
       active++;
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => waiters.push(resolve));
+    return new Promise<void>((resolve, reject) => {
+      // A queued waiter that is aborted before it's admitted removes itself and
+      // rejects, so it never occupies a slot and its ancestors can unwind.
+      const waiter = (): void => {
+        if (signal) signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = (): void => {
+        const i = waiters.indexOf(waiter);
+        if (i !== -1) waiters.splice(i, 1);
+        reject(abortError());
+      };
+      waiters.push(waiter);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    });
   };
   const release = (): void => {
     active--;
@@ -85,8 +112,8 @@ export function createLimiter(opts: LimiterOptions = {}): Limiter {
     get active() {
       return active;
     },
-    async run<T>(fn: () => Promise<T>): Promise<T> {
-      await acquire();
+    async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+      await acquire(signal);
       try {
         const result = await fn();
         onSuccess();

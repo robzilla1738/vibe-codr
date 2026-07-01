@@ -25,6 +25,9 @@ function detectServers(output: string): string[] {
   return [...urls];
 }
 
+/** Cap on the sticky detected-server list per job (bounds high-cardinality output). */
+const MAX_SERVERS = 64;
+
 /**
  * Process-wide registry of background shell jobs. Lets the agent start a
  * long-running command (build, watcher, server) and keep working, polling with
@@ -68,10 +71,22 @@ export class BackgroundJobs {
         if (!text) return;
         job.output += text;
         if (job.output.length > 100_000) job.output = job.output.slice(-100_000);
-        // Surface a newly-bound dev-server URL as soon as it's printed.
-        const before = job.servers.length;
-        job.servers = detectServers(job.output);
-        if (job.servers.length > before) this.#onChange?.();
+        // Surface a newly-bound dev-server URL as soon as it's printed. MERGE new
+        // URLs into the sticky list rather than replacing it from the (truncated)
+        // buffer — otherwise a server URL printed early scrolls out of the 100k
+        // window and vanishes from `/jobs` while the server is still running.
+        let added = false;
+        for (const url of detectServers(job.output)) {
+          if (!job.servers.includes(url)) {
+            job.servers.push(url);
+            // Bound the sticky list: a job that logs many distinct URLs (ephemeral
+            // ports, request paths) must not grow it without limit. Keep the most
+            // recent — real dev-server URLs are stable and stay.
+            if (job.servers.length > MAX_SERVERS) job.servers.shift();
+            added = true;
+          }
+        }
+        if (added) this.#onChange?.();
       };
       for await (const chunk of stream) append(decoder.decode(chunk, { stream: true }));
       append(decoder.decode()); // flush trailing bytes

@@ -111,6 +111,52 @@ test("a checkpoint records the conversation mark for history rollback", async ()
   expect(restored!.conversation).toEqual({ messages: 4, history: 3 });
 });
 
+test("undo with a missing snapshot commit refuses to delete untracked files", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+
+  // The user has untracked work before the agent touches anything.
+  await Bun.write(join(dir, "precious.txt"), "irreplaceable\n");
+
+  const snap = await cp.snapshot("before");
+  expect(snap).not.toBeNull();
+
+  // Simulate the snapshot commit being garbage-collected / lost: delete its ref
+  // and prune the object so read-tree/ls-tree fail with empty output.
+  await git(dir, ["update-ref", "-d", `refs/vibecodr/${snap!.id}`]);
+  await git(dir, ["reflog", "expire", "--expire=now", "--all"]);
+  await git(dir, ["gc", "--prune=now"]);
+
+  const restored = await cp.undo();
+  // Undo could not restore (commit gone) — but it must NOT have deleted the
+  // user's untracked file (the old code wiped ALL untracked on a false-empty tree).
+  expect(restored).toBeNull();
+  expect(await Bun.file(join(dir, "precious.txt")).exists()).toBe(true);
+});
+
+test("undo advances past a dead checkpoint to the next valid one", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+
+  // Two checkpoints: an older valid one, then a newer one we'll make dead.
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  await cp.snapshot("older-valid");
+  await Bun.write(join(dir, "a.txt"), "v2\n");
+  const newer = await cp.snapshot("newer-will-die");
+
+  // Kill only the NEWER checkpoint's commit object.
+  await git(dir, ["update-ref", "-d", `refs/vibecodr/${newer!.id}`]);
+  await git(dir, ["reflog", "expire", "--expire=now", "--all"]);
+  await git(dir, ["gc", "--prune=now"]);
+
+  // Current working state, then undo: it must skip the dead newer checkpoint and
+  // restore the older valid one (not report "nothing to undo").
+  await Bun.write(join(dir, "a.txt"), "v3-dirty\n");
+  const restored = await cp.undo();
+  expect(restored?.label).toBe("older-valid");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
+});
+
 test("non-git directories are a safe no-op", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-nogit-"));
   const cp = new CheckpointManager(dir);

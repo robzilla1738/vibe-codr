@@ -48,6 +48,43 @@ test("a non-overload error does not lower the ceiling", async () => {
   expect(lim.limit).toBe(8);
 });
 
+test("a queued call whose signal aborts rejects and frees its ancestor's slot", async () => {
+  // Ceiling of 1: the first call holds the only slot; a second, queued call must
+  // be able to abandon its wait (a subagent timeout) instead of hanging forever.
+  const lim = createLimiter({ max: 1, min: 1 });
+  let release!: () => void;
+  const holder = lim.run(() => new Promise<void>((r) => (release = r)));
+  const ac = new AbortController();
+  let queuedRan = false;
+  const queued = lim
+    .run(async () => {
+      queuedRan = true;
+    }, ac.signal)
+    .catch((e) => (e as Error).name);
+  // The queued call is waiting behind the holder; aborting must reject it.
+  ac.abort();
+  expect(await queued).toBe("AbortError");
+  expect(queuedRan).toBe(false);
+  // Aborting the waiter must not have leaked a slot: a fresh call still admits
+  // after the holder releases.
+  release();
+  await holder;
+  let after = false;
+  await lim.run(async () => {
+    after = true;
+  });
+  expect(after).toBe(true);
+  expect(lim.active).toBe(0);
+});
+
+test("an already-aborted signal rejects immediately without taking a slot", async () => {
+  const lim = createLimiter({ max: 2 });
+  const ac = new AbortController();
+  ac.abort();
+  await expect(lim.run(async () => "x", ac.signal)).rejects.toThrow(/abort/i);
+  expect(lim.active).toBe(0);
+});
+
 test("with a high ceiling a single call never waits (no-op for single-session)", async () => {
   const lim = createLimiter({ max: 16 });
   let started = false;

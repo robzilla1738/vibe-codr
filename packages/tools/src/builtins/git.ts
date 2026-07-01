@@ -1,6 +1,29 @@
 import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "@vibe/shared";
 
+/** Ceiling on bytes read from each git stream, well above the 20k display cap so
+ * nothing legitimate is lost — but bounded so a pathological `git diff` of a
+ * multi-GB change can't be fully materialized in memory before `cap()` trims it. */
+const MAX_GIT_STREAM = 64_000;
+
+/** Read a stream up to `max` chars, then cancel it (git exits on the broken pipe). */
+async function readCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  try {
+    while (out.length < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return out;
+}
+
 /** Run a git subcommand in the session cwd; returns combined output + exit code. */
 async function git(args: string[], ctx: ToolContext): Promise<{ code: number; out: string }> {
   const proc = Bun.spawn(["git", ...args], {
@@ -10,8 +33,8 @@ async function git(args: string[], ctx: ToolContext): Promise<{ code: number; ou
     signal: ctx.abortSignal,
   });
   const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+    readCapped(proc.stdout, MAX_GIT_STREAM),
+    readCapped(proc.stderr, MAX_GIT_STREAM),
     proc.exited,
   ]);
   const out = (stdout + stderr).trim();

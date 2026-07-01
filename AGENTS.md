@@ -190,7 +190,10 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   - `/undo` restores via a throwaway `GIT_INDEX_FILE` (never the user's real
     index), removes only files absent from the snapshot tree (keeps the user's
     pre-existing untracked files), and rewinds the conversation to the
-    checkpoint's `conversation` mark.
+    checkpoint's `conversation` mark. It **guards `read-tree`/`ls-tree` success**:
+    a snapshot whose commit object is gone (GC'd) is SKIPPED (its dangling ref
+    dropped) and `undo` advances to the next valid checkpoint — a failed git call
+    must never be read as an empty snapshot, which would delete every untracked file.
   - The plugin `HookBus` isolates each handler (one throw doesn't break the turn)
     and the lifecycle hooks are actually wired: `session.start/idle/end` (engine),
     `tool.before.execute` (with a working `deny` gate) / `tool.after.execute` /
@@ -204,6 +207,51 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
     **base-model match** (`ollama/glm-5.2` inherits a `glm-5.2` price) flagged
     `estimated`. The flag rides `SessionUsage.costEstimated` so `formatUsage` shows
     `~$` for estimates, `$0.00` for genuinely free/local — cost is never hidden.
+    Anthropic reports `cache_read` tokens **disjoint** from `input_tokens`, so
+    `onStepFinish` folds them into a superset (`cacheTokensDisjointFromInput`)
+    before cost/context/compaction accounting, else cost + `ctx %` under-report.
+  - **A turn that ends before any assistant reply rolls back its user message.**
+    `Session.run`'s `finally` identity-matches the just-pushed user turn and pops it
+    (with its `#history` echo) when a pre-stream abort/error left it as the last
+    message, so the next turn never opens with two consecutive user messages (a 400
+    on strict providers, a corrupt `--resume` seed). The identity check survives a
+    mid-turn compaction that keeps the message verbatim at the tail.
+  - **The tree-global provider `Limiter` must not deadlock a deep fan-out.**
+    `run(fn, signal)` is abort-aware (a queued waiter aborts + rejects, so a
+    timed-out subagent stuck on `acquire` unwinds) and the engine floors the AIMD
+    ceiling at `subagent.maxDepth + 1`, so a linear chain of ancestors each holding
+    a slot can't starve its own leaf. `#withLimiter` threads `this.#abort.signal`.
+  - **`webfetch` is DNS-rebinding-safe.** `assertFetchAllowed` resolves a hostname
+    ONCE (`ADDRCONFIG`, all addresses verified public) and returns `pinnedIp`
+    (preferring a verified IPv4 for reachability); `webfetch` connects to *exactly*
+    that IP (bracketing IPv6, preserving `Host` + TLS `serverName` + userinfo),
+    re-validated + re-pinned on every redirect hop. Never re-resolve at connect time.
+  - **Every context-producing tool caps output DURING streaming, not after.**
+    `bash`/`git_*`/`verify` read their streams with a bounded reader (cancel at the
+    cap), `edit`/`diff` fall back to a coarse diff past an LCS-matrix size guard,
+    `@`-mentions bound the READ by stat size, and `pdftext` caps `inflateSync`
+    (`maxOutputLength`) against a deflate bomb — so a runaway/hostile input can't OOM.
+  - **Orchestration `verify→retry` is honest.** The reviewer verdict must be
+    `REVIEW-CLEAN` on its own line (`isReviewClean`, not a substring — an "NOT
+    REVIEW-CLEAN …" must read as feedback), and a non-mutating RETRY (feedback set)
+    must NOT short-circuit to `completed` (it leaves the prior rejected edits on disk).
+  - **MCP:** two real tool names that sanitize to one exposed name are
+    disambiguated with a hash suffix (`#registerServerTools`); a reconnect that
+    resolves after `close()` tears down its transport (no leak); a transient
+    transport `onerror` does NOT latch `connected=false` (only `onclose` drives the
+    down/reconnect); resources/prompts first seen on a reconnect register their
+    aggregate tool; the OAuth token store writes atomically (temp+rename) and sets a
+    corrupt file aside rather than dropping the grant.
+  - **Config defaults are per-parse independent.** `defaultConfig`/`loadConfig`
+    `structuredClone` the parsed config — Zod's object/array defaults are shared by
+    reference, and the engine mutates several (`providers`, `subagent`, `reasoning`),
+    so aliasing would leak across configs and pollute tests. `writeGlobalConfig`
+    serializes its read-modify-write, and `save_memory` (`appendMemory`) is atomic
+    per dated file, so concurrent fire-and-forget persists can't clobber.
+  - The plan→execute handoff is **bound to its enqueued job** (a `{handoff}` option
+    on `#handlePrompt`, captured at enqueue time), not a shared flag a queued prompt
+    could steal; `abort`/`steer` target `(#loopSession ?? #session)` so Esc
+    interrupts an in-flight `/loop` iteration, not just the idle main session.
 - Every behavior change ships with a test. Prefer mock-model integration tests
   (`ai/test`'s `MockLanguageModelV2`) over hitting the network.
 - `packages/tui/src/app.tsx` is excluded from `tsc` (OpenTUI is an optional

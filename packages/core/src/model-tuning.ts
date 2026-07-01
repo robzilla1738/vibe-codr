@@ -57,6 +57,19 @@ export function reasoningSupported(modelString: string): boolean {
   return REASONING_PROVIDERS.has(providerOf(modelString));
 }
 
+/**
+ * Whether the provider reports cached-prompt tokens DISJOINT from `inputTokens`
+ * (input EXCLUDES the cached read) rather than as a subset of it. Anthropic does
+ * this — `input_tokens` is the new/uncached input and `cache_read_input_tokens`
+ * is separate — so a cache hit would understate cost (the flat-input pricing in
+ * `computeCost` assumes cached ⊆ input), the live context %, and the compaction
+ * trigger unless the caller folds the two into a superset. OpenAI-family
+ * providers already include cached in input, so no fold is needed there.
+ */
+export function cacheTokensDisjointFromInput(modelString: string): boolean {
+  return providerOf(modelString) === "anthropic";
+}
+
 export function buildModelTuning(modelString: string, config: Config): ModelTuning {
   const provider = providerOf(modelString);
   const { effort, budgetTokens } = config.reasoning;

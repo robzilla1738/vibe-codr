@@ -59,6 +59,35 @@ test("a GFM table is split out, with alignment, between prose", () => {
   expect(b[2]).toEqual({ kind: "prose", text: "done" });
 });
 
+test("a GFM escaped pipe in a cell is a literal | , not a column break", () => {
+  const src = "| Op | Meaning |\n| --- | --- |\n| a \\| b | alternation |";
+  const b = splitMarkdown(src);
+  const table = b.find((x) => x.kind === "table") as Extract<
+    (typeof b)[number],
+    { kind: "table" }
+  >;
+  expect(table).toBeDefined();
+  // Two cells (the escaped pipe stays inside cell 1 as a literal "|"), no stray backslash.
+  expect(table.rows).toEqual([
+    ["Op", "Meaning"],
+    ["a | b", "alternation"],
+  ]);
+});
+
+test("a doubled backslash before a pipe is an escaped backslash + a real delimiter", () => {
+  // `a\\|b`: literal backslash, then a column break → cells "a\" and "b" (GFM).
+  const src = "| x | y |\n| --- | --- |\n| a\\\\|b | z |";
+  const b = splitMarkdown(src);
+  const table = b.find((x) => x.kind === "table") as Extract<
+    (typeof b)[number],
+    { kind: "table" }
+  >;
+  expect(table.rows).toEqual([
+    ["x", "y"],
+    ["a\\", "b", "z"],
+  ]);
+});
+
 test("a header-without-delimiter stays prose (not a premature table)", () => {
   // While streaming, the header may arrive before the delimiter row.
   const b = splitMarkdown("| Name | Size |");
@@ -93,6 +122,19 @@ test("stripInline conceals bold/italic/code/strikethrough/links", () => {
   expect(stripInline("`code` and ~~gone~~")).toBe("code and gone");
   expect(stripInline("see [the docs](https://x.y/z)")).toBe("see the docs");
   expect(stripInline("plain")).toBe("plain");
+});
+
+test("stripInline preserves intraword underscores in identifiers", () => {
+  // Regression: `_`-emphasis used to eat identifier underscores in table cells /
+  // headings / blockquotes, turning `max_retry_count` into `maxretrycount`.
+  expect(stripInline("max_retry_count")).toBe("max_retry_count");
+  expect(stripInline("get_user_by_id")).toBe("get_user_by_id");
+  expect(stripInline("call `set__value` in db__table")).toBe("call set__value in db__table");
+  // Genuine `_`/`__` emphasis (flanked by non-word chars) is still concealed.
+  expect(stripInline("this is _emphasis here_ ok")).toBe("this is emphasis here ok");
+  expect(stripInline("__strong__ start")).toBe("strong start");
+  // A mix: identifier survives, real emphasis is stripped.
+  expect(stripInline("_note_: use api_key_id")).toBe("note: use api_key_id");
 });
 
 test("renderTable conceals inline markdown in cells (no raw ** leaks)", () => {

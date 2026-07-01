@@ -14,6 +14,10 @@ type GrepInput = z.infer<typeof Input>;
 
 /** Cap on returned match lines, so a broad pattern can't flood the context. */
 const LIMIT = 500;
+/** Skip lines longer than this in the builtin fallback scan: a user regex with
+ * catastrophic backtracking against a very long single line (minified JS, a data
+ * blob) would otherwise hang synchronously and ignore the abort signal. */
+const MAX_LINE_LEN = 50_000;
 
 /** Extensions we never scan in the built-in fallback (binary / non-text). */
 const BINARY_EXT =
@@ -72,6 +76,12 @@ export async function builtinGrep(
   } catch (err) {
     return { output: `invalid regex: ${(err as Error).message}`, isError: true };
   }
+  // A pattern with NO regex metacharacters is a plain literal — a substring scan
+  // has no backtracking risk, so it can match ANY line length. Only a true regex
+  // (which could backtrack catastrophically) is skipped on pathologically long
+  // lines. This keeps the ReDoS guard while still finding literal symbols in a
+  // minified/one-line file (the common fallback-grep case).
+  const isLiteral = !/[.*+?^${}()|[\]\\]/.test(pattern);
   const files = await listFiles(ctx.cwd, path ?? ".", glob);
   const results: string[] = [];
   for (const rel of files) {
@@ -85,8 +95,16 @@ export async function builtinGrep(
     }
     const lines = text.split("\n");
     for (let i = 0; i < lines.length; i++) {
-      if (regex.test(lines[i]!)) {
-        results.push(`${rel}:${i + 1}:${lines[i]}`);
+      if (ctx.abortSignal.aborted) break;
+      const line = lines[i]!;
+      // Only a real regex risks catastrophic backtracking on a huge single line
+      // (minified JS, embedded data) — skip those to avoid a synchronous hang. A
+      // literal pattern is matched with a plain substring scan at any length.
+      const matched = isLiteral
+        ? line.includes(pattern)
+        : line.length <= MAX_LINE_LEN && regex.test(line);
+      if (matched) {
+        results.push(`${rel}:${i + 1}:${line}`);
         if (results.length > LIMIT) break;
       }
     }

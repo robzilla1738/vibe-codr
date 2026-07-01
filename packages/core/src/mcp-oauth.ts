@@ -1,5 +1,5 @@
 import { join, dirname } from "node:path";
-import { mkdir, unlink } from "node:fs/promises";
+import { mkdir, unlink, rename } from "node:fs/promises";
 import { createLogger, type Logger } from "@vibe/shared";
 import type { McpOAuth } from "@vibe/config";
 import { vibeConfigDir } from "./memory.ts";
@@ -47,18 +47,30 @@ export class McpTokenStore {
   }
 
   async read(): Promise<StoredMcpAuth> {
+    const file = Bun.file(this.#path);
+    if (!(await file.exists())) return {}; // absent → genuinely empty store
     try {
-      return JSON.parse(await Bun.file(this.#path).text()) as StoredMcpAuth;
+      return JSON.parse(await file.text()) as StoredMcpAuth;
     } catch {
+      // Present but unparseable: do NOT silently treat as empty — the next merge()
+      // would then persist only the new patch and drop the (recoverable) tokens +
+      // dynamic client registration. Set the corrupt file aside so a merge starts
+      // clean without erasing it without a trace.
+      await rename(this.#path, `${this.#path}.corrupt`).catch(() => undefined);
       return {};
     }
   }
 
-  /** Merge `patch` into the stored state (create parent dir as needed). */
+  /** Merge `patch` into the stored state (create parent dir as needed). Atomic:
+   * writes a temp file then renames over the target, so a crash mid-write leaves
+   * the previous good file intact instead of a truncated one that reads as empty
+   * (which would drop the whole grant on the next merge). */
   async merge(patch: Partial<StoredMcpAuth>): Promise<void> {
     const next = { ...(await this.read()), ...patch };
     await mkdir(dirname(this.#path), { recursive: true });
-    await Bun.write(this.#path, JSON.stringify(next, null, 2));
+    const tmp = `${this.#path}.tmp`;
+    await Bun.write(tmp, JSON.stringify(next, null, 2));
+    await rename(tmp, this.#path);
   }
 
   async clear(): Promise<void> {

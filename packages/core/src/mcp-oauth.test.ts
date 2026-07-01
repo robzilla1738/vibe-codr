@@ -21,6 +21,29 @@ test("McpTokenStore round-trips tokens, client info, and the PKCE verifier", asy
   expect(state.clientInformation).toEqual({ client_id: "c1" });
 });
 
+test("McpTokenStore.merge is atomic (no leftover temp file) and preserves prior keys", async () => {
+  const store = tmpStore();
+  await store.merge({ clientInformation: { client_id: "dyn-123" } });
+  await store.merge({ tokens: { access_token: "a", refresh_token: "r" } });
+  const state = await store.read();
+  expect(state.clientInformation).toEqual({ client_id: "dyn-123" }); // preserved across merges
+  expect(state.tokens).toEqual({ access_token: "a", refresh_token: "r" });
+  // No stray temp file left behind (the write is temp+rename).
+  expect(await Bun.file(`${store.path}.tmp`).exists()).toBe(false);
+});
+
+test("a corrupt token file is set aside on read, not silently clobbered", async () => {
+  const store = tmpStore();
+  await store.merge({ clientInformation: { client_id: "dyn-123" }, tokens: { refresh_token: "keep-me" } });
+  // Simulate a crash-corrupted file (truncated JSON).
+  await Bun.write(store.path, '{"tokens": {"refresh');
+  // read() must not return {} while erasing the file — it backs it up instead.
+  expect(await store.read()).toEqual({});
+  expect(await Bun.file(`${store.path}.corrupt`).exists()).toBe(true);
+  // The salvaged bytes are recoverable from the .corrupt sidecar.
+  expect(await Bun.file(`${store.path}.corrupt`).text()).toContain("refresh");
+});
+
 test("McpTokenStore.clear removes the persisted state", async () => {
   const store = tmpStore();
   await store.merge({ tokens: { access_token: "a" } });

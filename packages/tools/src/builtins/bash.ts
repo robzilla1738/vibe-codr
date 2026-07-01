@@ -18,6 +18,8 @@ const Input = z.object({
 });
 
 const DEFAULT_TIMEOUT = 120_000;
+/** Head cap on the model-facing captured output (bounds memory during streaming). */
+const OUTPUT_CAP = 30_000;
 
 /** Build the bash tool. A shared job registry enables `background: true`. */
 export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof Input>> {
@@ -58,19 +60,33 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
       }, limit);
 
       let out = "";
+      // Bound the retained buffer to the head cap DURING streaming, not after: a
+      // high-volume command (`yes`, a chatty build) is drained as fast as it's
+      // produced, so an unbounded `out` grows to gigabytes before the process
+      // exits and OOM-crashes the turn. We still forward every chunk to the UI
+      // (progress is transient); only the model-facing capture is capped.
+      let capped = false;
       const pump = async (stream: ReadableStream<Uint8Array>) => {
         // One decoder per stream with streaming mode so a multibyte UTF-8
         // character split across chunk boundaries isn't corrupted into `�`.
         const decoder = new TextDecoder();
         const emit = (text: string) => {
           if (!text) return;
-          out += text;
           ctx.emit({
             type: "tool-call-progress",
             sessionId: ctx.sessionId,
             toolCallId: ctx.toolCallId,
             chunk: text,
           });
+          if (out.length >= OUTPUT_CAP) {
+            capped = true;
+            return;
+          }
+          out += text;
+          if (out.length > OUTPUT_CAP) {
+            out = out.slice(0, OUTPUT_CAP);
+            capped = true;
+          }
         };
         for await (const chunk of stream) emit(decoder.decode(chunk, { stream: true }));
         emit(decoder.decode()); // flush any buffered trailing bytes
@@ -80,7 +96,7 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
       const code = await proc.exited;
       clearTimeout(timer);
 
-      const trimmed = out.length > 30_000 ? `${out.slice(0, 30_000)}\n…(truncated)` : out;
+      const trimmed = capped ? `${out}\n…(truncated)` : out;
       const status = timedOut
         ? `timed out after ${limit}ms (process killed; rerun with a larger timeoutMs or background:true)`
         : `exit ${code}`;

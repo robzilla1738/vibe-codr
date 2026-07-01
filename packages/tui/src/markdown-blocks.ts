@@ -42,8 +42,14 @@ export function stripInline(s: string): string {
   return s
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // image ![alt](url) → alt
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // link [text](url) → text
-    .replace(/(\*\*|__)(.+?)\1/g, "$2") // bold
-    .replace(/(\*|_)(.+?)\1/g, "$2") // italic
+    .replace(/\*\*(.+?)\*\*/g, "$1") // bold **
+    // `_`-emphasis must be flanked by non-word chars, or an identifier like
+    // `max_retry_count` / `get_user_by_id` in a table cell/heading/blockquote gets
+    // its underscores eaten (→ `maxretrycount`). Asterisks never appear inside
+    // identifiers, so `*` needs no such guard.
+    .replace(/(?<![\p{L}\p{N}_])__(.+?)__(?![\p{L}\p{N}_])/gu, "$1") // bold __
+    .replace(/\*(.+?)\*/g, "$1") // italic *
+    .replace(/(?<![\p{L}\p{N}_])_(.+?)_(?![\p{L}\p{N}_])/gu, "$1") // italic _
     .replace(/~~(.+?)~~/g, "$1") // strikethrough
     .replace(/`([^`]+)`/g, "$1") // inline code
     .trim();
@@ -55,12 +61,32 @@ function isDelimiterRow(line: string): boolean {
   return t.includes("-") && /^\|?[\s:|-]+\|?$/.test(t) && t.replace(/[^|]/g, "").length >= 1;
 }
 
-/** Split a `| a | b |` row into trimmed cells (drops the optional outer pipes). */
+/** Split a `| a | b |` row into trimmed cells (drops the optional outer pipes).
+ * A GFM escaped pipe (`\|`) is a literal `|` INSIDE a cell, not a column break. A
+ * pipe delimits only when preceded by an EVEN run of backslashes (so `\|` is an
+ * escaped pipe but `\\|` is an escaped backslash followed by a real delimiter) —
+ * a fixed-width lookbehind can't tell those apart, so we count the run. */
 function parseRow(line: string): string[] {
   let t = line.trim();
   if (t.startsWith("|")) t = t.slice(1);
-  if (t.endsWith("|")) t = t.slice(0, -1);
-  return t.split("|").map((c) => c.trim());
+  const cells: string[] = [];
+  let cur = "";
+  let backslashes = 0; // consecutive backslashes immediately before the cursor
+  for (const ch of t) {
+    if (ch === "|" && backslashes % 2 === 0) {
+      cells.push(cur);
+      cur = "";
+      backslashes = 0;
+      continue;
+    }
+    cur += ch;
+    backslashes = ch === "\\" ? backslashes + 1 : 0;
+  }
+  cells.push(cur);
+  // Drop the trailing empty cell produced by an optional closing outer pipe.
+  if (cells.length > 1 && cells[cells.length - 1]!.trim() === "") cells.pop();
+  // Unescape GFM sequences: `\|` → `|` and `\\` → `\`.
+  return cells.map((c) => c.replace(/\\([\\|])/g, "$1").trim());
 }
 
 function parseAlign(delim: string): Align[] {

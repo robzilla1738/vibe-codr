@@ -1,5 +1,10 @@
 import * as zlib from "node:zlib";
 
+/** Cap per-stream inflated size so a "deflate bomb" content stream can't balloon
+ * into a multi-hundred-MB allocation (or a >512MB string that throws). 32MB is far
+ * larger than any legitimate text content stream. */
+const MAX_INFLATE_BYTES = 32 * 1024 * 1024;
+
 /**
  * Minimal zero-dependency PDF text extraction: inflate FlateDecode content
  * streams (the runtime's built-in zlib) and interpret the text-showing operators
@@ -32,12 +37,23 @@ export function extractPdfText(buf: Buffer): { text: string; pages: number } | n
     let data = buf.subarray(start, len);
     if (/FlateDecode/.test(dict)) {
       try {
-        data = zlib.inflateSync(data);
+        // Cap the inflated size: a "deflate bomb" stream (a few hundred KB of
+        // zeros) otherwise expands to hundreds of MB — a huge transient
+        // allocation, and a >512MB result throws RangeError from `.toString`
+        // below (outside a try) which violates this fn's null-return contract.
+        data = zlib.inflateSync(data, { maxOutputLength: MAX_INFLATE_BYTES });
       } catch {
-        continue;
+        continue; // corrupt/oversized stream — skip it, don't blow up extraction
       }
     }
-    const content = data.toString("latin1");
+    // Belt-and-suspenders: never stringify past the cap (guards the RangeError).
+    if (data.length > MAX_INFLATE_BYTES) continue;
+    let content: string;
+    try {
+      content = data.toString("latin1");
+    } catch {
+      continue;
+    }
     if (!/\bBT\b/.test(content)) continue; // not a text content stream
     const extracted = extractFromContent(content);
     if (extracted.trim()) text += `${extracted}\n`;

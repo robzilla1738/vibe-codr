@@ -22,15 +22,18 @@ export const globTool: ToolDefinition<z.infer<typeof Input>> = {
     let truncated = false;
     for await (const file of glob.scan({ cwd: searchDir, dot: false })) {
       matches.push(file);
-      if (matches.length >= LIMIT) {
+      // Probe for one MORE than the cap so a directory with exactly `LIMIT`
+      // matches isn't falsely flagged truncated (the old `>= LIMIT` broke early).
+      if (matches.length > LIMIT) {
         truncated = true;
         break;
       }
     }
     if (!matches.length) return { output: "(no matches)" };
+    const shown = matches.slice(0, LIMIT);
     const note = truncated
       ? `\n…(truncated at ${LIMIT} matches; narrow the pattern)`
       : "";
-    return { output: matches.join("\n") + note };
+    return { output: shown.join("\n") + note };
   },
 };

@@ -241,6 +241,130 @@ test("Engine planning: resolve-plan accept switches to execute, seeds tasks, run
   await collector;
 });
 
+test("Engine planning: a prompt queued ahead of plan-accept can't steal the handoff", async () => {
+  // Regression: the plan→execute handoff preamble used to be a shared boolean read
+  // at turn-run time, so a user prompt queued before the accept would consume it
+  // and the real execute-plan turn would lose it. It must now be bound to its job.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-handoff-steal-"));
+  const prompts: string[] = [];
+  let releaseHolder!: () => void;
+  const holderGate = new Promise<void>((r) => (releaseHolder = r));
+
+  const planStep = () =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: "1. Do the thing" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]);
+  const textStep = (t: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: t },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]);
+  // Calls: 0 present_plan, 1 plan-text, 2 HOLDER (blocks), 3 typed-ahead A, 4 execute-plan B.
+  const steps = [planStep(), textStep("planned"), textStep("holding"), textStep("A ran"), textStep("B ran")];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const idx = call++;
+      prompts.push(JSON.stringify(options.prompt));
+      if (idx === 2) await holderGate; // keep the drain busy so A stays queued
+      return steps[idx] as never;
+    },
+  });
+
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  engine.send({ type: "submit-prompt", text: "plan a refactor" });
+  await engine.whenIdle(); // plan presented, #lastPlan set
+
+  engine.send({ type: "submit-prompt", text: "holder turn" }); // occupies the drain (blocks on gate)
+  await new Promise((r) => setTimeout(r, 10)); // let the holder's model call start
+  engine.send({ type: "submit-prompt", text: "typed ahead A" }); // queued behind the holder
+  engine.send({ type: "resolve-plan", decision: "accept" }); // enqueues the execute-plan turn behind A
+  releaseHolder();
+  await engine.whenIdle();
+
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  // Exactly one turn carries the approval preamble — and it's the execute-plan
+  // turn (which also carries "Proceed with the approved plan."), NOT the A turn.
+  const withHandoff = prompts.filter((p) => p.includes("approved by the user"));
+  expect(withHandoff).toHaveLength(1);
+  expect(withHandoff[0]).toContain("Proceed with the approved plan");
+  const aPrompt = prompts.find((p) => p.includes("typed ahead A"));
+  expect(aPrompt).toBeDefined();
+  expect(aPrompt).not.toContain("approved by the user");
+});
+
+test("abort during a loop iteration interrupts the loop's session (not just the main one)", async () => {
+  // Regression: `abort`/`steer` used to call this.#session.abort(), but a loop
+  // iteration runs on the ephemeral #loopSession — so Esc couldn't interrupt it.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-loopabort-"));
+  let signalStarted!: () => void;
+  const started = new Promise<void>((r) => (signalStarted = r));
+  const abortErr = () => Object.assign(new Error("aborted"), { name: "AbortError" });
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      // Announce the model call began, then block until the turn's signal aborts.
+      // If abort never reaches THIS session's signal, the turn hangs forever.
+      signalStarted();
+      await new Promise<void>((_resolve, reject) => {
+        const sig = options.abortSignal;
+        if (sig?.aborted) return reject(abortErr());
+        sig?.addEventListener("abort", () => reject(abortErr()), { once: true });
+      });
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "SHOULD_NOT_APPEAR" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never;
+    },
+  });
+
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  // A 1h interval + max 1 so exactly one iteration runs (and it blocks in doStream).
+  engine.send({ type: "run-slash", name: "loop", args: "1h keep improving --max 1" });
+  await started; // the loop iteration's model call is now blocked on its own signal
+  engine.send({ type: "abort" }); // must abort the LOOP session's turn, unblocking it
+  await engine.whenIdle(); // resolves only if the blocked turn was actually aborted
+
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  // The turn never completed its stream (the gate was never released), and the
+  // loop stopped after its single interrupted iteration.
+  const deltas = events.filter((e) => e.type === "assistant-text-delta");
+  expect(deltas.some((e) => e.type === "assistant-text-delta" && e.delta.includes("SHOULD_NOT_APPEAR"))).toBe(false);
+});
+
 test("Engine /clear emits exactly one 'Conversation cleared.' notice", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-clear-"));
   const model = new MockLanguageModelV2({ doStream: async () => stream([]) });

@@ -233,6 +233,113 @@ test("accumulates per-step usage and prices it (no double-counting)", async () =
   expect(usage.costUSD).toBeCloseTo(0.00021, 9);
 });
 
+test("Anthropic's disjoint cache-read tokens are folded into input for cost + context", async () => {
+  // Anthropic reports input_tokens EXCLUSIVE of cache reads. The mock emits the
+  // provider shape: 10 new input tokens + 90 cache-read tokens (disjoint).
+  const ANTHRO_USAGE = {
+    inputTokens: 10,
+    outputTokens: 5,
+    totalTokens: 105,
+    cachedInputTokens: 90,
+  };
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: ANTHRO_USAGE },
+      ]) as never,
+  });
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    // Provider id must be "anthropic" for the disjoint-cache fold to engage.
+    registry: new ProviderRegistry([
+      { id: "anthropic", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    ]),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "anthropic/claude-x",
+    mode: "execute",
+    // $3/1M input, $0.30/1M cache read.
+    getPricing: async () => ({ input: 3, output: 15, cacheRead: 0.3 }),
+  });
+
+  const events = await collect(bus, () => session.run("go"));
+  // Context fill reflects the FULL prompt (10 + 90 = 100), not just the 10 new.
+  const ctx = [...events].reverse().find((e) => e.type === "context-updated");
+  expect(ctx && ctx.type === "context-updated" && ctx.usedTokens).toBe(100);
+
+  const usage = session.snapshot().usage;
+  expect(usage.inputTokens).toBe(100); // folded: 10 new + 90 cached
+  expect(usage.cachedInputTokens).toBe(90);
+  // uncached 10*3/1e6 + cached 90*0.3/1e6 + out 5*15/1e6
+  expect(usage.costUSD).toBeCloseTo(0.00003 + 0.000027 + 0.000075, 12);
+});
+
+test("a turn that fails before any assistant reply rolls back its user message (no orphan turn)", async () => {
+  // The first turn's model resolution fails outright; its pushed user message must
+  // be rolled back so the next turn's prompt doesn't open with two user messages
+  // in a row (a hard 400 on strict providers, and a corrupt --resume seed).
+  let failResolve = true;
+  let sentPrompt: { role: string; content: unknown }[] = [];
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      sentPrompt = options.prompt as { role: string; content: unknown }[];
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never;
+    },
+  });
+  const registry = new ProviderRegistry([
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => {
+        if (failResolve) throw new Error("provider temporarily down");
+        return model;
+      },
+      listModels: async () => [],
+    },
+  ]);
+  const cfg = defaultConfig();
+  cfg.retry = { ...cfg.retry, maxAttempts: 1, baseDelayMs: 0 }; // fail fast, no retry delay
+  const bus = new EventBus();
+  const session = new Session({
+    config: cfg,
+    registry,
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  await session.run("FIRST prompt"); // resolveModel throws → turn errors before any assistant
+  expect(session.lastError).toContain("provider temporarily down");
+  failResolve = false;
+  await session.run("SECOND prompt"); // succeeds
+  bus.close();
+
+  // The successful turn's prompt carries exactly ONE user message (the second),
+  // with the orphaned first turn rolled back and no two consecutive user roles.
+  const userMsgs = sentPrompt.filter((m) => m.role === "user");
+  expect(userMsgs).toHaveLength(1);
+  expect(JSON.stringify(userMsgs[0]!.content)).toContain("SECOND prompt");
+  expect(JSON.stringify(userMsgs[0]!.content)).not.toContain("FIRST prompt");
+  const roles = sentPrompt.map((m) => m.role);
+  for (let i = 1; i < roles.length; i++) {
+    expect(roles[i] === "user" && roles[i - 1] === "user").toBe(false);
+  }
+});
+
 test("cost accrues at the price in effect per step, across a model switch", async () => {
   const reply = () =>
     stream([

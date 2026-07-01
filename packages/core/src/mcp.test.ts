@@ -58,6 +58,25 @@ test("mcpToolName sanitizes disallowed chars and caps length for hosted provider
     expect(n).toMatch(NAME);
 });
 
+test("two real tool names that sanitize to the same exposed name both stay callable", async () => {
+  const reg = registry();
+  const client: McpClient = {
+    // `db.get` and `db/get` both sanitize to `mcp__srv__db_get` — a collision.
+    listTools: async () => [{ name: "db.get" }, { name: "db/get" }],
+    callTool: async () => ({ content: "ok" }),
+    close: async () => {},
+  };
+  const hub = new McpHub({ ...reg, connect: async () => client });
+  await hub.start({ srv: { command: "x" } });
+  const names = reg.names();
+  // Both tools are registered under DISTINCT exposed names (no silent overwrite).
+  expect(names).toHaveLength(2);
+  expect(new Set(names).size).toBe(2);
+  expect(names).toContain("mcp__srv__db_get"); // the first keeps the readable name
+  expect(names.every((n) => /^[A-Za-z0-9_-]+$/.test(n) && n.length <= 64)).toBe(true);
+  await hub.close();
+});
+
 test("a sanitized MCP tool still calls the server with its real name", async () => {
   const calls: { name: string; args: unknown }[] = [];
   const client: McpClient = {
@@ -305,6 +324,81 @@ test("reconnects with backoff after the transport drops, re-registering tools", 
   expect(dials).toBe(3);
   expect(reg.names()).toEqual(["mcp__demo__echo"]); // re-registered on reconnect
   expect(hub.status()[0]!.connected).toBe(true);
+  await hub.close();
+});
+
+test("a reconnect that resolves after close() closes the new transport (no leak)", async () => {
+  let closeCb: (() => void) | undefined;
+  let closed = 0;
+  let releaseDial!: () => void;
+  const dialGate = new Promise<void>((r) => (releaseDial = r));
+  let dials = 0;
+  const reg = registry();
+  const hub = new McpHub({
+    ...reg,
+    reconnect: { baseDelayMs: 1, maxAttempts: 5 },
+    connect: async () => {
+      dials++;
+      if (dials === 2) await dialGate; // hold the RECONNECT dial mid-flight
+      return {
+        listTools: async () => [{ name: "echo" }],
+        callTool: async () => ({ content: "ok" }),
+        onClose: (cb) => {
+          closeCb = cb;
+        },
+        close: async () => {
+          closed++;
+        },
+      };
+    },
+  });
+  await hub.start({ demo: { command: "x" } });
+
+  closeCb!(); // transport drops → schedules a reconnect that will block on dialGate
+  await tick(10); // let the reconnect loop reach the awaited dial
+  const closedBefore = closed;
+
+  await hub.close(); // shut down WHILE the reconnect dial is in flight
+  releaseDial(); // the dial now resolves — its client must be torn down, not leaked
+  await tick(10);
+
+  // The freshly (re)connected transport got closed rather than left dangling.
+  expect(closed).toBe(closedBefore + 1);
+  // And it was never registered after shutdown.
+  expect(reg.names()).toEqual([]);
+});
+
+test("a server that first exposes resources on RECONNECT gets read_mcp_resource registered", async () => {
+  let dials = 0;
+  let closeCb: (() => void) | undefined;
+  const reg = registry();
+  const hub = new McpHub({
+    ...reg,
+    reconnect: { baseDelayMs: 1, maxAttempts: 5 },
+    connect: async () => {
+      dials++;
+      const hasResources = dials >= 2; // resources appear only on the reconnect
+      return {
+        listTools: async () => [{ name: "echo" }],
+        callTool: async () => ({ content: "ok" }),
+        listResources: async () => (hasResources ? [{ uri: "file:///readme" }] : []),
+        readResource: async () => ({ content: "hi" }),
+        onClose: (cb) => {
+          closeCb = cb;
+        },
+        close: async () => {},
+      };
+    },
+  });
+  await hub.start({ demo: { command: "x" } });
+  // No resources at boot → the aggregate tool isn't registered yet.
+  expect(reg.names()).not.toContain("read_mcp_resource");
+
+  closeCb!(); // transport drops → reconnect (dial 2 now advertises a resource)
+  await tick(60);
+  expect(dials).toBeGreaterThanOrEqual(2);
+  // The aggregate resource tool is now registered, so the model can actually read them.
+  expect(reg.names()).toContain("read_mcp_resource");
   await hub.close();
 });
 

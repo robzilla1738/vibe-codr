@@ -107,6 +107,89 @@ All notable changes to vibe-codr are documented here.
   a denied/failed tool call renders as an error, not a success; MCP servers
   connect in parallel and report live status; the dead `step.finish` hook now
   fires; and more.
+- **Adversarial review sweep (21 verified defects across every subsystem).**
+  - *Security:* closed an **IPv4-mapped IPv6 SSRF bypass** — `new URL()`
+    normalizes `[::ffff:169.254.169.254]` to the hex form `::ffff:a9fe:a9fe`,
+    which the guard's dotted-decimal-only matcher missed, letting a
+    prompt-injected page reach cloud-metadata/loopback; the guard now fully
+    expands the address and judges the embedded v4. **DNS rebinding is also
+    closed**: the guard resolves a hostname once and returns the verified public
+    IP, and `webfetch` connects to *exactly* that IP (bracketing IPv6, preserving
+    the original `Host` header and TLS SNI so routing + cert validation are
+    unchanged) — so an attacker who returns a public IP to the check and a private
+    one to the connection can no longer slip through the window, on every redirect
+    hop too. Reachability is preserved: the resolver uses `ADDRCONFIG` and the pin
+    prefers a verified IPv4 (IPv6 is often configured-but-unroutable in containers/
+    CI), so pinning doesn't regress `webfetch` on IPv4-only hosts. Embedded URL
+    credentials (Basic auth) are kept through the rewrite.
+  - *Orchestration:* the tree-global provider limiter no longer **deadlocks a
+    deep subagent fan-out** — an ancestor held its slot across nested child
+    execution, so a chain deeper than the (AIMD-lowered) ceiling could starve its
+    own leaf. `acquire()` is now abort-aware (a timed-out/cancelled child stuck
+    waiting unwinds) and the ceiling floors at `maxDepth + 1`.
+  - *Cost/context:* Anthropic reports `cache_read` tokens **disjoint** from
+    `input_tokens`; they're now folded into a superset so cost, the live context
+    %, and the compaction trigger reflect the true prompt size.
+  - *Data safety:* `/undo` no longer **deletes all untracked files** when the
+    snapshot commit is missing (a failed `read-tree`/`ls-tree` read as an empty
+    snapshot); it refuses and advances to an older checkpoint. Concurrent
+    `save_memory` writes and concurrent global-config persists are now atomic
+    (each was a lossy read-modify-write).
+  - *Resource bounds:* `bash`, `git_*`, `diff` (LCS matrix), and `@`-mention
+    reads are all capped **during** streaming/allocation, not after — a
+    high-volume command, a multi-GB `git diff`, a huge-file edit, or a giant
+    `@file` can no longer OOM the turn.
+  - *Planning/loops:* a prompt queued ahead of plan-accept can no longer **steal
+    the plan→execute handoff** (it's bound to its job, not a shared flag); Esc /
+    steer now interrupts an in-flight **`/loop` iteration** (it targets the loop's
+    session, not the idle main one).
+  - *Smaller:* Ollama's context probe prefers the served `num_ctx` over the
+    architectural max; markdown rendering keeps intraword underscores
+    (`max_retry_count`); `glob` no longer mislabels exactly-1000 matches as
+    truncated; MCP tool names that sanitize to the same string are disambiguated;
+    an MCP reconnect that resolves after shutdown closes its transport instead of
+    leaking it; a custom `/redo` command works (it was a phantom reserved name);
+    the cross-agent file-write lock is case-correct for new files on
+    case-insensitive filesystems.
+- **Second review pass (8 more verified defects; the first-pass fixes verified
+  regression-free).**
+  - A **config shell/HTTP hook can no longer hang the turn**: the wall-clock
+    timeout is enforced on the read (with the shell killed and the read
+    cancelled), so a hook that backgrounds a child holding the stdout pipe returns
+    within `timeoutMs` instead of blocking indefinitely.
+  - **Orchestration verify→retry is honest**: the reviewer's `REVIEW-CLEAN`
+    verdict must be on its own line (an adversarial "NOT REVIEW-CLEAN — …" no
+    longer reads as a pass that discards the feedback), and a retry that makes no
+    edits no longer marks the previous rejected work as completed.
+  - A turn that **fails before any assistant reply** (model resolve / pricing /
+    compaction throw or abort) now **rolls back its user message**, so the next
+    turn doesn't open with two consecutive user messages (a 400 on strict
+    providers, and a corrupt `--resume` seed).
+  - `/undo` **advances past a stale (GC'd) checkpoint** to the next valid one
+    instead of reporting "nothing to undo".
+  - MCP: a transient transport `onerror` no longer **latches a still-working
+    server "down" forever** (only `onclose` drives the down/reconnect transition);
+    resources/prompts first exposed on a **reconnect** now register their
+    aggregate tool; and the OAuth token store writes **atomically** (temp +
+    rename) and sets a corrupt file aside instead of silently dropping the grant.
+- **Third exhaustive pass (10 more verified defects across the previously
+  less-scrutinized surface — TUI app, parsers, CLI, config, shared).**
+  - **Config defaults are no longer a shared mutable singleton**: `defaultConfig`
+    / `loadConfig` deep-clone, so one config's mutation (e.g. `/model key` writing
+    `providers[id]`) can't leak into another (or pollute tests).
+  - Hardened parsers/tools against hostile or runaway input: a **deflate-bomb
+    PDF** stream is size-capped instead of inflating to hundreds of MB; the
+    builtin `grep` fallback **skips pathologically long lines** (no
+    catastrophic-backtracking hang); `verify` reads its output **incrementally**;
+    and a detected dev-server URL is now **sticky** in `/jobs` instead of
+    vanishing once the job's output scrolls past the buffer.
+  - CLI/TUI: a `-m <model>` flag no longer **discards the provider you just
+    configured in first-run onboarding** (which failed the run right after setup);
+    the onboarding provider menu is **windowed** so it can't spam scrollback; the
+    TUI **`/model` and `/providers` pickers refresh** after a key is added or
+    `/model refresh` (they were cached for the whole session); `/exit` **awaits
+    the session digest/teardown** before quitting; and a GFM **escaped pipe**
+    (`\|`) in a table cell renders as a literal `|`, not a broken column.
 
 ### Added (providers)
 - **Seven more providers + a generic bring-your-own endpoint — use vibe with

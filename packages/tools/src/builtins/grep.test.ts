@@ -73,3 +73,24 @@ test("built-in fallback grep reports an invalid regex cleanly", async () => {
   expect(res.isError).toBe(true);
   expect(res.output).toContain("invalid regex");
 });
+
+test("builtinGrep skips pathologically long lines (no catastrophic-backtracking hang)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-grep-redos-"));
+  // One 300k-char single line (like minified JS) + a normal matching line.
+  await Bun.write(join(dir, "min.js"), `${"a".repeat(300_000)}\nreal needle here`);
+  const start = Date.now();
+  // A classic catastrophic-backtracking pattern; on the long line it would hang.
+  const r = await builtinGrep({ pattern: "(a+)+$" }, ctx(dir));
+  expect(Date.now() - start).toBeLessThan(2000); // the long line was skipped, no hang
+  expect(r.isError).toBeUndefined();
+});
+
+test("builtinGrep still finds a literal match on a very long single line", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-grep-long-"));
+  // A 200k-char minified-style single line that contains a real symbol.
+  await Bun.write(join(dir, "bundle.min.js"), `${"x".repeat(120_000)}getUserById${"y".repeat(120_000)}`);
+  const r = await builtinGrep({ pattern: "getUserById" }, ctx(dir));
+  // The literal symbol must be found (a substring scan, no ReDoS risk), not dropped
+  // by the long-line guard (which only applies to true regex patterns).
+  expect(String(r.output)).toContain("getUserById");
+});

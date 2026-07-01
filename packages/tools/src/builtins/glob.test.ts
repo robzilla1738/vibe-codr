@@ -40,3 +40,14 @@ test("appends a truncation marker past the 1000-match cap", async () => {
   expect(lines.length).toBe(1001); // 1000 matches + the marker line
   expect(lines[lines.length - 1]).toContain("truncated at 1000 matches");
 });
+
+test("exactly 1000 matches is NOT flagged truncated (boundary)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-glob-exact-"));
+  await Promise.all(
+    Array.from({ length: 1000 }, (_, i) => Bun.write(join(cwd, `f${i}.ts`), "")),
+  );
+  const r = await globTool.execute({ pattern: "*.ts" }, ctx(cwd));
+  const lines = (r.output as string).split("\n");
+  expect(lines.length).toBe(1000); // all 1000, no spurious marker line
+  expect(r.output as string).not.toContain("truncated");
+});

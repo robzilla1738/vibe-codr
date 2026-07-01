@@ -30,17 +30,52 @@ export interface ConfigHookRunners {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Default shell runner: spawn `sh -c command`, feed JSON on stdin, parse stdout. */
-async function defaultExec(command: string, payloadJson: string, timeoutMs: number): Promise<HookRunResult> {
+/** Ceiling on hook stdout retained in memory (a runaway hook can't OOM the turn). */
+const MAX_HOOK_OUTPUT = 1_000_000;
+
+/**
+ * Default shell runner: spawn `sh -c command`, feed JSON on stdin, parse stdout.
+ *
+ * The timeout is enforced on the READ, not just via `AbortSignal` on the spawn:
+ * `AbortSignal.timeout` only SIGTERMs the direct `sh`, but a hook that spawns a
+ * child which outlives the shell (a pipeline, a `cmd &`, a daemon) keeps the
+ * inherited stdout pipe open, so a naive `await Response(stdout).text()` blocks
+ * far past `timeoutMs` — indefinitely for a long-lived helper — wedging the whole
+ * agent turn (the hook runs on the tool-execute path). Instead we read with a
+ * cancelable reader and, on timeout, kill the shell AND cancel the read so the
+ * function always returns within `timeoutMs`, parsing whatever output arrived.
+ */
+export async function defaultExec(
+  command: string,
+  payloadJson: string,
+  timeoutMs: number,
+): Promise<HookRunResult> {
   const proc = Bun.spawn(["sh", "-c", command], {
     stdin: new TextEncoder().encode(payloadJson),
     stdout: "pipe",
     stderr: "ignore",
-    signal: AbortSignal.timeout(timeoutMs),
   });
-  const out = (await new Response(proc.stdout).text()).trim();
-  await proc.exited;
-  return parseHookOutput(out);
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  const timer = setTimeout(() => {
+    proc.kill(); // best-effort SIGTERM the shell (a detached child may linger)
+    void reader.cancel().catch(() => undefined); // unblock the pending read()
+  }, timeoutMs);
+  try {
+    while (out.length < MAX_HOOK_OUTPUT) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+  } catch {
+    /* reader cancelled by the timeout — parse whatever we captured */
+  } finally {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => undefined);
+  }
+  return parseHookOutput(out.trim());
 }
 
 /** Default HTTP runner: POST JSON, parse JSON response. */

@@ -29,6 +29,62 @@ function stubFetch(body: string, contentType: string, status = 200): void {
     new Response(body, { status, headers: { "content-type": contentType } })) as unknown as typeof fetch;
 }
 
+test("connects to the guard-verified IP (DNS pinning), keeping the original Host + SNI", async () => {
+  // Capture what URL/options fetch actually receives — it must be the pinned IP,
+  // not the hostname, so a DNS rebind can't redirect the real connection.
+  let seenUrl = "";
+  let seenInit: (RequestInit & { tls?: { serverName?: string } }) | undefined;
+  globalThis.fetch = (async (u: unknown, init?: RequestInit) => {
+    seenUrl = String(u);
+    seenInit = init as never;
+    return new Response("ok", { headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+
+  await webfetchTool({ lookup: async () => [{ address: "93.184.216.34" }] }).execute(
+    { url: "https://example.com/docs?q=1" },
+    ctx(),
+  );
+  // Connected to the IP, preserving path/query…
+  expect(seenUrl).toBe("https://93.184.216.34/docs?q=1");
+  // …with the real Host header and TLS SNI so routing + cert validation still work.
+  expect((seenInit?.headers as Record<string, string>)?.host).toBe("example.com");
+  expect(seenInit?.tls?.serverName).toBe("example.com");
+});
+
+test("re-pins each redirect hop, brackets an IPv6 pinned address, and keeps the port", async () => {
+  const seen: string[] = [];
+  let hop = 0;
+  globalThis.fetch = (async (u: unknown) => {
+    seen.push(String(u));
+    if (hop++ === 0) {
+      return new Response(null, { status: 302, headers: { location: "https://second.example:8443/next" } });
+    }
+    return new Response("ok", { headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  // Different hosts resolve to different families — the first hop pins to v4, the
+  // redirect target re-resolves and pins to its (public) IPv6, bracketed + port kept.
+  const lookup = async (host: string) =>
+    host === "first.example"
+      ? [{ address: "93.184.216.34" }]
+      : [{ address: "2606:2800:220:1:248:1893:25c8:1946" }];
+  await webfetchTool({ lookup }).execute({ url: "https://first.example/start" }, ctx());
+  expect(seen[0]).toBe("https://93.184.216.34/start");
+  expect(seen[1]).toBe("https://[2606:2800:220:1:248:1893:25c8:1946]:8443/next");
+});
+
+test("an IP-literal target is fetched as-is (no pinning rewrite)", async () => {
+  let seenUrl = "";
+  globalThis.fetch = (async (u: unknown) => {
+    seenUrl = String(u);
+    return new Response("ok", { headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  await webfetchTool({ lookup: async () => [{ address: "93.184.216.34" }] }).execute(
+    { url: "http://93.184.216.34/path" },
+    ctx(),
+  );
+  expect(seenUrl).toBe("http://93.184.216.34/path");
+});
+
 test("reduces HTML to readable text, stripping scripts/styles/tags", async () => {
   stubFetch(
     "<html><head><style>.x{color:red}</style><script>evil()</script></head><body><h1>Title</h1><p>Hello&nbsp;world</p></body></html>",
@@ -177,4 +233,17 @@ test("cache-through: stale-on-failure serves the last good copy when the live fe
   expect(stale.isError).toBeUndefined();
   expect(String(stale.output)).toContain("served a cached copy");
   expect(String(stale.output)).toContain("cached body");
+});
+
+test("pinning preserves embedded credentials (Basic auth) in the URL", async () => {
+  let seenUrl = "";
+  globalThis.fetch = (async (u: unknown) => {
+    seenUrl = String(u);
+    return new Response("ok", { headers: { "content-type": "text/plain" } });
+  }) as unknown as typeof fetch;
+  await webfetchTool({ lookup: async () => [{ address: "93.184.216.34" }] }).execute(
+    { url: "https://user:pass@example.com/secure" },
+    ctx(),
+  );
+  expect(seenUrl).toBe("https://user:pass@93.184.216.34/secure"); // creds kept, IP pinned
 });

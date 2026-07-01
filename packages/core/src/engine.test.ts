@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { test, expect } from "bun:test";
 import type { UIEvent } from "@vibe/shared";
 import { defaultConfig, type Config } from "@vibe/config";
+import { CommandRegistry } from "@vibe/plugins";
 import { Engine } from "./engine.ts";
 
 // Each Engine gets an isolated temp cwd so `/recall`, `/memory`, checkpoints and
@@ -152,4 +153,34 @@ test("/reasoning warns on a non-reasoning (local) model", async () => {
     (e) => e.type === "notice" && e.level === "warn" && e.message.includes("ignores it"),
   );
   expect(warned).toBe(true);
+});
+
+test("a custom /redo command is usable (redo is not a phantom reserved built-in)", async () => {
+  // Regression: `redo` was listed in RESERVED_SLASH but had no built-in handler,
+  // so a user's own /redo was rejected as "shadows a protected built-in" and then
+  // "Unknown command" — permanently unusable. It must now just run.
+  const commands = new CommandRegistry();
+  commands.register({
+    name: "redo",
+    description: "custom redo",
+    source: "file",
+    run: () => ({ kind: "notice", message: "custom redo ran" }),
+  });
+  const engine = new Engine({
+    config: defaultConfig(),
+    cwd: mkdtempSync(join(tmpdir(), "vibe-engine-redo-")),
+    commands,
+  });
+  const { events, stop } = collect(engine);
+  engine.send({ type: "run-slash", name: "redo", args: "" });
+  await engine.whenIdle();
+  stop();
+
+  expect(events.some((e) => e.type === "notice" && e.message === "custom redo ran")).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && e.message.includes("shadows a protected")),
+  ).toBe(false);
+  expect(
+    events.some((e) => e.type === "notice" && e.message.includes("Unknown command")),
+  ).toBe(false);
 });

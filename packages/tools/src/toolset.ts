@@ -1,6 +1,10 @@
 import { tool, jsonSchema, type Tool } from "ai";
 import { realpathSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
+
+/** macOS (APFS/HFS+) and Windows (NTFS) default to case-insensitive filesystems,
+ * where `src/App.ts` and `SRC/app.ts` are the SAME file. */
+const CASE_INSENSITIVE_FS = process.platform === "darwin" || process.platform === "win32";
 import type { ZodType } from "zod";
 import type {
   CheckPermission,
@@ -197,16 +201,26 @@ export function createSemaphore(n: number): <T>(fn: () => Promise<T>) => Promise
  * `write` creating a new file) we canonicalize the nearest existing ancestor and
  * re-append the rest, then fall back to the raw path.
  */
-function canonicalLockKey(absPath: string): string {
+export function canonicalLockKey(absPath: string): string {
+  let key: string;
   try {
-    return realpathSync.native(absPath);
+    key = realpathSync.native(absPath);
   } catch {
+    // Path doesn't exist yet (a `write` creating a new file): canonicalize the
+    // nearest existing ancestor and re-attach the leaf.
     try {
-      return join(realpathSync.native(dirname(absPath)), basename(absPath));
+      key = join(realpathSync.native(dirname(absPath)), basename(absPath));
     } catch {
-      return absPath;
+      key = absPath;
     }
   }
+  // On a case-insensitive filesystem every spelling of one file is the SAME file,
+  // so fold the whole key's case to one canonical form. This must apply to BOTH
+  // branches: `realpathSync` returns the real on-disk casing for a file that
+  // exists but the RAW leaf for one that doesn't, so without folding, a new-file
+  // write (`src/App.ts` → `app.ts`) and a later existing-file write (`→ App.ts`)
+  // would get distinct keys and two subagents could race the same path.
+  return CASE_INSENSITIVE_FS ? key.toLowerCase() : key;
 }
 
 /** Thrown when a subagent tries to write a file a DIFFERENT live agent owns. */

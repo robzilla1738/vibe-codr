@@ -1,6 +1,10 @@
 import { test, expect } from "bun:test";
 import { defaultConfig } from "@vibe/config";
-import { buildModelTuning, reasoningSupported } from "./model-tuning.ts";
+import {
+  buildModelTuning,
+  reasoningSupported,
+  cacheTokensDisjointFromInput,
+} from "./model-tuning.ts";
 
 function cfg(overrides: Record<string, unknown> = {}) {
   return { ...defaultConfig(), ...overrides } as ReturnType<typeof defaultConfig>;
@@ -18,6 +22,14 @@ test("caching can be disabled", () => {
 
 test("non-Anthropic providers don't get the cache marker", () => {
   expect(buildModelTuning("openai/gpt-x", cfg()).cacheSystem).toBe(false);
+});
+
+test("cacheTokensDisjointFromInput is true only for Anthropic", () => {
+  expect(cacheTokensDisjointFromInput("anthropic/claude-opus-4-8")).toBe(true);
+  expect(cacheTokensDisjointFromInput("openai/gpt-x")).toBe(false);
+  expect(cacheTokensDisjointFromInput("openrouter/anthropic/claude")).toBe(false);
+  expect(cacheTokensDisjointFromInput("ollama/llama3")).toBe(false);
+  expect(cacheTokensDisjointFromInput("garbage")).toBe(false);
 });
 
 test("Anthropic thinking budget maps to providerOptions.anthropic.thinking", () => {

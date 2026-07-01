@@ -166,6 +166,13 @@ export class Engine implements EngineClient {
     this.#config = opts.config;
     this.#limiter = createLimiter({
       max: opts.config.subagent.providerConcurrency,
+      // Floor the AIMD ceiling at the max nesting depth (+1 for the root) so a
+      // LINEAR subagent chain — where each of `maxDepth`+1 ancestors holds a
+      // tree-global slot while awaiting its descendant — can never starve its
+      // own leaf and deadlock, even after repeated overload backoff. Wider trees
+      // that still over-subscribe self-heal via the per-subagent wall-clock
+      // timeout, which now (abort-aware limiter) unwedges a stuck acquire.
+      min: opts.config.subagent.maxDepth + 1,
       onChange: (limit) => this.#log.debug(`provider concurrency ceiling → ${limit}`),
     });
     this.#cwd = opts.cwd ?? process.cwd();
@@ -305,9 +312,12 @@ export class Engine implements EngineClient {
     const plan = this.#lastPlan;
     if (!plan) return;
     this.#session.setMode("execute");
-    this.#pendingHandoff = true;
     this.#seedTasksFromPlan(plan);
-    this.#enqueue("execute plan", () => this.#handlePrompt("Proceed with the approved plan."));
+    // Bind the handoff directly to this job so it applies to THIS turn and can't
+    // be stolen by a prompt the user queued ahead of it.
+    this.#enqueue("execute plan", () =>
+      this.#handlePrompt("Proceed with the approved plan.", { handoff: true }),
+    );
   }
 
   /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps. */
@@ -469,13 +479,19 @@ export class Engine implements EngineClient {
 
   send(command: EngineCommand): void {
     switch (command.type) {
-      case "submit-prompt":
+      case "submit-prompt": {
         // A fresh user prompt resets the auto-verify retry budget.
         this.#verifyAttempts = 0;
+        // Capture any armed plan handoff NOW and bind it to THIS prompt's job, so
+        // it can't be stolen by an unrelated prompt that was queued ahead of it
+        // (the flag used to be read at turn-run time — see #handlePrompt).
+        const handoff = this.#pendingHandoff;
+        this.#pendingHandoff = false;
         this.#enqueue(queueLabel(command.text), () =>
-          this.#handlePrompt(command.text),
+          this.#handlePrompt(command.text, { handoff }),
         );
         break;
+      }
       case "set-mode": {
         // Leaving plan mode for execute right after a presented plan = approval:
         // arm a handoff so the next turn proceeds against the plan.
@@ -511,12 +527,14 @@ export class Engine implements EngineClient {
         this.#session.setGoal(command.goal);
         break;
       case "abort":
-        // Drop everything still waiting, then cancel the in-flight turn.
+        // Drop everything still waiting, then cancel the in-flight turn — which
+        // may be a loop iteration running on an ephemeral session (`#loopSession`
+        // is set only for the duration of that iteration), not the main session.
         if (this.#pending.length) {
           this.#pending = [];
           this.#emitQueue();
         }
-        this.#session.abort();
+        (this.#loopSession ?? this.#session).abort();
         break;
       case "dequeue": {
         // Remove one waiting prompt without running it (cancel a queued item).
@@ -534,7 +552,10 @@ export class Engine implements EngineClient {
         if (item) {
           this.#pending.unshift(item);
           this.#emitQueue();
-          this.#session.abort();
+          // Interrupt whatever turn is actually in flight (a loop iteration runs
+          // on `#loopSession`, not the main session) so the drain picks up the
+          // steered item next.
+          (this.#loopSession ?? this.#session).abort();
         }
         break;
       }
@@ -1299,15 +1320,17 @@ export class Engine implements EngineClient {
     for (const resolve of this.#idleResolvers.splice(0)) resolve();
   }
 
-  async #handlePrompt(text: string): Promise<void> {
+  async #handlePrompt(text: string, opts: { handoff?: boolean } = {}): Promise<void> {
     // Plan→execute handoff: prepend an explicit approval directive so the model
     // doesn't read its own present_plan "stop here" as an instruction to halt. This
     // directive is internal — the model needs it, but it must NOT render as a user
     // message (the user approved via the plan card, they didn't "type" this). So we
     // send it with `display: null` (no user bubble) and show a clean notice instead.
-    const isHandoff = this.#pendingHandoff;
+    // The flag is passed in (bound to this specific job at enqueue time) rather
+    // than read from shared state, so a queued prompt can't consume another
+    // turn's handoff.
+    const isHandoff = opts.handoff ?? false;
     if (isHandoff) {
-      this.#pendingHandoff = false;
       this.#lastPlan = undefined;
       text =
         "The plan you presented was approved by the user — proceed with implementing it " +
@@ -1755,8 +1778,10 @@ export class Engine implements EngineClient {
 /** Selectable UI theme names (kept in sync with `@vibe/tui`'s THEME_NAMES). */
 const KNOWN_THEMES = new Set(["default", "dark", "light", "contrast", "opencode"]);
 
-/** Safety-critical built-in slash commands a custom command must not shadow. */
-const RESERVED_SLASH = new Set(["undo", "redo", "clear", "new", "compact", "exit", "quit"]);
+/** Safety-critical built-in slash commands a custom command must not shadow.
+ * Only names with a real built-in handler belong here — listing a phantom (there
+ * is no `/redo`) would block a user's own `/redo` while offering no replacement. */
+const RESERVED_SLASH = new Set(["undo", "clear", "new", "compact", "exit", "quit"]);
 
 /** A short one-line label for a queued prompt. */
 function queueLabel(text: string): string {

@@ -10,6 +10,7 @@ import {
   createSemaphore,
   createFileLock,
   isConcurrencySafe,
+  canonicalLockKey,
 } from "./toolset.ts";
 import { builtinTools } from "./builtins/index.ts";
 
@@ -318,4 +319,43 @@ test("createFileLock without an owner serializes (backward-compatible)", async (
   await expect(
     Promise.all([lock("/g", async () => "1"), lock("/g", async () => "2")]),
   ).resolves.toEqual(["1", "2"]);
+});
+
+test("canonicalLockKey folds a new file's leaf case on case-insensitive filesystems", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-lockkey-"));
+  const caseInsensitive = process.platform === "darwin" || process.platform === "win32";
+  // Neither file exists yet (the `write`-a-new-file path).
+  const newUpper = canonicalLockKey(join(dir, "App.ts"));
+  const newLower = canonicalLockKey(join(dir, "app.ts"));
+  if (caseInsensitive) {
+    // Same on-disk file on a case-insensitive FS → must share a lock key, or two
+    // subagents racing to create it bypass the cross-agent write guard.
+    expect(newUpper).toBe(newLower);
+  } else {
+    expect(newUpper).not.toBe(newLower); // distinct files on a case-sensitive FS
+  }
+
+  // Now the file EXISTS: the key for the existing file (realpath resolves the real
+  // casing) must STILL match the key computed when it didn't exist yet — otherwise
+  // a new-file write and a later existing-file write to the same path could race.
+  writeFileSync(join(dir, "App.ts"), "x");
+  const existing = canonicalLockKey(join(dir, "app.ts"));
+  if (caseInsensitive) expect(existing).toBe(newUpper);
+});
+
+test("createFileLock rejects a concurrent different-agent write to the same new file (case-insensitive)", async () => {
+  // Only meaningful where the FS folds case; assert the guard on those platforms.
+  if (process.platform !== "darwin" && process.platform !== "win32") return;
+  const dir = mkdtempSync(join(tmpdir(), "vibe-lock-case-"));
+  const lock = createFileLock();
+  let releaseA!: () => void;
+  const aHolds = new Promise<void>((r) => (releaseA = r));
+  // Agent A claims src/App.ts and holds it.
+  const aRun = lock(join(dir, "App.ts"), () => aHolds, "agentA");
+  // Agent B tries to write the same file spelled differently — must be rejected.
+  await expect(lock(join(dir, "app.ts"), async () => "b", "agentB")).rejects.toThrow(
+    /being written by another/,
+  );
+  releaseA();
+  await aRun;
 });

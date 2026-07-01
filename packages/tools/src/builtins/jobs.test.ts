@@ -42,3 +42,35 @@ test("killing an unknown job returns false", () => {
   const jobs = new BackgroundJobs();
   expect(jobs.kill("job_999")).toBe(false);
 });
+
+test("a detected server URL survives output truncation (sticky server list)", async () => {
+  const jobs = new BackgroundJobs();
+  // Print the server URL first (its own chunk), then flood >100k chars so the URL
+  // scrolls out of the retained buffer. It must remain in the sticky server list.
+  const job = jobs.start(
+    `echo "  ➜  Local:   http://localhost:5173/"; sleep 0.1; for i in $(seq 1 60000); do echo "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx $i"; done`,
+    cwd(),
+  );
+  await job.proc.exited;
+  await new Promise((r) => setTimeout(r, 80));
+  const after = jobs.get(job.id);
+  // The URL scrolled out of the 100k buffer window…
+  expect(after!.output.includes("localhost:5173")).toBe(false);
+  // …but it stays in the accumulated server list (recomputing from the truncated
+  // buffer would have dropped it).
+  expect(after!.servers.some((u) => u.includes("localhost:5173"))).toBe(true);
+});
+
+test("the sticky server list is bounded under high-cardinality URL output", async () => {
+  const jobs = new BackgroundJobs();
+  // Print 300 distinct localhost URLs (varying ports) — the list must stay bounded.
+  const job = jobs.start(
+    `for p in $(seq 1 300); do echo "http://localhost:$((3000+p))/"; done`,
+    cwd(),
+  );
+  await job.proc.exited;
+  await new Promise((r) => setTimeout(r, 60));
+  const after = jobs.get(job.id);
+  expect(after!.servers.length).toBeLessThanOrEqual(64); // capped, not 300
+  expect(after!.servers.length).toBeGreaterThan(0);
+});

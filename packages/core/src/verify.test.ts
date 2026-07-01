@@ -110,3 +110,12 @@ test("a passing verify command triggers no retry", async () => {
   await engine.whenIdle();
   expect(events.filter((e) => e.type === "verify-started").length).toBe(1);
 });
+
+test("runVerify bounds a high-volume command's output in memory", async () => {
+  const start = Date.now();
+  const r = await runVerify(process.cwd(), "yes xxxxxxxxxxxxxxxxxxxxxxxxxxxx | head -100000; exit 1");
+  expect(r.ok).toBe(false);
+  expect(r.output).toContain("truncated");
+  expect(r.output.length).toBeLessThan(9000); // ~8k display cap + marker, not ~3MB
+  expect(Date.now() - start).toBeLessThan(5000);
+});

@@ -60,4 +60,8 @@ export interface EngineClient {
   listProviders?(): ProviderInfo[] | Promise<ProviderInfo[]>;
   /** Named subagents + their model/mode, for the `/agents` menu. Optional. */
   listAgents?(): AgentInfo[] | Promise<AgentInfo[]>;
+  /** Flush the session digest + tear down (idempotent). A UI should await this
+   * before a hard `process.exit` so an in-flight digest completes. Optional so a
+   * minimal/mock client can omit it. */
+  finalize?(): Promise<void>;
 }

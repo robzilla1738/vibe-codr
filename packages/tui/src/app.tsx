@@ -915,8 +915,18 @@ export function App(props: { engine: EngineClient }) {
     // (a prior expand/collapse may have disengaged it — see `anchoredToggle`).
     if (scrollEl) scrollEl.stickyScroll = true;
     if (text === "/exit" || text === "/quit") {
-      props.engine.send({ type: "shutdown" });
-      process.exit(0);
+      // Await finalize (session digest + teardown) before the hard exit, so a
+      // `process.exit(0)` doesn't race the fire-and-forget shutdown and drop the
+      // digest — the same guarantee the CLI's `await engine.finalize()` gives the
+      // normal exit path. `finalize` is idempotent and optional on EngineClient.
+      void (async () => {
+        try {
+          await props.engine.finalize?.();
+        } finally {
+          process.exit(0);
+        }
+      })();
+      return;
     }
     // `/jobs` toggles the background-jobs sub-view (running shell commands +
     // detected localhost servers). Handled locally — no engine round-trip.
@@ -949,6 +959,14 @@ export function App(props: { engine: EngineClient }) {
       setPerms([]);
       setPendingQ([]);
       setWorking(false);
+    }
+    // Adding a provider key or refreshing the catalog changes what the model /
+    // provider pickers should show, so drop their session caches — the next open
+    // re-fetches fresh (mirrors the setAgents(null) invalidation on agent edits).
+    // Without this, a provider configured mid-session keeps showing as ○/stale.
+    if (/^\/model\s+key\b/i.test(text) || /^\/models?\s+refresh\b/i.test(text)) {
+      setModels(null);
+      setProviders(null);
     }
     // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.
     // keep their arguments (the same logic the REPL uses).

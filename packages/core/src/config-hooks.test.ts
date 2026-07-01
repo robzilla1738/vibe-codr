@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { HookBus } from "@vibe/plugins";
 import type { HookConfig } from "@vibe/config";
-import { registerConfigHooks, parseHookOutput, type HookRunResult } from "./config-hooks.ts";
+import { registerConfigHooks, parseHookOutput, defaultExec, type HookRunResult } from "./config-hooks.ts";
 
 const hook = (h: Partial<HookConfig>): HookConfig => ({
   event: "tool.before.execute",
@@ -74,4 +74,28 @@ test("a hook with neither command nor url is skipped", async () => {
   });
   const out = await bus.run("tool.before.execute", { toolName: "bash", input: {} });
   expect(out.deny).toBeUndefined();
+});
+
+test("defaultExec bounds wall-clock even when the hook backgrounds a lingering child", async () => {
+  // The command prints its verdict then backgrounds a 30s sleep that inherits the
+  // stdout pipe. The old `Response(stdout).text()` blocked on that fd for 30s;
+  // defaultExec must return within ~the timeout and still parse the verdict.
+  const start = Date.now();
+  const result = await defaultExec(
+    `echo '{"deny":true,"reason":"blocked"}'; sleep 30 &`,
+    "{}",
+    400,
+  );
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(2000); // NOT 30s — the timeout bounded it
+  // The verdict that was printed before the timeout is still honored.
+  expect(result.deny).toBe(true);
+  expect(result.reason).toBe("blocked");
+});
+
+test("defaultExec returns a fast hook's verdict immediately (no timeout wait)", async () => {
+  const start = Date.now();
+  const result = await defaultExec(`echo '{"deny":false}'`, "{}", 5000);
+  expect(Date.now() - start).toBeLessThan(1000); // well under the 5s timeout
+  expect(result.deny).toBeUndefined(); // deny:false → not a block
 });

@@ -80,26 +80,39 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
     }
     const file = Bun.file(full);
     if (!(await file.exists())) continue; // not a path — leave the literal text
+    const size = info?.size ?? 0; // byte size from the stat above
     const ext = extname(token).toLowerCase();
     const mediaType = IMAGE_MEDIA[ext];
     if (mediaType) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      // Guard against a huge image bloating the prompt (and cost).
-      if (bytes.byteLength > MAX_IMAGE_BYTES) {
+      // Check the size BEFORE reading, so a huge image isn't slurped into memory
+      // just to be rejected (a partial image is useless, so oversize → skip).
+      if (size > MAX_IMAGE_BYTES) {
         notices.push(
-          `${token} skipped: image is ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB (max ${MAX_IMAGE_BYTES / 1024 / 1024}MB)`,
+          `${token} skipped: image is ${(size / 1024 / 1024).toFixed(1)}MB (max ${MAX_IMAGE_BYTES / 1024 / 1024}MB)`,
         );
         continue;
       }
-      images.push({ path: token, mediaType, data: bytes });
+      images.push({ path: token, mediaType, data: new Uint8Array(await file.arrayBuffer()) });
       continue;
     }
-    const raw = await file.text();
+    // Bound the READ to the byte budget, not just the output: read only the first
+    // MAX_TEXT_BYTES of an over-cap file instead of slurping a multi-hundred-MB
+    // `@huge.log` into memory and only then truncating.
+    let raw: string;
+    let preTruncated = false;
+    if (size > MAX_TEXT_BYTES) {
+      const buf = await file.slice(0, MAX_TEXT_BYTES).arrayBuffer();
+      raw = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf)).replace(/�+$/, "");
+      preTruncated = true;
+    } else {
+      raw = await file.text();
+    }
     // Truncate by ENCODED BYTES (not String.slice's UTF-16 units) so a CJK/emoji
     // file actually honors the byte budget it claims to enforce.
     const { text: capped, truncated } = capBytes(raw, MAX_TEXT_BYTES);
-    const text = truncated ? `${capped}\n… (truncated)` : capped;
-    if (truncated) notices.push(`${token} truncated to ${MAX_TEXT_BYTES} bytes`);
+    const wasTruncated = truncated || preTruncated;
+    const text = wasTruncated ? `${capped}\n… (truncated)` : capped;
+    if (wasTruncated) notices.push(`${token} truncated to ${MAX_TEXT_BYTES} bytes`);
     blocks.push(`--- ${token} ---\n\`\`\`\n${text}\n\`\`\``);
   }
 

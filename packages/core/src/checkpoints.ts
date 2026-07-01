@@ -137,19 +137,40 @@ export class CheckpointManager {
   async undo(): Promise<Checkpoint | null> {
     if (!(await this.isGitRepo())) return null;
     await this.#ensureLoaded();
-    const cp = this.#list.pop();
-    if (!cp) return null;
 
-    // Restore the working tree from the snapshot via a THROWAWAY index, so the
-    // user's real staging area is never disturbed (the old code did `read-tree`
-    // + `reset` on the live index, wiping the user's staged changes).
-    const indexFile = join(tmpdir(), `vibecodr-undo-${cp.id}`);
-    const env = { GIT_INDEX_FILE: indexFile };
-    try {
-      await this.#git(["read-tree", cp.commit], env);
-      await this.#git(["checkout-index", "-a", "-f"], env);
-    } finally {
-      await rm(indexFile, { force: true }).catch(() => undefined);
+    // Pop checkpoints newest-first, skipping any whose snapshot commit is gone,
+    // until we restore one or the list empties. This advances past a stale
+    // checkpoint (e.g. GC'd object) to the next VALID one instead of giving up.
+    let cp = this.#list.pop();
+    while (cp) {
+      const indexFile = join(tmpdir(), `vibecodr-undo-${cp.id}`);
+      const env = { GIT_INDEX_FILE: indexFile };
+      let restored = false;
+      try {
+        // If the snapshot commit object is gone (GC'd, or a `commit-tree` that
+        // silently failed), read-tree fails with EMPTY stdout — indistinguishable
+        // from a legitimately empty snapshot. Proceeding would make the cleanup
+        // below (which treats "not in the snapshot tree" as "created since") delete
+        // EVERY current untracked file. Skip this dead checkpoint (drop its dangling
+        // ref) and try the next-older one rather than nuking the user's files.
+        const read = await this.#git(["read-tree", cp.commit], env);
+        if (read.ok) {
+          await this.#git(["checkout-index", "-a", "-f"], env);
+          restored = true;
+        }
+      } finally {
+        await rm(indexFile, { force: true }).catch(() => undefined);
+      }
+      if (!restored) {
+        await this.#git(["update-ref", "-d", `refs/vibecodr/${cp.id}`]).catch(() => undefined);
+        cp = this.#list.pop();
+        continue;
+      }
+      break;
+    }
+    if (!cp) {
+      await this.#save(); // persist the dropped dead checkpoints
+      return null;
     }
 
     // Remove only files created since the snapshot — untracked now and absent
@@ -161,15 +182,21 @@ export class CheckpointManager {
       .map((s) => s.trim())
       .filter(Boolean);
     if (untracked.length) {
-      const inSnapshot = new Set(
-        (await this.#git(["ls-tree", "-r", "--name-only", cp.commit])).stdout
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean),
-      );
-      for (const file of untracked) {
-        if (!inSnapshot.has(file)) {
-          await rm(join(this.#cwd, file), { force: true }).catch(() => undefined);
+      // Guard the snapshot listing too: a FAILED ls-tree (empty stdout) must not
+      // read as "the snapshot had no files" and delete everything untracked. Only
+      // prune when we could actually enumerate the snapshot tree.
+      const snapshotList = await this.#git(["ls-tree", "-r", "--name-only", cp.commit]);
+      if (snapshotList.ok) {
+        const inSnapshot = new Set(
+          snapshotList.stdout
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        );
+        for (const file of untracked) {
+          if (!inSnapshot.has(file)) {
+            await rm(join(this.#cwd, file), { force: true }).catch(() => undefined);
+          }
         }
       }
     }

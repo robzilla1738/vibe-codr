@@ -124,3 +124,48 @@ test("writeGlobalConfig deep-merges, and a null value clears a persisted key", a
     else process.env.XDG_CONFIG_HOME = prevXdg;
   }
 });
+
+test("defaultConfig returns independent copies (no shared mutable defaults)", () => {
+  const a = defaultConfig();
+  const b = defaultConfig();
+  // Distinct nested instances (Zod's object/array defaults are shared by ref).
+  expect(a.webfetch.allowHosts).not.toBe(b.webfetch.allowHosts);
+  expect(a.mcp.servers).not.toBe(b.mcp.servers);
+  expect(a.providers).not.toBe(b.providers);
+  expect(a.subagent).not.toBe(b.subagent);
+  // Mutating one config (as the engine does — e.g. `/model key` writes providers)
+  // must NOT leak into another config or a later defaultConfig().
+  a.webfetch.allowHosts.push("evil.example.com");
+  a.providers.openai = { apiKey: "leaked" };
+  a.subagent.model = "mock/x";
+  expect(b.webfetch.allowHosts).toEqual([]);
+  expect(b.providers).toEqual({});
+  expect(b.subagent.model).toBeUndefined();
+  expect(defaultConfig().webfetch.allowHosts).toEqual([]);
+});
+
+test("concurrent writeGlobalConfig calls don't clobber each other (serialized RMW)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-xdg-race-"));
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = dir;
+  try {
+    // Fire many distinct-key writes at once WITHOUT awaiting between them, exactly
+    // as the engine's fire-and-forget #persistConfig does. Every key must survive.
+    await Promise.all([
+      writeGlobalConfig({ model: "a/one" }),
+      writeGlobalConfig({ accentColor: "#111111" }),
+      writeGlobalConfig({ theme: "opencode" }),
+      writeGlobalConfig({ reasoning: { effort: "high" } }),
+      writeGlobalConfig({ subagent: { model: "b/two" } }),
+    ]);
+    const written = JSON.parse(await Bun.file(globalConfigPath()).text());
+    expect(written.model).toBe("a/one");
+    expect(written.accentColor).toBe("#111111");
+    expect(written.theme).toBe("opencode");
+    expect(written.reasoning.effort).toBe("high");
+    expect(written.subagent.model).toBe("b/two");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+});

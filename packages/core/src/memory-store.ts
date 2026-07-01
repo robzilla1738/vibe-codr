@@ -47,6 +47,29 @@ export async function gatherMemoryDocs(cwd: string): Promise<MemoryDoc[]> {
   return [...project, ...global];
 }
 
+/**
+ * Serialize the read-modify-write of each dated memory file per path. Without
+ * this, two concurrent `save_memory` calls (parallel subagents, or a fan-out
+ * that saves several facts in one step) both read the same `existing` snapshot
+ * and the later `Bun.write` clobbers the earlier one's entry — a silently lost
+ * memory. In-process is sufficient: the store is written by one vibe-codr tree.
+ */
+const appendChains = new Map<string, Promise<unknown>>();
+function serializeByPath<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const prev = appendChains.get(path) ?? Promise.resolve();
+  const result = prev.then(fn, fn);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  appendChains.set(path, settled);
+  // Prune the entry once it's the tail and has settled, so the map can't grow.
+  void settled.then(() => {
+    if (appendChains.get(path) === settled) appendChains.delete(path);
+  });
+  return result;
+}
+
 export interface SaveMemoryInput {
   /** The fact/decision/preference to remember (concise, self-contained). */
   fact: string;
@@ -72,10 +95,14 @@ export async function appendMemory(
   const date = now.toISOString().slice(0, 10);
   const time = now.toISOString().slice(11, 16);
   const path = join(dir, `${date}.md`);
-  const existing = await Bun.file(path).text().catch(() => "");
-  const header = existing.trim() ? "" : `# Memory — ${date}\n\n`;
   const tags = input.tags?.length ? ` _(${input.tags.join(", ")})_` : "";
   const entry = `- ${time} — ${input.fact.trim()}${tags}\n`;
-  await Bun.write(path, `${existing}${header}${entry}`);
+  // The whole read → build → write must be atomic against a concurrent save to
+  // the same file, or the two racing writes drop one entry.
+  await serializeByPath(path, async () => {
+    const existing = await Bun.file(path).text().catch(() => "");
+    const header = existing.trim() ? "" : `# Memory — ${date}\n\n`;
+    await Bun.write(path, `${existing}${header}${entry}`);
+  });
   return scope === "global" ? `~/.config/vibe-codr/memory/${date}.md` : `.vibe/memory/${date}.md`;
 }

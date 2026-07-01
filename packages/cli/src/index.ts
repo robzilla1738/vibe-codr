@@ -112,11 +112,20 @@ export async function run(argv: string[]): Promise<number> {
   // surface the normal auth error instead. Gate on `=== undefined` so an empty
   // `-p ""` (pipe form) doesn't fall into interactive onboarding.
   const interactive = values.prompt === undefined && positionals[0] !== "models";
+  let onboardingRan = false;
   if (interactive) {
     const registry = new ProviderRegistry();
     if (needsOnboarding(config, registry)) {
       const onboarded = await runOnboarding(config, registry);
-      if (onboarded) config = await loadConfig({ cwd, overrides });
+      if (onboarded) {
+        onboardingRan = true;
+        // Onboarding just wrote the user's chosen provider + model to disk. A
+        // stale `-m` override (whose provider may be exactly the one they
+        // couldn't configure) must NOT clobber that fresh choice on reload, or the
+        // run fails with "no key" right after a successful setup.
+        delete overrides.model;
+        config = await loadConfig({ cwd, overrides });
+      }
     }
   }
 
@@ -140,8 +149,9 @@ export async function run(argv: string[]): Promise<number> {
     interactive,
     ...(projectMemory ? { projectMemory } : {}),
     ...(resume ? { resume } : {}),
-    // Explicit flags override a resumed session's saved model/mode.
-    ...(values.model ? { modelOverride: values.model } : {}),
+    // Explicit flags override a resumed session's saved model/mode — but NOT when
+    // onboarding just configured a (possibly different) provider/model above.
+    ...(values.model && !onboardingRan ? { modelOverride: values.model } : {}),
     ...(overrides.mode ? { modeOverride: overrides.mode } : {}),
   });
   await engine.bootstrap();

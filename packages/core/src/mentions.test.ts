@@ -66,3 +66,16 @@ test("text-file truncation is byte-accurate for multibyte content", async () => 
   // The injected block honors the byte budget (was ~3x over with String.slice).
   expect(Buffer.byteLength(r.text, "utf8")).toBeLessThan(64_000 + 2_000);
 });
+
+test("an over-cap text file reads only its head (bounded read, not whole-file slurp)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-big-"));
+  // 300KB: a HEAD marker, filler past the 64k cap, then a TAIL marker that must
+  // be dropped (proving the injected content is the bounded head, not the tail).
+  const body = `HEAD_MARKER\n${"x".repeat(300_000)}\nTAIL_MARKER`;
+  await Bun.write(join(cwd, "big.log"), body);
+  const r = await expandMentions("@big.log", cwd);
+  expect(r.text).toContain("HEAD_MARKER");
+  expect(r.text).not.toContain("TAIL_MARKER");
+  expect(r.notices.some((n) => n.includes("truncated"))).toBe(true);
+  expect(Buffer.byteLength(r.text, "utf8")).toBeLessThan(64_000 + 2_000);
+});

@@ -39,7 +39,11 @@ import { searchSessions, formatRecall } from "./recall.ts";
 import { formatMemoryHits } from "./memory-search.ts";
 import type { MemoryService } from "./memory-service.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
-import { buildModelTuning, ANTHROPIC_CACHE_CONTROL } from "./model-tuning.ts";
+import {
+  buildModelTuning,
+  ANTHROPIC_CACHE_CONTROL,
+  cacheTokensDisjointFromInput,
+} from "./model-tuning.ts";
 import type { ImageAttachment } from "./mentions.ts";
 import { withRetry } from "./retry.ts";
 import type { Limiter } from "./limiter.ts";
@@ -341,9 +345,12 @@ export class Session {
   }
 
   /** Run a provider call through the tree-global limiter when one is wired (so
-   * fan-out can't stampede the provider); otherwise run it directly. */
+   * fan-out can't stampede the provider); otherwise run it directly. The turn's
+   * abort signal is threaded in so a queued acquire is abandoned on cancel/
+   * timeout — a nested subagent stuck waiting for a slot must be able to unwind,
+   * or a deep fan-out that over-subscribes the tree-global ceiling deadlocks. */
   #withLimiter<T>(fn: () => Promise<T>): Promise<T> {
-    return this.#deps.limiter ? this.#deps.limiter.run(fn) : fn();
+    return this.#deps.limiter ? this.#deps.limiter.run(fn, this.#abort.signal) : fn();
   }
 
   /** A marker of the current conversation length (for checkpoint rollback). */
@@ -602,7 +609,12 @@ export class Session {
       if (outcome.isError) {
         return { id: spec.id, objective: spec.objective, outcome: "failed", output: outcome.text, attempts };
       }
-      if (!spec.verify || !child.didMutate) {
+      // A task that did nothing on its FIRST attempt has nothing to verify → done.
+      // But on a RETRY (feedback set), a non-mutating child leaves the previous
+      // attempt's REJECTED edits on disk — don't short-circuit to "completed" and
+      // drop the reviewer's feedback; fall through to re-review so outstanding
+      // issues still gate completion.
+      if (!spec.verify || (!child.didMutate && !feedback)) {
         return { id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts };
       }
       const review = await this.#reviewTask(spec, outcome.text, parentSignal);
@@ -636,7 +648,7 @@ export class Session {
       "`path:line — problem`, or reply exactly REVIEW-CLEAN if the work is correct and complete.";
     await this.#runChildToCompletion(child, prompt, parentSignal);
     const out = child.lastAssistantText();
-    return { clean: /REVIEW-CLEAN/.test(out), feedback: out || "(reviewer produced no output)" };
+    return { clean: isReviewClean(out), feedback: out || "(reviewer produced no output)" };
   }
 
   /**
@@ -806,6 +818,13 @@ export class Session {
     // already-aborted controller.
     this.#abort = new AbortController();
 
+    // The user/history messages pushed for THIS turn (captured after #pushUser),
+    // so an interrupt/error BEFORE any assistant reply is committed can roll them
+    // back — otherwise the orphan user turn leaves two consecutive user messages
+    // for the next turn (a 400 on strict providers) and pollutes `--resume`.
+    let userMsgRef: ModelMessage | undefined;
+    let histRef: Message | undefined;
+
     try {
       // If a prior turn already blew the spend limit under `stop`, refuse the new
       // turn — but do so BEFORE pushing the user message, so we don't leave an
@@ -822,6 +841,8 @@ export class Session {
         return;
       }
       this.#pushUser(input, images, opts.display);
+      userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
+      histRef = this.#history[this.#history.length - 1];
 
       const model = await withRetry(() => registry.resolveModel(this.model, config), {
         maxAttempts: config.retry.maxAttempts,
@@ -956,6 +977,10 @@ export class Session {
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
       // the stable system prefix so repeated turns don't re-bill the full prompt.
       const tuning = buildModelTuning(this.model, config);
+      // Anthropic reports cache_read_input_tokens DISJOINT from input_tokens; fold
+      // it into a superset (below) so cost, the live context %, and the compaction
+      // trigger all reflect the true prompt size rather than the uncached slice.
+      const foldCachedIntoInput = cacheTokensDisjointFromInput(this.model);
       const messages: ModelMessage[] = tuning.cacheSystem
         ? [
             { role: "system", content: system, providerOptions: ANTHROPIC_CACHE_CONTROL },
@@ -991,6 +1016,13 @@ export class Session {
           : {}),
         onStepFinish: ({ usage }) => {
           const stepUsage = normalizeUsage(usage);
+          // Restore the `cached ⊆ input` invariant for providers (Anthropic) that
+          // report the two disjoint, so the accounting below (cost, context fill,
+          // compaction) sees the full prompt size instead of only the new tokens.
+          if (foldCachedIntoInput && stepUsage?.cachedInputTokens) {
+            stepUsage.inputTokens =
+              (stepUsage.inputTokens ?? 0) + stepUsage.cachedInputTokens;
+          }
           bus.emit({
             type: "step-finished",
             sessionId: this.id,
@@ -1079,6 +1111,16 @@ export class Session {
         });
       }
     } finally {
+      // Roll back an orphan user turn: if the turn ended before ANY assistant
+      // reply was committed (a pre-stream abort/error, or a stream that failed
+      // before emitting anything), the just-pushed user message is still the LAST
+      // entry. Identity-match it so a compaction that ran mid-turn (which replaces
+      // the array but keeps this message verbatim at the tail) doesn't fool the
+      // check, and drop it so the next turn doesn't open with two user messages.
+      if (userMsgRef && this.#modelMessages[this.#modelMessages.length - 1] === userMsgRef) {
+        this.#modelMessages.pop();
+        if (histRef && this.#history[this.#history.length - 1] === histRef) this.#history.pop();
+      }
       this.busy = false;
       await this.#persist();
       bus.emit({ type: "turn-finished", sessionId: this.id });
@@ -1576,6 +1618,18 @@ function contentToText(content: unknown): string {
       .join(" ");
   }
   return JSON.stringify(content);
+}
+
+/**
+ * Whether a task reviewer's output is a CLEAN verdict. Requires `REVIEW-CLEAN` as
+ * its own verdict at the start of a line — NOT a bare substring — so an
+ * adversarial reviewer that writes "NOT REVIEW-CLEAN — path:line — problem" (or
+ * "this is not REVIEW-CLEAN") is treated as feedback, not a pass whose concrete
+ * issues get silently discarded. Biased to a re-review (false negative) over
+ * shipping rejected work (false positive).
+ */
+export function isReviewClean(out: string): boolean {
+  return /(^|\n)\s*REVIEW-CLEAN\b/.test(out);
 }
 
 function appendText(message: Message, delta: string): void {

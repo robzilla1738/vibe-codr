@@ -33,3 +33,19 @@ test("gatherMemoryDocs returns [] for a project with no saved memory", async () 
   const dir = mkdtempSync(join(tmpdir(), "vibe-mstore3-"));
   expect(await gatherMemoryDocs(dir)).toEqual([]);
 });
+
+test("concurrent saves to the same dated file don't lose entries (atomic append)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-race-"));
+  const now = new Date("2026-06-30T09:00:00Z");
+  // Fire many saves at once — the non-atomic read-modify-write used to drop all
+  // but the last (each read the same empty file, last write won).
+  const N = 25;
+  await Promise.all(
+    Array.from({ length: N }, (_, i) => appendMemory(dir, { fact: `fact number ${i}` }, now)),
+  );
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  for (let i = 0; i < N; i++) expect(text).toContain(`fact number ${i}`);
+  // Exactly N entries and a single day header.
+  expect(text.match(/^- /gm)).toHaveLength(N);
+  expect(text.match(/# Memory/g)).toHaveLength(1);
+});

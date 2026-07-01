@@ -82,7 +82,7 @@ const COLORS = {
  */
 const TOOL_ICONS: Record<string, string> = {
   bash: "$", shell: "$", read: "→", write: "←", edit: "←", multiedit: "←",
-  apply_patch: "%", glob: "✱", grep: "✱", list: "☰", ls: "☰",
+  apply_patch: "%", glob: "✱", grep: "✱", repo_map: "⌗", list: "☰", ls: "☰",
   webfetch: "%", web_fetch: "%", websearch: "◈", web_search: "◈",
   task: "✦", subagent: "✦", update_tasks: "☑", todowrite: "☑", todo_write: "☑",
   present_plan: "◑", recall: "⌕", memory: "❖",

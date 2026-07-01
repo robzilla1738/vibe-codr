@@ -139,6 +139,11 @@ export class McpHub {
   #closed = false;
   /** Servers with a reconnect loop in flight (so a drop storm can't stack loops). */
   #reconnecting = new Set<string>();
+  /** Whether the aggregate read_mcp_resource / get_mcp_prompt tools are registered
+   * (once each, lazily), so a server that first exposes resources/prompts on a
+   * later RECONNECT still gets them surfaced to the model. */
+  #resourceToolRegistered = false;
+  #promptToolRegistered = false;
 
   constructor(deps: McpHubDeps) {
     this.#deps = deps;
@@ -196,21 +201,43 @@ export class McpHub {
         this.#log.error(`MCP server "${name}" failed: ${message}`);
       }
     }
-    // Register read_mcp_resource / get_mcp_prompt once if any server exposes them.
-    if (this.#entries.some((e) => e.resources.length)) {
+    this.#ensureAggregateTools();
+  }
+
+  /** Register the aggregate read_mcp_resource / get_mcp_prompt tools once each,
+   * the moment ANY connected server exposes resources/prompts — at boot or on a
+   * later reconnect (a server that first advertises them then would otherwise
+   * leave the model unable to read them). */
+  #ensureAggregateTools(): void {
+    if (!this.#resourceToolRegistered && this.#entries.some((e) => e.resources.length)) {
       this.#deps.registerTool(this.#readResourceTool());
+      this.#resourceToolRegistered = true;
     }
-    if (this.#entries.some((e) => e.prompts.length)) {
+    if (!this.#promptToolRegistered && this.#entries.some((e) => e.prompts.length)) {
       this.#deps.registerTool(this.#getPromptTool());
+      this.#promptToolRegistered = true;
     }
   }
 
   /** Register a server's current tool set, recording the exposed names so a later
    * re-list or drop can cleanly unregister them. */
   #registerServerTools(entry: McpEntry, tools: McpToolSpec[], client: McpClient): void {
-    entry.toolNames = tools.map((spec) => mcpToolName(entry.name, spec.name));
+    // Two DISTINCT real tool names can sanitize to the same exposed name (e.g.
+    // `db.get` and `db/get` → `mcp__srv__db_get`); registering both would let the
+    // second silently overwrite the first, leaving one tool uncallable. Detect the
+    // collision here and disambiguate the later one with a stable hash of its real
+    // name, so the common (readable) name is preserved and only clashes get a suffix.
+    const used = new Set<string>();
+    const names: string[] = [];
+    for (const spec of tools) {
+      let name = mcpToolName(entry.name, spec.name);
+      if (used.has(name)) name = withHashSuffix(name, djb2(`${entry.name} ${spec.name}`));
+      used.add(name);
+      names.push(name);
+      this.#deps.registerTool(toToolDefinition(entry.name, spec, client, name));
+    }
+    entry.toolNames = names;
     entry.toolCount = tools.length;
-    for (const spec of tools) this.#deps.registerTool(toToolDefinition(entry.name, spec, client));
   }
 
   /** Unregister every tool currently exposed by a server (re-list / drop / close). */
@@ -262,11 +289,22 @@ export class McpHub {
       if (this.#closed) break;
       try {
         const { client, tools, resources, prompts } = await this.#connectAndList(name, entry.config);
+        // close() may have run while we were awaiting the (re)connect. If so, the
+        // freshly-spawned transport (stdio child / HTTP connection) would leak —
+        // #entries is already cleared and nothing will ever close it. Tear it down.
+        if (this.#closed) {
+          await client.close().catch(() => undefined);
+          this.#reconnecting.delete(name);
+          return;
+        }
         entry.client = client;
         entry.resources = resources;
         entry.prompts = prompts;
         delete entry.error;
         this.#registerServerTools(entry, tools, client);
+        // A server may first advertise resources/prompts on this reconnect; make
+        // sure the aggregate tools are registered so they're actually reachable.
+        this.#ensureAggregateTools();
         this.#wire(entry, client);
         this.#log.info(`MCP server "${name}" reconnected (${tools.length} tools)`);
         this.#reconnecting.delete(name);
@@ -460,8 +498,13 @@ export function mcpToolName(server: string, toolName: string): string {
   if (sanitized.length <= 64) return sanitized;
   // Full 32-bit hash in base36 (≤7 chars) — keep all entropy so truncated names
   // that share a prefix stay distinct.
-  const hash = djb2(raw).toString(36);
-  return `${sanitized.slice(0, 64 - hash.length - 1)}_${hash}`;
+  return withHashSuffix(sanitized, djb2(raw));
+}
+
+/** Append a stable base36 hash suffix, trimming the base to keep ≤ 64 chars. */
+function withHashSuffix(sanitized: string, hash: number): string {
+  const suffix = `_${hash.toString(36)}`;
+  return `${sanitized.slice(0, 64 - suffix.length)}${suffix}`;
 }
 
 /** Tiny deterministic string hash (djb2) — for unique truncation suffixes. */
@@ -476,11 +519,14 @@ export function toToolDefinition(
   server: string,
   spec: McpToolSpec,
   client: McpClient,
+  /** Pre-resolved exposed name (collision-disambiguated by the caller); defaults
+   * to the plain sanitized name for standalone use. */
+  exposedName: string = mcpToolName(server, spec.name),
 ): ToolDefinition {
   return {
     // Exposed name is sanitized for provider compatibility; `spec.name` (the real
     // MCP tool name) is what we hand back to the server in `callTool`.
-    name: mcpToolName(server, spec.name),
+    name: exposedName,
     description: spec.description ?? `MCP tool "${spec.name}" from "${server}".`,
     inputSchema: spec.inputSchema ?? { type: "object", properties: {} },
     // Honor the server's readOnlyHint: a genuinely read-only MCP tool skips the
@@ -607,9 +653,12 @@ const defaultConnect: McpConnect = async (name, config) => {
     connected = false;
     for (const cb of closeCbs) cb();
   };
-  lifecycle.onerror = () => {
-    connected = false;
-  };
+  // The SDK fires onerror on TRANSIENT/recoverable events too (a malformed SSE
+  // chunk, a stream read hiccup) while the connection stays alive, so it is NOT a
+  // durable disconnect signal. Latching connected=false here would report a
+  // still-working server down forever — nothing resets it, and only onclose
+  // triggers a reconnect. Rely on onclose for the down transition.
+  lifecycle.onerror = () => {};
   lifecycle.fallbackNotificationHandler = async (n) => {
     if (n?.method === "notifications/tools/list_changed") for (const cb of listChangedCbs) cb();
   };

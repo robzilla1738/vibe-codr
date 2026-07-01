@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isIP } from "node:net";
 import type { ToolDefinition } from "@vibe/shared";
 import { assertFetchAllowed, type FetchPolicy, type Lookup } from "./net-guard.ts";
 import { extractPdfText } from "./pdftext.ts";
@@ -204,8 +205,12 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
         let current = url;
         let res: Response | undefined;
         for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-          await assertFetchAllowed(current, policy, opts.lookup);
-          const r = await fetch(current, { signal, redirect: "manual" });
+          const target = await assertFetchAllowed(current, policy, opts.lookup);
+          // Connect to the exact IP the guard verified (when it resolved a
+          // hostname), keeping the original Host header + TLS SNI, so a DNS rebind
+          // can't point the actual connection at a private address. IP-literal /
+          // opted-in targets have no pinnedIp and fetch the URL as-is.
+          const r = await fetch(pinnedUrl(target.url, target.pinnedIp), pinnedInit(target, signal));
           const location = r.headers.get("location");
           if (r.status >= 300 && r.status < 400 && location) {
             await r.body?.cancel?.().catch(() => {});
@@ -252,6 +257,32 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
       }
     },
   };
+}
+
+/** The URL to actually connect to: the guard-verified IP (bracketed for IPv6)
+ * when a hostname was resolved, else the original URL. */
+function pinnedUrl(u: URL, pinnedIp?: string): string {
+  if (!pinnedIp) return u.toString();
+  const hostPart = isIP(pinnedIp) === 6 ? `[${pinnedIp}]` : pinnedIp;
+  const port = u.port ? `:${u.port}` : "";
+  // Preserve any embedded credentials (Basic auth) — dropping them would silently
+  // break `http://user:pass@host/…`. The fragment is client-only (never sent), so
+  // it's correctly omitted.
+  const auth = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
+  return `${u.protocol}//${auth}${hostPart}${port}${u.pathname}${u.search}`;
+}
+
+/** Fetch init that preserves virtual-host routing + TLS identity when connecting
+ * by a pinned IP: the original Host header, and (for HTTPS) the SNI/cert hostname
+ * via Bun's `tls.serverName`, so cert validation still checks the real hostname. */
+function pinnedInit(target: { url: URL; pinnedIp?: string }, signal: AbortSignal): RequestInit {
+  const base = { signal, redirect: "manual" as const };
+  if (!target.pinnedIp) return base;
+  const init = { ...base, headers: { host: target.url.host } } as RequestInit & {
+    tls?: { serverName: string };
+  };
+  if (target.url.protocol === "https:") init.tls = { serverName: target.url.hostname };
+  return init;
 }
 
 /** Turn raw response bytes into readable text by content type: PDF → extracted

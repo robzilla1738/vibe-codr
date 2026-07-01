@@ -29,8 +29,10 @@ latest) — never hardcoded.
 >   scheduler** (`spawn_tasks`) with verify→retry.
 > - **Research** — **keyless web search** that fans out across DuckDuckGo + Bing
 >   and quality-ranks the deduped merge (TinyFish optional; `deep` query fan-out),
->   a `repo_map` code-intelligence tool, and hardened `webfetch` (SSRF-guarded,
->   timeout + size caps, **PDF** + optional Readability extraction, cache-through).
+>   a `repo_map` code-intelligence tool, and hardened `webfetch` (SSRF-guarded with
+>   **DNS-rebinding-safe IP pinning** and per-redirect revalidation, timeout + size
+>   caps, **PDF** extraction with a deflate-bomb guard, optional Readability,
+>   cache-through).
 > - **MCP** — stdio + Streamable-HTTP/SSE transports, tools, **resources**,
 >   **prompts**, **OAuth 2.1**, and auto-reconnect + `tools/list_changed`.
 > - **Planning** — an interactive **plan-approval modal** (accept & execute,
@@ -40,7 +42,7 @@ latest) — never hardcoded.
 >
 > A full slash-command surface (`/status` `/cost` `/config` `/diff` `/recall`
 > `/mcp` `/review` `/doctor` `/export` …) makes every setting and bit of session
-> state reachable. All covered by **547 tests** (including mock-model integration
+> state reachable. All covered by **616 tests** (including mock-model integration
 > tests of the agent loop with zero network) plus a TUI render smoke test and a
 > compiled-binary check.
 >
@@ -317,8 +319,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   deduped merge (no API key); a [TinyFish](https://tinyfish.ai) key
   (`TINYFISH_API_KEY` / `search.apiKey`) is an optional higher-quality booster that
   joins the fan-out. Disable with `search.enabled: false`. The model follows up
-  with `webfetch` (SSRF-guarded, wall-clock timeout, streaming size cap, **PDF** +
-  optional Readability extraction, cache-through). Search depth is **adaptive and
+  with `webfetch` (SSRF-guarded with DNS-rebinding-safe IP pinning, wall-clock
+  timeout, streaming size cap, **PDF** extraction, optional Readability,
+  cache-through). Search depth is **adaptive and
   model-controlled** — a quick fact is answered straight from the snippets (one
   query, no fetch), while a hard question goes deep (`deep` query fan-out, full-page
   fetches, cross-checking).

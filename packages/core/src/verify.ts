@@ -5,11 +5,33 @@ export interface VerifyResult {
 }
 
 const MAX_OUTPUT = 8000;
+/** Read each stream up to this many chars (well above the display cap) so a
+ * runaway verify command can't buffer gigabytes before the cap is applied. */
+const MAX_STREAM = 64_000;
+
+/** Read a stream up to `max` chars, then cancel it (the writer exits on the pipe). */
+async function readCapped(stream: ReadableStream<Uint8Array>, max: number): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let out = "";
+  try {
+    while (out.length < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) out += decoder.decode(value, { stream: true });
+    }
+    out += decoder.decode();
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return out;
+}
 
 /**
  * Run the project's verification command (typecheck/tests/lint) in `cwd` and
- * capture the result. A non-zero exit means failure; output is capped so it can
- * be fed back to the model without blowing up context.
+ * capture the result. A non-zero exit means failure; output is capped — read
+ * incrementally so a runaway command doesn't materialize its whole output in
+ * memory before truncation.
  */
 export async function runVerify(
   cwd: string,
@@ -24,8 +46,8 @@ export async function runVerify(
     ...(signal ? { signal } : {}),
   });
   const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
+    readCapped(proc.stdout, MAX_STREAM),
+    readCapped(proc.stderr, MAX_STREAM),
   ]);
   const code = await proc.exited;
   const combined = `${stdout}${stderr}`.trim();

@@ -103,3 +103,17 @@ test("git_push fails clearly when there is no remote", async () => {
   expect(r.isError).toBe(true);
   expect(String(r.output).length).toBeGreaterThan(0);
 });
+
+test("a very large diff is bounded in memory (read is capped, not the whole file)", async () => {
+  const cwd = await initRepo();
+  // ~5MB of new content, staged so it shows in `git diff --staged` → a huge diff.
+  // The wrapper must not materialize it all; the display is capped + marked.
+  const big = Array.from({ length: 120_000 }, (_, i) => `line ${i} ${"x".repeat(30)}`).join("\n");
+  await Bun.write(join(cwd, "big.txt"), big);
+  await Bun.spawn(["git", "add", "-A"], { cwd }).exited;
+  const r = await gitDiffTool.execute({ staged: true }, ctx(cwd));
+  const out = String(r.output);
+  expect(out).toContain("truncated");
+  // Bounded well under the 5MB the diff would be (read cap 64k + display cap 20k).
+  expect(out.length).toBeLessThan(70_000);
+});

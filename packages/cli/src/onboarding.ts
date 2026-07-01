@@ -201,9 +201,17 @@ function select<T>(
   initial = 0,
 ): Promise<T> {
   let idx = Math.min(Math.max(initial, 0), items.length - 1);
+  // Window the list so a long menu (each row up to 2 lines with its hint) doesn't
+  // draw a frame taller than the viewport — which the in-place `\x1b[{n}A` redraw
+  // can't fully overwrite, spamming scrollback with a duplicated menu per keypress.
+  const WINDOW = 8;
   const draw = () => {
-    const rows = items.map((it, i) => {
-      const active = i === idx;
+    const start = Math.min(
+      Math.max(0, idx - Math.floor(WINDOW / 2)),
+      Math.max(0, items.length - WINDOW),
+    );
+    const rows = items.slice(start, start + WINDOW).map((it, i) => {
+      const active = start + i === idx;
       const pointer = active ? fg("❯", ACCENT) : " ";
       const label = active ? bold(fg(it.label, ACCENT)) : it.label;
       const badge = it.badge ? ` ${it.badge}` : "";
@@ -211,8 +219,10 @@ function select<T>(
       const hint = it.hint ? `\n    ${dim(it.hint)}` : "";
       return `${head}${hint}`;
     });
+    const more =
+      items.length > WINDOW ? `${dim(`  …${items.length} options (${idx + 1}/${items.length})`)}\n` : "";
     return (
-      `${bold(title)}\n\n${rows.join("\n")}\n\n` +
+      `${bold(title)}\n\n${rows.join("\n")}\n${more}\n` +
       `${dim("↑/↓ move · enter select · ctrl-c quit")}\n`
     );
   };

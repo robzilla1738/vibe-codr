@@ -65,6 +65,38 @@ function toLines(text: string): string[] {
 }
 
 /**
+ * Guard on the LCS matrix size (`(n+1)·(m+1)` numbers): editing or overwriting a
+ * large file would otherwise allocate an O(n·m) matrix — a 20k-line file is
+ * ~400M entries (multi-GB) and OOM-crashes the process. Sized so ordinary source
+ * files (up to ~6000 lines square, or a small edit to a much larger file) still
+ * diff fully; only genuinely huge inputs fall back to a cheap coarse diff.
+ */
+const MAX_LCS_CELLS = 40_000_000;
+
+/** A cheap O(n+m) line-multiset diff for files too large to LCS. Reports accurate
+ * add/remove counts (lines present in one side but not the other) and a short
+ * placeholder instead of the full text, so the file-changed event + `+a -b`
+ * summary still work without the quadratic allocation. */
+function coarseDiff(a: string[], b: string[]): DiffResult {
+  const count = (arr: string[]): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (const line of arr) m.set(line, (m.get(line) ?? 0) + 1);
+    return m;
+  };
+  const ca = count(a);
+  const cb = count(b);
+  let removed = 0;
+  let added = 0;
+  for (const [line, n] of ca) removed += Math.max(0, n - (cb.get(line) ?? 0));
+  for (const [line, n] of cb) added += Math.max(0, n - (ca.get(line) ?? 0));
+  return {
+    text: `…(diff omitted: file too large to render — ${a.length} → ${b.length} lines)`,
+    added,
+    removed,
+  };
+}
+
+/**
  * Build a compact unified diff between `before` and `after`. Unchanged runs are
  * collapsed to up to `context` lines around each change so large files stay
  * readable.
@@ -74,7 +106,11 @@ export function unifiedDiff(
   after: string,
   context = 3,
 ): DiffResult {
-  const ops = diffLines(toLines(before), toLines(after));
+  const a = toLines(before);
+  const b = toLines(after);
+  // Bail to a coarse diff before allocating a matrix that would OOM the process.
+  if ((a.length + 1) * (b.length + 1) > MAX_LCS_CELLS) return coarseDiff(a, b);
+  const ops = diffLines(a, b);
   let added = 0;
   let removed = 0;
   for (const op of ops) {

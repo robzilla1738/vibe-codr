@@ -31,6 +31,24 @@ export interface TableLine {
 
 const len = (s: string): number => [...s].length;
 
+/**
+ * Strip inline markdown (emphasis / code / links) for text we render OURSELVES —
+ * table cells, headings, blockquotes. OpenTUI's native `<markdown>` conceals these
+ * for prose, but our hand-rendered `<text>` primitives would otherwise show the raw
+ * `**` / `*` / `` ` `` / `~~` / `[label](url)` markers. Bold is stripped before
+ * italic so `**x**` doesn't leave a stray `*`.
+ */
+export function stripInline(s: string): string {
+  return s
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // image ![alt](url) → alt
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // link [text](url) → text
+    .replace(/(\*\*|__)(.+?)\1/g, "$2") // bold
+    .replace(/(\*|_)(.+?)\1/g, "$2") // italic
+    .replace(/~~(.+?)~~/g, "$1") // strikethrough
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .trim();
+}
+
 /** A GFM delimiter row: `| --- | :--: |` (only `|`, `-`, `:`, spaces; has a `-`). */
 function isDelimiterRow(line: string): boolean {
   const t = line.trim();
@@ -92,7 +110,7 @@ export function splitMarkdown(src: string): MdBlock[] {
     const heading = /^(#{1,6})[ \t]+(.*)$/.exec(line);
     if (heading) {
       flushProse();
-      blocks.push({ kind: "heading", level: heading[1]!.length, text: heading[2]!.trim() });
+      blocks.push({ kind: "heading", level: heading[1]!.length, text: stripInline(heading[2]!) });
       continue;
     }
     // A `>` blockquote — gather consecutive quoted lines, stripping the marker.
@@ -100,7 +118,7 @@ export function splitMarkdown(src: string): MdBlock[] {
       flushProse();
       const quoted: string[] = [];
       while (i < lines.length && /^\s*>/.test(lines[i] ?? "")) {
-        quoted.push((lines[i] ?? "").replace(/^\s*>[ \t]?/, ""));
+        quoted.push(stripInline((lines[i] ?? "").replace(/^\s*>[ \t]?/, "")));
         i++;
       }
       i--; // step back so the for-loop's ++ lands on the first non-quote line
@@ -126,16 +144,47 @@ export function splitMarkdown(src: string): MdBlock[] {
   return blocks;
 }
 
+/** Greedy word-wrap `s` to `width` columns; a word longer than `width` is
+ * hard-broken. Always returns at least one (possibly empty) line. */
+function wrapCell(s: string, width: number): string[] {
+  const w = Math.max(1, width);
+  const lines: string[] = [];
+  let cur = "";
+  for (let word of s.split(/\s+/).filter(Boolean)) {
+    // Hard-break a single word that can't fit the column.
+    while (len(word) > w) {
+      if (cur) {
+        lines.push(cur);
+        cur = "";
+      }
+      lines.push([...word].slice(0, w).join(""));
+      word = [...word].slice(w).join("");
+    }
+    if (!word) continue;
+    if (!cur) cur = word;
+    else if (len(cur) + 1 + len(word) <= w) cur += ` ${word}`;
+    else {
+      lines.push(cur);
+      cur = word;
+    }
+  }
+  if (cur || lines.length === 0) lines.push(cur);
+  return lines;
+}
+
 /**
- * Render a table to clean box-drawing lines, columns aligned and fit within
- * `maxWidth` (cells truncated with `…` when the table would overflow).
+ * Render a GFM table to clean box-drawing lines: inline markdown is stripped from
+ * every cell, columns are aligned, and the whole table is fit within `maxWidth` by
+ * **wrapping** overflowing cells across multiple lines (no truncation, no data
+ * loss). Every emitted line is the same visual width.
  */
 export function renderTable(rows: string[][], align: Align[], maxWidth: number): TableLine[] {
   const cols = Math.max(1, ...rows.map((r) => r.length));
-  const norm = rows.map((r) => Array.from({ length: cols }, (_, c) => (r[c] ?? "").trim()));
+  const norm = rows.map((r) => Array.from({ length: cols }, (_, c) => stripInline((r[c] ?? "").trim())));
   const w = Array.from({ length: cols }, (_, c) => Math.max(1, ...norm.map((r) => len(r[c]!))));
 
-  // Shrink the widest column until the table fits. Chrome = `│`*(cols+1) + 2 pad/col.
+  // Shrink the widest column until the table fits (min 3 cols wide so wrapping
+  // stays legible). Chrome = `│`*(cols+1) + 2 pad/col. Overflow now wraps, not truncates.
   const chrome = cols + 1 + 2 * cols;
   let total = chrome + w.reduce((a, b) => a + b, 0);
   while (total > maxWidth && Math.max(...w) > 3) {
@@ -143,11 +192,9 @@ export function renderTable(rows: string[][], align: Align[], maxWidth: number):
     total--;
   }
 
-  const cell = (s: string, c: number): string => {
+  const alignLine = (v: string, c: number): string => {
     const width = w[c]!;
-    let v = s;
-    if (len(v) > width) v = `${[...v].slice(0, Math.max(1, width - 1)).join("")}…`;
-    const pad = width - len(v);
+    const pad = Math.max(0, width - len(v));
     const a = align[c] ?? "left";
     if (a === "right") return " ".repeat(pad) + v;
     if (a === "center") {
@@ -158,12 +205,22 @@ export function renderTable(rows: string[][], align: Align[], maxWidth: number):
   };
   const rule = (l: string, m: string, r: string): string =>
     l + w.map((width) => "─".repeat(width + 2)).join(m) + r;
-  const dataRow = (r: string[]): string => `│${r.map((s, c) => ` ${cell(s, c)} `).join("│")}│`;
+  // A logical row → 1+ physical lines: wrap each cell, then stack them to the row's
+  // tallest cell, padding shorter cells with blank lines.
+  const dataRows = (r: string[]): string[] => {
+    const wrapped = r.map((s, c) => wrapCell(s, w[c]!));
+    const height = Math.max(1, ...wrapped.map((x) => x.length));
+    const out: string[] = [];
+    for (let li = 0; li < height; li++) {
+      out.push(`│${wrapped.map((lines, c) => ` ${alignLine(lines[li] ?? "", c)} `).join("│")}│`);
+    }
+    return out;
+  };
 
   const out: TableLine[] = [{ role: "rule", text: rule("┌", "┬", "┐") }];
-  out.push({ role: "header", text: dataRow(norm[0]!) });
+  for (const line of dataRows(norm[0]!)) out.push({ role: "header", text: line });
   out.push({ role: "rule", text: rule("├", "┼", "┤") });
-  for (const r of norm.slice(1)) out.push({ role: "row", text: dataRow(r) });
+  for (const r of norm.slice(1)) for (const line of dataRows(r)) out.push({ role: "row", text: line });
   out.push({ role: "rule", text: rule("└", "┴", "┘") });
   return out;
 }

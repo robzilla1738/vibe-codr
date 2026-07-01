@@ -476,7 +476,7 @@ push({
   type: "assistant-text-delta",
   id: "r",
   delta:
-    "## RICHHEAD\n\nPROSE_ALPHA before.\n\n> RICHQUOTE noted.\n\n```ts\nconst RICHCODE = 1;\n```\n\n| Name | Size |\n| --- | --- |\n| Zustand | tiny |\n\nPROSE_OMEGA after.",
+    "## RICHHEAD\n\nPROSE_ALPHA before.\n\n> RICHQUOTE noted.\n\n```ts\nconst RICHCODE = 1;\n```\n\n| **Name** | Size |\n| --- | --- |\n| Zustand | tiny |\n\nPROSE_OMEGA after.",
 } as UIEvent);
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
 await settle();
@@ -485,6 +485,9 @@ check("rich reply: prose before a code/table block renders", frame.includes("PRO
 check("rich reply: prose after a code/table block renders", frame.includes("PROSE_OMEGA"));
 check("rich reply: the code block renders", frame.includes("RICHCODE"));
 check("rich reply: the table renders (native box-drawing)", frame.includes("Zustand") && frame.includes("│"));
+// Table cells conceal inline markdown — the `**Name**` header must not leak raw
+// `**` (and the whole reply, prose + table, has no stray markers).
+check("rich reply: table cells conceal inline markdown (no raw **)", !frame.includes("**"));
 check("rich reply: the heading renders", frame.includes("RICHHEAD"));
 check("rich reply: the blockquote renders with a gutter bar", frame.includes("RICHQUOTE") && frame.includes("▎"));
 // The heading is painted in the blue accent (the `heading` token), not body white.

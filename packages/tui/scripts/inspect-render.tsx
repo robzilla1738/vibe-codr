@@ -76,12 +76,12 @@ await settle();
 console.log(t.captureCharFrame());
 
 banner("2) A RICH REPLY (heading · quote · code · table)");
-push({ type: "user-message", text: "compare the state libraries" });
+push({ type: "user-message", text: "create a table of eth vs btc pros and cons" });
 push({
   type: "assistant-text-delta",
   id: "r",
   delta:
-    "## State libraries\n\nHere's the rundown.\n\n> Rule of thumb: pick the smallest thing that fits.\n\n```ts\nconst store = create((set) => ({ n: 0 }));\n```\n\n| Library | Size | Notes |\n| :-- | --: | :-- |\n| Redux | large | boilerplate |\n| Zustand | tiny | hooks-first |\n\nThat's the shape of it.",
+    "## ETH vs BTC\n\nHere's the rundown.\n\n> **Rule of thumb:** pick the smallest thing that fits your use case.\n\n```ts\nconst store = create((set) => ({ n: 0 }));\n```\n\n| | **Bitcoin (BTC)** | **Ethereum (ETH)** |\n| :-- | :-- | :-- |\n| **Purpose** | Digital store of value / \"digital gold\" | Programmable smart-contract platform |\n| **Consensus** | Proof of Work (SHA-256) | Proof of Stake (Casper, since the Merge) |\n| **Supply** | Hard cap 21M coins | No hard cap; ~0.5% net annual issuance |\n| **Smart contracts** | Very limited (Taproot scripts) | First-class; EVM is the dominant VM |\n\nThat's the shape of it.",
 } as UIEvent);
 push({ type: "turn-finished", sessionId: "ins" } as UIEvent);
 await waitForText("shape of it");

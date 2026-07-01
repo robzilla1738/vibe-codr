@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { splitMarkdown, renderTable } from "./markdown-blocks.ts";
+import { splitMarkdown, renderTable, stripInline } from "./markdown-blocks.ts";
 
 test("plain prose is a single prose block", () => {
   const b = splitMarkdown("Hello there.\n\nSecond paragraph.");
@@ -85,12 +85,51 @@ test("renderTable produces an aligned, fitted box-drawing table", () => {
   expect(lines.at(-1)!.text.startsWith("└")).toBe(true);
 });
 
-test("renderTable truncates cells to fit a narrow width", () => {
+test("stripInline conceals bold/italic/code/strikethrough/links", () => {
+  expect(stripInline("**Bitcoin (BTC)**")).toBe("Bitcoin (BTC)");
+  expect(stripInline("*italic* and _also_")).toBe("italic and also");
+  expect(stripInline("`code` and ~~gone~~")).toBe("code and gone");
+  expect(stripInline("see [the docs](https://x.y/z)")).toBe("see the docs");
+  expect(stripInline("plain")).toBe("plain");
+});
+
+test("renderTable conceals inline markdown in cells (no raw ** leaks)", () => {
   const lines = renderTable(
-    [["Column"], ["a-very-long-cell-value-that-overflows"]],
-    ["left"],
-    16,
+    [["**Metric**", "**BTC**"], ["**Supply**", "21M `hard cap`"]],
+    ["left", "left"],
+    80,
   );
-  for (const l of lines) expect([...l.text].length).toBeLessThanOrEqual(16);
-  expect(lines.some((l) => l.text.includes("…"))).toBe(true);
+  const body = lines.map((l) => l.text).join("\n");
+  expect(body).not.toContain("**");
+  expect(body).not.toContain("`");
+  expect(body).toContain("Metric");
+  expect(body).toContain("hard cap");
+});
+
+test("renderTable wraps (not truncates) cells to fit a narrow width, losing no text", () => {
+  const lines = renderTable(
+    [["Column"], ["a very long cell value that overflows the column"]],
+    ["left"],
+    18,
+  );
+  // Every line fits the width, and nothing is truncated with an ellipsis.
+  for (const l of lines) expect([...l.text].length).toBeLessThanOrEqual(18);
+  expect(lines.some((l) => l.text.includes("…"))).toBe(false);
+  // All the original words survive across the wrapped body lines.
+  const body = lines.map((l) => l.text).join(" ");
+  for (const word of ["long", "cell", "value", "overflows", "column"]) {
+    expect(body).toContain(word);
+  }
+  // The wrapped row is taller than one line (a real wrap happened).
+  expect(lines.filter((l) => l.role === "row").length).toBeGreaterThan(1);
+});
+
+test("every wrapped table line is the same visual width", () => {
+  const lines = renderTable(
+    [["Name", "Detail"], ["Alpha", "a longer detail that must wrap across lines"]],
+    ["left", "left"],
+    28,
+  );
+  const widths = new Set(lines.map((l) => [...l.text].length));
+  expect(widths.size).toBe(1);
 });

@@ -1072,18 +1072,19 @@ export function App(props: { engine: EngineClient }) {
                     id={`msg-${(block() as { id: number }).id}`}
                     flexDirection="column"
                     marginTop={(block() as { gap: boolean }).gap ? 1 : 0}
-                    // x=2 — aligns the reply text with the user-message and tool-step
-                    // content (which sit at border(1)+pad(1)), so the whole transcript
-                    // shares one left text column with the colored gutters at x=0.
-                    paddingLeft={2}
                   >
+                    {/* `indent={2}` aligns prose/headings/quotes with the user-message
+                        and tool-step content (border(1)+pad(1)); code blocks and
+                        tables render flush at x=0 so they share the input frame's full
+                        width (both left AND right edges align, not just the right). */}
                     <AssistantText
                       text={(block() as { text: string }).text}
                       streaming={(block() as { streaming: boolean }).streaming}
                       style={mdStyle}
                       fg={palette().assistant}
                       palette={palette()}
-                      width={contentWidth() - 4}
+                      width={contentWidth() - 2}
+                      indent={2}
                     />
                   </box>
                 </Show>
@@ -1467,8 +1468,12 @@ function AssistantText(props: {
   palette: Palette;
   /** Width budget for table fitting; defaults to a sane value for narrow contexts. */
   width?: number;
+  /** Left indent for prose/heading/quote blocks; code + tables stay flush at 0 so
+   * they align with the full-width input frame. Default 0. */
+  indent?: number;
 }) {
   const blocks = () => splitMarkdown(props.text);
+  const pad = (kind: MdBlock["kind"]) => (kind === "code" || kind === "table" ? 0 : props.indent ?? 0);
   return (
     <Show
       when={props.style}
@@ -1480,7 +1485,8 @@ function AssistantText(props: {
         <Index each={blocks()}>
           {(block, i) => (
             // One blank row between blocks (none above the first) for even rhythm.
-            <box flexDirection="column" marginTop={i > 0 ? 1 : 0}>
+            // Prose/heading/quote indent; code + tables stay flush-left (full width).
+            <box flexDirection="column" marginTop={i > 0 ? 1 : 0} paddingLeft={pad(block().kind)}>
               <Switch>
                 <Match when={block().kind === "heading"}>
                   <HeadingBlock block={block as () => Extract<MdBlock, { kind: "heading" }>} palette={props.palette} />

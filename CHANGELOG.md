@@ -5,6 +5,50 @@ All notable changes to vibe-codr are documented here.
 ## Unreleased
 
 ### Added
+- **Long-term memory — hybrid semantic + lexical recall with an agent
+  write-path.** A new `save_memory` tool lets the agent persist durable facts
+  (project or global, dated markdown), and `recall_memory` / `/recall` now fuse
+  BM25 (`bm25.ts`) with optional on-device semantic embeddings (a `bun:sqlite`
+  vector store; keyless ONNX or a configured cloud embedder) and past-session
+  recall via reciprocal-rank fusion. A curated global `~/.config/vibe-codr/
+  memory/USER.md` is injected everywhere; opt-in `memory.proactiveRecall` injects
+  relevant past context at session start and `memory.sessionDigest` writes a
+  cross-session digest at the end. Everything degrades to lexical when no embedder
+  is available — nothing cloud or native is required at startup.
+- **Multi-agent orchestration (agentswarm-style).** Parallel subagents now get
+  **exclusive per-file write ownership** (a concurrent write to a file another
+  agent owns is hard-rejected instead of silently clobbering), a shared
+  coordination **blackboard** (`post_note` / `read_notes`), a tree-global
+  **AIMD adaptive concurrency limiter** in front of every provider call, and a
+  per-subagent wall-clock timeout. An opt-in (`orchestration.enabled`)
+  deterministic **task-DAG scheduler** — `spawn_tasks([{objective,deps,files,
+  verify,agent}])` — runs a dependency-ordered plan the engine schedules, with a
+  per-task verify→retry pass.
+- **Keyless web search + code intelligence.** `web_search` now works with **no
+  API key** (DuckDuckGo), with TinyFish as an optional booster. A new `repo_map`
+  tool returns a ranked file→symbol map so the model can orient on a codebase in
+  one call. `@`-mentions resolve directories and honor byte-accurate caps.
+- **MCP parity.** Added the **Streamable HTTP** transport (config `transport:
+  http|sse`), MCP **resources** (`read_mcp_resource`), and **prompts**
+  (`get_mcp_prompt`), on top of parallel timeout-bounded connects, live
+  connection status, and `readOnlyHint`-aware permission gating.
+- **Declarative hooks + extensibility.** A config `hooks` block runs shell
+  commands / HTTP endpoints on lifecycle events (deny a tool, rewrite its input,
+  or notify). Skills and commands now also load from `~/.config/vibe-codr/
+  {skills,commands}` (project overrides global), and named agents can declare a
+  tool allowlist/denylist. Plans are persisted to `.vibe/plans/`, and switching
+  plan→execute injects an explicit approval directive.
+
+### Fixed
+- **Correctness hardening (24 verified bugs).** Token-accurate + image-aware
+  compaction (long sessions no longer 400 on `context_length_exceeded`); Esc /
+  steer is reported as a cancel, not a red error; cache-read tokens are billed at
+  the cache rate; `webfetch` is SSRF-guarded with a timeout + streaming size cap;
+  a denied/failed tool call renders as an error, not a success; MCP servers
+  connect in parallel and report live status; the dead `step.finish` hook now
+  fires; and more.
+
+### Added (providers)
 - **Seven more providers + a generic bring-your-own endpoint — use vibe with
   almost any model.** Added Google Gemini (via its OpenAI-compatible endpoint),
   Groq, Mistral, Together AI, Cerebras, and Perplexity, plus a generic **`custom`**

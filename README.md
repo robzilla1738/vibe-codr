@@ -13,14 +13,33 @@ latest) — never hardcoded.
 
 > Status: **feature-complete.** Multi-provider agent loop, live model catalog,
 > **plan / execute / yolo** modes (Shift+Tab to cycle) with a permission layer, a
-> live **task list**, an observable **prompt queue**, subagents, an interactive
-> **slash-command menu**, skills / plugins, `/goal` + `/loop`, MCP client, web
-> search, checkpoints/undo, self-verify, cost tracking, and session persistence
-> with context-aware compaction. A full slash-command surface (`/status` `/cost`
-> `/config` `/diff` `/review` `/doctor` `/export` …) makes every setting and bit
-> of session state reachable. All covered by 222 tests (including mock-model
-> integration tests of the agent loop with zero network) plus a TUI render
-> smoke test.
+> live **task list**, an observable **prompt queue**, an interactive
+> **slash-command menu**, skills / plugins, `/goal` + `/loop`, checkpoints/undo,
+> self-verify, cache-aware cost tracking, and session persistence with
+> context-aware compaction. On top of that:
+>
+> - **Long-term memory** — hybrid recall (BM25 + optional on-device semantic
+>   embeddings, fused with reciprocal-rank fusion) over saved facts and past
+>   sessions, a `save_memory` write-path, a curated global `USER.md`, and opt-in
+>   proactive recall + cross-session digests. Fully offline; degrades to lexical
+>   when no embedder is present.
+> - **Multi-agent orchestration** — parallel subagents with **exclusive per-file
+>   write ownership**, a shared coordination **blackboard**, a tree-global
+>   **adaptive concurrency limiter**, and an opt-in deterministic **task-DAG
+>   scheduler** (`spawn_tasks`) with verify→retry.
+> - **Research** — **keyless web search** (DuckDuckGo, no API key required;
+>   TinyFish optional), a `repo_map` code-intelligence tool, and hardened
+>   `webfetch` (SSRF-guarded, timeout + size caps).
+> - **MCP** — stdio + Streamable-HTTP/SSE transports, tools, **resources**, and
+>   **prompts**.
+> - **Extensibility** — declarative shell/HTTP **hooks**, project + global
+>   skills/commands, and per-agent tool allowlists.
+>
+> A full slash-command surface (`/status` `/cost` `/config` `/diff` `/recall`
+> `/mcp` `/review` `/doctor` `/export` …) makes every setting and bit of session
+> state reachable. All covered by **488 tests** (including mock-model integration
+> tests of the agent loop with zero network) plus a TUI render smoke test and a
+> compiled-binary check.
 >
 > The terminal command is **`vibecodr`** (`vibe` works as an alias).
 
@@ -277,24 +296,29 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   a visible, ordered backlog that drains one at a time so history stays
   consistent. `/queue` shows it, `/queue clear` (or aborting) drops what's
   waiting.
-- **Web search & context gathering** — a `web_search` tool powered by
-  [TinyFish](https://tinyfish.ai) (free tier, no card) is on by default; the model
-  can search the live web and follow up with `webfetch`. Set `TINYFISH_API_KEY`
-  (or `search.apiKey`); disable with `search.enabled: false`. Search depth is
-  **adaptive and model-controlled** — nothing throttles it: a quick fact (a price,
-  a date, a version) is answered straight from the search snippets (one query, no
-  fetch), while a hard question goes deep (more queries, full-page fetches,
-  cross-checking). `web_search` keeps every result the provider
-  returns by default (`maxResults` optionally trims to the top N), and `webfetch`'s
-  `maxChars` controls how much page text comes back — depth is the model's call.
+- **Web search & context gathering** — `web_search` works **keyless by default**
+  (DuckDuckGo, no API key); a [TinyFish](https://tinyfish.ai) key
+  (`TINYFISH_API_KEY` / `search.apiKey`) is an optional higher-quality booster
+  tried first. Disable with `search.enabled: false`. The model searches the live
+  web and follows up with `webfetch` (SSRF-guarded, with a wall-clock timeout and
+  a streaming size cap). Search depth is **adaptive and model-controlled** — a
+  quick fact is answered straight from the snippets (one query, no fetch), while a
+  hard question goes deep (more queries, full-page fetches, cross-checking).
+- **Code intelligence** — a `repo_map` tool returns a ranked file→symbol map
+  (exports, functions, classes, types) so the model can orient on an unfamiliar
+  repo or subsystem in one cheap call before blind glob/grep.
 - **Dependency currency** — a `package_info` tool returns the authoritative latest
   version + metadata from npm or PyPI, the fast, reliable way to check whether a
   project's stack is up to date (read the manifest, then compare against the real
   latest) instead of scraping blog posts. No key required.
 - **MCP client** — connect [Model Context Protocol](https://modelcontextprotocol.io)
-  servers under `mcp.servers` (stdio or SSE/HTTP); their tools register as
-  `mcp__<server>__<tool>` and flow through the same permission gate. Requires the
-  optional `@modelcontextprotocol/sdk` peer dep; failures are skipped, not fatal.
+  servers under `mcp.servers` over **stdio, Streamable HTTP, or SSE** (`transport:
+  "http" | "sse"` for a URL). Server **tools** register as `mcp__<server>__<tool>`
+  (honoring `readOnlyHint`), **resources** are reachable via `read_mcp_resource`,
+  and **prompts** via `get_mcp_prompt`; `/mcp` shows live per-server status.
+  Servers connect in parallel with a timeout so one slow server can't block
+  startup. Requires the optional `@modelcontextprotocol/sdk` peer dep; failures
+  are skipped, not fatal.
 - **Interactive permissions** — side-effecting tools prompt for approval
   (**allow once / always / deny**) under `approvalMode: "ask"` (the default);
   `always` is remembered for the session. Headless runs auto-allow. `auto` mode
@@ -326,9 +350,18 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   while in plan mode every subagent is coerced read-only, so you get parallel
   codebase exploration before converging on a plan, with no risk of a write.
   Fan-out is bounded by `subagent.maxParallel` (default 4) and recursion by
-  `subagent.maxDepth` (default 3), and a tree-wide, canonicalized per-file write
-  lock means two parallel subagents can never corrupt the same file. Set a default
+  `subagent.maxDepth` (default 3). A tree-wide **exclusive-ownership** file lock
+  hard-rejects a concurrent write to a file another subagent owns (instead of
+  silently clobbering it); a shared **blackboard** (`post_note` / `read_notes`)
+  lets parallel agents coordinate; and a tree-global **adaptive concurrency
+  limiter** keeps a wide fan-out from stampeding the provider. Set a default
   subagent model with `subagent.model`.
+- **Deterministic orchestration (opt-in)** — enable `orchestration.enabled` to
+  offer `spawn_tasks([{objective, deps, files, verify, agent}])`: the model
+  submits a whole dependency-ordered plan and the **engine** schedules it —
+  independent tasks run in parallel, dependents unlock as inputs complete, a task
+  whose dependency failed is skipped, and a `verify:true` task is reviewed and
+  retried. The inline `spawn_subagent` path is unchanged when it's off.
 - **`/goal`** injects a north-star into every system prompt; **`/loop`** reruns a
   prompt on an interval until a `--until` condition (checked with a structured
   model call) or `--max` is reached.
@@ -338,21 +371,33 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   and most recent turns. The status bar shows live context fill (`ctx 45%`) and
   `/context` reports the window plus the compaction threshold so you always know
   how close you are to the limit.
-- **Session memory (recall)** — past sessions become searchable long-term
-  memory. `/recall <text>` does a fast, offline lexical search across every saved
-  session and shows the matching turns (with session id, date, and goal); the
-  agent can do the same mid-task via the `recall_memory` tool when you reference
-  earlier work or ask "what did we decide?". No embeddings or vector store
-  required — it just works on the session files already on disk.
+- **Long-term memory (hybrid recall + write-path)** — the agent both **saves**
+  and **recalls** durable knowledge. `save_memory` persists a fact/decision/
+  preference (project `.vibe/memory/` or global `~/.config/vibe-codr/memory/`,
+  dated markdown); `/recall <text>` and the `recall_memory` tool search **saved
+  memory + past sessions** and rank with reciprocal-rank fusion. Lexical BM25
+  works fully offline with zero setup; add on-device embeddings
+  (`bun add @huggingface/transformers`, `memory.semantic.model: "local"`) or a
+  cloud embedder for **semantic** recall on top — it degrades cleanly to lexical
+  when no embedder is present. Opt-in `memory.proactiveRecall` injects relevant
+  past context at session start; `memory.sessionDigest` writes a cross-session
+  digest at the end.
 - **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` are
   injected into every system prompt, so the agent follows your stack and
   conventions out of the box. Discovery **walks up from the working directory to
   the git root**, so running from a subdirectory still picks up the repo-root
-  notes; a user-global `~/.config/vibe-codr/VIBE.md` applies everywhere. Precedence
-  is explicit (global < repo-root < closer dirs; closest wins), each block is
-  labelled with its source, files are byte-capped so a huge note can't bloat every
-  request, and `/memory` shows exactly what's loaded. Drop-in compatible with
-  repos already carrying Codex's `AGENTS.md` or Claude Code's `CLAUDE.md`.
+  notes; a user-global `~/.config/vibe-codr/VIBE.md` and a curated
+  `~/.config/vibe-codr/memory/USER.md` (preferences / standing rules) apply
+  everywhere. Precedence is explicit (global < repo-root < closer dirs; closest
+  wins), each block is labelled with its source, files are byte-capped, and
+  `/memory` shows exactly what's loaded. Drop-in compatible with repos already
+  carrying Codex's `AGENTS.md` or Claude Code's `CLAUDE.md`.
+- **Hooks, skills & commands (project + global)** — skills and slash-commands
+  load from both the project's `.vibe/{skills,commands}` and user-global
+  `~/.config/vibe-codr/{skills,commands}` (project overrides global). Declarative
+  `hooks` in config run a shell command or POST a URL on lifecycle events and can
+  **deny a tool** or **rewrite its input** (a `{deny,reason}` / `{input}` JSON
+  protocol), layered onto the in-process plugin hook bus.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,
@@ -403,10 +448,22 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
 ```jsonc
 {
   "model": "anthropic/claude-opus-4-8",
-  "subagent": { "model": "anthropic/claude-haiku-4-5", "maxDepth": 3, "maxParallel": 4 },
-  "search": { "enabled": true, "apiKey": "tf-..." },   // TinyFish web search
-  "pricing": {                                          // USD per 1M tokens
-    "anthropic/claude-opus-4-8": { "input": 5, "output": 25 }
+  "subagent": {                                         // fan-out + concurrency
+    "model": "anthropic/claude-haiku-4-5", "maxDepth": 3, "maxParallel": 4,
+    "providerConcurrency": 16, "timeoutMs": 300000, "verifyMaxAttempts": 2
+  },
+  "orchestration": { "enabled": false },                // opt-in spawn_tasks DAG
+  "search": { "enabled": true },                        // keyless DDG; apiKey = optional TinyFish booster
+  "memory": {                                           // long-term memory
+    "semantic": { "enabled": true, "model": "local" },  // "local" | "provider/model" | "off"
+    "proactiveRecall": false, "sessionDigest": false
+  },
+  "webfetch": { "allowPrivateHosts": false, "timeoutMs": 8000 }, // SSRF policy
+  "hooks": [                                            // declarative shell/HTTP hooks
+    { "event": "tool.before.execute", "matcher": "bash", "command": "./policy.sh" }
+  ],
+  "pricing": {                                          // USD per 1M tokens (+ cacheRead)
+    "anthropic/claude-opus-4-8": { "input": 5, "output": 25, "cacheRead": 0.5 }
   },
   "approvalMode": "ask",                                // ask | auto
   "theme": "default",                                   // default | light | contrast | opencode
@@ -423,7 +480,10 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-github"],
         "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
-      }
+      },
+      // Remote server over Streamable HTTP (or "sse"); headers carry auth.
+      "docs": { "url": "https://mcp.example.com/mcp", "transport": "http",
+                "headers": { "Authorization": "Bearer ..." } }
     }
   },
   "providers": { "anthropic": { "apiKey": "sk-..." } }

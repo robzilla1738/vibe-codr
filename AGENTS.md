@@ -17,7 +17,7 @@ vibe-codr itself, Codex (`AGENTS.md`), and Claude Code (`CLAUDE.md`).
 | `@vibe/config` | Zod config schema, file discovery + deep-merge, auth resolution |
 | `@vibe/providers` | `ProviderRegistry`, `resolveModel`, `CatalogService` (models.dev + `/v1/models`) |
 | `@vibe/tools` | Built-in tools (`read`/`edit`/`bash`/`grep`/`repo_map`/`git_*`/…) + the AI-SDK `tool()` adapter; the file-write lock is an **exclusive-ownership claim registry** (`createFileLock`) so parallel subagents can't clobber one file. Web search is **keyless** and **fans out across DuckDuckGo + Bing** (`search-engines.ts`), then dedupes by canonical URL + quality-ranks the merge (`searchcore.ts`); TinyFish is an optional booster. `webfetch` extracts PDFs (`pdftext.ts`, zero-dep) + optional Readability, backed by a cache-through store (`fetch-cache.ts`) |
-| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD provider limiter (`limiter.ts`), a deterministic task-DAG scheduler (`orchestrator.ts`, `spawn_tasks`, behind `orchestration.enabled`), and a shared coordination blackboard (`blackboard.ts`, `post_note`/`read_notes`); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`), OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/list_changed` re-registration |
+| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD limiter (`limiter.ts`), the default-ON task-DAG scheduler (`orchestrator.ts` + `orchestration/orchestrator-runner.ts`: structured handoffs, `read_report`, model tiers, executable verify, worktree isolation, ensemble, journal resume), and a typed coordination blackboard (`blackboard.ts`); (2b) **build intelligence** (`build/` — deterministic recon → `RepoProfile`, `run_check` parsing, the green-gate, green checkpoints, stub scan, gitops/worktrees, browser verify); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`), OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/list_changed` re-registration |
 | `@vibe/plugins` | `HookBus`, slash-command + skill runtimes, `PluginHost`; declarative shell/HTTP hooks are layered on via `core/config-hooks.ts` from the config `hooks` block |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers, themes, tool icons, spinner |
 | `@vibe/cli` | `bin/vibecodr` entrypoint (argv, config, headless `-p` vs TUI) |
@@ -38,9 +38,12 @@ bun packages/cli/bin/vibecodr.ts --help   # run from source
 # (the only way to exercise app.tsx outside a terminal). Run after app.tsx edits.
 bun run smoke:tui
 
-# Regenerate the README screenshots (drives the real engine with a mock model
-# + Playwright Chromium). Re-run after any TUI/output change.
-bun packages/core/scripts/screenshot.ts docs/screenshots
+# Regenerate the README screenshots. Drives the REAL App component with a mock
+# engine through OpenTUI's test renderer, then rasterizes the actual rendered cell
+# grid (captureSpans) to PNG via Playwright Chromium — so the shots are pixel-for-
+# pixel what the live app paints (no HTML mirror to keep in sync). Re-run after any
+# visible TUI change.
+bun packages/tui/scripts/screenshot.ts docs/screenshots
 ```
 
 ## Conventions
@@ -252,6 +255,40 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
     on `#handlePrompt`, captured at enqueue time), not a shared flag a queued prompt
     could steal; `abort`/`steer` target `(#loopSession ?? #session)` so Esc
     interrupts an in-flight `/loop` iteration, not just the idle main session.
+  - **Recon is deterministic and degrade-only.** `build/codeintel.ts` never
+    throws — a failed probe degrades fields to null; watch/dev scripts are never
+    detected as build/test commands (`NON_TERMINATING`); `run_check` + the
+    green-gate share ONE `detectCommands` so worker and gate can't drift; "no
+    tests ran" is never green and an unparseable passing run is never "no tests"
+    (`build/check.ts`). The ledger fills only MISSING commands (detection wins).
+  - **The green-gate is honest.** No detected command → the turn is reported
+    UNVERIFIED, never silently green; fix rounds are bounded (`build.gate.maxRounds`)
+    and enqueue through the FIFO like user turns; `/loop` iterations are never
+    gated; green checkpoints are hidden refs (commit-on-green must NEVER touch
+    the user's branch/index — branch mode is opt-in and refuses a dirty tree).
+    The diff reviewer sees the REAL diff (`checkpoints.diffFrom`, untracked
+    files included) — never a child's self-report.
+  - **Worktree tasks commit-then-squash-merge** (a squash-merge only sees
+    committed history), merges are serialized behind a per-runner lock, and a
+    conflict FAILS the task with feedback — never a half-merged tree. Ensemble
+    attempts are judged by their own gate results; only a scoring winner merges.
+  - **Microcompaction only touches `role:"tool"` messages** (alternation and
+    tool-boundary invariants are structurally safe), keeps untouched messages
+    BY REFERENCE (the orphan-rollback identity check depends on it), never
+    offloads the most recent `keepLiveResults`, and is idempotent via the
+    offload sentinel. prepareStep edits are EPHEMERAL — the durable pass at
+    end-of-turn/pre-compaction is what persisted sessions carry.
+  - **Permission rules: specificity, then deny.** Content-scoped rules
+    (`match`) decide before name-only rules; within a tier deny > ask > allow,
+    order-independent. Network read-only tools consult the rules with a
+    fallback of allow (frictionless default, governable egress) — don't restore
+    the old readOnly bypass.
+  - **Stale-write guard:** `read` records mtimes; `edit`/`write` to an
+    externally-changed file must error "re-read first" (checked INSIDE the file
+    lock). Our own writes re-record so they never self-flag.
+  - **Wayback recovery fires ONLY on HTTP-status failures** — an SSRF-guard
+    rejection must propagate untouched (asking archive.org about a blocked
+    internal URL would leak it).
 - Every behavior change ships with a test. Prefer mock-model integration tests
   (`ai/test`'s `MockLanguageModelV2`) over hitting the network.
 - `packages/tui/src/app.tsx` is excluded from `tsc` (OpenTUI is an optional
@@ -259,10 +296,11 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   the real `App` with a mock engine through OpenTUI's test renderer (asserts
   input/submit, streamed output, tool icons, the working spinner, the command
   menu, the permission card, and the plan-approval card actually work), and
-  `screenshot.ts` mirrors its
-  render logic for the README shots. Keep all three in lockstep: any visible
-  app.tsx change gets the matching change in the screenshot reducer and, where
-  behavioral, a smoke assertion — and never use an OpenTUI prop you can't confirm
+  `packages/tui/scripts/screenshot.ts` drives that SAME real `App` and rasterizes
+  its actual rendered cell grid (`captureSpans()`) to the README PNGs — so there's
+  no parallel render logic to keep in lockstep; a visible app.tsx change just gets a
+  smoke assertion (where behavioral) and a screenshot re-run. Never use an OpenTUI
+  prop you can't confirm
   exists (the input once silently dropped every keystroke because it lacked
   `focused`, and streamed replies never repainted because `<For>` is
   reference-keyed; both are now covered by the smoke test). OpenTUI box/text
@@ -297,15 +335,17 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   **quote** / code / table blocks — streaming-tolerant and fence-aware — so app.tsx
   renders each with the right primitive and explicit color: headings/table-header in
   `heading`, quotes with a `gutter` bar, code in `code`; prose still goes through
-  the native `<markdown>`), `gradient.ts` (the single-hue accent ramp
-  `brandRamp`/`brandSpans` + `hexToHsv`/`hsvToHex`), `layout.ts` (the shared `PANEL`
-  box chrome), `tool-icons.ts` (per-tool glyph + action summary), `spinner.ts`
-  (braille frames), `themes.ts` (palettes incl. `opencode`; every palette defines the
-  `gutter`/`heading`/`code` text tokens), `modes.ts`, `commands-catalog.ts`.
-  `screenshot.ts` can't import
-  `@vibe/tui`, so it carries
-  a **local copy of the tool-icon/summary logic** — keep it identical to
-  `tool-icons.ts` (it has a comment pointing here).
+  the native `<markdown>`. `renderTable` returns a **flat** table: `header`/`row`
+  lines carry their columns as `cells: string[]` (pre-padded) so `TableBlock` draws
+  a bold accent header over aligned rows — no lines/bands — while wrapped cells stay
+  in-column), `rich-blocks.ts` (the out-of-the-box data views — bar/line/pie charts,
+  weather + source cards, all pure + tested), `gradient.ts` (the single-hue accent
+  ramp `brandRamp`/`brandSpans` + `hexToHsv`/`hsvToHex`), `tool-icons.ts` (per-tool
+  glyph + action summary), `spinner.ts` (braille frames), `themes.ts` (palettes incl.
+  `opencode`; every palette defines the `gutter`/`heading`/`code` text tokens + a
+  `series` chart ramp), `modes.ts`, `commands-catalog.ts`.
+  The screenshot generator lives in `@vibe/tui` and imports the real `App`, so it
+  reuses these modules directly — there are no duplicated copies to keep in sync.
 - **Layout invariant (centered single column; don't regress scrolling):** the
   ROOT is a flex *row* on a **black background** (`backgroundColor={palette().
   background}`): a `flexGrow` **left gutter**, the **chat column**
@@ -329,24 +369,31 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   via `captureSpans()` (many distinct fg colors, all blue-dominant — `captureCharFrame`
   is color-blind). Shown when the column has room (`showWordmark()`); otherwise it
   falls back to `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (flat
-  accent), then `◆ Vibe Codr`. Below it is a single **centered** prompt-starter line
-  (`SegRow center`) — `Try › …` example asks — and nothing else (no tagline, no
-  key cheatsheet; the keys live in the under-input status). `SegRow` is a row of
+  accent), then `◆ Vibe Codr`. Below it is a quiet "Try asking" intro then the
+  example asks as a **block-centered list** with aligned `›` markers (a flex row of
+  `[flexGrow spacer][column of rows][flexGrow spacer]`, each row `[› ][example]`) —
+  reads as inviting quick-actions, not a cramped one-liner. `SegRow` is a row of
   coloured `<text>` runs (OpenTUI has no inline-markup `<text>`), two-tone: muted
-  scaffolding, brighter foreground on the example prompts. The under-input status
-  is two **centered** lines:
-  `detailsCenter()` (location · git · model · changed · ctx · cost · goal) and the
-  `SegRow` key hints — then the stacked status surfaces, the input, and the
-  under-input status block. **The slash-command menu docks in-flow to the input** —
-  it renders as the sibling immediately *above* the input box (same full width, same
-  neutral-grey border, blue padded title, panel fill) with **no bottom border**, and
-  the input drops its top margin while the menu is open so the two sit flush and read
-  as one connected control (the input's mode-chip top border is the shared divider).
-  Because it's in normal flow, opening it shrinks the scrollable transcript above
-  rather than covering it; the input stays pinned at the bottom. The transcript is `<scrollbox flexGrow={1}
+  scaffolding, brighter foreground. **Context (location · git · goal) sits
+  TOP-LEFT** of the column (`topLeftLine()`, muted, left-aligned), out of the
+  conversation's way. The **under-input footer is a justified status BAR** (NOT
+  centered): `detailsRight()` (model · changed · ctx · cost) hugs the LEFT edge
+  (aligned with the top-left line), and the `SegRow` key hints hug the RIGHT edge —
+  but only when they fit beside the status (`footerFits()`), else the hints drop to
+  their own left-aligned row so the two never collide/clip on a narrow terminal.
+  Hints show only on the empty splash or while a job runs (`showHints()`), so the
+  working footer is just the left-aligned status and the input sits low. **The slash-command menu
+  renders INSIDE the input frame** — the input is one bordered box whose top border
+  carries the mode chip; when `menuModel().open`, the menu (a context label, the
+  rows, `+N more`, then a `─` divider) renders ABOVE the input line in that same
+  frame, so the field fluidly grows UPWARD and reads as one control, not a separate
+  popup. The box has no fixed height — it auto-sizes to the menu + divider + input
+  (`height={inputRows()}`) stack. Opening it shrinks the scrollable transcript
+  above rather than covering it; the input stays pinned at the bottom. The
+  transcript is `<scrollbox flexGrow={1}
   flexShrink={1} stickyScroll stickyStart="bottom">`. Every surface *below* the
   transcript (working spinner, plan box, **Tasks** panel, **Subagents** panel,
-  permission card, command menu, input, the two status lines) must set
+  permission card, the input frame, the status line) must set
   `flexShrink={0}`, or the scrollbox steals their space and they collapse to one
   overlapping row. Long conversations must scroll inside the box, never overflow
   onto the input. The transcript is a list of `Block`s rendered with `<Index>`
@@ -459,6 +506,12 @@ bun packages/core/scripts/screenshot.ts docs/screenshots
   submenu, extend `menuModel` + add a detector — don't dump output into the transcript
   via `#notice`. Named-agent models persist to `.vibe/agents/<name>.md` via the
   `agents.ts` writer (`setAgentModel`/`scaffoldAgent`), then the engine reloads the roster.
+  **Hover vs arrows (FOOTGUN):** a menu row's `onMouseOver` must go through
+  `hoverRow(idx, e)`, which re-selects only when the pointer's `(e.x, e.y)` actually
+  changed from the last event. A resting mouse otherwise keeps re-firing hover (or a
+  new row scrolls under it after an arrow press) and pins the selection, making ↑/↓
+  look dead. Keyboard nav wins until the mouse truly moves. `MouseEvent` carries
+  `x`/`y` (confirmed in `@opentui/core` 0.4.x `renderer.d.ts`).
 - **Persisted settings + test isolation (FOOTGUN — already bit once):**
   `/model`, `/model sub`, `/model key`, `/accent`, `/theme`, `/reasoning` persist via
   `#persistConfig` → `writeGlobalConfig` → `globalConfigPath()`. That path honors

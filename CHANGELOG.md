@@ -4,7 +4,147 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
-### Added
+### Added — engine-owned build intelligence, industry-leading agentic core
+
+- **Deterministic repo recon, injected everywhere.** At startup the engine
+  probes the working directory ONCE (one batched shell round-trip) and detects
+  the repo's REAL build / typecheck / test / lint commands (parsing
+  `package.json` scripts — watch/dev scripts rejected — pyproject, Cargo,
+  go.mod, Makefile), language, framework, and conventions. The profile is
+  injected into every prompt as a `REPO FACTS` block, inherited by every
+  subagent, fills `verify.command` automatically, and is bootstrapped by a
+  **cross-run ledger** (`.vibe/ledger.jsonl`) of confirmed-green commands with
+  per-command invalidation (a dep bump doesn't discard still-valid commands).
+  No agent in the tree ever guesses how to build the project again.
+- **`run_check` — one step to a verdict.** Runs a detected command and returns
+  a parsed `PASS 142/142` / `FAIL 3/142 + first failures` instead of raw log
+  spew, with honesty guards ("no tests ran" is never green; an unparseable
+  passing run is never "no tests").
+- **An engine-owned green-gate.** After a mutating turn the ENGINE runs the
+  repo's real checks (fail-fast order: typecheck → test → build); red output
+  feeds back for bounded fix rounds (`build.gate.maxRounds`); no detected
+  command → the work is reported **unverified**, never silently green. On
+  green: **commit-on-green as GREEN checkpoints** (hidden-ref snapshots that
+  never touch your branch/index — dirty-tree-safe by design; agentswarm-style
+  work-branch commits are opt-in via `build.commit.mode: "branch"`), then an
+  **adversarial diff review** — a reviewer that sees the REAL diff (untracked
+  files included) plus a deterministic **stub scan** (dead handlers,
+  `href="#"`, console-only handlers, "not implemented") and must answer
+  `REVIEW-CLEAN` or concrete `path:line` issues that trigger a bounded fix turn.
+- **Browser / visual verification** (`build.visualVerify`, optional
+  `playwright` peer): for web repos the green-gate boots the detected dev
+  server on a deterministic port, screenshots the app, captures console
+  errors, and **clicks every visible control** — controls with no observable
+  effect are flagged as dead and fed into the review. Degrades to a silent
+  skip without the peer dep; a server that never comes up reports "could not
+  run", never a pass.
+- **Orchestration is now the flagship** (`orchestration.enabled` default ON):
+  `spawn_tasks` gains **structured handoffs** (children end with a fenced
+  `handoff` block — `key_facts` / `files_touched` / `open_questions` — whose
+  fields propagate verbatim to dependents, replacing the old 1,000-char prose
+  slice), a **`read_report` tool** (full task reports persisted and pullable,
+  surviving `--resume`), **model tiers** per task (`tier: "cheap" | "strong"`
+  → `build.models`), **executable task verify** (`check: true` runs the real
+  gate before any LLM review; the reviewer now receives the actual `git diff`,
+  never the child's self-report), an **orchestration journal** (an interrupted
+  DAG re-runs only unfinished tasks), a per-tree **spawn ceiling**
+  (`subagent.maxTotal`), and **live child activity** — a running subagent's
+  current tool call streams to the Subagents panel ("· $ bun test").
+- **Worktree isolation + best-of-N.** `worktree: true` tasks run in isolated
+  git worktrees (commit → squash-merge → cleanup, merges serialized; a
+  conflict fails the task honestly). `hard: true` tasks can run as a
+  **best-of-N ensemble** (`build.ensemble.n`, default 0 = off) — N attempts
+  with distinct strategy directives, judged by their own gate results, only
+  the winner merges.
+- **Mid-turn microcompaction (context editing).** Long turns no longer blow
+  the window: when fill crosses `compaction.offload.threshold`, bulky and
+  superseded tool results are offloaded to session artifacts — a 2KB preview
+  + the path stays in context, the full text is retrievable via `read` — with
+  a durable end-of-turn pass so persisted sessions carry the previews. The
+  LLM summarizer (now a **sectioned contract**: STATE / DECISIONS / FILES
+  TOUCHED / VERIFIED FACTS / OPEN THREADS, with a capped input) remains the
+  between-turn last resort. The live task list is **re-injected into the
+  system prompt every turn**, so it survives compaction deterministically.
+- **TypeScript diagnostics in the loop** (optional `typescript` peer): after
+  every `edit`/`write` to a TS/JS file, real compiler errors are appended to
+  the tool result in the SAME step — "you broke the types" no longer waits
+  for a test run.
+- **Research is coding-grade.** `web_search` retries once with a reformulated
+  keyword core on zero results; `deep: true` now **fetches the top pages**
+  (through the same SSRF-pinned pipeline) and returns dated, quotable
+  passages — plus a `github.com/<owner>/<repo>` → raw-README rewrite. A new
+  **`crawl_docs`** tool does a bounded same-domain BFS over a docs site with
+  relevance-ranked excerpts. `webfetch` sends a browser-like UA, detects
+  charsets (no more mojibake), preserves document structure as markdown
+  (headings/lists/fenced code), detects paywall/anti-bot shells, and recovers
+  4xx/5xx pages from the **Wayback Machine** (clearly labeled; never consulted
+  for SSRF-blocked URLs). A per-session **source ledger** tracks every URL the
+  research tools touch, injects a numbered `SOURCES` block into the prompt for
+  stable `[n]` citations, and is browsable via **`/sources`**. Concurrent
+  identical fetches coalesce into one network call.
+- **Egress is governable + content-scoped permissions.** Network tools
+  (webfetch/web_search/crawl_docs/package_info) now honor permission rules
+  (they used to bypass the gate entirely; their default stays frictionless
+  allow). Permission rules gain a **`match` glob over the call's content** —
+  `{tool: "bash", match: "git push*", action: "deny"}` — with
+  specificity-then-deny-precedence semantics (a targeted deny can never be
+  shadowed by a broad allow, and a scoped allowlist entry beats a generic ask).
+- **Resilience:** a **model failover chain** (`modelFallbacks`) switches
+  visibly to the first resolvable fallback when the primary can't resolve;
+  MCP tool calls are now **abortable with a 120s deadline** (Esc works on a
+  hung server); Anthropic **cache-write tokens** are folded into context +
+  cost (they were invisible to both) and billed at the cache-write rate;
+  prompt caching gains **tool-block + conversation breakpoints** (3 of the 4
+  Anthropic slots); timeout/`job_kill` now reap the **whole process tree**
+  (no more orphaned dev servers, and background jobs are reaped at exit);
+  thrown tool errors land in the same `ERROR:` contract as returned ones;
+  session saves use ordered renames (crash-consistent); `--resume` restores
+  the recalled-memory block and an armed plan approval; a `/loop` job that
+  throws can no longer hang the loop.
+- **Memory & blackboard:** `memory.proactiveRecall` and `memory.sessionDigest`
+  are ON by default (digests only for interactive sessions — headless `-p`
+  runs never pay an extra model call); saved memories are chunked per-fact
+  for sharper recall; the coordination blackboard has **typed notes**
+  (`claim`/`decision`/`conflict`) that trim transient notes first and resets
+  per top-level prompt (no stale claims leaking across turns).
+- **File freshness guard:** an `edit`/`write` to a file that changed on disk
+  since the session last read it errors with "re-read first" instead of
+  silently clobbering the external change.
+- **`repo_map` upgraded:** files now ranked by **import-graph in-degree**
+  (load-bearing files first) with an incremental mtime cache, and the engine
+  injects a token-budgeted symbol map into every subagent kickoff.
+- **grep/glob parity:** `ignoreCase`, `context` lines, and a `fileType`
+  filter on grep (rg and fallback paths now agree on the file set); glob
+  excludes `node_modules`/`.git` and sorts by mtime.
+
+### Changed
+- `engine.ts` and `session.ts` were split into focused modules
+  (`engine-commands.ts`, `orchestration/orchestrator-runner.ts`,
+  `session-tools.ts`, `build/*`); six duplicated capped-stream readers were
+  unified into `@vibe/shared`'s `stream.ts` — and `bash`/`git` truncation now
+  keeps **head + tail**, so a failing command's trailing error lines survive.
+- `/config` no longer masks `tokenFile`/`tokenPath` (paths, not secrets).
+
+### Fixed
+- A raw NUL byte in `mcp.ts` made grep/ripgrep treat the whole file as binary
+  (now an escape sequence + a workspace-wide guard test).
+- Session tools (`save_memory` et al.) now share the turn's mutation lock
+  instead of racing `edit`/`write`.
+- The `--until` loop condition evaluator now rides the retry/limiter rails
+  with a hard deadline (it could previously wedge a loop forever).
+
+### Added — earlier in this cycle
+- **Rich, out-of-the-box data views for assistant replies.** A new pure engine
+  (`rich-blocks.ts`) renders fenced blocks tagged with a view language into real
+  visualizations: ` ```chart ` / ` ```bar ` → horizontal bar charts (eighth-block
+  sub-cell precision, value-labeled), ` ```line ` → a braille line chart (2×4-dot
+  canvas with min/max axis) or colored block sparklines for multi-series,
+  ` ```pie ` → a solid circular pie/donut with a `■ label pct%` legend (percentages
+  summed to exactly 100 via largest-remainder), ` ```weather ` → a weather card
+  (glyph + temp + hi/lo/humidity/wind chips + a multi-day forecast), and
+  ` ```sources ` → numbered citation cards (title · domain · snippet). Charts use a
+  per-theme `series` color ramp. Everything falls back to a plain code block when
+  the body doesn't parse.
 - **Long-term memory — hybrid semantic + lexical recall with an agent
   write-path.** A new `save_memory` tool lets the agent persist durable facts
   (project or global, dated markdown), and `recall_memory` / `/recall` now fuse
@@ -52,6 +192,20 @@ All notable changes to vibe-codr are documented here.
   plan→execute injects an explicit approval directive.
 
 ### Changed
+- **Transcript rebuilt as uniform, opencode-style message blocks — flat chrome,
+  filled content.** Each turn now renders as clean filled panel blocks (a raised
+  surface with top/bottom/left padding and a thin left accent edge): the prompt in
+  one block, the answer + tool steps + notices in another. This replaces the older
+  bordered-panel + heavy-rail design, which broke up on terminals that add
+  line/letter spacing (box-drawing `│─┼` glyphs render as dashes; sized-to-content
+  fills read as ragged floating rectangles). The one structural rule: **structural
+  chrome is flat or filled-uniform, never line-drawn** — the input is a flat
+  `MODE ❯` prompt with the command menu as flat rows above it; status sections
+  (Tasks/Subagents/Queued) are flat accent titles + rows; tool steps are a clean
+  `chevron · icon · label … right-aligned meta` row; diffs are fg-only. Only data
+  views (bar/line/pie) and a message block's own fill use background color, which
+  fills the whole cell and stays solid on any terminal. Tables render as a flat,
+  aligned grid (bold accent header, no lines/bands). `layout.ts` was removed.
 - **Menus rebuilt into real, configurable settings.** The `/model` and `/models`
   redundancy collapses into one searchable picker that configures **both** agents —
   Tab flips the target Main ⇄ Subagents (the current model for each is marked). New
@@ -63,10 +217,29 @@ All notable changes to vibe-codr are documented here.
   so you can define as many subagents as you want, each with its own model/provider.
   Subagent concurrency default raised (maxParallel 4 → 8; total count was already
   unbounded). Esc now clears a half-typed draft.
-- **Markdown tables render cleanly.** Inline `**bold**` / `` `code` `` markers are
-  concealed in table cells (and headings/quotes); overflowing cells **wrap** across
-  lines instead of truncating with `…` (no data loss, uniform width); and code blocks +
-  tables render flush-left at the full input-frame width, so both edges align.
+- **Markdown tables render as a light "ledger".** Columns are separated by a calm
+  ` │ ` and the header rule gets `─┼─` junctions, both drawn in the border tone
+  (kept out of the cell text so they never compete with content) — a real grid to
+  scan, far more legible than the flat borderless block when cells wrap, without the
+  clutter of a full box. Inline `**bold**` / `` `code` `` markers are still concealed
+  in cells; overflowing cells **wrap** (no data loss); and every assistant block
+  shares one left edge — quote/code markers on the gutter column, prose/heading/table
+  content one column in.
+- **Chrome relayout: path top-left, a justified status bar under the input.**
+  Location · git · goal moved to a muted TOP-LEFT context line; the under-input
+  footer is a justified status **bar** (model · changed · ctx · cost on the left,
+  aligned with the top-left line; key hints on the right — shown only on the splash
+  / while a job runs, and dropped to their own row when they don't fit) rather than
+  a centered block — so the input sits lower and the working screen is quieter. The
+  empty-state splash's prompt starters are now a **block-centered list** with
+  aligned `›` markers under a quiet "Try asking", instead of a cramped one-liner.
+- **README screenshots render the real UI (no more HTML mirror).** The generator
+  moved to `packages/tui/scripts/screenshot.ts`: it drives the actual OpenTUI `App`
+  through the test renderer and rasterizes its real cell grid (`captureSpans()`) to
+  PNG, so the shots are pixel-for-pixel what the live app paints. This retires the
+  hand-maintained HTML/CSS mock in `@vibe/core` that had to be kept "in lockstep"
+  (and had drifted — wrong brand color, stale chrome) along with its duplicated
+  tool-icon/glyph copies.
 - **TUI redesign — one Blue 300 accent, no rainbow.** The full-spectrum rainbow
   (wordmark, spinner, per-step/per-subagent gutters) is replaced by a single
   **Blue 300 (`#70cbf4`)** accent reserved for titles + markers. The wordmark is now
@@ -100,6 +273,34 @@ All notable changes to vibe-codr are documented here.
   user message (it's sent to the model silently, with an "Executing the approved plan…"
   notice). The **"Working…" elapsed clock** is live again (it had frozen because the
   label wasn't reactively tied to the tick). Esc clears a half-typed draft.
+- **TUI surface polish pass — consistency across every panel + block.** The
+  **Tasks / Subagents / Queued** panel titles now carry the same ` … ` padding as
+  the input/plan/menu, so no title reads cramped against its border. Assistant
+  **markdown blocks align on one edge**: quote (`▎`) and code (`│`) markers sit on
+  the gutter column while prose, headings, and **tables** share the content column —
+  tables used to jut two columns left of the prose and quotes two columns right (a
+  visible zig-zag). An **expanded subagent result** now hangs under its `↳` instead
+  of wrapping back to the panel edge. **Errors render red** (info/warn stay amber)
+  and every system line gets a leading `·` so it doesn't read as assistant prose.
+  The **working spinner is hidden while a plan card is up** (the card is the
+  affordance, not "working"), and the **`/jobs` view's per-job spinners animate**
+  even at idle. The under-input details are **two centered rows** (location · git ·
+  goal / model · changed · ctx · cost) instead of one line that wrapped mid-metric.
+  Model context windows show **`1M`** (not `1000k`), and cached-token counts use the
+  same compact `k` form as the total.
+- **The `/` command menu is now part of the input (fluid), and hover no longer
+  eats the arrow keys.** The menu (and the `/model`/`/providers`/`/agents` pickers)
+  renders INSIDE the input frame — one bordered box whose top border carries the
+  mode chip, with the list stacked above a `─` divider and the prompt below, so the
+  field grows UPWARD as one control instead of a separate popup floating above it.
+  And hovering a menu row while pressing ↑/↓ no longer pins the selection under the
+  cursor: hover re-selects only on real pointer movement (`(x,y)` change), so the
+  keyboard wins until the mouse actually moves. The in-frame menu's row count
+  **adapts to the terminal height** (mirroring the plan panel's cap), so on a short
+  pane the prompt you're typing at never scrolls off the bottom — the rest scrolls
+  behind a "+N more". And table columns now measure **display width** (CJK/emoji
+  count as two cells), so a `语言`/`✅` cell no longer drifts the ` │ ` separators
+  off the `┼` rule; wrapping also preserves a cell's internal spacing when it fits.
 - **Correctness hardening (24 verified bugs).** Token-accurate + image-aware
   compaction (long sessions no longer 400 on `context_length_exceeded`); Esc /
   steer is reported as a cancel, not a red error; cache-read tokens are billed at

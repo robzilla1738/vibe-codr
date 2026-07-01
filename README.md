@@ -20,19 +20,35 @@ latest) — never hardcoded.
 >
 > - **Long-term memory** — hybrid recall (BM25 + optional on-device semantic
 >   embeddings, fused with reciprocal-rank fusion) over saved facts and past
->   sessions, a `save_memory` write-path, a curated global `USER.md`, and opt-in
->   proactive recall + cross-session digests. Fully offline; degrades to lexical
+>   sessions, a `save_memory` write-path, a curated global `USER.md`, and default-on
+>   proactive recall + cross-session digests (digests only for interactive
+>   sessions — headless `-p` runs never pay an extra call). Fully offline; degrades to lexical
 >   when no embedder is present.
+> - **Engine-owned build intelligence** — deterministic **repo recon** (your
+>   real build/typecheck/test/lint commands, injected into every agent — no
+>   guessing), a parsed **`run_check`** (`PASS 142/142`, not log spew), an
+>   automatic **green-gate** after mutating turns with bounded fix rounds,
+>   **green checkpoints** (commit-on-green that never touches your branch),
+>   an **adversarial diff review** + deterministic **stub scan**, optional
+>   **browser verification** (screenshot + click every control, flag dead
+>   ones), and **TypeScript diagnostics in the loop** on every edit.
 > - **Multi-agent orchestration** — parallel subagents with **exclusive per-file
->   write ownership**, a shared coordination **blackboard**, a tree-global
->   **adaptive concurrency limiter**, and an opt-in deterministic **task-DAG
->   scheduler** (`spawn_tasks`) with verify→retry.
+>   write ownership**, a typed coordination **blackboard**, a tree-global
+>   **adaptive concurrency limiter**, and a default-ON deterministic **task-DAG
+>   scheduler** (`spawn_tasks`) with **structured handoffs**, a `read_report`
+>   tool, **model tiers** (cheap/strong), executable verify→retry against the
+>   real checks, **git-worktree isolation** for parallel writers (opt-in
+>   best-of-N ensembles), a journaled **resume**, and live per-child activity.
 > - **Research** — **keyless web search** that fans out across DuckDuckGo + Bing
->   and quality-ranks the deduped merge (TinyFish optional; `deep` query fan-out),
->   a `repo_map` code-intelligence tool, and hardened `webfetch` (SSRF-guarded with
->   **DNS-rebinding-safe IP pinning** and per-redirect revalidation, timeout + size
->   caps, **PDF** extraction with a deflate-bomb guard, optional Readability,
->   cache-through).
+>   and quality-ranks the deduped merge (TinyFish optional), with **deep-mode
+>   passage enrichment** (fetches the top pages and quotes dated passages),
+>   zero-result **query reformulation**, a bounded **`crawl_docs`** site
+>   crawler, a per-session **source ledger** with `[n]` citations (`/sources`),
+>   a ranked import-graph **`repo_map`**, and hardened `webfetch` (SSRF-guarded
+>   with **DNS-rebinding-safe IP pinning**, per-redirect revalidation,
+>   charset-aware markdown extraction, paywall-shell detection, **Wayback
+>   recovery**, **PDF** extraction with a deflate-bomb guard, cache-through
+>   with request coalescing).
 > - **MCP** — stdio + Streamable-HTTP/SSE transports, tools, **resources**,
 >   **prompts**, **OAuth 2.1**, and auto-reconnect + `tools/list_changed`.
 > - **Planning** — an interactive **plan-approval modal** (accept & execute,
@@ -42,7 +58,7 @@ latest) — never hardcoded.
 >
 > A full slash-command surface (`/status` `/cost` `/config` `/diff` `/recall`
 > `/mcp` `/review` `/doctor` `/export` …) makes every setting and bit of session
-> state reachable. All covered by **616 tests** (including mock-model integration
+> state reachable. All covered by **860+ tests** (including mock-model integration
 > tests of the agent loop with zero network) plus a TUI render smoke test and a
 > compiled-binary check.
 >
@@ -91,8 +107,9 @@ model picker, clickable toggles).
 |---|---|
 | ![permission](docs/screenshots/07-permission.png) | ![menu](docs/screenshots/09-menu.png) |
 
-<sub>Regenerate with `bun packages/core/scripts/screenshot.ts docs/screenshots`
-(drives the real engine with a mock model; bundled Playwright Chromium).</sub>
+<sub>Regenerate with `bun packages/tui/scripts/screenshot.ts docs/screenshots`
+(renders the real OpenTUI app and rasterizes its actual cell grid — bundled
+Playwright Chromium; pixel-for-pixel what the live UI paints).</sub>
 
 ## Stack
 
@@ -277,7 +294,10 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   when the model calls `present_plan` you get an **interactive approval card** —
   **Enter** accepts & executes (seeding the task list from the plan's checklist),
   **typing** revises the plan, **Esc** keeps planning. **Execute** allows
-  edits/commands, each gated by a glob-based allow/deny/ask **permission layer**.
+  edits/commands, each gated by a glob-based allow/deny/ask **permission layer**
+  that can also scope by CONTENT — `{"tool":"bash","match":"git push*",
+  "action":"deny"}` — with deny-beats-allow semantics; network tools honor
+  rules too, so egress is governable.
   **Yolo** runs side-effecting tools without prompting. The mode chip on the
   input's top border is color-coded (ASK blue / PLAN green / YOLO red) so the
   active mode is unmistakable, while the rest of the chrome stays neutral.
@@ -380,12 +400,18 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   lets parallel agents coordinate; and a tree-global **adaptive concurrency
   limiter** keeps a wide fan-out from stampeding the provider. Set a default
   subagent model with `subagent.model`.
-- **Deterministic orchestration (opt-in)** — enable `orchestration.enabled` to
-  offer `spawn_tasks([{objective, deps, files, verify, agent}])`: the model
-  submits a whole dependency-ordered plan and the **engine** schedules it —
-  independent tasks run in parallel, dependents unlock as inputs complete, a task
-  whose dependency failed is skipped, and a `verify:true` task is reviewed and
-  retried. The inline `spawn_subagent` path is unchanged when it's off.
+- **Deterministic orchestration (default-on)** — `spawn_tasks([{objective,
+  deps, files, verify, check, tier, worktree, hard, agent}])`: the model submits
+  a whole dependency-ordered plan and the **engine** schedules it — independent
+  tasks run in parallel, dependents unlock as inputs complete (receiving each
+  dependency's **structured handoff**: `key_facts` / `files_touched` /
+  `open_questions`, with the full report one `read_report` away), a task whose
+  dependency failed is skipped, `check:true` runs the repo's REAL checks before
+  any LLM review (and the reviewer sees the actual diff), `tier` routes tasks
+  to cheap/strong models, `worktree:true` isolates parallel writers in git
+  worktrees (squash-merged on success), and `hard:true` can fan into a
+  best-of-N ensemble (`build.ensemble.n`, off by default). Task events are
+  journaled, so a re-submitted plan re-runs only unfinished tasks.
 - **`/goal`** injects a north-star into every system prompt; **`/loop`** reruns a
   prompt on an interval until a `--until` condition (checked with a structured
   model call) or `--max` is reached.
@@ -476,11 +502,19 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
     "model": "anthropic/claude-haiku-4-5", "maxDepth": 3, "maxParallel": 4,
     "providerConcurrency": 16, "timeoutMs": 300000, "verifyMaxAttempts": 2
   },
-  "orchestration": { "enabled": false },                // opt-in spawn_tasks DAG
+  "orchestration": { "enabled": true },                 // spawn_tasks DAG (default on)
+  "build": {                                            // engine-owned build intelligence
+    "gate": { "maxRounds": 2, "checks": ["typecheck", "test", "build"] },
+    "commit": { "mode": "checkpoint" },                 // green checkpoints | "branch" | "off"
+    "review": { "enabled": true, "stubScan": true },    // adversarial diff review
+    "visualVerify": true,                               // browser check (playwright peer)
+    "models": { "cheap": "anthropic/claude-haiku-4-5", "strong": "anthropic/claude-opus-4-8" }
+  },
+  "modelFallbacks": ["openai/gpt-5.2"],                 // failover chain
   "search": { "enabled": true },                        // keyless DDG; apiKey = optional TinyFish booster
   "memory": {                                           // long-term memory
     "semantic": { "enabled": true, "model": "local" },  // "local" | "provider/model" | "off"
-    "proactiveRecall": false, "sessionDigest": false
+    "proactiveRecall": true, "sessionDigest": true
   },
   "webfetch": { "allowPrivateHosts": false, "timeoutMs": 8000 }, // SSRF policy
   "hooks": [                                            // declarative shell/HTTP hooks
@@ -527,7 +561,7 @@ bun test              # unit tests
 bun run smoke:tui     # drive the real OpenTUI app (mock engine) — input, streamed
                       # output, tool icons, working spinner, the command menu, and
                       # the permission card — via the test renderer
-bun packages/core/scripts/screenshot.ts docs/screenshots  # regenerate README shots
+bun packages/tui/scripts/screenshot.ts docs/screenshots  # regenerate README shots
 bun run build:binary  # standalone binary -> dist/vibecodr (bun --compile)
 ```
 

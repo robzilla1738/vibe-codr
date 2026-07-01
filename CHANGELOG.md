@@ -88,6 +88,18 @@ All notable changes to vibe-codr are documented here.
   and render are unchanged (smoke-verified).
 
 ### Fixed
+- **TUI interaction polish (reported issues).** The `/` menu no longer fast-scrolls
+  when you move the mouse — hovering just highlights the row under the cursor; only
+  arrows (and the initial highlight) scroll the window. Markdown **tables** are
+  redesigned borderless (accent header + one rule + aligned wrapped columns) instead
+  of the cluttered heavy box. A **presented plan** is now bounded and scrollable, so a
+  long plan scrolls in place while the approval hint + input stay on-screen (they used
+  to be pushed off). Selecting text **copies it to the clipboard** (OSC52 + platform
+  `pbcopy`/`clip`/`wl-copy`). `/clear` no longer prints "Conversation cleared." twice.
+  The internal plan→execute handoff directive no longer leaks into the transcript as a
+  user message (it's sent to the model silently, with an "Executing the approved plan…"
+  notice). The **"Working…" elapsed clock** is live again (it had frozen because the
+  label wasn't reactively tied to the tick). Esc clears a half-typed draft.
 - **Correctness hardening (24 verified bugs).** Token-accurate + image-aware
   compaction (long sessions no longer 400 on `context_length_exceeded`); Esc /
   steer is reported as a cancel, not a red error; cache-read tokens are billed at

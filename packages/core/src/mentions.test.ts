@@ -46,3 +46,23 @@ test("duplicate mentions are de-duplicated", async () => {
   const occurrences = r.text.split("--- a.txt ---").length - 1;
   expect(occurrences).toBe(1);
 });
+
+test("a directory mention expands to a capped listing", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-dir-"));
+  await Bun.write(join(cwd, "src", "a.ts"), "a");
+  await Bun.write(join(cwd, "src", "b.ts"), "b");
+  const r = await expandMentions("look at @src", cwd);
+  expect(r.text).toContain("(directory)");
+  expect(r.text).toContain("a.ts");
+  expect(r.text).toContain("b.ts");
+});
+
+test("text-file truncation is byte-accurate for multibyte content", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-cjk-"));
+  // 40k '中' chars = 120k UTF-8 bytes (> 64k cap) but 40k UTF-16 code units.
+  await Bun.write(join(cwd, "big.txt"), "中".repeat(40_000));
+  const r = await expandMentions("@big.txt", cwd);
+  expect(r.notices.some((n) => n.includes("truncated"))).toBe(true);
+  // The injected block honors the byte budget (was ~3x over with String.slice).
+  expect(Buffer.byteLength(r.text, "utf8")).toBeLessThan(64_000 + 2_000);
+});

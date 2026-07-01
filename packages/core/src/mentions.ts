@@ -1,4 +1,5 @@
 import { resolve, extname } from "node:path";
+import { readdir, stat } from "node:fs/promises";
 
 /** Image extensions that become multimodal attachments rather than text. */
 const IMAGE_MEDIA: Record<string, string> = {
@@ -11,6 +12,20 @@ const IMAGE_MEDIA: Record<string, string> = {
 
 /** Cap injected text per file so a stray `@huge.log` can't blow the context. */
 const MAX_TEXT_BYTES = 64_000;
+/** Cap an `@image` attachment so a huge file can't bloat the prompt / cost. */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** Max entries listed for an `@dir/` mention. */
+const MAX_DIR_ENTRIES = 200;
+
+/** Truncate `text` to at most `maxBytes` UTF-8 bytes (not UTF-16 code units). */
+function capBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maxBytes) return { text, truncated: false };
+  const kept = new TextDecoder("utf-8", { fatal: false })
+    .decode(bytes.subarray(0, maxBytes))
+    .replace(/�+$/, "");
+  return { text: kept, truncated: true };
+}
 
 export interface ImageAttachment {
   path: string;
@@ -52,19 +67,39 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
 
   for (const token of tokens) {
     const full = resolve(cwd, token);
+    // A directory mention (@src/ or @src) expands to a capped listing.
+    const info = await stat(full).catch(() => null);
+    if (info?.isDirectory()) {
+      const entries = (await readdir(full).catch(() => []))
+        .sort()
+        .slice(0, MAX_DIR_ENTRIES);
+      if (entries.length) {
+        blocks.push(`--- ${token}/ (directory) ---\n${entries.join("\n")}`);
+      }
+      continue;
+    }
     const file = Bun.file(full);
     if (!(await file.exists())) continue; // not a path — leave the literal text
     const ext = extname(token).toLowerCase();
     const mediaType = IMAGE_MEDIA[ext];
     if (mediaType) {
-      images.push({ path: token, mediaType, data: new Uint8Array(await file.arrayBuffer()) });
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      // Guard against a huge image bloating the prompt (and cost).
+      if (bytes.byteLength > MAX_IMAGE_BYTES) {
+        notices.push(
+          `${token} skipped: image is ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB (max ${MAX_IMAGE_BYTES / 1024 / 1024}MB)`,
+        );
+        continue;
+      }
+      images.push({ path: token, mediaType, data: bytes });
       continue;
     }
-    let text = await file.text();
-    if (text.length > MAX_TEXT_BYTES) {
-      text = `${text.slice(0, MAX_TEXT_BYTES)}\n… (truncated)`;
-      notices.push(`${token} truncated to ${MAX_TEXT_BYTES} bytes`);
-    }
+    const raw = await file.text();
+    // Truncate by ENCODED BYTES (not String.slice's UTF-16 units) so a CJK/emoji
+    // file actually honors the byte budget it claims to enforce.
+    const { text: capped, truncated } = capBytes(raw, MAX_TEXT_BYTES);
+    const text = truncated ? `${capped}\n… (truncated)` : capped;
+    if (truncated) notices.push(`${token} truncated to ${MAX_TEXT_BYTES} bytes`);
     blocks.push(`--- ${token} ---\n\`\`\`\n${text}\n\`\`\``);
   }
 

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { toolIcon, toolSummary, toolLabel } from "./tool-icons.ts";
+import { permissionPreview, toolIcon, toolSummary, toolLabel } from "./tool-icons.ts";
 
 test("known tools map to their distinct glyphs", () => {
   expect(toolIcon("bash")).toBe("$");
@@ -116,4 +116,52 @@ test("MCP aggregate tools get the ⊕ glyph and list/read summaries", () => {
 test("kv digests object args as JSON, not [object Object]", () => {
   expect(toolSummary("frobnicate", { opts: { a: 1 } })).toBe('frobnicate [opts={"a":1}]');
   expect(toolSummary("frobnicate", { list: [1, 2] })).toBe("frobnicate [list=[1,2]]");
+});
+
+test("permissionPreview shows the full bash command ONLY when the label truncates it", () => {
+  // Short single-line command: the 72-char label already tells the whole story.
+  expect(permissionPreview("bash", { command: "git status" })).toBeNull();
+  // Long command: the dangerous tail is exactly what the label cut off.
+  const long = `git status && ${"x".repeat(70)} && rm -rf /tmp/cache`;
+  const p = permissionPreview("bash", { command: long });
+  expect(p).not.toBeNull();
+  expect(p!.diff).toBe(false);
+  expect(p!.lines.join("\n")).toContain("rm -rf /tmp/cache");
+  // Multi-line commands always preview (the label collapses them to one line).
+  expect(permissionPreview("bash", { command: "a\nb" })!.lines).toEqual(["a", "b"]);
+});
+
+test("permissionPreview renders an edit as -/+ lines (single and multi-edit forms)", () => {
+  const single = permissionPreview("edit", {
+    path: "src/a.ts",
+    oldString: "const x = 1;",
+    newString: "const x = 2;",
+  });
+  expect(single).toEqual({ lines: ["- const x = 1;", "+ const x = 2;"], diff: true });
+  const multi = permissionPreview("multiedit", {
+    path: "src/a.ts",
+    edits: [
+      { oldString: "a", newString: "b" },
+      { oldString: "c", newString: "d" },
+    ],
+  });
+  expect(multi!.lines).toEqual(["- a", "+ b", "- c", "+ d"]);
+});
+
+test("permissionPreview shows a write's content head, capped with a +N marker", () => {
+  const short = permissionPreview("write", { path: "x.txt", content: "hello\nworld" });
+  expect(short).toEqual({ lines: ["+ hello", "+ world"], diff: true });
+  const big = permissionPreview("write", {
+    path: "x.txt",
+    content: Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n"),
+  });
+  expect(big!.lines).toHaveLength(13); // 12 + the "+N more" marker
+  expect(big!.lines[12]).toContain("+18 more");
+});
+
+test("permissionPreview is null when the label suffices (read, short URL, no content)", () => {
+  expect(permissionPreview("read", { path: "a.ts" })).toBeNull();
+  expect(permissionPreview("webfetch", { url: "https://x.dev" })).toBeNull();
+  expect(permissionPreview("webfetch", { url: `https://x.dev/${"p".repeat(80)}` })).not.toBeNull();
+  expect(permissionPreview("write", { path: "a.ts" })).toBeNull();
 });

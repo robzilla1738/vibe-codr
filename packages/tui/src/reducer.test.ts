@@ -98,6 +98,93 @@ test("file-changed folds the diff into the producing tool block and suppresses i
   expect(tool(s.blocks[0]!).isDiff).toBe(true);
 });
 
+test("a NO-OP file-changed (±0, empty diff) leaves the tool block + its output alone", () => {
+  // A write that produced the identical file used to convert the block into an
+  // expanded EMPTY diff and suppress the tool's real result — the row showed
+  // nothing where "no changes" should have been.
+  let s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "write", input: { path: "a.ts" } },
+    { type: "file-changed", toolCallId: "c1", path: "a.ts", action: "write", added: 0, removed: 0 },
+  ]);
+  const t = tool(s.blocks[0]!);
+  expect(t.isDiff).toBe(false);
+  expect(t.label).toContain("write a.ts"); // original label, not "wrote a.ts +0 -0"
+  // The finish echo is NOT suppressed — the tool's own text lands normally.
+  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "no changes", isError: false });
+  expect(tool(s.blocks[0]!).output).toEqual(["no changes"]);
+  // …and the footer doesn't count an untouched file as changed.
+  expect(s.changedFiles).toEqual([]);
+});
+
+test("tool-progress streams a live tail on the RUNNING row, dropped once it finishes", () => {
+  let s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "bun test" } },
+    { type: "tool-progress", toolCallId: "c1", chunk: "src/a.test.ts:\n" },
+    { type: "tool-progress", toolCallId: "c1", chunk: "(pass) first case\n" },
+  ]);
+  let t = tool(s.blocks[0]!);
+  expect(t.done).toBe(false);
+  expect(t.tail).toContain("(pass) first case");
+  // The result lands: done, tail gone, output is the real capture.
+  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "exit 0\nall pass", isError: false });
+  t = tool(s.blocks[0]!);
+  expect(t.done).toBe(true);
+  expect(t.tail).toBeUndefined();
+  // A stray late chunk can't resurrect a dead preview.
+  s = reduceTranscript(s, { type: "tool-progress", toolCallId: "c1", chunk: "late" });
+  expect(tool(s.blocks[0]!).tail).toBeUndefined();
+});
+
+test("the live tail is bounded — a chatty build can't grow the block", () => {
+  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: {} }]);
+  for (let i = 0; i < 50; i++) {
+    s = reduceTranscript(s, { type: "tool-progress", toolCallId: "c1", chunk: `line ${i} ${"x".repeat(80)}\n` });
+  }
+  expect(tool(s.blocks[0]!).tail!.length).toBeLessThanOrEqual(600);
+  expect(tool(s.blocks[0]!).tail).toContain("line 49"); // keeps the NEWEST output
+});
+
+test("a FAILED call opens expanded — the error text is what the user needs next", () => {
+  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: {} }]);
+  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "exit 1\nboom", isError: true });
+  const t = tool(s.blocks[0]!);
+  expect(t.isError).toBe(true);
+  expect(t.collapsed).toBe(false);
+  // A successful call stays condensed until clicked.
+  let ok = run([{ type: "tool-start", toolCallId: "c2", toolName: "read", input: {} }]);
+  ok = reduceTranscript(ok, { type: "tool-finish", toolCallId: "c2", output: "text", isError: false });
+  expect(tool(ok.blocks[0]!).collapsed).toBe(true);
+});
+
+test("tool duration is derived from the action stamps (shown as meta when slow)", () => {
+  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: {}, at: 1000 }]);
+  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "ok", isError: false, at: 4500 });
+  expect(tool(s.blocks[0]!).elapsedMs).toBe(3500);
+});
+
+test("a thinking burst lands as a collapsed row; toggle expands it; empty is dropped", () => {
+  let s = run([{ type: "thinking", text: "the loader owns the cache\nso patch there", seconds: 8 }]);
+  const t = s.blocks[0]!;
+  expect(t.kind).toBe("thinking");
+  expect(t.kind === "thinking" && t.collapsed).toBe(true);
+  expect(t.kind === "thinking" && t.seconds).toBe(8);
+  s = reduceTranscript(s, { type: "toggle", id: t.id });
+  expect(s.blocks[0]!.kind === "thinking" && (s.blocks[0] as { collapsed: boolean }).collapsed).toBe(false);
+  // Whitespace-only reasoning never lands a row.
+  expect(run([{ type: "thinking", text: "   \n  " }]).blocks).toHaveLength(0);
+});
+
+test("clear-turn settles still-running rows so an aborted call doesn't spin forever", () => {
+  let s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "bash", input: {} },
+    { type: "tool-progress", toolCallId: "c1", chunk: "partial output" },
+  ]);
+  s = reduceTranscript(s, { type: "clear-turn" });
+  const t = tool(s.blocks[0]!);
+  expect(t.done).toBe(true);
+  expect(t.tail).toBeUndefined();
+});
+
 test("changedFiles accumulates line deltas per path across multiple edits", () => {
   const s = run([
     { type: "tool-start", toolCallId: "c1", toolName: "edit", input: { path: "a.ts" } },
@@ -214,13 +301,13 @@ test("groupIntoTurns puts a leading (pre-user) block in a node-less preamble tur
 });
 
 test("collapsedHint reads diffs, search results, and line counts", () => {
-  expect(collapsedHint({ kind: "tool", id: 0, label: "x", output: [], collapsed: true, isDiff: true, isError: false })).toBe("diff");
+  expect(collapsedHint({ kind: "tool", id: 0, label: "x", output: [], collapsed: true, isDiff: true, isError: false, done: true })).toBe("diff");
   const search: Extract<Block, { kind: "tool" }> = {
-    kind: "tool", id: 1, label: "◈ search foo", output: ["1. a", "2. b", "notes"], collapsed: true, isDiff: false, isError: false,
+    kind: "tool", id: 1, label: "◈ search foo", output: ["1. a", "2. b", "notes"], collapsed: true, isDiff: false, isError: false, done: true,
   };
   expect(collapsedHint(search)).toBe("2 results");
   expect(
-    collapsedHint({ kind: "tool", id: 2, label: "→ read x", output: ["only one"], collapsed: true, isDiff: false, isError: false }),
+    collapsedHint({ kind: "tool", id: 2, label: "→ read x", output: ["only one"], collapsed: true, isDiff: false, isError: false, done: true }),
   ).toBe("1 line");
 });
 

@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { formatDiff, formatUsage, formatJsonResult } from "./headless.ts";
+import type { Task } from "@vibe/shared";
+import { formatDiff, formatUsage, formatJsonResult, windowTasks } from "./headless.ts";
 
 test("formatDiff prefixes additions, deletions, and context distinctly", () => {
   // ansi colors are disabled when stdout is not a TTY (test env), so the
@@ -64,4 +65,31 @@ test("formatJsonResult emits a parseable result with the expected fields", () =>
   expect(parsed.text).toBe("done");
   expect((parsed.usage as { totalTokens: number }).totalTokens).toBe(15);
   expect(parsed.error).toBeUndefined();
+});
+
+test("windowTasks collapses leading completed tasks so the ACTIVE task stays visible", () => {
+  const t = (i: number, status: "completed" | "in_progress" | "pending") =>
+    ({ title: `task ${i}`, status }) as Task;
+  const many = [
+    ...Array.from({ length: 12 }, (_, i) => t(i, "completed")),
+    t(12, "in_progress"),
+    ...Array.from({ length: 5 }, (_, i) => t(13 + i, "pending")),
+  ];
+  const w = windowTasks(many, 8);
+  // The window BACKFILLS to stay full (8 rows): 10 completed collapse into the
+  // lead count, two ride in the window above the active task — which is ON
+  // SCREEN, the whole point.
+  expect(w.lead).toBe(10);
+  expect(w.visible).toHaveLength(8);
+  expect(w.visible.some((x) => x.status === "in_progress")).toBe(true);
+  expect(w.trailing).toBe(0);
+  // No overflow → untouched.
+  const few = windowTasks(many.slice(0, 5), 8);
+  expect(few).toEqual({ lead: 0, visible: many.slice(0, 5), trailing: 0 });
+  // All completed and overflowing → show the last `max`, count the rest as lead.
+  const done = Array.from({ length: 10 }, (_, i) => t(i, "completed"));
+  const dw = windowTasks(done, 8);
+  expect(dw.lead).toBe(2);
+  expect(dw.visible).toHaveLength(8);
+  expect(dw.trailing).toBe(0);
 });

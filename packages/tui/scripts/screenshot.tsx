@@ -194,7 +194,12 @@ const SCENES: SceneDef[] = [
         { id: "3", title: "Render tokens · $cost in the status bar", status: "pending" },
         { id: "4", title: "Add a test for the footer formatter", status: "pending" },
       ] } as UIEvent);
+      // One finished child (✔ + result glimpse + final duration) beside one
+      // still running (spinner + live activity + ticking elapsed).
+      push({ type: "subagent-started", sessionId: "s", subagentId: "sa0", prompt: "Map where usage events originate in the engine." } as UIEvent);
+      push({ type: "subagent-finished", sessionId: "s", subagentId: "sa0", result: "step-finished carries per-step usage; session.ts:882 accumulates it." } as UIEvent);
       push({ type: "subagent-started", sessionId: "s", subagentId: "sa1", prompt: "Audit how the catalog exposes per-model pricing and return the exact field path." } as UIEvent);
+      push({ type: "subagent-activity", sessionId: "s", subagentId: "sa1", label: "→ read catalog.ts" } as UIEvent);
       push({ type: "usage-updated", sessionId: "s", usage: U_CACHED } as UIEvent);
       push({ type: "context-updated", sessionId: "s", usedTokens: 420000, contextWindow: 1000000 } as UIEvent);
       await waitFor("track progress");
@@ -298,10 +303,15 @@ const SCENES: SceneDef[] = [
     cwd: "~/Code/ck-dashboard",
     engine: { usage: U, git: { branch: "main", dirty: 1, ahead: 0, behind: 0, worktree: false } },
     async setup({ push, waitFor }) {
-      // The turn thread: a ◆ node → condensed tool steps (memory + search, each with
-      // a right-aligned meta) → the answer, all on one continuous git-graph rail.
+      // The turn thread: a ◆ node → a landed `✻ thought` row → condensed tool steps
+      // (memory + search, each with a right-aligned meta) → the answer, all on one
+      // continuous git-graph rail. The reasoning delta lands as its thinking row
+      // when the first tool starts; the search's progress chunk exercises the
+      // live-tail path in the real renderer before its result replaces it.
       push({ type: "user-message", sessionId: "s", text: "bt price" } as UIEvent);
+      push({ type: "reasoning-delta", sessionId: "s", delta: "The user wants the live Bitcoin price — check memory for saved context first, then search for current quotes across a few exchanges.\n" } as UIEvent);
       push({ type: "tool-call-started", sessionId: "s", toolCallId: "t1", toolName: "recall_memory", input: { query: "bt price" } } as UIEvent);
+      push({ type: "tool-call-progress", sessionId: "s", toolCallId: "t1", chunk: "searching memory…\n" } as UIEvent);
       push({ type: "tool-call-finished", sessionId: "s", toolCallId: "t1", toolName: "recall_memory", output: Array.from({ length: 15 }, (_, i) => `memory line ${i + 1}`).join("\n"), isError: false } as UIEvent);
       push({ type: "tool-call-started", sessionId: "s", toolCallId: "t2", toolName: "web_search", input: { query: "Bitcoin BTC price now USD" } } as UIEvent);
       push({ type: "tool-call-finished", sessionId: "s", toolCallId: "t2", toolName: "web_search", output: "1. CoinDesk — BTC price index\n2. CoinMarketCap — Bitcoin USD\n3. Binance — BTC/USDT\n4. Kraken — Bitcoin price\n5. Coinbase — BTC spot", isError: false } as UIEvent);

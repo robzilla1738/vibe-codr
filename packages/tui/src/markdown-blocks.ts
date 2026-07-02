@@ -71,9 +71,32 @@ function charWidth(cp: number): number {
   return 1;
 }
 
-/** Display width of a string in terminal cells (sums {@link charWidth}). */
+/** Grapheme segmenter for cluster-aware width (ZWJ emoji, flags, VS16). */
+const GRAPHEMES =
+  typeof Intl !== "undefined" && "Segmenter" in Intl
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : undefined;
+
+/** Width of ONE grapheme cluster: an emoji-presentation (VS16) or ZWJ sequence
+ * renders as a single 2-cell glyph; otherwise the widest codepoint wins (so a
+ * flag's two regional indicators count 2 once, not 4). */
+function graphemeWidth(g: string): number {
+  if (/[\u200d\ufe0f]/u.test(g)) return 2; // ZWJ sequence / emoji presentation
+  let w = 0;
+  for (const ch of g) w = Math.max(w, charWidth(ch.codePointAt(0)!));
+  return w;
+}
+
+/** Display width of a string in terminal cells. Sums {@link charWidth} per code
+ * point on the fast path; strings that can contain multi-codepoint clusters
+ * (ZWJ sequences `👨‍👩‍👧`, flags `🇺🇸`, VS16 emoji `☀️`) are measured per GRAPHEME —
+ * per-codepoint summing over/under-counts those and drifts table columns. */
 export function displayWidth(s: string): number {
   let w = 0;
+  if (GRAPHEMES && /[\u200d\ufe0f\u{1f1e6}-\u{1f1ff}\u{1f3fb}-\u{1f3ff}]/u.test(s)) {
+    for (const { segment } of GRAPHEMES.segment(s)) w += graphemeWidth(segment);
+    return w;
+  }
   for (const ch of s) w += charWidth(ch.codePointAt(0)!);
   return w;
 }
@@ -92,10 +115,12 @@ export function stripInline(s: string): string {
     .replace(/\*\*(.+?)\*\*/g, "$1") // bold **
     // `_`-emphasis must be flanked by non-word chars, or an identifier like
     // `max_retry_count` / `get_user_by_id` in a table cell/heading/blockquote gets
-    // its underscores eaten (→ `maxretrycount`). Asterisks never appear inside
-    // identifiers, so `*` needs no such guard.
+    // its underscores eaten (→ `maxretrycount`).
     .replace(/(?<![\p{L}\p{N}_])__(.+?)__(?![\p{L}\p{N}_])/gu, "$1") // bold __
-    .replace(/\*(.+?)\*/g, "$1") // italic *
+    // Italic `*` needs CommonMark's flanking rule (content starts AND ends on a
+    // non-space) or literal asterisk pairs get eaten: `*.ts and *.js` (globs) and
+    // `2 * 3 and 4 * 5` (math) must survive — only real `*emphasis*` is stripped.
+    .replace(/\*(\S(?:.*?\S)?)\*/g, "$1") // italic *
     .replace(/(?<![\p{L}\p{N}_])_(.+?)_(?![\p{L}\p{N}_])/gu, "$1") // italic _
     .replace(/~~(.+?)~~/g, "$1") // strikethrough
     .replace(/`([^`]+)`/g, "$1") // inline code
@@ -187,11 +212,14 @@ export function splitMarkdown(src: string): MdBlock[] {
       continue;
     }
     // A `>` blockquote — gather consecutive quoted lines, stripping the marker.
+    // ALL leading `>` levels are stripped (a nested `> > deep` flattens rather
+    // than showing the inner marker literally — depth doesn't survive terminal
+    // scale anyway).
     if (/^\s*>/.test(line)) {
       flushProse();
       const quoted: string[] = [];
       while (i < lines.length && /^\s*>/.test(lines[i] ?? "")) {
-        quoted.push(stripInline((lines[i] ?? "").replace(/^\s*>[ \t]?/, "")));
+        quoted.push(stripInline((lines[i] ?? "").replace(/^\s*(?:>[ \t]?)+/, "")));
         i++;
       }
       i--; // step back so the for-loop's ++ lands on the first non-quote line
@@ -269,6 +297,17 @@ function wrapCell(s: string, width: number): string[] {
 /** Per-column chrome: a left `│` + one padding cell each side of the content
  * (` cell `). Plus one trailing `│` for the whole grid. */
 const COL_CHROME = 3;
+
+/**
+ * Whether a grid with `cols` columns can physically fit in `maxWidth`: the
+ * shrink loop in {@link renderTable} floors content at 3 cells per column, so
+ * the minimum grid is `(3 chrome + 3 content) × cols + 1`. Beyond that the
+ * lines would overflow and clip mid-grid — the caller should render a
+ * record-style fallback instead of a broken table.
+ */
+export function tableFits(cols: number, maxWidth: number): boolean {
+  return (COL_CHROME + 3) * cols + 1 <= maxWidth;
+}
 
 /** Normalize a cell: convert HTML `<br>` line breaks (GFM tables can't hold a
  * literal newline, so authors use `<br>` for in-cell breaks) to real newlines, then

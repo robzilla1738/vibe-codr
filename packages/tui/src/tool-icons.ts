@@ -215,3 +215,71 @@ function humanize(name: string): string {
 export function toolLabel(name: string, input: unknown): string {
   return `${toolIcon(name)} ${toolSummary(name, input)}`;
 }
+
+/** Cap for permission-preview body lines — enough to judge the action, small
+ * enough that the card never crowds out the input. */
+const PREVIEW_MAX_LINES = 12;
+
+/** Bound `lines` to the preview cap, appending a "+N more" marker. */
+function capLines(lines: string[]): string[] {
+  if (lines.length <= PREVIEW_MAX_LINES) return lines;
+  const hidden = lines.length - PREVIEW_MAX_LINES;
+  return [...lines.slice(0, PREVIEW_MAX_LINES), `… +${hidden} more line${hidden === 1 ? "" : "s"}`];
+}
+
+/**
+ * What an approval prompt should SHOW before the user grants it — the part the
+ * one-line `toolLabel` cannot carry. An ask-mode user was otherwise approving
+ * blind: bash truncated at 72 chars (the dangerous tail is exactly what got cut)
+ * and edit/write showing only a path with no content at all.
+ *
+ * Returns the full bash command (only when the label truncated it), a `-`/`+`
+ * preview of each edit, the head of a write's content, or the full URL — capped
+ * at {@link PREVIEW_MAX_LINES}. `diff` marks `-`/`+` lines for red/green
+ * rendering. Null when the label already tells the whole story.
+ */
+export function permissionPreview(
+  name: string,
+  input: unknown,
+): { lines: string[]; diff: boolean } | null {
+  const a = asRecord(input);
+  const key = name.toLowerCase();
+  switch (key) {
+    case "bash":
+    case "shell": {
+      const cmd = str(a.command || a.cmd);
+      // The label shows ≤72 chars of a single line; only preview what it hides.
+      if (!cmd || (cmd.length <= 72 && !cmd.includes("\n"))) return null;
+      return { lines: capLines(cmd.split("\n")), diff: false };
+    }
+    case "edit":
+    case "multiedit": {
+      // Single-edit form or the atomic `edits` array — both become one -/+ run
+      // per edit so the user sees WHAT changes, not just which file.
+      const edits = Array.isArray(a.edits)
+        ? (a.edits as Record<string, unknown>[])
+        : a.oldString != null || a.newString != null
+          ? [a]
+          : [];
+      const lines: string[] = [];
+      for (const e of edits) {
+        for (const l of str(e.oldString).split("\n")) lines.push(`- ${l}`);
+        for (const l of str(e.newString).split("\n")) lines.push(`+ ${l}`);
+      }
+      return lines.length ? { lines: capLines(lines), diff: true } : null;
+    }
+    case "write": {
+      const content = str(a.content);
+      if (!content) return null;
+      return { lines: capLines(content.split("\n").map((l) => `+ ${l}`)), diff: true };
+    }
+    case "webfetch":
+    case "web_fetch": {
+      const url = str(a.url);
+      // The label truncates URLs at 64 chars — show the full one past that.
+      return url.length > 64 ? { lines: [url], diff: false } : null;
+    }
+    default:
+      return null;
+  }
+}

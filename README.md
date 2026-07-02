@@ -252,7 +252,7 @@ Highlights:
 - **Model & mode** — `/model` (opens a live, searchable picker; or `/model <id>`,
   `/model sub <id>` for a dedicated subagent model, `/model key <provider> <key>` —
   all persisted), `/models` (`/models refresh` force-pulls the latest), `/plan`,
-  `/execute`, `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
+  `/execute`, `/yolo`, `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
   `/theme <name>` (default, light, contrast, opencode, tokyonight, catppuccin,
   gruvbox, nord, one-dark, dracula, rosepine, kanagawa, everforest, flexoki,
   vesper), `/accent <name|hex>` (a live swatch submenu — orange, blue, ember, …).
@@ -286,8 +286,11 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   and input rail follow.
   A **single, centered chat column** (ChatGPT-style — no sidebar, **no top header**)
   fills a narrow terminal and centers on a wide one: a fresh screen shows the
-  wordmark, then the scrolling transcript, the **task list** and live **subagents**
-  (one line each, tap to expand) in panels above the input, the input as a
+  wordmark, then the scrolling transcript, the **task list** (windowed around the
+  active task — finished work collapses into a `✔ N done` count) and live
+  **subagents** (one line each with a ticking elapsed, live activity while
+  running and a `↳ result` glimpse when done; tap to expand) in panels above
+  the input, the input as a
   **raised filled block on the mode-hued rail**, and **all the details
   under it** (cwd · git / model · changed · ctx · cost, plus hints + goal). The
   user rail, the calm step rails, and the input all align on one left edge.
@@ -298,15 +301,25 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   native primitives** (aligned columns, accent header row); tool calls read as a
   distinct icon + action label (`$` bash, `→` read, `←` edit/write, `✱` glob/grep,
   `◈` websearch, `±` git, `✦` subagent…) and **condense to one line you click to
-  expand**, while edits fold into a single diff row with the hunk beneath it and
+  expand** — a **running step spins and streams the live tail of its output**
+  (a long `bun test` scrolls line by line instead of sitting dead), a failed
+  step **opens expanded with its error text**, slow steps show their duration in
+  the meta column, edits fold into a single diff row with the hunk beneath it and
   **search steps expand to clean source cards**.
   Streamed text is coalesced so long replies stay smooth. A braille spinner in the
   accent with elapsed time shows live work (**Esc** interrupts the turn), with a
-  muted one-line `✻ thinking` preview while the model reasons; verify results,
-  `/loop` iterations, and `/undo` reverts land as transcript notices. **Ctrl+C
+  **live `✻ thinking` stack** while the model reasons — its last few lines stream
+  under the spinner, newest brightest — and each finished
+  reasoning burst lands as a quiet **`✻ thought` row you can expand later**, so
+  the thinking that led to each step stays reviewable instead of evaporating;
+  verify results,
+  `/loop` iterations, and `/undo` reverts land as transcript notices (info muted,
+  warnings amber, errors red). **Ctrl+C
   exits cleanly** (runs the session digest + teardown like `/exit`; a second press
   forces). The **slash menu
-  docks flush to the input as one connected control** and drills into real,
+  docks flush to the input as one connected control**, matches fuzzily (prefix
+  first, then name substring, then descriptions — `/sessions` finds `/resume`),
+  and drills into real,
   configurable settings: **`/model`** is one searchable picker that sets both agents
   (Tab flips **Main ⇄ Subagents**, current marked); **`/providers`** lists every
   provider with ✓ configured / ○ needs-a-key and lets you paste a key in-session;
@@ -314,20 +327,32 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   per-agent model or scaffold a new one (`/agents new <name>`) — so you can run as many
   distinct subagents as you like, each on its own model/provider. Plus clickable
   theme/approvals/reasoning toggles. Permission prompts surface as a bordered card
-  answerable with `y`/`a`/`n`. Fifteen themes ship — `default` (black, blue
+  that shows **what you're actually approving** — the full command, an edit's
+  `-`/`+` preview, a write's content head — answerable with `y` (once) / `a`
+  (always — logged to the transcript so a durable grant is never invisible) /
+  `n`/Esc (deny), **or type a reason**: any other text denies AND travels to the
+  model as the deny reason (`denied by user — use staging instead`), so a denial
+  steers the next attempt instead of leaving the model guessing. Fifteen themes
+  ship — `default` (black, blue
   accent), `light`, `contrast`, `opencode` (warm peach), and ported classics:
   `tokyonight`, `catppuccin`, `gruvbox`, `nord`, `one-dark`, `dracula`,
   `rosepine`, `kanagawa`, `everforest`, `flexoki` (burnt orange), `vesper` (peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
-  `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools;
+  `/plan`, `/execute`, `/yolo`). **Plan** exposes only read-only tools;
   when the model calls `present_plan` you get an **interactive approval card** —
   **Enter** accepts & executes (seeding the task list from the plan's checklist),
-  **typing** revises the plan, **Esc** keeps planning. **Execute** allows
+  **typing** revises the plan, **Esc** keeps planning. Approving by mode-switch
+  (`/execute` or Shift+Tab) arms the same handoff — the transcript says so, and
+  your next message starts implementation. **Execute** allows
   edits/commands, each gated by a glob-based allow/deny/ask **permission layer**
   that can also scope by CONTENT — `{"tool":"bash","match":"git push*",
   "action":"deny"}` — with deny-beats-allow semantics; network tools honor
   rules too, so egress is governable.
-  **Yolo** runs side-effecting tools without prompting. The mode chip on the
+  **Yolo** runs side-effecting tools without prompting. Every real mode
+  transition re-gates approvals to `ask` **in the engine itself**, so leaving
+  plan can never silently inherit a lingering YOLO — YOLO is always an explicit
+  choice, and entering it via `/yolo` leaves a warn notice in the transcript.
+  The mode chip on the
   input's top border is color-coded (ASK blue / PLAN green / YOLO red) so the
   active mode is unmistakable, while the rest of the chrome stays neutral.
 - **Resilience & git/process tools** — provider calls retry transient failures

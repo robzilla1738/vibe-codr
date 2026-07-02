@@ -31,8 +31,9 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   // Model & mode
   { name: "model", description: "Pick the model (Tab: main ⇄ subagents · /model refresh)", arg: "[filter]" },
   { name: "providers", description: "Providers + keys (Enter to configure)", arg: "[filter]" },
-  { name: "plan", description: "Switch to read-only plan mode" },
-  { name: "execute", description: "Switch to execute mode" },
+  { name: "plan", description: "Read-only plan mode — present a plan for approval" },
+  { name: "execute", description: "Gated execute — every action asks (ASK)" },
+  { name: "yolo", description: "Execute with approvals off — no prompts" },
   { name: "approvals", description: "Set approval mode", values: ["ask", "auto"] },
   { name: "reasoning", description: "Set reasoning effort", values: ["low", "medium", "high", "off"] },
   // Values derive from the palette registry so a new theme/accent shows up here
@@ -85,13 +86,29 @@ export type PaletteState =
  * Derive the palette from the current draft text. Opens while the draft is a
  * slash line: a command list before the first space, then (for enum commands) a
  * value list after it. Returns closed for plain prompts or free-form args.
+ *
+ * Command matching is tiered fuzzy, not prefix-only: name-PREFIX matches rank
+ * first (muscle memory stays deterministic), then name-substring, then
+ * description words — so `/sessions` surfaces `/resume` ("List saved sessions")
+ * and `/oal` still finds `/goal` instead of dead-ending. Stable within a tier
+ * (catalog order).
  */
 export function paletteState(draft: string): PaletteState {
   if (!draft.startsWith("/")) return { open: false };
   const space = draft.indexOf(" ");
   if (space === -1) {
     const query = draft.slice(1).toLowerCase();
-    const items = PALETTE_COMMANDS.filter((c) => c.name.toLowerCase().startsWith(query));
+    const tier = (c: PaletteCommand): number => {
+      const name = c.name.toLowerCase();
+      if (!query || name.startsWith(query)) return 0;
+      if (name.includes(query)) return 1;
+      if (c.description.toLowerCase().includes(query)) return 2;
+      return 3;
+    };
+    const items = PALETTE_COMMANDS.map((c) => ({ c, t: tier(c) }))
+      .filter(({ t }) => t < 3)
+      .sort((a, b) => a.t - b.t)
+      .map(({ c }) => c);
     return items.length ? { open: true, mode: "command", query, items } : { open: false };
   }
   const name = draft.slice(1, space).toLowerCase();

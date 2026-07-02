@@ -25,14 +25,16 @@ test("a plain prompt keeps the menu closed", () => {
   expect(paletteState("")).toEqual({ open: false });
 });
 
-test("a slash opens the command list and filters by prefix", () => {
+test("a slash opens the command list; prefix matches lead the tiers", () => {
   const all = paletteState("/");
   expect(all.open && all.mode).toBe("command");
   if (all.open && all.mode === "command") {
     expect(all.items.length).toBe(PALETTE_COMMANDS.length);
   }
+  // "/mod" ranks the prefix match (/model) first; description hits ("plan MODe",
+  // "Model, mode, cwd…") trail behind it instead of displacing it.
   const mod = paletteState("/mod");
-  expect(mod.open && mod.mode === "command" && mod.items.map((c) => c.name)).toEqual(["model"]);
+  expect(mod.open && mod.mode === "command" && mod.items[0]?.name).toBe("model");
 });
 
 test("an unknown command closes the menu", () => {
@@ -84,4 +86,24 @@ test("/accent offers the named presets as a value submenu, and a hex still close
   expect(menu.open && menu.mode === "value" && menu.items).toEqual(ACCENT_NAMES);
   // Typing a hex matches no preset → the menu closes so Enter submits it raw.
   expect(paletteState("/accent #fab283")).toEqual({ open: false });
+});
+
+test("palette matching is tiered fuzzy: prefix, then name-substring, then description", () => {
+  // Description tier: "sessions" isn't any command name, but /resume's
+  // description ("List saved sessions to resume") carries it.
+  const byDesc = paletteState("/sessions");
+  expect(byDesc.open).toBe(true);
+  expect(byDesc.open && byDesc.mode === "command" && byDesc.items[0]?.name).toBe("resume");
+  // Name-substring tier: a mid-word typo like "/oal" still finds /goal.
+  const bySub = paletteState("/oal");
+  expect(bySub.open && bySub.mode === "command" && bySub.items[0]?.name).toBe("goal");
+  // Prefix stays first: "/co" ranks cost/context/compact/config/commands (all
+  // prefix matches, catalog order) ahead of any substring/description hit.
+  const byPrefix = paletteState("/co");
+  expect(byPrefix.open && byPrefix.mode === "command" && byPrefix.items[0]?.name).toBe("cost");
+  const names = byPrefix.open && byPrefix.mode === "command" ? byPrefix.items.map((c) => c.name) : [];
+  const prefixNames = names.filter((n) => n.startsWith("co"));
+  expect(names.slice(0, prefixNames.length)).toEqual(prefixNames);
+  // Nothing matches anywhere → closed, not an empty shell.
+  expect(paletteState("/zzzznope").open).toBe(false);
 });

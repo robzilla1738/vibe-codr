@@ -34,6 +34,29 @@ export const TASK_GLYPH: Record<Task["status"], string> = {
   pending: "○",
 };
 
+/**
+ * Window `tasks` to at most `max` visible rows WITHOUT hiding the active work:
+ * when the list overflows, completed tasks before the first unfinished one
+ * collapse into a leading `lead` count (rendered as one "✔ N done" line) so the
+ * in-progress task is always on screen — a 20-task run used to show only its
+ * first 8 (all completed) rows. `trailing` counts tasks cut after the window.
+ */
+export function windowTasks(
+  tasks: Task[],
+  max: number,
+): { lead: number; visible: Task[]; trailing: number } {
+  if (tasks.length <= max) return { lead: 0, visible: tasks, trailing: 0 };
+  const firstActive = tasks.findIndex((t) => t.status !== "completed");
+  // Start at the first unfinished task, backing off so the window stays full
+  // when the tail is short (all-completed lists show their last `max`).
+  const start = Math.max(0, Math.min(firstActive === -1 ? tasks.length : firstActive, tasks.length - max));
+  return {
+    lead: start,
+    visible: tasks.slice(start, start + max),
+    trailing: Math.max(0, tasks.length - start - max),
+  };
+}
+
 /** Render the task list as an indented checklist. */
 export function formatTasks(tasks: Task[]): string {
   if (!tasks.length) return "";
@@ -73,6 +96,9 @@ export interface HeadlessOptions {
   showTools?: boolean;
   /** Output format for one-shot mode: streamed text (default) or a JSON object. */
   outputFormat?: "text" | "json";
+  /** Single-prompt `-p` run: suppress interactive hints ("approve with
+   * /execute") that nothing can act on once the process exits. */
+  oneShot?: boolean;
 }
 
 /** The machine-readable result of a one-shot run (`--output-format json`). */
@@ -159,13 +185,18 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
         `${ansi.magenta(GLYPH.subagentOut)} ${ansi.dim(`subagent ${event.subagentId.slice(-6)} done`)}\n`,
       );
       break;
-    case "plan-presented":
-      process.stdout.write(
-        `\n${ansi.magenta(ansi.bold("── Plan ──"))}\n${event.plan}\n${ansi.dim(
-          "Run /execute to proceed.",
-        )}\n`,
-      );
+    case "plan-presented": {
+      // The hint matches what /execute actually does now (arms the handoff; the
+      // NEXT message starts implementation) — and is suppressed in a one-shot
+      // run, where the process exits and nothing can act on it.
+      const hint = opts.oneShot
+        ? ""
+        : `${ansi.dim(
+            "Approve with /execute — your next message starts implementation. Or reply to refine the plan.",
+          )}\n`;
+      process.stdout.write(`\n${ansi.magenta(ansi.bold("── Plan ──"))}\n${event.plan}\n${hint}`);
       break;
+    }
     case "tasks-updated":
       if (event.tasks.length) process.stderr.write(`\n${formatTasks(event.tasks)}\n`);
       break;
@@ -216,6 +247,7 @@ export async function runOneShot(
   prompt: string,
   opts: HeadlessOptions = {},
 ): Promise<boolean> {
+  opts = { ...opts, oneShot: true };
   const json = opts.outputFormat === "json";
   const events = engine.events();
   engine.send({ type: "submit-prompt", text: prompt });

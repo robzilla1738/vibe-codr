@@ -56,7 +56,7 @@ import type {
 import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
 import { applyPalette, paletteState } from "./commands-catalog.ts";
-import { displayWidth, renderTable, splitMarkdown, type MdBlock } from "./markdown-blocks.ts";
+import { displayWidth, renderTable, splitMarkdown, tableFits, type MdBlock } from "./markdown-blocks.ts";
 import {
   barGlyphs,
   brailleChart,
@@ -74,13 +74,13 @@ import {
   weatherIcon,
 } from "./rich-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
-import { formatUsage, TASK_GLYPH } from "./headless.ts";
+import { formatUsage, TASK_GLYPH, windowTasks } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
 import { brandSpans } from "./gradient.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
-import { toolLabel } from "./tool-icons.ts";
+import { permissionPreview, toolLabel } from "./tool-icons.ts";
 import {
   initialTranscript,
   reduceTranscript,
@@ -177,11 +177,12 @@ export function App(props: { engine: EngineClient }) {
   // elapsed time updates without re-rendering an idle screen.
   const [working, setWorking] = createSignal(false);
   const [tick, setTick] = createSignal(0);
-  // The model's live reasoning, condensed to its latest line — shown muted under
-  // the working spinner while the model thinks, cleared the moment real answer
-  // text starts streaming (and at turn end). Headless parity: `-p` prints
-  // reasoning with --show-reasoning; the TUI otherwise dropped it entirely.
-  const [reasoningTail, setReasoningTail] = createSignal("");
+  // The model's live reasoning as a small streaming STACK (the last few lines,
+  // newest brightest) under the working spinner — watching the model think,
+  // not one flickering line. Cleared when the burst lands as its `✻ thought`
+  // transcript row (the moment the model acts) and at turn end. Headless
+  // parity: `-p` prints reasoning with --show-reasoning.
+  const [reasoningLines, setReasoningLines] = createSignal<string[]>([]);
   let turnStartedAt = 0;
   let model = snap.model;
   let mode = snap.mode;
@@ -701,14 +702,23 @@ export function App(props: { engine: EngineClient }) {
   // Streamed deltas are COALESCED: tokens accumulate in a buffer and flush on a
   // short timer (~40fps) instead of one reduce + <markdown> re-parse per token.
   // Re-parsing growing text on every token is O(n²) and was the source of the
-  // streaming lag on long replies; flushing per frame keeps it smooth.
+  // streaming lag on long replies; flushing per frame keeps it smooth. Live
+  // tool-output chunks (bash progress) coalesce on the same timer — a chatty
+  // build would otherwise force a re-render per chunk.
   let pendingDelta = "";
+  const pendingProgress = new Map<string, string>();
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   const STREAM_FLUSH_MS = 24;
   const landPending = () => {
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
+    }
+    if (pendingProgress.size) {
+      for (const [toolCallId, chunk] of pendingProgress) {
+        ts = reduceTranscript(ts, { type: "tool-progress", toolCallId, chunk });
+      }
+      pendingProgress.clear();
     }
     if (!pendingDelta) return;
     ts = reduceTranscript(ts, { type: "delta", text: pendingDelta });
@@ -742,11 +752,27 @@ export function App(props: { engine: EngineClient }) {
     setMetrics(metricsLine(queued(), usage, ctx));
     setGoalInfo(goal);
   };
-  // Resolve the oldest pending permission and drop it from the queue.
-  const answerPerm = (decision: "once" | "always" | "deny") => {
+  // Resolve the oldest pending permission and drop it from the queue. Grants
+  // leave a transcript notice — a single `a` keypress is a durable session-wide
+  // grant, and an invisible one is how an accidental keystroke becomes silent
+  // policy. Denials already surface via the engine's "Blocked …" warn notice
+  // (which carries any typed feedback), so no local echo for those.
+  const answerPerm = (decision: "once" | "always" | "deny", feedback?: string) => {
     const head = perms()[0];
     if (!head) return;
-    props.engine.send({ type: "resolve-permission", id: head.id, decision });
+    props.engine.send({
+      type: "resolve-permission",
+      id: head.id,
+      decision,
+      ...(feedback ? { feedback } : {}),
+    });
+    if (decision !== "deny") {
+      apply({
+        type: "notice",
+        text: `${decision === "always" ? "always allowed (this session)" : "allowed once"} — ${toolLabel(head.toolName, head.input)}`,
+        level: "info",
+      });
+    }
     setPerms((p) => p.slice(1));
   };
   // Resolve a presented plan from the approval card, then dismiss it.
@@ -911,23 +937,51 @@ export function App(props: { engine: EngineClient }) {
     });
 
     void (async () => {
-      // The reducer owns per-turn call maps; endTurn finalizes the reply and
-      // drops them, then stops the spinner.
+      // Reasoning arrives as raw deltas. Two views of the same burst:
+      //  • LIVE — a streaming stack of the last few lines under the spinner
+      //    (newest brightest) while the model thinks;
+      //  • PERMANENT — when the model ACTS (text streams / a tool starts / the
+      //    turn ends), the burst lands as a collapsed `✻ thought` row in the
+      //    transcript, expandable later. Without it the reasoning evaporated
+      //    the moment the answer started.
+      let reasoningBuf = "";
+      let reasoningTailBuf = "";
+      let thinkingStartedAt = 0;
+      const pushReasoning = (delta: string) => {
+        if (!reasoningBuf) thinkingStartedAt = Date.now();
+        // Bounded: keep the HEAD of a huge think (the framing) rather than an
+        // arbitrary mid-sentence tail; the live stack tracks the newest lines
+        // via its own small rolling window (a delta alone can be a partial line).
+        if (reasoningBuf.length < 20_000) reasoningBuf += delta;
+        reasoningTailBuf = (reasoningTailBuf + delta).slice(-4000);
+        setReasoningLines(
+          reasoningTailBuf
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(-3)
+            .map((l) => truncate(l, Math.max(24, contentWidth() - 10))),
+        );
+      };
+      // Land the accumulated burst as a transcript row and clear the preview.
+      const commitThinking = () => {
+        if (reasoningBuf.trim()) {
+          apply({
+            type: "thinking",
+            text: reasoningBuf,
+            seconds: Math.round((Date.now() - thinkingStartedAt) / 1000),
+          });
+        }
+        reasoningBuf = "";
+        reasoningTailBuf = "";
+        setReasoningLines([]);
+      };
+      // The reducer owns per-turn call maps; endTurn lands any dangling
+      // thinking, finalizes the reply, drops the maps, and stops the spinner.
       const endTurn = () => {
+        commitThinking();
         apply({ type: "clear-turn" });
         setWorking(false);
-        setReasoningTail("");
-      };
-      // Reasoning arrives as raw deltas; keep a rolling buffer and surface just
-      // the last non-empty line (bounded so a long think can't grow the string).
-      let reasoningBuf = "";
-      const pushReasoning = (delta: string) => {
-        reasoningBuf = (reasoningBuf + delta).slice(-2000);
-        const line = reasoningBuf
-          .split("\n")
-          .reverse()
-          .find((l) => l.trim().length > 0);
-        if (line) setReasoningTail(truncate(line.trim(), Math.max(24, contentWidth() - 8)));
       };
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
         switch (event.type) {
@@ -948,29 +1002,42 @@ export function App(props: { engine: EngineClient }) {
             // Subagents panel, not streamed into the parent transcript; empty
             // deltas are no-ops.
             if (event.subagentId || !event.delta) break;
-            // Real answer text is streaming — the thinking preview has served
-            // its purpose (a later step's reasoning re-opens it).
-            reasoningBuf = "";
-            setReasoningTail("");
+            // Real answer text is streaming — the model acted, so the thinking
+            // burst lands as its transcript row (and the live preview clears).
+            commitThinking();
             // Buffer the token and flush on the next frame — coalescing keeps long
             // streamed replies smooth.
             pendingDelta += event.delta;
             scheduleFlush();
             break;
           case "reasoning-delta":
-            // The model's chain-of-thought, condensed to a one-line live preview
-            // under the spinner (subagent thinking stays in its panel row).
+            // The model's chain-of-thought: a one-line live preview under the
+            // spinner while it thinks, landed as a collapsed transcript row when
+            // it acts (subagent thinking stays in its panel row).
             if (event.subagentId || !event.delta) break;
             pushReasoning(event.delta);
             break;
           case "tool-call-started":
             if (event.subagentId) break; // subagent tools don't enter the transcript
+            // The thinking that led to this call lands just above it.
+            commitThinking();
             apply({
               type: "tool-start",
               toolCallId: event.toolCallId,
               toolName: event.toolName,
               input: event.input,
+              at: Date.now(),
             });
+            break;
+          case "tool-call-progress":
+            // Live streamed output (bash stdout/stderr) → the running row's tail
+            // preview, so a long build/test is visibly alive line by line.
+            // Coalesced onto the frame timer like text deltas.
+            pendingProgress.set(
+              event.toolCallId,
+              (pendingProgress.get(event.toolCallId) ?? "") + event.chunk,
+            );
+            scheduleFlush();
             break;
           case "tool-call-finished":
             if (event.subagentId) break;
@@ -979,6 +1046,7 @@ export function App(props: { engine: EngineClient }) {
               toolCallId: event.toolCallId,
               output: event.output,
               isError: event.isError,
+              at: Date.now(),
             });
             break;
           case "file-changed":
@@ -1020,7 +1088,7 @@ export function App(props: { engine: EngineClient }) {
           case "subagent-started":
             setSubagents((prev) => [
               ...prev,
-              { id: event.subagentId, prompt: event.prompt, status: "running" },
+              { id: event.subagentId, prompt: event.prompt, status: "running", startedAt: Date.now() },
             ]);
             break;
           case "subagent-activity":
@@ -1039,13 +1107,23 @@ export function App(props: { engine: EngineClient }) {
             setSubagents((prev) =>
               prev.map((s) =>
                 s.id === event.subagentId
-                  ? { ...s, status: "done", activity: undefined, result: firstLine(event.result) }
+                  ? {
+                      ...s,
+                      status: "done",
+                      activity: undefined,
+                      result: firstLine(event.result),
+                      ...(s.startedAt ? { elapsedMs: Date.now() - s.startedAt } : {}),
+                    }
                   : s,
               ),
             );
             break;
           case "mode-changed":
             mode = event.mode;
+            // Leaving plan mode moots a still-open plan card — the user approved
+            // by mode-switch (the engine armed the handoff and said so). A stale
+            // "review & approve" card would offer a second, double-firing accept.
+            if (event.mode !== "plan") setPlan(null);
             refreshStatus();
             break;
           case "model-changed":
@@ -1149,9 +1227,12 @@ export function App(props: { engine: EngineClient }) {
       setShowJobs((v) => !v);
       return;
     }
-    // While permission prompts are pending, a typed reply answers the oldest.
+    // While permission prompts are pending, a typed reply answers the oldest:
+    // exact y/yes/a/always/n/no decide; anything else denies WITH the text as
+    // feedback (the model sees "denied by user — <text>" and can adjust).
     if (perms().length > 0) {
-      answerPerm(parsePermissionDecision(text));
+      const parsed = parsePermissionDecision(text);
+      answerPerm(parsed.decision, parsed.feedback);
       return;
     }
     // A plan card is up: a non-slash message is revision feedback (re-plan), not a
@@ -1167,6 +1248,7 @@ export function App(props: { engine: EngineClient }) {
     if (text === "/clear" || text === "/new") {
       if (working()) props.engine.send({ type: "abort" });
       pendingDelta = "";
+      pendingProgress.clear();
       resetTranscript();
       setPlan(null);
       setSubagents([]);
@@ -1554,10 +1636,12 @@ export function App(props: { engine: EngineClient }) {
                       >
                         <Index each={items()}>
                           {(blk, i) => {
-                            // A tool row stacks flush under a preceding tool (a run of
-                            // steps reads as one segment); otherwise a gap row above it.
+                            // A step row (tool or thinking) stacks flush under a
+                            // preceding step — a run of thought→act→act reads as one
+                            // segment; otherwise a gap row above it.
+                            const steppy = (k: string | undefined) => k === "tool" || k === "thinking";
                             const chained = () =>
-                              blk().kind === "tool" && items()[i - 1]?.kind === "tool";
+                              steppy(blk().kind) && steppy(items()[i - 1]?.kind);
                             return (
                               <>
                                 <Show when={blk().kind === "assistant"}>
@@ -1586,16 +1670,35 @@ export function App(props: { engine: EngineClient }) {
                                     chained={i > 0 && chained()}
                                     first={i === 0}
                                     width={blockInner()}
+                                    spin={() => spinnerFrame(tick())}
+                                    onToggle={(id) => anchoredToggle(() => toggle(id))}
+                                  />
+                                </Show>
+                                <Show when={blk().kind === "thinking"}>
+                                  <ThinkingBlockView
+                                    block={blk as () => Extract<Block, { kind: "thinking" }>}
+                                    palette={palette()}
+                                    chained={i > 0 && chained()}
+                                    first={i === 0}
+                                    width={blockInner()}
                                     onToggle={(id) => anchoredToggle(() => toggle(id))}
                                   />
                                 </Show>
                                 <Show when={blk().kind === "notice"}>
-                                  {/* Errors pop red; info/warn stay amber. A leading `·`
-                                      marks a system note. No word-wrap: command output
-                                      (/help, /config) is pre-aligned. */}
+                                  {/* Severity carries the tone: errors red, warnings
+                                      amber, plain info MUTED — system chatter ("Plan
+                                      saved to …") must recede, not read as a warning.
+                                      A leading `·` marks a system note. No word-wrap:
+                                      command output (/help, /config) is pre-aligned. */}
                                   <text
                                     flexShrink={0}
-                                    fg={(blk() as { level?: string }).level === "error" ? palette().del : palette().notice}
+                                    fg={
+                                      (blk() as { level?: string }).level === "error"
+                                        ? palette().del
+                                        : (blk() as { level?: string }).level === "warn"
+                                          ? palette().notice
+                                          : palette().muted
+                                    }
                                     marginTop={i > 0 ? 1 : 0}
                                   >
                                     {`· ${(blk() as { text: string }).text}`}
@@ -1631,14 +1734,27 @@ export function App(props: { engine: EngineClient }) {
               {` ${elapsedLabel()}  ·  esc to interrupt`}
             </text>
           </box>
-          {/* Live thinking preview — the model's latest reasoning line, muted +
-              italic, while it thinks; clears the moment answer text streams. */}
-          <Show when={reasoningTail()}>
-            <box flexDirection="row" flexShrink={0}>
-              <text flexShrink={0} fg={palette().muted}>{"  ✻ "}</text>
-              <text flexShrink={1} wrapMode="none" fg={palette().muted} attributes={TextAttributes.ITALIC}>
-                {reasoningTail()}
-              </text>
+          {/* Live thinking stack — the model's last few reasoning lines stream
+              under the spinner while it thinks (older lines recede to the
+              dimmer gutter tone, the newest reads in muted). The stack clears
+              when the burst lands as its `✻ thought` transcript row. */}
+          <Show when={reasoningLines().length > 0}>
+            <box flexDirection="column" flexShrink={0}>
+              <Index each={reasoningLines()}>
+                {(line, i) => (
+                  <box flexDirection="row" flexShrink={0}>
+                    <text flexShrink={0} fg={palette().gutter}>{i === 0 ? "  ✻ " : "    "}</text>
+                    <text
+                      flexShrink={1}
+                      wrapMode="none"
+                      fg={i === reasoningLines().length - 1 ? palette().muted : palette().gutter}
+                      attributes={TextAttributes.ITALIC}
+                    >
+                      {line()}
+                    </text>
+                  </box>
+                )}
+              </Index>
             </box>
           </Show>
         </box>
@@ -1700,13 +1816,23 @@ export function App(props: { engine: EngineClient }) {
         </Rail>
       </Show>
       {/* Tasks — the live to-do list, just above the input; hides once everything
-          is done so a finished list doesn't linger. */}
+          is done so a finished list doesn't linger. The window centers on the
+          ACTIVE work: overflowing completed tasks collapse into one leading
+          "✔ N done" line, so the in-progress task is never scrolled out. */}
       <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
         <Panel
           title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
           titleColor={brand()}
         >
-          <For each={tasks().slice(0, PANEL_MAX_ROWS)}>
+          <Show when={windowTasks(tasks(), PANEL_MAX_ROWS).lead > 0}>
+            <box flexDirection="row" gap={1}>
+              <text flexShrink={0} fg={palette().muted}>{TASK_GLYPH.completed}</text>
+              <text flexShrink={0} fg={palette().muted}>
+                {`${windowTasks(tasks(), PANEL_MAX_ROWS).lead} done`}
+              </text>
+            </box>
+          </Show>
+          <For each={windowTasks(tasks(), PANEL_MAX_ROWS).visible}>
             {(task) => {
               const c = () =>
                 task.status === "completed"
@@ -1722,16 +1848,26 @@ export function App(props: { engine: EngineClient }) {
               );
             }}
           </For>
-          <Show when={tasks().length > PANEL_MAX_ROWS}>
-            <text fg={palette().muted}>{`  +${tasks().length - PANEL_MAX_ROWS} more`}</text>
+          <Show when={windowTasks(tasks(), PANEL_MAX_ROWS).trailing > 0}>
+            <text fg={palette().muted}>{`  +${windowTasks(tasks(), PANEL_MAX_ROWS).trailing} more`}</text>
           </Show>
         </Panel>
       </Show>
       {/* Subagents — live fan-out. ONE truncated line each by default (so a big
           fan-out stays tidy and never fills the screen); tap a row to expand its
-          full prompt + result (bounded), tap again to collapse. Cleared per turn. */}
+          full prompt + result (bounded), tap again to collapse. Each row carries
+          a right-aligned elapsed (live while running, final once done); a done
+          row folds its result glimpse into the line. Cleared per turn. */}
       <Show when={subagents().length > 0}>
-        <Panel title={`Subagents · ${subagents().length}`} titleColor={brand()}>
+        <Panel
+          title={(() => {
+            const done = subagents().filter((s) => s.status === "done").length;
+            return done > 0 && done < subagents().length
+              ? `Subagents · ${done}/${subagents().length} done`
+              : `Subagents · ${subagents().length}`;
+          })()}
+          titleColor={brand()}
+        >
           <For each={subagents().slice(0, PANEL_MAX_ROWS)}>
             {(s) => {
               const open = () => expandedSubs().has(s.id);
@@ -1741,13 +1877,28 @@ export function App(props: { engine: EngineClient }) {
               // dims to muted once done so finished rows recede.
               const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
               const fg = () => (s.status === "running" ? palette().assistant : palette().muted);
+              // Right-aligned elapsed: ticks live while running, freezes at the
+              // total once done — the fan-out reads like a build matrix. A
+              // sub-second finish shows nothing (a "0.0s" column is noise).
+              const elapsed = () => {
+                if (s.status === "running" && s.startedAt) {
+                  void tick();
+                  return `${Math.max(0, Math.round((Date.now() - s.startedAt) / 1000))}s`;
+                }
+                if (s.elapsedMs === undefined || s.elapsedMs < 1000) return "";
+                return `${(s.elapsedMs / 1000).toFixed(s.elapsedMs >= 10_000 ? 0 : 1)}s`;
+              };
               const oneLine = () => {
                 const base = firstLine(s.prompt) ?? s.prompt;
-                // A running child appends its live activity ("… · $ bun test"); the
-                // label is cleared on finish, so a done row shows only its prompt.
+                // A running child appends its live activity ("… · $ bun test");
+                // a done row folds in its result glimpse ("… ↳ found 3 cases").
                 const line =
-                  s.status === "running" && s.activity ? `${base} · ${s.activity}` : base;
-                return truncate(line, Math.max(24, contentWidth() - 14));
+                  s.status === "running" && s.activity
+                    ? `${base} · ${s.activity}`
+                    : s.status === "done" && s.result
+                      ? `${base} ${GLYPH.result} ${s.result}`
+                      : base;
+                return truncate(line, Math.max(24, contentWidth() - 20));
               };
               return (
                 <box flexDirection="column" onMouseDown={() => toggleSub(s.id)}>
@@ -1762,6 +1913,9 @@ export function App(props: { engine: EngineClient }) {
                     >
                       {/* Bounded so an expanded row can't run off the screen. */}
                       <text flexGrow={1} wrapMode="word" fg={fg()}>{truncate(s.prompt, 700)}</text>
+                    </Show>
+                    <Show when={elapsed()}>
+                      <text flexShrink={0} fg={palette().gutter}>{elapsed()}</text>
                     </Show>
                   </box>
                   <Show when={open() && s.result}>
@@ -1823,44 +1977,69 @@ export function App(props: { engine: EngineClient }) {
       </Show>
       {/* Permission request — the same block language as the turns + input: a
           filled panel card with a thin amber left accent. The tool action reads in
-          the body tone; the y/a/n keys pop bright over muted descriptors. */}
+          the body tone; below it, a PREVIEW of what's actually being approved
+          (the full command / the edit's -/+ lines / a write's content head) so
+          the user never grants blind off a truncated one-liner. */}
       <Show when={perms()[0]}>
-        {(p) => (
-          <Rail color={palette().notice} marginTop={1}>
-            <box
-              backgroundColor={palette().panel}
-              flexDirection="column"
-              paddingTop={1}
-              paddingBottom={1}
-              paddingLeft={2}
-              paddingRight={1}
-            >
-              <text fg={palette().notice} attributes={TextAttributes.BOLD}>
-                {`${GLYPH.warn} Permission required · ${p().toolName}`}
-              </text>
-              <text fg={palette().assistant} wrapMode="word">{toolLabel(p().toolName, p().input)}</text>
-              <box flexDirection="row" flexShrink={0} marginTop={1}>
-                <For
-                  each={[
-                    { t: "y", fg: palette().assistant },
-                    { t: " yes once", fg: palette().muted },
-                    { t: "  ·  ", fg: palette().muted },
-                    { t: "a", fg: palette().assistant },
-                    { t: " always", fg: palette().muted },
-                    { t: "  ·  ", fg: palette().muted },
-                    { t: "n", fg: palette().assistant },
-                    { t: " no", fg: palette().muted },
-                  ] satisfies Seg[]}
-                >
-                  {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
-                </For>
-                <Show when={perms().length > 1}>
-                  <text flexShrink={0} fg={palette().muted}>{`  ·  +${perms().length - 1} more pending`}</text>
+        {(p) => {
+          const preview = () => permissionPreview(p().toolName, p().input);
+          return (
+            <Rail color={palette().notice} marginTop={1}>
+              <box
+                backgroundColor={palette().panel}
+                flexDirection="column"
+                paddingTop={1}
+                paddingBottom={1}
+                paddingLeft={2}
+                paddingRight={1}
+              >
+                <text fg={palette().notice} attributes={TextAttributes.BOLD}>
+                  {`${GLYPH.warn} Permission required · ${p().toolName}`}
+                </text>
+                <text fg={palette().assistant} wrapMode="word">{toolLabel(p().toolName, p().input)}</text>
+                <Show when={preview()}>
+                  <box flexDirection="column" flexShrink={0} marginTop={1}>
+                    <For each={preview()!.lines}>
+                      {(line) => (
+                        <text
+                          flexShrink={0}
+                          wrapMode="none"
+                          fg={preview()!.diff ? diffColor(line, palette()) : palette().muted}
+                        >
+                          {`  ${line || " "}`}
+                        </text>
+                      )}
+                    </For>
+                  </box>
                 </Show>
+                <box flexDirection="row" flexShrink={0} marginTop={1}>
+                  <For
+                    each={[
+                      { t: "y", fg: palette().assistant },
+                      { t: " allow once", fg: palette().muted },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "a", fg: palette().assistant },
+                      { t: " always", fg: palette().muted },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "n", fg: palette().assistant },
+                      { t: "/", fg: palette().muted },
+                      { t: "esc", fg: palette().assistant },
+                      { t: " deny", fg: palette().muted },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "type", fg: palette().assistant },
+                      { t: " why → deny with feedback", fg: palette().muted },
+                    ] satisfies Seg[]}
+                  >
+                    {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
+                  </For>
+                  <Show when={perms().length > 1}>
+                    <text flexShrink={0} fg={palette().muted}>{`  ·  +${perms().length - 1} more pending`}</text>
+                  </Show>
+                </box>
               </box>
-            </box>
-          </Rail>
-        )}
+            </Rail>
+          );
+        }}
       </Show>
       {/* The input — a UNIFORM filled block (same language as the message blocks):
           a raised ELEVATED surface (a shade above the panel blocks, so the active
@@ -2250,6 +2429,21 @@ function TableBlock(props: {
   width: number;
 }) {
   const p = props.palette;
+  const cols = () => Math.max(1, ...props.block().rows.map((r) => r.length));
+  // A grid whose columns can't physically fit (many columns × the 3-cell
+  // minimum) would clip mid-grid; render each row as a `header: value` record
+  // stanza instead — narrower terminals get a readable list, not a broken box.
+  const fits = () => tableFits(cols(), Math.max(12, props.width));
+  const records = () => {
+    const [header, ...data] = props.block().rows;
+    const rows = data.length ? data : [header ?? []];
+    return rows.map((r) =>
+      r.map((cell, c) => ({
+        label: data.length ? (header?.[c] ?? "") : "",
+        value: cell,
+      })),
+    );
+  };
   const lines = () => renderTable(props.block().rows, props.block().align, Math.max(12, props.width));
   // A header/row → alternating border + ` cell ` parts: │ c0 │ c1 │ … so the `│`
   // and the rule junctions line up (each ` cell ` is the column width + 2 pad).
@@ -2262,30 +2456,54 @@ function TableBlock(props: {
     return out;
   };
   return (
-    <box flexDirection="column" flexShrink={0}>
-      <For each={lines()}>
-        {(line) =>
-          line.role === "rule" ? (
-            <text flexShrink={0} fg={p.border} wrapMode="none">{line.text}</text>
-          ) : (
-            <box flexDirection="row" flexShrink={0}>
-              <For each={parts(line.cells)}>
-                {(part) => (
-                  <text
-                    flexShrink={0}
-                    fg={part.sep ? p.border : line.role === "header" ? p.heading : p.assistant}
-                    attributes={!part.sep && line.role === "header" ? TextAttributes.BOLD : undefined}
-                    wrapMode="none"
-                  >
-                    {part.text}
-                  </text>
-                )}
-              </For>
-            </box>
-          )
-        }
-      </For>
-    </box>
+    <Show
+      when={fits()}
+      fallback={
+        <box flexDirection="column" flexShrink={0}>
+          <For each={records()}>
+            {(rec, ri) => (
+              <box flexDirection="column" flexShrink={0} marginTop={ri() > 0 ? 1 : 0}>
+                <For each={rec}>
+                  {(f) => (
+                    <box flexDirection="row" flexShrink={0}>
+                      <Show when={f.label}>
+                        <text flexShrink={0} fg={p.muted}>{`${f.label}: `}</text>
+                      </Show>
+                      <text flexShrink={1} wrapMode="word" fg={p.assistant}>{f.value || " "}</text>
+                    </box>
+                  )}
+                </For>
+              </box>
+            )}
+          </For>
+        </box>
+      }
+    >
+      <box flexDirection="column" flexShrink={0}>
+        <For each={lines()}>
+          {(line) =>
+            line.role === "rule" ? (
+              <text flexShrink={0} fg={p.border} wrapMode="none">{line.text}</text>
+            ) : (
+              <box flexDirection="row" flexShrink={0}>
+                <For each={parts(line.cells)}>
+                  {(part) => (
+                    <text
+                      flexShrink={0}
+                      fg={part.sep ? p.border : line.role === "header" ? p.heading : p.assistant}
+                      attributes={!part.sep && line.role === "header" ? TextAttributes.BOLD : undefined}
+                      wrapMode="none"
+                    >
+                      {part.text}
+                    </text>
+                  )}
+                </For>
+              </box>
+            )
+          }
+        </For>
+      </box>
+    </Show>
   );
 }
 
@@ -2437,38 +2655,45 @@ function LineChart(props: { body: string; palette: Palette; width: number; spark
     });
   };
   return (
-    <box flexDirection="column" flexShrink={0}>
-      <Show when={model().title}>
-        <text fg={p.heading} attributes={TextAttributes.BOLD}>{model().title}</text>
-      </Show>
-      <Show
-        when={useBraille()}
-        fallback={
-          <For each={sparks()}>
-            {(s) => (
+    // No parseable numeric series → the fenced content must not VANISH; show it
+    // as an ordinary code block (same fallback bar/pie use).
+    <Show
+      when={model().series.length > 0}
+      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />}
+    >
+      <box flexDirection="column" flexShrink={0}>
+        <Show when={model().title}>
+          <text fg={p.heading} attributes={TextAttributes.BOLD}>{model().title}</text>
+        </Show>
+        <Show
+          when={useBraille()}
+          fallback={
+            <For each={sparks()}>
+              {(s) => (
+                <box flexDirection="row" flexShrink={0}>
+                  <Show when={s.label}>
+                    <text flexShrink={0} fg={p.muted}>{`${s.label}  `}</text>
+                  </Show>
+                  <text flexShrink={0} fg={s.color}>{s.spark}</text>
+                  <text flexShrink={0} fg={p.muted}>{s.range}</text>
+                </box>
+              )}
+            </For>
+          }
+        >
+          <For each={braille().rows}>
+            {(row, i) => (
               <box flexDirection="row" flexShrink={0}>
-                <Show when={s.label}>
-                  <text flexShrink={0} fg={p.muted}>{`${s.label}  `}</text>
-                </Show>
-                <text flexShrink={0} fg={s.color}>{s.spark}</text>
-                <text flexShrink={0} fg={p.muted}>{s.range}</text>
+                <text flexShrink={0} fg={p.muted}>
+                  {`${padLeft(i() === 0 ? braille().top : i() === braille().rows.length - 1 ? braille().bottom : "", braille().axisW)} `}
+                </text>
+                <text flexShrink={0} fg={braille().color}>{row}</text>
               </box>
             )}
           </For>
-        }
-      >
-        <For each={braille().rows}>
-          {(row, i) => (
-            <box flexDirection="row" flexShrink={0}>
-              <text flexShrink={0} fg={p.muted}>
-                {`${padLeft(i() === 0 ? braille().top : i() === braille().rows.length - 1 ? braille().bottom : "", braille().axisW)} `}
-              </text>
-              <text flexShrink={0} fg={braille().color}>{row}</text>
-            </box>
-          )}
-        </For>
-      </Show>
-    </box>
+        </Show>
+      </box>
+    </Show>
   );
 }
 
@@ -2499,8 +2724,10 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
     };
   };
   return (
+    // Data must exist AND have a positive total — an all-zero/negative "pie"
+    // would draw an invisible disc beside an all-0% legend; show the raw text.
     <Show
-      when={model().data.length > 0}
+      when={model().data.some((d) => d.value > 0)}
       fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />}
     >
       <box flexDirection="row" flexShrink={0}>
@@ -2546,7 +2773,17 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
 function WeatherCard(props: { body: string; palette: Palette }) {
   const p = props.palette;
   const w = () => parseWeather(props.body);
+  // Nothing recognizable parsed → the block would render as a lone default ⛅
+  // with all its content dropped; show the raw text as a code block instead.
+  const hasContent = () =>
+    Boolean(w().location || w().temp || w().condition || w().hi || w().lo) ||
+    w().chips.length > 0 ||
+    w().forecast.length > 0;
   return (
+    <Show
+      when={hasContent()}
+      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />}
+    >
     <box flexDirection="column" flexShrink={0}>
       <Show when={w().location}>
         <text fg={p.heading} attributes={TextAttributes.BOLD}>{w().location}</text>
@@ -2598,6 +2835,7 @@ function WeatherCard(props: { body: string; palette: Palette }) {
         </box>
       </Show>
     </box>
+    </Show>
   );
 }
 
@@ -2675,12 +2913,14 @@ function ToolBlockView(props: {
   block: () => Extract<Block, { kind: "tool" }>;
   palette: Palette;
   style: SyntaxStyle | undefined;
-  /** This row follows another visible tool row → stack flush (no top gap). */
+  /** This row follows another visible step row → stack flush (no top gap). */
   chained?: boolean;
   /** First item in the turn's output block → no top gap (the block padding spaces it). */
   first?: boolean;
   /** Inner content width (for the subagent-reply markdown). */
   width?: number;
+  /** Live spinner frame (tick-driven) — shown as the chevron while the call runs. */
+  spin?: () => string;
   onToggle: (id: number) => void;
 }) {
   const b = props.block;
@@ -2696,12 +2936,30 @@ function ToolBlockView(props: {
     const sp = b().label.indexOf(" ");
     return sp > 0 ? b().label.slice(sp + 1) : "";
   };
-  // The chevron shows expand state; the meta (right-aligned) is the collapsed hint
-  // (`5 results` / `12 lines` / `diff`) — a scannable column, hidden once expanded.
-  const chevron = () => (expandable() ? (b().collapsed ? "▸" : "▾") : "·");
-  const meta = () => (b().collapsed && expandable() ? collapsedHint(b()) : "");
+  // The chevron column: a live spinner while the call RUNS (each step is visibly
+  // alive, not just the bottom working line), then the expand state (`▸`/`▾`),
+  // or `·` for a row with nothing to expand.
+  const chevron = () =>
+    !b().done && props.spin ? props.spin() : expandable() ? (b().collapsed ? "▸" : "▾") : "·";
+  // Right-aligned meta: the collapsed hint (`5 results` / `12 lines` / `diff`),
+  // prefixed with the call's duration when it was slow (≥2s) — a scannable
+  // "what cost time" column down a run of steps.
+  const duration = () => {
+    const ms = b().elapsedMs;
+    return ms !== undefined && ms >= 2000 ? `${(ms / 1000).toFixed(1)}s` : "";
+  };
+  const meta = () =>
+    b().collapsed && expandable() ? [duration(), collapsedHint(b())].filter(Boolean).join(" · ") : duration();
   const visible = () => b().output.slice(0, MAX_OUTPUT_LINES);
   const overflow = () => Math.max(0, b().output.length - MAX_OUTPUT_LINES);
+  // Live output preview while the call runs: the last couple of streamed lines,
+  // muted, under the header — a long `bun test` scrolls line by line instead of
+  // sitting dead until it exits. Replaced by the real output when it lands.
+  const liveTail = () => {
+    if (b().done) return [] as string[];
+    const lines = (b().tail ?? "").split("\n").filter((l) => l.trim().length > 0);
+    return lines.slice(-2);
+  };
   return (
     <box
       id={`tool-${b().id}`}
@@ -2712,9 +2970,9 @@ function ToolBlockView(props: {
         if (expandable()) props.onToggle(b().id);
       }}
     >
-      {/* Header: chevron · icon · summary … right-aligned meta. */}
+      {/* Header: chevron/spinner · icon · summary … right-aligned meta. */}
       <box flexDirection="row" flexShrink={0}>
-        <text flexShrink={0} fg={p.muted}>{`${chevron()} `}</text>
+        <text flexShrink={0} fg={!b().done ? p.tool : p.muted}>{`${chevron()} `}</text>
         <text flexShrink={0} fg={b().isError ? p.del : p.tool}>{icon()}</text>
         <text flexShrink={1} wrapMode="none" fg={b().isError ? p.del : p.muted}>{` ${summary()}`}</text>
         <box flexGrow={1} />
@@ -2722,6 +2980,13 @@ function ToolBlockView(props: {
           <text flexShrink={0} fg={b().isError ? p.del : p.gutter}>{`  ${meta()}`}</text>
         </Show>
       </box>
+      <For each={liveTail()}>
+        {(line) => (
+          <text flexShrink={0} wrapMode="none" fg={p.muted}>
+            {`    ${truncate(line, Math.max(20, (props.width ?? 80) - 6))}`}
+          </text>
+        )}
+      </For>
       <Show when={!b().collapsed && expandable()}>
         <Switch
           fallback={
@@ -2769,6 +3034,62 @@ function ToolBlockView(props: {
             </box>
           </Match>
         </Switch>
+      </Show>
+    </box>
+  );
+}
+
+/**
+ * A landed reasoning burst — one quiet step row (`✻ thought · 8s`) in the turn
+ * thread, expandable to the full reasoning text in muted italic. The live
+ * preview under the spinner shows thinking as it happens; this keeps it
+ * reviewable afterwards instead of evaporating when the answer starts.
+ */
+function ThinkingBlockView(props: {
+  block: () => Extract<Block, { kind: "thinking" }>;
+  palette: Palette;
+  chained?: boolean;
+  first?: boolean;
+  width?: number;
+  onToggle: (id: number) => void;
+}) {
+  const b = props.block;
+  const p = props.palette;
+  const header = () => {
+    const s = b().seconds ?? 0;
+    return s >= 1 ? `thought · ${s}s` : "thought";
+  };
+  const lines = () => b().text.split("\n").slice(0, MAX_OUTPUT_LINES);
+  const overflow = () => Math.max(0, b().text.split("\n").length - MAX_OUTPUT_LINES);
+  return (
+    <box
+      id={`think-${b().id}`}
+      flexDirection="column"
+      flexShrink={0}
+      marginTop={props.first || props.chained ? 0 : 1}
+      onMouseDown={() => props.onToggle(b().id)}
+    >
+      <box flexDirection="row" flexShrink={0}>
+        <text flexShrink={0} fg={p.muted}>{`${b().collapsed ? "▸" : "▾"} `}</text>
+        <text flexShrink={0} fg={p.gutter}>{"✻"}</text>
+        <text flexShrink={1} wrapMode="none" fg={p.muted} attributes={TextAttributes.ITALIC}>
+          {` ${header()}`}
+        </text>
+        <box flexGrow={1} />
+      </box>
+      <Show when={!b().collapsed}>
+        <box flexDirection="column" flexShrink={0}>
+          <For each={lines()}>
+            {(line) => (
+              <text flexShrink={0} wrapMode="word" fg={p.muted} attributes={TextAttributes.ITALIC}>
+                {`  ${line || " "}`}
+              </text>
+            )}
+          </For>
+          <Show when={overflow() > 0}>
+            <text fg={p.muted}>{`  … ${overflow()} more line${overflow() === 1 ? "" : "s"}`}</text>
+          </Show>
+        </box>
       </Show>
     </box>
   );

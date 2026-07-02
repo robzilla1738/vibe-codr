@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { splitMarkdown, renderTable, stripInline, displayWidth, type TableLine } from "./markdown-blocks.ts";
+import { splitMarkdown, renderTable, stripInline, displayWidth, tableFits, type TableLine } from "./markdown-blocks.ts";
 
 /** Reconstruct a grid table line's visual text (the box rules verbatim; a
  * header/row as its cells wrapped by the outer + inner `│` borders the UI draws) so
@@ -228,4 +228,42 @@ test("renderTable preserves a cell's internal spacing when it fits the column", 
   const row = lines.find((l) => l.role === "row") as { cells: string[] };
   // The four spaces survive (no greedy re-flow collapsing them to one).
   expect(row.cells[0]).toContain("a    b");
+});
+
+test("stripInline preserves literal asterisk pairs — globs and math are NOT italics", () => {
+  // Regression: the italic pass ate the text between any two `*`, silently
+  // corrupting glob patterns and multiplication in headings/cells/quotes.
+  expect(stripInline("Files: *.ts and *.js")).toBe("Files: *.ts and *.js");
+  expect(stripInline("2 * 3 and 4 * 5")).toBe("2 * 3 and 4 * 5");
+  expect(stripInline("match *.log and *.tmp")).toBe("match *.log and *.tmp");
+  // Real emphasis (content flanked by non-space) still conceals.
+  expect(stripInline("*emphasis*")).toBe("emphasis");
+  expect(stripInline("a *real emphasis* here")).toBe("a real emphasis here");
+});
+
+test("nested blockquotes flatten instead of showing the inner marker", () => {
+  const blocks = splitMarkdown("> outer\n> > nested deeper");
+  expect(blocks).toHaveLength(1);
+  const q = blocks[0]!;
+  expect(q.kind).toBe("quote");
+  expect(q.kind === "quote" && q.lines).toEqual(["outer", "nested deeper"]);
+});
+
+test("tableFits: the 3-cell column floor decides when a grid physically fits", () => {
+  // 2 cols → min 13; 13 cols → min 79 (> the 78-col max budget of a wide column).
+  expect(tableFits(2, 13)).toBe(true);
+  expect(tableFits(2, 12)).toBe(false);
+  expect(tableFits(13, 78)).toBe(false);
+  expect(tableFits(7, 43)).toBe(true);
+  expect(tableFits(7, 42)).toBe(false);
+});
+
+test("displayWidth measures grapheme clusters as single glyphs", () => {
+  expect(displayWidth("🇺🇸")).toBe(2); // flag = 2 regional indicators, ONE glyph
+  expect(displayWidth("👨‍👩‍👧")).toBe(2); // ZWJ family
+  expect(displayWidth("👍🏽")).toBe(2); // skin-tone modifier
+  expect(displayWidth("☀️")).toBe(2); // VS16 upgrades a narrow base to emoji
+  // The fast path is untouched: plain ASCII + CJK still sum per codepoint.
+  expect(displayWidth("ab")).toBe(2);
+  expect(displayWidth("日本")).toBe(4);
 });

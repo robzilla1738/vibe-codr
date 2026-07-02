@@ -32,6 +32,29 @@ export type Block =
       /** Output is a web-search result list → render as clean source cards. */
       isSources?: boolean;
       isError: boolean;
+      /** The call finished (result landed or its diff folded in). While false the
+       * row is LIVE: its chevron spins and `tail` previews streaming output. */
+      done: boolean;
+      /** Rolling tail of streamed output (bash chunks) shown under the header
+       * while the call runs — a long `bun test` is visibly alive, not a dead
+       * row until it exits. Bounded; cleared when the result lands. */
+      tail?: string;
+      /** Stamp from the `tool-start` action (app time, ms). */
+      startedAt?: number;
+      /** Wall-clock the call took; the meta column shows it when it's ≥2s. */
+      elapsedMs?: number;
+    }
+  | {
+      /** A burst of the model's reasoning, landed as a collapsed row once the
+       * model ACTS (text streams / a tool starts / the turn ends) — so the
+       * thinking that led to each step stays reviewable in place, like the
+       * live one-line preview but permanent. */
+      kind: "thinking";
+      id: number;
+      text: string;
+      collapsed: boolean;
+      /** How long the burst took, seconds (shown in the header when ≥1). */
+      seconds?: number;
     }
   | { kind: "notice"; id: number; text: string; level: "info" | "warn" | "error" };
 
@@ -45,6 +68,10 @@ export interface Subagent {
   activity?: string;
   /** One-line result summary, surfaced once the subagent finishes. */
   result?: string;
+  /** App-time start stamp — drives the live per-row elapsed while running. */
+  startedAt?: number;
+  /** Total wall-clock once finished (the row's final duration). */
+  elapsedMs?: number;
 }
 
 /** A file edited this session, with its cumulative line delta (footer summary). */
@@ -90,8 +117,13 @@ export type TranscriptAction =
   | { type: "delta"; text: string }
   /** Land the streaming reply: flip `streaming` off so <markdown> closes fences. */
   | { type: "finalize" }
-  | { type: "tool-start"; toolCallId: string; toolName: string; input: unknown }
-  | { type: "tool-finish"; toolCallId: string; output: unknown; isError: boolean }
+  /** `at` = app-time stamp (ms); with tool-finish's it yields the row's duration. */
+  | { type: "tool-start"; toolCallId: string; toolName: string; input: unknown; at?: number }
+  /** A chunk of live streamed output from a RUNNING call (bash stdout/stderr). */
+  | { type: "tool-progress"; toolCallId: string; chunk: string }
+  | { type: "tool-finish"; toolCallId: string; output: unknown; isError: boolean; at?: number }
+  /** A finished reasoning burst → a collapsed, expandable thinking row. */
+  | { type: "thinking"; text: string; seconds?: number }
   | {
       type: "file-changed";
       toolCallId: string;
@@ -167,6 +199,8 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           isMarkdown,
           isSources,
           isError: false,
+          done: false,
+          ...(a.at !== undefined ? { startedAt: a.at } : {}),
         },
       ];
       return {
@@ -175,6 +209,17 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
         nextId: f.nextId + 1,
         toolByCallId: { ...f.toolByCallId, [a.toolCallId]: blocks.length - 1 },
       };
+    }
+    case "tool-progress": {
+      // Live streamed output for a RUNNING call: keep a bounded rolling tail on
+      // the block (rendering shows its last lines). Once the result has landed
+      // (done), stray late chunks are dropped — they'd resurrect a dead preview.
+      const idx = s.toolByCallId[a.toolCallId];
+      const b = idx == null ? undefined : s.blocks[idx];
+      if (idx == null || b?.kind !== "tool" || b.done) return s;
+      const blocks = s.blocks.slice();
+      blocks[idx] = { ...b, tail: ((b.tail ?? "") + a.chunk).slice(-600) };
+      return { ...s, blocks };
     }
     case "tool-finish": {
       // Skip only the echo for the exact call whose diff we already folded.
@@ -192,10 +237,46 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       const b = s.blocks[idx];
       if (b?.kind !== "tool") return { ...s, toolByCallId };
       const blocks = s.blocks.slice();
-      blocks[idx] = { ...b, output: lines, isError: a.isError };
+      const { tail: _tail, ...rest } = b;
+      blocks[idx] = {
+        ...rest,
+        output: lines,
+        isError: a.isError,
+        // A failed call opens EXPANDED: the error text is exactly what the user
+        // needs next — hiding it behind a click is friction at the worst moment.
+        collapsed: a.isError ? false : b.collapsed,
+        done: true,
+        ...(a.at !== undefined && b.startedAt !== undefined
+          ? { elapsedMs: Math.max(0, a.at - b.startedAt) }
+          : {}),
+      };
       return { ...s, blocks, toolByCallId };
     }
+    case "thinking": {
+      const text = a.text.trim();
+      if (!text) return s;
+      const f = finalizeActive(s);
+      return {
+        ...f,
+        blocks: [
+          ...f.blocks,
+          {
+            kind: "thinking" as const,
+            id: f.nextId,
+            text,
+            collapsed: true,
+            ...(a.seconds !== undefined ? { seconds: a.seconds } : {}),
+          },
+        ],
+        nextId: f.nextId + 1,
+      };
+    }
     case "file-changed": {
+      // A no-op change (empty diff, ±0 lines — e.g. a write that produced the
+      // identical file) must NOT convert the tool block into an expanded empty
+      // diff and suppress its real result text. Leave the block alone so the
+      // tool's own output ("no changes") lands normally.
+      if (!a.diff && a.added === 0 && a.removed === 0) return s;
       const suppressCallIds = { ...s.suppressCallIds, [a.toolCallId]: true as const };
       const verb = a.action === "write" ? "wrote" : "edited";
       const header = `${GLYPH.file} ${verb} ${a.path}  +${a.added} -${a.removed}`;
@@ -222,6 +303,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
         collapsed: false,
         isDiff: true,
         isError: false,
+        done: true,
       };
       if (canFold && idx != null) {
         const blocks = fin.blocks.slice();
@@ -242,11 +324,24 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
     case "toggle":
       return {
         ...s,
-        blocks: s.blocks.map((b) => (b.id === a.id && b.kind === "tool" ? { ...b, collapsed: !b.collapsed } : b)),
+        blocks: s.blocks.map((b) =>
+          b.id === a.id && (b.kind === "tool" || b.kind === "thinking")
+            ? { ...b, collapsed: !b.collapsed }
+            : b,
+        ),
       };
     case "clear-turn": {
       const f = finalizeActive(s);
-      return { ...f, toolByCallId: {}, suppressCallIds: {} };
+      // The turn is over (finished or aborted): settle any still-live tool rows
+      // so an interrupted call doesn't spin forever with a stale output tail.
+      const blocks = f.blocks.some((b) => b.kind === "tool" && !b.done)
+        ? f.blocks.map((b) => {
+            if (b.kind !== "tool" || b.done) return b;
+            const { tail: _tail, ...rest } = b;
+            return { ...rest, done: true };
+          })
+        : f.blocks;
+      return { ...f, blocks, toolByCallId: {}, suppressCallIds: {} };
     }
     default:
       return s;

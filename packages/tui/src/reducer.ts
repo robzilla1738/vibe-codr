@@ -149,9 +149,9 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
     case "tool-start": {
       const f = finalizeActive(s);
       const label = toolLabel(a.toolName, a.input);
-      // A subagent reply is markdown prose; a web-search result list renders as
-      // clean source cards — both instead of raw dumped lines when expanded.
-      const isMarkdown = a.toolName === "spawn_subagent";
+      // A subagent reply / task-DAG report is markdown prose; a web-search result
+      // list renders as clean source cards — both instead of raw dumped lines.
+      const isMarkdown = a.toolName === "spawn_subagent" || a.toolName === "spawn_tasks";
       const isSources = a.toolName === "web_search";
       const blocks = [
         ...f.blocks,
@@ -160,9 +160,9 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           id: f.nextId,
           label,
           output: [] as string[],
-          // A subagent reply opens expanded (it's the answer); other tools stay
-          // condensed to one line until clicked.
-          collapsed: a.toolName !== "spawn_subagent",
+          // A subagent's reply (or a fan-out's consolidated report) opens expanded
+          // — it IS the answer; other tools stay condensed until clicked.
+          collapsed: !isMarkdown,
           isDiff: false,
           isMarkdown,
           isSources,

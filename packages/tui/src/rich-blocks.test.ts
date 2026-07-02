@@ -112,6 +112,15 @@ test("weatherIcon maps conditions to glyphs", () => {
   expect(weatherIcon("Snow")).toBe("❄");
 });
 
+test("every weather glyph is BMP text-presentation (predictable width)", () => {
+  // A supplementary-plane emoji (🌫/🌬) is double-width with spotty terminal
+  // font coverage and would misalign the forecast columns.
+  for (const cond of ["Foggy", "Windy", "Sunny", "Rain", "Snow", "Thunderstorm", "Overcast", "Haze", ""]) {
+    const glyph = weatherIcon(cond);
+    expect(glyph.codePointAt(0)! <= 0xffff).toBe(true);
+  }
+});
+
 // ── parseSources ─────────────────────────────────────────────────────────────
 test("parseSources reads pipe-delimited cards", () => {
   const s = parseSources("Bitcoin hits high | coindesk.com | BTC surged past $58k.");

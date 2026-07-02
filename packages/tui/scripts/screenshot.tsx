@@ -42,6 +42,10 @@ interface EngineOpts {
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number; costUSD: number; cachedInputTokens?: number };
   git?: { branch: string; dirty: number; ahead: number; behind: number; worktree: boolean };
   models?: { id: string; providerId: string; name?: string; contextWindow?: number }[];
+  /** `/accent` override carried by the snapshot (e.g. "#fab283" for orange). */
+  accent?: string;
+  /** Palette name carried by the snapshot (e.g. "tokyonight"). */
+  theme?: string;
 }
 function makeEngine(o: EngineOpts) {
   const queue: UIEvent[] = [];
@@ -60,8 +64,8 @@ function makeEngine(o: EngineOpts) {
       goal: o.goal ?? null,
       usage: o.usage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
       tasks: [],
-      theme: "default",
-      accentColor: "",
+      theme: o.theme ?? "default",
+      accentColor: o.accent ?? "",
       commandNames: ["help", "cost", "model", "theme", "approvals"],
       git: o.git,
     }),
@@ -388,6 +392,59 @@ const SCENES: SceneDef[] = [
       await drag(10, 9, 60, 9);
       // Let the toast slide in to its hold position (eases in over ~4 frames).
       for (let i = 0; i < 5; i++) await settle();
+    },
+  },
+  {
+    name: "17-accent",
+    width: 92,
+    height: 26,
+    cwd: "~/vibe-codr",
+    engine: { usage: U, git: { branch: "main", dirty: 0, ahead: 0, behind: 0, worktree: false } },
+    async setup({ push, type, settle, waitFor }) {
+      // The /accent swatch submenu: each preset name painted in the hue it sets.
+      push({ type: "user-message", sessionId: "s", text: "can I change the accent color?" } as UIEvent);
+      push({ type: "assistant-text-delta", sessionId: "s", delta: "Yes — pick a preset below, or give any hex." } as UIEvent);
+      push({ type: "turn-finished", sessionId: "s" } as UIEvent);
+      await settle();
+      await type("/accent ");
+      await settle();
+      await waitFor("violet");
+    },
+  },
+  {
+    name: "18-orange",
+    width: 92,
+    height: 30,
+    cwd: "~/vibe-codr",
+    engine: {
+      usage: U,
+      accent: "#fab283",
+      git: { branch: "main", dirty: 0, ahead: 0, behind: 0, worktree: false },
+    },
+    async setup({ settle }) {
+      // `/accent orange` in effect: the wordmark fade, markers, input rail, and
+      // caret all follow the warm hue — one command recolors the whole chrome.
+      await settle();
+    },
+  },
+  {
+    name: "19-tokyonight",
+    width: 92,
+    height: 26,
+    cwd: "~/vibe-codr",
+    engine: {
+      usage: U,
+      theme: "tokyonight",
+      git: { branch: "main", dirty: 0, ahead: 0, behind: 0, worktree: false },
+    },
+    async setup({ push, waitFor }) {
+      // A ported classic theme end-to-end: its own backdrop, surfaces, and hues.
+      push({ type: "user-message", sessionId: "s", text: "switch the theme to tokyonight" } as UIEvent);
+      push({ type: "assistant-text-delta", sessionId: "s", delta: "Done — **Tokyo Night** is active. The palette registry also ships catppuccin, gruvbox, nord, one-dark, dracula, rosepine, kanagawa, everforest, flexoki, and vesper." } as UIEvent);
+      push({ type: "tool-call-started", sessionId: "s", toolCallId: "t1", toolName: "read", input: { path: "packages/tui/src/themes.ts" } } as UIEvent);
+      push({ type: "tool-call-finished", sessionId: "s", toolCallId: "t1", toolName: "read", output: "const TOKYONIGHT: Palette = { … }", isError: false } as UIEvent);
+      push({ type: "turn-finished", sessionId: "s" } as UIEvent);
+      await waitFor("Tokyo Night");
     },
   },
 ];

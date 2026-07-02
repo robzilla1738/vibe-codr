@@ -45,7 +45,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "approvals", description: "Show or set approval mode (/approvals ask|auto)" },
       { name: "reasoning", description: "Show or set reasoning effort (/reasoning low|medium|high|off)" },
       { name: "theme", description: "Show or set the UI theme (/theme <name>)" },
-      { name: "accent", description: "Show or set the accent color (/accent <hex>)" },
+      { name: "accent", description: "Show or set the accent color (/accent orange · /accent <hex>)" },
     ],
   },
   {

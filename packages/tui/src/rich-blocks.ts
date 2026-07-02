@@ -253,11 +253,13 @@ export function weatherIcon(condition: string | undefined): string {
   if (/(thunder|storm|lightning)/.test(c)) return "⛈";
   if (/(snow|sleet|flurr|blizzard|ice)/.test(c)) return "❄";
   if (/(rain|drizzle|shower|wet)/.test(c)) return "☔";
-  if (/(fog|mist|haze|smoke)/.test(c)) return "🌫";
+  // Fog/wind stay BMP too (`🌫`/`🌬` are supplementary-plane emoji — double-width
+  // with spotty terminal-font coverage, the exact problem this table avoids).
+  if (/(fog|mist|haze|smoke)/.test(c)) return "≋";
   if (/(part|few|scatter|broken|intermittent)/.test(c) && /cloud/.test(c)) return "⛅";
   if (/(cloud|overcast|grey|gray)/.test(c)) return "☁";
   if (/(clear|sunny|sun|fair)/.test(c)) return "☀";
-  if (/wind|breez|gust/.test(c)) return "🌬";
+  if (/wind|breez|gust/.test(c)) return "≈";
   return "⛅";
 }
 

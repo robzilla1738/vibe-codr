@@ -571,14 +571,15 @@ Verified sound: headless permission handling doesn't hang (non-interactive auto-
   text. Fixed: `plan-presented` is folded into the JSON `text`. Regression added.
 
 ### CONFIRMED — recorded (need interactive verification; not fixed blind)
-- [MEDIUM] Interactive TUI drops `verify-*` / `loop-tick` / `checkpoint-restored` / `reasoning-delta`
-  events the headless renderer shows (partially mitigated by notices). **Recommended:** add cases
-  to app.tsx's event switch + a reasoning surface. Deferred — a large `.tsx` render change that
-  needs interactive screenshot verification to avoid visual regressions.
-- [MEDIUM] Ctrl-C in the TUI bypasses `engine.finalize()` (no digest, orphaned bg jobs, unclosed
-  MCP). **Recommended:** set OpenTUI `exitOnCtrlC: false` and handle SIGINT with
-  finalize()+terminal-restore. Deferred — mis-wiring risks leaving the terminal in raw mode
-  (worse than the leak); needs interactive verification.
+- ~~[MEDIUM] Interactive TUI drops `verify-*` / `loop-tick` / `checkpoint-restored` /
+  `reasoning-delta` events~~ **FIXED (2026-07-02, UI pass):** app.tsx now renders all four —
+  verify/loop/checkpoint as transcript notices (a verify failure carries the output's first
+  line, previously shown nowhere), reasoning as a live `✻ thinking` one-liner under the
+  spinner. Smoke-verified (§15/§16) + screenshot-verified.
+- ~~[MEDIUM] Ctrl-C in the TUI bypasses `engine.finalize()`~~ **FIXED (2026-07-02, UI pass):**
+  `mountApp` renders with `exitOnCtrlC: false`; Ctrl+C routes through the SAME
+  finalize-then-exit path the shipped `/exit` command already used (so terminal restore is
+  the proven path, not new wiring); a second press during teardown hard-exits (130).
 - [LOW] Permission card is hard to answer while the input draft is non-empty; reducer drops a
   tool-finish for an unknown callId (benign); transcript `blocks` grows unbounded. Recorded.
 

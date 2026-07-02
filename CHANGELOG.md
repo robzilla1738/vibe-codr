@@ -4,6 +4,52 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — named accents (orange is back) + eleven ported classic themes
+
+- **`/accent <name>`** — named presets alongside the hex form: `orange`
+  (opencode's signature peach `#fab283`), `blue`, `ember`, `amber`, `green`,
+  `teal`, `violet`, `rose`, `white`. The submenu renders each preset as a **live
+  swatch** (the row painted in the hue it sets), the engine resolves names to hex
+  so `accent-changed` needs no UI-side map, and the wordmark fade + markers +
+  input rail all follow. The **ASK mode chip now follows the accent** (PLAN
+  green / YOLO red stay fixed), so a warm accent recolors the whole input
+  coherently instead of clashing with a fixed blue.
+- **Eleven ported classic themes** mapped onto the full semantic palette (own
+  backdrop, raised surfaces, series ramp): `tokyonight`, `catppuccin`,
+  `gruvbox`, `nord`, `one-dark`, `dracula`, `rosepine`, `kanagawa`,
+  `everforest`, `flexoki` (burnt-orange primary), `vesper` (peach primary). The
+  `/theme` menu + engine validation + help text all derive from one registry, so
+  a new theme can't drift out of any list.
+
+### Fixed — TUI event parity, tool-call display, graceful Ctrl+C
+
+- **The TUI no longer drops engine events the headless printer showed** (the
+  audit ledger's deferred subsystem-11 item): `reasoning-delta` renders as a
+  live one-line `✻ thinking` preview under the working spinner (cleared when
+  answer text streams), `verify-started`/`verify-finished` land as notices (a
+  failure now carries the check's first output line — previously shown nowhere),
+  and `loop-tick` / `checkpoint-restored` mark iterations and `/undo` reverts in
+  the transcript.
+- **Ctrl+C exits gracefully** (the ledger's other deferred item): the renderer's
+  built-in exit (which skipped `engine.finalize()` — dropping the session digest,
+  orphaning background jobs, leaking MCP connections) is disabled; Ctrl+C routes
+  through the same finalize-then-exit path as `/exit`, clears a non-empty draft
+  first, and a second press during teardown hard-exits.
+- **Tool rows now describe every tool truthfully**: `save_memory` shows the fact
+  it stores (it read schema fields that don't exist — the row was always blank),
+  `glob` shows its real `cwd`, `spawn_tasks` reads as its DAG shape
+  (`3 tasks: recon → impl → verify`, opens expanded + renders its report as
+  markdown) instead of `[object Object]`, `read_mcp_resource`/`get_mcp_prompt`
+  get the `⊕` MCP glyph and list/read summaries, and `use_skill`/`run_check`/
+  `read_report`/`post_note`/`crawl_docs`/`package_info`/`job_*` all gained
+  bespoke icons + summaries. Object args in the generic fallback digest as JSON.
+- **The TUI smoke suite is green again and wider**: five click assertions had
+  silently staled against the padded-panel geometry (clicks landed in padding),
+  two assertions tested retired renderings (permission-card text, glyph-drawn
+  bars); all fixed, plus new sections covering the reasoning preview, the
+  verify/loop/checkpoint notices, the accent swatch menu, and the spawn_tasks
+  label.
+
 ### Hardened — full subsystem-by-subsystem audit
 
 A read-every-line adversarial audit across all 12 subsystems (tracked in

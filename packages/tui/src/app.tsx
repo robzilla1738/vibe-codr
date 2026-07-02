@@ -79,7 +79,7 @@ import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.
 import { brandSpans } from "./gradient.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
-import { getTheme, type Palette } from "./themes.ts";
+import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
 import { toolLabel } from "./tool-icons.ts";
 import {
   initialTranscript,
@@ -177,6 +177,11 @@ export function App(props: { engine: EngineClient }) {
   // elapsed time updates without re-rendering an idle screen.
   const [working, setWorking] = createSignal(false);
   const [tick, setTick] = createSignal(0);
+  // The model's live reasoning, condensed to its latest line — shown muted under
+  // the working spinner while the model thinks, cleared the moment real answer
+  // text starts streaming (and at turn end). Headless parity: `-p` prints
+  // reasoning with --show-reasoning; the TUI otherwise dropped it entirely.
+  const [reasoningTail, setReasoningTail] = createSignal("");
   let turnStartedAt = 0;
   let model = snap.model;
   let mode = snap.mode;
@@ -229,9 +234,11 @@ export function App(props: { engine: EngineClient }) {
   // stay neutral grey (`palette().border`).
   const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
   const brand = () => accentColor() || palette().primary;
-  // The mode chip on the input's top border — the one mode-driven hue in the UI:
-  // ASK (execute) blue · PLAN green · YOLO red.
-  const accent = () => modeColor(uiMode());
+  // The mode chip + input rail hue — the one mode-driven color in the UI. ASK
+  // (execute, the everyday state) FOLLOWS the brand accent so `/accent orange`
+  // recolors the whole input control coherently (a fixed blue chip would clash
+  // with a warm accent); PLAN green and YOLO red stay fixed alert hues.
+  const accent = () => (uiMode() === "execute" ? brand() : modeColor(uiMode()));
   // The mode word shown on the input's top border. "execute" means "every action
   // is gated by an approval prompt", so it reads as ASK (vs YOLO = no prompts).
   const modeWord = () => (uiMode() === "execute" ? "ASK" : uiMode().toUpperCase());
@@ -264,6 +271,8 @@ export function App(props: { engine: EngineClient }) {
     if (name === "theme") return themeName();
     if (name === "approvals") return uiMode() === "yolo" ? "auto" : "ask";
     if (name === "reasoning") return reasoningSig() ?? "off";
+    // The live accent maps back to its preset name (custom hexes match nothing).
+    if (name === "accent") return accentNameOf(accentColor() || palette().primary);
     return undefined;
   };
   // Detect when the draft opens the unified `/model` picker and WHICH agent it
@@ -448,7 +457,9 @@ export function App(props: { engine: EngineClient }) {
   // keyboard handler, click handler, and renderer share a single path regardless
   // of which kind of menu produced it. `label` is the primary token (aligned into
   // a column); `desc` is the muted explanation beside it.
-  type MenuRow = { label: string; desc?: string; current?: boolean; choose: (run: boolean) => void };
+  // `fg` paints the label in its own hue — the accent submenu uses it to render
+  // each preset name as a live swatch of the color it would set.
+  type MenuRow = { label: string; desc?: string; current?: boolean; fg?: string; choose: (run: boolean) => void };
 
   // The unified slash menu — three shapes, one row list:
   //   • command — the flat `/command` list (filters as you type)
@@ -581,6 +592,8 @@ export function App(props: { engine: EngineClient }) {
     const rows: MenuRow[] = st.items.map((v) => ({
       label: v,
       current: cur === v,
+      // Accent rows render as live swatches — each preset name in its own hue.
+      ...(st.command.name === "accent" && ACCENT_PRESETS[v] ? { fg: ACCENT_PRESETS[v] } : {}),
       choose: (run: boolean) => {
         const line = `/${st.command.name} ${v}`;
         setDraft(line);
@@ -588,7 +601,8 @@ export function App(props: { engine: EngineClient }) {
         if (run) runText(line);
       },
     }));
-    return { open: true, loading: false, kind: "value" as const, title: `/${st.command.name}`, hint: "", rows };
+    const hint = st.command.name === "accent" ? "or type a hex — /accent #fab283" : "";
+    return { open: true, loading: false, kind: "value" as const, title: `/${st.command.name}`, hint, rows };
   });
 
   // Pre-highlight the current value (if any), else the first row, whenever the
@@ -664,6 +678,7 @@ export function App(props: { engine: EngineClient }) {
       current: !!r.current,
       label: r.desc ? r.label.padEnd(labelW + 2) : r.label,
       desc: r.desc ?? "",
+      fg: r.fg,
       idx: start + i,
     }));
     const more = rows.length > win ? `+${rows.length - win} more · type to filter` : "";
@@ -748,6 +763,24 @@ export function App(props: { engine: EngineClient }) {
     const target = nextUiMode(deriveUiMode(mode, approvals));
     for (const cmd of commandsForUiMode(target)) props.engine.send(cmd);
   };
+  // Graceful exit — the SAME teardown the `/exit` command runs (await finalize:
+  // session digest, background-job reap, MCP close — then exit; OpenTUI's own
+  // exit hook restores the terminal). Ctrl+C routes here now that the renderer's
+  // exitOnCtrlC is off (its default handler exited WITHOUT finalize, leaking
+  // jobs + dropping the digest). A second press while finalize is in flight
+  // hard-exits so a hung teardown can't trap the user.
+  let exiting = false;
+  const gracefulExit = () => {
+    if (exiting) process.exit(130);
+    exiting = true;
+    void (async () => {
+      try {
+        await props.engine.finalize?.();
+      } finally {
+        process.exit(0);
+      }
+    })();
+  };
   // Apply the highlighted menu row; `run` also submits a complete one.
   const choosePalette = (run: boolean) => chooseAt(selIdx(), run);
   useKeyboard(
@@ -756,6 +789,18 @@ export function App(props: { engine: EngineClient }) {
     if (key.name === "tab" && key.shift) {
       key.preventDefault?.();
       cycleMode();
+      return;
+    }
+    // Ctrl+C: clear a half-typed draft first (readline muscle memory); on an
+    // empty draft it exits GRACEFULLY (finalize, then exit — the same path as
+    // /exit). Pressing again mid-teardown hard-exits.
+    if (key.ctrl && key.name === "c") {
+      key.preventDefault?.();
+      if (!exiting && draft().trim()) {
+        setDraft("");
+        return;
+      }
+      gracefulExit();
       return;
     }
     // Ctrl+O folds/unfolds every turn's tool work at once (just the prose left).
@@ -871,6 +916,18 @@ export function App(props: { engine: EngineClient }) {
       const endTurn = () => {
         apply({ type: "clear-turn" });
         setWorking(false);
+        setReasoningTail("");
+      };
+      // Reasoning arrives as raw deltas; keep a rolling buffer and surface just
+      // the last non-empty line (bounded so a long think can't grow the string).
+      let reasoningBuf = "";
+      const pushReasoning = (delta: string) => {
+        reasoningBuf = (reasoningBuf + delta).slice(-2000);
+        const line = reasoningBuf
+          .split("\n")
+          .reverse()
+          .find((l) => l.trim().length > 0);
+        if (line) setReasoningTail(truncate(line.trim(), Math.max(24, contentWidth() - 8)));
       };
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
         switch (event.type) {
@@ -891,10 +948,20 @@ export function App(props: { engine: EngineClient }) {
             // Subagents panel, not streamed into the parent transcript; empty
             // deltas are no-ops.
             if (event.subagentId || !event.delta) break;
+            // Real answer text is streaming — the thinking preview has served
+            // its purpose (a later step's reasoning re-opens it).
+            reasoningBuf = "";
+            setReasoningTail("");
             // Buffer the token and flush on the next frame — coalescing keeps long
             // streamed replies smooth.
             pendingDelta += event.delta;
             scheduleFlush();
+            break;
+          case "reasoning-delta":
+            // The model's chain-of-thought, condensed to a one-line live preview
+            // under the spinner (subagent thinking stays in its panel row).
+            if (event.subagentId || !event.delta) break;
+            pushReasoning(event.delta);
             break;
           case "tool-call-started":
             if (event.subagentId) break; // subagent tools don't enter the transcript
@@ -1027,6 +1094,31 @@ export function App(props: { engine: EngineClient }) {
           case "loop-stopped":
             apply({ type: "notice", text: `Loop stopped · ${event.reason}`, level: "info" });
             break;
+          case "loop-tick":
+            // Mark each `/loop` iteration in the transcript (headless parity) so
+            // recurring runs read as separate passes, not one endless turn.
+            apply({ type: "notice", text: `${GLYPH.loopTick} loop iteration ${event.iteration}`, level: "info" });
+            break;
+          case "checkpoint-restored":
+            // /undo landed — say so in the transcript (the headless printer
+            // already did); otherwise a successful revert looked like a no-op.
+            apply({ type: "notice", text: `${GLYPH.revert} reverted: ${event.label}`, level: "info" });
+            break;
+          case "verify-started":
+            apply({ type: "notice", text: `verifying: ${event.command}`, level: "info" });
+            break;
+          case "verify-finished": {
+            // Failures carry the check's first line so the reason is visible
+            // without leaving the transcript (the payload was never shown anywhere).
+            const detail =
+              !event.ok && event.output ? ` — ${truncate(firstLine(event.output) ?? "", 120)}` : "";
+            apply({
+              type: "notice",
+              text: event.ok ? "verification passed" : `verification failed${detail}`,
+              level: event.ok ? "info" : "error",
+            });
+            break;
+          }
           case "engine-error":
             endTurn();
             apply({ type: "notice", text: `error: ${event.message}`, level: "error" });
@@ -1046,17 +1138,9 @@ export function App(props: { engine: EngineClient }) {
     // (a prior expand/collapse may have disengaged it — see `anchoredToggle`).
     if (scrollEl) scrollEl.stickyScroll = true;
     if (text === "/exit" || text === "/quit") {
-      // Await finalize (session digest + teardown) before the hard exit, so a
-      // `process.exit(0)` doesn't race the fire-and-forget shutdown and drop the
-      // digest — the same guarantee the CLI's `await engine.finalize()` gives the
-      // normal exit path. `finalize` is idempotent and optional on EngineClient.
-      void (async () => {
-        try {
-          await props.engine.finalize?.();
-        } finally {
-          process.exit(0);
-        }
-      })();
+      // Await finalize (session digest + teardown) before the hard exit — the
+      // shared gracefulExit path (also bound to Ctrl+C).
+      gracefulExit();
       return;
     }
     // `/jobs` toggles the background-jobs sub-view (running shell commands +
@@ -1538,13 +1622,25 @@ export function App(props: { engine: EngineClient }) {
           elapsed/interrupt label stays muted for readability. Hidden while a
           permission card is up (the card is the active affordance then). */}
       <Show when={working() && perms().length === 0 && !plan()}>
-        <box flexDirection="row" flexShrink={0} marginTop={1}>
-          <text fg={brand()}>
-            {spinnerFrame(tick())}
-          </text>
-          <text fg={palette().muted}>
-            {` ${elapsedLabel()}  ·  esc to interrupt`}
-          </text>
+        <box flexDirection="column" flexShrink={0} marginTop={1}>
+          <box flexDirection="row" flexShrink={0}>
+            <text fg={brand()}>
+              {spinnerFrame(tick())}
+            </text>
+            <text fg={palette().muted}>
+              {` ${elapsedLabel()}  ·  esc to interrupt`}
+            </text>
+          </box>
+          {/* Live thinking preview — the model's latest reasoning line, muted +
+              italic, while it thinks; clears the moment answer text streams. */}
+          <Show when={reasoningTail()}>
+            <box flexDirection="row" flexShrink={0}>
+              <text flexShrink={0} fg={palette().muted}>{"  ✻ "}</text>
+              <text flexShrink={1} wrapMode="none" fg={palette().muted} attributes={TextAttributes.ITALIC}>
+                {reasoningTail()}
+              </text>
+            </box>
+          </Show>
         </box>
       </Show>
       <Show when={plan()}>
@@ -1825,9 +1921,12 @@ export function App(props: { engine: EngineClient }) {
                         {row.current ? "● " : "  "}
                       </text>
                     </Show>
+                    {/* A row's own `fg` (the accent swatches) wins over the
+                        active/body tones so the color preview reads even while
+                        highlighted; selection still shows via ❯ + the band. */}
                     <text
                       flexShrink={0}
-                      fg={row.active ? brand() : palette().assistant}
+                      fg={row.fg ?? (row.active ? brand() : palette().assistant)}
                       attributes={row.active ? TextAttributes.BOLD : undefined}
                     >
                       {row.label}
@@ -2718,7 +2817,11 @@ function shortCwd(): string {
 }
 
 export async function mountApp(engine: EngineClient): Promise<void> {
-  render(() => <App engine={engine} />);
+  // exitOnCtrlC off: the renderer's built-in handler exits WITHOUT running
+  // engine.finalize() (no session digest, orphaned background jobs, unclosed
+  // MCP). Ctrl+C is handled in App's useKeyboard instead, which routes through
+  // the same finalize-then-exit path as /exit.
+  render(() => <App engine={engine} />, { exitOnCtrlC: false });
   // Keep the process alive while the TUI runs.
   await new Promise<void>(() => {});
 }

@@ -62,3 +62,58 @@ test("humanized fallback: snake_case reads as words and drops an mcp prefix", ()
   expect(toolSummary("recall_memory", { query: "bt price" })).toBe('recall memory "bt price"');
   expect(toolSummary("mcp__linear__create_issue", { title: "x" })).toBe("linear create issue [title=x]");
 });
+
+test("save_memory summarizes the FACT it stores (the real schema field)", () => {
+  // Regression: the summary read title/name/query — none exist on the schema —
+  // so every save_memory row rendered as a bare "save memory".
+  expect(toolSummary("save_memory", { fact: "prefers bun over npm" })).toBe(
+    'save memory "prefers bun over npm"',
+  );
+});
+
+test("glob reads its real `cwd` field for the directory clause", () => {
+  expect(toolSummary("glob", { pattern: "**/*.ts", cwd: "packages/tui" })).toBe(
+    'glob "**/*.ts" in packages/tui',
+  );
+});
+
+test("spawn_tasks summarizes the DAG shape, never [object Object]", () => {
+  const input = {
+    tasks: [
+      { id: "recon", objective: "map the repo" },
+      { id: "impl", objective: "build it", deps: ["recon"] },
+      { id: "verify", objective: "test it", deps: ["impl"] },
+    ],
+  };
+  expect(toolSummary("spawn_tasks", input)).toBe("3 tasks: recon → impl → verify");
+  expect(toolLabel("spawn_tasks", input).startsWith("✦ ")).toBe(true);
+  expect(toolSummary("spawn_tasks", {})).toBe("spawn tasks");
+});
+
+test("orchestration + session tools carry bespoke summaries", () => {
+  expect(toolSummary("read_report", { task_id: "impl" })).toBe("read report impl");
+  expect(toolSummary("use_skill", { name: "polish" })).toBe("skill polish");
+  expect(toolSummary("run_check", { check: "test" })).toBe("run test");
+  expect(toolSummary("post_note", { note: "api uses v2 auth" })).toBe('post note "api uses v2 auth"');
+  expect(toolSummary("package_info", { name: "react", ecosystem: "npm" })).toBe("package react (npm)");
+  expect(toolSummary("job_status", { id: "job_1" })).toBe("job job_1");
+  expect(toolSummary("job_kill", { id: "job_1" })).toBe("kill job job_1");
+  expect(toolSummary("crawl_docs", { url: "https://docs.x.dev", query: "auth" })).toBe(
+    'crawl https://docs.x.dev "auth"',
+  );
+});
+
+test("MCP aggregate tools get the ⊕ glyph and list/read summaries", () => {
+  expect(toolIcon("read_mcp_resource")).toBe("⊕");
+  expect(toolIcon("get_mcp_prompt")).toBe("⊕");
+  expect(toolSummary("read_mcp_resource", {})).toBe("list mcp resources");
+  expect(toolSummary("read_mcp_resource", { uri: "db://schema" })).toBe("mcp resource db://schema");
+  expect(toolSummary("get_mcp_prompt", { server: "linear", name: "triage" })).toBe(
+    "mcp prompt linear/triage",
+  );
+});
+
+test("kv digests object args as JSON, not [object Object]", () => {
+  expect(toolSummary("frobnicate", { opts: { a: 1 } })).toBe('frobnicate [opts={"a":1}]');
+  expect(toolSummary("frobnicate", { list: [1, 2] })).toBe("frobnicate [list=[1,2]]");
+});

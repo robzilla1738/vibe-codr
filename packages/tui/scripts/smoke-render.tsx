@@ -213,8 +213,10 @@ const toolRow = t
   .findIndex((l) => l.includes("read x") && l.includes("line"));
 check("located the tool row to click", toolRow >= 0);
 if (toolRow >= 0) {
-  // Click inside the centered column (past the left gutter), anywhere on the row.
-  await t.mockMouse.click(12, toolRow);
+  // Click inside the row's own box: past the left gutter (10), the column pad
+  // (1), the rail column (1), and the panel's paddingLeft (2) — column 15 is
+  // safely on the row content on an evenly-centered 104-col terminal.
+  await t.mockMouse.click(15, toolRow);
   await settle();
   frame = t.captureCharFrame();
   check("clicking a tool row expands its output", frame.includes("ALPHA_BODY"));
@@ -397,7 +399,7 @@ check(
 const pickRow = t.captureCharFrame().split("\n").findIndex((l) => l.includes("openai/o4-mini"));
 check("located the model picker row", pickRow >= 0);
 if (pickRow >= 0) {
-  await t.mockMouse.click(12, pickRow);
+  await t.mockMouse.click(15, pickRow);
   await settle();
   check(
     "clicking a model sets it (typed set-model command)",
@@ -417,7 +419,7 @@ check("providers menu lists a configured provider (✓)", frame.includes("✓") 
 check("providers menu flags an unconfigured provider (○)", frame.includes("○") && frame.includes("anthropic"));
 const provRow = t.captureCharFrame().split("\n").findIndex((l) => l.includes("anthropic"));
 if (provRow >= 0) {
-  await t.mockMouse.click(12, provRow);
+  await t.mockMouse.click(15, provRow);
   await settle();
   check(
     "choosing an unconfigured provider prefills the key entry",
@@ -442,14 +444,14 @@ check("agents menu offers a create affordance", frame.includes("new agent"));
 // line that also contains "explore" (e.g. "explore the repo" from an earlier turn).
 const agentRow = frame.split("\n").findIndex((l) => l.includes("explore") && l.includes("inherits"));
 if (agentRow >= 0) {
-  await t.mockMouse.click(12, agentRow); // select "explore" → agent-targeted picker
+  await t.mockMouse.click(15, agentRow); // select "explore" → agent-targeted picker
   await settle();
   await settle();
   frame = t.captureCharFrame();
   check("selecting an agent opens its model picker", frame.includes("agent: explore") || frame.includes('agent "explore"'));
   const mrow = frame.split("\n").findIndex((l) => l.includes("openai/o4-mini"));
   if (mrow >= 0) {
-    await t.mockMouse.click(12, mrow);
+    await t.mockMouse.click(15, mrow);
     await settle();
     check(
       "choosing a model sets THAT agent's model (set-agent-model)",
@@ -470,7 +472,7 @@ push({
 } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
-check("permission request renders as a card", frame.includes("[y]es once"));
+check("permission request renders as a card", frame.includes("y yes once"));
 check("permission card identifies the tool", frame.includes("bash"));
 await t.mockInput.typeText("y");
 await settle();
@@ -625,7 +627,17 @@ push({
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = await waitForText("Market cap");
-check("rich view: bar chart renders a title + bars", frame.includes("Market cap") && frame.includes("█"));
+// Bars are painted as BACKGROUND-colored cell runs (one seamless band; only a
+// fractional tail uses an eighth-block glyph) — assert the top bar's row carries
+// a saturated bg span rather than looking for `█` glyphs.
+const barPainted = t
+  .captureSpans()
+  .lines.some(
+    (l) =>
+      l.spans.some((s) => s.text.includes("1200")) &&
+      l.spans.some((s) => Math.max(s.bg.r, s.bg.g, s.bg.b) - Math.min(s.bg.r, s.bg.g, s.bg.b) > 0.2),
+  );
+check("rich view: bar chart renders a title + bars", frame.includes("Market cap") && barPainted);
 check("rich view: bar chart keeps the value labels", frame.includes("1200") && frame.includes("190"));
 check("rich view: pie legend shows labelled percentages", frame.includes("55%") && frame.includes("Others"));
 check("rich view: sources render as cards (title + domain)", frame.includes("Bitcoin surges") && frame.includes("coindesk.com"));
@@ -642,7 +654,9 @@ check("rich view: pie disc paints colored slices", pieColored);
 const capRow = t.captureCharFrame().split("\n").findIndex((l) => l.includes("Market cap"));
 check("located a row to select", capRow >= 0);
 if (capRow >= 0) {
-  await t.mockMouse.drag(8, capRow, 30, capRow);
+  // Drag WITHIN the content column (col 14+) — a drag that starts in the left
+  // gutter (x<11) selects no text renderable and never fires the copy handler.
+  await t.mockMouse.drag(14, capRow, 40, capRow);
   // Let the toast slide in to its hold position (it eases in over ~4 frames).
   for (let i = 0; i < 5; i++) await settle();
   frame = t.captureCharFrame();
@@ -661,6 +675,68 @@ await settle();
 frame = t.captureCharFrame();
 check("wide subagent fan-out collapses overflow to +N more", frame.includes("more"));
 check("wide subagent fan-out keeps the under-input status visible", frame.includes("ollama/glm-5.2"));
+
+// 15) The live thinking preview: reasoning deltas show a one-line ✻ preview
+// under the working spinner, and the first ANSWER token clears it. (§14's turn
+// is still working — no turn-finished was pushed.)
+push({ type: "reasoning-delta", sessionId: "smoke", delta: "I should check the failing test first" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("reasoning delta shows the thinking preview (✻)", frame.includes("✻") && frame.includes("failing test first"));
+push({ type: "assistant-text-delta", id: "z", delta: "On it." } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("answer text clears the thinking preview", !frame.includes("failing test first"));
+
+// 16) Engine lifecycle events the TUI used to drop now land as transcript
+// notices: verify pass/fail (with the failure's first line), /loop iteration
+// marks, and a checkpoint restore.
+push({ type: "verify-started", command: "bun test" } as UIEvent);
+push({ type: "verify-finished", ok: false, output: "FAIL 3/142 parser.test.ts" } as UIEvent);
+push({ type: "loop-tick", loopId: "l1", iteration: 4 } as UIEvent);
+push({ type: "checkpoint-restored", id: "cp9", label: "before edit turn 3" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("verify-started renders a notice", frame.includes("verifying: bun test"));
+check("verify failure renders with its reason", frame.includes("verification failed") && frame.includes("FAIL 3/142"));
+check("loop-tick renders an iteration mark", frame.includes("loop iteration 4"));
+check("checkpoint-restored renders a revert notice", frame.includes("reverted: before edit turn 3"));
+
+// 17) A spawn_tasks fan-out reads as its DAG shape, not raw [object Object]s.
+push({
+  type: "tool-call-started",
+  toolCallId: "t3",
+  toolName: "spawn_tasks",
+  input: { tasks: [{ id: "recon", objective: "map the repo" }, { id: "impl", objective: "build it", deps: ["recon"] }] },
+} as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("spawn_tasks summarizes its DAG shape", frame.includes("2 tasks: recon → impl"));
+check("spawn_tasks never dumps raw objects", !frame.includes("[object Object]"));
+push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+await settle();
+
+// 18) `/accent` opens a swatch submenu: preset names each painted in their own
+// hue (the orange row's fg IS the peach it sets), with the hex hint.
+await t.mockInput.typeText("/accent ");
+await settle();
+frame = t.captureCharFrame();
+check("accent submenu lists the presets", frame.includes("orange") && frame.includes("violet"));
+check("accent submenu offers the hex path", frame.includes("#fab283"));
+const orangeSwatch = t
+  .captureSpans()
+  .lines.flatMap((l) => l.spans)
+  .some((s) => s.text.includes("orange") && s.fg.r > s.fg.g && s.fg.g > s.fg.b && s.fg.r - s.fg.b > 0.25);
+check("accent submenu paints the orange row as a live swatch", orangeSwatch);
+// The theme submenu picked up the ported classics from THEME_NAMES.
+t.mockInput.pressEscape();
+await settle();
+await t.mockInput.typeText("/theme ");
+await settle();
+frame = t.captureCharFrame();
+check("theme submenu lists the ported classics", frame.includes("tokyonight") && frame.includes("gruvbox"));
+t.mockInput.pressEscape();
+await settle();
 
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);

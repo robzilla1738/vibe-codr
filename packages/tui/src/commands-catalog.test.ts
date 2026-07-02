@@ -5,6 +5,7 @@ import {
   isExactCommand,
   PALETTE_COMMANDS,
 } from "./commands-catalog.ts";
+import { ACCENT_NAMES, THEME_NAMES } from "./themes.ts";
 
 test("isExactCommand recognizes a full command word, with or without args", () => {
   // Names come from the engine snapshot (built-ins + custom commands + skills).
@@ -66,4 +67,21 @@ test("applyPalette completes an enum command to a trailing space (not done)", ()
 test("applyPalette completes a value as a runnable command", () => {
   const st = paletteState("/approvals ");
   expect(applyPalette(st, 1)).toEqual({ draft: "/approvals auto", done: true });
+});
+
+test("/theme values track the palette registry (no hardcoded drift)", () => {
+  const theme = PALETTE_COMMANDS.find((c) => c.name === "theme");
+  // Every registered theme is offered (the `dark` alias is hidden by design).
+  expect(theme?.values).toEqual(THEME_NAMES.filter((n) => n !== "dark"));
+  expect(theme?.values).toContain("tokyonight");
+  expect(theme?.values).toContain("flexoki");
+});
+
+test("/accent offers the named presets as a value submenu, and a hex still closes it", () => {
+  const accent = PALETTE_COMMANDS.find((c) => c.name === "accent");
+  expect(accent?.values).toEqual(ACCENT_NAMES);
+  const menu = paletteState("/accent ");
+  expect(menu.open && menu.mode === "value" && menu.items).toEqual(ACCENT_NAMES);
+  // Typing a hex matches no preset → the menu closes so Enter submits it raw.
+  expect(paletteState("/accent #fab283")).toEqual({ open: false });
 });

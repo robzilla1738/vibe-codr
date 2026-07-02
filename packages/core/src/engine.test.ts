@@ -78,6 +78,34 @@ test("/accent sets the accent color and emits accent-changed", async () => {
   expect(events.some((e) => e.type === "accent-changed" && e.accent === "#abcdef")).toBe(true);
 });
 
+test("/accent accepts named presets (orange → its hex) and rejects unknown names", async () => {
+  const engine = makeEngine();
+  const { events, stop } = collect(engine);
+  engine.send({ type: "run-slash", name: "accent", args: "orange" });
+  await engine.whenIdle();
+  // The event carries the RESOLVED hex, so UIs need no preset map of their own.
+  expect(engine.snapshot().accentColor).toBe("#fab283");
+  expect(events.some((e) => e.type === "accent-changed" && e.accent === "#fab283")).toBe(true);
+  engine.send({ type: "run-slash", name: "accent", args: "chartreuse-ish" });
+  await engine.whenIdle();
+  stop();
+  // Unknown name: warned, unchanged.
+  expect(engine.snapshot().accentColor).toBe("#fab283");
+  expect(
+    events.some((e) => e.type === "notice" && e.level === "warn" && /Unknown accent/.test(e.message)),
+  ).toBe(true);
+});
+
+test("/theme accepts the ported classic themes", async () => {
+  const engine = makeEngine();
+  const { events, stop } = collect(engine);
+  engine.send({ type: "run-slash", name: "theme", args: "tokyonight" });
+  await engine.whenIdle();
+  stop();
+  expect(events.some((e) => e.type === "theme-changed" && e.theme === "tokyonight")).toBe(true);
+  expect(engine.snapshot().theme).toBe("tokyonight");
+});
+
 test("snapshot.git reports branch and dirty count inside a repo", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-git-"));
   const git = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd });

@@ -66,6 +66,14 @@ test("a subagent tool opens expanded and renders as markdown", () => {
   expect(t.isMarkdown).toBe(true);
 });
 
+test("a spawn_tasks fan-out report opens expanded and renders as markdown", () => {
+  // The consolidated DAG report IS the answer — same treatment as spawn_subagent.
+  const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "spawn_tasks", input: { tasks: [] } }]);
+  const t = tool(s.blocks[0]!);
+  expect(t.collapsed).toBe(false);
+  expect(t.isMarkdown).toBe(true);
+});
+
 test("tool-finish output objects are JSON-stringified", () => {
   let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "read", input: {} }]);
   s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: { ok: true }, isError: false });

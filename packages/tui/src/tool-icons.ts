@@ -28,6 +28,8 @@ const ICONS: Record<string, string> = {
   task: "✦",
   subagent: "✦",
   spawn_subagent: "✦",
+  spawn_tasks: "✦",
+  read_report: "→",
   update_tasks: "☑",
   todowrite: "☑",
   todo_write: "☑",
@@ -36,6 +38,16 @@ const ICONS: Record<string, string> = {
   memory: "❖",
   recall_memory: "❖",
   save_memory: "❖",
+  post_note: "❖",
+  read_notes: "❖",
+  use_skill: "❋",
+  run_check: "✓",
+  crawl_docs: "%",
+  package_info: "⊙",
+  job_status: "☰",
+  job_kill: "■",
+  read_mcp_resource: "⊕",
+  get_mcp_prompt: "⊕",
   think: "✎",
 };
 
@@ -76,13 +88,27 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-/** Compact `key=value` digest of remaining args, e.g. `[depth=2, all=true]`. */
+/** Compact `key=value` digest of remaining args, e.g. `[depth=2, all=true]`.
+ * Objects/arrays digest as truncated JSON (a raw `String(v)` would print the
+ * useless `[object Object]`). */
 function kv(args: Record<string, unknown>, max = 3): string {
   const parts = Object.entries(args)
     .filter(([, v]) => v != null && v !== "")
     .slice(0, max)
-    .map(([k, v]) => `${k}=${truncate(str(v), 24)}`);
+    .map(([k, v]) => {
+      const val = typeof v === "object" ? safeJson(v) : str(v);
+      return `${k}=${truncate(val, 24)}`;
+    });
   return parts.length ? ` [${parts.join(", ")}]` : "";
+}
+
+/** JSON.stringify that never throws (circular input digests as its type). */
+function safeJson(v: unknown): string {
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    return Array.isArray(v) ? "[…]" : "{…}";
+  }
 }
 
 /**
@@ -109,7 +135,7 @@ export function toolSummary(name: string, input: unknown): string {
     case "apply_patch":
       return `patch ${path}`;
     case "glob":
-      return `glob ${quote(a.pattern || a.glob)}${a.path ? ` in ${str(a.path)}` : ""}`.trim();
+      return `glob ${quote(a.pattern || a.glob)}${a.cwd || a.path ? ` in ${str(a.cwd || a.path)}` : ""}`.trim();
     case "grep":
       return `grep ${quote(a.pattern || a.query)}${a.path ? ` in ${str(a.path)}` : ""}`.trim();
     case "list":
@@ -125,12 +151,44 @@ export function toolSummary(name: string, input: unknown): string {
     case "subagent":
     case "spawn_subagent":
       return `subagent ${quote(truncate(str(a.description || a.title || a.prompt), 56))}`.trim();
+    case "spawn_tasks": {
+      // A task-DAG fan-out: show the shape (`3 tasks: recon → impl → verify`),
+      // not the raw objects (which would stringify uselessly).
+      const tasks = Array.isArray(a.tasks) ? (a.tasks as Record<string, unknown>[]) : [];
+      const ids = tasks.map((t) => str(t?.id)).filter(Boolean);
+      const n = tasks.length;
+      return n
+        ? `${n} task${n === 1 ? "" : "s"}: ${truncate(ids.join(" → "), 56)}`
+        : "spawn tasks";
+    }
+    case "read_report":
+      return `read report ${str(a.task_id || a.taskId)}`.trim();
     case "recall":
     case "recall_memory":
       return `recall memory ${quote(truncate(str(a.query || a.q || a.prompt), 48))}`.trim();
     case "save_memory":
     case "memory":
-      return `save memory ${quote(truncate(str(a.title || a.name || a.query), 48))}`.trim();
+      return `save memory ${quote(truncate(str(a.fact || a.title || a.name), 48))}`.trim();
+    case "post_note":
+      return `post note ${quote(truncate(str(a.note), 48))}`.trim();
+    case "read_notes":
+      return "read shared notes";
+    case "use_skill":
+      return `skill ${str(a.name)}`.trim();
+    case "run_check":
+      return `run ${str(a.check) || "check"}`.trim();
+    case "crawl_docs":
+      return `crawl ${truncate(str(a.url), 40)} ${quote(truncate(str(a.query), 32))}`.trim();
+    case "package_info":
+      return `package ${str(a.name)}${a.ecosystem ? ` (${str(a.ecosystem)})` : ""}`.trim();
+    case "job_status":
+      return `job ${str(a.id)}`.trim();
+    case "job_kill":
+      return `kill job ${str(a.id)}`.trim();
+    case "read_mcp_resource":
+      return a.uri ? `mcp resource ${truncate(str(a.uri), 56)}` : "list mcp resources";
+    case "get_mcp_prompt":
+      return a.name ? `mcp prompt ${[str(a.server), str(a.name)].filter(Boolean).join("/")}` : "list mcp prompts";
     case "update_tasks":
     case "todowrite":
     case "todo_write":

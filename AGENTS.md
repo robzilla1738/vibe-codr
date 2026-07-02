@@ -314,7 +314,15 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   native dep) and can't run in CI. Verify it two ways: `bun run smoke:tui` drives
   the real `App` with a mock engine through OpenTUI's test renderer (asserts
   input/submit, streamed output, tool icons, the working spinner, the command
-  menu, the permission card, and the plan-approval card actually work), and
+  menu, the permission card, the plan-approval card, the reasoning preview, the
+  verify/loop/checkpoint notices, and the accent-swatch submenu actually work).
+  **Smoke click-coordinate gotcha:** the turn/input panels carry
+  `paddingLeft={2}` after the rail column, so a row's own clickable box starts at
+  column ~14 on the 104-col test terminal — `mockMouse.click(15, row)` hits it; a
+  click at column 12 lands in panel padding and silently no-ops (this staled five
+  click assertions once). Full-width Rail targets (the user card) still take
+  x=12, and a selection drag must START inside the content column (x≥14), never
+  the gutter. The other verification path:
   `packages/tui/scripts/screenshot.ts` drives that SAME real `App` and rasterizes
   its actual rendered cell grid (`captureSpans()`) to the README PNGs — so there's
   no parallel render logic to keep in lockstep; a visible app.tsx change just gets a
@@ -360,9 +368,17 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   in-column), `rich-blocks.ts` (the out-of-the-box data views — bar/line/pie charts,
   weather + source cards, all pure + tested), `gradient.ts` (the single-hue accent
   ramp `brandRamp`/`brandSpans` + `hexToHsv`/`hsvToHex`), `tool-icons.ts` (per-tool
-  glyph + action summary), `spinner.ts` (braille frames), `themes.ts` (palettes incl.
-  `opencode`; every palette defines the `gutter`/`heading`/`code` text tokens + a
-  `series` chart ramp), `modes.ts`, `commands-catalog.ts`.
+  glyph + action summary — every registered tool has a bespoke summary reading its
+  REAL schema fields; `kv()` digests object args as JSON, never `[object Object]`),
+  `spinner.ts` (braille frames), `themes.ts` (palettes: `default`/`light`/
+  `contrast`/`opencode` + the ported classics `tokyonight`/`catppuccin`/`gruvbox`/
+  `nord`/`one-dark`/`dracula`/`rosepine`/`kanagawa`/`everforest`/`flexoki`/`vesper`;
+  every palette defines the `gutter`/`heading`/`code` text tokens + a `series`
+  chart ramp, and its own background/panel/elevated surfaces. `ACCENT_PRESETS`
+  also lives here — named accents for `/accent orange|blue|…`; the ENGINE keeps a
+  synced copy in `engine-commands.ts` (KNOWN_THEMES too — core can't import tui;
+  update both together, `commands-catalog.ts` derives its menus from these so it
+  never drifts)), `modes.ts`, `commands-catalog.ts`.
   The screenshot generator lives in `@vibe/tui` and imports the real `App`, so it
   reuses these modules directly — there are no duplicated copies to keep in sync.
 - **Layout invariant (centered single column; don't regress scrolling):** the
@@ -489,8 +505,11 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
      ramp around `brand()`.
   2. **Markers** — panel titles, the `❯` user marker + heavy left gutter, the active
      task/step, the selected menu row, and the input caret (all `brand()`).
-  3. **Mode chip** — the input's top-border title, `modeColor(uiMode())` = ASK blue
-     `#70cbf4` (aligned to the accent) · PLAN green `#9ece6a` · YOLO red `#f7768e`.
+  3. **Mode chip** — the input's mode label + rail. ASK (execute) FOLLOWS the live
+     brand accent (`accent()` in app.tsx returns `brand()` for execute — so
+     `/accent orange` recolors the whole input control coherently instead of
+     clashing with a fixed blue); PLAN green `#9ece6a` · YOLO red `#f7768e` stay
+     fixed alert hues (`modes.ts`).
   4. **Working spinner** — the braille glyph in flat `brand()`, animated only while a
      turn runs (rides the existing `working()`-gated tick; no new idle timer).
   **Borders stay neutral grey** — the input frame and every panel box use
@@ -503,6 +522,23 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   only — never body text or tool output.** A `title` needs a top edge, so the input
   uses a full `border` (all sides); the docked slash menu (below) drops its *bottom*
   border so the input's top border is the shared divider.
+- **Event-surface parity (don't re-drop these).** The TUI's event switch handles
+  the full user-meaningful set the headless printer shows: `reasoning-delta`
+  (a one-line muted+italic `✻ thinking` preview under the working spinner —
+  cleared when answer text streams and at turn end), `verify-started`/
+  `verify-finished` (notice; a failure carries the output's first line),
+  `loop-tick`, and `checkpoint-restored` (both notices). Intentionally silent in
+  BOTH renderers: `session-start` (snapshot covers it), `step-finished`
+  (usage-updated covers it), `checkpoint-created` (per-turn noise),
+  `orchestration-task` (the Subagents panel + runner notices cover it),
+  `queue-changed.active` (the pending list is the UI need).
+- **Ctrl+C exits GRACEFULLY.** `mountApp` renders with `exitOnCtrlC: false` and
+  App's `useKeyboard` routes Ctrl+C through the same `gracefulExit` path as
+  `/exit` (await `engine.finalize()` — digest, job reap, MCP close — then
+  `process.exit(0)`; OpenTUI's exit hook restores the terminal). A non-empty
+  draft is cleared by the first press; a second press during teardown hard-exits
+  (130) so a hung finalize can't trap the user. Don't re-enable `exitOnCtrlC` —
+  the built-in handler exits WITHOUT finalize (the old leak).
 - **Plan-approval modal.** A presented plan (`plan-presented` event) is an
   interactive gate, not a static hint: with the input empty, **Enter accepts**
   (`resolve-plan` → engine switches to execute, seeds the task list from the plan's

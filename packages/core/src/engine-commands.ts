@@ -540,12 +540,17 @@ function handleReasoning(h: EngineHandle, args: string): void {
   }
 }
 
+/** The `/theme` help list, derived from the known set (never drifts from it). */
+function themeList(): string {
+  return [...KNOWN_THEMES].filter((n) => n !== "dark").join(", ");
+}
+
 /** `/theme [name]` — show or set the UI theme. */
 function handleTheme(h: EngineHandle, args: string): void {
   const next = args.trim();
   if (!next) {
     h.notice(
-      `Theme: ${h.config.theme}. Available: default (alias: dark), light, contrast, opencode. Use /theme <name>.`,
+      `Theme: ${h.config.theme}. Available: ${themeList()} (dark = default). Use /theme <name>.`,
     );
     return;
   }
@@ -553,10 +558,7 @@ function handleTheme(h: EngineHandle, args: string): void {
   // silently falls back to the default palette. (Mirrors tui's THEME_NAMES;
   // core can't import the UI package, so the known set is kept in sync here.)
   if (!KNOWN_THEMES.has(next)) {
-    h.notice(
-      `Unknown theme "${next}". Available: default (alias: dark), light, contrast, opencode.`,
-      "warn",
-    );
+    h.notice(`Unknown theme "${next}". Available: ${themeList()}.`, "warn");
     return;
   }
   h.config.theme = next;
@@ -565,23 +567,26 @@ function handleTheme(h: EngineHandle, args: string): void {
   h.notice(`Theme set to "${next}".`);
 }
 
-/** `/accent [hex]` — show or set the UI accent color. */
+/** `/accent [name|hex]` — show or set the UI accent color. Accepts a named
+ * preset (`/accent orange`) or any 6-digit hex (`/accent #fab283`). */
 function handleAccent(h: EngineHandle, args: string): void {
   const next = args.trim();
+  const names = Object.keys(ACCENT_PRESETS).join(", ");
   if (!next) {
-    const cur = h.config.accentColor || "theme default (neutral white)";
-    h.notice(`Accent: ${cur}. Use /accent <hex>, e.g. /accent #7aa2f7.`);
+    const cur = h.config.accentColor || "theme default (Blue 300 #70cbf4)";
+    h.notice(`Accent: ${cur}. Use /accent <name|hex> — ${names}, or e.g. /accent #fab283.`);
     return;
   }
-  if (!/^#?[0-9a-fA-F]{6}$/.test(next)) {
-    h.notice(`Invalid color "${next}". Use a 6-digit hex, e.g. #bb9af7.`, "warn");
+  const preset = ACCENT_PRESETS[next.toLowerCase()];
+  if (!preset && !/^#?[0-9a-fA-F]{6}$/.test(next)) {
+    h.notice(`Unknown accent "${next}". Use one of ${names}, or a 6-digit hex like #fab283.`, "warn");
     return;
   }
-  const hex = next.startsWith("#") ? next : `#${next}`;
+  const hex = preset ?? (next.startsWith("#") ? next : `#${next}`);
   h.config.accentColor = hex;
   void h.persistConfig({ accentColor: hex });
   h.emit({ type: "accent-changed", accent: hex });
-  h.notice(`Accent set to ${hex}.`);
+  h.notice(`Accent set to ${preset ? `${next.toLowerCase()} (${hex})` : hex}.`);
 }
 
 /** `/diff` — show the working-tree diff (git). */
@@ -807,7 +812,39 @@ async function handleCheckpoints(h: EngineHandle): Promise<void> {
 }
 
 /** Selectable UI theme names (kept in sync with `@vibe/tui`'s THEME_NAMES). */
-const KNOWN_THEMES = new Set(["default", "dark", "light", "contrast", "opencode"]);
+const KNOWN_THEMES = new Set([
+  "default",
+  "dark",
+  "light",
+  "contrast",
+  "opencode",
+  "tokyonight",
+  "catppuccin",
+  "gruvbox",
+  "nord",
+  "one-dark",
+  "dracula",
+  "rosepine",
+  "kanagawa",
+  "everforest",
+  "flexoki",
+  "vesper",
+]);
+
+/** Named accent presets (kept in sync with `@vibe/tui`'s ACCENT_PRESETS — core
+ * can't import the UI package). `/accent orange` resolves here to its hex, so
+ * the emitted `accent-changed` always carries a hex and the UIs need no map. */
+const ACCENT_PRESETS: Record<string, string> = {
+  blue: "#70cbf4",
+  orange: "#fab283",
+  ember: "#ff966c",
+  amber: "#e0af68",
+  green: "#9ece6a",
+  teal: "#2ac3de",
+  violet: "#bb9af7",
+  rose: "#f7768e",
+  white: "#e6e6e6",
+};
 
 /** Safety-critical built-in slash commands a custom command must not shadow.
  * Only names with a real built-in handler belong here — listing a phantom (there

@@ -73,9 +73,12 @@ terminals with line spacing), and a single **Blue 300 (`#70cbf4`) accent**
 reserved for titles and markers — the **VIBE CODR wordmark** (a calm light→deep
 blue fade), panel titles, the **user-message rail**, the active task/step, the
 selected menu row, the **braille thinking spinner**, and the input caret. The
-input's **mode label + rail** (`ASK ❯` blue · `PLAN ❯` green · `YOLO ❯` red) make
-switching mode unmistakable without repainting the screen. Override the accent
-with `/accent <hex>` — the wordmark fade follows it. The other colors are purely
+input's **mode label + rail** (`ASK ❯` in the accent · `PLAN ❯` green · `YOLO ❯`
+red) make switching mode unmistakable without repainting the screen. Swap the
+accent in one word — **`/accent orange`** (opencode's warm peach), or `blue`,
+`ember`, `amber`, `green`, `teal`, `violet`, `rose`, `white`, or any
+`/accent <hex>` — the swatch submenu previews each hue live, and the wordmark
+fade, markers, and input rail all follow it. The other colors are purely
 functional — green/red on diffs, amber on warnings, and one **calm muted tone**
 for the tool-step / subagent rails. The layout is a **single, centered chat
 column** (ChatGPT-style): it fills a narrow terminal and centers on a wide one,
@@ -108,6 +111,14 @@ and drills into rich submenus (a searchable model picker, clickable toggles).
 | Permission card | Slash-command menu |
 |---|---|
 | ![permission](docs/screenshots/07-permission.png) | ![menu](docs/screenshots/09-menu.png) |
+
+| `/accent orange` — one word recolors the chrome | The `/accent` swatch submenu |
+|---|---|
+| ![orange accent](docs/screenshots/18-orange.png) | ![accent swatches](docs/screenshots/17-accent.png) |
+
+| Ported classic themes (`/theme tokyonight`, catppuccin, gruvbox, …) |
+|---|
+| ![tokyonight](docs/screenshots/19-tokyonight.png) |
 
 <sub>Regenerate with `bun packages/tui/scripts/screenshot.ts docs/screenshots`
 (renders the real OpenTUI app and rasterizes its actual cell grid — bundled
@@ -239,7 +250,9 @@ Highlights:
   `/model sub <id>` for a dedicated subagent model, `/model key <provider> <key>` —
   all persisted), `/models` (`/models refresh` force-pulls the latest), `/plan`,
   `/execute`, `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
-  `/theme <default|light|contrast|opencode>`.
+  `/theme <name>` (default, light, contrast, opencode, tokyonight, catppuccin,
+  gruvbox, nord, one-dark, dracula, rosepine, kanagawa, everforest, flexoki,
+  vesper), `/accent <name|hex>` (a live swatch submenu — orange, blue, ember, …).
   Press **Shift+Tab** to cycle the mode (the colored `MODE ❯` label + rail on
   the input): **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>`,
@@ -262,10 +275,12 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   markers — the **VIBE CODR wordmark** (a calm light→deep blue fade), panel titles,
   the **user-message rail**, the active task/step, the selected menu row, the
   **braille thinking spinner**, and the caret; the input's **mode label + rail**
-  (`ASK ❯` blue / `PLAN ❯` green / `YOLO ❯` red) carry the mode; green/red/amber
-  stay reserved for diffs and warnings, and one **calm muted tone** carries the
-  tool-step / subagent rails (override the accent with `/accent <hex>` — the
-  wordmark fade follows it).
+  (`ASK ❯` in the accent / `PLAN ❯` green / `YOLO ❯` red) carry the mode;
+  green/red/amber stay reserved for diffs and warnings, and one **calm muted
+  tone** carries the tool-step / subagent rails. Swap the accent in one word —
+  `/accent orange` (or ember, amber, green, teal, violet, rose, white, blue, or
+  any hex) — the swatch submenu previews each hue and the wordmark fade, markers,
+  and input rail follow.
   A **single, centered chat column** (ChatGPT-style — no sidebar, **no top header**)
   fills a narrow terminal and centers on a wide one: a fresh screen shows the
   wordmark, then the scrolling transcript, the **task list** and live **subagents**
@@ -282,8 +297,12 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `◈` websearch, `±` git, `✦` subagent…) and **condense to one line you click to
   expand**, while edits fold into a single diff row with the hunk beneath it and
   **search steps expand to clean source cards**.
-  Streamed text is coalesced so long replies stay smooth. A blue braille spinner
-  with elapsed time shows live work (**Esc** interrupts the turn). The **slash menu
+  Streamed text is coalesced so long replies stay smooth. A braille spinner in the
+  accent with elapsed time shows live work (**Esc** interrupts the turn), with a
+  muted one-line `✻ thinking` preview while the model reasons; verify results,
+  `/loop` iterations, and `/undo` reverts land as transcript notices. **Ctrl+C
+  exits cleanly** (runs the session digest + teardown like `/exit`; a second press
+  forces). The **slash menu
   docks flush to the input as one connected control** and drills into real,
   configurable settings: **`/model`** is one searchable picker that sets both agents
   (Tab flips **Main ⇄ Subagents**, current marked); **`/providers`** lists every
@@ -292,8 +311,10 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   per-agent model or scaffold a new one (`/agents new <name>`) — so you can run as many
   distinct subagents as you like, each on its own model/provider. Plus clickable
   theme/approvals/reasoning toggles. Permission prompts surface as a bordered card
-  answerable with `y`/`a`/`n`. Four themes ship — `default` (black, blue accent),
-  `light`, `contrast`, and `opencode` (warm peach).
+  answerable with `y`/`a`/`n`. Fifteen themes ship — `default` (black, blue
+  accent), `light`, `contrast`, `opencode` (warm peach), and ported classics:
+  `tokyonight`, `catppuccin`, `gruvbox`, `nord`, `one-dark`, `dracula`,
+  `rosepine`, `kanagawa`, `everforest`, `flexoki` (burnt orange), `vesper` (peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
   `/plan`, `/execute`, `/approvals auto`). **Plan** exposes only read-only tools;
   when the model calls `present_plan` you get an **interactive approval card** —
@@ -529,7 +550,8 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
     "anthropic/claude-opus-4-8": { "input": 5, "output": 25, "cacheRead": 0.5 }
   },
   "approvalMode": "ask",                                // ask | auto
-  "theme": "default",                                   // default | light | contrast | opencode
+  "theme": "default",                                   // default | light | contrast | opencode | tokyonight | …
+  "accentColor": "#fab283",                             // chrome accent (or /accent orange in-app)
   "caching": { "enabled": true },                       // Anthropic prompt caching
   "reasoning": { "effort": "high", "budgetTokens": 8000 }, // thinking controls
   "budget": { "limitUSD": 5, "onExceed": "warn" },      // spend guard: warn | stop

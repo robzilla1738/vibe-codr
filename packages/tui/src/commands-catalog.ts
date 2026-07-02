@@ -1,3 +1,5 @@
+import { ACCENT_NAMES, THEME_NAMES } from "./themes.ts";
+
 /**
  * Slash-command catalogue for the in-TUI command menu (the palette that opens
  * when you type `/`). This is presentation metadata owned by the UI — the engine
@@ -33,8 +35,10 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "execute", description: "Switch to execute mode" },
   { name: "approvals", description: "Set approval mode", values: ["ask", "auto"] },
   { name: "reasoning", description: "Set reasoning effort", values: ["low", "medium", "high", "off"] },
-  { name: "theme", description: "Set the UI theme", values: ["default", "light", "contrast", "opencode"] },
-  { name: "accent", description: "Set the accent color", arg: "<hex>" },
+  // Values derive from the palette registry so a new theme/accent shows up here
+  // automatically ("dark" is an alias of default — hidden to keep the menu tight).
+  { name: "theme", description: "Set the UI theme", values: THEME_NAMES.filter((n) => n !== "dark") },
+  { name: "accent", description: "Set the accent color (or /accent <hex>)", values: ACCENT_NAMES },
   // Steering
   { name: "goal", description: "Set or clear the north-star goal", arg: "<text>" },
   { name: "loop", description: "Run a prompt on a loop", arg: "<interval> <prompt>" },

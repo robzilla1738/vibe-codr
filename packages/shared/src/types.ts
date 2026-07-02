@@ -42,7 +42,7 @@ export interface Task {
  * stays free of any provider-layer dependency.
  */
 export interface ModelSummary {
-  /** Bare model id within its provider (e.g. `gpt-4o`, `glm-5.2`). */
+  /** Bare model id within its provider (e.g. `gpt-5.5`, `glm-5.2`). */
   id: string;
   /** Provider id (e.g. `openai`, `ollama`); `${providerId}/${id}` is the full id. */
   providerId: string;

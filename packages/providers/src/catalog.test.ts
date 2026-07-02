@@ -69,6 +69,9 @@ test("aliasModelKey rewrites provider ids that differ from their models.dev slug
   expect(aliasModelKey("together/Llama-3.3-70B")).toBe("togetherai/Llama-3.3-70B");
   expect(aliasModelKey("fireworks/x")).toBe("fireworks-ai/x");
   expect(aliasModelKey("codex/gpt-5.2-codex")).toBe("openai/gpt-5.2-codex");
+  expect(aliasModelKey("moonshot/kimi-k2.7-code")).toBe("moonshotai/kimi-k2.7-code");
+  // Hosted ollama.com models are cataloged under `ollama-cloud`.
+  expect(aliasModelKey("ollama/glm-5.2")).toBe("ollama-cloud/glm-5.2");
   // Ids that already match models.dev pass through untouched.
   expect(aliasModelKey("openai/gpt-5.2")).toBe("openai/gpt-5.2");
   expect(aliasModelKey("google/gemini-2.5-pro")).toBe("google/gemini-2.5-pro");

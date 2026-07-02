@@ -10,14 +10,18 @@ const FETCH_TIMEOUT_MS = 8000;
 /**
  * Map a vibe provider id to its models.dev catalog slug where they differ, so
  * enrichment lands for every provider. Most ids match models.dev 1:1; these are
- * the verified exceptions. Providers with no catalog presence (lmstudio, custom,
- * local ollama tags) simply don't enrich — they fall back to the base-model price
- * match and the session's default context window.
+ * the verified exceptions. Models with no catalog presence (custom endpoints,
+ * unlisted local tags) simply don't enrich — they fall back to the base-model
+ * price match and the session's default context window.
  */
 export const PROVIDER_SLUG_ALIASES: Record<string, string> = {
   together: "togetherai",
   fireworks: "fireworks-ai",
   codex: "openai", // Codex serves OpenAI models
+  moonshot: "moonshotai",
+  // Hosted ollama.com ids (e.g. `glm-5.2`, `gpt-oss:120b`) are cataloged under
+  // `ollama-cloud`; purely local tags miss and fall back as before.
+  ollama: "ollama-cloud",
 };
 
 /** Rewrite the provider prefix of a `provider/model` key to its catalog slug. */

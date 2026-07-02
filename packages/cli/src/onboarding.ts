@@ -469,7 +469,7 @@ export async function runOnboarding(
   if (choice.registryId === "" || choice.key === "custom") {
     const model = await input("Model string", {
       placeholder: "provider/model-id",
-      hint: "e.g. anthropic/claude-opus-4-8 or ollama/gpt-oss:120b-cloud",
+      hint: "e.g. anthropic/claude-opus-4-8 or zai/glm-5.2",
     });
     const providerId = model.split("/")[0] ?? "";
     const def = registry.get(providerId);

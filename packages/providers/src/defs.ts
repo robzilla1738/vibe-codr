@@ -153,6 +153,50 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
+    // Z.ai (Zhipu) — GLM models via the OpenAI-compatible endpoint. Coding-plan
+    // subscribers use the dedicated coding endpoint instead: set
+    // ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4. models.dev slug is `zai`.
+    id: "zai",
+    env: ["ZAI_API_KEY", "ZHIPU_API_KEY"],
+    baseURL: "https://api.z.ai/api/paas/v4",
+    baseURLEnv: "ZAI_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Moonshot AI (Kimi) — OpenAI-compatible, international endpoint (mainland
+    // China is api.moonshot.cn; point MOONSHOT_BASE_URL there if needed).
+    // models.dev slug is `moonshotai`; the catalog aliases `moonshot` → it.
+    id: "moonshot",
+    env: ["MOONSHOT_API_KEY"],
+    baseURL: "https://api.moonshot.ai/v1",
+    baseURLEnv: "MOONSHOT_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Alibaba Model Studio (Qwen) — DashScope's OpenAI-compatible
+    // "compatible-mode" endpoint, international region (mainland is
+    // dashscope.aliyuncs.com — override via DASHSCOPE_BASE_URL). models.dev
+    // slug is `alibaba` (matches, so enrichment lands directly).
+    id: "alibaba",
+    env: ["DASHSCOPE_API_KEY"],
+    baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    baseURLEnv: "DASHSCOPE_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Hugging Face Inference Providers router — one HF token, OpenAI-compatible;
+    // each open model is auto-routed to a live inference provider.
+    id: "huggingface",
+    env: ["HF_TOKEN", "HUGGINGFACE_API_KEY"],
+    baseURL: "https://router.huggingface.co/v1",
+    baseURLEnv: "HF_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
     id: "groq",
     env: ["GROQ_API_KEY"],
     baseURL: "https://api.groq.com/openai/v1",

@@ -212,11 +212,11 @@ const SCENES: SceneDef[] = [
       models: [
         { id: "claude-opus-4-8", providerId: "anthropic", contextWindow: 1_000_000 },
         { id: "claude-sonnet-5", providerId: "anthropic", contextWindow: 1_000_000 },
-        { id: "gpt-5.2-codex", providerId: "codex", contextWindow: 400_000 },
-        { id: "gpt-5.2", providerId: "openai", contextWindow: 400_000 },
-        { id: "MiniMax-M1", providerId: "minimax", contextWindow: 1_000_000 },
-        { id: "grok-4", providerId: "xai", contextWindow: 256_000 },
-        { id: "deepseek-v3.1", providerId: "deepseek", contextWindow: 128_000 },
+        { id: "gpt-5.3-codex", providerId: "codex", contextWindow: 400_000 },
+        { id: "gpt-5.5", providerId: "openai", contextWindow: 1_050_000 },
+        { id: "MiniMax-M3", providerId: "minimax", contextWindow: 1_000_000 },
+        { id: "grok-4.3", providerId: "xai", contextWindow: 1_000_000 },
+        { id: "deepseek-v4-pro", providerId: "deepseek", contextWindow: 1_000_000 },
         { id: "gpt-oss:120b", providerId: "ollama", contextWindow: 128_000 },
       ],
     },
@@ -227,7 +227,7 @@ const SCENES: SceneDef[] = [
       await settle();
       await type("/model ");
       await settle();
-      await waitFor("openai/gpt-5.2");
+      await waitFor("openai/gpt-5.5");
     },
   },
   {

@@ -35,8 +35,10 @@ OPTIONS
   -h, --help            show this help
 
 MODEL STRINGS
-  <provider>/<model-id>   anthropic, openai, deepseek, xai, minimax, codex,
-                          fireworks, baseten, openrouter, ollama, lmstudio
+  <provider>/<model-id>   anthropic, openai, codex, google, zai, moonshot,
+                          alibaba, deepseek, xai, minimax, groq, mistral,
+                          cerebras, together, fireworks, baseten, huggingface,
+                          openrouter, perplexity, ollama, lmstudio, custom
 
 IN-SESSION
   Type /help for slash commands (/model /plan /status /config /diff /review …),

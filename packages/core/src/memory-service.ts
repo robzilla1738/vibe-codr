@@ -2,7 +2,7 @@ import type { Config } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
 import type { Logger } from "@vibe/shared";
 import { resolveEmbedder } from "./embeddings.ts";
-import { openSemanticMemory, type SemanticMemory } from "./semantic-memory.ts";
+import { openSemanticMemory, type SemanticMemory, type MemoryDoc } from "./semantic-memory.ts";
 import { searchMemory, type MemoryHit } from "./memory-search.ts";
 import { gatherMemoryDocs, appendMemory, type SaveMemoryInput } from "./memory-store.ts";
 
@@ -41,7 +41,17 @@ export class MemoryService {
   /** Hybrid recall over saved memory + past sessions. Reconciles the index on
    * read (cheap when unchanged), so a just-saved fact is searchable immediately. */
   async search(query: string, limit = 8): Promise<MemoryHit[]> {
-    const sources = await gatherMemoryDocs(this.#cwd);
+    // A transient corpus-read failure must NOT reach the semantic layer: indexing
+    // a partial/empty corpus would prune every vector for the scope (reconcile-on-
+    // read treats "not in this corpus" as "deleted"). On such a failure, degrade to
+    // session-only recall WITHOUT touching the index, so a momentary FS hiccup can't
+    // wipe and force a full re-embed.
+    let sources: MemoryDoc[];
+    try {
+      sources = await gatherMemoryDocs(this.#cwd);
+    } catch {
+      return searchMemory({ cwd: this.#cwd, query, sources: [], limit });
+    }
     return searchMemory({
       cwd: this.#cwd,
       query,

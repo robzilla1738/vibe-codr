@@ -57,7 +57,9 @@ export async function runGate(
     const started = Date.now();
     const r = await exec(command, {
       cwd,
-      timeoutSec: opts.timeoutSec ?? 600,
+      // A non-positive timeout would disable the kill timer in bunExec and let a
+      // hung watcher wedge the gate forever; coerce anything ≤ 0 to the default.
+      timeoutSec: opts.timeoutSec && opts.timeoutSec > 0 ? opts.timeoutSec : 600,
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
     const parsed = parseCheckOutput(check, r.out, r.code);

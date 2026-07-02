@@ -47,3 +47,23 @@ test("computeCost clamps cached tokens to the input total", () => {
   // A bogus cached > input must not produce negative uncached cost.
   expect(computeCost(100_000, 0, { input: 3, cacheRead: 0 }, 999_999)).toBeCloseTo(0, 6);
 });
+
+test("computeCost bills cache WRITES at the cache-write rate (peeled off the input superset)", () => {
+  // 1M input superset = 100k uncached + 200k cache reads + 700k cache writes.
+  // $3/1M input, $0.30/1M read, $3.75/1M write (Anthropic 1.25x).
+  // 100k*3 + 200k*0.30 + 700k*3.75 = 0.3 + 0.06 + 2.625 = 2.985.
+  const cost = computeCost(
+    1_000_000,
+    0,
+    { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    200_000,
+    700_000,
+  );
+  expect(cost).toBeCloseTo(2.985, 6);
+});
+
+test("computeCost falls back to the input rate for cache writes when unpriced", () => {
+  // No cacheWrite rate → writes bill at full input (never silently free).
+  // 1M superset, 300k writes, no reads: 700k*3 + 300k*3 = 3.0.
+  expect(computeCost(1_000_000, 0, { input: 3 }, 0, 300_000)).toBeCloseTo(3, 6);
+});

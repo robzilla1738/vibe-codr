@@ -56,7 +56,11 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
 
   // Dense (semantic) over the same corpus. Reconcile-on-read keeps the index in
   // sync (cheap when nothing changed) so dense ids line up with current chunks.
-  if (semantic && chunks.length) {
+  // Guard an empty/whitespace query: embedding "" yields a real vector and would
+  // return cosine-nearest chunks as if relevant (the lexical BM25 pass already
+  // returns nothing for empty terms). Still reconcile the index so a later real
+  // query is fresh, but don't rank on a meaningless embedding.
+  if (semantic && chunks.length && query.trim()) {
     try {
       await semantic.index(sources);
       const dense = await semantic.search(query, limit * 3);

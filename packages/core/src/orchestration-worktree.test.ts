@@ -1,7 +1,7 @@
 import { test, expect, afterAll } from "bun:test";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RepoProfile, ToolDefinition, UIEvent } from "@vibe/shared";
@@ -227,9 +227,17 @@ test("two parallel worktree tasks on the SAME path: one merges, the other fails 
   // The winner's content landed in the main tree; both worktrees were cleaned up.
   expect(readFileSync(join(cwd, "shared.txt"), "utf8").trim()).toMatch(/^(AAA|BBB)$/);
   expect(await worktreeBranches(cwd)).toEqual([]);
-  expect(existsSync(join(cwd, ".vibe", "worktrees", "wa"))).toBe(false);
-  expect(existsSync(join(cwd, ".vibe", "worktrees", "wb"))).toBe(false);
+  // The real worktree dirs are slugged `wa-<hash>` / `wb-<hash>`, so asserting on
+  // the bare id name was vacuous. Assert NO worktree dir survives teardown.
+  expect(worktreeDirs(cwd)).toEqual([]);
 });
+
+/** Names of surviving per-task worktree dirs under .vibe/worktrees (empty when
+ * all were torn down). Slugged `<id>-<hash>`, so we can't assert on bare ids. */
+function worktreeDirs(cwd: string): string[] {
+  const dir = join(cwd, ".vibe", "worktrees");
+  return existsSync(dir) ? readdirSync(dir) : [];
+}
 
 // ── worktree tasks: disjoint files (both merge back) ─────────────────────────
 

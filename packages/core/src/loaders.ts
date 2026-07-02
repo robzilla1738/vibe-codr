@@ -34,15 +34,22 @@ export async function loadCommandsFrom(dir: string): Promise<SlashCommand[]> {
   const glob = new Glob("*.md");
   try {
     for await (const file of glob.scan({ cwd: dir, absolute: true })) {
-      const raw = await Bun.file(file).text();
-      const { frontmatter, body } = parseSkillMarkdown(raw);
-      const name = frontmatter.name ?? basename(file, ".md");
-      commands.push({
-        name,
-        description: frontmatter.description ?? `Custom command /${name}`,
-        source: "file",
-        run: (args) => ({ kind: "prompt", text: applyArgs(body, args) }),
-      });
+      // Guard EACH file: one unreadable file (permission error, a name that
+      // resolves to a directory) must not abort the whole scan and silently drop
+      // every command discovered after it.
+      try {
+        const raw = await Bun.file(file).text();
+        const { frontmatter, body } = parseSkillMarkdown(raw);
+        const name = frontmatter.name ?? basename(file, ".md");
+        commands.push({
+          name,
+          description: frontmatter.description ?? `Custom command /${name}`,
+          source: "file",
+          run: (args) => ({ kind: "prompt", text: applyArgs(body, args) }),
+        });
+      } catch {
+        // Skip this one file; keep scanning the rest.
+      }
     }
   } catch {
     // No commands directory — fine.
@@ -67,19 +74,24 @@ export async function loadSkillsFrom(root: string): Promise<Skill[]> {
   const glob = new Glob("*/SKILL.md");
   try {
     for await (const file of glob.scan({ cwd: root, absolute: true })) {
-      const raw = await Bun.file(file).text();
-      const { frontmatter, body } = parseSkillMarkdown(raw);
-      const dir = dirname(file);
-      const name = frontmatter.name ?? basename(dir);
-      skills.push({
-        name,
-        description: frontmatter.description ?? name,
-        ...(frontmatter.when_to_use
-          ? { whenToUse: frontmatter.when_to_use }
-          : {}),
-        dir,
-        load: async () => body,
-      });
+      // Guard EACH skill file so one unreadable SKILL.md doesn't drop the rest.
+      try {
+        const raw = await Bun.file(file).text();
+        const { frontmatter, body } = parseSkillMarkdown(raw);
+        const dir = dirname(file);
+        const name = frontmatter.name ?? basename(dir);
+        skills.push({
+          name,
+          description: frontmatter.description ?? name,
+          ...(frontmatter.when_to_use
+            ? { whenToUse: frontmatter.when_to_use }
+            : {}),
+          dir,
+          load: async () => body,
+        });
+      } catch {
+        // Skip this one skill; keep scanning the rest.
+      }
     }
   } catch {
     // No skills directory — fine.

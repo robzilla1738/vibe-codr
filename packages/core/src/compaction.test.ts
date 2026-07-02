@@ -70,6 +70,30 @@ test("does not compact below the threshold", async () => {
   expect(result).toBeNull();
 });
 
+test("an empty/whitespace summary aborts compaction instead of deleting history", async () => {
+  // A summarizer that returns nothing (refusal, content filter, a local model
+  // that emits an empty string) must NOT drop `older` and leave a bare header.
+  for (const empty of ["", "   ", "\n\t "]) {
+    const result = await compactMessages(msgs(20), {
+      contextWindow: 100_000,
+      threshold: 0.75,
+      keep: 6,
+      force: true,
+      summarize: async () => empty,
+    });
+    expect(result).toBeNull();
+  }
+  // A non-empty summary still compacts (guard is specific to empty output).
+  const ok = await compactMessages(msgs(20), {
+    contextWindow: 100_000,
+    threshold: 0.75,
+    keep: 6,
+    force: true,
+    summarize: async () => "real summary",
+  });
+  expect(ok).not.toBeNull();
+});
+
 /** Assert the contract every compaction result must satisfy. */
 function expectValidContext(messages: ModelMessage[]): void {
   // First message must be a user turn (Anthropic requires this).

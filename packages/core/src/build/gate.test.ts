@@ -24,6 +24,44 @@ test("pickChecks: configured ∩ detected, fail-fast order", () => {
   expect(picked.map((p) => p.check)).toEqual(["typecheck", "test"]); // build not detected; lint not wanted
 });
 
+test("runGate: an already-aborted signal stops before running any check", async () => {
+  const ran: string[] = [];
+  const exec: Exec = async (cmd) => {
+    ran.push(cmd);
+    return { out: "10 pass", code: 0 };
+  };
+  const ctrl = new AbortController();
+  ctrl.abort();
+  const summary = await runGate("/x", profile({ typecheck: "tsc", test: "bun test" }), 0, {
+    checks: ["typecheck", "test"],
+    exec,
+    signal: ctrl.signal,
+  });
+  expect(ran).toEqual([]); // nothing ran — aborted up front
+  expect(summary.outcome).toBe("unverified"); // no checks produced a verdict
+});
+
+test("runGate: the abort signal is forwarded to exec (abortable mid-check)", async () => {
+  let received: AbortSignal | undefined;
+  const exec: Exec = async (_cmd, opts) => {
+    received = opts.signal;
+    return { out: "10 pass", code: 0 };
+  };
+  const ctrl = new AbortController();
+  await runGate("/x", profile({ typecheck: "tsc" }), 0, { checks: ["typecheck"], exec, signal: ctrl.signal });
+  expect(received).toBe(ctrl.signal);
+});
+
+test("runGate: a non-positive timeout is coerced to the default (no wedge)", async () => {
+  let seenTimeout: number | undefined;
+  const exec: Exec = async (_cmd, opts) => {
+    seenTimeout = opts.timeoutSec;
+    return { out: "10 pass", code: 0 };
+  };
+  await runGate("/x", profile({ typecheck: "tsc" }), 0, { checks: ["typecheck"], exec, timeoutSec: 0 });
+  expect(seenTimeout).toBe(600); // coerced away from the wedge-inducing 0
+});
+
 test("runGate: green when every check passes; commands actually run", async () => {
   const ran: string[] = [];
   const exec: Exec = async (cmd) => {

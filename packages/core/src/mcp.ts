@@ -367,11 +367,19 @@ export class McpHub {
     prompts: McpPrompt[];
   }> {
     const deadline = config.timeoutMs ?? this.#connectTimeoutMs;
+    // Keep a handle on the raw connect promise: `withTimeout` only RACES it, so on
+    // a connect-timeout the underlying attempt keeps running and may still resolve
+    // later with a LIVE transport (a spawned stdio child / HTTP client). Without
+    // closing that late arrival it orphans a process for the whole session.
+    const connectP = this.#connect(name, config);
     const client = await withTimeout(
-      this.#connect(name, config),
+      connectP,
       deadline,
       `connecting to MCP server "${name}"`,
-    );
+    ).catch((err) => {
+      connectP.then((c) => c.close().catch(() => undefined)).catch(() => undefined);
+      throw err;
+    });
     try {
       const tools = await withTimeout(
         client.listTools(),

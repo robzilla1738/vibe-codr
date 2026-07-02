@@ -227,13 +227,21 @@ export async function runOneShot(
     // In JSON mode, accumulate the answer silently instead of streaming it; in
     // text mode, render events as they arrive (the existing behaviour).
     if (event.type === "assistant-text-delta") text += event.delta;
+    // A plan-mode turn's output IS the presented plan (delivered via
+    // plan-presented, not assistant-text-delta), so capture it too — otherwise a
+    // headless `--mode plan --output-format json` run returns empty text and the
+    // plan is silently lost. Text mode already renders it to stdout.
+    if (event.type === "plan-presented") text += (text ? "\n\n" : "") + event.plan;
     if (event.type === "engine-error") error = event.message;
     if (!json) render(event, opts);
-    // `session-idle` ends a normal turn. Also stop on `engine-error`: a failure
-    // before the session's run loop starts (e.g. an unreadable @mention or a
-    // corrupt checkpoint file) emits engine-error without a trailing
-    // session-idle, which would otherwise hang the one-shot forever.
-    if (event.type === "session-idle" || event.type === "engine-error") break;
+    // Stop on `engine-idle` — the queue is FULLY drained, i.e. the prompt AND
+    // every follow-up turn it spawned (gate-fix / review-fix / verify-fix) are
+    // done. Breaking on the per-turn `session-idle` (the old behaviour) cut off
+    // that follow-up output and let the CLI's finalize() race the in-flight turn.
+    // `engine-idle` always fires at drain end — even after an engine-error, and
+    // even for a pre-run-loop failure (unreadable @mention / corrupt checkpoint)
+    // whose session never emits `session-idle` — so this can't hang.
+    if (event.type === "engine-idle") break;
   }
 
   const finalUsage = usage ?? emptyUsage();

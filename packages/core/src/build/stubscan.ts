@@ -58,6 +58,15 @@ const STUB_RULES: { kind: string; re: RegExp }[] = [
   },
   // alert-only handler standing in for real behavior
   { kind: "stub-alert", re: /=>\s*alert\s*\(/ },
+  // empty-bodied NAMED function declaration on one line — `function save() {}`,
+  // `async function handle(): void {}`. Scoped to `function` declarations (not
+  // arrow `() => {}`, which is a common intentional no-op) to keep false
+  // positives down while catching the "declared but never implemented" stub the
+  // gate can't see (an empty function compiles clean).
+  {
+    kind: "empty-body",
+    re: /\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s+\w+\s*\([^)]*\)\s*(?::\s*[^{;]+)?\{\s*\}/,
+  },
 ];
 
 export function scanStubs(diff: string, opts: { max?: number } = {}): StubFinding[] {

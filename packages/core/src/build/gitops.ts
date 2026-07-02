@@ -129,6 +129,13 @@ export async function gitAddWorktree(
   await run(cwd, id(["worktree", "remove", "--force", opts.path]));
   Bun.spawnSync(["rm", "-rf", opts.path]);
   await run(cwd, id(["worktree", "prune"]));
+  // Delete a STALE leftover branch at the deterministic name too: a SIGKILL after
+  // this created the branch but before teardown leaves it behind, and since the
+  // branch name is deterministic per task, a `--resume` re-run's `add -b` would
+  // fail ("branch already exists") → the task silently degrades to the shared tree,
+  // losing its isolation. The branch is a `vibe-wt/…` name we own (never the user's
+  // or a checked-out one, since we just pruned the worktree), so -D is safe.
+  await run(cwd, id(["branch", "-D", opts.branch]));
   const r = await run(cwd, id(["worktree", "add", "-b", opts.branch, opts.path, "HEAD"]));
   return r.ok ? opts.path : null;
 }

@@ -648,6 +648,50 @@ test("compaction frees the reported context immediately (no stale provider count
   expect(events.some((e) => e.type === "compacted")).toBe(true);
 });
 
+test("a failing summarizer skips compaction with a notice instead of failing the turn", async () => {
+  // The summarizer (generateText) is an AUXILIARY call. A transient failure on it
+  // must NOT abort the turn (or mark a subagent fork as failed) — compaction is
+  // skipped and the turn proceeds on the uncompacted context.
+  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const reply = (text: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: text },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+    ]);
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => reply(`answer ${call++}`) as never,
+    // The summarizer call throws (transient provider error).
+    doGenerate: async () => {
+      throw new Error("summarizer upstream 503");
+    },
+  });
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    getContextWindow: async () => 128_000,
+  });
+  for (let i = 0; i < 5; i++) await session.run(`turn ${i}`);
+  // /compact must resolve (not reject) and emit a warn notice; history is intact.
+  const before = session.contextTokens;
+  const events = await collect(bus, () => session.compact());
+  const notice = events.findLast((e) => e.type === "notice");
+  expect(notice && notice.type === "notice" && notice.level).toBe("warn");
+  expect(notice && notice.type === "notice" && notice.message).toContain("Compaction skipped");
+  // The session is still usable — no engine-error, context unchanged (not dropped).
+  expect(events.some((e) => e.type === "engine-error")).toBe(false);
+  expect(session.contextTokens).toBe(before);
+});
+
 test("the compaction summarizer uses the sectioned contract and caps its input", async () => {
   const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
   const reply = (text: string) =>

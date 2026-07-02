@@ -125,6 +125,29 @@ test("writeGlobalConfig deep-merges, and a null value clears a persisted key", a
   }
 });
 
+test("writeGlobalConfig REJECTS an invalid patch instead of bricking future loads", async () => {
+  // Regression: onboarding wrote unvalidated patches, so a custom baseURL typed
+  // without a scheme (`localhost:1234`) persisted and every later `vibe` run then
+  // threw ConfigError on load — a bricked CLI. The write must reject up front.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-xdg-"));
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = dir;
+  try {
+    await expect(
+      writeGlobalConfig({ providers: { custom: { baseURL: "not a url" } } }),
+    ).rejects.toThrow(/invalid configuration/i);
+    // Nothing was persisted, so a subsequent load still succeeds on defaults.
+    await expect(loadConfig({ cwd: dir })).resolves.toBeDefined();
+    // A VALID baseURL still writes fine.
+    await writeGlobalConfig({ providers: { custom: { baseURL: "https://api.example.com/v1" } } });
+    const written = JSON.parse(await Bun.file(globalConfigPath()).text());
+    expect(written.providers.custom.baseURL).toBe("https://api.example.com/v1");
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+});
+
 test("defaultConfig returns independent copies (no shared mutable defaults)", () => {
   const a = defaultConfig();
   const b = defaultConfig();

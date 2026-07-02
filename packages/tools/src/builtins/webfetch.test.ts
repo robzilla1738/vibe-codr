@@ -250,7 +250,23 @@ test("pinning preserves embedded credentials (Basic auth) in the URL", async () 
 
 // ---------------------------------------------------------------- research-grade fetch
 
-import { decodeCharset, htmlToText, looksLikeShell } from "./webfetch.ts";
+import { decodeCharset, htmlToText, looksLikeShell, sameSite } from "./webfetch.ts";
+
+test("sameSite: crawler bound allows http→https upgrade, refuses downgrade/off-host", () => {
+  const base = "http://docs.example.com";
+  // Identical origin.
+  expect(sameSite("http://docs.example.com/guide", base)).toBe(true);
+  // http→https upgrade on the same host (the common docs redirect) is allowed.
+  expect(sameSite("https://docs.example.com/guide", base)).toBe(true);
+  // https→http downgrade is refused.
+  expect(sameSite("http://docs.example.com/x", "https://docs.example.com")).toBe(false);
+  // A different host is refused even with the same scheme.
+  expect(sameSite("http://evil.example.com/x", base)).toBe(false);
+  // A different port is a different service.
+  expect(sameSite("http://docs.example.com:8080/x", base)).toBe(false);
+  // Malformed URL fails closed.
+  expect(sameSite("not a url", base)).toBe(false);
+});
 
 test("requests carry a browser-like User-Agent (UA-less clients get 403'd)", async () => {
   let ua = "";

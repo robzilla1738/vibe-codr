@@ -94,6 +94,12 @@ export async function compactMessages(
   const older = messages.slice(0, cut);
   const recent = messages.slice(cut);
   const summary = await opts.summarize(older);
+  // The summary REPLACES `older` — committing an empty/whitespace summary would
+  // irrecoverably delete that history and hand the model a bare header. A model
+  // hiccup (refusal, content filter, a local model that emits nothing, a provider
+  // that resolves with `text:""`) must not cost the conversation its past: treat
+  // an empty summary as "couldn't compact" and leave the messages untouched.
+  if (!summary.trim()) return null;
   const note = `[Summary of earlier conversation]\n${summary}`;
 
   // Keep strict user/assistant alternation with a leading user turn — Anthropic

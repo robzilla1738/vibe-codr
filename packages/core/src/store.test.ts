@@ -61,6 +61,22 @@ test("save then load round-trips the working task list", async () => {
   expect(loaded!.meta.tasks).toEqual(withTasks.tasks);
 });
 
+test("save then load round-trips the web-source ledger for resume", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
+  const store = new SessionStore(cwd);
+  const { meta, model, history } = fixture();
+  const withSources: SessionMeta = {
+    ...meta,
+    sources: [
+      { index: 1, url: "https://a.example/x", via: "web_search", title: "A" },
+      { index: 2, url: "https://b.example/y", via: "webfetch" },
+    ],
+  };
+  await store.save(withSources, model, history);
+  const loaded = await store.load(meta.id);
+  expect(loaded!.meta.sources).toEqual(withSources.sources);
+});
+
 test("latestId returns the most recently updated session", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
   const store = new SessionStore(cwd);
@@ -69,6 +85,48 @@ test("latestId returns the most recently updated session", async () => {
   await store.save({ ...a.meta, id: "new", updatedAt: 20 }, a.model, a.history);
   expect(await store.latestId()).toBe("new");
   expect(await store.list()).toHaveLength(2);
+});
+
+test("concurrent saves to the same session never produce a torn transcript", async () => {
+  // Two writers (simulating two `--continue` instances) saving the SAME session
+  // at once must each install a COMPLETE messages.jsonl via a unique temp — never
+  // a byte-interleaved mix that #readJsonl would silently truncate.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
+  const store = new SessionStore(cwd);
+  const { meta, history } = fixture();
+  // Two large, distinct transcripts so a torn interleave would be detectable.
+  const big = (tag: string): ModelMessage[] =>
+    Array.from({ length: 200 }, (_, i) => ({ role: i % 2 === 0 ? ("user" as const) : ("assistant" as const), content: `${tag}-msg-${i}-${"x".repeat(50)}` }));
+  await Promise.all([
+    store.save(meta, big("A"), history),
+    store.save(meta, big("B"), history),
+    store.save(meta, big("A"), history),
+    store.save(meta, big("B"), history),
+  ]);
+  const loaded = await store.load("ses_abc");
+  // Whichever writer won, the transcript is COMPLETE (200 messages) and internally
+  // consistent (all from ONE writer) — not a truncated/mixed file.
+  expect(loaded!.modelMessages).toHaveLength(200);
+  const tags = new Set(loaded!.modelMessages.map((m) => String((m as { content: string }).content).split("-")[0]));
+  expect(tags.size).toBe(1); // every line came from the same writer — no interleave
+});
+
+test("an @image message's Uint8Array bytes round-trip through save/load (resumable)", async () => {
+  // A Uint8Array would otherwise serialize to a numeric-keyed object and load back
+  // as a plain object — a broken `image` field the provider rejects on resume.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
+  const store = new SessionStore(cwd);
+  const { meta, history } = fixture();
+  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const model: ModelMessage[] = [
+    { role: "user", content: [{ type: "text", text: "look" }, { type: "image", image: bytes, mediaType: "image/png" }] },
+  ];
+  await store.save(meta, model, history);
+  const loaded = await store.load(meta.id);
+  const part = (loaded!.modelMessages[0]!.content as { type: string; image?: unknown }[])[1]!;
+  expect(part.type).toBe("image");
+  expect(part.image).toBeInstanceOf(Uint8Array);
+  expect([...(part.image as Uint8Array)]).toEqual([...bytes]);
 });
 
 test("load returns null for an unknown session", async () => {

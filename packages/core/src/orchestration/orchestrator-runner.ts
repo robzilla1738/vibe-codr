@@ -93,10 +93,12 @@ export class OrchestratorRunner {
   /** Emit the "review degraded to a generic child" warning at most once per
    * session, not once per verified task. */
   #reviewDegradationWarned = false;
-  /** Serializes the commit+merge+remove of every worktree/ensemble task in this
-   * runner: concurrent squash-merges into the ONE main tree race `.git/index`
-   * (and a merge that touches a file a prior merge already staged is refused by
-   * git), so the whole critical section must run one-at-a-time. */
+  /** Serializes every operation that mutates or builds the ONE shared main tree:
+   * the commit+merge+remove of each worktree/ensemble task AND the shared-tree
+   * `runGate` build/test. Concurrent squash-merges race `.git/index` (and a merge
+   * touching a file a prior merge staged is refused by git); concurrent gate builds
+   * in one dir clobber each other's outputs and cross-observe edits. So the whole
+   * shared-tree critical section — merges and gates alike — must run one-at-a-time. */
   #mergeLock: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Live-activity tap teardown per child id (see #tapChildActivity): the child
    * runs on an isolated bus, so we subscribe to it and re-emit throttled activity
@@ -106,11 +108,15 @@ export class OrchestratorRunner {
   constructor(handle: SessionHandle) {
     this.#handle = handle;
     this.#childGate = createSemaphore(handle.deps.config.subagent.maxParallel);
-    this.#mergeLock = createSerialLock();
     // Tree-shared ledgers: the ROOT runner (where these are absent) creates them
     // on its live deps; forks inherit the SAME objects via `{...deps}`, so the
     // spawn ceiling is tree-global and read_report can see sibling reports.
     if (!handle.deps.spawnCounter) handle.deps.spawnCounter = { used: 0 };
+    // The merge lock MUST be tree-global too: a nested `spawn_tasks` runner shares
+    // the same `.git`, so a per-runner lock would let a parent-runner merge race a
+    // child-runner merge on `.git/index`. Share the root's lock across the tree.
+    if (!handle.deps.mergeLock) handle.deps.mergeLock = createSerialLock();
+    this.#mergeLock = handle.deps.mergeLock;
     if (!handle.deps.reportStore) {
       handle.deps.reportStore = new ReportStore(handle.deps.cwd, handle.id);
     }
@@ -454,16 +460,18 @@ export class OrchestratorRunner {
       }
       const handoff = parseHandoff(outcome.text) ?? undefined;
 
-      // Commit → squash-merge → gate → review, ALL inside ONE critical section.
-      // The gate/review build+test the whole MAIN tree, so a sibling worktree
-      // task's merge landing between this task's merge and its own gate would give
-      // it a nondeterministic verdict (and two builds clobbering one dir). Holding
-      // the merge lock across the verify phase keeps the main tree stable for this
-      // task's gate. Deadlock-free: a review child acquires the (separate) fan-out
-      // semaphore, and siblings release their fan-out slots before they ever queue
-      // on this lock. The worktree removal runs in the outer finally, also serialized.
+      // Commit → squash-merge → gate → CAPTURE DIFF, all inside ONE critical
+      // section on the shared tree: the gate builds+tests the whole MAIN tree, so a
+      // sibling worktree task's merge landing between this task's merge and its own
+      // gate would give a nondeterministic verdict (and two builds clobbering one
+      // dir). The review child runs OUTSIDE the lock (below) on the diff captured
+      // HERE — it's a full LLM turn that may itself emit `spawn_tasks`, and that
+      // nested runner shares this same NON-reentrant tree-global lock; running the
+      // review inside the lock would deadlock the whole tree. The lock only ever
+      // wraps git ops + the gate build, never a child turn. Worktree removal runs in
+      // the outer finally, also serialized.
       const verdict = await this.#mergeLock(
-        async (): Promise<{ ok: true } | { ok: false; output: string }> => {
+        async (): Promise<{ ok: true; diff?: string } | { ok: false; output: string }> => {
           await commitWorktree(wt, `vibecodr(task ${spec.id}): ${spec.objective}`);
           if (!(await gitMergeWorktreeBranch(mainCwd, branch))) {
             return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
@@ -478,15 +486,20 @@ export class OrchestratorRunner {
               return { ok: false, output: `Checks failed on the merged tree:\n${formatGateFailure(gate, 1)}` };
             }
           }
-          if (spec.verify) {
-            const review = await this.#reviewTask(spec, outcome.text, parentSignal);
-            if (!review.clean) return { ok: false, output: `Post-merge review found issues:\n${review.feedback}` };
-          }
-          return { ok: true };
+          // Capture the diff of THIS task's merged changes while the tree is still
+          // stable (before releasing the lock lets a sibling merge land).
+          return { ok: true, ...(spec.verify ? { diff: await this.#captureTaskDiff(spec) } : {}) };
         },
       );
       if (!verdict.ok) {
         return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: verdict.output, attempts: 1, ...(handoff ? { handoff } : {}) });
+      }
+      // Review OUTSIDE the lock (see above) on the diff captured inside it.
+      if (spec.verify) {
+        const review = await this.#reviewCapturedDiff(spec, outcome.text, verdict.diff ?? "", parentSignal);
+        if (!review.clean) {
+          return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: `Post-merge review found issues:\n${review.feedback}`, attempts: 1, ...(handoff ? { handoff } : {}) });
+        }
       }
       return settle({ id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts: 1, ...(handoff ? { handoff } : {}) });
     } catch (err) {
@@ -618,36 +631,47 @@ export class OrchestratorRunner {
     const branch = worktreeBranch(this.#handle.id, wtId);
     const base: EnsembleAttempt = { i, label, wt: null, wtPath, branch, text: "", score: -1, diffSize: Infinity, verdict: "not-run" };
 
-    const wt = await gitAddWorktree(mainCwd, { path: wtPath, branch });
-    if (!wt) return { ...base, verdict: "worktree-unavailable" };
-    const child = this.#forkChild(named, undefined, spec.tier, wt);
-    if (!child) return { ...base, wt, verdict: "spawn-ceiling" };
-    this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
-    const kickoff = `${buildTaskKickoff(spec, depResults, "")}\n\n${strategy.directive}`;
-    const { timedOut, aborted } = await this.#runChildToCompletion(child, kickoff, parentSignal);
-    const outcome = this.#childOutcome(child, timedOut, aborted);
-    this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
-    const handoff = parseHandoff(outcome.text) ?? undefined;
-    if (outcome.isError) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), verdict: "child-error" };
+    // Track the worktree handle in the OUTER scope so a throw anywhere below still
+    // returns it to the caller for cleanup. Without this, a throw from `runGate`/
+    // `commitWorktree`/`gitDiffSince`/child-run rejected the caller's `Promise.all`
+    // BEFORE its cleanup `finally` ran, leaking EVERY sibling attempt's worktree +
+    // branch. #runEnsembleAttempt now never throws.
+    let wt: Awaited<ReturnType<typeof gitAddWorktree>> = null;
+    try {
+      wt = await gitAddWorktree(mainCwd, { path: wtPath, branch });
+      if (!wt) return { ...base, verdict: "worktree-unavailable" };
+      const child = this.#forkChild(named, undefined, spec.tier, wt);
+      if (!child) return { ...base, wt, verdict: "spawn-ceiling" };
+      this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
+      const kickoff = `${buildTaskKickoff(spec, depResults, "")}\n\n${strategy.directive}`;
+      const { timedOut, aborted } = await this.#runChildToCompletion(child, kickoff, parentSignal);
+      const outcome = this.#childOutcome(child, timedOut, aborted);
+      this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
+      const handoff = parseHandoff(outcome.text) ?? undefined;
+      if (outcome.isError) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), verdict: "child-error" };
 
-    // Commit so the branch carries the work (squash-merge sees only commits) and
-    // the in-worktree gate judges the committed state.
-    const committed = await commitWorktree(wt, `vibecodr(ensemble ${spec.id} a${i}): ${spec.objective}`);
-    if (!committed) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score: -1, verdict: "no-changes" };
+      // Commit so the branch carries the work (squash-merge sees only commits) and
+      // the in-worktree gate judges the committed state.
+      const committed = await commitWorktree(wt, `vibecodr(ensemble ${spec.id} a${i}): ${spec.objective}`);
+      if (!committed) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score: -1, verdict: "no-changes" };
 
-    const diffSize = (await gitDiffSince(wt, baseRef)).length;
-    let score = 1;
-    let verdict = "unverified";
-    if (profile) {
-      const gate = await runGate(wt, profile, 0, {
-        checks: this.#handle.deps.config.build.gate.checks,
-        timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
-        ...(parentSignal ? { signal: parentSignal } : {}),
-      });
-      score = gate.outcome === "green" ? 2 : gate.outcome === "red" ? 0 : 1;
-      verdict = gate.outcome;
+      const diffSize = (await gitDiffSince(wt, baseRef)).length;
+      let score = 1;
+      let verdict = "unverified";
+      if (profile) {
+        const gate = await runGate(wt, profile, 0, {
+          checks: this.#handle.deps.config.build.gate.checks,
+          timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+          ...(parentSignal ? { signal: parentSignal } : {}),
+        });
+        score = gate.outcome === "green" ? 2 : gate.outcome === "red" ? 0 : 1;
+        verdict = gate.outcome;
+      }
+      return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score, diffSize, verdict };
+    } catch (err) {
+      // Return the (possibly created) worktree so the caller's cleanup removes it.
+      return { ...base, wt, verdict: "error", text: `ensemble attempt threw: ${(err as Error)?.message ?? String(err)}` };
     }
-    return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score, diffSize, verdict };
   }
 
   /** Run one orchestrator task in the SHARED tree: fork a subagent, thread in
@@ -729,11 +753,21 @@ export class OrchestratorRunner {
       // is machine truth — fail the attempt with the structured, actionable gate
       // output as the retry feedback, without burning a review call.
       if (wantsGate) {
-        const gate = await runGate(this.#handle.deps.cwd, profile!, attempts - 1, {
-          checks: this.#handle.deps.config.build.gate.checks,
-          timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
-          ...(parentSignal ? { signal: parentSignal } : {}),
-        });
+        // Serialize the shared-tree gate through the SAME tree lock the worktree
+        // path uses: `runGate` builds/tests the whole `cwd`, so two concurrent
+        // shared `check` tasks (no deps → dispatched together) would run two
+        // `build`/`test` processes in one dir, clobbering each other's outputs and
+        // each seeing the OTHER task's edits — a nondeterministic verdict. The lock
+        // also mutually-excludes shared gates from worktree merge/gate critical
+        // sections so neither observes the other mid-write. Deadlock-free: runGate
+        // acquires no fan-out slot, so the lock holder always makes progress.
+        const gate = await this.#mergeLock(() =>
+          runGate(this.#handle.deps.cwd, profile!, attempts - 1, {
+            checks: this.#handle.deps.config.build.gate.checks,
+            timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+            ...(parentSignal ? { signal: parentSignal } : {}),
+          }),
+        );
         if (gate.outcome === "red") {
           feedback = formatGateFailure(gate, maxAttempts);
           if (attempts < maxAttempts) continue; // retry with the failing checks
@@ -811,6 +845,27 @@ export class OrchestratorRunner {
     work: string,
     parentSignal: AbortSignal | undefined,
   ): Promise<{ clean: boolean; feedback: string }> {
+    // Capture the diff, THEN review it (the review reads the captured diff, not the
+    // live tree). Split so a caller holding the shared-tree merge lock can capture
+    // INSIDE the lock and run the review child OUTSIDE it — see #reviewCapturedDiff.
+    return this.#reviewCapturedDiff(spec, work, await this.#captureTaskDiff(spec), parentSignal);
+  }
+
+  /**
+   * Run the read-only review child against an ALREADY-captured diff. Deliberately
+   * takes the diff as a param (not the live tree) so it can run OUTSIDE the
+   * tree-global `#mergeLock`: the review child runs a full LLM turn and may itself
+   * emit `spawn_tasks`, whose nested runner shares that same non-reentrant lock —
+   * running it inside the lock would deadlock the whole tree. The diff is captured
+   * by the caller inside the lock (tree stable), so the review still judges exactly
+   * this task's merged changes.
+   */
+  async #reviewCapturedDiff(
+    spec: TaskSpec,
+    work: string,
+    diff: string,
+    parentSignal: AbortSignal | undefined,
+  ): Promise<{ clean: boolean; feedback: string }> {
     const reviewAgent = this.#handle.deps.agents?.get("review");
     if (!reviewAgent && !this.#reviewDegradationWarned) {
       // LOUD once-per-session: a generic read-only child is a weaker reviewer than
@@ -824,7 +879,6 @@ export class OrchestratorRunner {
           "reviewer. Add a `review` agent for higher-quality diff review.",
       });
     }
-    const diff = await this.#captureTaskDiff(spec);
     const stubBlock =
       this.#handle.deps.config.build.review.stubScan && diff
         ? formatStubFindings(scanStubs(diff))

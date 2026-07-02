@@ -20,6 +20,17 @@ test("expandMentions injects text-file contents as a fenced block", async () => 
   expect(r.images).toHaveLength(0);
 });
 
+test("a binary file mention is skipped, not injected as mojibake text", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-"));
+  // A non-image binary (e.g. a .bin/.pdf) with NUL bytes.
+  await Bun.write(join(cwd, "blob.bin"), new Uint8Array([0x00, 0x01, 0x02, 0xff, 0x00, 0x7f]));
+  const r = await expandMentions("look at @blob.bin", cwd);
+  // Not injected as a text block…
+  expect(r.text).toBe("look at @blob.bin");
+  // …and a notice explains why.
+  expect(r.notices.some((n) => n.includes("blob.bin") && n.includes("binary"))).toBe(true);
+});
+
 test("unresolvable mentions pass through untouched", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-"));
   const r = await expandMentions("what about @nope/missing.ts?", cwd);

@@ -107,6 +107,13 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
     } else {
       raw = await file.text();
     }
+    // A non-image binary file (PDF/wasm/mp4/zip/…) would otherwise be UTF-8
+    // decoded into up to 64KB of mojibake and injected as "text" — wasted tokens
+    // and polluted context. A NUL byte is the reliable binary tell; skip + notice.
+    if (raw.includes("\0")) {
+      notices.push(`${token} skipped: looks binary (not injected as text)`);
+      continue;
+    }
     // Truncate by ENCODED BYTES (not String.slice's UTF-16 units) so a CJK/emoji
     // file actually honors the byte budget it claims to enforce.
     const { text: capped, truncated } = capBytes(raw, MAX_TEXT_BYTES);

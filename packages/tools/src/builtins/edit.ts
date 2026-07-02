@@ -129,7 +129,20 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
         };
       }
 
-      const before = await file.text();
+      // Read the RAW bytes and decode strictly: `file.text()` lossily maps any
+      // invalid-UTF-8 byte to U+FFFD, and the subsequent `Bun.write(buffer)` would
+      // then re-encode that replacement — silently corrupting binary/non-UTF-8
+      // bytes ANYWHERE in the file, even far from the edited region, while
+      // reporting success. Refuse to edit a non-UTF-8 file instead of destroying it.
+      let before: string;
+      try {
+        before = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+      } catch {
+        return {
+          output: `${path} is not valid UTF-8 (looks binary) — refusing to edit, since a text edit would corrupt its bytes. Use a different tool for binary files.`,
+          isError: true,
+        };
+      }
       // Apply against an in-memory buffer; write only if every edit succeeds.
       let buffer = before;
       for (let i = 0; i < ops.length; i++) {

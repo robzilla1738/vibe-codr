@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendMemory, gatherMemoryDocs } from "./memory-store.ts";
@@ -60,6 +61,20 @@ test("gatherMemoryDocs reads saved project memory as indexable docs", async () =
 test("gatherMemoryDocs returns [] for a project with no saved memory", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mstore3-"));
   expect(await gatherMemoryDocs(dir)).toEqual([]);
+});
+
+test("always-injected curated files (USER/VIBE/AGENTS/CLAUDE.md) are excluded from the recall corpus", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore4-"));
+  const memDir = join(dir, ".vibe", "memory");
+  await mkdir(memDir, { recursive: true });
+  // A curated always-injected file must NOT enter the searchable corpus (it's
+  // already permanently in the system prompt — double-embedding wastes the budget).
+  await writeFile(join(memDir, "USER.md"), "# user preferences\nalways-injected curated notes");
+  await writeFile(join(memDir, "2026-01-01.md"), "# fact\nan actual saved fact about turborepo");
+  const docs = await gatherMemoryDocs(dir);
+  const sources = docs.map((d) => d.source);
+  expect(sources.some((s) => s.endsWith("USER.md"))).toBe(false);
+  expect(sources.some((s) => s.endsWith("2026-01-01.md"))).toBe(true);
 });
 
 test("concurrent saves to the same dated file don't lose entries (atomic append)", async () => {

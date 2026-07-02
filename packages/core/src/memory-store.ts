@@ -21,18 +21,31 @@ export function globalMemoryDir(): string {
   return join(vibeConfigDir(), "memory");
 }
 
-/** Read every `*.md` in `dir` as a MemoryDoc (skipping the sqlite index). */
+/** Curated, ALWAYS-INJECTED memory files that live under the global memory dir
+ * (USER.md) or a repo. They're permanently in the system prompt, so pulling them
+ * into the searchable recall corpus too would double-embed them and let recall
+ * surface content already in context — wasting the hit budget. Excluded here. */
+const ALWAYS_INJECTED = new Set(["USER.md", "VIBE.md", "AGENTS.md", "CLAUDE.md"]);
+
+/** Read every saved-fact `*.md` in `dir` as a MemoryDoc (skipping the sqlite
+ * index and the always-injected curated files). */
 async function readMarkdownDocs(dir: string, label: string): Promise<MemoryDoc[]> {
   let entries: string[];
   try {
     entries = await readdir(dir);
-  } catch {
-    return []; // dir doesn't exist yet — no saved memory
+  } catch (err) {
+    // ENOENT = the dir doesn't exist yet → legitimately empty. Any OTHER error
+    // (permission, transient FS fault) must PROPAGATE: returning [] here would tell
+    // the index reconciler "this scope has no docs" and it would prune every vector
+    // for the scope, forcing a full re-embed once the read recovers.
+    if ((err as { code?: string })?.code === "ENOENT") return [];
+    throw err;
   }
   const docs: MemoryDoc[] = [];
   for (const name of entries.sort()) {
     if (!name.endsWith(".md")) continue;
-    const text = await Bun.file(join(dir, name)).text().catch(() => "");
+    if (ALWAYS_INJECTED.has(name)) continue;
+    const text = await Bun.file(join(dir, name)).text();
     if (text.trim()) docs.push({ source: `${label}/${name}`, text });
   }
   return docs;

@@ -142,12 +142,31 @@ export async function runDag(
   // Only ids that still exist in this plan are honored, so a stale journal entry
   // never resurrects a removed task; seeded tasks count as settled + started.
   if (events.seed?.length) {
-    for (const r of events.seed) {
-      const spec = byId.get(r.id);
-      if (!spec || results.has(r.id)) continue;
-      results.set(r.id, r);
-      started.add(r.id);
-      events.onStatus?.(spec, r.outcome, r);
+    // Candidates: prior results whose id still exists AND whose OBJECTIVE is
+    // unchanged. Plan-drift guard: a reused id (generic `impl`/`test`/`fix`) whose
+    // objective changed is a DIFFERENT task — seeding it would skip the new work
+    // and report the old objective, so it must re-run.
+    const seedById = new Map(
+      events.seed
+        .filter((r) => byId.get(r.id) && byId.get(r.id)!.objective === r.objective)
+        .map((r) => [r.id, r] as const),
+    );
+    // Seed to a FIXPOINT, only seeding a task once every dep is ALSO seeded. If a
+    // dep drifted (or is absent from the seed), it re-runs — and so must every
+    // transitive dependent, otherwise a dependent's stale result would be retained
+    // against a dep that produced a fresh (possibly different) output.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [id, r] of seedById) {
+        if (results.has(id)) continue;
+        const spec = byId.get(id)!;
+        if (!spec.deps.every((d) => results.has(d))) continue; // a dep isn't seeded → don't seed this
+        results.set(id, r);
+        started.add(id);
+        events.onStatus?.(spec, r.outcome, r);
+        changed = true;
+      }
     }
   }
 

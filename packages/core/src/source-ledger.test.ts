@@ -42,6 +42,20 @@ test("record assigns stable [n] indices in first-seen order and dedupes by canon
   expect(led.list().map((e) => e.url)).toEqual(["https://foo.com/a", "https://bar.com/b"]);
 });
 
+test("hydrate restores persisted entries and continues the [n] numbering on resume", () => {
+  const led = new SourceLedger();
+  led.hydrate([
+    { index: 1, url: "https://foo.com/a", via: "web_search", title: "A" },
+    { index: 2, url: "https://bar.com/b", via: "webfetch" },
+  ]);
+  expect(led.size).toBe(2);
+  expect(led.list().map((e) => e.index)).toEqual([1, 2]);
+  // A pre-existing citation still resolves (dedupes to its original index)…
+  expect(led.record({ url: "https://foo.com/a", via: "webfetch" })?.index).toBe(1);
+  // …and a NEW source continues from the next index, not restarting at [1].
+  expect(led.record({ url: "https://baz.com/c", via: "web_search" })?.index).toBe(3);
+});
+
 test("record back-fills a title on a later sighting and ignores empty urls", () => {
   const led = new SourceLedger();
   led.record({ url: "https://foo.com/a", via: "web_search" });
@@ -230,6 +244,53 @@ test("session harvests URLs from a web_search result and injects them into the n
   expect(lastUser).toContain("[1] https://foo.example.com/a");
   expect(lastUser).toContain("[2] https://bar.example.com/b");
   expect(lastUser).toContain("<workspace-state>");
+});
+
+test("webfetch records the URL it FETCHED, not links found inside the page body", async () => {
+  // webfetch's output is the page BODY; harvesting URLs from it recorded arbitrary
+  // in-page links (ads/related) as if fetched, while the actual page went unrecorded.
+  const webfetch: ToolDefinition<{ url: string }> = {
+    name: "webfetch",
+    description: "Fake webfetch.",
+    inputSchema: z.object({ url: z.string() }),
+    readOnly: true,
+    network: true,
+    async execute() {
+      // Body full of OTHER links that must NOT be recorded as sources.
+      return {
+        output:
+          "# The Article\nSee also https://ads.tracker.com/x and https://unrelated.example/y for more.",
+      };
+    },
+  };
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "c1", toolName: "webfetch", input: JSON.stringify({ url: "https://blog.example.com/post" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "done" },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([webfetch]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("fetch it");
+  // Exactly the fetched page is recorded — not the two in-body links.
+  expect(session.sources.list().map((e) => e.url)).toEqual(["https://blog.example.com/post"]);
 });
 
 // ── /sources command ───────────────────────────────────────────────────────

@@ -170,6 +170,19 @@ export function writeGlobalConfig(
     const path = globalConfigPath();
     const existing = (await readConfigFile(path)) ?? {};
     const merged = mergeForWrite(existing, patch);
+    // Validate BEFORE persisting: a patch with an invalid value (e.g. a custom
+    // provider baseURL typed without a scheme, `localhost:1234`) must not be
+    // written to disk — every subsequent non-`setup` run would then throw
+    // ConfigError on load and the CLI would be bricked until the user discovers
+    // `vibe setup`. Reject the write here so the caller (onboarding) can re-prompt.
+    const check = ConfigSchema.safeParse(merged);
+    if (!check.success) {
+      throw new ConfigError(
+        `Refusing to write invalid configuration: ${check.error.issues
+          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+      );
+    }
     await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
     return merged;
   };

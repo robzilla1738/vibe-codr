@@ -149,6 +149,33 @@ export class SourceLedger {
     return this.#order;
   }
 
+  /**
+   * Restore a persisted ledger (on `--resume`) so the `[n]` citations already in
+   * the resumed transcript still resolve, and new sources continue the numbering
+   * instead of colliding. Preserves each entry's original index; `#next` advances
+   * past the highest seen. Clears any current state first (called once at seed).
+   */
+  hydrate(entries: readonly SourceEntry[]): void {
+    this.#byCanon.clear();
+    this.#order = [];
+    this.#next = 1;
+    this.#dropped = 0;
+    for (const e of entries) {
+      const canon = canonicalizeUrl(e.url);
+      if (this.#byCanon.has(canon)) continue;
+      const entry: SourceEntry = { index: e.index, url: canon, via: e.via, ...(e.title ? { title: e.title } : {}) };
+      this.#byCanon.set(canon, entry);
+      this.#order.push(entry);
+      this.#next = Math.max(this.#next, e.index + 1);
+    }
+    // Keep the cap invariant if a persisted ledger somehow exceeded it.
+    while (this.#order.length > this.max) {
+      const removed = this.#order.shift()!;
+      this.#byCanon.delete(removed.url);
+      this.#dropped++;
+    }
+  }
+
   /** Number of retained entries. */
   get size(): number {
     return this.#order.length;

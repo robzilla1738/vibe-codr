@@ -11,6 +11,14 @@ import type { Exec } from "./exec.ts";
 
 const SENTINEL = "@@VIBECODR@@";
 
+/** A per-recon section marker: the sentinel plus an unguessable nonce, so a
+ * scanned file that happens to (or maliciously does) contain the literal
+ * `@@VIBECODR@@GITDIRTY` can't inject a fake section and spoof git state or
+ * disable command detection. Regenerated every reconRepo call. */
+function reconMarker(): string {
+  return `${SENTINEL}${crypto.randomUUID()}@@`;
+}
+
 /** The raw manifest text reconRepo collected, fed to the pure detectors. */
 export interface RepoManifests {
   packageJson?: string;
@@ -46,7 +54,8 @@ export function looksGreenfield(entries: string[]): boolean {
  * failure degrades its field rather than throwing.
  */
 export async function reconRepo(exec: Exec, workdir: string, signal?: AbortSignal): Promise<RepoProfile> {
-  const sec = (name: string) => `printf '%s\\n' "${SENTINEL}${name}"`;
+  const marker = reconMarker();
+  const sec = (name: string) => `printf '%s\\n' "${marker}${name}"`;
   const probe = [
     sec("LS"), "ls -A 2>/dev/null",
     sec("GITREPO"), "git rev-parse --is-inside-work-tree 2>/dev/null",
@@ -70,7 +79,7 @@ export async function reconRepo(exec: Exec, workdir: string, signal?: AbortSigna
     return { ...GREENFIELD_PROFILE, greenfield: false };
   }
 
-  const sections = splitSections(out);
+  const sections = splitSections(out, marker);
   const entries = lines(sections.LS);
   if (looksGreenfield(entries)) return { ...GREENFIELD_PROFILE };
 
@@ -108,9 +117,9 @@ export async function reconRepo(exec: Exec, workdir: string, signal?: AbortSigna
   };
 }
 
-function splitSections(out: string): Record<string, string> {
+function splitSections(out: string, marker: string): Record<string, string> {
   const map: Record<string, string> = {};
-  for (const part of out.split(SENTINEL)) {
+  for (const part of out.split(marker)) {
     const nl = part.indexOf("\n");
     if (nl < 0) continue;
     const name = part.slice(0, nl).trim();
@@ -230,10 +239,15 @@ export function detectCommands(m: RepoManifests): CodeCommands {
   }
   if (m.makefile) {
     const mk = m.makefile;
-    if (/^build\s*:/m.test(mk)) cmds.build = "make build";
-    if (/^test\s*:/m.test(mk)) cmds.test = "make test";
-    if (/^lint\s*:/m.test(mk)) cmds.lint = "make lint";
-    if (/^(typecheck|check)\s*:/m.test(mk)) cmds.typecheck = "make check";
+    // `(?!:?=)` after the colon rejects GNU-make variable ASSIGNMENTS
+    // (`build := …`, `build ::= …`) that would otherwise read as a `build:`
+    // TARGET — running `make build` on a var-only Makefile fails the gate on a
+    // target that doesn't exist. Real targets (`build:`, `build::`, `build: deps`)
+    // still match.
+    if (/^build\s*:(?!:?=)/m.test(mk)) cmds.build = "make build";
+    if (/^test\s*:(?!:?=)/m.test(mk)) cmds.test = "make test";
+    if (/^lint\s*:(?!:?=)/m.test(mk)) cmds.lint = "make lint";
+    if (/^(typecheck|check)\s*:(?!:?=)/m.test(mk)) cmds.typecheck = "make check";
     return cmds;
   }
   return cmds;

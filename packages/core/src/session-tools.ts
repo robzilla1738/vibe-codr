@@ -65,12 +65,16 @@ export function buildRecallTool(handle: SessionToolsHandle): ToolDefinition<{ qu
     description:
       "Search long-term memory — saved facts/decisions and past vibe-codr sessions — for relevant prior context. Use this when the user references earlier work, asks 'what did we decide', or you need context beyond the current conversation.",
     inputSchema: z.object({
-      query: z.string().describe("What to look for in saved memory and past sessions."),
+      query: z.string().min(1).describe("What to look for in saved memory and past sessions."),
       limit: z.number().int().positive().max(20).optional().describe("Max matches (default 8)."),
     }),
     readOnly: true,
     concurrencySafe: true,
     execute: async ({ query, limit }) => {
+      // Defense in depth against an empty query the schema would already reject:
+      // an all-whitespace query has no lexical/semantic signal — return nothing
+      // rather than arbitrary nearest-neighbours.
+      if (!query.trim()) return { output: "No query provided." };
       if (memory) {
         const hits = await memory.search(query, limit ?? 8);
         return { output: formatMemoryHits(query, hits) };

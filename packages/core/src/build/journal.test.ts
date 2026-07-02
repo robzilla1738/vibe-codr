@@ -62,3 +62,17 @@ test("task ids are sanitized in report filenames", () => {
   expect(rel).not.toContain("..");
   expect(readTaskReport(cwd, rel!)).toBe("content");
 });
+
+test("ids that sanitize-equal get distinct report files (no overwrite/mixup)", () => {
+  // `a.b` and `a_b` both sanitize to `a_b`; a bare-slug path collided so the
+  // second overwrote the first. A per-id hash keeps them distinct.
+  const cwd = tmp();
+  const relDot = persistTaskReport(cwd, "s", "a.b", "report for a.b");
+  const relUnderscore = persistTaskReport(cwd, "s", "a_b", "report for a_b");
+  expect(relDot).toBeDefined();
+  expect(relUnderscore).toBeDefined();
+  expect(relDot).not.toBe(relUnderscore); // distinct paths
+  // Neither clobbered the other.
+  expect(readTaskReport(cwd, relDot!)).toBe("report for a.b");
+  expect(readTaskReport(cwd, relUnderscore!)).toBe("report for a_b");
+});

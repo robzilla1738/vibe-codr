@@ -45,6 +45,21 @@ test("bare return null flagged only in handler-ish paths", () => {
   expect(elsewhere.filter((f) => f.kind === "empty-return")).toEqual([]);
 });
 
+test("empty-bodied function declarations are flagged, arrow no-ops and real bodies are not", () => {
+  const findings = scanStubs(
+    diff("src/save.ts", [
+      "export function save() {}", // stub → flagged
+      "async function handle(): Promise<void> {}", // stub → flagged
+      "const noop = () => {};", // intentional no-op → not flagged
+      "function real() { return 1; }", // real body → not flagged
+    ]),
+  );
+  const empties = findings.filter((f) => f.kind === "empty-body").map((f) => f.snippet);
+  expect(empties).toContain("export function save() {}");
+  expect(empties).toContain("async function handle(): Promise<void> {}");
+  expect(empties.length).toBe(2); // arrow no-op and real body excluded
+});
+
 test("tests, markdown, and vendored paths are not scanned; removed lines ignored", () => {
   const noise = [
     diff("src/App.test.tsx", ["// TODO: assert more"]),

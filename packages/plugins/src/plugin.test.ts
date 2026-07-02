@@ -59,3 +59,33 @@ test("PluginHost survives a broken plugin", async () => {
   await host.load(["/nonexistent/does-not-exist.ts"]);
   expect(true).toBe(true);
 });
+
+test("PluginHost does not hang on a plugin whose register() never resolves", async () => {
+  // Regression: register() was awaited with no deadline, so a never-resolving
+  // plugin blocked the entire CLI boot. It must time out (logged) and move on —
+  // and a WELL-BEHAVED plugin loaded after it must still register.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-"));
+  const hangPath = join(dir, "hang.ts");
+  await Bun.write(hangPath, `export function register() { return new Promise(() => {}); }`);
+  const okPath = join(dir, "ok.ts");
+  await Bun.write(
+    okPath,
+    `export function register(api) {
+       api.registerCommand({ name: "after", description: "x", source: "plugin", run: () => ({ kind: "notice", message: "ok" }) });
+     }`,
+  );
+  const commands = new CommandRegistry();
+  const host = new PluginHost({
+    hooks: new HookBus(),
+    commands,
+    skills: new SkillRegistry(),
+    registerTool: () => {},
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+  const start = performance.now();
+  // Short deadline so the test is fast; the hanging plugin is abandoned.
+  await host.load([hangPath, okPath], { timeoutMs: 50 });
+  expect(performance.now() - start).toBeLessThan(2000); // did NOT hang
+  expect(commands.get("after")).toBeDefined(); // the good plugin still loaded
+});

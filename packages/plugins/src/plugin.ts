@@ -53,14 +53,26 @@ export class PluginHost {
     };
   }
 
-  /** Import and register each plugin module specifier (npm name or path). */
-  async load(specifiers: string[]): Promise<void> {
+  /** Import and register each plugin module specifier (npm name or path).
+   * `timeoutMs` bounds each plugin's register() (default 15s); exposed mainly for
+   * tests. */
+  async load(specifiers: string[], opts: { timeoutMs?: number } = {}): Promise<void> {
+    const deadline = opts.timeoutMs ?? PLUGIN_REGISTER_TIMEOUT_MS;
     for (const spec of specifiers) {
       try {
         const mod = (await import(spec)) as { default?: Plugin } & Partial<Plugin>;
         const plugin = mod.default ?? (mod as Plugin);
         if (typeof plugin.register === "function") {
-          await plugin.register(this.#api());
+          // Bound register() with a wall-clock deadline: a plugin whose
+          // register() never resolves (or is pathologically slow) would otherwise
+          // hang the entire CLI boot — bootstrap() awaits this before the TUI
+          // starts. Matches the MCP hub's per-server connect timeout. A timeout is
+          // logged and skipped, not fatal.
+          await withTimeout(
+            Promise.resolve(plugin.register(this.#api())),
+            deadline,
+            `plugin ${spec} register() timed out`,
+          );
           this.#log.info(`loaded plugin ${spec}`);
         } else {
           this.#log.warn(`plugin ${spec} has no register()`);
@@ -70,4 +82,25 @@ export class PluginHost {
       }
     }
   }
+}
+
+/** Per-plugin register() deadline (ms) so one hung plugin can't block CLI boot. */
+export const PLUGIN_REGISTER_TIMEOUT_MS = 15_000;
+
+/** Reject if `p` doesn't settle within `ms`. The pending `p` is abandoned (a
+ * plugin that eventually resolves just logs late); boot proceeds regardless. */
+function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 }

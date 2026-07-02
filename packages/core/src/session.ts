@@ -34,7 +34,7 @@ import { composeSystemPrompt, formatWorkspaceState } from "./system-prompt.ts";
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages, estimateTokens } from "./compaction.ts";
-import { SourceLedger, harvestUrls, RESEARCH_TOOL_NAMES } from "./source-ledger.ts";
+import { SourceLedger, harvestUrls, RESEARCH_TOOL_NAMES, type SourceEntry } from "./source-ledger.ts";
 import {
   applyOffloads,
   planOffloads,
@@ -143,6 +143,12 @@ export interface SessionDeps {
    * the backstop against a runaway model (capped at subagent.maxTotal). Created
    * lazily by the root runner; forks inherit the SAME object via `...this.#deps`. */
   spawnCounter?: { used: number };
+  /** Tree-shared serial lock for the ONE shared `.git`/working tree: every
+   * worktree merge+gate and shared-tree gate across the WHOLE session tree —
+   * including NESTED `spawn_tasks` runners — serializes through it, so two runners
+   * can't race `.git/index`. Created lazily by the root runner; forks inherit the
+   * SAME lock via `...this.#deps`. */
+  mergeLock?: <T>(fn: () => Promise<T>) => Promise<T>;
   id?: string;
   /** Persistence backend; when set, the session is saved after each turn. */
   store?: SessionStore;
@@ -157,6 +163,8 @@ export interface SessionDeps {
   initialCostUSD?: number;
   /** Seed the recalled-context block when resuming a persisted session. */
   initialRecalledContext?: string;
+  /** Seed the web-source ledger when resuming, so `[n]` citations still resolve. */
+  initialSources?: SourceEntry[];
   createdAt?: number;
   /** Resolve the active model's context window (for compaction). */
   getContextWindow?: (model: string) => Promise<number | undefined>;
@@ -215,6 +223,12 @@ export class Session {
    * error flag; this side-channel lets `#consume` mark them correctly. Keyed by
    * toolCallId; populated by the tool adapter before the result part is emitted. */
   #toolCallErrors = new Map<string, boolean>();
+  /** webfetch tool-call id → the URL it was asked to fetch. `webfetch`'s OUTPUT is
+   * the page BODY, so harvesting URLs from it records arbitrary in-page links
+   * (ads, "related", footnotes) as if the agent fetched them, while the URL it
+   * actually fetched goes unrecorded. We capture the INPUT url here and record
+   * THAT on success instead. */
+  #fetchInputUrls = new Map<string, string>();
   /** Tool results offloaded to session artifacts (mid-turn microcompaction),
    * keyed by toolCallId. In-memory only: persisted messages carry the previews
    * themselves, so `--resume` needs no extra state. */
@@ -255,6 +269,7 @@ export class Session {
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
     this.#recalledContext = deps.initialRecalledContext;
+    if (deps.initialSources?.length) this.#sources.hydrate(deps.initialSources);
     this.#createdAt = deps.createdAt ?? Date.now();
     this.#handle = this.#buildHandle();
     this.#runner = new OrchestratorRunner(this.#handle);
@@ -351,7 +366,12 @@ export class Session {
         level: "warn",
         message: `Spend limit reached: $${this.#costUSD.toFixed(4)} ≥ $${budget.limitUSD} (${budget.onExceed}).`,
       });
-      if (budget.onExceed === "stop") this.#abort.abort();
+      // Only HARD-STOP on cost we actually know. An `estimated` price is a
+      // base-model catalog guess (e.g. a local `lmstudio/…`/`ollama/…` tag that
+      // inherited a cloud namesake's rate for a model that may be genuinely free)
+      // — aborting a session on phantom spend is worse than letting it run. The
+      // warn above still fires so the user sees the (estimated) crossing.
+      if (budget.onExceed === "stop" && !this.#price?.estimated) this.#abort.abort();
     }
     return true;
   }
@@ -445,6 +465,14 @@ export class Session {
     // abort that lands during a turn's pre-stream prep (model resolve, pricing,
     // compaction), letting the turn proceed against a non-aborted signal.
     this.#abort.abort();
+  }
+
+  /** The active turn's abort signal — read by post-turn steps (the green-gate,
+   * verify) that run in the engine AFTER `run()` resolves but BEFORE the next
+   * `run()` installs a fresh controller, so an Esc during a long gate/build
+   * aborts it instead of being ignored until the per-check timeout. */
+  get abortSignal(): AbortSignal {
+    return this.#abort.signal;
   }
 
   /** Is the active turn's signal aborted? (the user pressed Esc / steered). */
@@ -986,12 +1014,22 @@ export class Session {
         responseOk = true;
       } finally {
         if (assistant) {
-          this.#history.push(assistant);
-          // On failure the authoritative model messages never arrived; record
-          // the partial assistant text so model context matches UI history.
-          if (!responseOk) {
+          if (responseOk) {
+            // Success: the authoritative model messages already landed; record the
+            // UI reply too.
+            this.#history.push(assistant);
+          } else {
+            // Failure: record the partial assistant to BOTH lists or NEITHER, so
+            // they stay consistent for the orphan-rollback below. An EMPTY partial
+            // (an empty text-delta before abort makes `assistant` truthy while its
+            // text is "") must go to neither — otherwise #history keeps it while
+            // #modelMessages doesn't, and the rollback pops the orphan user from
+            // #modelMessages only, so a resume loses the user's prompt.
             const text = messageText(assistant);
-            if (text) this.#modelMessages.push({ role: "assistant", content: text });
+            if (text) {
+              this.#history.push(assistant);
+              this.#modelMessages.push({ role: "assistant", content: text });
+            }
           }
         }
       }
@@ -1078,7 +1116,14 @@ export class Session {
         }),
       );
       const digest = text.trim().replace(/\s+/g, " ");
-      return digest || undefined;
+      // Reject not just empty but LOW-VALUE digests: a curt "No significant
+      // changes." / "Nothing to note." would be saved as a durable memory and
+      // later recalled as noise. Require some substance (a handful of words) and
+      // drop obvious no-op replies.
+      if (digest.length < 24 || /^(no (significant )?(changes|updates|actions)|nothing (to note|happened|significant))\b/i.test(digest)) {
+        return undefined;
+      }
+      return digest;
     } catch {
       return undefined;
     }
@@ -1150,14 +1195,33 @@ export class Session {
       this.#lastInputTokens > 0
         ? Math.max(this.#lastInputTokens, estimate)
         : estimate + Math.min(COMPACT_OVERHEAD_MARGIN, Math.floor(contextWindow * 0.1));
-    const result = await compactMessages(this.#modelMessages, {
-      contextWindow,
-      threshold: this.#deps.config.compaction.threshold,
-      keep: COMPACT_KEEP_RECENT,
-      force,
-      currentTokens,
-      summarize: (msgs) => this.#summarize(model, msgs),
-    });
+    let result: Awaited<ReturnType<typeof compactMessages>>;
+    try {
+      result = await compactMessages(this.#modelMessages, {
+        contextWindow,
+        threshold: this.#deps.config.compaction.threshold,
+        keep: COMPACT_KEEP_RECENT,
+        force,
+        currentTokens,
+        summarize: (msgs) => this.#summarize(model, msgs),
+      });
+    } catch (err) {
+      // A cancellation must propagate — Esc during a long summarize should stop
+      // the turn, not be swallowed into a silent "no compaction".
+      if (this.#abort.signal.aborted || (err as { name?: string })?.name === "AbortError") throw err;
+      // Any other summarizer failure (transient provider error on the AUXILIARY
+      // summarize call) must not fail the turn — the real work might still fit.
+      // Skip compaction and proceed with the uncompacted context; a subsequent
+      // provider 400 on length is a clearer signal than losing the whole turn to
+      // a blip on a side-channel call. For subagents this also avoids a summarize
+      // hiccup marking a fork as "failed" to its orchestrator.
+      this.#deps.bus.emit({
+        type: "notice",
+        level: "warn",
+        message: `Compaction skipped: summarizer failed (${(err as Error)?.message ?? String(err)}).`,
+      });
+      return;
+    }
     if (!result) {
       if (force) {
         this.#deps.bus.emit({
@@ -1241,6 +1305,7 @@ export class Session {
           tasks: this.#tasks,
           usage: { ...this.#usage, costUSD: this.#costUSD },
           ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
+          ...(this.#sources.size ? { sources: [...this.#sources.list()] } : {}),
           createdAt: this.#createdAt,
           updatedAt: Date.now(),
         },
@@ -1367,6 +1432,12 @@ export class Session {
           if (def && !def.readOnly) {
             this.#turnMutated = true;
           }
+          // Capture the URL webfetch was asked to fetch (its output is the page
+          // body, not a URL list) so the ledger records the page actually pulled.
+          if (part.toolName === "webfetch") {
+            const inp = (part.input ?? part.args) as { url?: unknown } | undefined;
+            if (inp && typeof inp.url === "string") this.#fetchInputUrls.set(part.toolCallId, inp.url);
+          }
           bus.emit({
             type: "tool-call-started",
             sessionId: this.id,
@@ -1387,14 +1458,24 @@ export class Session {
           // URLs it surfaced and record them in the session's source ledger
           // (deduped + stably numbered), so later turns can cite them by [n].
           if (!isError && RESEARCH_TOOL_NAMES.has(part.toolName)) {
-            const text =
-              typeof part.output === "string"
-                ? part.output
-                : offloadResultText(part.output as { type?: string; value?: unknown });
-            for (const url of harvestUrls(text)) {
-              this.#sources.record({ url, via: part.toolName });
+            if (part.toolName === "webfetch") {
+              // Record the URL actually fetched (the tool INPUT), not links
+              // harvested from the page body — those weren't pulled by the agent.
+              const fetched = this.#fetchInputUrls.get(part.toolCallId);
+              if (fetched) this.#sources.record({ url: fetched, via: part.toolName });
+            } else {
+              // web_search / crawl_docs OUTPUT is a list of result/page URLs — those
+              // ARE the sources surfaced, so harvest them from the rendered text.
+              const text =
+                typeof part.output === "string"
+                  ? part.output
+                  : offloadResultText(part.output as { type?: string; value?: unknown });
+              for (const url of harvestUrls(text)) {
+                this.#sources.record({ url, via: part.toolName });
+              }
             }
           }
+          this.#fetchInputUrls.delete(part.toolCallId);
           bus.emit({
             type: "tool-call-finished",
             sessionId: this.id,

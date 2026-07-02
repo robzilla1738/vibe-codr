@@ -110,6 +110,28 @@ test("/plan and /execute toggle mode", async () => {
   expect(engine.snapshot().mode).toBe("execute");
 });
 
+test("/plan then /execute never silently lands in YOLO — approvals reset to ask", async () => {
+  // Regression: from a YOLO session (approvals=auto), `/plan` then `/execute`
+  // used to leave approvals on `auto`, so the next turn ran unprompted while the
+  // user believed they were back in gated EXECUTE.
+  const engine = makeEngine();
+  const { events } = collect(engine);
+  // Enter YOLO: approvals → auto.
+  engine.send({ type: "run-slash", name: "approvals", args: "auto" });
+  await engine.whenIdle();
+  // /plan must couple approvals back to ask.
+  engine.send({ type: "run-slash", name: "plan", args: "" });
+  await engine.whenIdle();
+  const afterPlan = events.filter((e) => e.type === "approvals-changed").at(-1);
+  expect(afterPlan && afterPlan.type === "approvals-changed" && afterPlan.mode).toBe("ask");
+  // And /execute stays gated (ask), not YOLO.
+  engine.send({ type: "run-slash", name: "execute", args: "" });
+  await engine.whenIdle();
+  const last = events.filter((e) => e.type === "approvals-changed").at(-1);
+  expect(last && last.type === "approvals-changed" && last.mode).toBe("ask");
+  expect(engine.snapshot().mode).toBe("execute");
+});
+
 test("/goal sets and clears the goal", async () => {
   const engine = makeEngine();
   collect(engine);

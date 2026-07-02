@@ -127,6 +127,13 @@ export type UIEvent =
   | { type: "notice"; level: "info" | "warn" | "error"; message: string }
   | { type: "engine-error"; sessionId?: string; message: string }
   | { type: "turn-finished"; sessionId: string }
-  | { type: "session-idle"; sessionId: string };
+  /** One turn's run loop settled. Emitted PER TURN — a single user prompt can
+   * expand into several (a gate-fix / review-fix / verify-fix follow-up), so this
+   * is NOT the end of the work for that prompt. */
+  | { type: "session-idle"; sessionId: string }
+  /** The engine's work queue fully drained: the submitted prompt AND every
+   * follow-up turn it spawned are done, and nothing is running. This is the true
+   * terminal signal for a headless one-shot (unlike per-turn `session-idle`). */
+  | { type: "engine-idle"; sessionId: string };
 
 export type UIEventType = UIEvent["type"];

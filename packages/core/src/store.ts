@@ -1,7 +1,8 @@
-import { readdir, rename } from "node:fs/promises";
+import { readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import type { Message, Mode, Task } from "@vibe/shared";
+import type { SourceEntry } from "./source-ledger.ts";
 
 export interface SessionMeta {
   id: string;
@@ -17,6 +18,10 @@ export interface SessionMeta {
   /** The proactively-recalled context block, so a resumed session keeps the
    * same injected memory instead of silently dropping (or re-deriving) it. */
   recalledContext?: string;
+  /** The web-source ledger (numbered `[n]` citations) at the last save, so a
+   * resumed session's existing citations still resolve and new sources continue
+   * the numbering instead of restarting from [1]. */
+  sources?: SourceEntry[];
   createdAt: number;
   updatedAt: number;
 }
@@ -27,6 +32,30 @@ export interface PersistedSession {
   history: Message[];
 }
 
+/** Tag key for a base64-encoded binary blob in persisted JSONL. Deliberately
+ * long + namespaced so a model-generated object can't collide with it and be
+ * wrongly revived into a Uint8Array. */
+const U8_TAG = "__vibecodr_binary_base64__";
+
+/**
+ * JSON replacer that encodes a `Uint8Array` (an `@image`/file part's bytes) as a
+ * tagged base64 string. Without it, `JSON.stringify` turns the typed array into a
+ * numeric-keyed object (`{"0":137,…}`) — several× larger AND not reconstructable,
+ * so a resumed session hands the provider a broken `image` field it rejects.
+ */
+function u8Replacer(_key: string, value: unknown): unknown {
+  return value instanceof Uint8Array ? { [U8_TAG]: Buffer.from(value).toString("base64") } : value;
+}
+
+/** Inverse of {@link u8Replacer}: restore a tagged base64 blob to a `Uint8Array`. */
+function u8Reviver(_key: string, value: unknown): unknown {
+  if (value && typeof value === "object") {
+    const tag = (value as Record<string, unknown>)[U8_TAG];
+    if (typeof tag === "string") return new Uint8Array(Buffer.from(tag, "base64"));
+  }
+  return value;
+}
+
 /**
  * Persists sessions under `.vibe/sessions/<id>/` so runs are resumable.
  * `messages.jsonl` holds the authoritative model context; `history.jsonl`
@@ -34,6 +63,9 @@ export interface PersistedSession {
  */
 export class SessionStore {
   #base: string;
+  /** Monotonic per-process counter for unique temp-file names (with pid), so
+   * concurrent saves never share a temp path. */
+  static #writeSeq = 0;
 
   constructor(cwd: string) {
     this.#base = join(cwd, ".vibe", "sessions");
@@ -49,10 +81,19 @@ export class SessionStore {
     history: Message[],
   ): Promise<void> {
     const dir = this.#dir(meta.id);
-    const files: [string, string][] = [
-      [join(dir, "meta.json"), JSON.stringify(meta, null, 2)],
-      [join(dir, "messages.jsonl"), modelMessages.map((m) => JSON.stringify(m)).join("\n")],
-      [join(dir, "history.jsonl"), history.map((m) => JSON.stringify(m)).join("\n")],
+    // A PER-WRITE-UNIQUE temp suffix (pid + monotonic counter): two vibe-codr
+    // instances resuming the SAME session (two `--continue` terminals in one repo)
+    // otherwise both write the FIXED `messages.jsonl.tmp` and their interleaved
+    // bytes rename into place as a TORN file — `#readJsonl` then silently drops
+    // the unparseable lines, breaking tool-call/tool-result pairing on the next
+    // load. A unique temp means every rename installs ONE writer's COMPLETE file
+    // (last-writer-wins with a valid file, never a corrupt mix).
+    const stamp = `${process.pid}.${SessionStore.#writeSeq++}`;
+    const tmp = (name: string) => join(dir, `${name}.${stamp}.tmp`);
+    const targets: [string, string, string][] = [
+      [tmp("meta.json"), join(dir, "meta.json"), JSON.stringify(meta, null, 2)],
+      [tmp("messages.jsonl"), join(dir, "messages.jsonl"), modelMessages.map((m) => JSON.stringify(m, u8Replacer)).join("\n")],
+      [tmp("history.jsonl"), join(dir, "history.jsonl"), history.map((m) => JSON.stringify(m, u8Replacer)).join("\n")],
     ];
     // Atomic save with ORDERED renames: write all temp files first, then rename
     // (atomic on POSIX) in a deliberate sequence — messages.jsonl (the
@@ -61,10 +102,23 @@ export class SessionStore {
     // ordering turns every crash window into a monotone state: the authoritative
     // transcript is never older than what meta/history claim, so a resumed
     // session at worst shows a slightly stale UI view — never a corrupt seed.
-    await Promise.all(files.map(([path, content]) => Bun.write(`${path}.tmp`, content)));
-    await rename(`${join(dir, "messages.jsonl")}.tmp`, join(dir, "messages.jsonl"));
-    await rename(`${join(dir, "history.jsonl")}.tmp`, join(dir, "history.jsonl"));
-    await rename(`${join(dir, "meta.json")}.tmp`, join(dir, "meta.json"));
+    const byName = (n: string) => targets.find((t) => t[1] === join(dir, n))!;
+    // Unique temp names don't self-heal the way the old fixed `.tmp` did (a later
+    // save reused that name), so on any write/rename failure clean up our own
+    // temps — otherwise an interrupted save leaks orphaned `*.<pid>.<seq>.tmp`
+    // files that accumulate forever.
+    try {
+      await Promise.all(targets.map(([tmpPath, , content]) => Bun.write(tmpPath, content)));
+      for (const name of ["messages.jsonl", "history.jsonl", "meta.json"]) {
+        const [tmpPath, finalPath] = byName(name);
+        await rename(tmpPath, finalPath);
+      }
+    } catch (err) {
+      // Best-effort: remove any of our unrenamed temps, then re-throw so the
+      // caller still learns the save failed.
+      await Promise.all(targets.map(([tmpPath]) => rm(tmpPath, { force: true }).catch(() => undefined)));
+      throw err;
+    }
   }
 
   async load(id: string): Promise<PersistedSession | null> {
@@ -102,7 +156,7 @@ export class SessionStore {
       if (!line.trim()) continue;
       // Skip an unparseable (truncated) trailing line rather than failing load.
       try {
-        out.push(JSON.parse(line) as T);
+        out.push(JSON.parse(line, u8Reviver) as T);
       } catch {
         /* skip corrupt line */
       }

@@ -113,6 +113,40 @@ test("enrich resolves metadata through the alias (fireworks → fireworks-ai)", 
   }
 });
 
+test("a failed first load does NOT poison the catalog — a later lookup retries", async () => {
+  // Regression: the first load caching an empty Map (truthy) made every later
+  // contextWindow()/pricing()/enrich() skip the network forever, pinning all
+  // models to defaults for the process lifetime.
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const prevCache = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = mkdtempSync(join(tmpdir(), "vibe-cat-")); // fresh, empty → no cache file
+  const realFetch = globalThis.fetch;
+  let failNext = true;
+  globalThis.fetch = (async (_url: string | URL) => {
+    if (failNext) throw new Error("offline");
+    return new Response(JSON.stringify({ openai: { models: { "gpt-5.2": { limit: { context: 400000 } } } } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const cat = new CatalogService();
+    // First load fails (offline, no cache) → empty enrichment, but NOT poisoned.
+    const first = await cat.enrich([{ providerId: "openai", id: "gpt-5.2" }]);
+    expect(first[0]!.contextWindow).toBeUndefined();
+    // Network recovers → the next load must retry and pick up the real value.
+    failNext = false;
+    const second = await cat.enrich([{ providerId: "openai", id: "gpt-5.2" }]);
+    expect(second[0]!.contextWindow).toBe(400000);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (prevCache === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevCache;
+  }
+});
+
 test("refresh() force-fetches the catalog and returns the model count", async () => {
   const cat = new CatalogService();
   let calls = 0;

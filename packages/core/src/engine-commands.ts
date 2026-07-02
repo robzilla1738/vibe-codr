@@ -77,6 +77,9 @@ export interface EngineHandle {
   emit(event: UIEvent): void;
   /** Route an EngineCommand back through the engine (e.g. /compact). */
   send(command: EngineCommand): void;
+  /** Forget all session `always`-allow grants — called when approvals are
+   * re-gated to `ask` so a prior "always allow" can't bypass the fresh gate. */
+  clearAlwaysAllow(): void;
   /** Persist a config patch to the user-global config file. */
   persistConfig(patch: Record<string, unknown>): Promise<void>;
   /** Run a text prompt through the full turn pipeline. */
@@ -243,9 +246,20 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     }
     case "plan":
       h.session.setMode("plan");
+      // Couple approvals to the mode transition, exactly like the Shift+Tab
+      // path (commandsForUiMode): reset to `ask` so leaving plan later lands in
+      // gated EXECUTE, never silently in YOLO. Without this, `/plan` from a YOLO
+      // session stayed on `auto`, and a following `/execute` was YOLO with no
+      // approval prompt. Quiet — the mode pill already reflects the change.
+      handleApprovals(h, "ask", true);
       break;
     case "execute":
       h.session.setMode("execute");
+      // `/execute` requests the GATED execute mode (the UiMode "execute" == ASK);
+      // reset approvals to `ask` so it can't inherit a lingering `auto` from a
+      // prior YOLO/plan state and run unprompted. YOLO is entered deliberately
+      // via Shift+Tab, not by falling through here.
+      handleApprovals(h, "ask", true);
       break;
     case "goal":
       h.session.setGoal(args || null);
@@ -477,6 +491,12 @@ export function handleApprovals(h: EngineHandle, args: string, quiet = false): v
     h.notice("Usage: /approvals <ask|auto>", "warn");
     return;
   }
+  // Re-gating to `ask` forgets prior `always`-allow grants — BEFORE the no-op
+  // early-return, so accepting a plan (or `/plan`/`/execute`) from a session
+  // that's already in `ask` still clears grants that would otherwise bypass the
+  // fresh gate ("nothing runs unprompted after re-gating"). Clearing when already
+  // in `ask` is safe: it only means the next matching tool call prompts again.
+  if (next === "ask") h.clearAlwaysAllow();
   // No-op if unchanged — avoids spamming the transcript when Shift+Tab cycles
   // through modes that resolve to the same approval setting.
   if (next === h.config.approvalMode) return;

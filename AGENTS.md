@@ -290,11 +290,18 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
     offloads the most recent `keepLiveResults`, and is idempotent via the
     offload sentinel. prepareStep edits are EPHEMERAL — the durable pass at
     end-of-turn/pre-compaction is what persisted sessions carry.
-  - **Permission rules: specificity, then deny.** Content-scoped rules
-    (`match`) decide before name-only rules; within a tier deny > ask > allow,
-    order-independent. Network read-only tools consult the rules with a
-    fallback of allow (frictionless default, governable egress) — don't restore
-    the old readOnly bypass.
+  - **Permission rules: DENY is absolute; specificity decides allow-vs-ask.**
+    Any matching deny — scoped OR name-only — wins outright (a blanket deny can't
+    be punched through by a scoped allow; express deny-with-exceptions by SCOPING
+    the deny). Below deny, a content-scoped (`match`) rule beats a name-only one
+    (so an allowlist doesn't prompt); within that, ask > allow. Globs are
+    action-aware: deny/ask compile dotAll+case-insensitive (a newline/case trick
+    can't dodge a kill-switch), allow compiles strictly (no smuggling a trailing
+    command past an allowlist). An EXPLICIT `ask` rule fails CLOSED when headless
+    (no human to approve); a default/fallback ask auto-allows. `always`-allow is
+    remembered per tool+content-scope and cleared when approvals re-gate to `ask`.
+    Network read-only tools consult the rules with a fallback of allow
+    (frictionless default, governable egress) — don't restore the old readOnly bypass.
   - **Stale-write guard:** `read` records mtimes; `edit`/`write` to an
     externally-changed file must error "re-read first" (checked INSIDE the file
     lock). Our own writes re-record so they never self-flag.

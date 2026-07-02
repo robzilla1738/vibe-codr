@@ -15,5 +15,6 @@ export {
   type PricingResult,
 } from "./catalog.ts";
 export { probeOllamaContextWindow, extractContextLength } from "./ollama-probe.ts";
+export { probeLmStudioContextWindow, extractLmStudioContext } from "./lmstudio-probe.ts";
 export { listOpenAICompatibleModels } from "./openai-compat.ts";
 export { readTokenFile, expandHome } from "./auth-file.ts";

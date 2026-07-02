@@ -156,6 +156,16 @@ export class CheckpointManager {
     // checkpoint (e.g. GC'd object) to the next VALID one instead of giving up.
     let cp = this.#list.pop();
     while (cp) {
+      // A GREEN checkpoint is a "this turn succeeded" RESULT marker whose tree
+      // equals the post-edit working tree — restoring it is a visible no-op, so
+      // `/undo` used to need TWO presses (one to pop the green marker, one to
+      // actually revert). Discard the green marker (drop its dangling ref) and
+      // undo to the pre-edit checkpoint beneath it, so ONE `/undo` reverts the turn.
+      if (cp.green) {
+        await this.#git(["update-ref", "-d", `refs/vibecodr/${cp.id}`]).catch(() => undefined);
+        cp = this.#list.pop();
+        continue;
+      }
       const indexFile = join(tmpdir(), `vibecodr-undo-${cp.id}`);
       const env = { GIT_INDEX_FILE: indexFile };
       let restored = false;

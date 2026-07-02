@@ -24,6 +24,7 @@ import {
   ProviderRegistry,
   CatalogService,
   probeOllamaContextWindow,
+  probeLmStudioContextWindow,
   type ModelInfo,
 } from "@vibe/providers";
 import { Toolset, builtinTools, buildRepoMap, createFileLock, BackgroundJobs } from "@vibe/tools";
@@ -38,7 +39,7 @@ import {
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
 import { BUILTIN_COMMANDS } from "./commands.ts";
-import type { PermissionResolver } from "./permissions.ts";
+import { type PermissionResolver, scopeString } from "./permissions.ts";
 import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./agents.ts";
 import { resolveRepoProfile } from "./build/profile.ts";
 import { appendLedger, manifestHash, commandsHash } from "./build/ledger.ts";
@@ -287,6 +288,7 @@ export class Engine implements EngineClient {
             ...(resume.meta.recalledContext
               ? { initialRecalledContext: resume.meta.recalledContext }
               : {}),
+            ...(resume.meta.sources?.length ? { initialSources: resume.meta.sources } : {}),
             ...(resume.meta.usage
               ? {
                   initialUsage: resume.meta.usage,
@@ -395,7 +397,16 @@ export class Engine implements EngineClient {
     // accept
     const plan = this.#lastPlan;
     if (!plan) return;
+    // Clear the armed plan NOW (not later, when the enqueued job runs) so a
+    // second `resolve-plan{accept}` — a double-click, a scripted/plugin re-send —
+    // fails the `if (!plan) return` guard above instead of seeding the task list
+    // twice and firing two execute turns against the same plan.
+    this.#lastPlan = undefined;
     this.#session.setMode("execute");
+    // Accepting a plan is a mode transition into gated EXECUTE — reset approvals
+    // to `ask` so a plan approved from a YOLO session doesn't start executing
+    // unprompted. Mirrors the Shift+Tab / `/execute` coupling.
+    handleApprovals(this.#getCommandHandle(), "ask", true);
     this.#seedTasksFromPlan(plan);
     // Bind the handoff directly to this job so it applies to THIS turn and can't
     // be stolen by a prompt the user queued ahead of it.
@@ -681,6 +692,12 @@ export class Engine implements EngineClient {
           this.#pending = [];
           this.#emitQueue();
         }
+        // Resolve any on-screen permission prompt as `deny` so the cancelled
+        // tool doesn't run — and so a stale card, if clicked later, can't fulfil
+        // an already-settled promise and slip a side-effecting call past the
+        // abort. (Without this the pending map was only cleared at finalize.)
+        for (const resolve of this.#pendingPermissions.values()) resolve("deny");
+        this.#pendingPermissions.clear();
         (this.#loopSession ?? this.#session).abort();
         break;
       case "dequeue": {
@@ -745,9 +762,20 @@ export class Engine implements EngineClient {
   async #askPermission(req: {
     toolName: string;
     input: unknown;
+    explicit?: boolean;
   }): Promise<boolean> {
-    if (!this.#interactive) return true;
-    if (this.#alwaysAllow.has(req.toolName)) return true;
+    // Non-interactive (headless/`-p`/CI): a frictionless DEFAULT ask auto-allows
+    // so scripted runs aren't wedged waiting for a human, but an EXPLICIT gate
+    // (`{action:"ask"}` a user deliberately authored) fails CLOSED — there is no
+    // human to approve, and silently upgrading an authored gate to `allow` would
+    // let e.g. `{tool:"git_push", action:"ask"}` push unattended.
+    if (!this.#interactive) return !req.explicit;
+    // `always` is remembered per (tool + content scope), NOT per tool name: an
+    // "always allow" on `bash {command:"git status"}` must not also green-light
+    // `bash {command:"rm -rf /"}`. Tools with no natural scope fall back to the
+    // tool name (the whole tool is remembered).
+    const key = this.#alwaysAllowKey(req.toolName, req.input);
+    if (this.#alwaysAllow.has(key)) return true;
     const id = createId("perm");
     const decision = await new Promise<"once" | "always" | "deny">((resolve) => {
       this.#pendingPermissions.set(id, resolve);
@@ -759,8 +787,17 @@ export class Engine implements EngineClient {
         input: req.input,
       });
     });
-    if (decision === "always") this.#alwaysAllow.add(req.toolName);
+    if (decision === "always") this.#alwaysAllow.add(key);
     return decision !== "deny";
+  }
+
+  /** Memory key for an `always`-allow decision: tool name plus its content scope
+   * (command/path/url) so "always" is remembered for THIS call shape, not the
+   * whole tool. `\x00` can't appear in a tool name or scope, so it's an
+   * unambiguous separator. */
+  #alwaysAllowKey(toolName: string, input: unknown): string {
+    const scope = scopeString(toolName, input);
+    return scope === undefined ? toolName : `${toolName}\x00${scope}`;
   }
 
   /** Snapshot of the queue for first paint / `/queue`. */
@@ -948,9 +985,11 @@ export class Engine implements EngineClient {
 
   /**
    * Resolve a model's real context window (tokens): a config `contextWindow`
-   * override wins, then a live Ollama `/api/show` probe (covers local + cloud
-   * Ollama models the catalog doesn't list), then the models.dev catalog. Falls
-   * through to undefined, where the session applies its 128k default.
+   * override wins, then a live probe of the local server (Ollama `/api/show`,
+   * LM Studio `/api/v0/models`) that reports the SERVED window, then the
+   * models.dev catalog. Falls through to undefined, where the session applies its
+   * 128k default — safe for big cloud models, dangerous for small LOCAL ones,
+   * which is exactly why local providers are probed here.
    */
   async #resolveContextWindow(model: string): Promise<number | undefined> {
     const override = this.#config.contextWindow[model];
@@ -959,6 +998,13 @@ export class Engine implements EngineClient {
       const probed = await probeOllamaContextWindow(
         model,
         this.#config.providers?.ollama?.baseURL,
+      );
+      if (probed) return probed;
+    }
+    if (model.startsWith("lmstudio/")) {
+      const probed = await probeLmStudioContextWindow(
+        model,
+        this.#config.providers?.lmstudio?.baseURL,
       );
       if (probed) return probed;
     }
@@ -1106,6 +1152,7 @@ export class Engine implements EngineClient {
       notice: (message, level) => engine.#notice(message, level),
       emit: (event) => engine.#bus.emit(event),
       send: (command) => engine.send(command),
+      clearAlwaysAllow: () => engine.#alwaysAllow.clear(),
       persistConfig: (patch) => engine.#persistConfig(patch),
       handlePrompt: (text, opts) => engine.#handlePrompt(text, opts),
       resetTurnBudgets: () => engine.#resetPromptBudgets(),
@@ -1217,6 +1264,11 @@ export class Engine implements EngineClient {
       await new Promise((resolve) => setTimeout(resolve, 0));
     } while (this.#pending.length);
     this.#draining = false;
+    // The queue is fully drained — the prompt AND every follow-up turn it spawned
+    // (gate-fix / review-fix / verify-fix) are done. Signal the true terminal
+    // point so a headless one-shot stops HERE, not on the first per-turn
+    // `session-idle` (which would cut off follow-up output and race finalize()).
+    this.#bus.emit({ type: "engine-idle", sessionId: this.#session.id });
     void this.hooks.run("session.idle", { sessionId: this.#session.id });
     for (const resolve of this.#idleResolvers.splice(0)) resolve();
   }
@@ -1358,6 +1410,11 @@ export class Engine implements EngineClient {
     const summary = await runGate(this.#cwd, profile, this.#gateRounds, {
       checks: gate.checks,
       timeoutSec: gate.timeoutSec,
+      // Thread the session's abort signal so an Esc during a long gate build
+      // stops it between (and, via exec, during) checks — otherwise the only
+      // bound was the per-check timeout (default 600s × N checks), wedging the
+      // queue unabortably.
+      signal: this.#session.abortSignal,
     });
     if (summary.outcome === "unverified") {
       // pickChecks found commands but the gate produced no verdict (every check
@@ -1485,6 +1542,31 @@ export class Engine implements EngineClient {
   }
 
   /**
+   * The review diff when no checkpoint baseline exists (checkpoints disabled).
+   * A bare `git diff` shows only tracked, unstaged changes — so a brand-new file
+   * the agent CREATED (untracked) was invisible to both the reviewer and the stub
+   * scan, letting a new file full of stubs ship unreviewed. This includes staged
+   * changes (`diff HEAD`) and untracked, non-ignored files (synthesized as an
+   * add-diff against /dev/null). Non-destructive: never touches the index.
+   */
+  async #fallbackReviewDiff(): Promise<string> {
+    // Tracked changes vs HEAD (staged + unstaged). In a repo with no commits yet,
+    // `git diff HEAD` errors — fall back to the plain working-tree diff there.
+    const tracked = await spawnGit(this.#cwd, ["diff", "HEAD"]);
+    let diff = tracked.ok ? tracked.stdout : (await spawnGit(this.#cwd, ["diff"])).stdout;
+    const listed = await spawnGit(this.#cwd, ["ls-files", "--others", "--exclude-standard"]);
+    if (listed.ok && listed.stdout.trim()) {
+      for (const file of listed.stdout.split("\n").map((s) => s.trim()).filter(Boolean)) {
+        // `git diff --no-index` exits 1 when the files differ, so read stdout
+        // regardless of `ok`. `--` guards a filename that looks like a flag.
+        const d = await spawnGit(this.#cwd, ["diff", "--no-index", "--", "/dev/null", file]);
+        if (d.stdout.trim()) diff += (diff ? "\n" : "") + d.stdout;
+      }
+    }
+    return diff;
+  }
+
+  /**
    * Adversarial diff review after a GREEN gate. Diffs THIS turn's work (the
    * pre-turn checkpoint base, or a plain working-tree diff as fallback), scans it
    * for stub/dead-code signals, and asks the model to judge the diff ALONE
@@ -1506,8 +1588,7 @@ export class Engine implements EngineClient {
     if (baseCheckpoint) {
       diff = await this.#checkpoints.diffFrom(baseCheckpoint);
     } else {
-      const r = await spawnGit(this.#cwd, ["diff"]);
-      diff = r.ok ? r.stdout : "";
+      diff = await this.#fallbackReviewDiff();
     }
     // Nothing to act on: no diff to review AND no runtime findings to fix.
     if (!diff.trim() && !visualFindings) return;

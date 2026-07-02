@@ -19,10 +19,10 @@ export const MAX_MEMORY_BYTES = 32 * 1024;
  * down to `cwd`. We only walk up when a `.git` ancestor is found — otherwise we
  * read just `cwd`, so running outside a repo never silently slurps `~/AGENTS.md`.
  */
-function memoryDirs(cwd: string): string[] {
+export function memoryDirs(cwd: string, homeDir: string = homedir()): string[] {
   const start = resolve(cwd);
   const fsRoot = parse(start).root;
-  const home = homedir();
+  const home = homeDir;
   const chain: string[] = [];
   let dir = start;
   let foundGit = false;
@@ -33,7 +33,11 @@ function memoryDirs(cwd: string): string[] {
       break;
     }
     const parent = dirname(dir);
-    if (parent === dir || dir === fsRoot || dir === home) break;
+    // Stop BEFORE ascending into $HOME (or past the fs root): a dotfiles-as-repo
+    // `~/.git` must not make the walk treat $HOME as a git root and slurp
+    // ~/AGENTS.md / ~/CLAUDE.md. `parent === home` stops us one level below home;
+    // `dir === home` still covers the degenerate case where cwd IS home.
+    if (parent === dir || dir === fsRoot || dir === home || parent === home) break;
     dir = parent;
   }
   // chain is [cwd, …, gitRoot]; reverse → [gitRoot, …, cwd] (cwd wins).

@@ -112,6 +112,24 @@ test("a checkpoint records the conversation mark for history rollback", async ()
   expect(restored!.conversation).toEqual({ messages: 4, history: 3 });
 });
 
+test("one undo reverts the turn even when a green result-marker sits on top", async () => {
+  // Mirrors the real edit turn: a pre-edit snapshot, then the model edits, then
+  // commit-on-green pushes a GREEN checkpoint of the post-edit tree. `/undo` must
+  // revert to the PRE-EDIT state in a single call, not land on the (no-op) green
+  // marker and force a second press.
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  const preedit = await cp.snapshot("edit auth.ts"); // pre-edit baseline
+  await Bun.write(join(dir, "a.txt"), "EDITED BY AGENT\n"); // the turn's edit
+  await cp.snapshot("green: edit auth.ts", undefined, { green: true }); // post-edit green marker
+
+  const restored = await cp.undo();
+  // Restored the pre-edit checkpoint, not the green marker…
+  expect(restored?.id).toBe(preedit!.id);
+  // …and the file is actually back to its pre-edit content after ONE undo.
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("original\n");
+});
+
 test("undo with a missing snapshot commit refuses to delete untracked files", async () => {
   const dir = await initRepo();
   const cp = new CheckpointManager(dir);

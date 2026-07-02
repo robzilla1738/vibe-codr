@@ -162,9 +162,14 @@ export class CatalogService {
    */
   async refresh(): Promise<number> {
     const raw = await this.#fetchCatalog(true);
-    this.#metadata = raw ? parseModelsDev(raw) : new Map();
-    this.#loadPromise = Promise.resolve(this.#metadata);
-    return this.#metadata.size;
+    // A FAILED forced refresh (raw null) must not wipe good metadata to an empty
+    // map — keep what we had and report its size, so `/models refresh` while
+    // offline degrades to "unchanged" instead of "all models forgotten".
+    if (raw) {
+      this.#metadata = parseModelsDev(raw);
+      this.#loadPromise = Promise.resolve(this.#metadata);
+    }
+    return this.#metadata?.size ?? 0;
   }
 
   /** Load (and memoize) the catalog metadata; a single in-flight fetch is shared. */
@@ -172,8 +177,17 @@ export class CatalogService {
     if (this.#metadata) return Promise.resolve(this.#metadata);
     if (!this.#loadPromise) {
       this.#loadPromise = this.#fetchCatalog().then((raw) => {
-        this.#metadata = raw ? parseModelsDev(raw) : new Map();
-        return this.#metadata;
+        if (raw) {
+          this.#metadata = parseModelsDev(raw);
+          return this.#metadata;
+        }
+        // Fetch failed AND no cache: do NOT poison `#metadata` with an empty map —
+        // that's truthy, so every later contextWindow()/pricing() would take the
+        // fast path and never retry the network, pinning all models to the 128k
+        // default + $0 pricing for the whole process. Clear the in-flight promise
+        // so the NEXT lookup retries; return an empty map for THIS call only.
+        this.#loadPromise = null;
+        return new Map<string, Partial<ModelInfo>>();
       });
     }
     return this.#loadPromise;

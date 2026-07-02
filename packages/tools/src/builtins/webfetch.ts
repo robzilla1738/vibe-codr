@@ -378,8 +378,12 @@ export async function guardedFetchText(startUrl: string, opts: GuardedFetchOptio
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     // Same-domain confinement (crawler bound): re-checked on the FINAL resolved
     // URL of every hop, so a redirect off-origin can't smuggle external content
-    // back under the crawl's trusted domain.
-    if (opts.sameOrigin && new URL(current).origin !== opts.sameOrigin) {
+    // back under the crawl's trusted domain. Compared by host+port (not full
+    // origin) with an http→https UPGRADE allowed: a docs site that 301s
+    // http→https on the same host is legitimate and must not fail the crawl,
+    // while a redirect to a different host — or an https→http DOWNGRADE — is still
+    // refused.
+    if (opts.sameOrigin && !sameSite(current, opts.sameOrigin)) {
       throw new Error(`refusing to follow a redirect off ${opts.sameOrigin} (to ${current})`);
     }
     const target = await assertFetchAllowed(current, policy, opts.lookup);
@@ -408,6 +412,24 @@ export async function guardedFetchText(startUrl: string, opts: GuardedFetchOptio
     ? decodeCharset(bytes, contentType)
     : await extractText(contentType, bytes, current, opts.readable);
   return byteTruncated ? `${text}\n…(response exceeded ${maxBytes} bytes and was truncated)` : text;
+}
+
+/** Whether `current` is on the same site as the crawl's base origin: identical
+ * host + port, with an http→https UPGRADE tolerated (never a downgrade, never a
+ * different host). Keeps a crawler on its own domain while surviving the near-
+ * universal http→https redirect. Malformed URLs fail closed (not same-site). */
+export function sameSite(current: string, baseOrigin: string): boolean {
+  let cur: URL;
+  let base: URL;
+  try {
+    cur = new URL(current);
+    base = new URL(baseOrigin);
+  } catch {
+    return false;
+  }
+  if (cur.hostname !== base.hostname || cur.port !== base.port) return false;
+  if (cur.protocol === base.protocol) return true;
+  return base.protocol === "http:" && cur.protocol === "https:"; // upgrade only
 }
 
 /** The URL to actually connect to: the guard-verified IP (bracketed for IPv6)

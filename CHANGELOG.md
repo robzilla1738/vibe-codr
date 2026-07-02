@@ -4,6 +4,39 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Hardened — full subsystem-by-subsystem audit
+
+A read-every-line adversarial audit across all 12 subsystems (tracked in
+`docs/audit-ledger.md`), with every confirmed defect reproduced, fixed, and
+regression-tested, followed by two adversarial verification passes over the
+weakest areas. Highlights:
+
+- **Permissions.** DENY is now absolute across specificity tiers (a blanket deny
+  can't be punched through by a scoped allow); glob matching is action-aware so a
+  newline/whitespace-case/host-case trick can't dodge a deny kill-switch; an
+  explicit `ask` rule fails closed when headless; `always`-allow is keyed per
+  tool+content-scope and cleared when approvals re-gate to `ask`; a command-bearing
+  MCP/exec tool is now governable by `match` rules; abort resolves pending
+  permission prompts so a stale card can't run a cancelled tool.
+- **Modes.** `/plan`→`/execute` and plan-card accept now reset approvals to `ask`
+  (no more silent YOLO); plan-accept is idempotent (no double-execute).
+- **Compaction.** An empty/failed summary never deletes history — it skips
+  compaction (with a notice) instead of dropping the conversation or failing the turn.
+- **Headless parity.** A one-shot (`-p`) now prints ALL turns of a prompt — including
+  gate-fix/review-fix follow-ups — via a new `engine-idle` terminal signal, and no
+  longer races `finalize()`; a plan is captured in `--output-format json`.
+- **Orchestration.** The shared-tree gate is serialized (no concurrent-build clobber);
+  journal seeds respect objective drift and cascade a re-run to dependents; report
+  paths disambiguate ids that sanitize-equal.
+- **Providers.** LM Studio / local models are probed for their real context window
+  (no more 128k default → truncation); a failed catalog load no longer poisons the
+  process; estimated pricing can't hard-stop a free local session.
+- **Sessions.** Concurrent saves use unique temp files (no torn transcript); the web
+  source ledger is persisted and restored on resume.
+- **Fresh install.** Onboarding validates config before persisting (can't brick a
+  later run) and is honest when a required key is skipped; a hung plugin can't block
+  boot; an MCP connect-timeout no longer leaks the connection.
+
 ### Changed — TUI visual polish pass
 
 A screenshot-verified sweep over every view of the OpenTUI app (all 17 render

@@ -24,7 +24,11 @@ export async function probeOllamaContextWindow(
 ): Promise<number | undefined> {
   if (cache.has(model)) return cache.get(model);
   const name = model.replace(/^ollama\//, "");
-  const root = (baseURL ?? process.env.OLLAMA_BASE_URL ?? "http://localhost:11434/v1")
+  // Route the probe to the SAME host the model runs on. Precedence: explicit
+  // baseURL → $OLLAMA_BASE_URL → Ollama CLOUD (when an API key is set, so a cloud
+  // user isn't misrouted to a localhost daemon that may not exist) → local daemon.
+  const cloudDefault = process.env.OLLAMA_API_KEY ? "https://ollama.com" : "http://localhost:11434/v1";
+  const root = (baseURL ?? process.env.OLLAMA_BASE_URL ?? cloudDefault)
     .replace(/\/v1\/?$/, "")
     .replace(/\/$/, "");
   try {

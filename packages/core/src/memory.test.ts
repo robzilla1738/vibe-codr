@@ -6,6 +6,7 @@ import {
   loadProjectMemory,
   loadMemorySources,
   formatMemory,
+  memoryDirs,
   MAX_MEMORY_BYTES,
 } from "./memory.ts";
 
@@ -107,6 +108,33 @@ test("does NOT walk up when there is no .git ancestor (only reads cwd)", async (
   await writeFile(join(sub, "VIBE.md"), "child only");
   const paths = (await loadMemorySources(sub)).map((s) => s.path);
   expect(paths).toEqual(["VIBE.md"]);
+});
+
+test("a dotfiles-as-repo $HOME/.git does not make the walk ascend into $HOME", async () => {
+  // Home is itself a git repo (common with dotfiles); a project below it with no
+  // closer .git must NOT ascend into $HOME (which would slurp ~/AGENTS.md). Tested
+  // via the injectable home param since os.homedir() ignores $HOME under Bun.
+  const home = await freshDir();
+  await mkdir(join(home, ".git")); // dotfiles repo at $HOME
+  const project = join(home, "work", "project");
+  await mkdir(project, { recursive: true });
+
+  const dirs = memoryDirs(project, home);
+  // Only the project dir — the walk stopped before reaching $HOME.
+  expect(dirs).toEqual([project]);
+  // $HOME is never in the searched set.
+  expect(dirs).not.toContain(home);
+});
+
+test("memoryDirs still finds a real git root below $HOME", async () => {
+  // The home guard must not break the normal case: a repo at ~/work/repo is found.
+  const home = await freshDir();
+  const repo = join(home, "work", "repo");
+  const sub = join(repo, "src");
+  await mkdir(sub, { recursive: true });
+  await mkdir(join(repo, ".git"));
+  const dirs = memoryDirs(sub, home);
+  expect(dirs).toEqual([repo, sub]); // gitRoot first, cwd last
 });
 
 test("caps an oversized memory file with a truncation marker", async () => {

@@ -61,9 +61,27 @@ export function appendOrchestrationEvent(cwd: string, sessionId: string, event: 
 /** The cwd-relative path a task's persisted report lives at. Session-scoped so
  * two sessions' task ids can't collide. Exposed (not just internal to
  * persistTaskReport) so the ReportStore can locate a report on a resumed
- * session, where its in-memory map is empty. */
+ * session, where its in-memory map is empty. A short hash of the RAW id
+ * disambiguates ids that sanitize-equal (`a.b` vs `a_b` → same slug), so the
+ * second no longer silently overwrites the first's report on persist/resume. */
 export function taskReportPath(sessionId: string, taskId: string): string {
-  return join(".vibe", "orchestration", "reports", `${sessionId}-${sanitize(taskId)}.md`);
+  return join(
+    ".vibe",
+    "orchestration",
+    "reports",
+    `${sessionId}-${sanitize(taskId)}-${shortHash(taskId)}.md`,
+  );
+}
+
+/** Deterministic 8-char hex hash of a string (FNV-1a). Dependency-free and
+ * stable across runs, so persist and resume-lookup derive the same path. */
+function shortHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
 }
 
 /** Persist a task's full report; returns its cwd-relative path (for read_report

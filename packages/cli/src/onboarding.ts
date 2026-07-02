@@ -61,6 +61,7 @@ const BRAND_A: RGB = [138, 92, 246]; // violet
 const BRAND_B: RGB = [34, 211, 238]; // cyan
 const ACCENT: RGB = [124, 161, 255];
 const OK: RGB = [52, 211, 153];
+const WARN: RGB = [251, 191, 36]; // amber — a saved-but-incomplete setup
 
 function fg(text: string, [r, g, b]: RGB): string {
   return useColor ? `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m` : text;
@@ -450,12 +451,18 @@ export async function runOnboarding(
     const modelId = (
       await input("Model id", { placeholder: "model-name", hint: "as the endpoint names it" })
     ).trim();
-    return persist({
-      model: `custom/${modelId}`,
-      providerId: "custom",
-      apiKey,
-      baseURL: baseURL || undefined,
-    });
+    return persist(
+      {
+        model: `custom/${modelId}`,
+        providerId: "custom",
+        apiKey,
+        baseURL: baseURL || undefined,
+      },
+      // A custom OpenAI-compatible endpoint REQUIRES a base URL (the `custom`
+      // provider throws "base URL required" without one); a key alone is not
+      // enough. Only "all set" once a base URL is set.
+      { configured: Boolean(baseURL) },
+    );
   }
 
   // Other / advanced: the user supplies the whole model string; derive the provider.
@@ -472,7 +479,11 @@ export async function runOnboarding(
         (await input(`${providerId} API key`, { mask: true })).trim() ||
         undefined;
     }
-    return persist({ model, providerId, apiKey });
+    // Usable if keyless, already-configured (env/saved), or a key was provided;
+    // otherwise (key required + skipped) don't print a false "all set".
+    const configured =
+      Boolean(def?.auth.keyless) || registry.isConfigured(providerId, config) || Boolean(apiKey);
+    return persist({ model, providerId, apiKey }, { configured });
   }
 
   // 2) Key — skip for local/keyless and whenever the provider is ALREADY
@@ -519,12 +530,36 @@ export async function runOnboarding(
       ).trim() || undefined;
   }
 
-  return persist({ model, providerId: choice.registryId, apiKey, searchKey });
+  // Whether the provider will actually be USABLE after this: a keyless local
+  // provider, an already-configured one (env/saved/token), or one we just got a
+  // key for. If the user SKIPPED a required key, the provider stays unconfigured
+  // and we must not claim "all set" (which sends them into a re-onboarding loop
+  // with a false confirmation).
+  const configured =
+    Boolean(choice.localKeyless) || registry.isConfigured(choice.registryId, config) || Boolean(apiKey);
+  return persist({ model, providerId: choice.registryId, apiKey, searchKey }, { configured });
 }
 
 /** Write the config patch and print a tidy confirmation. */
-async function persist(answers: OnboardingAnswers): Promise<boolean> {
+async function persist(answers: OnboardingAnswers, opts: { configured?: boolean } = {}): Promise<boolean> {
   await writeGlobalConfig(buildOnboardingPatch(answers));
+  if (opts.configured === false) {
+    // The model was saved, but the provider has no usable credential — be honest
+    // so the user knows why the next launch re-prompts, instead of "You're all set".
+    const summary = boxed(
+      [
+        `${fg("!", WARN)} ${bold("Almost there — no API key set")}`,
+        "",
+        `${dim("model")}   ${fg(answers.model, ACCENT)}`,
+        `${dim("config")}  ${globalConfigPath()}`,
+        "",
+        `${dim("next")}    run ${bold("vibe setup")} again and paste a key, or set the provider's API-key env var`,
+      ],
+      BRAND_A,
+    );
+    stdout.write(`\n${summary}\n\n`);
+    return true;
+  }
   const summary = boxed(
     [
       `${fg("✓", OK)} ${bold("You're all set")}`,

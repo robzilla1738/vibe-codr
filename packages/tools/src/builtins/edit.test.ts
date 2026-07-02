@@ -40,6 +40,21 @@ test("single edit replaces a unique match and emits a file-changed diff", async 
   expect(changed && changed.type === "file-changed" && changed.toolCallId).toBe("call_1");
 });
 
+test("refuses to edit a non-UTF-8 (binary) file instead of corrupting its bytes", async () => {
+  // `file.text()` would map the 0xFF to U+FFFD and the rewrite would persist that
+  // corruption far from the edit. The tool must refuse and leave the bytes intact.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-edit-"));
+  const path = "bin.dat";
+  const original = Buffer.concat([Buffer.from("foo\n"), Buffer.from([0xff]), Buffer.from("bar")]);
+  await Bun.write(join(cwd, path), original);
+  const r = await editTool.execute({ path, oldString: "foo", newString: "baz" }, ctx(cwd, []));
+  expect(r.isError).toBe(true);
+  expect(r.output).toContain("not valid UTF-8");
+  // The file is byte-for-byte unchanged — no corruption.
+  const after = new Uint8Array(await Bun.file(join(cwd, path)).arrayBuffer());
+  expect([...after]).toEqual([...original]);
+});
+
 test("replacement text containing $ sequences is inserted literally", async () => {
   // `$&`, `$1`, `$$` are special in String.replace's string form — they must
   // be preserved verbatim when the model edits regex/shell/jQuery code.

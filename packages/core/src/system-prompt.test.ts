@@ -126,6 +126,27 @@ test("project memory is included when present", () => {
   expect(out).toContain("This is a Bun monorepo.");
 });
 
+test("memory doctrine: full save guidance in execute, recall-only in plan, absent without memory", () => {
+  // Execute with a wired MemoryService → recall + proactive-save doctrine.
+  const full = composeSystemPrompt({ mode: "execute", goal: null, memory: { save: true } });
+  expect(full).toContain("LONG-TERM MEMORY");
+  expect(full).toContain("recall_memory");
+  expect(full).toContain("save_memory");
+  expect(full).toContain("AS YOU LEARN IT");
+  // The doctrine teaches the taxonomy that matters: preferences, decisions with
+  // rationale, gotchas — and what must never be saved.
+  expect(full).toContain('scope "user"');
+  expect(full).toContain("rationale");
+  expect(full).toContain("secrets/credentials");
+  // Plan mode (or no MemoryService): recall doctrine only — never coach a tool
+  // the model doesn't have.
+  const recallOnly = composeSystemPrompt({ mode: "plan", goal: null, memory: { save: false } });
+  expect(recallOnly).toContain("recall_memory");
+  expect(recallOnly).not.toContain("save_memory");
+  // Omitted entirely when the memory tools aren't registered.
+  expect(composeSystemPrompt({ mode: "execute", goal: null })).not.toContain("LONG-TERM MEMORY");
+});
+
 test("repo facts (recon) are injected before the goal", () => {
   const out = composeSystemPrompt({
     mode: "execute",

@@ -86,30 +86,130 @@ function serializeByPath<T>(path: string, fn: () => Promise<T>): Promise<T> {
 export interface SaveMemoryInput {
   /** The fact/decision/preference to remember (concise, self-contained). */
   fact: string;
-  /** "project" (this repo) or "global" (all projects). Default project. */
-  scope?: "project" | "global";
+  /** "project" (this repo), "global" (all projects, recalled on demand), or
+   * "user" (a stable user preference/fact — appended to the ALWAYS-INJECTED
+   * USER.md so every future session starts with it). Default project. */
+  scope?: "project" | "global" | "user";
   /** Optional tags for grouping/retrieval. */
   tags?: string[];
 }
 
+export interface SaveMemoryResult {
+  /** Display path of the file the fact lives in. */
+  path: string;
+  /** True when an equivalent fact was already stored and the save was skipped. */
+  deduped: boolean;
+}
+
+/** Lowercase + collapse whitespace, for duplicate detection across formatting. */
+function normalizeText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Normalized form of a fact for dedup: case-, whitespace-, and trailing-
+ * punctuation-insensitive, so "Use Bun." re-saved as "use bun" is one memory. */
+function normalizeFact(fact: string): string {
+  return normalizeText(fact).trim().replace(/[.!?]+$/, "");
+}
+
 /**
- * Append a fact to the dated memory file for its scope (`YYYY-MM-DD.md`).
+ * Whether an equivalent fact already exists in `existing`. A normalized
+ * substring match, but only at WORD BOUNDARIES on both ends: "use bun" inside
+ * "abuse bunting" or "fact 1" inside "fact 12" must NOT count as duplicates,
+ * while "uses postgres" inside a longer stored "uses postgres via neon" does
+ * (the knowledge is already stored — recall surfaces the fuller note).
+ * An empty/punctuation-only fact counts as duplicate (nothing worth storing).
+ */
+function containsFact(existing: string, fact: string): boolean {
+  const norm = normalizeFact(fact);
+  if (!norm) return true;
+  const hay = normalizeText(existing);
+  let at = hay.indexOf(norm);
+  while (at !== -1) {
+    const before = at > 0 ? hay[at - 1]! : "";
+    const after = at + norm.length < hay.length ? hay[at + norm.length]! : "";
+    if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+    at = hay.indexOf(norm, at + 1);
+  }
+  return false;
+}
+
+/** Read the concatenated text of every `*.md` in a scope dir, best-effort: dedup
+ * must FAIL OPEN — a transient read error means "can't prove it's a duplicate",
+ * and appending twice is recoverable where silently dropping a save is not. */
+async function scopeText(dir: string): Promise<string> {
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return "";
+  }
+  const texts = await Promise.all(
+    entries
+      .filter((name) => name.endsWith(".md"))
+      .map((name) => Bun.file(join(dir, name)).text().catch(() => "")),
+  );
+  return texts.join("\n");
+}
+
+/** Header written once when `save_memory` creates USER.md. */
+const USER_MD_HEADER = `# User memory
+
+Stable preferences and facts about the user, one \`- \` bullet each. This file is
+injected into EVERY session's system prompt (all projects) — keep it short and
+durable. Appended by \`save_memory\` (scope "user"); edit or prune freely.
+
+`;
+
+/**
+ * Append a stable user preference/fact to the always-injected USER.md (global
+ * memory dir). Bullets are one line each (whitespace collapsed) so the file
+ * stays a clean, prunable list; an equivalent existing bullet skips the append.
+ */
+async function appendUserMemory(fact: string): Promise<SaveMemoryResult> {
+  const dir = globalMemoryDir();
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "USER.md");
+  let deduped = false;
+  await serializeByPath(path, async () => {
+    const existing = await Bun.file(path).text().catch(() => "");
+    if (containsFact(existing, fact)) {
+      deduped = true;
+      return;
+    }
+    const header = existing.trim() ? "" : USER_MD_HEADER;
+    const glue = existing && !existing.endsWith("\n") ? "\n" : "";
+    await Bun.write(path, `${existing}${glue}${header}- ${fact.trim().replace(/\s+/g, " ")}\n`);
+  });
+  return { path: "~/.config/vibe-codr/memory/USER.md", deduped };
+}
+
+/**
+ * Append a fact to the dated memory file for its scope (`YYYY-MM-DD.md`), or —
+ * scope "user" — to the always-injected USER.md.
  *
- * Each fact gets its OWN `## HH:MM:SS — <fact>` heading under the day's `# Memory`
- * title, so `chunkMarkdown`'s heading-based splitter yields one chunk PER FACT
- * rather than collapsing a whole day into a single chunk. A day-blob chunk both
- * dilutes each fact's embedding across every unrelated topic saved that day and
- * makes recall return the entire day instead of the matching fact (audit
- * finding). The format stays human-readable: a dated title, then one timestamped
- * section per fact with its tags. Returns a display path. `now` is injectable for
- * deterministic tests.
+ * Each dated fact gets its OWN `## HH:MM:SS — <fact>` heading under the day's
+ * `# Memory` title, so `chunkMarkdown`'s heading-based splitter yields one chunk
+ * PER FACT rather than collapsing a whole day into a single chunk. A day-blob
+ * chunk both dilutes each fact's embedding across every unrelated topic saved
+ * that day and makes recall return the entire day instead of the matching fact
+ * (audit finding). The format stays human-readable: a dated title, then one
+ * timestamped section per fact with its tags.
+ *
+ * Saves are DEDUPLICATED against the scope's whole store (normalized substring
+ * match): re-saving a known fact — the same session digest after a `--resume`,
+ * a preference the model re-learns every week — reports `deduped` instead of
+ * accreting copies that recall would then surface as noise. The check runs
+ * inside the per-path write lock so two racing saves of the same fact can't
+ * both pass it. `now` is injectable for deterministic tests.
  */
 export async function appendMemory(
   cwd: string,
   input: SaveMemoryInput,
   now: Date = new Date(),
-): Promise<string> {
+): Promise<SaveMemoryResult> {
   const scope = input.scope ?? "project";
+  if (scope === "user") return appendUserMemory(input.fact);
   const dir = scope === "global" ? globalMemoryDir() : projectMemoryDir(cwd);
   await mkdir(dir, { recursive: true });
   const date = now.toISOString().slice(0, 10);
@@ -120,12 +220,23 @@ export async function appendMemory(
   // sections visually separated and the fact text lives in the heading so the
   // chunk is self-describing.
   const entry = `## ${time} — ${input.fact.trim()}${tags}\n\n`;
-  // The whole read → build → write must be atomic against a concurrent save to
-  // the same file, or the two racing writes drop one entry.
+  let deduped = false;
+  // The whole check → read → build → write must be atomic against a concurrent
+  // save to the same file, or two racing writes drop an entry (or double-save
+  // the same fact past the dedup check).
   await serializeByPath(path, async () => {
+    // Scan the whole scope store (every dated file), not just today's file — a
+    // fact saved last week must not re-append today.
+    if (containsFact(await scopeText(dir), input.fact)) {
+      deduped = true;
+      return;
+    }
     const existing = await Bun.file(path).text().catch(() => "");
     const header = existing.trim() ? "" : `# Memory — ${date}\n\n`;
     await Bun.write(path, `${existing}${header}${entry}`);
   });
-  return scope === "global" ? `~/.config/vibe-codr/memory/${date}.md` : `.vibe/memory/${date}.md`;
+  return {
+    path: scope === "global" ? `~/.config/vibe-codr/memory/${date}.md` : `.vibe/memory/${date}.md`,
+    deduped,
+  };
 }

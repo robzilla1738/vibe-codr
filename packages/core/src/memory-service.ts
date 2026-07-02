@@ -4,7 +4,12 @@ import type { Logger } from "@vibe/shared";
 import { resolveEmbedder } from "./embeddings.ts";
 import { openSemanticMemory, type SemanticMemory, type MemoryDoc } from "./semantic-memory.ts";
 import { searchMemory, type MemoryHit } from "./memory-search.ts";
-import { gatherMemoryDocs, appendMemory, type SaveMemoryInput } from "./memory-store.ts";
+import {
+  gatherMemoryDocs,
+  appendMemory,
+  type SaveMemoryInput,
+  type SaveMemoryResult,
+} from "./memory-store.ts";
 
 /**
  * The long-term memory façade the engine owns and shares with the session tree.
@@ -61,8 +66,10 @@ export class MemoryService {
     });
   }
 
-  /** Persist a fact to the saved-memory store; recall picks it up on next search. */
-  async save(input: SaveMemoryInput): Promise<string> {
+  /** Persist a fact to the saved-memory store; recall picks it up on next search
+   * (scope "user" lands in the always-injected USER.md instead). An equivalent
+   * already-stored fact is skipped and reported via `deduped`. */
+  async save(input: SaveMemoryInput): Promise<SaveMemoryResult> {
     return appendMemory(this.#cwd, input);
   }
 

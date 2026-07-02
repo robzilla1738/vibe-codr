@@ -103,9 +103,11 @@ export async function loadMemorySources(cwd: string): Promise<MemorySource[]> {
   if (global) {
     sources.push({ scope: "global", path: "~/.config/vibe-codr/VIBE.md", text: capMemory(global) });
   }
-  // Structured global user memory: a curated USER.md (preferences, environment,
-  // standing rules) under the global memory dir, injected like the global VIBE.md.
-  // The dated entries in that dir are episodic/search-only (see memory-store.ts).
+  // Structured global user memory: USER.md (stable preferences, environment,
+  // standing rules) under the global memory dir, injected like the global
+  // VIBE.md. It's curated by hand AND appended by `save_memory` scope "user" —
+  // the write path that lets a learned preference become always-injected. The
+  // dated entries in that dir are episodic/search-only (see memory-store.ts).
   const userGlobal = await readTrimmed(join(vibeConfigDir(), "memory", "USER.md"));
   if (userGlobal) {
     sources.push({
@@ -144,8 +146,9 @@ export async function loadProjectMemory(cwd: string): Promise<string | undefined
   const sources = await loadMemorySources(cwd);
   if (!sources.length) return undefined;
   const blocks = sources.map((s) => {
-    const label =
-      s.scope === "global"
+    const label = s.path.endsWith("USER.md")
+      ? `${s.path} (user memory — the user's stable preferences; respect them in every project)`
+      : s.scope === "global"
         ? `${s.path} (global notes — apply to every project)`
         : `${s.path} (project notes — override global on conflict)`;
     return `## ${label}\n\n${s.text}`;

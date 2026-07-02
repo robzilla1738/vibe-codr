@@ -703,6 +703,10 @@ export class Session {
         ...(repoFacts ? { repoFacts } : {}),
         projectMemory: this.#deps.projectMemory,
         ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
+        // Memory doctrine mirrors the tool registration below: recall_memory is
+        // always offered; save_memory only with a wired MemoryService outside
+        // plan mode — the prompt must never coach a tool the model doesn't have.
+        memory: { save: Boolean(this.#deps.memory) && this.mode !== "plan" },
         pluginBlocks: this.#deps.extraSystem,
         subagentsAvailable,
         ...(rosterLines.length ? { agentRoster: rosterLines } : {}),
@@ -1109,8 +1113,11 @@ export class Session {
           prompt:
             "Write a durable memory note for a coding agent's FUTURE sessions on this " +
             "project. From the transcript below, produce ONE compact paragraph (≤ 80 " +
-            "words) capturing the goal, what was accomplished, and any key decisions or " +
-            "gotchas worth remembering. No preamble, no markdown headings, no bullet list.\n\n" +
+            "words) capturing: the goal, what was accomplished, key decisions WITH their " +
+            "reasons, gotchas hit, and any user preferences or corrections expressed " +
+            "(these matter most — future sessions must respect them). Prefer specifics " +
+            "(names, paths, commands) over generalities. No preamble, no markdown " +
+            "headings, no bullet list.\n\n" +
             transcript,
           abortSignal: this.#abort.signal,
         }),

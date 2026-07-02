@@ -581,8 +581,12 @@ export class Engine implements EngineClient {
       if (this.#config.memory.sessionDigest && this.#memory && this.#interactive) {
         const digest = await this.#session.buildDigest();
         if (digest) {
-          const path = await this.#memory.save({ fact: digest, tags: ["session-digest"] });
-          this.#log.info(`wrote session digest to ${path}`);
+          const saved = await this.#memory.save({ fact: digest, tags: ["session-digest"] });
+          this.#log.info(
+            saved.deduped
+              ? "session digest already stored — duplicate skipped"
+              : `wrote session digest to ${saved.path}`,
+          );
         }
       }
     } catch (err) {

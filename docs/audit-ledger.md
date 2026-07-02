@@ -466,7 +466,9 @@ work in `-p`).
 ### CONFIRMED — recorded / accepted
 - [MEDIUM] Session digests accumulate with no dedup across `--resume` (near-duplicate summaries).
   Recorded — a content-hash dedup is the recommended follow-up; not fixed here to avoid changing
-  the append-store contract mid-audit.
+  the append-store contract mid-audit. *(Implemented 2026-07-02, post-audit: all saves — digests
+  included — dedup against the scope's whole store via a normalized, word-boundary-aware match;
+  `appendMemory` returns `{path, deduped}` and the check runs inside the per-path write lock.)*
 - [LOW] Vector store is O(N) per query with no eviction; global memory re-embedded per project;
   digest uses the flagship model. Recorded (cost/scale, not correctness).
 

@@ -3,9 +3,10 @@
 A cutting-edge, **model-agnostic** CLI coding agent for the terminal — in the
 class of Claude Code / Codex / opencode, but able to drive coding and agentic
 tasks on *any* model: local models via **Ollama** and **LM Studio**, aggregators
-(**OpenRouter, Fireworks, Together, Baseten**), and first-party providers
-(**OpenAI, Anthropic, Google Gemini, DeepSeek, xAI/Grok, Groq, Mistral, Cerebras,
-Perplexity, MiniMax**) — plus **OpenAI Codex via your `codex login` session** and a
+(**OpenRouter, Fireworks, Together, Baseten, Hugging Face**), and first-party
+providers (**OpenAI, Anthropic, Google Gemini, Z.ai/GLM, Moonshot/Kimi,
+Alibaba/Qwen, DeepSeek, xAI/Grok, Groq, Mistral, Cerebras, Perplexity,
+MiniMax**) — plus **OpenAI Codex via your `codex login` session** and a
 generic **custom** provider for any OpenAI-compatible endpoint (your own base URL +
 key). Model context windows, pricing, and capabilities come live from
 [models.dev](https://models.dev) (24h cache; `/models refresh` to force the
@@ -20,7 +21,8 @@ latest) — never hardcoded.
 >
 > - **Long-term memory** — hybrid recall (BM25 + optional on-device semantic
 >   embeddings, fused with reciprocal-rank fusion) over saved facts and past
->   sessions, a `save_memory` write-path, a curated global `USER.md`, and default-on
+>   sessions, a deduplicating `save_memory` write-path with a `user` scope that
+>   grows the always-injected global `USER.md`, and default-on
 >   proactive recall + cross-session digests (digests only for interactive
 >   sessions — headless `-p` runs never pay an extra call). Fully offline; degrades to lexical
 >   when no embedder is present.
@@ -197,7 +199,8 @@ vibecodr --model ollama/gpt-oss:120b
 
 With a key set, vibecodr automatically targets `https://ollama.com/v1`. Run
 `vibecodr models` to list the exact ids your subscription exposes (e.g.
-`ollama/gpt-oss:120b`, `ollama/qwen3-coder:480b`, `ollama/deepseek-v3.1:671b`).
+`ollama/glm-5.2`, `ollama/kimi-k2.7-code`, `ollama/deepseek-v4-pro`,
+`ollama/gpt-oss:120b`).
 
 ### OpenAI Codex (reuse your ChatGPT login)
 
@@ -207,7 +210,7 @@ its credentials — no API key to paste:
 ```bash
 codex login                    # once, with the official OpenAI Codex CLI
 vibecodr setup                 # pick "OpenAI · Codex (ChatGPT login)" — it's auto-detected
-vibecodr --model codex/gpt-5.2-codex
+vibecodr --model codex/gpt-5.3-codex
 ```
 
 It reads `~/.codex/auth.json` (API key or ChatGPT OAuth token) and re-reads it each
@@ -448,23 +451,30 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `/context` reports the window plus the compaction threshold so you always know
   how close you are to the limit.
 - **Long-term memory (hybrid recall + write-path)** — the agent both **saves**
-  and **recalls** durable knowledge. `save_memory` persists a fact/decision/
-  preference (project `.vibe/memory/` or global `~/.config/vibe-codr/memory/`,
-  dated markdown); `/recall <text>` and the `recall_memory` tool search **saved
-  memory + past sessions** and rank with reciprocal-rank fusion. Lexical BM25
-  works fully offline with zero setup; add on-device embeddings
+  and **recalls** durable knowledge, and the system prompt teaches it *when*: a
+  stated preference or correction, a decision **with its rationale**, a gotcha
+  the code doesn't record — never transient state, derivable facts, or secrets.
+  `save_memory` persists a fact at scope `project` (`.vibe/memory/`, dated
+  markdown), `global` (`~/.config/vibe-codr/memory/`), or `user` — which appends
+  to the **always-injected** `USER.md`, so a learned preference follows the user
+  into every future session. Saves are **deduplicated** (normalized,
+  word-boundary-aware) so repeat learnings and `--resume` digests never accrete
+  noise. `/recall <text>` and the `recall_memory` tool search **saved memory +
+  past sessions** and rank with reciprocal-rank fusion. Lexical BM25 works fully
+  offline with zero setup; add on-device embeddings
   (`bun add @huggingface/transformers`, `memory.semantic.model: "local"`) or a
   cloud embedder for **semantic** recall on top — it degrades cleanly to lexical
   when no embedder is present. Opt-in `memory.proactiveRecall` injects relevant
-  past context at session start; `memory.sessionDigest` writes a cross-session
-  digest at the end.
+  past context at session start; `memory.sessionDigest` distills each
+  interactive session (goal, outcomes, decisions + reasons, user corrections)
+  into a recallable note at the end.
 - **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` are
   injected into every system prompt, so the agent follows your stack and
   conventions out of the box. Discovery **walks up from the working directory to
   the git root**, so running from a subdirectory still picks up the repo-root
-  notes; a user-global `~/.config/vibe-codr/VIBE.md` and a curated
-  `~/.config/vibe-codr/memory/USER.md` (preferences / standing rules) apply
-  everywhere. Precedence is explicit (global < repo-root < closer dirs; closest
+  notes; a user-global `~/.config/vibe-codr/VIBE.md` and
+  `~/.config/vibe-codr/memory/USER.md` (preferences / standing rules — curated
+  by hand or grown by `save_memory` scope `user`) apply everywhere. Precedence is explicit (global < repo-root < closer dirs; closest
   wins), each block is labelled with its source, files are byte-capped, and
   `/memory` shows exactly what's loaded. Drop-in compatible with repos already
   carrying Codex's `AGENTS.md` or Claude Code's `CLAUDE.md`.
@@ -476,20 +486,26 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   protocol), layered onto the in-process plugin hook bus.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
-`anthropic/claude-opus-4-8`, `openai/gpt-...`, `deepseek/...`, `xai/grok-...`,
-`minimax/MiniMax-M1`, `codex/gpt-...`, `openrouter/anthropic/claude-...`,
-`fireworks/...`, `baseten/...`, `lmstudio/<id>`, `ollama/llama3.1`.
+`anthropic/claude-opus-4-8`, `openai/gpt-...`, `zai/glm-...`, `moonshot/kimi-...`,
+`alibaba/qwen...`, `deepseek/...`, `xai/grok-...`, `minimax/MiniMax-M3`,
+`codex/gpt-...`, `openrouter/anthropic/claude-...`, `fireworks/...`,
+`baseten/...`, `huggingface/...`, `lmstudio/<id>`, `ollama/glm-5.2`.
 
 #### Providers & subscription auth
 
 All providers run on **AI SDK v5**. anthropic/openai/deepseek use their dedicated
-v5 SDKs; every other provider (xai, openrouter, fireworks, baseten, minimax,
-ollama, lmstudio) is driven through `@ai-sdk/openai-compatible` so it works out of
-the box without chasing incompatible SDK majors.
+v5 SDKs; every other provider (google, zai, moonshot, alibaba, xai, groq, mistral,
+cerebras, together, fireworks, baseten, huggingface, openrouter, perplexity,
+minimax, ollama, lmstudio, custom) is driven through `@ai-sdk/openai-compatible`
+so it works out of the box without chasing incompatible SDK majors.
 
 | Provider | Auth | Notes |
 |---|---|---|
 | `anthropic` `openai` `deepseek` `fireworks` `baseten` `openrouter` | `*_API_KEY` env or `providers.<id>.apiKey` | first-party + aggregators (the OpenAI-compatible ones via the shared compat driver) |
+| `zai` (**Z.ai / GLM**) | `ZAI_API_KEY` (or `ZHIPU_API_KEY`) | OpenAI-compatible; coding-plan subscribers set `ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4` |
+| `moonshot` (**Kimi**) | `MOONSHOT_API_KEY` | OpenAI-compatible, international endpoint (`api.moonshot.ai`); `MOONSHOT_BASE_URL` overrides (e.g. `api.moonshot.cn`) |
+| `alibaba` (**Qwen**) | `DASHSCOPE_API_KEY` | Model Studio's OpenAI-compatible "compatible-mode" endpoint, intl region; `DASHSCOPE_BASE_URL` overrides |
+| `huggingface` | `HF_TOKEN` | Inference Providers router (`router.huggingface.co/v1`) — one token, open models auto-routed to live providers |
 | `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | OpenAI-compatible; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
 | `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
@@ -536,7 +552,7 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
     "visualVerify": true,                               // browser check (playwright peer)
     "models": { "cheap": "anthropic/claude-haiku-4-5", "strong": "anthropic/claude-opus-4-8" }
   },
-  "modelFallbacks": ["openai/gpt-5.2"],                 // failover chain
+  "modelFallbacks": ["openai/gpt-5.5"],                 // failover chain
   "search": { "enabled": true },                        // keyless DDG; apiKey = optional TinyFish booster
   "memory": {                                           // long-term memory
     "semantic": { "enabled": true, "model": "local" },  // "local" | "provider/model" | "off"

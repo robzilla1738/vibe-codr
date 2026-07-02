@@ -16,6 +16,10 @@ export interface SystemPromptInputs {
   recalledContext?: string;
   /** Skill name/description lines for progressive disclosure. */
   skillDescriptions?: string[];
+  /** Long-term memory doctrine: present when the memory tools are registered;
+   * `save` is false in plan mode (recall-only) — the save doctrine is omitted
+   * so the model is never coached to call a tool it doesn't have. */
+  memory?: { save: boolean };
   /** Extra blocks contributed by plugins. */
   pluginBlocks?: string[];
   /** True when `spawn_subagent` is available (execute mode, below depth cap). */
@@ -98,6 +102,14 @@ const DATA_VIEWS = `RICH DATA VIEWS. The terminal UI renders certain fenced code
 
 Pick the view that fits the question: comparison → \`chart\`, composition/share → \`pie\`, trend/time-series → \`line\`, weather → \`weather\`, citations → \`sources\`. If none fits, answer normally (prose, a markdown pipe table, or a code block). Only reach for HTML/a file/a script when the user explicitly asks for one.`;
 
+const MEMORY_RECALL = `LONG-TERM MEMORY. You have persistent memory across sessions. \`recall_memory\` searches saved facts, decisions, and past sessions — use it when the user references earlier work ("like last time", "what did we decide about …"), before re-deriving a past decision, and when starting work in an area you may have prior notes on. Recalled notes reflect when they were written — verify against the current workspace before relying on them.`;
+
+const MEMORY_SAVE = `Save durable knowledge with \`save_memory\` AS YOU LEARN IT — don't wait to be asked:
+- The user states a preference, corrects you, or sets a standing rule ("always …", "never …", "I prefer …") → save it: scope "user" if it's about how they work everywhere (auto-loaded into every future session), "project" if repo-specific.
+- A non-obvious decision is settled → save the decision WITH its rationale ("chose X over Y because …"), scope "project".
+- You uncover a gotcha or constraint the code doesn't record (a flaky test's cause, an API quirk, an environment trap) → scope "project".
+Do NOT save transient task state, anything derivable from the code or git history, secrets/credentials, or guesses. One concise, self-contained fact per save. Exact duplicates are skipped automatically, so save when in doubt — and recall first if you're unsure what's already stored.`;
+
 const PLAN_MODE = `MODE: PLAN. You are in read-only planning mode. You may inspect the workspace but MUST NOT modify files or run side-effecting commands. Produce a clear, concrete plan and call \`present_plan\` when ready.`;
 
 const EXECUTE_MODE = `MODE: EXECUTE. You may read and modify the workspace and run commands. Verify your work as you go.`;
@@ -138,6 +150,9 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
     sections.push(
       `RELEVANT PAST CONTEXT (recalled from long-term memory — may be incomplete or stale; verify against the current workspace before relying on it):\n${inputs.recalledContext}`,
     );
+  }
+  if (inputs.memory) {
+    sections.push(inputs.memory.save ? `${MEMORY_RECALL}\n\n${MEMORY_SAVE}` : MEMORY_RECALL);
   }
   if (inputs.subagentsAvailable) {
     const doctrine = inputs.mode === "plan" ? PLAN_DELEGATION : DELEGATION;

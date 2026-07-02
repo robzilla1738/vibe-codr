@@ -110,6 +110,7 @@ export {
   projectMemoryDir,
   globalMemoryDir,
   type SaveMemoryInput,
+  type SaveMemoryResult,
 } from "./memory-store.ts";
 export { MemoryService } from "./memory-service.ts";
 export {

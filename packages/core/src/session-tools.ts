@@ -63,7 +63,7 @@ export function buildRecallTool(handle: SessionToolsHandle): ToolDefinition<{ qu
   return {
     name: "recall_memory",
     description:
-      "Search long-term memory — saved facts/decisions and past vibe-codr sessions — for relevant prior context. Use this when the user references earlier work, asks 'what did we decide', or you need context beyond the current conversation.",
+      "Search long-term memory — saved facts/decisions and past vibe-codr sessions — for relevant prior context. Use this when the user references earlier work, asks 'what did we decide', before re-deriving a past decision, or to check what's already known before saving a memory.",
     inputSchema: z.object({
       query: z.string().min(1).describe("What to look for in saved memory and past sessions."),
       limit: z.number().int().positive().max(20).optional().describe("Max matches (default 8)."),
@@ -92,17 +92,22 @@ export function buildRecallTool(handle: SessionToolsHandle): ToolDefinition<{ qu
  * memory (permission-gated, since it writes a file). */
 export function buildSaveMemoryTool(handle: SessionToolsHandle): ToolDefinition<{
   fact: string;
-  scope?: "project" | "global";
+  scope?: "project" | "global" | "user";
   tags?: string[];
 }> {
   const memory = handle.deps.memory;
   return {
     name: "save_memory",
     description:
-      "Persist a durable fact, decision, or user preference to long-term memory so future sessions can recall it (architecture choices, conventions, gotchas, stable preferences). Use sparingly — not for transient task state, which the task list already tracks. Choose scope: 'project' for this repo, 'global' for things true across all the user's projects.",
+      "Persist a durable fact to long-term memory so future sessions know it. Save the moment you learn something durable: a decision AND its rationale ('chose X over Y because …'), a hard-won gotcha the code doesn't record, a stable user preference or correction. NOT for transient task state (the task list tracks it), facts derivable from the code or git history, or secrets/credentials. One concise, self-contained fact per call; an equivalent already-saved fact is detected and skipped, so saving when unsure is safe.",
     inputSchema: z.object({
-      fact: z.string().min(1).describe("The fact to remember, as one concise self-contained statement."),
-      scope: z.enum(["project", "global"]).optional().describe("project (this repo, default) or global (all projects)."),
+      fact: z.string().min(1).describe("The fact to remember, as one concise self-contained statement (include the why for decisions)."),
+      scope: z
+        .enum(["project", "global", "user"])
+        .optional()
+        .describe(
+          "project (this repo, default) · global (true across all the user's projects, recalled on demand) · user (a stable preference or fact about the USER — auto-loaded into every future session's prompt; reserve for durable how-they-work preferences).",
+        ),
       tags: z.array(z.string()).optional().describe("Optional tags for grouping."),
     }),
     readOnly: false,
@@ -111,8 +116,16 @@ export function buildSaveMemoryTool(handle: SessionToolsHandle): ToolDefinition<
       if (!memory) {
         return { output: "Memory is not available in this session.", isError: true };
       }
-      const path = await memory.save({ fact, ...(scope ? { scope } : {}), ...(tags ? { tags } : {}) });
-      return { output: `Saved to ${path}. It will surface via recall_memory when relevant.` };
+      const saved = await memory.save({ fact, ...(scope ? { scope } : {}), ...(tags ? { tags } : {}) });
+      if (saved.deduped) {
+        return { output: `Already known — an equivalent memory exists in ${saved.path}; skipped the duplicate.` };
+      }
+      return {
+        output:
+          scope === "user"
+            ? `Saved to ${saved.path} — loaded into every future session automatically.`
+            : `Saved to ${saved.path}. It will surface via recall_memory when relevant.`,
+      };
     },
   };
 }

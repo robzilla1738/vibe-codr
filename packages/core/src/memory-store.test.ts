@@ -9,10 +9,11 @@ import { chunkMarkdown } from "./chunk.ts";
 test("appendMemory writes a single day header, then one heading per fact", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-"));
   const now = new Date("2026-06-30T14:05:00Z");
-  const path = await appendMemory(dir, { fact: "the project uses Postgres" }, now);
+  const saved = await appendMemory(dir, { fact: "the project uses Postgres" }, now);
   await appendMemory(dir, { fact: "dark theme by default", tags: ["ui"] }, now);
 
-  expect(path).toBe(".vibe/memory/2026-06-30.md");
+  expect(saved.path).toBe(".vibe/memory/2026-06-30.md");
+  expect(saved.deduped).toBe(false);
   const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
   expect(text).toContain("# Memory — 2026-06-30");
   expect(text).toContain("the project uses Postgres");
@@ -75,6 +76,62 @@ test("always-injected curated files (USER/VIBE/AGENTS/CLAUDE.md) are excluded fr
   const sources = docs.map((d) => d.source);
   expect(sources.some((s) => s.endsWith("USER.md"))).toBe(false);
   expect(sources.some((s) => s.endsWith("2026-01-01.md"))).toBe(true);
+});
+
+test("re-saving an equivalent fact is deduped — across days, case, and trailing punctuation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-dedup-"));
+  const first = await appendMemory(dir, { fact: "Deploys to Fly.io via GitHub Actions." }, new Date("2026-06-29T10:00:00Z"));
+  expect(first.deduped).toBe(false);
+  // Same knowledge, different casing/punctuation, saved a DAY later → skipped;
+  // no second file, no second heading.
+  const again = await appendMemory(dir, { fact: "deploys to fly.io via github actions" }, new Date("2026-06-30T10:00:00Z"));
+  expect(again.deduped).toBe(true);
+  expect(await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).exists()).toBe(false);
+  const day1 = await Bun.file(join(dir, ".vibe", "memory", "2026-06-29.md")).text();
+  expect(day1.match(/^## /gm)).toHaveLength(1);
+});
+
+test("dedup requires word boundaries — a fact is not swallowed by a longer token", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-bound-"));
+  const now = new Date("2026-06-30T10:00:00Z");
+  await appendMemory(dir, { fact: "port 8012 serves the API" }, now);
+  // "port 801" IS a raw substring of "port 8012", but the token continues ("2")
+  // — a different fact, so it must save, not dedupe.
+  const second = await appendMemory(dir, { fact: "port 801" }, now);
+  expect(second.deduped).toBe(false);
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  expect(text.match(/^## /gm)).toHaveLength(2);
+});
+
+test("scope 'user' appends one-line bullets to the always-injected USER.md, with dedup", async () => {
+  // XDG_CONFIG_HOME is redirected by the test preload; isolate further per-test.
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "vibe-mstore-user-"));
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-user-cwd-"));
+    const saved = await appendMemory(dir, {
+      fact: "prefers tabs over\n  spaces in Go projects",
+      scope: "user",
+    });
+    expect(saved).toEqual({ path: "~/.config/vibe-codr/memory/USER.md", deduped: false });
+    const userPath = join(process.env.XDG_CONFIG_HOME!, "vibe-codr", "memory", "USER.md");
+    const text = await Bun.file(userPath).text();
+    // Header written once; the fact is a single collapsed-whitespace bullet.
+    expect(text).toContain("# User memory");
+    expect(text).toContain("- prefers tabs over spaces in Go projects");
+    // Equivalent re-save (case + trailing period) is skipped, file unchanged.
+    const again = await appendMemory(dir, { fact: "Prefers tabs over spaces in Go projects.", scope: "user" });
+    expect(again.deduped).toBe(true);
+    expect(await Bun.file(userPath).text()).toBe(text);
+    // A genuinely new preference appends a second bullet, header not repeated.
+    await appendMemory(dir, { fact: "never force-push to main", scope: "user" });
+    const after = await Bun.file(userPath).text();
+    expect(after).toContain("- never force-push to main");
+    expect(after.match(/# User memory/g)).toHaveLength(1);
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prev;
+  }
 });
 
 test("concurrent saves to the same dated file don't lose entries (atomic append)", async () => {

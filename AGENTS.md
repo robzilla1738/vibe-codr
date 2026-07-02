@@ -53,7 +53,12 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
 - Provider SDKs, OpenTUI, `@modelcontextprotocol/sdk`, and
   `@huggingface/transformers` (on-device embeddings for semantic memory) are
   **optional peer deps** — import them via non-literal specifiers and fail with a
-  clear, actionable error rather than at startup. Semantic memory degrades to
+  clear, actionable error rather than at startup. **"Non-literal" means a runtime
+  VARIABLE** (`const s = "playwright"; await import(s)`) — a cast
+  (`import("playwright" as string)`) erases at transpile time back to a literal,
+  which `bun build --compile` statically bundles: that broke `build:binary`
+  (playwright-core's optional `chromium-bidi` requires) and silently baked
+  typescript/linkedom/readability into the binary. Semantic memory degrades to
   lexical BM25 recall when no embedder (local dep or configured cloud model) is
   available, so `bun add @huggingface/transformers` is opt-in.
 - **Provider spec invariant:** the repo is pinned to **AI SDK v5** (provider spec

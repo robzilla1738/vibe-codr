@@ -49,6 +49,13 @@ All notable changes to vibe-codr are documented here.
   bars); all fixed, plus new sections covering the reasoning preview, the
   verify/loop/checkpoint notices, the accent swatch menu, and the spawn_tasks
   label.
+- **`build:binary` compiles again** (CI on main had been red): optional peers
+  were imported with a literal-cast specifier (`import("playwright" as string)`)
+  — the cast erases at transpile time, so `bun build --compile` statically
+  bundled playwright-core (whose optional `chromium-bidi` requires then failed
+  the build) and silently bundled typescript/linkedom/readability (binary
+  bloat). All four now load through a runtime variable specifier; absent peers
+  still degrade gracefully.
 
 ### Hardened — full subsystem-by-subsystem audit
 

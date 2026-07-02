@@ -1,5 +1,6 @@
 export type {
   ModelInfo,
+  PricingTier,
   ProviderDef,
   ProviderAuth,
   ProviderCreateOptions,
@@ -12,6 +13,7 @@ export {
   CatalogService,
   parseModelsDev,
   resolveCatalogPrice,
+  resolveCatalogWindow,
   type PricingResult,
 } from "./catalog.ts";
 export { probeOllamaContextWindow, extractContextLength } from "./ollama-probe.ts";

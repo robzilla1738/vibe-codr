@@ -335,3 +335,113 @@ test("path-scoped deny can't be evaded by an equivalent path spelling", async ()
   // An unrelated in-tree path is still allowed.
   expect((await checker.check("write", { path: "src/index.ts" })).allowed).toBe(true);
 });
+
+// ------------------------------------------- dangerouslyUnsandboxed escape hatch
+
+test("dangerouslyUnsandboxed forces an EXPLICIT ask (fails closed) under auto", async () => {
+  // approvalMode auto → defaultAction "allow": a normal bash call auto-allows
+  // WITHOUT consulting the resolver. The unsandboxed variant must instead be
+  // forced to an explicit ask, which a headless resolver (no human) denies.
+  const seen: boolean[] = [];
+  const checker = new PermissionChecker(
+    [],
+    (req) => {
+      seen.push(req.explicit);
+      return !req.explicit; // mirror the engine's headless #askPermission
+    },
+    "allow",
+  );
+  // Normal call: auto-allowed, resolver never consulted.
+  expect((await checker.check("bash", { command: "git status" })).allowed).toBe(true);
+  expect(seen).toHaveLength(0);
+  // Unsandboxed variant: forced explicit ask → fails closed (denied).
+  const res = await checker.check("bash", { command: "git status", dangerouslyUnsandboxed: true });
+  expect(res.allowed).toBe(false);
+  expect(seen).toEqual([true]); // the resolver saw explicit:true
+});
+
+test('a "!unsandboxed *" allow rule pre-authorizes the escape hatch; a normal allow does not', async () => {
+  // The content-scoped rule targets the sentinel scope, so the flagged call is
+  // allowed WITHOUT a prompt; a blanket name-only allow would NOT cover it.
+  const authorized = new PermissionChecker(
+    [{ tool: "bash", match: "!unsandboxed *", action: "allow" }],
+    () => false, // would deny if it fell through to an ask
+    "ask",
+  );
+  expect(
+    (await authorized.check("bash", { command: "npm publish", dangerouslyUnsandboxed: true })).allowed,
+  ).toBe(true);
+
+  // A blanket name-only bash allow does NOT silently cover the unsafe variant:
+  // it's still forced to an explicit ask (here denied).
+  const blanket = new PermissionChecker(
+    [{ tool: "bash", action: "allow" }],
+    (req) => !req.explicit,
+    "ask",
+  );
+  expect(
+    (await blanket.check("bash", { command: "npm publish", dangerouslyUnsandboxed: true })).allowed,
+  ).toBe(false);
+  // …but the ordinary sandboxed form IS covered by that same blanket allow.
+  expect((await blanket.check("bash", { command: "npm publish" })).allowed).toBe(true);
+});
+
+test('the "!unsandboxed *" rule does NOT match the ordinary sandboxed command', async () => {
+  // The sentinel-scoped allow must not leak into normal calls: a plain bash call
+  // has scope "npm publish" (no prefix), so the rule doesn't apply and the call
+  // falls through to the default ask (here denied).
+  const checker = new PermissionChecker(
+    [{ tool: "bash", match: "!unsandboxed *", action: "allow" }],
+    () => false,
+    "ask",
+  );
+  expect((await checker.check("bash", { command: "npm publish" })).allowed).toBe(false);
+});
+
+test("a BROAD allow glob that also matches the bare command does NOT cover the escape hatch (fails closed)", async () => {
+  // Regression: the fail-closed guard keyed on "no content-scoped rule applies",
+  // but a broad allow (`match:"*"`, `match:"*npm*"`) DOES match the "!unsandboxed
+  // <cmd>" scope, so it was "applicable" and silently green-lit the UNSAFE variant
+  // with zero approval under auto/yolo/headless. A blanket allow that would also
+  // cover the bare command must NOT pre-authorize the unsandboxed form.
+  for (const match of ["*", "*npm*"]) {
+    const checker = new PermissionChecker(
+      [{ tool: "bash", match, action: "allow" }],
+      (req) => !req.explicit, // mirror the engine's headless #askPermission
+      "allow",
+    );
+    // The ordinary sandboxed form IS covered by the broad allow (no prompt).
+    expect((await checker.check("bash", { command: "npm publish" })).allowed).toBe(true);
+    // The unsandboxed variant is forced to an explicit ask → fails closed.
+    const res = await checker.check("bash", { command: "npm publish", dangerouslyUnsandboxed: true });
+    expect(res.allowed).toBe(false);
+  }
+});
+
+test("a partial sentinel glob authorizes the escape hatch without leaking to the ordinary command", async () => {
+  // A scoped allow that targets the "!unsandboxed " sentinel (matches the sentinel
+  // form but NOT the bare command) is a deliberate pre-authorization of the unsafe
+  // variant, so the flagged call is allowed WITHOUT a prompt…
+  const checker = new PermissionChecker(
+    [{ tool: "bash", match: "!unsandboxed npm*", action: "allow" }],
+    () => false, // would deny if it fell through to an ask
+    "ask",
+  );
+  expect(
+    (await checker.check("bash", { command: "npm publish", dangerouslyUnsandboxed: true })).allowed,
+  ).toBe(true);
+  // …while the ORDINARY sandboxed command is untouched by the sentinel rule and
+  // falls through to the default ask (here denied).
+  expect((await checker.check("bash", { command: "npm publish" })).allowed).toBe(false);
+});
+
+test("a matching deny still wins over the escape hatch (deny is absolute)", async () => {
+  const checker = new PermissionChecker(
+    [{ tool: "bash", action: "deny" }],
+    () => true,
+    "allow",
+  );
+  const res = await checker.check("bash", { command: "rm -rf /", dangerouslyUnsandboxed: true });
+  expect(res.allowed).toBe(false);
+  expect(res.allowed === false && res.reason).toBe("denied by policy");
+});

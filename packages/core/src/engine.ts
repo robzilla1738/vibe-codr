@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
+import { homedir } from "node:os";
 import { mkdir, rm } from "node:fs/promises";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
@@ -26,9 +27,17 @@ import {
   probeOllamaContextWindow,
   probeLmStudioContextWindow,
   type ModelInfo,
+  type PricingResult,
 } from "@vibe/providers";
-import { Toolset, builtinTools, buildRepoMap, createFileLock, BackgroundJobs } from "@vibe/tools";
-import type { ModelPrice } from "@vibe/config";
+import {
+  Toolset,
+  builtinTools,
+  buildRepoMap,
+  createFileLock,
+  BackgroundJobs,
+  resolveSandboxPolicy,
+  type SandboxPolicy,
+} from "@vibe/tools";
 import {
   HookBus,
   CommandRegistry,
@@ -42,6 +51,7 @@ import { BUILTIN_COMMANDS } from "./commands.ts";
 import { type PermissionReply, type PermissionResolver, scopeString } from "./permissions.ts";
 import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./agents.ts";
 import { resolveRepoProfile } from "./build/profile.ts";
+import { bunExec } from "./build/exec.ts";
 import { appendLedger, manifestHash, commandsHash } from "./build/ledger.ts";
 import {
   runGate,
@@ -53,7 +63,8 @@ import { scanStubs, formatStubFindings } from "./build/stubscan.ts";
 import { isWebApp } from "./build/codeintel.ts";
 import { browserVerify, formatBrowserVerify } from "./build/browser-verify.ts";
 import { gitPrepare, gitCommitGreen } from "./build/gitops.ts";
-import { TsDiagnostics } from "./diagnostics.ts";
+import { type Diagnostics, TsDiagnostics } from "./diagnostics.ts";
+import { CompositeDiagnostics } from "./lsp/composite.ts";
 import {
   loadCommandFiles,
   loadCommandsFrom,
@@ -68,7 +79,7 @@ import { MemoryService } from "./memory-service.ts";
 import { createLimiter, type Limiter } from "./limiter.ts";
 import { createBlackboard } from "./blackboard.ts";
 import { registerConfigHooks } from "./config-hooks.ts";
-import { loadProjectMemory } from "./memory.ts";
+import { loadProjectMemory, vibeConfigDir } from "./memory.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
 import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
@@ -131,6 +142,10 @@ export class Engine implements EngineClient {
   #gitState: GitInfo | undefined;
   #config: Config;
   #cwd: string;
+  /** Resolved OS-sandbox policy (config + live env + state dirs), threaded to the
+   * toolset, background jobs, the build gate, and verify. Its warning (if any) is
+   * emitted ONCE at bootstrap. */
+  #sandbox: SandboxPolicy;
   #projectMemory: string | undefined;
   #session: Session;
   #log: Logger;
@@ -147,9 +162,12 @@ export class Engine implements EngineClient {
   #limiter!: Limiter;
   /** Shared coordination board for parallel subagents, shared across the tree. */
   #blackboard = createBlackboard();
-  /** In-process TS language service (lazy; no-op without the optional dep) —
-   * edit/write append its diagnostics so type errors surface in the same step. */
-  #diagnostics = new TsDiagnostics();
+  /** Diagnostics-in-the-loop seam (lazy; no-op without the optional deps) —
+   * edit/write append its diagnostics so errors surface in the same step. Bare
+   * `TsDiagnostics` when `lsp.enabled` is off (default-safe path unchanged); a
+   * multi-language `CompositeDiagnostics` (TS fast path + LSP) when on. Assigned
+   * in the constructor once config is available. */
+  #diagnostics!: Diagnostics;
   #loop: LoopController | undefined;
   /** The session running the current loop iteration, so a stop can abort it. */
   #loopSession: Session | undefined;
@@ -199,16 +217,30 @@ export class Engine implements EngineClient {
     this.#config = opts.config;
     this.#limiter = createLimiter({
       max: opts.config.subagent.providerConcurrency,
-      // Floor the AIMD ceiling at the max nesting depth (+1 for the root) so a
-      // LINEAR subagent chain — where each of `maxDepth`+1 ancestors holds a
-      // tree-global slot while awaiting its descendant — can never starve its
-      // own leaf and deadlock, even after repeated overload backoff. Wider trees
-      // that still over-subscribe self-heal via the per-subagent wall-clock
-      // timeout, which now (abort-aware limiter) unwedges a stuck acquire.
+      // Floor the AIMD ceiling at the max nesting depth (+1 for the root).
+      // Hold-and-wait is structurally eliminated — a parent RELEASES its
+      // tree-global slot while awaiting spawned children (Session.
+      // suspendLimiterSlot around the child-await funnel) — so this floor and
+      // the per-subagent wall-clock timeout (which unwedges a stuck acquire via
+      // the abort-aware limiter) are defense-in-depth, not the primary escape.
       min: opts.config.subagent.maxDepth + 1,
       onChange: (limit) => this.#log.debug(`provider concurrency ceiling → ${limit}`),
     });
     this.#cwd = opts.cwd ?? process.cwd();
+    // Resolve the OS sandbox once from config + the real state dirs. Writable
+    // roots (under workspace-write) always include cwd + tmp; add the app's own
+    // state dirs so its writes (config, caches, .vibe sessions) never get denied.
+    this.#sandbox = resolveSandboxPolicy(opts.config.sandbox, {
+      cwd: this.#cwd,
+      stateDirs: [
+        vibeConfigDir(),
+        process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+        join(this.#cwd, ".vibe"),
+      ],
+    });
+    // The registry was created before the policy resolved (field initializer);
+    // apply it so background jobs run under the same backstop as foreground bash.
+    this.#jobs.setSandbox(this.#sandbox);
     this.#projectMemory = opts.projectMemory;
     this.#interactive = opts.interactive ?? false;
     // Use the caller's resolver if given (tests); otherwise bridge `ask`
@@ -242,6 +274,7 @@ export class Engine implements EngineClient {
             maxBytes: opts.config.webfetch.maxBytes,
           },
           jobs: this.#jobs,
+          sandbox: this.#sandbox,
         }),
       );
     // Surface tool-name collisions (MCP/plugin tools shadowing a built-in, or a
@@ -257,6 +290,12 @@ export class Engine implements EngineClient {
     this.skills = opts.skills ?? new SkillRegistry();
     this.catalog = opts.catalog ?? new CatalogService();
     this.#log = opts.logger ?? createLogger("engine");
+    // Multi-language diagnostics only when enabled; otherwise the unchanged
+    // TS-only path (so disabling LSP restores the exact prior behavior). The
+    // workspace-root getter is read lazily at first server spawn.
+    this.#diagnostics = opts.config.lsp.enabled
+      ? new CompositeDiagnostics(opts.config.lsp, () => this.#cwd, this.#log)
+      : new TsDiagnostics();
     const resume = opts.resume;
     this.#session = new Session({
       config: opts.config,
@@ -279,6 +318,9 @@ export class Engine implements EngineClient {
       skills: this.skills,
       hooks: this.hooks,
       store: this.#store,
+      // Interactivity governs whether subagent `detach` runs in the background
+      // (headless coerces it to synchronous — see OrchestratorRunner).
+      interactive: this.#interactive,
       getContextWindow: (model) => this.#resolveContextWindow(model),
       getPricing: (model) => this.#resolvePricing(model),
       ...(resume
@@ -397,25 +439,59 @@ export class Engine implements EngineClient {
       this.#bus.emit({ type: "notice", level: "info", message: "Kept planning — the plan wasn't started." });
       return;
     }
-    // accept
-    const plan = this.#lastPlan;
-    if (!plan) return;
-    // Clear the armed plan NOW (not later, when the enqueued job runs) so a
-    // second `resolve-plan{accept}` — a double-click, a scripted/plugin re-send —
-    // fails the `if (!plan) return` guard above instead of seeding the task list
-    // twice and firing two execute turns against the same plan.
-    this.#lastPlan = undefined;
-    this.#session.setMode("execute");
-    // Accepting a plan is a mode transition into gated EXECUTE — reset approvals
-    // to `ask` so a plan approved from a YOLO session doesn't start executing
-    // unprompted. Mirrors the Shift+Tab / `/execute` coupling.
+    // accept — the plan card's immediate-run surface. The double-accept guard
+    // (a double-click, a scripted/plugin re-send) lives here: #approvePlan clears
+    // #lastPlan synchronously, so a second resolve-plan{accept} fails this guard
+    // instead of seeding the task list twice + firing two execute turns.
+    if (!this.#lastPlan) return;
+    this.#approvePlan(true);
+  }
+
+  /**
+   * The engine-owned mode transition, in ONE place: set the mode, then ALWAYS
+   * re-gate approvals to `ask` (forgetting prior `always` grants). Every surface
+   * that changes mode — the `set-mode` command and the plan-card accept — funnels
+   * through here so "requesting a mode lands in gated ask" can't drift between
+   * them. Deliberate YOLO is a `set-approvals auto` sent AFTER this, never an
+   * inherited `auto`.
+   */
+  #setModeGated(mode: Mode): void {
+    this.#session.setMode(mode);
     handleApprovals(this.#getCommandHandle(), "ask", true);
-    this.#seedTasksFromPlan(plan);
-    // Bind the handoff directly to this job so it applies to THIS turn and can't
-    // be stolen by a prompt the user queued ahead of it.
-    this.#enqueue("execute plan", () =>
-      this.#handlePrompt("Proceed with the approved plan.", { handoff: true }),
-    );
+  }
+
+  /**
+   * The SINGLE plan-approval routine both approval surfaces route through — the
+   * plan card's accept (#resolvePlan) and a plan→execute mode switch (`set-mode`)
+   * — so the two can't drift apart on the approval invariant (the "paths drift
+   * apart" fragility 1f44d14 set out to kill). Approving a plan is a transition
+   * into gated EXECUTE via the engine-owned #setModeGated, then arming the
+   * plan→execute handoff. The caller picks HOW the handoff is consumed:
+   *   - `start` (card accept): run NOW — clear the plan synchronously
+   *     (double-accept guard), seed the task list, and enqueue the execute turn
+   *     with the handoff bound to THAT job (uncontendable by a queued prompt);
+   *   - `!start` (mode switch): DEFER — arm #pendingHandoff (persisted so a quit
+   *     between approval and the next prompt survives --resume) so the user's NEXT
+   *     message carries the approval, and notice that it's armed-not-running.
+   */
+  #approvePlan(start: boolean): void {
+    this.#setModeGated("execute");
+    if (start) {
+      const plan = this.#lastPlan;
+      this.#lastPlan = undefined;
+      if (plan) this.#seedTasksFromPlan(plan);
+      this.#enqueue("execute plan", () =>
+        this.#handlePrompt("Proceed with the approved plan.", { handoff: true }),
+      );
+    } else {
+      this.#pendingHandoff = true;
+      void this.#persistEngineState();
+      this.#bus.emit({
+        type: "notice",
+        level: "info",
+        message: "Plan approved — your next message starts implementation.",
+      });
+    }
   }
 
   /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps. */
@@ -440,6 +516,10 @@ export class Engine implements EngineClient {
    * Safe to call once before the first run.
    */
   async bootstrap(): Promise<void> {
+    // Surface a sandbox-unavailable warning ONCE, here (not in the constructor —
+    // no subscriber exists yet then, so the notice would be dropped). Off mode
+    // has no warning; an unenforceable requested mode always does.
+    if (this.#sandbox.warning) this.#notice(this.#sandbox.warning, "warn");
     for (const [name, agent] of await loadAgents(this.#cwd)) {
       this.#agents.set(name, agent);
     }
@@ -597,14 +677,27 @@ export class Engine implements EngineClient {
     }
     void this.hooks.run("session.end", { sessionId: this.#session.id });
     this.#loop?.stop("shutdown");
-    // Unblock any in-flight permission prompts so nothing hangs.
-    for (const resolve of this.#pendingPermissions.values()) resolve("deny");
-    this.#pendingPermissions.clear();
+    // Abort + bounded-await any outstanding DETACHED (background) subagents: a
+    // detached child gets `parentSignal: undefined` so the spawning turn ending
+    // can't kill it, so finalize is the ONLY thing that reaps it — otherwise a
+    // background child would outlive the process (or wedge shutdown). Mirrors the
+    // job-reaper below. No-op when the tree never spawned a detached child.
+    const registry = this.#session.childRegistry;
+    if (registry) {
+      registry.abortAllDetached();
+      await registry.awaitAllDetached(5_000);
+    }
+    // Unblock any in-flight permission prompts so nothing hangs — and tell the UI
+    // so their now-dead cards drop rather than linger.
+    this.#settlePendingPermissions("shutdown");
     // Reap surviving background jobs (dev servers etc.) — the process is going
     // away; leaving them orphaned made every `bash background:true` a leak. Await
     // the SIGKILL escalation so a child that ignores SIGTERM can't outlive us.
     await this.#jobs.killAllAndWait();
     await this.#mcp.close();
+    // Kill any spawned language servers (and their worker grandchildren) — a
+    // no-op for the bare TS path, which has nothing to dispose.
+    this.#diagnostics.dispose?.();
     this.#memory?.close();
     this.#bus.close();
   }
@@ -653,39 +746,33 @@ export class Engine implements EngineClient {
         break;
       }
       case "set-mode": {
-        // Leaving plan mode for execute right after a presented plan = approval:
-        // arm a handoff so the next turn proceeds against the plan.
+        // Leaving plan mode for execute right after a presented plan = approval.
         const approvingPlan =
           this.#session.mode === "plan" && command.mode === "execute" && this.#lastPlan !== undefined;
-        this.#session.setMode(command.mode);
-        // Requesting a mode ALWAYS lands in the gated baseline (approvals →
-        // ask, `always` grants forgotten) — an ENGINE-owned invariant, not a UI
-        // courtesy. Every client (typed /plan → /execute, Shift+Tab, scripts
-        // embedding the engine) leaves plan in gated EXECUTE, never inheriting
-        // a lingering `auto` from a prior YOLO; and an explicit re-request of
-        // the current mode re-arms the gate. Deliberate YOLO is a
-        // `set-approvals auto` sent AFTER this (exactly what the TUI's yolo
-        // target does), so it survives.
-        handleApprovals(this.#getCommandHandle(), "ask", true);
         if (approvingPlan) {
-          this.#pendingHandoff = true;
-          // Persist the armed handoff so quitting between approval and the next
-          // prompt doesn't drop the approval on --resume.
-          void this.#persistEngineState();
-          // Without this, approving by mode-switch is silent and the user
-          // doesn't know the plan is armed but NOT yet running (unlike the plan
-          // card's accept, which starts immediately).
-          this.#bus.emit({
-            type: "notice",
-            level: "info",
-            message: "Plan approved — your next message starts implementation.",
-          });
-        } else if (command.mode === "plan" && this.#pendingHandoff) {
-          // Returning to plan mode revokes a pending approval: a handoff that
-          // survived into plan would prepend "proceed with implementing it now"
-          // to a read-only turn — a directive the mode can't honor.
-          this.#pendingHandoff = false;
-          void this.#persistEngineState();
+          // Route through the SHARED plan-approval so the mode-switch and
+          // card-accept surfaces can't drift: transition into gated execute
+          // (engine-owned) + arm the handoff. A mode switch DEFERS (`start:false`)
+          // — #pendingHandoff carries the approval into the user's next message,
+          // unlike the card, which starts implementation immediately.
+          this.#approvePlan(false);
+        } else {
+          // Requesting a mode ALWAYS lands in the gated baseline (approvals →
+          // ask, `always` grants forgotten) — an ENGINE-owned invariant, not a UI
+          // courtesy. Every client (typed /plan → /execute, Shift+Tab, scripts
+          // embedding the engine) leaves plan in gated EXECUTE, never inheriting
+          // a lingering `auto` from a prior YOLO; and an explicit re-request of
+          // the current mode re-arms the gate. Deliberate YOLO is a
+          // `set-approvals auto` sent AFTER this (exactly what the TUI's yolo
+          // target does), so it survives.
+          this.#setModeGated(command.mode);
+          if (command.mode === "plan" && this.#pendingHandoff) {
+            // Returning to plan mode revokes a pending approval: a handoff that
+            // survived into plan would prepend "proceed with implementing it now"
+            // to a read-only turn — a directive the mode can't honor.
+            this.#pendingHandoff = false;
+            void this.#persistEngineState();
+          }
         }
         break;
       }
@@ -725,9 +812,10 @@ export class Engine implements EngineClient {
         // Resolve any on-screen permission prompt as `deny` so the cancelled
         // tool doesn't run — and so a stale card, if clicked later, can't fulfil
         // an already-settled promise and slip a side-effecting call past the
-        // abort. (Without this the pending map was only cleared at finalize.)
-        for (const resolve of this.#pendingPermissions.values()) resolve("deny");
-        this.#pendingPermissions.clear();
+        // abort. Emit `permission-settled` so the UI drops the card too: an abort
+        // from a non-user source (steer / budget-stop / loop-stop) would
+        // otherwise leave it lingering into the next turn.
+        this.#settlePendingPermissions("aborted");
         (this.#loopSession ?? this.#session).abort();
         break;
       case "dequeue": {
@@ -829,10 +917,32 @@ export class Engine implements EngineClient {
   /** Memory key for an `always`-allow decision: tool name plus its content scope
    * (command/path/url) so "always" is remembered for THIS call shape, not the
    * whole tool. `\x00` can't appear in a tool name or scope, so it's an
-   * unambiguous separator. */
+   * unambiguous separator. A PATH scope is keyed by its CANONICAL ABSOLUTE form
+   * (resolve(cwd, path)) — the SAME normalization the permission checker matches
+   * a path-scoped rule against — so the SAME file approved as "src/x.ts" isn't
+   * re-prompted when the model next spells it "./src/x.ts". Command/URL/synthetic
+   * scopes have no equivalent normalization and stay spelling-EXACT, so an
+   * "always allow git status" never green-lights a differently-spelled command.
+   * Both the WRITE (grant) and READ (check) sides go through here, so they key
+   * identically. */
   #alwaysAllowKey(toolName: string, input: unknown): string {
-    const scope = scopeString(toolName, input);
+    const scope = canonicalPathScope(toolName, input, this.#cwd) ?? scopeString(toolName, input);
     return scope === undefined ? toolName : `${toolName}\x00${scope}`;
+  }
+
+  /** Auto-resolve every pending permission prompt as `deny` (no human answered)
+   * and tell the UI which ids settled via `permission-settled`. Emitting AFTER
+   * the resolve keeps the deny the source of truth; the event lets the UI drop
+   * the dead card so it can't linger past an abort/shutdown — blocking Esc/plan
+   * shortcuts or, if clicked later, writing a false "allowed" notice for a tool
+   * that never ran. The `resolve-permission` (user-answer) path is separate: it
+   * removes exactly its own id and already clears its card in the UI. */
+  #settlePendingPermissions(reason: "aborted" | "shutdown"): void {
+    if (this.#pendingPermissions.size === 0) return;
+    const ids = [...this.#pendingPermissions.keys()];
+    for (const resolve of this.#pendingPermissions.values()) resolve("deny");
+    this.#pendingPermissions.clear();
+    this.#bus.emit({ type: "permission-settled", sessionId: this.#session.id, ids, reason });
   }
 
   /** Snapshot of the queue for first paint / `/queue`. */
@@ -926,6 +1036,7 @@ export class Engine implements EngineClient {
       blackboard: this.#blackboard,
       skills: this.skills,
       hooks: this.hooks,
+      interactive: this.#interactive,
       ...(this.#memory ? { memory: this.#memory } : {}),
       getContextWindow: (model) => this.#resolveContextWindow(model),
       getPricing: (model) => this.#resolvePricing(model),
@@ -997,11 +1108,11 @@ export class Engine implements EngineClient {
   /**
    * Resolve a model's price (USD per 1M tokens). A config `pricing[model]`
    * override wins; otherwise fall back to the live catalog. A partial override
-   * (e.g. only `input`) is completed from the catalog.
+   * (e.g. only `input`) is completed from the catalog — including its
+   * long-context `tiers`, which only the catalog knows (a FULL config pin stays
+   * authoritative and flat: the user negotiated that rate for every prompt size).
    */
-  async #resolvePricing(
-    model: string,
-  ): Promise<(ModelPrice & { estimated?: boolean }) | undefined> {
+  async #resolvePricing(model: string): Promise<PricingResult | undefined> {
     const override = this.#config.pricing[model];
     // A full config pin is authoritative (a real negotiated rate, not estimated).
     if (override?.input !== undefined && override?.output !== undefined) {
@@ -1014,6 +1125,7 @@ export class Engine implements EngineClient {
       output: override.output ?? catalog?.output,
       cacheRead: override.cacheRead ?? catalog?.cacheRead,
       cacheWrite: override.cacheWrite ?? catalog?.cacheWrite,
+      tiers: catalog?.tiers,
       estimated: catalog?.estimated,
     };
   }
@@ -1184,6 +1296,9 @@ export class Engine implements EngineClient {
       get store() {
         return engine.#store;
       },
+      get sandbox() {
+        return engine.#sandbox;
+      },
       notice: (message, level) => engine.#notice(message, level),
       emit: (event) => engine.#bus.emit(event),
       send: (command) => engine.send(command),
@@ -1199,6 +1314,7 @@ export class Engine implements EngineClient {
       resolveContextWindow: (model) => engine.#resolveContextWindow(model),
       resolvePricing: (model) => engine.#resolvePricing(model),
       mcpStatus: () => engine.#mcp.status(),
+      lspStatus: () => engine.#diagnostics.status?.() ?? [],
       git: (args) => engine.#git(args),
     };
   }
@@ -1445,12 +1561,23 @@ export class Engine implements EngineClient {
     const summary = await runGate(this.#cwd, profile, this.#gateRounds, {
       checks: gate.checks,
       timeoutSec: gate.timeoutSec,
+      // Run the gate's build/test/lint under the OS sandbox (bunExec upgrades a
+      // read-only policy to workspace-write so artifacts can still be written).
+      exec: bunExec(this.#sandbox),
       // Thread the session's abort signal so an Esc during a long gate build
       // stops it between (and, via exec, during) checks — otherwise the only
       // bound was the per-check timeout (default 600s × N checks), wedging the
       // queue unabortably.
       signal: this.#session.abortSignal,
     });
+    if (summary.outcome === "aborted") {
+      // The user interrupted the gate (Esc) before it reached a verdict. Nothing
+      // was machine-verified, so take NONE of the verdict paths: no gate-fix
+      // enqueue, no #gateRounds increment, no green-ledger persist, no
+      // commit-on-green, no adversarial review. Just a quiet, honest notice.
+      this.#notice(formatGateOutcome(summary), "info");
+      return;
+    }
     if (summary.outcome === "unverified") {
       // pickChecks found commands but the gate produced no verdict (every check
       // aborted / no output) — still honest, never green.
@@ -1650,10 +1777,21 @@ export class Engine implements EngineClient {
           const { text } = await generateText({
             model,
             prompt: buildReviewPrompt(diff, stubBlock, visualFindings),
+            // The review is a single auxiliary provider call: unbounded, a hung
+            // provider wedged `vibe -p` forever with Esc ignored. Bound it by the
+            // session abort signal (Esc) AND a hard 120s ceiling; either trips the
+            // catch below, which skips the review and lets the turn complete.
+            abortSignal: AbortSignal.any([this.#session.abortSignal, AbortSignal.timeout(120_000)]),
           });
           if (!isReviewClean(text)) reviewFlagged = text;
-        } catch {
-          if (!visualFindings) return; // best-effort — bow out unless runtime findings exist
+        } catch (err) {
+          // Best-effort auxiliary call — an Esc-abort, the 120s timeout, or a
+          // transient provider error skips the review with a calm notice and lets
+          // the turn complete (same degrade-don't-kill shape as #maybeCompact's
+          // summarizer failure); an interrupt must never surface as a scary error.
+          // Runtime findings are still ground truth, so fall through to fix them.
+          this.#notice(`Diff review skipped: ${(err as Error)?.message ?? String(err)}.`, "warn");
+          if (!visualFindings) return;
         }
       }
     }
@@ -1715,7 +1853,7 @@ export class Engine implements EngineClient {
   /** Run the verify command, emitting start/finish events. */
   async #runVerifyCommand(command: string): Promise<{ ok: boolean; output: string }> {
     this.#bus.emit({ type: "verify-started", command });
-    const result = await runVerify(this.#cwd, command);
+    const result = await runVerify(this.#cwd, command, undefined, this.#sandbox);
     this.#bus.emit({
       type: "verify-finished",
       ok: result.ok,
@@ -1759,6 +1897,21 @@ export class Engine implements EngineClient {
 function queueLabel(text: string): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > 48 ? `${oneLine.slice(0, 47)}…` : oneLine;
+}
+
+/** The canonical absolute path a file-tool call targets — `resolve(cwd, path)`,
+ * or undefined for a command/URL/no-path scope. Mirrors the (module-private)
+ * `resolvedPathScope` in permissions.ts so an `always`-allow grant is keyed on
+ * the SAME normalization the permission checker matches a path-scoped rule with
+ * — the two MUST stay in lock-step, which is why this replicates it rather than
+ * keying on the raw `scopeString` path (which would re-prompt an already-granted
+ * file spelled with a different `./`/`../` prefix). */
+function canonicalPathScope(toolName: string, input: unknown, cwd: string): string | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const o = input as Record<string, unknown>;
+  if (toolName === "bash" || typeof o.command === "string") return undefined;
+  if (typeof o.path !== "string") return undefined;
+  return resolvePath(cwd, o.path);
 }
 
 /** Cap on the diff handed to the single-shot reviewer (chars) — the same bound

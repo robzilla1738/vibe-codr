@@ -75,6 +75,19 @@ export type UIEvent =
       toolName: string;
       input: unknown;
     }
+  | {
+      /** One or more pending permission prompts were resolved by the engine
+       * WITHOUT a user answer — an abort (steer / budget-stop / loop-stop) or a
+       * shutdown auto-denied them. The UI drops the now-dead card(s) so a stale
+       * prompt can't linger into the next turn: block Esc-to-abort / plan
+       * shortcuts (both gated on no pending prompt), or, if later clicked, write a
+       * false "allowed" notice for a tool that was denied and never ran. Carries
+       * the settled `permission-request` `id`s and why they settled. */
+      type: "permission-settled";
+      sessionId: string;
+      ids: string[];
+      reason: "aborted" | "shutdown";
+    }
   | { type: "tasks-updated"; sessionId: string; tasks: Task[] }
   | {
       /** A scheduled orchestrator task changed state (spawn_tasks DAG). */

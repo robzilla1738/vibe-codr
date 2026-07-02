@@ -2,7 +2,17 @@
  * UI themes for the OpenTUI app — named palettes selectable with `/theme`.
  * Each palette maps the app's semantic line kinds to hex colors. The headless
  * REPL uses 16-color ANSI (see `ansi.ts`) and is theme-agnostic.
+ *
+ * The selectable theme NAMES and the named accent presets are pure serializable
+ * data the ENGINE also needs (to validate `/theme` + resolve `/accent`), so they
+ * live in `@vibe/shared` (`THEME_NAMES`/`ACCENT_PRESETS`) — one source across the
+ * core/TUI boundary, no hand-synced copies. This file owns only the render-side
+ * PALETTES; `themes.test.ts` asserts `THEMES` covers exactly `THEME_NAMES`.
  */
+import { ACCENT_NAMES, ACCENT_PRESETS, THEME_NAMES } from "@vibe/shared";
+
+export { ACCENT_NAMES, ACCENT_PRESETS, THEME_NAMES };
+
 export interface Palette {
   user: string;
   assistant: string;
@@ -560,32 +570,6 @@ export const THEMES: Record<string, Palette> = {
   flexoki: FLEXOKI,
   vesper: VESPER,
 };
-
-/** All selectable theme names. */
-export const THEME_NAMES: string[] = Object.keys(THEMES);
-
-/**
- * Named accent presets for `/accent <name>` — a curated swatch row so switching
- * the chrome hue is one word, not a hex hunt. `orange` is opencode's signature
- * peach (the warm classic); `ember` is a deeper orange; the rest round out a
- * calm, terminal-proven set. Any 6-digit hex still works via `/accent #rrggbb`.
- * The engine keeps a synced copy (engine-commands.ts ACCENT_PRESETS — core can't
- * import the UI package); update both together.
- */
-export const ACCENT_PRESETS: Record<string, string> = {
-  blue: "#70cbf4",
-  orange: "#fab283",
-  ember: "#ff966c",
-  amber: "#e0af68",
-  green: "#9ece6a",
-  teal: "#2ac3de",
-  violet: "#bb9af7",
-  rose: "#f7768e",
-  white: "#e6e6e6",
-};
-
-/** All selectable accent preset names, menu order. */
-export const ACCENT_NAMES: string[] = Object.keys(ACCENT_PRESETS);
 
 /** The preset name for a hex accent (case-insensitive), or undefined. */
 export function accentNameOf(hex: string | undefined): string | undefined {

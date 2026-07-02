@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { drainTextStream, type JobInfo, type ToolDefinition } from "@vibe/shared";
 import { killTree, killTreeAndWait } from "./process-tree.ts";
+import { type SandboxPolicy, wrapCommand } from "../sandbox.ts";
 
 interface Job {
   id: string;
@@ -40,13 +41,27 @@ export class BackgroundJobs {
   #jobs = new Map<string, Job>();
   #seq = 0;
   #onChange?: () => void;
+  /** OS sandbox policy applied to every started job (dev servers/watchers run
+   * under the same kernel backstop as foreground bash). Settable after
+   * construction because the engine creates its registry before it resolves the
+   * policy. */
+  #sandbox?: SandboxPolicy;
 
-  constructor(opts?: { onChange?: () => void }) {
+  constructor(opts?: { onChange?: () => void; sandbox?: SandboxPolicy }) {
     this.#onChange = opts?.onChange;
+    this.#sandbox = opts?.sandbox;
+  }
+
+  /** Set (or replace) the sandbox policy applied to subsequently-started jobs. */
+  setSandbox(sandbox: SandboxPolicy | undefined): void {
+    this.#sandbox = sandbox;
   }
 
   start(command: string, cwd: string): Job {
-    const proc = Bun.spawn(["bash", "-lc", command], {
+    const argv = this.#sandbox
+      ? wrapCommand(this.#sandbox, { cwd, command })
+      : ["bash", "-lc", command];
+    const proc = Bun.spawn(argv, {
       cwd,
       stdout: "pipe",
       stderr: "pipe",

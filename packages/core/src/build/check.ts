@@ -16,7 +16,12 @@ export function parseCheckOutput(
 
   if (check === "typecheck") {
     const errs = ls.filter((l) => /error TS\d+|: error:|error\[/.test(l));
-    return { pass: ok && errs.length === 0, failed: errs.length, total: errs.length, firstFailures: errs.slice(0, 5) };
+    // The exit code is the source of truth. A compiler that exited 0 PASSED even
+    // if the output carries an "error TS…" token (a fixture string, a logged
+    // prior error, a message quoting a diagnostic) — only trust the scraped count
+    // on a run that actually exited nonzero, mirroring the test branch below.
+    const failed = ok ? 0 : errs.length;
+    return { pass: ok, failed, total: failed, firstFailures: ok ? [] : errs.slice(0, 5) };
   }
 
   if (check === "test") {
@@ -52,10 +57,14 @@ export function parseCheckOutput(
   }
 
   if (check === "lint") {
-    const errors = num(text, /(\d+)\s+error/i) ?? (ok ? 0 : countErrors(ls));
-    const problems = num(text, /(\d+)\s+problem/i) ?? errors;
-    const failures = ls.filter((l) => /error|warning/i.test(l)).slice(0, 5);
-    return { pass: ok && errors === 0, failed: errors, total: problems, firstFailures: failures };
+    // Exit code is the source of truth, same as the test/typecheck branches. A
+    // linter that exited 0 PASSED even when its summary scrapes as "3 errors" —
+    // e.g. "Found 3 errors (3 fixed, 0 remaining)" after an autofix, where the
+    // remaining count is zero. Only trust the scraped counts on a nonzero exit.
+    const errors = ok ? 0 : (num(text, /(\d+)\s+error/i) ?? countErrors(ls));
+    const problems = ok ? 0 : (num(text, /(\d+)\s+problem/i) ?? errors);
+    const failures = ok ? [] : ls.filter((l) => /error|warning/i.test(l)).slice(0, 5);
+    return { pass: ok, failed: errors, total: problems, firstFailures: failures };
   }
 
   // build / install: exit code is the source of truth; collect first error lines.

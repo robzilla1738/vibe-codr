@@ -1,4 +1,5 @@
 import { readCappedText } from "@vibe/shared";
+import { policyForChecks, type SandboxPolicy, wrapCommand } from "@vibe/tools";
 
 export interface VerifyResult {
   ok: boolean;
@@ -22,8 +23,15 @@ export async function runVerify(
   cwd: string,
   command: string,
   signal?: AbortSignal,
+  policy?: SandboxPolicy,
 ): Promise<VerifyResult> {
-  const proc = Bun.spawn(["bash", "-lc", command], {
+  // Verify runs the project's own build/test commands, which write artifacts —
+  // so a read-only policy is upgraded to workspace-write; an absent policy →
+  // the unchanged base argv (unsandboxed).
+  const argv = policy
+    ? wrapCommand(policyForChecks(policy), { cwd, command })
+    : ["bash", "-lc", command];
+  const proc = Bun.spawn(argv, {
     cwd,
     stdout: "pipe",
     stderr: "pipe",

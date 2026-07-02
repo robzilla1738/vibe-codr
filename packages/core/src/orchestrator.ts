@@ -42,6 +42,11 @@ export interface TaskSpec {
    * in-worktree gate — only the winner merges. Expensive; reserve for genuinely
    * hard tasks. */
   hard?: boolean;
+  /** Optional JSON Schema. When set (shared-tree tasks), the subagent's FINAL
+   * message must be exactly one JSON object matching it — validated, retried on
+   * mismatch (subagent.structuredMaxAttempts); the validated JSON becomes the
+   * task report. Machine-consumable task results. */
+  outputSchema?: Record<string, unknown>;
 }
 
 export type TaskOutcome = "completed" | "failed" | "skipped";

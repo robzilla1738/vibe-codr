@@ -1,5 +1,15 @@
 import { test, expect } from "bun:test";
+import { resolveSandboxPolicy } from "@vibe/tools";
 import { bunExec } from "./exec.ts";
+
+/** The real backend on THIS host, or null when none is enforceable (skip). */
+function realWorkspaceWritePolicy() {
+  const p = resolveSandboxPolicy(
+    { mode: "workspace-write", network: "on", writablePaths: [] },
+    { cwd: process.cwd() },
+  );
+  return p.available ? p : null;
+}
 
 const isAlive = (pid: number): boolean => {
   try {
@@ -16,6 +26,15 @@ test("bunExec: a passing command returns its combined output and exit code", asy
   expect(res.code).toBe(0);
   expect(res.out).toContain("hi");
   expect(res.out).toContain("err");
+});
+
+test("bunExec: a trivial check exits 0 under a real workspace-write sandbox", async () => {
+  const policy = realWorkspaceWritePolicy();
+  if (!policy) return; // no enforceable backend on this host — skip cleanly
+  const exec = bunExec(policy);
+  const res = await exec("echo ok", { cwd: process.cwd() });
+  expect(res.code).toBe(0);
+  expect(res.out).toContain("ok");
 });
 
 test("bunExec timeout kills the whole process tree and does NOT hang on an orphaned pipe holder", async () => {

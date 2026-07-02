@@ -1,5 +1,5 @@
 import { chunkMarkdown } from "./chunk.ts";
-import { rankBm25, reciprocalRankFusion } from "./bm25.ts";
+import { rankBm25, reciprocalRankFusion, queryTerms, tokenize } from "./bm25.ts";
 import { searchSessions } from "./recall.ts";
 import type { SemanticMemory, MemoryDoc } from "./semantic-memory.ts";
 
@@ -27,6 +27,72 @@ export interface SearchMemoryOptions {
   limit?: number;
 }
 
+/** Keep a hit only if its per-hit relevance is at least this fraction of the top
+ * hit's — drops stragglers far weaker than a genuinely strong match. Low on
+ * purpose: the overlap floor below does the junk-rejection; this only trims the
+ * long tail. */
+const FRACTION_OF_TOP = 0.25;
+
+/**
+ * Relevance floor for the fused hit list. Proactive recall injects the top-k hits
+ * into EVERY turn's cache-stable prefix, so a junk match that merely shares one
+ * incidental token pollutes the whole session. This drops weak hits so a
+ * junk-only result set surfaces NOTHING (empty recall is honest and already
+ * handled downstream).
+ *
+ * Scored from the QUERY, never the fused RRF score. RRF is RANK-based: a lone
+ * junk hit gets the same 1/(k+0) as a lone strong hit, so a floor on the fused
+ * score can't tell them apart. The real relevance signal lives pre-fusion, in
+ * BM25 (relative) and raw query-term overlap (absolute) — so we recompute both
+ * here. Applied as a post-fusion FILTER, so the RRF ordering of the survivors is
+ * preserved (the normal path is unaffected when every hit is genuinely relevant).
+ *
+ * The floor governs LEXICAL hits only. A dense (semantic) hit — one the embedding
+ * branch surfaced — is exempt: semantic search exists to match paraphrases that
+ * share ZERO surface terms with the query, so a lexical-overlap gate would drop
+ * exactly the recall it provides. `denseIds` carries the ids the dense branch
+ * ranked (the RRF fusion already knows them); anything else is judged lexically.
+ *
+ * Two criteria, both required (for a lexical hit):
+ *  - ABSOLUTE overlap: the hit must contain at least `minOverlap` DISTINCT query
+ *    terms. This is what rejects an ALL-junk set even when its own best hit
+ *    defines the top (a relative-only floor can't). `minOverlap` scales with
+ *    query specificity: a query with ≥ 4 meaningful terms (proactive seeds —
+ *    goal + first prompt — are always this long) demands ≥ 2 overlaps, so a
+ *    single shared token can't qualify; a short 1–3 term query stays at ≥ 1 so a
+ *    legitimately terse explicit `/recall` isn't over-filtered.
+ *  - RELATIVE score: the hit's corpus-relative BM25 across the candidate set must
+ *    be at least `FRACTION_OF_TOP` of the best hit's.
+ */
+function applyRelevanceFloor(
+  query: string,
+  hits: MemoryHit[],
+  denseIds: ReadonlySet<string>,
+): MemoryHit[] {
+  if (hits.length === 0) return hits;
+  const qterms = queryTerms(query);
+  if (!qterms.length) return hits; // no meaningful terms → nothing to floor against
+  const minOverlap = qterms.length >= 4 ? 2 : 1;
+  // Corpus-relative BM25 across the candidate hits — a real relevance measure,
+  // unlike the rank-based RRF score. Zero-overlap hits are absent from `rel`.
+  const rel = rankBm25(query, hits.map((h) => h.text), qterms);
+  const scoreByIndex = new Map<number, number>();
+  for (const h of rel) scoreByIndex.set(h.index, h.score);
+  const top = rel[0]?.score ?? 0;
+  return hits.filter((h, i) => {
+    // A dense (semantic) hit bypasses the lexical floor entirely: a paraphrase
+    // match legitimately shares no surface terms, so both the overlap gate and
+    // the (necessarily zero) BM25 fraction would wrongly drop it.
+    if (denseIds.has(h.id)) return true;
+    const tokens = new Set(tokenize(h.text));
+    let overlap = 0;
+    for (const t of qterms) if (tokens.has(t)) overlap++;
+    if (overlap < minOverlap) return false;
+    const score = scoreByIndex.get(i) ?? 0;
+    return top === 0 || score >= FRACTION_OF_TOP * top;
+  });
+}
+
 /**
  * Hybrid memory search: fuses up to three rankings — lexical BM25 over the memory
  * corpus, dense (semantic) nearest-neighbours over the same corpus, and lexical
@@ -41,6 +107,9 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
   const { cwd, query, sources, semantic, limit = 8, includeSessions = true } = opts;
   const rankings: string[][] = [];
   const byId = new Map<string, MemoryHit>();
+  // Ids the dense branch ranked — exempt from the lexical relevance floor so a
+  // zero-surface-overlap paraphrase match survives (semantic recall's whole point).
+  const denseIds = new Set<string>();
 
   // Chunk the corpus once (shared by the lexical pass and as hit metadata).
   const chunks = sources.flatMap((s) => chunkMarkdown(s.source, s.text));
@@ -66,6 +135,7 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
       const dense = await semantic.search(query, limit * 3);
       rankings.push(dense.map((h) => h.id));
       for (const h of dense) {
+        denseIds.add(h.id);
         if (!byId.has(h.id)) {
           byId.set(h.id, { id: h.id, source: h.source, heading: h.heading, text: h.text, kind: "memory", score: 0 });
         }
@@ -95,13 +165,15 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
   }
 
   if (!rankings.length) return [];
-  const out: MemoryHit[] = [];
+  const fused: MemoryHit[] = [];
   for (const { id, score } of reciprocalRankFusion(rankings)) {
     const hit = byId.get(id);
-    if (hit) out.push({ ...hit, score });
-    if (out.length >= limit) break;
+    if (hit) fused.push({ ...hit, score });
   }
-  return out;
+  // Apply the relevance floor BEFORE the limit cut: a weak hit near the top must
+  // not shadow a stronger one below it, and a junk-only set must return empty
+  // rather than a `limit`-length list of noise.
+  return applyRelevanceFloor(query, fused, denseIds).slice(0, limit);
 }
 
 /** Render hybrid memory hits as a compact block for the model / `/recall`. */

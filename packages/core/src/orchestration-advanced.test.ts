@@ -1,7 +1,7 @@
 import { test, expect, afterAll } from "bun:test";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RepoProfile, ToolContext, ToolDefinition, UIEvent } from "@vibe/shared";
@@ -243,6 +243,59 @@ test("check:true with a red gate fails the attempt on PASS/FAIL text, with no LL
   const started = events.filter((e) => e.type === "subagent-started");
   expect(started.length).toBe(1);
   expect(call).toBe(3);
+});
+
+// ── 4b. an aborted (Esc mid-gate) shared task fails with no retry ────────────
+
+test("verify task: an Esc during the gate settles the task failed, with no retry", async () => {
+  // The check blocks until the test releases it, so we can Esc while the gate is
+  // mid-run; releasing lets the aborted check exit cleanly (no wedged reader).
+  const cwd = tmpCwd();
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => (call++ === 0
+      ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
+      : textStep("did the change")) as never,
+  });
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+
+  const session = new Session({
+    config: orchestrationConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    repoProfile: fakeProfile({
+      typecheck: "echo started > gate-started; until [ -f release ]; do sleep 0.05; done",
+    }),
+  });
+
+  // Esc mid-gate: once the check subprocess has started (its marker file), abort
+  // the session and release the check so it exits cleanly.
+  const marker = join(cwd, "gate-started");
+  const watcher = (async () => {
+    const deadline = Date.now() + 15_000;
+    while (!existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    session.abort();
+    writeFileSync(join(cwd, "release"), "");
+  })();
+
+  await session.run("do it and verify");
+  await watcher;
+  bus.close();
+  await done;
+
+  // The task settled FAILED on the interrupt — a terminal non-verdict.
+  const failed = events.find(
+    (e) => e.type === "orchestration-task" && e.taskId === "t" && e.status === "failed",
+  );
+  expect(failed).toBeDefined();
+  // And the interrupt did NOT trigger a retry: verifyMaxAttempts is 2, so a RED
+  // gate would have run a second worker; an aborted gate runs exactly one.
+  expect(events.filter((e) => e.type === "subagent-started").length).toBe(1);
 });
 
 // ── 5. the reviewer gets the REAL diff ──────────────────────────────────────

@@ -120,11 +120,18 @@ export function buildSaveMemoryTool(handle: SessionToolsHandle): ToolDefinition<
       if (saved.deduped) {
         return { output: `Already known — an equivalent memory exists in ${saved.path}; skipped the duplicate.` };
       }
+      if (scope === "user") {
+        const base = `Saved to ${saved.path} — loaded into every future session automatically.`;
+        // Don't claim the whole file is injected when it's over the budget: the cap
+        // keeps only the newest bullets, so say so and point at pruning.
+        return {
+          output: saved.overBudget
+            ? `${base} Note: USER.md now exceeds the injection budget, so only the newest preferences are injected — prune older bullets so none are dropped.`
+            : base,
+        };
+      }
       return {
-        output:
-          scope === "user"
-            ? `Saved to ${saved.path} — loaded into every future session automatically.`
-            : `Saved to ${saved.path}. It will surface via recall_memory when relevant.`,
+        output: `Saved to ${saved.path}. It will surface via recall_memory when relevant.`,
       };
     },
   };

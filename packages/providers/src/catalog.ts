@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLogger, type Logger } from "@vibe/shared";
-import type { ModelInfo } from "./types.ts";
+import type { ModelInfo, PricingTier } from "./types.ts";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -45,6 +45,9 @@ export interface PricingResult {
   cacheRead?: number;
   /** Per-1M price of writing the prompt cache, when known. */
   cacheWrite?: number;
+  /** Long-context pricing tiers, when the model prices a big prompt higher. Rides
+   * on the price object so it flows through to the cost computation unchanged. */
+  tiers?: PricingTier[];
   estimated?: boolean;
 }
 
@@ -88,6 +91,54 @@ export function resolveCatalogPrice(
   return exact;
 }
 
+/** Providers that serve models LOCALLY and are live-probed for the SERVED
+ * context window. A fuzzy catalog window for these is exactly the over-report
+ * hazard: a small local tag inheriting a cloud namesake's huge window means
+ * compaction never fires and every long turn 400s — so catalog window
+ * fallbacks stay conservative (undefined) for them, and the probe remains
+ * their source of truth. */
+const LOCALLY_PROBED_PROVIDERS = new Set(["ollama", "lmstudio"]);
+
+function providerOf(modelString: string): string {
+  const slash = modelString.indexOf("/");
+  return slash < 0 ? "" : modelString.slice(0, slash);
+}
+
+/**
+ * Resolve a model's context window from a loaded catalog map. An exact hit
+ * wins; a miss falls back to a base-model match across providers — the same
+ * fallback `resolveCatalogPrice` has, because an ESTIMATED window for a known
+ * base model beats the session's blanket 128k default in both directions
+ * (a fine-tune/variant id inherits its family's real window). Two asymmetries
+ * a price lookup doesn't need:
+ *   - locally-probed providers get NO fuzzy fallback (see
+ *     {@link LOCALLY_PROBED_PROVIDERS} — a wrong price warns, a wrong window
+ *     truncates turns);
+ *   - the `ollama`→`ollama-cloud` slug alias is honored only when cloud is
+ *     plausibly in play (`OLLAMA_API_KEY`, the probe's own routing signal) —
+ *     otherwise a purely local tag would read its cloud namesake's window.
+ */
+export function resolveCatalogWindow(
+  metadata: Map<string, Partial<ModelInfo>>,
+  modelString: string,
+): number | undefined {
+  const provider = providerOf(modelString);
+  const cloudPlausible = provider !== "ollama" || Boolean(process.env.OLLAMA_API_KEY);
+  const key = cloudPlausible ? aliasModelKey(modelString) : modelString;
+  const exact = metadata.get(key)?.contextWindow;
+  if (exact !== undefined) return exact;
+  if (LOCALLY_PROBED_PROVIDERS.has(provider)) return undefined;
+  const bare = baseModelId(modelString);
+  if (bare) {
+    for (const [k, meta] of metadata) {
+      if (meta.contextWindow !== undefined && baseModelId(k) === bare) {
+        return meta.contextWindow;
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * Fetches the models.dev catalog (capabilities, context window, pricing) and
  * uses it to ENRICH live `/v1/models` results. Live ids are the source of
@@ -115,9 +166,12 @@ export class CatalogService {
    * NON-BLOCKING: if the catalog isn't loaded yet, this kicks off a background
    * load and returns `undefined` so the caller (per-turn compaction) never
    * stalls on the network. Subsequent turns get the real value once it lands.
+   * Resolution (exact hit, guarded alias, base-model fallback) is
+   * {@link resolveCatalogWindow}'s — see its doc for the local-provider
+   * asymmetries.
    */
   async contextWindow(modelString: string): Promise<number | undefined> {
-    if (this.#metadata) return this.#metadata.get(aliasModelKey(modelString))?.contextWindow;
+    if (this.#metadata) return resolveCatalogWindow(this.#metadata, modelString);
     void this.#load(); // warm the cache for next time, but don't wait on it
     return undefined;
   }
@@ -235,6 +289,48 @@ export class CatalogService {
   }
 }
 
+/**
+ * Long-context pricing tiers from a models.dev `cost` block. The `tiers` array is
+ * the faithful source: each entry carries its REAL threshold (`tier.size`, which
+ * varies — 200k for Gemini, 272k for GPT-5.x, 256k for Qwen). The
+ * `context_over_200k` sibling is a lossy convenience field (always keyed to 200k
+ * regardless of the true threshold), so we fall back to it only when `tiers` is
+ * absent. Returns undefined when the model prices a big prompt flat, so untiered
+ * models keep a `tiers`-free cost object.
+ */
+function parseTiers(cost: any): PricingTier[] | undefined {
+  const raw = cost?.tiers;
+  if (Array.isArray(raw)) {
+    const tiers: PricingTier[] = [];
+    for (const t of raw) {
+      const size = t?.tier?.size;
+      if (typeof size !== "number") continue;
+      tiers.push({
+        threshold: size,
+        input: t?.input,
+        output: t?.output,
+        cacheRead: t?.cache_read,
+        cacheWrite: t?.cache_write,
+      });
+    }
+    // Ascending by threshold so tier selection can walk it as a step function.
+    if (tiers.length) return tiers.sort((a, b) => a.threshold - b.threshold);
+  }
+  const over = cost?.context_over_200k;
+  if (over && typeof over === "object") {
+    return [
+      {
+        threshold: 200_000,
+        input: over.input,
+        output: over.output,
+        cacheRead: over.cache_read,
+        cacheWrite: over.cache_write,
+      },
+    ];
+  }
+  return undefined;
+}
+
 /** Flatten the models.dev `api.json` into `providerId/modelId -> ModelInfo`. */
 export function parseModelsDev(raw: unknown): Map<string, Partial<ModelInfo>> {
   const out = new Map<string, Partial<ModelInfo>>();
@@ -256,6 +352,7 @@ export function parseModelsDev(raw: unknown): Map<string, Partial<ModelInfo>> {
           output: m?.cost?.output,
           cacheRead: m?.cost?.cache_read,
           cacheWrite: m?.cost?.cache_write,
+          tiers: parseTiers(m?.cost),
         },
         capabilities: {
           toolCall: m?.tool_call,

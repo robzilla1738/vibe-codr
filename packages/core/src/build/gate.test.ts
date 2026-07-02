@@ -24,7 +24,7 @@ test("pickChecks: configured ∩ detected, fail-fast order", () => {
   expect(picked.map((p) => p.check)).toEqual(["typecheck", "test"]); // build not detected; lint not wanted
 });
 
-test("runGate: an already-aborted signal stops before running any check", async () => {
+test("runGate: an already-aborted signal stops before running any check → aborted", async () => {
   const ran: string[] = [];
   const exec: Exec = async (cmd) => {
     ran.push(cmd);
@@ -38,7 +38,46 @@ test("runGate: an already-aborted signal stops before running any check", async 
     signal: ctrl.signal,
   });
   expect(ran).toEqual([]); // nothing ran — aborted up front
-  expect(summary.outcome).toBe("unverified"); // no checks produced a verdict
+  // Commands existed; the interrupt cut in before a verdict. That's "aborted"
+  // (a terminal non-verdict), NOT "unverified" (which means no command to run).
+  expect(summary.outcome).toBe("aborted");
+});
+
+test("runGate: an abort DURING a check is aborted, not a false RED", async () => {
+  // The signal killed the child mid-run: exec returns nonzero, but the abort is
+  // the honest reason. parseCheckOutput would bucket the nonzero exit as a real
+  // failure (false RED) — the post-exec abort check must win.
+  const ctrl = new AbortController();
+  const exec: Exec = async () => {
+    ctrl.abort();
+    return { out: "Terminated", code: 143 };
+  };
+  const summary = await runGate("/x", profile({ typecheck: "tsc" }), 0, {
+    checks: ["typecheck"],
+    exec,
+    signal: ctrl.signal,
+  });
+  expect(summary.outcome).toBe("aborted");
+});
+
+test("runGate: an abort BETWEEN checks is aborted, not a false GREEN, and skips the rest", async () => {
+  // The first check passes cleanly (exit 0), then the user hits Esc before the
+  // next check. Bucketing the passed check as GREEN would be a false verdict; the
+  // second command must never run.
+  const ran: string[] = [];
+  const ctrl = new AbortController();
+  const exec: Exec = async (cmd) => {
+    ran.push(cmd);
+    ctrl.abort();
+    return { out: "10 pass\n0 fail", code: 0 };
+  };
+  const summary = await runGate("/x", profile({ typecheck: "tsc", test: "bun test" }), 0, {
+    checks: ["typecheck", "test"],
+    exec,
+    signal: ctrl.signal,
+  });
+  expect(summary.outcome).toBe("aborted"); // not green, even though the check that ran passed
+  expect(ran).toEqual(["tsc"]); // the second check never ran
 });
 
 test("runGate: the abort signal is forwarded to exec (abortable mid-check)", async () => {
@@ -112,4 +151,17 @@ test("formatGateOutcome renders a compact green line", async () => {
   const exec: Exec = async () => ({ out: " 142 pass\n 0 fail\n142 total", code: 0 });
   const summary = await runGate("/x", profile({ test: "bun test" }), 0, { checks: ["test"], exec });
   expect(formatGateOutcome(summary)).toBe("Gate: GREEN — test ✓ 142/142");
+});
+
+test("formatGateOutcome renders ABORTED on its own line, never a per-check list", async () => {
+  const ctrl = new AbortController();
+  ctrl.abort();
+  const summary = await runGate("/x", profile({ typecheck: "tsc" }), 0, {
+    checks: ["typecheck"],
+    signal: ctrl.signal,
+  });
+  const line = formatGateOutcome(summary);
+  expect(line).toContain("ABORTED");
+  expect(line).toContain("not machine-verified");
+  expect(line).not.toContain("✓"); // no misleading "typecheck ✓" from the parts map
 });

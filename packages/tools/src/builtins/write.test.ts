@@ -1,5 +1,5 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync, utimesSync } from "node:fs";
+import { mkdtempSync, utimesSync, readdirSync, statSync, chmodSync, symlinkSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
@@ -105,6 +105,67 @@ test("stale-write guard: an external touch after a read blocks the write", async
   expect(res.output).toContain("changed on disk");
   // The write was refused — the external content is intact.
   expect(await Bun.file(full).text()).toBe("original\n");
+});
+
+test("write via temp+rename leaves no stray temp file (create and overwrite)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-write-temp-"));
+  const { ctx: c } = ctx(dir, "ses_temp");
+  await writeTool.execute({ path: "new.txt", content: "hi\n" }, c);
+  await writeTool.execute({ path: "new.txt", content: "bye\n" }, c);
+  expect(await Bun.file(join(dir, "new.txt")).text()).toBe("bye\n");
+  // No `*.tmp` sibling survives either the create or the overwrite.
+  expect(readdirSync(dir).filter((f) => f.includes(".tmp"))).toEqual([]);
+});
+
+test("overwriting preserves the existing file mode across the temp+rename", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-write-mode-"));
+  const full = join(dir, "run.sh");
+  await Bun.write(full, "echo v1\n");
+  chmodSync(full, 0o755);
+  const { ctx: c } = ctx(dir, "ses_mode");
+  const res = await writeTool.execute({ path: "run.sh", content: "echo v2\n" }, c);
+  expect(res.isError).toBeUndefined();
+  // rename swaps the inode; without carrying the mode the +x bit would be lost.
+  expect(statSync(full).mode & 0o777).toBe(0o755);
+});
+
+test("a mid-write failure leaves the existing file intact with no temp", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-write-fail-"));
+  const full = join(dir, "f.txt");
+  await Bun.write(full, "original\n");
+  const { ctx: c } = ctx(dir, "ses_fail");
+  const orig = Bun.write;
+  try {
+    (Bun as unknown as { write: unknown }).write = () => {
+      throw new Error("injected write failure");
+    };
+    await expect(
+      writeTool.execute({ path: "f.txt", content: "clobber\n" }, c),
+    ).rejects.toThrow("injected write failure");
+  } finally {
+    (Bun as unknown as { write: typeof orig }).write = orig;
+  }
+  // The overwrite target keeps its original bytes; no temp leaked.
+  expect(await Bun.file(full).text()).toBe("original\n");
+  expect(readdirSync(dir).some((f) => f.includes(".tmp"))).toBe(false);
+});
+
+test("writing THROUGH a symlink preserves the link and updates its real target", async () => {
+  // Temp+rename swaps the inode at the written path. Writing a symlink must
+  // dereference to the target so the link survives and its target is overwritten —
+  // never replace the link with a regular file and strand the target stale.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-write-link-"));
+  await Bun.write(join(dir, "real.txt"), "v1\n");
+  symlinkSync(join(dir, "real.txt"), join(dir, "link.txt"));
+  const { ctx: c } = ctx(dir, "ses_link");
+  const res = await writeTool.execute({ path: "link.txt", content: "v2\n" }, c);
+  expect(res.isError).toBeUndefined();
+  expect(res.output).toContain("Overwrote link.txt");
+  // The link stays a link; its target got the new content.
+  expect(lstatSync(join(dir, "link.txt")).isSymbolicLink()).toBe(true);
+  expect(await Bun.file(join(dir, "real.txt")).text()).toBe("v2\n");
+  // No stray temp beside either the link or its target.
+  expect(readdirSync(dir).filter((f) => f.includes(".tmp"))).toEqual([]);
 });
 
 test("write after our own write does not self-flag as stale (baseline advances)", async () => {

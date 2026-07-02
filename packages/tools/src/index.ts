@@ -28,3 +28,16 @@ export {
 export type { WebSearchOptions } from "./builtins/web-search.ts";
 export { unifiedDiff, type DiffResult } from "./diff.ts";
 export { killTree, processTree } from "./builtins/process-tree.ts";
+export {
+  type SandboxPolicy,
+  type SandboxConfig,
+  type SandboxMode,
+  type SandboxNetwork,
+  type SandboxBackend,
+  resolveSandboxPolicy,
+  wrapCommand,
+  policyForChecks,
+  annotateDenial,
+  seatbeltProfile,
+  bwrapArgs,
+} from "./sandbox.ts";

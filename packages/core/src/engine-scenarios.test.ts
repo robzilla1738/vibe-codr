@@ -149,3 +149,88 @@ test("auto-verify: a failing check feeds back and the agent self-corrects", asyn
   expect(verifyResults.some((e) => !e.ok)).toBe(true); // first check failed
   expect(verifyResults.some((e) => e.ok)).toBe(true); // second check passed
 });
+
+test("plan approval: card-accept and mode-switch share one routine (same execute + ask + handoff effects)", async () => {
+  // Both approval surfaces funnel through the SAME #approvePlan/#setModeGated
+  // routine, so neither can drift from the engine-owned invariant: approving a
+  // plan lands in gated EXECUTE (mode execute, approvals re-gated to ask) and
+  // arms the plan→execute handoff (the execute turn's model prompt carries the
+  // "approved by the user" directive). The two differ ONLY in WHEN the turn runs
+  // — the card immediately, the mode switch on the next message — so we assert
+  // the SHARED effects, not a byte-identical event stream.
+  const PLAN = "## Steps\n- [ ] Refactor the loader\n- [ ] Add tests";
+
+  async function approveVia(method: "card" | "mode") {
+    const cwd = mkdtempSync(join(tmpdir(), `vibe-scn-approve-${method}-`));
+    const prompts: string[] = [];
+    const steps = [
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: PLAN }) },
+        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      ]),
+      textStep("Plan presented."),
+      textStep("Implementing the plan."),
+    ];
+    let call = 0;
+    const model = new MockLanguageModelV2({
+      doStream: async (options) => {
+        prompts.push(JSON.stringify(options.prompt));
+        return steps[call++] as never;
+      },
+    });
+    const registry = new ProviderRegistry([
+      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    ]);
+    // Start in YOLO (approvals auto) so the shared "re-gate to ask" effect is
+    // observable on BOTH paths (a plan approved from a no-prompts session must
+    // land back in gated execute).
+    const engine = new Engine({
+      config: { ...defaultConfig(), model: "mock/test", mode: "plan", approvalMode: "auto" },
+      cwd,
+      registry,
+      interactive: false,
+    });
+    await engine.bootstrap();
+    const events: UIEvent[] = [];
+    const collector = (async () => {
+      for await (const e of engine.events()) events.push(e);
+    })();
+
+    engine.send({ type: "submit-prompt", text: "plan a refactor" });
+    await engine.whenIdle();
+
+    if (method === "card") {
+      engine.send({ type: "resolve-plan", decision: "accept" }); // runs immediately
+      await engine.whenIdle();
+    } else {
+      engine.send({ type: "set-mode", mode: "execute" }); // arms the handoff…
+      engine.send({ type: "submit-prompt", text: "go" }); // …consumed by the next message
+      await engine.whenIdle();
+    }
+    engine.send({ type: "shutdown" });
+    await collector;
+
+    return {
+      execPrompt: prompts.at(-1) ?? "",
+      mode: engine.snapshot().mode,
+      approvals: engine.snapshot().approvalMode,
+      reGatedToAsk: events.some((e) => e.type === "approvals-changed" && e.mode === "ask"),
+    };
+  }
+
+  const card = await approveVia("card");
+  const mode = await approveVia("mode");
+
+  // Shared effect 1+2: both land in gated EXECUTE, re-gating approvals auto→ask.
+  expect(card.mode).toBe("execute");
+  expect(mode.mode).toBe("execute");
+  expect(card.approvals).toBe("ask");
+  expect(mode.approvals).toBe("ask");
+  expect(card.reGatedToAsk).toBe(true);
+  expect(mode.reGatedToAsk).toBe(true);
+  // Shared effect 3: both arm the handoff — the execute turn's model prompt
+  // carries the approval directive (its present_plan "stop here" no longer holds).
+  expect(card.execPrompt).toContain("approved by the user");
+  expect(mode.execPrompt).toContain("approved by the user");
+});

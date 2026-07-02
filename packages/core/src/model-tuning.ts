@@ -33,19 +33,40 @@ function providerOf(modelString: string): string {
 }
 
 /**
- * Providers whose models reason — either because vibe-codr forwards an effort/
- * budget hint (anthropic, openai, xai, openrouter) or because the model reasons
- * natively (codex, deepseek-reasoner). Used only to decide whether to warn that
- * `/reasoning` will be ignored (e.g. on local Ollama / LM Studio models).
+ * Providers whose reasoning-effort hint vibe-codr actually FORWARDS on the wire:
+ * `buildModelTuning` emits a `providerOptions` block the AI SDK translates into
+ * the provider's native reasoning control (Anthropic thinking budget, OpenAI
+ * `reasoningEffort`). Only these can honestly confirm `/reasoning <tier>` took.
  */
-export const REASONING_PROVIDERS = new Set([
-  "anthropic",
-  "openai",
-  "codex",
-  "xai",
-  "openrouter",
-  "deepseek",
-]);
+const REASONING_FORWARDED = new Set(["anthropic", "openai"]);
+
+/**
+ * Providers whose models reason NATIVELY but whose transport carries no forwarded
+ * effort hint — either a built-in reasoner (codex, deepseek-reasoner) or a model
+ * routed through `@ai-sdk/openai-compatible` (xai, openrouter), which doesn't
+ * accept the native reasoning options. `/reasoning` changes nothing on the wire
+ * for these; the model reasons at its own default, so we must caveat rather than
+ * confirm.
+ */
+const REASONING_NATIVE = new Set(["codex", "deepseek", "xai", "openrouter"]);
+
+/** How a model's provider treats a reasoning-effort hint. */
+export type ReasoningSupport = "forwarded" | "native" | "none";
+
+/**
+ * Which reasoning category a model's provider falls in: `"forwarded"` (the effort
+ * hint is sent and honored), `"native"` (the model reasons on its own but the
+ * hint is dropped by its transport), or `"none"` (no reasoning at all — local
+ * Ollama / LM Studio and other non-reasoning models). `/reasoning` uses this to
+ * tell the truth: confirm only for `"forwarded"`, caveat for `"native"`, warn for
+ * `"none"`.
+ */
+export function reasoningCategory(modelString: string): ReasoningSupport {
+  const provider = providerOf(modelString);
+  if (REASONING_FORWARDED.has(provider)) return "forwarded";
+  if (REASONING_NATIVE.has(provider)) return "native";
+  return "none";
+}
 
 /** Map an effort tier to an Anthropic thinking budget (tokens). */
 const EFFORT_BUDGET: Record<"low" | "medium" | "high", number> = {
@@ -55,12 +76,13 @@ const EFFORT_BUDGET: Record<"low" | "medium" | "high", number> = {
 };
 
 /**
- * Whether setting reasoning effort has any effect for this model's provider.
- * Used to warn the user when `/reasoning` is set on a model that ignores it
- * (e.g. local Ollama / LM Studio models).
+ * Whether the model's provider reasons at all (forwarded OR native). Used to warn
+ * only when `/reasoning` is set on a model that ignores it entirely (e.g. local
+ * Ollama / LM Studio). It does NOT distinguish "hint forwarded" from "reasons
+ * natively but the hint is dropped" — {@link reasoningCategory} makes that call.
  */
 export function reasoningSupported(modelString: string): boolean {
-  return REASONING_PROVIDERS.has(providerOf(modelString));
+  return reasoningCategory(modelString) !== "none";
 }
 
 /**

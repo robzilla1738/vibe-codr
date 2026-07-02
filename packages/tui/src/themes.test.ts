@@ -5,8 +5,35 @@ import {
   accentNameOf,
   getTheme,
   isKnownTheme,
+  THEMES,
   THEME_NAMES,
 } from "./themes.ts";
+// The engine consumes the SAME registry across the core/TUI boundary. Importing
+// it from @vibe/shared here (not re-exported by themes.ts) proves the two paths
+// resolve one object, and lets the parity test below assert the palettes cover it.
+import {
+  ACCENT_PRESETS as SHARED_ACCENT_PRESETS,
+  THEME_NAMES as SHARED_THEME_NAMES,
+} from "@vibe/shared";
+
+test("themes.ts re-exports the SHARED registry — one source, no hand-synced copy", () => {
+  // themes.ts's THEME_NAMES / ACCENT_PRESETS are the shared module's exports, so
+  // the engine (which imports from @vibe/shared) and the TUI can never diverge.
+  expect(THEME_NAMES).toBe(SHARED_THEME_NAMES);
+  expect(ACCENT_PRESETS).toBe(SHARED_ACCENT_PRESETS);
+});
+
+test("every palette in THEMES covers EXACTLY the shared THEME_NAMES (drift fails CI)", () => {
+  // This is the sync-enforcing test: a theme registered in @vibe/shared with no
+  // palette here — or a palette added here without the shared name — fails. The
+  // engine validates `/theme` against THEME_NAMES; the TUI must render each one.
+  expect(new Set(Object.keys(THEMES))).toEqual(new Set(THEME_NAMES));
+  for (const name of THEME_NAMES) {
+    expect(THEMES[name]).toBeDefined();
+    // isKnownTheme (core's KNOWN_THEMES analogue) agrees with the palette map.
+    expect(isKnownTheme(name)).toBe(true);
+  }
+});
 
 test("getTheme returns a distinct palette per known name", () => {
   expect(getTheme("light")).not.toBe(getTheme("default"));

@@ -151,6 +151,34 @@ export const McpServerSchema = z.union([
   }),
 ]);
 
+/** Per-language language-server override. All fields optional: an empty entry
+ * keeps the built-in candidate list; `command` swaps the executable, `args`
+ * replaces the candidate's default args, `enabled:false` turns LSP off for just
+ * this language. */
+export const LspServerSchema = z.object({
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  enabled: z.boolean().optional(),
+});
+
+/** Multi-language LSP diagnostics-in-the-loop config (generalizes the in-process
+ * TS fast path to any language with a language server on PATH). */
+export const LspConfigSchema = z.object({
+  /** Master switch. On by default; when off the engine keeps the TS-only path,
+   * so the default-safe behavior is unchanged. */
+  enabled: z.boolean().default(true),
+  /** Per-diagnose deadline (ms): a slow server never blocks an edit past this —
+   * a timeout degrades to no diagnostics (advisory), never a false "clean". */
+  timeoutMs: z.number().int().min(0).default(2000),
+  /** Idle server shutdown (ms): a language server unused for this long is killed
+   * and re-spawned lazily on the next edit of that filetype. */
+  idleShutdownMs: z.number().int().min(0).default(300_000),
+  /** Languages to never start a server for (by key: `py`, `go`, `rust`, …). */
+  disabledLanguages: z.array(z.string()).default([]),
+  /** Per-language server overrides keyed by language (`py`, `go`, `rust`, …). */
+  servers: z.record(z.string(), LspServerSchema).default({}),
+});
+
 export const ConfigSchema = z.object({
   /** Default model string, e.g. "anthropic/claude-opus-4-8" or "lmstudio/<id>". */
   model: z.string().default("anthropic/claude-opus-4-8"),
@@ -167,6 +195,26 @@ export const ConfigSchema = z.object({
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
   /** Tool permission rules. Among matching rules: deny > ask > allow. */
   permissions: z.array(PermissionRuleSchema).default([]),
+  /**
+   * OS-level sandbox — defense-in-depth UNDER the permission engine (the policy
+   * brain); this is the kernel backstop (Seatbelt on macOS, bubblewrap on Linux).
+   *
+   * `mode` defaults to "off" this release: it's opt-in because a default-on
+   * `workspace-write` can break commands that legitimately write outside cwd
+   * (npm→~/.npm, git→~/.gitconfig). Turn it on with `workspace-write` (writes
+   * confined to cwd/tmp/state dirs + `writablePaths`) or `read-only` (no writes;
+   * the engine's own build/verify still write via an internal upgrade). A
+   * blocked command surfaces an actionable line telling you how to unblock it.
+   * `network:"off"` cuts egress. `VIBE_SANDBOX` env overrides `mode`.
+   */
+  sandbox: z
+    .object({
+      mode: z.enum(["off", "read-only", "workspace-write"]).default("off"),
+      network: z.enum(["on", "off"]).default("on"),
+      /** Extra absolute paths kept writable under `workspace-write`. */
+      writablePaths: z.array(z.string()).default([]),
+    })
+    .default({ mode: "off", network: "on", writablePaths: [] }),
   /**
    * Default handling for side-effecting tools with no matching rule:
    * `ask` prompts interactively (auto-allowed when non-interactive),
@@ -204,6 +252,18 @@ export const ConfigSchema = z.object({
       /** Max attempts for a verify→retry task (orchestrator `verify` flag): the
        * subagent re-runs with review feedback up to this many times. */
       verifyMaxAttempts: z.number().int().min(1).max(5).default(2),
+      /** How many completed shared-tree `spawn_subagent` children to retain for
+       * `continue_subagent` (the live Session IS the retained context; eviction
+       * just drops the reference). Bounded LRU. 0 disables continuation. */
+      retainCompleted: z.number().int().min(0).default(16),
+      /** Max attempts to coerce a subagent's final message into a schema-valid
+       * JSON object when `outputSchema` is set (validate → re-run with the
+       * errors as feedback). Mirrors verifyMaxAttempts' retry shape. */
+      structuredMaxAttempts: z.number().int().min(1).default(2),
+      /** Max concurrent DETACHED (background) subagents. A `detach:true` spawn
+       * past this ceiling (or in a headless run) is coerced to synchronous.
+       * Defaults to maxParallel's default. */
+      maxDetached: z.number().int().min(0).default(8),
       /** Default model for subagents. Falls back to the main model when unset. */
       model: z.string().optional(),
     })
@@ -214,6 +274,9 @@ export const ConfigSchema = z.object({
       providerConcurrency: 16,
       timeoutMs: 300_000,
       verifyMaxAttempts: 2,
+      retainCompleted: 16,
+      structuredMaxAttempts: 2,
+      maxDetached: 8,
     }),
   /** Deterministic task-DAG orchestration (the `spawn_tasks` tool). ON by
    * default — the model can submit a whole dependency-ordered plan the engine
@@ -298,6 +361,21 @@ export const ConfigSchema = z.object({
       ensemble: { n: 0 },
       models: {},
     }),
+  /**
+   * Multi-language LSP diagnostics-in-the-loop. Generalizes the in-process TS
+   * fast path: after an edit/write, real language-server errors for py/go/rust/
+   * c/cpp/java/ruby/… are appended to the tool result, same as TS today. A server
+   * is spawned lazily per language (only if its binary is on PATH — never
+   * installed) and every failure path (slow/crashed/missing) degrades to no
+   * diagnostics, never a false "clean". Off keeps the TS-only path unchanged.
+   */
+  lsp: LspConfigSchema.default({
+    enabled: true,
+    timeoutMs: 2000,
+    idleShutdownMs: 300_000,
+    disabledLanguages: [],
+    servers: {},
+  }),
   compaction: z
     .object({
       /** Fraction of context window at which to auto-compact (LLM summary). */
@@ -427,6 +505,13 @@ export const ConfigSchema = z.object({
       baseDelayMs: z.number().int().min(0).max(60_000).default(500),
     })
     .default({ maxAttempts: 2, baseDelayMs: 500 }),
+  /**
+   * Startup update check. When `check` is true (default), the interactive CLI
+   * does a cached (24h TTL) lookup of the latest GitHub release and prints a
+   * quiet one-line hint when a newer version exists. The request carries no user
+   * data; `$VIBE_NO_UPDATE_CHECK` also disables it. Headless (`-p`) never checks.
+   */
+  update: z.object({ check: z.boolean().default(true) }).default({ check: true }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -438,4 +523,6 @@ export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
 export type HookConfig = z.infer<typeof HookSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type McpServer = z.infer<typeof McpServerSchema>;
+export type LspConfig = z.infer<typeof LspConfigSchema>;
+export type LspServer = z.infer<typeof LspServerSchema>;
 export type McpOAuth = z.infer<typeof McpOAuthSchema>;

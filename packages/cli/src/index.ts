@@ -7,11 +7,16 @@ import {
   SessionStore,
   type PersistedSession,
 } from "@vibe/core";
+import { checkForUpdate, isNewer, readUpdateCache } from "@vibe/core";
 import { ProviderRegistry } from "@vibe/providers";
 import { runOneShot, startTui } from "@vibe/tui";
 import { needsOnboarding, runOnboarding } from "./onboarding.ts";
+import { upgradeInstructions } from "./upgrade.ts";
+import { VERSION } from "./version.ts";
 
-export const VERSION = "0.0.0";
+// Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
+// literal now lives in ./version.ts (stamped at release by set-version.ts).
+export { VERSION };
 
 const HELP = `vibecodr ${VERSION} — a model-agnostic coding agent for the terminal
 
@@ -21,6 +26,7 @@ USAGE
   vibecodr models [options]          list available models for configured providers
   vibecodr sessions                  list saved sessions (resume with --resume <id>)
   vibecodr setup                     run the guided provider/model setup (alias: login)
+  vibecodr upgrade                   print how to update to the latest version
 
 OPTIONS
   -p, --prompt <text>   run a single prompt (headless / pipeable); use - for stdin
@@ -83,6 +89,14 @@ export async function run(argv: string[]): Promise<number> {
   // `vibecodr sessions` — list saved sessions and exit (no engine needed).
   if (positionals[0] === "sessions") {
     process.stdout.write(await formatSessions(cwd));
+    return 0;
+  }
+
+  // `vibecodr upgrade` — print channel-appropriate update instructions and exit.
+  // It PRINTS (never self-mutates) — honest and simple: the channel is detected
+  // from how this process was launched (compiled binary vs a bun runtime).
+  if (positionals[0] === "upgrade") {
+    process.stdout.write(`${upgradeInstructions({ execPath: process.execPath, version: VERSION })}\n`);
     return 0;
   }
 
@@ -182,9 +196,35 @@ export async function run(argv: string[]): Promise<number> {
     return ok ? 0 : 1;
   }
 
+  // Quiet, non-blocking update hint — interactive TUI path only. We only READ the
+  // 24h cache here (instant, no network) so startup never blocks, then kick off a
+  // silent background refresh that seeds the cache for the next launch. Gated by
+  // config `update.check` + `$VIBE_NO_UPDATE_CHECK` inside the core helpers.
+  await maybePrintUpdateHint(config);
+
   await startTui(engine);
   await engine.finalize();
   return 0;
+}
+
+/** Print a one-line "update available" hint from the cached check, then refresh
+ * the cache in the background for next time. Never throws, never blocks on IO. */
+async function maybePrintUpdateHint(config: Config): Promise<void> {
+  // Honor the opt-out exactly as the core check does — the hint is the check's
+  // user-visible surface, so it must not print when checking is disabled.
+  if (!config.update.check || process.env.VIBE_NO_UPDATE_CHECK) return;
+  try {
+    const cached = await readUpdateCache();
+    if (cached && isNewer(VERSION, cached.latest)) {
+      process.stderr.write(
+        `\x1b[2mUpdate available: ${VERSION} → ${cached.latest}. Run \`vibe upgrade\` for instructions.\x1b[0m\n`,
+      );
+    }
+  } catch {
+    // A missing/corrupt cache is not an error — silently skip the hint.
+  }
+  // Fire-and-forget: refresh the cache (respects gating + TTL + 3s timeout).
+  void checkForUpdate({ current: VERSION, enabled: config.update.check }).catch(() => {});
 }
 
 /** Render the saved-session list for `vibecodr sessions`. */

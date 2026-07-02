@@ -66,6 +66,9 @@ export {
   readCappedBytes,
 } from "./stream.ts";
 
+// Theme + accent registry (shared across the core/TUI boundary — data only)
+export { THEME_NAMES, ACCENT_PRESETS, ACCENT_NAMES } from "./theme-registry.ts";
+
 // Build intelligence (deterministic recon / checks / gate / handoffs)
 export type {
   CodeCommands,

@@ -144,3 +144,43 @@ test("caps an oversized memory file with a truncation marker", async () => {
   expect(sources[0]!.text).toContain("[memory truncated");
   expect(Buffer.byteLength(sources[0]!.text, "utf8")).toBeLessThan(MAX_MEMORY_BYTES + 200);
 });
+
+test("an over-budget USER.md keeps the NEWEST bullets + header, trims the oldest, marks the trim", async () => {
+  // USER.md is appended NEWEST-last by save_memory, so a plain head-keep cap would
+  // silently drop every freshly-learned preference. Isolate the global dir per-test.
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = await freshDir();
+  try {
+    const memDir = join(process.env.XDG_CONFIG_HOME!, "vibe-codr", "memory");
+    await mkdir(memDir, { recursive: true });
+    // Header, an OLDEST bullet, enough filler to blow the cap, then a NEWEST bullet
+    // at the tail (where save_memory appends).
+    const header = "# User memory\n\nStable preferences, one bullet each.";
+    const oldest = "- OLDEST-FACT prefers tabs over spaces";
+    const filler = Array.from(
+      { length: 4000 },
+      (_, i) => `- filler preference number ${i} kept as byte padding`,
+    ).join("\n");
+    const newest = "- NEWEST-FACT deploys on Fridays only";
+    const body = `${header}\n${oldest}\n${filler}\n${newest}\n`;
+    await writeFile(join(memDir, "USER.md"), body);
+    expect(Buffer.byteLength(body, "utf8")).toBeGreaterThan(MAX_MEMORY_BYTES);
+
+    // cwd is a fresh, git-less dir so ONLY the global USER.md source is returned.
+    const cwd = await freshDir();
+    const sources = await loadMemorySources(cwd);
+    const user = sources.find((s) => s.path.endsWith("USER.md"));
+    expect(user).toBeDefined();
+    const text = user!.text;
+    // The header and the NEWEST bullet survive; the OLDEST is trimmed out.
+    expect(text).toContain("# User memory");
+    expect(text).toContain("NEWEST-FACT deploys on Fridays only");
+    expect(text).not.toContain("OLDEST-FACT prefers tabs over spaces");
+    // A marker records the drop, and the whole injected block stays within budget.
+    expect(text).toMatch(/older USER\.md bullet/i);
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThan(MAX_MEMORY_BYTES + 300);
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prev;
+  }
+});

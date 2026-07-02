@@ -55,7 +55,10 @@ const DELEGATION = `DELEGATING TO SUBAGENTS. You can spawn subagents with \`spaw
 - WRITE SELF-CONTAINED PROMPTS: a subagent knows nothing you don't tell it. Inline the objective, the exact files/paths, the relevant facts, and explicit success criteria ("Done when …").
 - DISJOINT FILE OWNERSHIP: never run two subagents that edit the SAME file at once — give each a disjoint set of files. The engine now HARD-REJECTS a second subagent's concurrent write to a file another already owns (it errors instead of silently clobbering), so plan disjoint file sets up front; if a child reports a file-ownership error, it overlapped a sibling — split the work differently.
 - COORDINATE: when several agents work in parallel, use \`post_note\` to share a decision, a claimed file, or a conflict, and \`read_notes\` to see what siblings posted — so they don't duplicate work or contradict each other.
-- CONSOLIDATE AND VERIFY: after subagents return, reconcile their results yourself and run the project's checks before declaring done. If one fails, diagnose from its result and spawn a corrected approach — never re-run the same thing verbatim.`;
+- CONSOLIDATE AND VERIFY: after subagents return, reconcile their results yourself and run the project's checks before declaring done. If one fails, diagnose from its result and spawn a corrected approach — never re-run the same thing verbatim.
+- CONTINUE, DON'T RE-SPAWN: to follow up with a subagent that already investigated an area, call \`continue_subagent\` with its id (from the spawn result) — it keeps its full prior context, cheaper and better-informed than a fresh child re-deriving everything.
+- STRUCTURED RESULTS: when you need a subagent's answer as machine-consumable data, pass \`outputSchema\` (a JSON Schema) — its final message will be exactly that JSON, validated.
+- BACKGROUND WORK: for long, independent work you don't need to block on, spawn with \`detach: true\` and keep going; collect the result later with \`check_task\` (they're also summarized to you when they finish).`;
 
 const PLAN_DELEGATION = `DELEGATING TO SUBAGENTS (read-only). While planning you can fan out read-only subagents with \`spawn_subagent\` to investigate the codebase in parallel before you converge on a plan — each inherits plan mode (investigation only, no edits) and returns its findings.
 
@@ -190,6 +193,9 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
 export function formatWorkspaceState(inputs: {
   tasks?: { title: string; status: TaskStatus }[];
   sources?: string;
+  /** One line per detached (background) subagent that finished since the last
+   * turn — surfaced once, then cleared by the caller. */
+  backgroundFinished?: string[];
 }): string | undefined {
   const blocks: string[] = [];
   if (inputs.tasks?.length) {
@@ -197,6 +203,13 @@ export function formatWorkspaceState(inputs: {
     blocks.push(
       `CURRENT TASKS (your live task list — keep exactly one in_progress; update with \`update_tasks\`):\n${inputs.tasks
         .map((t) => `${mark(t.status)} ${t.title}`)
+        .join("\n")}`,
+    );
+  }
+  if (inputs.backgroundFinished?.length) {
+    blocks.push(
+      `BACKGROUND SUBAGENTS FINISHED (detached spawns that completed since your last turn — collect any result you still need with \`check_task\`, or \`read_report\` for a task batch; this list is shown once):\n${inputs.backgroundFinished
+        .map((l) => `- ${l}`)
         .join("\n")}`,
     );
   }

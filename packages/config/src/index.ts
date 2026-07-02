@@ -6,6 +6,8 @@ export {
   ModelPriceSchema,
   McpServerSchema,
   McpOAuthSchema,
+  LspConfigSchema,
+  LspServerSchema,
 } from "./schema.ts";
 export type {
   Config,
@@ -18,6 +20,8 @@ export type {
   ModelPrice,
   McpServer,
   McpOAuth,
+  LspConfig,
+  LspServer,
 } from "./schema.ts";
 export {
   loadConfig,

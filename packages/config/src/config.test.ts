@@ -14,9 +14,38 @@ test("defaultConfig is valid and carries the documented defaults", () => {
   expect(c.theme).toBe("default");
   // Nested defaults fill in too.
   expect(c.subagent.maxDepth).toBe(3);
+  expect(c.subagent.retainCompleted).toBe(16);
+  expect(c.subagent.structuredMaxAttempts).toBe(2);
+  expect(c.subagent.maxDetached).toBe(8); // == maxParallel's default
   expect(c.verify.auto).toBe(false);
   expect(c.compaction.threshold).toBe(0.75);
   expect(c.retry.maxAttempts).toBe(2);
+  expect(c.update.check).toBe(true);
+  // Sandbox ships OFF (opt-in) this release; network on, no extra writable paths.
+  expect(c.sandbox.mode).toBe("off");
+  expect(c.sandbox.network).toBe("on");
+  expect(c.sandbox.writablePaths).toEqual([]);
+  // Multi-language LSP diagnostics: on by default with the documented deadlines.
+  expect(c.lsp.enabled).toBe(true);
+  expect(c.lsp.timeoutMs).toBe(2000);
+  expect(c.lsp.idleShutdownMs).toBe(300_000);
+  expect(c.lsp.disabledLanguages).toEqual([]);
+  expect(c.lsp.servers).toEqual({});
+});
+
+test("lsp accepts per-language overrides and a partial block fills defaults", () => {
+  const r = ConfigSchema.safeParse({
+    lsp: { timeoutMs: 500, disabledLanguages: ["go"], servers: { py: { command: "pyright-langserver", args: ["--stdio"] } } },
+  });
+  expect(r.success).toBe(true);
+  if (r.success) {
+    expect(r.data.lsp.enabled).toBe(true); // default preserved under a partial block
+    expect(r.data.lsp.timeoutMs).toBe(500);
+    expect(r.data.lsp.idleShutdownMs).toBe(300_000); // default preserved
+    expect(r.data.lsp.disabledLanguages).toEqual(["go"]);
+    expect(r.data.lsp.servers.py?.command).toBe("pyright-langserver");
+    expect(r.data.lsp.servers.py?.args).toEqual(["--stdio"]);
+  }
 });
 
 test("the schema fills nested defaults under a partial object", () => {

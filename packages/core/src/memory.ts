@@ -59,6 +59,61 @@ function capMemory(text: string): string {
   return `${kept}\n\n…[memory truncated to ${Math.floor(MAX_MEMORY_BYTES / 1024)} KB]`;
 }
 
+/**
+ * Cap USER.md structure-aware. The human-curated memory docs keep their important
+ * content at the HEAD (so `capMemory`'s head-keep is right for them), but
+ * `save_memory` scope "user" APPENDS each newly-learned preference to the TAIL —
+ * so a plain head-keep would silently drop every fresh fact once the file grows
+ * past the budget while `save_memory` still reports it as always-injected. Keep the
+ * header (the prose block before the first `- ` bullet) plus as many of the NEWEST
+ * bullets as fit, trimming the OLDEST first, and append a marker recording how many
+ * were dropped so the model knows the injected list is partial.
+ */
+function capUserMemory(text: string): string {
+  const encoder = new TextEncoder();
+  const bytes = (s: string) => encoder.encode(s).length;
+  if (bytes(text) <= MAX_MEMORY_BYTES) return text;
+
+  const lines = text.split("\n");
+  const firstBullet = lines.findIndex((l) => l.startsWith("- "));
+  // No bullet list to preserve (e.g. a hand-written prose USER.md) — nothing is
+  // newest-at-tail, so the ordinary head-keep cap is correct.
+  if (firstBullet === -1) return capMemory(text);
+
+  const header = lines.slice(0, firstBullet).join("\n").replace(/\n+$/, "");
+  // Group the bullet region into blocks: a bullet starts at a `- ` line and absorbs
+  // any following continuation lines (a hand-curated multi-line bullet) so trimming
+  // is by whole bullet, never mid-fact.
+  const bullets: string[] = [];
+  for (const line of lines.slice(firstBullet)) {
+    if (line.startsWith("- ") || bullets.length === 0) bullets.push(line);
+    else bullets[bullets.length - 1] += `\n${line}`;
+  }
+
+  // The marker text varies only by the dropped COUNT; reserve its longest possible
+  // form (every bullet dropped) as the marker budget so the greedy fit can't overflow.
+  const marker = (n: number) =>
+    `\n\n…[${n} older USER.md bullet${n === 1 ? "" : "s"} trimmed to fit the ${Math.floor(
+      MAX_MEMORY_BYTES / 1024,
+    )} KB memory budget — prune USER.md]`;
+  const budget = MAX_MEMORY_BYTES - bytes(header) - bytes(marker(bullets.length));
+
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const cost = bytes(`\n${bullets[i]!}`);
+    if (used + cost > budget && kept.length > 0) break;
+    used += cost;
+    kept.unshift(bullets[i]!);
+  }
+
+  const trimmed = bullets.length - kept.length;
+  // The header alone blew the budget (nothing was actually trimmable) — degrade to
+  // the head-keep cap rather than emit a misleading "0 trimmed" marker.
+  if (trimmed === 0) return capMemory(text);
+  return `${header}\n\n${kept.join("\n")}${marker(trimmed)}`;
+}
+
 /** The user-global vibe-codr config dir, honoring `XDG_CONFIG_HOME` (consistent
  * with `@vibe/config`'s global config path), falling back to `~/.config`. */
 export function vibeConfigDir(): string {
@@ -113,7 +168,7 @@ export async function loadMemorySources(cwd: string): Promise<MemorySource[]> {
     sources.push({
       scope: "global",
       path: "~/.config/vibe-codr/memory/USER.md",
-      text: capMemory(userGlobal),
+      text: capUserMemory(userGlobal),
     });
   }
 

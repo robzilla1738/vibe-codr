@@ -3,6 +3,7 @@ import { defaultConfig } from "@vibe/config";
 import {
   buildModelTuning,
   reasoningSupported,
+  reasoningCategory,
   cacheTokensDisjointFromInput,
 } from "./model-tuning.ts";
 
@@ -80,6 +81,31 @@ test("reasoningSupported is true for reasoning providers, false for local models
   expect(reasoningSupported("xai/grok-4")).toBe(true);
   expect(reasoningSupported("ollama/llama3.1")).toBe(false);
   expect(reasoningSupported("lmstudio/qwen")).toBe(false);
+});
+
+test("reasoningCategory splits forwarded, native, and none per provider", () => {
+  // Forwarded: the effort hint is actually sent (buildModelTuning emits options).
+  expect(reasoningCategory("anthropic/claude-opus-4-8")).toBe("forwarded");
+  expect(reasoningCategory("openai/gpt-5.5")).toBe("forwarded");
+  // Native: reasons on its own, but the transport drops the hint — no affirmation.
+  expect(reasoningCategory("xai/grok-4")).toBe("native");
+  expect(reasoningCategory("openrouter/anthropic/claude")).toBe("native");
+  expect(reasoningCategory("codex/gpt-5.2-codex")).toBe("native");
+  expect(reasoningCategory("deepseek/deepseek-reasoner")).toBe("native");
+  // None: local / non-reasoning models ignore it outright.
+  expect(reasoningCategory("ollama/llama3.1")).toBe("none");
+  expect(reasoningCategory("lmstudio/qwen")).toBe("none");
+  expect(reasoningCategory("garbage")).toBe("none");
+});
+
+test("only forwarded providers emit reasoning providerOptions (native ones stay bare)", () => {
+  // The category split must line up with what buildModelTuning actually forwards:
+  // native providers reason but get no options block, so /reasoning can't claim it.
+  const c = cfg({ reasoning: { effort: "high" } });
+  expect(reasoningCategory("xai/grok-4")).toBe("native");
+  expect(buildModelTuning("xai/grok-4", c).providerOptions).toBeUndefined();
+  expect(reasoningCategory("openrouter/x")).toBe("native");
+  expect(buildModelTuning("openrouter/x", c).providerOptions).toBeUndefined();
 });
 
 test("cache breakpoints: tools + conversation markers are Anthropic-only and config-gated", () => {

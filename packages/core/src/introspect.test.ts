@@ -1,7 +1,8 @@
 import { test, expect } from "bun:test";
 import type { Message, ToolDefinition } from "@vibe/shared";
 import { ConfigSchema } from "@vibe/config";
-import { searchDoctorCheck } from "./engine-commands.ts";
+import { searchDoctorCheck, sandboxDoctorCheck, lspDoctorCheck } from "./engine-commands.ts";
+import type { SandboxPolicy } from "@vibe/tools";
 import {
   formatStatus,
   formatCost,
@@ -200,4 +201,58 @@ test("/doctor treats keyless web search as healthy (never 'searches will fail')"
   expect(searchDoctorCheck(true, "tf_key").ok).toBe(true);
   // Disabled is the only non-healthy state (neutral, not a failure).
   expect(searchDoctorCheck(false, undefined).ok).toBeNull();
+});
+
+test("/doctor sandbox line is honest: ok:null when off/unavailable, ok:true when active", () => {
+  const base: SandboxPolicy = {
+    mode: "off",
+    network: "on",
+    writablePaths: [],
+    backend: "none",
+    available: true,
+  };
+  // Off (the shipped default) is neutral, not a failure.
+  expect(sandboxDoctorCheck(base).ok).toBeNull();
+  // Requested but unenforceable → neutral + carries the reason.
+  const unavailable = sandboxDoctorCheck({
+    ...base,
+    mode: "workspace-write",
+    available: false,
+    warning: "unsupported on win32",
+  });
+  expect(unavailable.ok).toBeNull();
+  expect(unavailable.detail).toContain("win32");
+  // Active backstop → healthy, names the backend + mode.
+  const active = sandboxDoctorCheck({
+    ...base,
+    mode: "workspace-write",
+    backend: "seatbelt",
+    available: true,
+  });
+  expect(active.ok).toBe(true);
+  expect(active.detail).toContain("seatbelt");
+  expect(active.detail).toContain("workspace-write");
+});
+
+test("/doctor lsp line is honest: null when off/idle, ✓ running, ✗ crashed/missing", () => {
+  // Off → neutral, not a failure (matches the LSP-is-advisory doctrine).
+  expect(lspDoctorCheck(false, []).ok).toBeNull();
+  // Enabled but nothing active yet → neutral (no non-TS file diagnosed).
+  expect(lspDoctorCheck(true, []).ok).toBeNull();
+  // A running server → healthy, names the language→command mapping.
+  const running = lspDoctorCheck(true, [{ language: "py", command: "basedpyright-langserver", state: "running" }]);
+  expect(running.ok).toBe(true);
+  expect(running.detail).toContain("py→basedpyright-langserver");
+  // A missing server for an edited/configured language → a real gap (✗).
+  const missing = lspDoctorCheck(true, [{ language: "go", state: "missing" }]);
+  expect(missing.ok).toBe(false);
+  expect(missing.detail).toContain("no server for: go");
+  // A crashed (restart-gave-up) server → ✗.
+  const crashed = lspDoctorCheck(true, [
+    { language: "rust", command: "rust-analyzer", state: "running" },
+    { language: "py", command: "pyright-langserver", state: "crashed" },
+  ]);
+  expect(crashed.ok).toBe(false);
+  expect(crashed.detail).toContain("crashed: py");
+  expect(crashed.detail).toContain("rust→rust-analyzer");
 });

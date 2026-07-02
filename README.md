@@ -33,14 +33,22 @@ latest) — never hardcoded.
 >   **green checkpoints** (commit-on-green that never touches your branch),
 >   an **adversarial diff review** + deterministic **stub scan**, optional
 >   **browser verification** (screenshot + click every control, flag dead
->   ones), and **TypeScript diagnostics in the loop** on every edit.
+>   ones), and **multi-language diagnostics in the loop** on every edit —
+>   in-process TypeScript plus an **LSP client** that lazy-spawns whatever server
+>   is on your `PATH` (pyright, gopls, rust-analyzer, clangd, jdtls, ruby-lsp, …),
+>   deadline-bounded so a slow server never wedges an edit and advisory-only so a
+>   crash degrades to nothing, never a false "clean".
 > - **Multi-agent orchestration** — parallel subagents with **exclusive per-file
 >   write ownership**, a typed coordination **blackboard**, a tree-global
 >   **adaptive concurrency limiter**, and a default-ON deterministic **task-DAG
 >   scheduler** (`spawn_tasks`) with **structured handoffs**, a `read_report`
 >   tool, **model tiers** (cheap/strong), executable verify→retry against the
 >   real checks, **git-worktree isolation** for parallel writers (opt-in
->   best-of-N ensembles), a journaled **resume**, and live per-child activity.
+>   best-of-N ensembles), a journaled **resume**, and live per-child activity —
+>   plus **subagent continuation** (`continue_subagent` resumes a finished child's
+>   full context), **schema-validated structured output** (an `outputSchema` the
+>   child's answer must satisfy, or it returns the errors — never a fabricated
+>   object), and **detached background spawns** (`detach:true` + `check_task`).
 > - **Research** — **keyless web search** that fans out across DuckDuckGo + Bing
 >   and quality-ranks the deduped merge (TinyFish optional), with **deep-mode
 >   passage enrichment** (fetches the top pages and quotes dated passages),
@@ -51,16 +59,25 @@ latest) — never hardcoded.
 >   charset-aware markdown extraction, paywall-shell detection, **Wayback
 >   recovery**, **PDF** extraction with a deflate-bomb guard, cache-through
 >   with request coalescing).
+> - **Safety** — a glob-based allow/deny/ask **permission layer** (deny is an
+>   absolute kill-switch; rules match every equivalent path spelling) with,
+>   underneath it, **opt-in OS sandboxing** — a macOS **Seatbelt** / Linux
+>   **bubblewrap** backstop that confines writes to your workspace and can cut
+>   network, with a fail-closed `dangerouslyUnsandboxed` escape hatch.
 > - **MCP** — stdio + Streamable-HTTP/SSE transports, tools, **resources**,
 >   **prompts**, **OAuth 2.1**, and auto-reconnect + `tools/list_changed`.
 > - **Planning** — an interactive **plan-approval modal** (accept & execute,
 >   revise, or keep planning) that seeds the task list from the plan.
 > - **Extensibility** — declarative shell/HTTP **hooks**, project + global
 >   skills/commands, and per-agent tool allowlists.
+> - **Ships as a product** — prebuilt **standalone binaries** (darwin/linux ×
+>   arm64/x64, checksummed) and an **npm/bun package**, a tag-driven release
+>   pipeline, `vibe upgrade` + a quiet opt-out update check, and **crash
+>   visibility** (redacted crash log + terminal restore, no telemetry).
 >
 > A full slash-command surface (`/status` `/cost` `/config` `/diff` `/recall`
 > `/mcp` `/review` `/doctor` `/export` …) makes every setting and bit of session
-> state reachable. All covered by **860+ tests** (including mock-model integration
+> state reachable. All covered by **900+ tests** (including mock-model integration
 > tests of the agent loop with zero network) plus a TUI render smoke test and a
 > compiled-binary check.
 >
@@ -152,6 +169,46 @@ the engine is fully testable headless.
 | `@vibe/plugins` | `HookBus`, `PluginApi`, slash-command + skill runtimes |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers |
 | `@vibe/cli` | `bin/vibe` entrypoint (argv, config, headless `-p` vs TUI) |
+
+## Install
+
+Two channels — pick one:
+
+**Standalone binary** (no runtime to install). Grab the build for your platform
+from the [latest release](https://github.com/robzilla1738/vibe-codr/releases/latest),
+verify it against `SHA256SUMS`, then drop it on your `PATH`:
+
+```bash
+# macOS arm64 shown; swap in darwin-x64 / linux-x64 / linux-arm64
+curl -sSL -o vibecodr https://github.com/robzilla1738/vibe-codr/releases/latest/download/vibecodr-darwin-arm64
+curl -sSL -o SHA256SUMS https://github.com/robzilla1738/vibe-codr/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing   # verify before trusting the binary
+chmod +x vibecodr && sudo mv vibecodr /usr/local/bin/
+```
+
+**npm / bun** (requires [Bun](https://bun.sh) ≥ 1.2 on your `PATH` — vibe-codr
+runs on the Bun runtime):
+
+```bash
+bun add -g vibe-codr        # or: npm install -g vibe-codr
+vibecodr                    # `vibe` is an alias
+```
+
+Provider SDKs, the rich TUI (OpenTUI), MCP, and on-device embeddings are declared
+as **optional dependencies**, so the install pulls what it can and the CLI
+degrades gracefully when one is missing.
+
+**Upgrade** — `vibe upgrade` prints the right steps for how you installed (a
+`bun add -g` line for the package channel, the Releases URL for the binary):
+
+```bash
+vibe upgrade
+```
+
+**Update check** — the interactive CLI does a quiet, cached (24h) check for a
+newer release at startup and prints a one-line hint when one exists. It sends no
+user data. Turn it off with `update.check: false` in config, or
+`VIBE_NO_UPDATE_CHECK=1`.
 
 ## Quick start
 

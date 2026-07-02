@@ -62,7 +62,14 @@ export function scopeString(toolName: string, input: unknown): string | undefine
   // just the `bash` builtin: an MCP shell/exec server (`mcp__shell__exec
   // {command:"git push …"}`) is always network-gated, so exposing its command
   // lets `match` rules actually govern it instead of being a silent no-op.
-  if (typeof o.command === "string") return o.command;
+  if (typeof o.command === "string") {
+    // A command that opts OUT of the OS sandbox (`dangerouslyUnsandboxed`) is a
+    // deliberate kernel-backstop bypass, so it gets a distinct "!unsandboxed "
+    // scope prefix: a rule can pre-authorize the unsafe variant on purpose
+    // (`{match:"!unsandboxed *"}`) without a normal command allow silently
+    // covering it (a strict allow like `git *` won't match the prefixed scope).
+    return o.dangerouslyUnsandboxed === true ? `!unsandboxed ${o.command}` : o.command;
+  }
   // The dedicated git_push/git_commit tools run a real git command with no
   // command/path/url field, so they'd otherwise have NO scope and slip past every
   // `match` rule (incl. the documented `git push*` egress deny). Expose the
@@ -254,9 +261,37 @@ export class PermissionChecker {
     // Whether the ask came from an EXPLICIT rule (a human-authored gate) vs the
     // default/fallback — the resolver treats the two differently when no human is
     // present (an explicit gate fails closed; a frictionless default auto-allows).
-    const explicitAsk = action === "ask" && applicable.some((r) => r.action === "ask");
-    if (action === "allow") return { allowed: true };
-    if (action === "deny") return { allowed: false, reason: "denied by policy" };
+    let finalAction = action;
+    let explicitAsk = action === "ask" && applicable.some((r) => r.action === "ask");
+    // OS-sandbox escape hatch (dangerouslyUnsandboxed): a deliberate kernel
+    // backstop bypass must never be silently green-lit. Unless a matching DENY
+    // wins (absolute) or an applicable ALLOW rule SPECIFICALLY pre-authorizes the
+    // "!unsandboxed " sentinel scope (`{match:"!unsandboxed *"}`), force an
+    // EXPLICIT ask. "Specifically" is load-bearing: a sentinel-targeting allow
+    // matches the `!unsandboxed <cmd>` form but NOT the bare command, whereas a
+    // BLANKET allow (`match:"*"`, `match:"*npm*"`) matches both — the sentinel
+    // scope IS applicable to it, but the user never wrote it to authorize the
+    // UNSAFE variant, so it must NOT bypass the gate. Otherwise the call FAILS
+    // CLOSED under auto/yolo and headless (the resolver denies an explicit gate
+    // with no human). Reuses the existing explicit-ask path.
+    const flagged =
+      !!input &&
+      typeof input === "object" &&
+      (input as Record<string, unknown>).dangerouslyUnsandboxed === true;
+    const bareCommand = flagged ? (input as Record<string, unknown>).command : undefined;
+    // An applicable allow rule already matches the "!unsandboxed <cmd>" scope; it
+    // deliberately pre-authorizes the unsafe variant only when it does NOT also
+    // match the bare command — that gap is what separates a sentinel-targeting
+    // rule from a blanket allow that merely happens to span the prefixed scope.
+    const sentinelAuthorized =
+      typeof bareCommand === "string" &&
+      applicable.some((r) => r.action === "allow" && !!r.match && !r.match.test(bareCommand));
+    if (flagged && finalAction !== "deny" && !sentinelAuthorized) {
+      finalAction = "ask";
+      explicitAsk = true;
+    }
+    if (finalAction === "allow") return { allowed: true };
+    if (finalAction === "deny") return { allowed: false, reason: "denied by policy" };
     const reply = await this.#resolve({ toolName, input, explicit: explicitAsk });
     if (reply === true) return { allowed: true };
     // A denial may carry the user's typed feedback; folding it into the reason

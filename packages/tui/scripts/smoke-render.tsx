@@ -472,7 +472,7 @@ push({
 } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
-check("permission request renders as a card", frame.includes("y yes once"));
+check("permission request renders as a card", frame.includes("y allow once"));
 check("permission card identifies the tool", frame.includes("bash"));
 await t.mockInput.typeText("y");
 await settle();

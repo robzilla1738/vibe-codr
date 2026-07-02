@@ -87,6 +87,17 @@ export interface PendingPerm {
   input: unknown;
 }
 
+/** Drop the permission cards the engine auto-settled (an abort or shutdown
+ * denied them with no user answer), matched by request id. An unknown id is a
+ * benign no-op — a card the UI already answered and removed — so a settle event
+ * that races the answer never throws or clears the wrong card. Pure so the
+ * perms-card lifecycle is unit-tested, not buried in app.tsx signals. */
+export function dropSettledPerms(perms: PendingPerm[], settledIds: readonly string[]): PendingPerm[] {
+  if (settledIds.length === 0) return perms;
+  const settled = new Set(settledIds);
+  return perms.filter((p) => !settled.has(p.id));
+}
+
 /**
  * The reducer's state. `blocks`/`changedFiles` are what app.tsx renders; the rest
  * are cursors kept so we can mutate the streaming reply and each tool call by
@@ -421,6 +432,25 @@ export function collapsedHint(t: Extract<Block, { kind: "tool" }>): string {
     if (results > 0) return `${results} result${results === 1 ? "" : "s"}`;
   }
   return `${t.output.length} line${t.output.length === 1 ? "" : "s"}`;
+}
+
+/**
+ * The tool row's right-aligned duration label. Two states, one column:
+ *  • FINISHED — the call's final wall-clock (`elapsedMs`), shown only when it was
+ *    slow (≥2s), a scannable "what cost time" marker down a run of steps;
+ *  • RUNNING — a LIVE ticking elapsed once the call has been going >2s, so a tool
+ *    with no streamed tail (crawl_docs, web_search, a long git op — only bash
+ *    streams a live tail) never sits on a bare spinner looking dead.
+ * Both gated at ≥2s so quick calls stay clean. `now` is injected (app.tsx feeds
+ * `Date.now()` on the tick) so the finished/running branches are unit-tested.
+ */
+export function toolDurationLabel(t: Extract<Block, { kind: "tool" }>, now: number): string {
+  if (t.elapsedMs !== undefined) return t.elapsedMs >= 2000 ? `${(t.elapsedMs / 1000).toFixed(1)}s` : "";
+  if (!t.done && t.startedAt !== undefined) {
+    const live = now - t.startedAt;
+    return live >= 2000 ? `${Math.round(live / 1000)}s` : "";
+  }
+  return "";
 }
 
 /** The first non-empty line of a (possibly multi-line) string, for one-line summaries. */

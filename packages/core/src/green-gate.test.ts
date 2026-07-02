@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
@@ -41,7 +41,7 @@ function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
  * Even doStream calls are the write step, odd calls the finishing text — so it
  * drives an arbitrary number of mutating turns (initial + fix turns). Captures
  * every prompt it receives and every review (doGenerate) call. */
-function mutatingModel(reviewVerdict: string) {
+function mutatingModel(reviewVerdict: string, opts: { reviewThrows?: boolean } = {}) {
   const prompts: string[] = [];
   let stream = 0;
   let reviewCalls = 0;
@@ -54,6 +54,10 @@ function mutatingModel(reviewVerdict: string) {
     // The adversarial diff review is a single-shot generateText → doGenerate.
     doGenerate: async () => {
       reviewCalls++;
+      // Simulate a hung/aborted or transient-error review provider call: the
+      // review is best-effort, so a rejection must degrade (notice + proceed),
+      // never kill the turn or enqueue a fix.
+      if (opts.reviewThrows) throw new Error("simulated review provider failure");
       return {
         content: [{ type: "text", text: reviewVerdict }],
         finishReason: "stop" as const,
@@ -208,6 +212,72 @@ test("dirty review: NOT REVIEW-CLEAN enqueues one fix; a 2nd review is bounded b
   expect(notices(events).some((n) => n.message.includes("Diff review flagged issues"))).toBe(true);
   // The review ran ONCE — the re-gated fix turn does not review again past maxRounds.
   expect(reviewCalls()).toBe(1);
+});
+
+test("aborted gate: an Esc mid-gate is a terminal non-verdict — no fix, no green checkpoint, quiet notice", async () => {
+  // The test command signals it has started (a marker file) then blocks until the
+  // test releases it, so we can deterministically Esc while the gate is mid-check.
+  // Releasing lets the (now-aborted) check exit cleanly so the reader never wedges.
+  const dir = initGitRepo({
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo started > gate-started; until [ -f release ]; do sleep 0.05; done; echo '3 pass'" },
+    }),
+    "bun.lock": "",
+    "src.ts": "export const x = 1;\n",
+  });
+  const { model, prompts, reviewCalls } = mutatingModel("REVIEW-CLEAN");
+  const config = defaultConfig();
+  config.model = "mock/test";
+  const engine = new Engine({ config, cwd: dir, registry: mockRegistry(model), interactive: false });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+  engine.send({ type: "submit-prompt", text: "do the work" });
+  // Wait until the gate's check subprocess has actually started, then Esc + let
+  // the aborted check exit cleanly.
+  const marker = join(dir, "gate-started");
+  const deadline = Date.now() + 15_000;
+  while (!existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  engine.send({ type: "abort" });
+  writeFileSync(join(dir, "release"), "");
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  // ABORTED is a non-verdict: an honest info notice, and NONE of the green path.
+  expect(notices(events).some((n) => n.level === "info" && n.message.includes("Gate: ABORTED"))).toBe(true);
+  // No gate-fix turn enqueued (no RED fix prompt) and no adversarial review ran.
+  expect(prompts.some((p) => p.includes("RED (fix round"))).toBe(false);
+  expect(reviewCalls()).toBe(0);
+  // No commit-on-green — an interrupt must never persist a green checkpoint.
+  expect((await new CheckpointManager(dir).list()).some((c) => c.green)).toBe(false);
+});
+
+test("review failure: a rejected diff-review call degrades — turn completes, no review-fix, notice", async () => {
+  // Green gate → the adversarial review runs, but the provider call rejects
+  // (simulating a hung/aborted or transient failure). It must skip with a calm
+  // notice and let the turn finish, never wedge `vibe -p` or enqueue a fix.
+  const dir = initGitRepo({
+    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "bun.lock": "",
+    "src.ts": "export const x = 1;\n",
+  });
+  const { model, prompts, reviewCalls } = mutatingModel("REVIEW-CLEAN", { reviewThrows: true });
+  const events = await runEngine(dir, model, () => {});
+
+  // The review was attempted once, then failed.
+  expect(reviewCalls()).toBe(1);
+  // It degraded to a calm notice instead of killing the turn or enqueuing a fix.
+  expect(notices(events).some((n) => n.message.includes("Diff review skipped"))).toBe(true);
+  // No review-fix turn: the whole run is just the initial turn's two doStream
+  // calls (write + finishing text); a fix turn would add two more.
+  expect(prompts.length).toBe(2);
+  // The green checkpoint was still committed — the review is downstream of it.
+  expect((await new CheckpointManager(dir).list()).some((c) => c.green)).toBe(true);
 });
 
 test("legacy fallback: build.enabled=false runs the old verify.auto loop (no gate)", async () => {

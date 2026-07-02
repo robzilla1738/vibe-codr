@@ -15,6 +15,7 @@ import { presentPlanTool } from "./present-plan.ts";
 import { gitTools } from "./git.ts";
 import { BackgroundJobs, backgroundJobTools } from "./jobs.ts";
 import { createFetchCache } from "./fetch-cache.ts";
+import type { SandboxPolicy } from "../sandbox.ts";
 
 /** How long a fetched page stays cache-fresh (docs/changelogs get re-read a lot). */
 const WEBFETCH_CACHE_TTL_MS = 5 * 60_000;
@@ -26,11 +27,15 @@ export interface BuiltinToolOptions {
   webfetch?: WebfetchOptions;
   /** Shared background-job registry; enables `bash background:true` + job tools. */
   jobs?: BackgroundJobs;
+  /** OS sandbox policy (defense-in-depth under the permission engine): wraps every
+   * `bash` + background-job spawn. Off/unavailable → base argv (no behavior change). */
+  sandbox?: SandboxPolicy;
 }
 
 /** All file/shell/web/plan/git built-in tools (subagent tools are added by core). */
 export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
-  const jobs = opts.jobs ?? new BackgroundJobs();
+  const jobs =
+    opts.jobs ?? new BackgroundJobs(opts.sandbox ? { sandbox: opts.sandbox } : undefined);
   // A per-toolset cache-through store so webfetch serves repeat/failed fetches of
   // the same URL from memory (callers can override via opts.webfetch.cache).
   const fetchCache = opts.webfetch?.cache ?? createFetchCache({ ttlMs: WEBFETCH_CACHE_TTL_MS });
@@ -44,7 +49,7 @@ export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
     packageInfoTool,
     writeTool,
     editTool,
-    bashTool(jobs),
+    bashTool(jobs, opts.sandbox),
     presentPlanTool,
     ...gitTools,
     ...backgroundJobTools(jobs),

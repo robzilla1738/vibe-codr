@@ -4,6 +4,109 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — production & distribution layer
+
+- **Two install channels.** Prebuilt **standalone binaries** (darwin/linux ×
+  arm64/x64) attached to each GitHub Release with an aggregate `SHA256SUMS`, and
+  an **npm/bun package** (`bun add -g vibe-codr`) built by
+  `scripts/release/build-npm.ts` — a single `bun build --target=bun` bundle that
+  inlines all `@vibe/*` source and keeps the `PROVIDER_MODULES` literal imports
+  bundle-visible (verified by grepping the output), with a generated
+  `package.json` whose `optionalDependencies` (provider SDKs, OpenTUI, MCP SDK,
+  on-device transformers) are copied from the workspace versions.
+- **Version stamping.** A committed `0.0.0-dev` sentinel in
+  `packages/cli/src/version.ts` is the single source of truth;
+  `scripts/release/set-version.ts` stamps the pushed tag across `version.ts` +
+  every workspace `package.json` and promotes the changelog's `## Unreleased`
+  section to `## <version> — <date>` (pure, tested rewrites).
+- **`vibe upgrade`.** Detects the install channel from `process.execPath` (a bun
+  runtime → `bun add -g vibe-codr@latest`; a compiled binary → the Releases URL +
+  checksum) and PRINTS the right steps — honest, never self-mutating.
+- **Quiet startup update check.** The interactive CLI reads a cached (24h TTL)
+  latest-release lookup and prints a one-line hint when a newer version exists,
+  then refreshes the cache in the background — never blocking, no user data in the
+  request, opt-out via `update.check: false` or `$VIBE_NO_UPDATE_CHECK`. Also a
+  `/doctor` line. `isNewer` treats a `-dev` build as never behind its own base.
+- **Crash visibility.** `installCrashHandlers` binds `uncaughtException` +
+  `unhandledRejection` (SIGINT stays the TUI's): it restores the terminal with
+  raw ANSI, writes a **redacted** crash log (api-key/token/authorization/secret
+  values masked) to `~/.config/vibe-codr/crashes/<iso>.log`, prints the path, and
+  exits 1 — each step individually guarded. `/doctor` surfaces recent crashes.
+- **Release + CI automation.** A tag-driven `release.yml` (cross-compiled
+  binaries, guarded `npm publish` that dry-runs `-rc` tags, a GitHub Release with
+  notes pulled from the changelog) and a hardened `ci.yml` (Linux + macOS matrix,
+  the compiled-binary smoke now runs `models` keyless, a PR-only release dry-run).
+- This cycle also landed a **9-defect correctness wave** and **10 tech-debt
+  items** across modes, memory, providers, and the TUI (tracked in
+  `docs/audit-ledger.md`).
+
+### Added — subagent parity pack (continuation, structured output, background spawns)
+
+- **`continue_subagent`.** A parent can now send a follow-up message to a
+  completed subagent and resume its full context instead of re-spawning a blank
+  child. Completed **shared-tree** children are held in a bounded-LRU
+  `ChildRegistry` (config `subagent.retainCompleted`, default 16); a
+  worktree/ensemble descendant (whose cwd is torn down) is never retained, and a
+  resume into a vanished cwd fails with an honest error rather than an ENOENT.
+- **Structured subagent output.** An optional `outputSchema` (JSON Schema) on
+  `spawn_subagent` / a task forces the child's final message through a real
+  JSON-Schema validator (a bounded validate→re-run-with-errors loop, config
+  `subagent.structuredMaxAttempts`, default 2). On success the report is the
+  validated JSON; on exhaustion it returns the errors + raw text — **never a
+  fabricated object**. (The AI SDK's `jsonSchema()` does no validation, so the
+  validator is hand-written and own-property-safe.)
+- **Background spawns.** `detach:true` fires a subagent/task fan-out and returns
+  a handle immediately; detached children obey the same spawn ceiling, journal,
+  and tree-global limiter, are aborted+awaited at `finalize()`, surface a
+  "background subagents finished" line into the next turn, and are collected via
+  a new `check_task` tool. Detach is **interactive-only** — coerced synchronous
+  headlessly so `engine-idle` stays the true terminal signal for `-p`.
+
+### Added — OS-level sandboxing (opt-in)
+
+- **Kernel-enforced FS/network isolation under the permission engine** (which
+  stays the policy brain; the sandbox is the backstop). `packages/tools/sandbox.ts`
+  generates a macOS **Seatbelt** profile / Linux **bubblewrap** args with
+  realpath-canonicalized writable roots (cwd, tmp, state dirs, configured extras),
+  routed through `bash`, background jobs, the gate's `exec`, and `verify`.
+  `policyForChecks` keeps the gate writable even under a pinned `read-only`.
+- **Config** `sandbox: { mode: off | read-only | workspace-write, network: on |
+  off, writablePaths[] }` — **default `off` this release** (opt-in per the audit's
+  rollout note), plus a `$VIBE_SANDBOX` override. Unsupported platforms / a
+  missing (or userns-disabled) `bwrap` warn once and run unsandboxed, never
+  silently. A `dangerouslyUnsandboxed` escape hatch **fails closed** through the
+  existing explicit-ask path (a blanket allow rule can't authorize the unsafe
+  variant). `/doctor` reports the active backend + mode.
+
+### Added — multi-language LSP diagnostics
+
+- **In-loop diagnostics for any language with a server on `PATH`**, generalized
+  behind the unchanged `diagnose()` seam (the TS fast path is kept). A new
+  `packages/core/src/lsp/` speaks Content-Length JSON-RPC over stdio
+  (`initialize` → `didOpen`/`didChange` → version-matched `publishDiagnostics`),
+  lazy-spawns one server per language (basedpyright/pyright, gopls,
+  rust-analyzer, clangd, jdtls, ruby-lsp, …), **never auto-installs**, bounds
+  every diagnose by a deadline so a slow server can't wedge an edit, does bounded
+  crash-restart + idle shutdown, and disposes every server at `finalize()`.
+- **Advisory + honest**: any timeout / crash / protocol error degrades to
+  `undefined`, never a false "clean"; the green-gate remains the cross-file
+  backstop. Default-on is a clean no-op when no servers are installed. Config
+  `lsp: { enabled, timeoutMs, idleShutdownMs, disabledLanguages[], servers{} }`;
+  `/doctor` lists detected / configured-but-missing / crashed servers.
+
+### Fixed — final adversarial review (12 findings in the above)
+
+A 7-area adversarial review of the whole cycle's diff found and fixed 12 verified
+defects, most-severe first: a **HIGH** sandbox escape-hatch hole (a broad `bash`
+allow rule defeated the `dangerouslyUnsandboxed` fail-closed gate); crash-log
+leakage of key-shaped tokens; an LSP `dispose()` that orphaned a still-initializing
+server; a relevance floor that nullified semantic recall for paraphrase queries; an
+atomic write that destroyed symlinks; the update-hint ignoring its opt-out; and six
+lower-severity items (stale `/doctor` version, a toothless npm-bundle guard, a
+worktree-descended child retained with a dead cwd, a prototype-chain schema-key
+bypass, an unbounded LSP crash-restart, and `bwrap` reported available without a
+userns smoke). All fixed with regression tests. See `docs/audit-ledger.md`.
+
 ### Added — named accents (orange is back) + eleven ported classic themes
 
 - **`/accent <name>`** — named presets alongside the hex form: `orange`

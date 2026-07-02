@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import {
   parseModelsDev,
   resolveCatalogPrice,
+  resolveCatalogWindow,
   aliasModelKey,
   PROVIDER_SLUG_ALIASES,
   CatalogService,
@@ -49,6 +50,80 @@ test("parseModelsDev flattens provider/model metadata", () => {
   expect(m?.cost).toEqual({ input: 5, output: 25 });
   expect(m?.capabilities?.vision).toBe(true);
   expect(m?.capabilities?.toolCall).toBe(true);
+});
+
+test("parseModelsDev captures long-context pricing tiers from cost.tiers", () => {
+  // Faithful wire shape: tiers carry their REAL threshold via tier.size (272k for
+  // GPT-5.x, not the lossy 200k of the context_over_200k sibling).
+  const map = parseModelsDev({
+    openai: {
+      models: {
+        "gpt-5.5": {
+          cost: {
+            input: 5,
+            output: 30,
+            cache_read: 0.5,
+            tiers: [
+              { input: 10, output: 45, cache_read: 1, tier: { type: "context", size: 272000 } },
+            ],
+            context_over_200k: { input: 10, output: 45, cache_read: 1 },
+          },
+        },
+      },
+    },
+  });
+  expect(map.get("openai/gpt-5.5")?.cost?.tiers).toEqual([
+    { threshold: 272000, input: 10, output: 45, cacheRead: 1, cacheWrite: undefined },
+  ]);
+});
+
+test("parseModelsDev falls back to context_over_200k when cost.tiers is absent", () => {
+  const map = parseModelsDev({
+    xai: {
+      models: {
+        "grok-legacy": {
+          cost: { input: 1.25, output: 2.5, context_over_200k: { input: 2.5, output: 5, cache_read: 0.4 } },
+        },
+      },
+    },
+  });
+  expect(map.get("xai/grok-legacy")?.cost?.tiers).toEqual([
+    { threshold: 200_000, input: 2.5, output: 5, cacheRead: 0.4, cacheWrite: undefined },
+  ]);
+});
+
+test("parseModelsDev leaves flat-rate models without a tiers field", () => {
+  const map = parseModelsDev({
+    anthropic: { models: { "claude-opus-4-8": { cost: { input: 5, output: 25 } } } },
+  });
+  expect(map.get("anthropic/claude-opus-4-8")?.cost?.tiers).toBeUndefined();
+});
+
+test("resolveCatalogPrice carries tiers through on both exact and estimated matches", () => {
+  const meta = parseModelsDev({
+    google: {
+      models: {
+        "gemini-3.1-pro-preview": {
+          cost: {
+            input: 2,
+            output: 12,
+            cache_read: 0.2,
+            tiers: [
+              { input: 4, output: 18, cache_read: 0.4, tier: { type: "context", size: 200000 } },
+            ],
+          },
+        },
+      },
+    },
+  });
+  // Exact hit keeps the tiers.
+  expect(resolveCatalogPrice(meta, "google/gemini-3.1-pro-preview")?.tiers).toEqual([
+    { threshold: 200_000, input: 4, output: 18, cacheRead: 0.4, cacheWrite: undefined },
+  ]);
+  // A base-model estimate (different provider tag) still carries the tiers.
+  const est = resolveCatalogPrice(meta, "vertex/gemini-3.1-pro-preview");
+  expect(est?.estimated).toBe(true);
+  expect(est?.tiers?.[0]?.threshold).toBe(200_000);
 });
 
 test("vision is false when image is not among the input modalities", () => {
@@ -167,5 +242,40 @@ test("refresh() force-fetches the catalog and returns the model count", async ()
     expect(calls).toBe(2);
   } finally {
     globalThis.fetch = realFetch;
+  }
+});
+
+test("resolveCatalogWindow: exact hit wins; base-model fallback covers variants", () => {
+  const meta = parseModelsDev({
+    openai: { models: { "gpt-5.5": { limit: { context: 272_000, output: 128_000 } } } },
+    zhipuai: { models: { "glm-5.2": { limit: { context: 200_000, output: 128_000 } } } },
+  });
+  expect(resolveCatalogWindow(meta, "openai/gpt-5.5")).toBe(272_000);
+  // A variant/fine-tune tag of a known base model inherits its family's real
+  // window — far better than the session's blanket 128k default.
+  expect(resolveCatalogWindow(meta, "azure/gpt-5.5:my-deployment")).toBe(272_000);
+  expect(resolveCatalogWindow(meta, "openai/nonesuch")).toBeUndefined();
+});
+
+test("resolveCatalogWindow: locally-probed providers never get a fuzzy window", () => {
+  const meta = parseModelsDev({
+    zhipuai: { models: { "glm-5.2": { limit: { context: 200_000, output: 128_000 } } } },
+    "ollama-cloud": { models: { "glm-5.2": { limit: { context: 256_000, output: 64_000 } } } },
+  });
+  const hadKey = process.env.OLLAMA_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
+  try {
+    // No cloud signal: a local ollama tag must NOT read its cloud namesake's
+    // window (the alias is skipped) nor a base-model match — the live probe is
+    // the source of truth for locally served models, and over-reporting means
+    // compaction never fires.
+    expect(resolveCatalogWindow(meta, "ollama/glm-5.2")).toBeUndefined();
+    expect(resolveCatalogWindow(meta, "lmstudio/glm-5.2")).toBeUndefined();
+    // With the cloud signal set, the alias is trustworthy again.
+    process.env.OLLAMA_API_KEY = "test-key";
+    expect(resolveCatalogWindow(meta, "ollama/glm-5.2")).toBe(256_000);
+  } finally {
+    if (hadKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = hadKey;
   }
 });

@@ -52,6 +52,39 @@ const TS_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 /** Cap on rendered diagnostics per call — the first errors are the signal. */
 const MAX_DIAGNOSTICS = 8;
 
+/** Whether a path is TS/JS — the composite router uses this to keep TS/JS on the
+ * cheap in-process fast path and send everything else to the LSP layer. */
+export function isTsJs(absPath: string): boolean {
+  return TS_EXT.test(absPath);
+}
+
+/** One language-server's state for `/doctor` (aggregated by the LSP layer).
+ * `missing` = a candidate binary was never found for a language actually edited;
+ * `crashed` = the server died and restart backoff gave up. */
+export interface LspStatus {
+  language: string;
+  /** Resolved server command (absent when no candidate binary was found). */
+  command?: string;
+  state: "running" | "starting" | "idle" | "crashed" | "missing";
+}
+
+/**
+ * The diagnostics seam the engine wires into edit/write via `ToolContext.diagnose`.
+ * `diagnose(absPath)` returns a compact rendered error list to append verbatim to
+ * the tool result, or undefined when the file is clean / diagnostics don't apply /
+ * anything went wrong (always advisory — a failure NEVER reads as "clean"). The
+ * TS fast path and the LSP layer both implement it; `status`/`dispose` are only
+ * meaningful for the (server-spawning) LSP layer, so they're optional. */
+export interface Diagnostics {
+  diagnose(absPath: string): Promise<string | undefined>;
+  /** Whether the layer is live (peer dep resolved / LSP enabled). */
+  available(): Promise<boolean>;
+  /** Per-language server status feeding `/doctor` (LSP-backed layers only). */
+  status?(): LspStatus[];
+  /** Tear down any spawned servers (LSP-backed layers only). */
+  dispose?(): void;
+}
+
 let tsLoader: Promise<TsModule | null> | undefined;
 function loadTs(): Promise<TsModule | null> {
   tsLoader ??= (async () => {
@@ -92,7 +125,7 @@ function mtimeOf(path: string): number {
  * unavailable, the file isn't TS/JS, or there are no errors — callers append it
  * verbatim to tool output.
  */
-export class TsDiagnostics {
+export class TsDiagnostics implements Diagnostics {
   #services = new Map<string, ServiceEntry>();
   #log: Logger | undefined;
 

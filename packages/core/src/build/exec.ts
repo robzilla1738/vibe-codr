@@ -6,7 +6,7 @@
  * recon/gitops. Mirrors agentswarm's SandboxRuntime["exec"] contract.
  */
 
-import { killTree } from "@vibe/tools";
+import { killTree, policyForChecks, type SandboxPolicy, wrapCommand } from "@vibe/tools";
 
 export interface ExecResult {
   out: string;
@@ -46,10 +46,16 @@ const MAX_PROBE_OUTPUT = 400_000;
  * as `{ out: message, code: 127 }` so callers keep their "degrade, don't
  * throw" contract.
  */
-export function bunExec(): Exec {
+export function bunExec(policy?: SandboxPolicy): Exec {
   return async (cmd, { cwd, timeoutSec, signal }) => {
     try {
-      const proc = Bun.spawn(["bash", "-lc", cmd], {
+      // The gate/build/verify commands MUST write artifacts, so a globally-pinned
+      // read-only policy is upgraded to workspace-write for these engine-owned
+      // paths. An absent policy → the unchanged base argv (unsandboxed).
+      const argv = policy
+        ? wrapCommand(policyForChecks(policy), { cwd, command: cmd })
+        : ["bash", "-lc", cmd];
+      const proc = Bun.spawn(argv, {
         cwd,
         stdout: "pipe",
         stderr: "pipe",

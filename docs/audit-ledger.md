@@ -172,6 +172,123 @@ Both targeted the non-trivial pass-5/pass-6 fixes AND swept broadly; both empiri
 
 ---
 
+## PRODUCTION-READINESS PROGRAM — 2026-07-02 (post-audit, on top of the converged baseline)
+
+A fresh 8-domain production audit (each defect claim adversarially verified) ran on top of the
+converged hardening baseline above, then a six-phase implementation program addressed everything it
+surfaced plus three strategic capability gaps. All work landed with paired regression tests; the gate
+was green after every phase. A final 7-area adversarial review of the whole accumulated diff
+(+~4000/−~330, 67 files + 16 new modules) found 12 confirmed defects in the NEW code — all fixed with
+regressions. Net gate at close: typecheck 8/8, lint clean (275 files), **15/15 turbo tasks, core 655
+tests**, 0 fail; compiled-binary smoke + live keyless-Ollama e2e both pass.
+
+### Phase 1 — 9 audit-confirmed defects (all fixed + regression-tested)
+- **[HIGH] Gate abort produced a false RED/GREEN** — an Esc mid-check parsed the SIGTERM-killed run as
+  a real failure (→ un-abortable gate-fix turn editing a healthy tree); an Esc between checks bucketed
+  the partial pass-list as GREEN (→ commit-on-green + ledger writeback on unverified work). Fixed: a
+  new `"aborted"` `GateSummary.outcome` (shared/build.ts) returned on any `signal.aborted` before/
+  during/after a check; the engine treats it as a terminal NON-verdict (no fix enqueue, no gate-round
+  bump, no commit-on-green, no review); all orchestrator gate consumers (worktree-merge, ensemble
+  scoring, shared-task) handle it (block / score-0 / settle-failed-no-retry).
+- **[MED] Adversarial diff-review call was un-abortable and unbounded** — a hung provider wedged
+  `vibe -p` forever. Fixed: `AbortSignal.any([session, timeout(120s)])`; abort/timeout skips the review
+  with a warn notice (compaction's degrade-don't-kill doctrine).
+- **[LOW] lint/typecheck parsers flipped exit-0 → RED** from scraped error tokens. Fixed: exit-code is
+  truth for all three parsers (matching the test parser's existing doctrine).
+- **[MED] Tiered/long-context pricing ignored** — models.dev `cost.tiers` were dropped, so >200k-context
+  turns on gpt-5.5/gemini-3.1-pro/grok-4.3 billed at the base rate (under-counting cost + the
+  budget.stop guard). Fixed: parse tiers into `ModelInfo.cost`; `computeCost` reprices every slice at
+  the highest exceeded tier.
+- **[MED] Limiter hold-and-wait deadlock** — a parent held its one tree-global slot while awaiting
+  spawned children (who queue on the same limiter); `subagent.timeoutMs=0` disabled the only escape →
+  permanent headless hang. Fixed STRUCTURALLY: `Session.suspendLimiterSlot` releases the parent's slot
+  around the child-await (the parent makes no provider call there) and re-acquires after — hold-and-wait
+  is eliminated for every config; the timeout stays as defense-in-depth.
+- **[LOW] USER.md cap truncated the NEWEST saved prefs** (head-keep vs tail-append). Fixed: structure-
+  aware cap keeps header + newest bullets, trims oldest, marks the trim; `save_memory` reports honestly
+  when over budget.
+- **[LOW] Memory dedup false-positive on boilerplate** — `containsFact` matched header/heading prose.
+  Fixed: dedup against fact content only.
+- **[LOW] `/reasoning` confirmed effort on providers that drop it** (xai/openrouter route through
+  openai-compatible). Fixed: split forwarded (anthropic/openai) vs natively-reasoning; honest caveat.
+- **[LOW] Stale permission card after a non-user abort** emitted a false "allowed" notice + wedged
+  shortcuts. Fixed: a `permission-settled` UIEvent on every engine auto-resolve; the TUI drops the card;
+  answering a settled id is a silent no-op.
+
+### Phase 2 — 10 tech-debt items (all fixed + tested)
+Atomic temp+rename for edit/write **and** memory appends; theme/accent name registry unified into
+`@vibe/shared/theme-registry` (kills the core/tui duplicate); one shared plan-approval routine (both the
+card-accept and mode-switch paths funnel through `#approvePlan`/`#setModeGated`); always-allow keyed by
+the canonical path form (no re-prompt on a re-spelling); `commitThinking` write-guarded; `contextWindow`
+base-model fallback + a guarded ollama→ollama-cloud alias (local tags no longer inherit the cloud
+window); live-elapsed tool rows (no dead spinner); digest fuzzy near-dup dedup; a proactive-recall
+relevance floor.
+
+### Phase 3 — production/distribution layer
+Version stamping (`version.ts` sentinel + `set-version.ts`); a single-package `--target=bun` npm bundle
+(all workspace source inlined, provider imports kept bundle-visible); a tag-driven `release.yml` (4-target
+`--compile` binary matrix + SHA256SUMS + guarded npm publish); `update-check` (pure `isNewer`, 24h-cached
+keyless GitHub GET, opt-out) + `vibe upgrade` channel detection; crash handlers (terminal-restore +
+redacted crash log + `/doctor` surfacing, no telemetry); CI hardened to a ubuntu+macos matrix with a
+real keyless-`models` binary smoke (transits the provider lazy-import path the old `--version` smoke
+missed) + a PR release-dryrun.
+
+### Phase 4 — subagent parity pack
+`continue_subagent` (bounded-LRU retention of completed shared-tree children — worktree/ensemble
+descendants deliberately not retained); optional `outputSchema` structured output (a real, honest
+JSON-Schema validator — ai@5's `jsonSchema()` does none — that returns errors + raw text on failure,
+never a fabricated object); `detach:true` background spawns (same ceiling/journal/limiter governance,
+finalize aborts+awaits them, next-turn surfacing + `check_task`; coerced synchronous when headless so
+`engine-idle` stays the terminal signal).
+
+### Phase 5 — OS-level sandboxing (opt-in this release)
+A stateless `sandbox.ts` under the permission engine: seatbelt (macOS) / bwrap (Linux) profile builders
+with realpath-canonicalized writable roots; routed through bash/jobs/exec/verify; `policyForChecks`
+keeps the gate writable under a pinned read-only; the `dangerouslyUnsandboxed` escape hatch fails closed
+through the existing explicit-ask path. Default `mode:"off"` per the rollout note; darwin integration
+tests (outside-write blocked, network-off blocked) verified on a real host.
+
+### Phase 6 — multi-language LSP diagnostics
+Behind the unchanged `diagnose()` seam: a `Diagnostics` interface (TsDiagnostics kept as the TS fast
+path), an `lsp/` client (Content-Length JSON-RPC over stdio, version-matched publishDiagnostics), a
+manager (lazy per-language spawn, per-diagnose deadline so a slow server never blocks an edit, bounded
+crash-restart, idle shutdown), and a composite router. Advisory-only + degrade-to-`undefined` (never a
+false "clean"); the green-gate stays the cross-file backstop. Default-on is a clean no-op when no
+servers are installed.
+
+### Final adversarial review — 12 confirmed in the new code, all fixed + regression-tested
+- **[HIGH] Sandbox escape-hatch fail-closed defeated by a broad allow rule** — `dangerouslyUnsandboxed`
+  bypassed the forced ask whenever ANY content-scoped rule applied, so a blanket `{bash, match:"*",
+  allow}` let an unsandboxed dangerous command run with zero approval under auto/yolo/headless. Fixed:
+  bypass only when an applicable ALLOW rule targets the `!unsandboxed <cmd>` sentinel but NOT the bare
+  command (a rule written specifically to pre-authorize the unsafe variant); a blanket allow fails closed.
+- **[MED] Crash log leaked key-shaped tokens** without an adjacent keyword — added prefix-anchored
+  value-shape masking (`sk`/`pk`/`ghp`/`xox*`/`AIza…`).
+- **[MED] LSP `dispose()` orphaned a mid-initialize server** (process leak) — track the starting client
+  synchronously and tear it down too.
+- **[MED] Relevance floor nullified semantic recall** for zero-surface-overlap paraphrase queries —
+  exempt dense-ranked hits from the lexical-overlap gate.
+- **[MED] Atomic temp+rename destroyed symlinks** (replaced the link with a regular file, stranded the
+  target) — dereference to the real target before writing, in edit + write.
+- **[MED] Update-hint ignored the opt-out**; **[LOW] `/doctor` showed a stale update-available for 24h**;
+  **[LOW] npm-bundle self-containment guard checked the specifier not an inlined symbol** (couldn't catch
+  the 0ebce43 externalization it guards) — all fixed.
+- **[LOW] Worktree-descended subagent retained with a torn-down cwd** — registry skips out-of-tree
+  children + `continue_subagent` evicts a vanished cwd with an honest error.
+- **[LOW] Structured-output validator used prototype-chain `in`** (a `constructor`/`toString` key spoofed
+  a modeled constraint) — `Object.hasOwn`.
+- **[LOW] LSP crash-budget reset on mere init** (crash-on-use churned unboundedly) — reset only after a
+  proven-usable diagnose round-trip.
+- **[LOW] Linux `available:true` from mere `bwrap` presence** (userns may be disabled) — gate on a cached
+  `bwrap --ro-bind / / true` smoke.
+
+**Verification at close:** gate green across all packages (655 core tests); compiled binary rebuilt
+(285 modules, provider lazy-imports survive `--compile`); `models` keyless exit 0 (353 models);
+`vibe upgrade` detects the binary channel; a live headless turn against local Ollama returns the answer
+with exit 0.
+
+---
+
 ## DECISIONS
 
 - **Permission precedence: DENY is absolute across specificity tiers.** The prior

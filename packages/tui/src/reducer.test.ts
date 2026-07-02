@@ -5,11 +5,14 @@ import {
   groupTurns,
   groupIntoTurns,
   collapsedHint,
+  dropSettledPerms,
   firstLine,
+  toolDurationLabel,
   truncate,
   type TranscriptState,
   type TranscriptAction,
   type Block,
+  type PendingPerm,
 } from "./reducer.ts";
 
 /** Fold a sequence of actions over the initial state. */
@@ -162,6 +165,38 @@ test("tool duration is derived from the action stamps (shown as meta when slow)"
   expect(tool(s.blocks[0]!).elapsedMs).toBe(3500);
 });
 
+test("tool-start records startedAt and leaves the row RUNNING so it can tick a live elapsed", () => {
+  // The running-row live elapsed reads `startedAt` (a tool with no streamed tail
+  // must still look alive), so the reducer has to stamp it and keep the row open.
+  const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "web_search", input: { query: "x" }, at: 5000 }]);
+  const t = tool(s.blocks[0]!);
+  expect(t.startedAt).toBe(5000);
+  expect(t.done).toBe(false);
+  expect(t.elapsedMs).toBeUndefined();
+});
+
+test("toolDurationLabel: no dead spinner — a running row past 2s shows a live ticking elapsed", () => {
+  const running = run([{ type: "tool-start", toolCallId: "c1", toolName: "crawl_docs", input: {}, at: 1000 }]);
+  const t = tool(running.blocks[0]!);
+  // Under 2s: nothing (quick calls stay clean). At/over 2s: whole-second live count.
+  expect(toolDurationLabel(t, 1000)).toBe("");
+  expect(toolDurationLabel(t, 2900)).toBe("");
+  expect(toolDurationLabel(t, 3000)).toBe("2s");
+  expect(toolDurationLabel(t, 8400)).toBe("7s");
+  // Finished: the final wall-clock, one decimal, only when it was slow (≥2s).
+  const done = reduceTranscript(running, { type: "tool-finish", toolCallId: "c1", output: "ok", isError: false, at: 4500 });
+  expect(toolDurationLabel(tool(done.blocks[0]!), 9_999_999)).toBe("3.5s");
+  // A fast finished call shows nothing regardless of `now`.
+  let quick = run([{ type: "tool-start", toolCallId: "c2", toolName: "read", input: {}, at: 0 }]);
+  quick = reduceTranscript(quick, { type: "tool-finish", toolCallId: "c2", output: "ok", isError: false, at: 300 });
+  expect(toolDurationLabel(tool(quick.blocks[0]!), 9_999_999)).toBe("");
+  // A settled row with no stamp (interrupted turn) shows nothing, never NaN.
+  const settled = reduceTranscript(run([{ type: "tool-start", toolCallId: "c3", toolName: "read", input: {} }]), {
+    type: "clear-turn",
+  });
+  expect(toolDurationLabel(tool(settled.blocks[0]!), 9_999_999)).toBe("");
+});
+
 test("a thinking burst lands as a collapsed row; toggle expands it; empty is dropped", () => {
   let s = run([{ type: "thinking", text: "the loader owns the cache\nso patch there", seconds: 8 }]);
   const t = s.blocks[0]!;
@@ -309,6 +344,26 @@ test("collapsedHint reads diffs, search results, and line counts", () => {
   expect(
     collapsedHint({ kind: "tool", id: 2, label: "→ read x", output: ["only one"], collapsed: true, isDiff: false, isError: false, done: true }),
   ).toBe("1 line");
+});
+
+test("dropSettledPerms removes the engine-settled cards; unknown/empty ids are benign", () => {
+  const perms: PendingPerm[] = [
+    { id: "perm_a", toolName: "bash", input: {} },
+    { id: "perm_b", toolName: "edit", input: {} },
+    { id: "perm_c", toolName: "write", input: {} },
+  ];
+  // Only the matching card(s) drop; the rest keep their order.
+  expect(dropSettledPerms(perms, ["perm_b"]).map((p) => p.id)).toEqual(["perm_a", "perm_c"]);
+  // An abort settles every pending prompt at once → the queue empties.
+  expect(dropSettledPerms(perms, ["perm_a", "perm_b", "perm_c"])).toEqual([]);
+  // An unknown id (a card already answered + removed) is a no-op, not a throw.
+  expect(dropSettledPerms(perms, ["perm_gone"]).map((p) => p.id)).toEqual([
+    "perm_a",
+    "perm_b",
+    "perm_c",
+  ]);
+  // An empty settle list returns the SAME array reference (nothing to do).
+  expect(dropSettledPerms(perms, [])).toBe(perms);
 });
 
 test("firstLine and truncate helpers", () => {

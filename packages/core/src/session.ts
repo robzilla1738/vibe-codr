@@ -60,7 +60,8 @@ import {
 } from "./orchestration/orchestrator-runner.ts";
 export { isReviewClean } from "./orchestration/orchestrator-runner.ts";
 import { type ReportStore, buildReadReportTool } from "./orchestration/report-store.ts";
-import type { TsDiagnostics } from "./diagnostics.ts";
+import type { ChildRegistry } from "./orchestration/child-registry.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 import {
   buildUseSkillTool,
   buildRecallTool,
@@ -136,13 +137,23 @@ export interface SessionDeps {
    * runner when absent; forks inherit the SAME object via `...this.#deps`, so a
    * dependent task (a fork) can pull a dependency's FULL report. */
   reportStore?: ReportStore;
-  /** In-process TS language service (engine-owned, tree-shared via forks):
-   * edit/write append its diagnostics to their output. Absent → no-op. */
-  diagnostics?: TsDiagnostics;
+  /** Diagnostics seam (engine-owned, tree-shared via forks): edit/write append
+   * its output. TS-only (`TsDiagnostics`) or multi-language (`CompositeDiagnostics`
+   * over LSP). Absent → no-op. */
+  diagnostics?: Diagnostics;
   /** Tree-global spawn ledger: total subagents spawned across the session tree,
    * the backstop against a runaway model (capped at subagent.maxTotal). Created
    * lazily by the root runner; forks inherit the SAME object via `...this.#deps`. */
   spawnCounter?: { used: number };
+  /** Whether a UI can drive interactive prompts (the engine is attached to a
+   * TUI). Threaded from the engine so subagent `detach` is coerced to synchronous
+   * in headless `-p` runs — a detached child would outlive the queue-drain
+   * (engine-idle) terminal signal. Forks inherit it via `...this.#deps`. */
+  interactive?: boolean;
+  /** Tree-shared registry of retained (continue_subagent) + detached (background)
+   * subagent children. Created lazily by the root runner; forks inherit the SAME
+   * object via `...this.#deps`, like reportStore. */
+  childRegistry?: ChildRegistry;
   /** Tree-shared serial lock for the ONE shared `.git`/working tree: every
    * worktree merge+gate and shared-tree gate across the WHOLE session tree —
    * including NESTED `spawn_tasks` runners — serializes through it, so two runners
@@ -300,6 +311,7 @@ export class Session {
       },
       fork: (overrides) => self.fork(overrides),
       onChildSettled: (child) => self.#foldChildUsage(child),
+      suspendLimiterSlot: (fn) => self.suspendLimiterSlot(fn),
       setTasks: (incoming) => self.setTasks(incoming),
     };
   }
@@ -411,6 +423,13 @@ export class Session {
     return this.#turnMutated;
   }
 
+  /** This session's working directory (a fork's, if redirected into a worktree).
+   * Read by the child registry to decide whether a completed child is safe to
+   * retain: a child whose cwd left the shared tree is torn down with its worktree. */
+  get cwd(): string {
+    return this.#deps.cwd;
+  }
+
   setMode(mode: Mode): void {
     this.mode = mode;
     this.#deps.bus.emit({ type: "mode-changed", sessionId: this.id, mode });
@@ -450,6 +469,22 @@ export class Session {
   /** The active repo recon, if the engine attached one. */
   get repoProfile(): RepoProfile | undefined {
     return this.#deps.repoProfile;
+  }
+
+  /** The tree-shared child registry (continuation LRU + detached tracking), once
+   * the root runner has created it. The engine reaches it through here to abort +
+   * await outstanding detached (background) subagents on finalize. */
+  get childRegistry(): ChildRegistry | undefined {
+    return this.#deps.childRegistry;
+  }
+
+  /** Point this (sub)agent session's event bus at a fresh one. Used when a
+   * retained child is resumed via `continue_subagent`: its original isolated bus
+   * was closed when its last run settled, so it needs a live bus to emit onto.
+   * Each Session owns its own `#deps` object (fork spreads a copy), so this never
+   * affects the parent's or a sibling's bus. */
+  rebindBus(bus: EventBus): void {
+    this.#deps.bus = bus;
   }
 
   /** Set the proactively-recalled context block injected into the system prompt
@@ -494,6 +529,40 @@ export class Session {
    * or a deep fan-out that over-subscribes the tree-global ceiling deadlocks. */
   #withLimiter<T>(fn: () => Promise<T>): Promise<T> {
     return this.#deps.limiter ? this.#deps.limiter.run(fn, this.#abort.signal) : fn();
+  }
+
+  /** Ref-count of in-flight limiter-slot suspensions. N spawn tools running in
+   * ONE step each open a suspension; only the 0→1 transition releases the slot and
+   * only the 1→0 transition re-acquires it, so a whole fan-out releases/re-acquires
+   * the parent's single slot exactly once. */
+  #limiterSuspends = 0;
+
+  /**
+   * Release this session's tree-global limiter slot for the span of `fn`, then
+   * re-acquire it. A parent that spawns children holds ONE whole-turn slot for the
+   * entire turn — including the tool-execution window in which it AWAITS those
+   * children. But during that await the parent makes no provider call, and its
+   * children (inheriting the same limiter via fork) queue on it: a hold-and-wait
+   * that deadlocks a deep/recursive fan-out once the per-child wall-clock timeout
+   * is disabled (`subagent.timeoutMs:0`). Handing the slot back for the child's
+   * span lets a queued child acquire it — TIGHTENING the provider-concurrency
+   * invariant, since the parent isn't calling the provider anyway.
+   *
+   * Ref-counted so N parallel spawns in one step map to exactly one release +
+   * re-acquire. The re-acquire deliberately takes NO abort signal: the release/
+   * acquire pairing MUST complete or `run()`'s finally over-decrements the
+   * limiter's `active`; a pending abort still unwinds via the child's own abort and
+   * the next `streamText` step observing the signal. No-op when no limiter is wired.
+   */
+  async suspendLimiterSlot<T>(fn: () => Promise<T>): Promise<T> {
+    const limiter = this.#deps.limiter;
+    if (!limiter) return fn();
+    if (++this.#limiterSuspends === 1) limiter.releaseSlot();
+    try {
+      return await fn();
+    } finally {
+      if (--this.#limiterSuspends === 0) await limiter.acquireSlot();
+    }
   }
 
   /**
@@ -652,9 +721,15 @@ export class Session {
       // turn's model-facing message so it stays current and survives compaction,
       // without polluting the cacheable system prefix. It's model-only — never
       // shown in the UI transcript (#history) or the user bubble.
+      // Surface any detached (background) subagents that finished since the last
+      // turn, then clear the pending list. Root session only — a subagent turn
+      // must not drain the user-facing notifications out from under the root.
+      const backgroundFinished =
+        this.depth === 0 ? this.#deps.childRegistry?.takePendingFinished() : undefined;
       const stateReminder = formatWorkspaceState({
         tasks: this.#tasks,
         sources: this.#sources.size ? this.#sources.format() : undefined,
+        ...(backgroundFinished?.length ? { backgroundFinished } : {}),
       });
       this.#pushUser(input, images, opts.display, stateReminder);
       userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
@@ -773,6 +848,17 @@ export class Session {
       // bounded by recursion depth.
       if (subagentsAvailable) {
         tools.spawn_subagent = toAISDKTool(this.#runner.spawnTool(), base, serialize);
+        // Continuation: resume a retained completed subagent (only when retention
+        // is enabled — otherwise every id would miss).
+        if (config.subagent.retainCompleted > 0) {
+          tools.continue_subagent = toAISDKTool(this.#runner.continueTool(), base, serialize);
+        }
+        // Background collection: check a detached child's status/result. Offered
+        // only in interactive sessions — headless runs coerce `detach` to
+        // synchronous, so no detached children ever exist there.
+        if (this.#deps.interactive) {
+          tools.check_task = toAISDKTool(this.#runner.checkTaskTool(), base, serialize);
+        }
         // Deterministic task-DAG orchestration (default-on): in addition to
         // one-off spawn_subagent, offer spawn_tasks so the model can submit a
         // whole dependency-ordered plan the engine schedules.

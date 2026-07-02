@@ -79,6 +79,21 @@ test("lint: error count parsed; build: exit code is the source of truth", () => 
   expect(parseCheckOutput("build", "anything", 0).pass).toBe(true);
 });
 
+test("lint: exit-0 is not flipped RED by a scraped '<N> errors' summary", () => {
+  // Biome after an autofix: "Found 3 errors (3 fixed, 0 remaining)" with exit 0.
+  // The exit code is the source of truth — this is a PASS, not 3 failures.
+  const r = parseCheckOutput("lint", "Found 3 errors (3 fixed, 0 remaining)", 0);
+  expect(r.pass).toBe(true);
+  expect(r.failed).toBe(0);
+});
+
+test("typecheck: exit-0 is not flipped RED by an 'error TS…' token in output", () => {
+  // A log line quoting a prior diagnostic must not turn a passing compile red.
+  const r = parseCheckOutput("typecheck", "note: previously saw error TS1234 here\nDone.", 0);
+  expect(r.pass).toBe(true);
+  expect(r.failed).toBe(0);
+});
+
 test("formatCheckResult renders PASS n/m and FAIL with first failures", () => {
   const pass = formatCheckResult("test", "bun test", { pass: true, failed: 0, total: 142, firstFailures: [] }, "3.2");
   expect(pass).toBe("PASS test (bun test) 142/142 in 3.2s");

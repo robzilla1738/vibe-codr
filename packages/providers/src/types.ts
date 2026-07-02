@@ -1,6 +1,23 @@
 import type { LanguageModel, EmbeddingModel } from "ai";
 import type { ProviderConfig } from "@vibe/config";
 
+/**
+ * One long-context pricing tier from models.dev `cost.tiers`: once a request's
+ * prompt exceeds `threshold` tokens, the whole request bills at these rates.
+ * Providers (Google, OpenAI, xAI, …) step the ENTIRE request — input, output,
+ * cache read/write — up to the tier's price once the prompt crosses the line; a
+ * rate the tier omits inherits the base (untiered) rate.
+ */
+export interface PricingTier {
+  /** Prompt-token count above which this tier applies (models.dev `tier.size`,
+   * which varies by model: 200k for Gemini, 272k for GPT-5.x, 256k for Qwen). */
+  threshold: number;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
 /** Capability + cost metadata, enriched from models.dev. */
 export interface ModelInfo {
   /** Provider-local model id, e.g. "claude-opus-4-8". */
@@ -9,7 +26,15 @@ export interface ModelInfo {
   name?: string;
   contextWindow?: number;
   maxOutput?: number;
-  cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    /** Long-context pricing tiers (ascending by threshold), when the model
+     * prices a big prompt higher; absent for flat-rate models. */
+    tiers?: PricingTier[];
+  };
   capabilities?: {
     toolCall?: boolean;
     reasoning?: boolean;

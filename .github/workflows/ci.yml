@@ -7,7 +7,12 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      # Run the gate on both Linux and macOS so an OS-specific break (path
+      # casing, a native-dep quirk, the compiled binary) can't slip through.
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -21,8 +26,37 @@ jobs:
       - run: bun test
       # Exercise the standalone-binary path that PROVIDER_MODULES exists to keep
       # self-contained — otherwise a broken `bun build --compile` ships unnoticed.
+      # This compile step is also what guards the PROVIDER_MODULES *static*
+      # bundling: a missing literal `import("@ai-sdk/…")` fails the compile here.
       - run: bun run build:binary
-      - run: ./dist/vibecodr --version
+      # Runtime smoke: run the compiled binary's `models` command instead of
+      # `--version`. It's keyless — the models.dev catalog needs no API key, and the
+      # per-provider live `/v1/models` availability probes are best-effort (skipped
+      # or swallowed without a key), so it prints the catalog and exits 0. It also
+      # degrades offline (the catalog fetch has a timeout + swallowed errors, falling
+      # back to the disk cache / empty), so it exercises binary boot + config load +
+      # provider-registry construction. NOTE: `models` lists via the catalog + a
+      # plain `/v1/models` fetch and does NOT itself dlopen a provider SDK —
+      # the `build:binary` step above covers the PROVIDER_MODULES bundling. Together
+      # they assert "the binary builds self-contained and actually runs".
+      - run: ./dist/vibecodr models
       # NOTE: `bun run smoke:tui` (the OpenTUI render check) is a LOCAL/manual gate,
       # not a CI one — it drives a real terminal renderer whose status-line layout is
       # environment-sensitive on headless runners. Run it after app.tsx edits.
+
+  # PR-only: prove the release path (version stamp → one binary → npm bundle) keeps
+  # working, without publishing anything. Catches a broken release script on the PR
+  # that introduces it, not at tag-push time.
+  release-dryrun:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      # Stamp a throwaway rc version (also promotes the CHANGELOG) — never committed.
+      - run: bun scripts/release/set-version.ts 0.0.0-rc.0
+      - run: bun build --compile --target=bun-linux-x64 packages/cli/bin/vibecodr.ts --outfile vibecodr-linux-x64
+      - run: bun scripts/release/build-npm.ts

@@ -163,3 +163,26 @@ export {
   type McpResource,
   type McpPrompt,
 } from "./mcp.ts";
+export {
+  installCrashHandlers,
+  handleCrash,
+  buildCrashRecord,
+  writeCrashLog,
+  redactCrash,
+  recentCrashes,
+  crashDoctorCheck,
+  crashesDir,
+  type CrashRecord,
+  type CrashHandlerDeps,
+} from "./crash.ts";
+export {
+  isNewer,
+  fetchLatestVersion,
+  checkForUpdate,
+  readUpdateCache,
+  updateCacheFile,
+  updateDoctorCheck,
+  type UpdateCache,
+  type UpdateStatus,
+  type CheckForUpdateOptions,
+} from "./update-check.ts";

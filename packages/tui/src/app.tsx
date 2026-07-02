@@ -86,7 +86,9 @@ import {
   reduceTranscript,
   groupIntoTurns,
   collapsedHint,
+  dropSettledPerms,
   firstLine,
+  toolDurationLabel,
   truncate,
   type Block,
   type Subagent,
@@ -974,7 +976,13 @@ export function App(props: { engine: EngineClient }) {
         }
         reasoningBuf = "";
         reasoningTailBuf = "";
-        setReasoningLines([]);
+        // commitThinking runs on EVERY assistant text token (each delta lands the
+        // thinking that preceded it), so an unconditional setReasoningLines([]) —
+        // a fresh `[]` is never `===` the prior array — forced a signal write, and
+        // thus a preview re-render, per token during a reply flood. Only fire when
+        // the live preview actually has lines to clear: the visible collapse is
+        // identical (it was already empty on the write-free path).
+        if (reasoningLines().length > 0) setReasoningLines([]);
       };
       // The reducer owns per-turn call maps; endTurn lands any dangling
       // thinking, finalizes the reply, drops the maps, and stops the spinner.
@@ -1080,6 +1088,14 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "permission-request":
             setPerms((p) => [...p, { id: event.id, toolName: event.toolName, input: event.input }]);
+            break;
+          case "permission-settled":
+            // The engine auto-denied these prompts (abort / shutdown) with no user
+            // answer — drop their cards so a stale prompt doesn't linger into the
+            // next turn, block Esc/plan shortcuts, or let a later keypress write a
+            // false "allowed" notice for a tool that never ran (answerPerm's
+            // `if (!head) return` then makes the answer a silent no-op).
+            setPerms((p) => dropSettledPerms(p, event.ids));
             break;
           case "plan-presented":
             finalizeAssistant();
@@ -2945,8 +2961,12 @@ function ToolBlockView(props: {
   // prefixed with the call's duration when it was slow (≥2s) — a scannable
   // "what cost time" column down a run of steps.
   const duration = () => {
-    const ms = b().elapsedMs;
-    return ms !== undefined && ms >= 2000 ? `${(ms / 1000).toFixed(1)}s` : "";
+    // While a call RUNS, subscribe to the same tick()-driven spinner the chevron
+    // uses so the live elapsed re-renders each frame; a finished row is static.
+    // The label itself (finished wall-clock vs. live ticking elapsed, both gated
+    // at ≥2s so no tool looks dead) is the pure `toolDurationLabel`.
+    if (!b().done && b().startedAt !== undefined) props.spin?.();
+    return toolDurationLabel(b(), Date.now());
   };
   const meta = () =>
     b().collapsed && expandable() ? [duration(), collapsedHint(b())].filter(Boolean).join(" · ") : duration();

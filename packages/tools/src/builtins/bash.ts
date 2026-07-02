@@ -2,6 +2,7 @@ import { z } from "zod";
 import { CappedText, drainTextStream, omittedMarker, type ToolDefinition } from "@vibe/shared";
 import type { BackgroundJobs } from "./jobs.ts";
 import { killTreeAndWait } from "./process-tree.ts";
+import { annotateDenial, type SandboxPolicy, wrapCommand } from "../sandbox.ts";
 
 const Input = z.object({
   command: z.string().describe("Shell command to execute."),
@@ -16,6 +17,12 @@ const Input = z.object({
     .boolean()
     .optional()
     .describe("Run detached and return a job id immediately; poll with job_status."),
+  dangerouslyUnsandboxed: z
+    .boolean()
+    .optional()
+    .describe(
+      "Run OUTSIDE the OS sandbox. Only use when a command legitimately needs to write outside the workspace or reach the network and the sandbox blocks it. Requires an explicit approval (fails closed in headless/auto).",
+    ),
 });
 
 const DEFAULT_TIMEOUT = 120_000;
@@ -24,8 +31,13 @@ const DEFAULT_TIMEOUT = 120_000;
  * dropping the tail would hide exactly the line the model needs to see. */
 const OUTPUT_CAP = 30_000;
 
-/** Build the bash tool. A shared job registry enables `background: true`. */
-export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof Input>> {
+/** Build the bash tool. A shared job registry enables `background: true`; an
+ * optional sandbox policy wraps every foreground spawn (unless the call opts out
+ * with `dangerouslyUnsandboxed`, which the permission engine gates separately). */
+export function bashTool(
+  jobs?: BackgroundJobs,
+  sandbox?: SandboxPolicy,
+): ToolDefinition<z.infer<typeof Input>> {
   return {
     name: "bash",
     description:
@@ -33,7 +45,7 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
     inputSchema: Input,
     readOnly: false,
     concurrencySafe: false,
-    async execute({ command, timeoutMs, background }, ctx) {
+    async execute({ command, timeoutMs, background, dangerouslyUnsandboxed }, ctx) {
       if (background) {
         if (!jobs) {
           return { output: "Background execution is unavailable here.", isError: true };
@@ -44,13 +56,21 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
         };
       }
 
+      // OS sandbox (defense-in-depth under the permission engine): wrap the base
+      // argv unless the model explicitly opted out — which the permission engine
+      // already forced through an explicit, fail-closed approval before we ran.
+      const useSandbox = sandbox !== undefined && !dangerouslyUnsandboxed;
+      const argv = useSandbox
+        ? wrapCommand(sandbox, { cwd: ctx.cwd, command })
+        : ["bash", "-lc", command];
+
       // NOTE: we do NOT hand Bun the abort signal. Bun's `signal` SIGTERMs only
       // the direct `bash` child; its grandchildren (node/vite under `npm run
       // dev`) then reparent to PID 1 and leak, holding their port. We kill the
       // whole tree ourselves — while bash is still alive to be its children's
       // parent, so `pgrep -P` can still find them (a deferred kill after bash
       // exits would find nothing).
-      const proc = Bun.spawn(["bash", "-lc", command], {
+      const proc = Bun.spawn(argv, {
         cwd: ctx.cwd,
         stdout: "pipe",
         stderr: "pipe",
@@ -103,8 +123,13 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
       const status = timedOut
         ? `timed out after ${limit}ms (process killed; rerun with a larger timeoutMs or background:true)`
         : `exit ${code}`;
+      const raw = `${status}\n${trimmed || "(no output)"}`;
+      // On a sandboxed failure, append one actionable line if the output carries
+      // a kernel-denial signature (no-op otherwise, so ordinary failures are
+      // untouched).
+      const output = useSandbox ? annotateDenial(raw, code, sandbox) : raw;
       return {
-        output: `${status}\n${trimmed || "(no output)"}`,
+        output,
         isError: timedOut || code !== 0,
       };
     },

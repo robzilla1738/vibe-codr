@@ -1,9 +1,16 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import type { Handoff, Mode, ToolDefinition } from "@vibe/shared";
+import { createId, type Handoff, type Mode, type ToolDefinition } from "@vibe/shared";
 import { createSemaphore, createSerialLock } from "@vibe/tools";
 import { EventBus as EventBusImpl } from "../event-bus.ts";
+import { ChildRegistry } from "./child-registry.ts";
+import {
+  enforceSchema,
+  structuredDirective,
+  structuredRetryPrompt,
+} from "./structured-output.ts";
 import type { NamedAgent } from "../agents.ts";
 import {
   validateDag,
@@ -75,6 +82,12 @@ export interface SessionHandle {
   fork(overrides: Partial<SessionDeps> & { model?: string }): Session;
   /** Fold a settled child's mutation flag + usage + cost up into the parent. */
   onChildSettled(child: Session): void;
+  /** Release the parent's tree-global limiter slot for the span of `fn` (while a
+   * spawn tool awaits its children the parent makes no provider call), so a queued
+   * child can acquire it — breaking the fan-out hold-and-wait. Ref-counted in the
+   * Session so parallel spawns in one step release/re-acquire the slot once; a
+   * no-op when no limiter is wired. */
+  suspendLimiterSlot<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 /**
@@ -104,6 +117,11 @@ export class OrchestratorRunner {
    * runs on an isolated bus, so we subscribe to it and re-emit throttled activity
    * onto the parent bus, then stop when the child finishes. */
   #childTaps = new Map<string, () => void>();
+  /** Tree-shared registry of retained (continue_subagent) + detached (background)
+   * children, created lazily by the root runner like reportStore. */
+  #childRegistry: ChildRegistry;
+  /** Warn once per session when a requested `detach` is coerced to synchronous. */
+  #detachCoercionWarned = false;
 
   constructor(handle: SessionHandle) {
     this.#handle = handle;
@@ -120,6 +138,15 @@ export class OrchestratorRunner {
     if (!handle.deps.reportStore) {
       handle.deps.reportStore = new ReportStore(handle.deps.cwd, handle.id);
     }
+    // Tree-shared child registry (continuation LRU + detached tracking): created
+    // once by the root, inherited by every fork via `{...deps}`.
+    if (!handle.deps.childRegistry) {
+      handle.deps.childRegistry = new ChildRegistry(
+        handle.deps.config.subagent.retainCompleted,
+        handle.deps.cwd, // the shared-tree cwd — children whose cwd differs (worktree descendants) aren't retained
+      );
+    }
+    this.#childRegistry = handle.deps.childRegistry;
   }
 
   /** Build the per-session `spawn_subagent` tool (closes over this session). */
@@ -127,6 +154,8 @@ export class OrchestratorRunner {
     prompt: string;
     agent?: string;
     mode?: Mode;
+    outputSchema?: Record<string, unknown>;
+    detach?: boolean;
   }> {
     const Input = z.object({
       prompt: z
@@ -140,6 +169,22 @@ export class OrchestratorRunner {
         .optional()
         .describe("Named agent to specialize the subagent (see the roster in the system prompt)."),
       mode: z.enum(["plan", "execute"]).optional(),
+      outputSchema: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe(
+          "Optional JSON Schema. When set, the subagent's FINAL message must be exactly one JSON " +
+            "object matching it — validated, and retried with the errors as feedback on a mismatch. " +
+            "Use when you need the result as machine-consumable structured data.",
+        ),
+      detach: z
+        .boolean()
+        .optional()
+        .describe(
+          "Run the subagent in the BACKGROUND and return its id immediately so you can keep " +
+            "working; collect its result later with check_task. For long, independent work. " +
+            "Interactive sessions only (coerced to synchronous otherwise).",
+        ),
     });
     // NOTE: there is deliberately no `model` parameter. The subagent's model is a
     // user *setting* — `subagent.model` (or a named agent's own `model`), falling
@@ -151,14 +196,17 @@ export class OrchestratorRunner {
       description:
         "Delegate a self-contained subtask to a fresh subagent with its own context " +
         "window; it returns only its final answer. Issue several calls in ONE step to " +
-        "run them in parallel — give each a disjoint set of files. While you are " +
+        "run them in parallel — give each a disjoint set of files. Pass `outputSchema` for a " +
+        "machine-consumable JSON result, or `detach:true` to run it in the background and collect " +
+        "it later with check_task. Follow up with continue_subagent (using the returned id) instead " +
+        "of re-spawning when a child already has the context. While you are " +
         "planning (read-only), subagents are read-only too (investigation only).",
       inputSchema: Input,
       // The spawn itself touches nothing — the child's own tools gate their side
       // effects individually — so don't make orchestration prompt for permission.
       readOnly: true,
       concurrencySafe: true,
-      execute: async ({ prompt, agent, mode }, ctx) => {
+      execute: async ({ prompt, agent, mode, outputSchema, detach }, ctx) => {
         const check = this.#classifyAgent(agent);
         if (!check.ok) {
           if (check.reason === "unknown") {
@@ -189,21 +237,141 @@ export class OrchestratorRunner {
         const named = check.named;
         const child = this.#forkChild(named, mode);
         if (!child) return this.#spawnCeilingError();
-        this.#handle.deps.bus.emit({
-          type: "subagent-started",
-          sessionId: this.#handle.id,
-          subagentId: child.id,
-          prompt,
-        });
-        const { timedOut, aborted } = await this.#runChildToCompletion(child, prompt, ctx.abortSignal);
+        this.#emitStarted(child.id, prompt);
+
+        // Background (detached) spawn: fire the SAME execution path as a tracked,
+        // try/caught promise and return the handle immediately. Interactive +
+        // root-only + under the concurrency ceiling — otherwise coerce to sync so
+        // engine-idle stays the true terminal signal for headless runs and a
+        // background grandchild never emits onto a torn-down subagent bus.
+        if (detach === true && this.#detachAllowed()) {
+          const abort = new AbortController();
+          const promise = this.#runSpawnedChild(child, prompt, outputSchema, abort.signal, false)
+            .then((r) => this.#childRegistry.markDetachedFinished(child.id, { report: r.text, isError: r.isError }))
+            .catch((err) =>
+              this.#childRegistry.markDetachedFinished(child.id, {
+                report: `Background subagent threw: ${(err as Error)?.message ?? String(err)}`,
+                isError: true,
+              }),
+            );
+          this.#childRegistry.registerDetached({
+            id: child.id,
+            kind: "subagent",
+            status: "running",
+            abort,
+            promise,
+            summary: firstLine(prompt),
+          });
+          return {
+            output:
+              `Started subagent \`${child.id}\` in the background. Keep working; call ` +
+              `check_task("${child.id}") to collect its status/result, and it will be summarized ` +
+              "in your next turn when it finishes.",
+          };
+        }
+        if (detach === true) this.#warnDetachCoerced();
+
+        const r = await this.#runSpawnedChild(child, prompt, outputSchema, ctx.abortSignal);
+        return { output: r.text, ...(r.isError ? { isError: true } : {}) };
+      },
+    };
+  }
+
+  /**
+   * Build the per-session `continue_subagent` tool: resume a retained completed
+   * subagent by id with a follow-up message. It keeps its FULL prior context (the
+   * live Session object), so this is cheaper and better-informed than re-spawning
+   * a child that would have to re-investigate. Does NOT fork (spawnCounter is
+   * untouched — no new subagent is created), and re-gates the child to plan when
+   * the parent is now planning, mirroring #forkChild.
+   */
+  continueTool(): ToolDefinition<{ id: string; message: string }> {
+    return {
+      name: "continue_subagent",
+      description:
+        "Resume a previously spawned subagent by its id (returned in a spawn_subagent result) with " +
+        "a follow-up message. It keeps its full prior context — prefer this over spawning a fresh " +
+        "child when one already investigated the relevant area. Unknown or expired ids return an error.",
+      inputSchema: z.object({
+        id: z.string().describe("The id of a subagent from an earlier spawn_subagent result."),
+        message: z.string().describe("The follow-up instruction for that subagent."),
+      }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ id, message }, ctx) => {
+        const child = this.#childRegistry.lookup(id);
+        if (!child) {
+          const max = this.#handle.deps.config.subagent.retainCompleted;
+          return {
+            output:
+              `No retained subagent with id "${id}" — it was never spawned in this session tree, or ` +
+              `has been evicted (only the ${max} most recently used completed subagents are retained). ` +
+              "Spawn a fresh subagent instead.",
+            isError: true,
+          };
+        }
+        // Belt-and-braces beyond the retention guard: a retained child whose
+        // working directory has since vanished (a worktree it descended from was
+        // torn down) can't be resumed — running it would ENOENT. Evict it and
+        // report the expiry honestly rather than crash.
+        if (!existsSync(child.cwd)) {
+          this.#childRegistry.evict(id);
+          return {
+            output:
+              `Subagent "${id}" can no longer be resumed — its working directory was cleaned up ` +
+              "(it ran inside a worktree that has since been removed). Spawn a fresh subagent instead.",
+            isError: true,
+          };
+        }
+        // Re-gate mode like #forkChild: coerce the child to plan while the parent
+        // is planning (read-only), never the other way.
+        if (this.#handle.mode === "plan" && child.mode !== "plan") child.setMode("plan");
+        // The child's isolated bus was closed when its last run settled; give it a
+        // fresh one and re-tap so live activity surfaces during the continuation.
+        const childBus = new EventBusImpl();
+        child.rebindBus(childBus);
+        this.#tapChildActivity(child.id, childBus);
+        this.#emitStarted(child.id, message);
+        const { timedOut, aborted } = await this.#runChildToCompletion(child, message, ctx.abortSignal);
         const outcome = this.#childOutcome(child, timedOut, aborted);
-        this.#handle.deps.bus.emit({
-          type: "subagent-finished",
-          sessionId: this.#handle.id,
-          subagentId: child.id,
-          result: outcome.event,
-        });
-        return { output: capSubagentOutput(outcome.text), ...(outcome.isError ? { isError: true } : {}) };
+        this.#emitFinished(child.id, outcome.event);
+        this.#childRegistry.retain(child); // bump LRU on reuse
+        return {
+          output: capSubagentOutput(outcome.text) + this.#handleSuffix(child.id),
+          ...(outcome.isError ? { isError: true } : {}),
+        };
+      },
+    };
+  }
+
+  /**
+   * Build the per-session `check_task` tool: report the status and (when done)
+   * the report of a DETACHED (background) subagent by its id. Detached
+   * `spawn_tasks` results are also reachable per-task via `read_report`.
+   */
+  checkTaskTool(): ToolDefinition<{ id: string }> {
+    return {
+      name: "check_task",
+      description:
+        "Check a background (detached) spawn by its id (returned when you passed detach:true). " +
+        "Returns whether it is still running or, once finished, its report.",
+      inputSchema: z.object({
+        id: z.string().describe("The id of a background spawn (from a detach:true result)."),
+      }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ id }) => {
+        const rec = this.#childRegistry.getDetached(id);
+        if (!rec) {
+          return { output: `No background spawn with id "${id}" in this session.`, isError: true };
+        }
+        if (rec.status === "running") {
+          return { output: `Background spawn \`${id}\`${rec.summary ? ` (${rec.summary})` : ""} is still running.` };
+        }
+        return {
+          output: `Background spawn \`${id}\` ${rec.status}:\n${capSubagentOutput(rec.report ?? "(no report)")}`,
+          ...(rec.isError ? { isError: true } : {}),
+        };
       },
     };
   }
@@ -224,7 +392,9 @@ export class OrchestratorRunner {
       check?: boolean;
       worktree?: boolean;
       hard?: boolean;
+      outputSchema?: Record<string, unknown>;
     }[];
+    detach?: boolean;
   }> {
     const TaskInput = z.object({
       id: z.string().describe("Stable id, referenced by other tasks' `deps`."),
@@ -257,15 +427,29 @@ export class OrchestratorRunner {
         .describe(
           "Run as a best-of-N ensemble in isolated worktrees; expensive, reserve for genuinely hard tasks.",
         ),
+      outputSchema: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe(
+          "Optional JSON Schema. When set, this (shared-tree) task's FINAL message must be exactly one JSON object matching it — validated and retried on mismatch; the validated JSON becomes the report.",
+        ),
     });
     return {
       name: "spawn_tasks",
       description:
-        "Submit a whole plan of subtasks as a dependency graph; the engine runs it deterministically — every task whose dependencies are done starts immediately (parallel where possible), dependents unlock as inputs complete, and a task whose dependency failed is skipped. Prefer this over many separate spawn_subagent calls for multi-step work: declare `deps` for ordering, disjoint `files` per task, and `verify:true` on a task to have it reviewed and retried. Each task is a fresh subagent; it returns a consolidated report.",
-      inputSchema: z.object({ tasks: z.array(TaskInput).min(1) }),
+        "Submit a whole plan of subtasks as a dependency graph; the engine runs it deterministically — every task whose dependencies are done starts immediately (parallel where possible), dependents unlock as inputs complete, and a task whose dependency failed is skipped. Prefer this over many separate spawn_subagent calls for multi-step work: declare `deps` for ordering, disjoint `files` per task, and `verify:true` on a task to have it reviewed and retried. Pass `detach:true` to run the whole plan in the background and collect each task's report via read_report. Each task is a fresh subagent; it returns a consolidated report.",
+      inputSchema: z.object({
+        tasks: z.array(TaskInput).min(1),
+        detach: z
+          .boolean()
+          .optional()
+          .describe(
+            "Run the whole plan in the BACKGROUND and return immediately; collect each task's report via read_report, or the batch status via check_task. Interactive sessions only.",
+          ),
+      }),
       readOnly: true,
       concurrencySafe: true,
-      execute: async ({ tasks }, ctx) => {
+      execute: async ({ tasks, detach }, ctx) => {
         const specs: TaskSpec[] = tasks.map((t) => ({
           id: t.id,
           objective: t.objective,
@@ -277,36 +461,73 @@ export class OrchestratorRunner {
           ...(t.check ? { check: t.check } : {}),
           ...(t.worktree ? { worktree: t.worktree } : {}),
           ...(t.hard ? { hard: t.hard } : {}),
+          ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
         }));
+        // Validate the plan SYNCHRONOUSLY so a bad plan errors immediately, even
+        // for a detached run (it must not be deferred into the background).
         const dagError = validateDag(specs);
         if (dagError) return { output: `Invalid task plan: ${dagError}`, isError: true };
         for (const s of specs) {
           const err = this.#validateAgentForTask(s.agent);
           if (err) return { output: `Task "${s.id}": ${err}`, isError: true };
         }
-        // Resume seed: completed tasks from a prior run of THIS session's plan
-        // (the journal on disk). runDag honors only ids still in this spec set,
-        // so a re-submitted plan re-runs only what didn't finish. Best-effort —
-        // a missing/torn journal simply yields no seed.
-        const seed = loadCompletedTasks(this.#handle.deps.cwd, this.#handle.id);
-        const results = await runDag(
-          specs,
-          (spec, depResults) => this.#runTask(spec, depResults, ctx.abortSignal),
-          {
-            onStatus: (spec, status, result) =>
-              this.#handle.deps.bus.emit({
-                type: "orchestration-task",
-                sessionId: this.#handle.id,
-                taskId: spec.id,
-                objective: spec.objective,
-                status,
-                ...(result?.attempts !== undefined ? { attempts: result.attempts } : {}),
-                ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+
+        const runPlan = (signal: AbortSignal | undefined, suspendParentSlot: boolean): Promise<string> => {
+          // Resume seed: completed tasks from a prior run of THIS session's plan
+          // (the journal on disk). runDag honors only ids still in this spec set,
+          // so a re-submitted plan re-runs only what didn't finish. Best-effort —
+          // a missing/torn journal simply yields no seed.
+          const seed = loadCompletedTasks(this.#handle.deps.cwd, this.#handle.id);
+          return runDag(
+            specs,
+            (spec, depResults) => this.#runTask(spec, depResults, signal, suspendParentSlot),
+            {
+              onStatus: (spec, status, result) =>
+                this.#handle.deps.bus.emit({
+                  type: "orchestration-task",
+                  sessionId: this.#handle.id,
+                  taskId: spec.id,
+                  objective: spec.objective,
+                  status,
+                  ...(result?.attempts !== undefined ? { attempts: result.attempts } : {}),
+                  ...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+                }),
+              ...(seed.length ? { seed } : {}),
+            },
+          ).then((results) => capSubagentOutput(formatTaskResults(results)));
+        };
+
+        // Background (detached) plan: same execution path, tracked/try-caught, so
+        // finalize can abort+await it and check_task/read_report collect results.
+        if (detach === true && this.#detachAllowed()) {
+          const abort = new AbortController();
+          const batchId = createId("bgtasks");
+          const promise = runPlan(abort.signal, false)
+            .then((report) => this.#childRegistry.markDetachedFinished(batchId, { report, isError: false }))
+            .catch((err) =>
+              this.#childRegistry.markDetachedFinished(batchId, {
+                report: `Background tasks threw: ${(err as Error)?.message ?? String(err)}`,
+                isError: true,
               }),
-            ...(seed.length ? { seed } : {}),
-          },
-        );
-        return { output: capSubagentOutput(formatTaskResults(results)) };
+            );
+          this.#childRegistry.registerDetached({
+            id: batchId,
+            kind: "tasks",
+            status: "running",
+            abort,
+            promise,
+            summary: `${specs.length} task(s)`,
+          });
+          return {
+            output:
+              `Started ${specs.length} task(s) in the background (ids: ${specs.map((s) => s.id).join(", ")}). ` +
+              `Keep working; collect each task's report with read_report, or check_task("${batchId}") for the ` +
+              "batch status. The batch will also be summarized in your next turn when it finishes.",
+          };
+        }
+        if (detach === true) this.#warnDetachCoerced();
+
+        return { output: await runPlan(ctx.abortSignal, true) };
       },
     };
   }
@@ -349,10 +570,14 @@ export class OrchestratorRunner {
     spec: TaskSpec,
     depResults: TaskResult[],
     parentSignal: AbortSignal | undefined,
+    // False for a DETACHED task batch: the spawn_tasks turn already ended and
+    // released the root's limiter slot, so its task children must take their own
+    // slots rather than suspend a slot the root no longer holds.
+    suspendParentSlot = true,
   ): Promise<TaskResult> {
     const build = this.#handle.deps.config.build;
     if (build.ensemble.n > 0 && spec.hard && build.worktrees.enabled) {
-      if (await this.#worktreesUsable()) return this.#runEnsembleTask(spec, depResults, parentSignal);
+      if (await this.#worktreesUsable()) return this.#runEnsembleTask(spec, depResults, parentSignal, suspendParentSlot);
       // Worktrees can't be created here (a non-git cwd, or an unborn HEAD — a
       // greenfield repo with no commit for `worktree add` to fork off). A hard
       // task must still run: fall back to a single shared-tree attempt rather than
@@ -362,14 +587,14 @@ export class OrchestratorRunner {
         level: "info",
         message: `Task "${spec.id}": git worktrees unavailable — running the ensemble as a single shared-tree task.`,
       });
-      return this.#runSharedTask(spec, depResults, parentSignal);
+      return this.#runSharedTask(spec, depResults, parentSignal, suspendParentSlot);
     }
     if (spec.worktree && build.worktrees.enabled) {
       // #runWorktreeTask itself falls back to the shared tree if the worktree
       // can't be created (e.g. a non-git cwd), so no pre-check is needed here.
-      return this.#runWorktreeTask(spec, depResults, parentSignal);
+      return this.#runWorktreeTask(spec, depResults, parentSignal, suspendParentSlot);
     }
-    return this.#runSharedTask(spec, depResults, parentSignal);
+    return this.#runSharedTask(spec, depResults, parentSignal, suspendParentSlot);
   }
 
   /** Whether git worktrees can actually be created in the session cwd. Requires a
@@ -409,6 +634,7 @@ export class OrchestratorRunner {
     spec: TaskSpec,
     depResults: TaskResult[],
     parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
   ): Promise<TaskResult> {
     const mainCwd = this.#handle.deps.cwd;
     const slug = worktreeSlug(spec.id);
@@ -424,7 +650,7 @@ export class OrchestratorRunner {
         level: "info",
         message: `Task "${spec.id}": git worktree unavailable — running in the shared tree.`,
       });
-      return this.#runSharedTask(spec, depResults, parentSignal);
+      return this.#runSharedTask(spec, depResults, parentSignal, suspendParentSlot);
     }
 
     const named = spec.agent ? this.#handle.deps.agents?.get(spec.agent) : undefined;
@@ -452,7 +678,7 @@ export class OrchestratorRunner {
         return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: this.#spawnCeilingError().output, attempts: 1 });
       }
       this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
-      const { timedOut, aborted } = await this.#runChildToCompletion(child, buildTaskKickoff(spec, depResults, ""), parentSignal);
+      const { timedOut, aborted } = await this.#runChildToCompletion(child, buildTaskKickoff(spec, depResults, ""), parentSignal, suspendParentSlot);
       const outcome = this.#childOutcome(child, timedOut, aborted);
       this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
       if (outcome.isError) {
@@ -485,6 +711,12 @@ export class OrchestratorRunner {
             if (gate.outcome === "red") {
               return { ok: false, output: `Checks failed on the merged tree:\n${formatGateFailure(gate, 1)}` };
             }
+            // An interrupted gate produced NO verdict — treat it like red so the
+            // task fails and the merged changes are discarded (the outer finally
+            // tears down the worktree). Never let an interrupt read as a pass.
+            if (gate.outcome === "aborted") {
+              return { ok: false, output: "Gate interrupted before a verdict — merged changes discarded." };
+            }
           }
           // Capture the diff of THIS task's merged changes while the tree is still
           // stable (before releasing the lock lets a sibling merge land).
@@ -496,7 +728,7 @@ export class OrchestratorRunner {
       }
       // Review OUTSIDE the lock (see above) on the diff captured inside it.
       if (spec.verify) {
-        const review = await this.#reviewCapturedDiff(spec, outcome.text, verdict.diff ?? "", parentSignal);
+        const review = await this.#reviewCapturedDiff(spec, outcome.text, verdict.diff ?? "", parentSignal, suspendParentSlot);
         if (!review.clean) {
           return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: `Post-merge review found issues:\n${review.feedback}`, attempts: 1, ...(handoff ? { handoff } : {}) });
         }
@@ -528,6 +760,7 @@ export class OrchestratorRunner {
     spec: TaskSpec,
     depResults: TaskResult[],
     parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
   ): Promise<TaskResult> {
     const mainCwd = this.#handle.deps.cwd;
     const n = Math.min(this.#handle.deps.config.build.ensemble.n, ENSEMBLE_STRATEGIES.length);
@@ -549,7 +782,9 @@ export class OrchestratorRunner {
     const baseRef = await this.#headRef(mainCwd);
 
     const attempts = await Promise.all(
-      Array.from({ length: n }, (_, i) => i).map((i) => this.#runEnsembleAttempt(spec, depResults, parentSignal, i, baseRef)),
+      Array.from({ length: n }, (_, i) => i).map((i) =>
+        this.#runEnsembleAttempt(spec, depResults, parentSignal, i, baseRef, suspendParentSlot),
+      ),
     );
 
     // Safety net: if NO attempt could even create a worktree (born HEAD passed the
@@ -620,6 +855,7 @@ export class OrchestratorRunner {
     parentSignal: AbortSignal | undefined,
     i: number,
     baseRef: string,
+    suspendParentSlot = true,
   ): Promise<EnsembleAttempt> {
     const mainCwd = this.#handle.deps.cwd;
     const profile = this.#handle.deps.repoProfile;
@@ -644,7 +880,7 @@ export class OrchestratorRunner {
       if (!child) return { ...base, wt, verdict: "spawn-ceiling" };
       this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
       const kickoff = `${buildTaskKickoff(spec, depResults, "")}\n\n${strategy.directive}`;
-      const { timedOut, aborted } = await this.#runChildToCompletion(child, kickoff, parentSignal);
+      const { timedOut, aborted } = await this.#runChildToCompletion(child, kickoff, parentSignal, suspendParentSlot);
       const outcome = this.#childOutcome(child, timedOut, aborted);
       this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
       const handoff = parseHandoff(outcome.text) ?? undefined;
@@ -664,7 +900,10 @@ export class OrchestratorRunner {
           timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
           ...(parentSignal ? { signal: parentSignal } : {}),
         });
-        score = gate.outcome === "green" ? 2 : gate.outcome === "red" ? 0 : 1;
+        // An interrupted gate (aborted) scores 0 alongside red: never select
+        // work whose checks the user cut short — an unverified interrupt is not a
+        // tiebreak-eligible "unverified" (score 1), it's a non-result.
+        score = gate.outcome === "green" ? 2 : gate.outcome === "red" || gate.outcome === "aborted" ? 0 : 1;
         verdict = gate.outcome;
       }
       return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score, diffSize, verdict };
@@ -682,9 +921,16 @@ export class OrchestratorRunner {
     spec: TaskSpec,
     depResults: TaskResult[],
     parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
   ): Promise<TaskResult> {
     const named = spec.agent ? this.#handle.deps.agents?.get(spec.agent) : undefined;
-    const maxAttempts = spec.verify ? Math.max(1, this.#handle.deps.config.subagent.verifyMaxAttempts) : 1;
+    // The retry budget spans BOTH the verify→retry loop and structured-output
+    // enforcement — a task can be `verify:true` and/or carry an `outputSchema`.
+    const maxAttempts = Math.max(
+      spec.verify ? this.#handle.deps.config.subagent.verifyMaxAttempts : 1,
+      spec.outputSchema ? this.#handle.deps.config.subagent.structuredMaxAttempts : 1,
+      1,
+    );
     const profile = this.#handle.deps.repoProfile;
     // Both `check:true` and `verify:true` run the real green-gate FIRST when a
     // profile exists — a red tree fails the attempt on machine truth without
@@ -734,6 +980,7 @@ export class OrchestratorRunner {
         child,
         buildTaskKickoff(spec, depResults, feedback),
         parentSignal,
+        suspendParentSlot,
       );
       const outcome = this.#childOutcome(child, timedOut, aborted);
       this.#handle.deps.bus.emit({
@@ -748,6 +995,29 @@ export class OrchestratorRunner {
       // The structured handoff (if the child emitted one) rides to dependents
       // verbatim; the full prose is pull-only via read_report.
       handoff = parseHandoff(outcome.text) ?? undefined;
+
+      // The report the task settles with — the validated JSON when an
+      // outputSchema is set (below), otherwise the child's prose.
+      let reportText = outcome.text;
+      // Structured output: the FINAL message must be exactly one JSON object
+      // matching spec.outputSchema. Validate BEFORE the gate/review so a mismatch
+      // re-runs the child (with the errors as feedback) without spending a gate or
+      // review call; on success the validated JSON becomes the report.
+      if (spec.outputSchema) {
+        const res = enforceSchema(outcome.text, spec.outputSchema);
+        if (!res.ok) {
+          feedback = `Your final message must be exactly one JSON object matching the required schema:\n${res.errors.map((e) => `- ${e}`).join("\n")}`;
+          if (attempts < maxAttempts) continue; // re-run with the validation errors
+          return settle({
+            id: spec.id,
+            objective: spec.objective,
+            outcome: "failed",
+            output: `Structured output invalid after ${attempts} attempt(s):\n${feedback}\n\nRaw final message:\n${res.raw}`,
+            attempts,
+          });
+        }
+        reportText = res.json;
+      }
 
       // Executable verify: run the real checks BEFORE any LLM review. A red gate
       // is machine truth — fail the attempt with the structured, actionable gate
@@ -768,6 +1038,20 @@ export class OrchestratorRunner {
             ...(parentSignal ? { signal: parentSignal } : {}),
           }),
         );
+        // An interrupted gate is a terminal non-verdict: the user hit Esc, so
+        // settle the task FAILED without a verdict and WITHOUT burning a retry —
+        // an interrupt means "stop", never "try again". This must precede the red
+        // branch so a killed check (nonzero exit) can't be re-run in a loop.
+        if (gate.outcome === "aborted") {
+          return settle({
+            id: spec.id,
+            objective: spec.objective,
+            outcome: "failed",
+            output: "Gate interrupted before a verdict — task not verified.",
+            attempts,
+            ...(handoff ? { handoff } : {}),
+          });
+        }
         if (gate.outcome === "red") {
           feedback = formatGateFailure(gate, maxAttempts);
           if (attempts < maxAttempts) continue; // retry with the failing checks
@@ -793,18 +1077,18 @@ export class OrchestratorRunner {
           id: spec.id,
           objective: spec.objective,
           outcome: "completed",
-          output: outcome.text,
+          output: reportText,
           attempts,
           ...(handoff ? { handoff } : {}),
         });
       }
-      const review = await this.#reviewTask(spec, outcome.text, parentSignal);
+      const review = await this.#reviewTask(spec, reportText, parentSignal, suspendParentSlot);
       if (review.clean) {
         return settle({
           id: spec.id,
           objective: spec.objective,
           outcome: "completed",
-          output: outcome.text,
+          output: reportText,
           attempts,
           ...(handoff ? { handoff } : {}),
         });
@@ -844,11 +1128,12 @@ export class OrchestratorRunner {
     spec: TaskSpec,
     work: string,
     parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
   ): Promise<{ clean: boolean; feedback: string }> {
     // Capture the diff, THEN review it (the review reads the captured diff, not the
     // live tree). Split so a caller holding the shared-tree merge lock can capture
     // INSIDE the lock and run the review child OUTSIDE it — see #reviewCapturedDiff.
-    return this.#reviewCapturedDiff(spec, work, await this.#captureTaskDiff(spec), parentSignal);
+    return this.#reviewCapturedDiff(spec, work, await this.#captureTaskDiff(spec), parentSignal, suspendParentSlot);
   }
 
   /**
@@ -865,6 +1150,7 @@ export class OrchestratorRunner {
     work: string,
     diff: string,
     parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
   ): Promise<{ clean: boolean; feedback: string }> {
     const reviewAgent = this.#handle.deps.agents?.get("review");
     if (!reviewAgent && !this.#reviewDegradationWarned) {
@@ -903,7 +1189,7 @@ export class OrchestratorRunner {
         : "") +
       "\nVerify against the diff and the files. Report concrete issues as `path:line — problem`, " +
       "or reply exactly REVIEW-CLEAN if the work is correct and complete.";
-    await this.#runChildToCompletion(child, prompt, parentSignal);
+    await this.#runChildToCompletion(child, prompt, parentSignal, suspendParentSlot);
     const out = child.lastAssistantText();
     return { clean: isReviewClean(out), feedback: out || "(reviewer produced no output)" };
   }
@@ -1051,44 +1337,217 @@ export class OrchestratorRunner {
     this.#childTaps.set(childId, () => childBus.close());
   }
 
+  /** Emit `subagent-started` on the parent bus for `id`. */
+  #emitStarted(id: string, prompt: string): void {
+    this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: id, prompt });
+  }
+
+  /** Emit `subagent-finished` on the parent bus for `id`. */
+  #emitFinished(id: string, result: string): void {
+    this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: id, result });
+  }
+
+  /** Whether a `detach:true` spawn actually runs in the background. Interactive
+   * root sessions only, under the concurrency ceiling: a headless run's true
+   * terminal signal is engine-idle (queue drain), which a background child would
+   * outlive; and a detached grandchild spawned by a subagent would emit onto its
+   * parent's torn-down bus. Both cases coerce detach to synchronous. */
+  #detachAllowed(): boolean {
+    return (
+      this.#handle.deps.interactive === true &&
+      this.#handle.depth === 0 &&
+      this.#childRegistry.runningDetachedCount() < this.#handle.deps.config.subagent.maxDetached
+    );
+  }
+
+  /** One-time notice that a requested detach was coerced to a synchronous run. */
+  #warnDetachCoerced(): void {
+    if (this.#detachCoercionWarned) return;
+    this.#detachCoercionWarned = true;
+    this.#handle.deps.bus.emit({
+      type: "notice",
+      level: "info",
+      message:
+        this.#handle.deps.interactive === true
+          ? "Background subagents at capacity (or nested) — running this detach:true spawn synchronously."
+          : "Background (detach:true) subagents need an interactive session — running synchronously instead.",
+    });
+  }
+
+  /** The follow-up handle appended to a spawn_subagent result so the model knows
+   * it can continue the child. Omitted when continuation is disabled. */
+  #handleSuffix(id: string): string {
+    return this.#handle.deps.config.subagent.retainCompleted > 0
+      ? `\n\n(subagent id: ${id} — follow up with continue_subagent)`
+      : "";
+  }
+
+  /** Retain a completed shared-tree spawn_subagent child for continue_subagent
+   * (no-op when retention is disabled). */
+  #retainCompleted(child: Session): void {
+    this.#childRegistry.retain(child);
+  }
+
+  /**
+   * Run a freshly-forked spawn_subagent child and produce its model-facing output.
+   * The shared funnel for BOTH the synchronous and detached paths: it runs the
+   * child (enforcing `outputSchema` when present), emits `subagent-finished`,
+   * retains the child for continuation, and returns the capped text + error flag.
+   */
+  async #runSpawnedChild(
+    child: Session,
+    prompt: string,
+    outputSchema: Record<string, unknown> | undefined,
+    parentSignal: AbortSignal | undefined,
+    // Whether the parent is AWAITING this child (holds a limiter slot to hand
+    // back). False for a DETACHED child: the spawning turn already ended and
+    // released the parent's slot, so suspending it would release a slot the
+    // parent no longer holds and leak one on re-acquire — the detached child
+    // takes its OWN slot when it runs.
+    suspendParentSlot = true,
+  ): Promise<{ text: string; isError: boolean }> {
+    if (outputSchema) return this.#runStructured(child, prompt, outputSchema, parentSignal, suspendParentSlot);
+    const { timedOut, aborted } = await this.#runChildToCompletion(child, prompt, parentSignal, suspendParentSlot);
+    const outcome = this.#childOutcome(child, timedOut, aborted);
+    this.#emitFinished(child.id, outcome.event);
+    this.#retainCompleted(child);
+    return { text: capSubagentOutput(outcome.text) + this.#handleSuffix(child.id), isError: outcome.isError };
+  }
+
+  /**
+   * Enforce structured output: run the child, extract + validate its final JSON
+   * against `schema`, and on a mismatch re-run the SAME child (keeping its
+   * context) with the validation errors as feedback, up to
+   * subagent.structuredMaxAttempts. Success → the validated JSON string is the
+   * report. Final failure NEVER fabricates an object — it surfaces the errors plus
+   * the raw text so the model can recover. Mirrors the #runSharedTask verify→retry
+   * shape; keeps ONE activity tap across attempts and tears it down at the end.
+   */
+  async #runStructured(
+    child: Session,
+    basePrompt: string,
+    schema: Record<string, unknown>,
+    parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
+  ): Promise<{ text: string; isError: boolean }> {
+    const maxAttempts = Math.max(1, this.#handle.deps.config.subagent.structuredMaxAttempts);
+    let attempts = 0;
+    let errors: string[] = [];
+    let raw = "";
+    try {
+      while (attempts < maxAttempts) {
+        attempts++;
+        const runPrompt =
+          attempts === 1 ? `${basePrompt}${structuredDirective(schema)}` : structuredRetryPrompt(errors);
+        const { timedOut, aborted } = await this.#runChildOnce(child, runPrompt, parentSignal, suspendParentSlot);
+        const outcome = this.#childOutcome(child, timedOut, aborted);
+        if (outcome.isError) {
+          // A timeout / interrupt / hard failure isn't a schema mismatch — surface
+          // it directly rather than pretending it's retryable output.
+          this.#emitFinished(child.id, outcome.event);
+          this.#retainCompleted(child);
+          return { text: capSubagentOutput(outcome.text), isError: true };
+        }
+        const result = enforceSchema(child.lastAssistantText(), schema);
+        if (result.ok) {
+          this.#emitFinished(child.id, result.json);
+          this.#retainCompleted(child);
+          // Pristine JSON — deliberately NO continue-handle suffix (it would break
+          // a machine consumer). The child is still retained for follow-up.
+          return { text: capSubagentOutput(result.json), isError: false };
+        }
+        errors = result.errors;
+        raw = result.raw;
+      }
+      const msg =
+        `Subagent output did not match the required JSON schema after ${attempts} attempt(s).\n` +
+        `Validation errors:\n${errors.map((e) => `- ${e}`).join("\n")}\n\n` +
+        `Raw final message:\n${raw || "(empty)"}`;
+      this.#emitFinished(child.id, `schema mismatch after ${attempts} attempt(s)`);
+      this.#retainCompleted(child);
+      return { text: capSubagentOutput(msg), isError: true };
+    } finally {
+      this.#teardownTap(child.id);
+    }
+  }
+
+  /** Stop and drop a child's live-activity tap (closes its isolated bus). */
+  #teardownTap(childId: string): void {
+    const stopTap = this.#childTaps.get(childId);
+    if (stopTap) {
+      this.#childTaps.delete(childId);
+      stopTap();
+    }
+  }
+
   /**
    * Run a forked child to completion through the fan-out gate + per-subagent
    * wall-clock timeout, propagating a parent abort and folding the child's
-   * usage/cost up into this session. Returns whether the timeout fired.
+   * usage/cost up into this session, then tearing down its activity tap. Returns
+   * whether the timeout fired. The single-run funnel used by every task path.
    */
   async #runChildToCompletion(
     child: Session,
     prompt: string,
     parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
+  ): Promise<{ timedOut: boolean; aborted: boolean }> {
+    try {
+      return await this.#runChildOnce(child, prompt, parentSignal, suspendParentSlot);
+    } finally {
+      // Stop the live-activity tap now the child has finished emitting (closes its
+      // isolated bus, which drains any buffered events then ends the tap loop).
+      this.#teardownTap(child.id);
+    }
+  }
+
+  /**
+   * ONE run of a child through the gate + limiter-suspend + wall-clock timeout,
+   * folding usage up on settle. Does NOT tear down the activity tap, so a
+   * multi-attempt caller (structured enforcement) can keep it alive across
+   * attempts and tear it down once at the end. `suspendParentSlot` is false for a
+   * DETACHED child (the parent isn't awaiting it — see #runSpawnedChild).
+   */
+  async #runChildOnce(
+    child: Session,
+    prompt: string,
+    parentSignal: AbortSignal | undefined,
+    suspendParentSlot = true,
   ): Promise<{ timedOut: boolean; aborted: boolean }> {
     const onAbort = () => child.abort();
     parentSignal?.addEventListener("abort", onAbort, { once: true });
     let timedOut = false;
+    // The child's actual provider run, guarded by the per-child wall-clock timeout.
+    const invoke = (): Promise<void> => {
+      // If the user aborted while this child was still queued, don't burn a
+      // model call — the parent turn is already unwinding.
+      if (parentSignal?.aborted) return Promise.resolve();
+      // Wall-clock guard: a hung provider stream can't wedge the gate forever.
+      const timeoutMs = this.#handle.deps.config.subagent.timeoutMs;
+      if (!timeoutMs) return child.run(prompt);
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.abort();
+      }, timeoutMs);
+      return child.run(prompt).finally(() => clearTimeout(timer));
+    };
     try {
       // Bound concurrent fan-out: at most `subagent.maxParallel` children run at
       // once; extras queue. Parallel calls in one step share this gate.
-      await this.#childGate(() => {
-        // If the user aborted while this child was still queued, don't burn a
-        // model call — the parent turn is already unwinding.
-        if (parentSignal?.aborted) return Promise.resolve();
-        // Wall-clock guard: a hung provider stream can't wedge the gate forever.
-        const timeoutMs = this.#handle.deps.config.subagent.timeoutMs;
-        if (!timeoutMs) return child.run(prompt);
-        const timer = setTimeout(() => {
-          timedOut = true;
-          child.abort();
-        }, timeoutMs);
-        return child.run(prompt).finally(() => clearTimeout(timer));
-      });
+      await this.#childGate(() =>
+        // When the parent AWAITS this child it makes NO provider call, so hand its
+        // tree-global limiter slot back for the child's span: a child inherits the
+        // same limiter (fork), and without releasing here the parent's held slot +
+        // the child's queued acquire is a hold-and-wait that deadlocks a deep or
+        // recursive fan-out once the wall-clock escape above is disabled
+        // (`subagent.timeoutMs:0`). Ref-counted in the Session, so N parallel
+        // children release/re-acquire the one slot exactly once. A DETACHED child
+        // is NOT awaited by a slot-holding parent, so it must NOT suspend — it
+        // takes its own slot via child.run's own limiter guard.
+        suspendParentSlot ? this.#handle.suspendLimiterSlot(invoke) : invoke(),
+      );
     } finally {
       parentSignal?.removeEventListener("abort", onAbort);
-      // Stop the live-activity tap now the child has finished emitting (closes its
-      // isolated bus, which drains any buffered events then ends the tap loop).
-      const stopTap = this.#childTaps.get(child.id);
-      if (stopTap) {
-        this.#childTaps.delete(child.id);
-        stopTap();
-      }
     }
     // Fold the child's mutation flag + tokens + cost into the parent (the child
     // runs on an isolated bus), so auto-verify, `/cost`, and the spend guard all
@@ -1186,8 +1645,17 @@ function buildTaskKickoff(spec: TaskSpec, depResults: TaskResult[], feedback: st
   if (feedback) {
     parts.push(`A previous attempt was reviewed and needs fixing before this is acceptable:\n${feedback}`);
   }
-  parts.push(HANDOFF_INSTRUCTION);
+  // A structured task's final message must be ONLY JSON — the handoff fence would
+  // violate that, so it replaces the handoff instruction with the schema directive.
+  parts.push(spec.outputSchema ? structuredDirective(spec.outputSchema) : HANDOFF_INSTRUCTION);
   return parts.join("\n\n");
+}
+
+/** The first non-empty line of a prompt, trimmed and capped — a compact label for
+ * a detached child in check_task + the background-finished surfacing. */
+function firstLine(text: string): string {
+  const line = (text ?? "").split("\n").map((l) => l.trim()).find((l) => l.length) ?? "";
+  return line.length > 80 ? `${line.slice(0, 80)}…` : line;
 }
 
 /**

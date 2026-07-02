@@ -49,8 +49,12 @@ export interface CheckSignal {
 /** The green-gate's overall outcome for one gated turn. */
 export interface GateSummary {
   /** "green" = every check passed; "red" = at least one failed;
-   * "unverified" = no trustworthy check command exists to run. */
-  outcome: "green" | "red" | "unverified";
+   * "unverified" = no trustworthy check command exists to run;
+   * "aborted" = the run was interrupted (Esc / timeout) before it reached a
+   * verdict — a terminal NON-verdict that must never be read as green or red
+   * (a check killed mid-run exits nonzero, which would otherwise scan as a false
+   * RED; a break between checks would otherwise bucket as a false GREEN). */
+  outcome: "green" | "red" | "unverified" | "aborted";
   checks: CheckSignal[];
   /** Which fix round produced this result (0 = the original turn). */
   round: number;

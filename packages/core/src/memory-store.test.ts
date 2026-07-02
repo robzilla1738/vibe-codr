@@ -1,9 +1,10 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appendMemory, gatherMemoryDocs } from "./memory-store.ts";
+import { MAX_MEMORY_BYTES } from "./memory.ts";
 import { chunkMarkdown } from "./chunk.ts";
 
 test("appendMemory writes a single day header, then one heading per fact", async () => {
@@ -132,6 +133,154 @@ test("scope 'user' appends one-line bullets to the always-injected USER.md, with
     if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = prev;
   }
+});
+
+test("saving a user preference past the injection budget reports overBudget honestly", async () => {
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "vibe-mstore-userbudget-"));
+  try {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-mstore-userbudget-cwd-"));
+    const memDir = join(process.env.XDG_CONFIG_HOME!, "vibe-codr", "memory");
+    await mkdir(memDir, { recursive: true });
+    // Pre-fill USER.md well OVER the injection cap so the next save keeps it over.
+    const filler = Array.from(
+      { length: Math.ceil(MAX_MEMORY_BYTES / 30) },
+      (_, i) => `- preexisting preference number ${i} kept as byte padding`,
+    ).join("\n");
+    await writeFile(join(memDir, "USER.md"), `${filler}\n`);
+    const over = await appendMemory(cwd, { fact: "prefers dark mode everywhere", scope: "user" });
+    expect(over.deduped).toBe(false);
+    expect(over.overBudget).toBe(true);
+
+    // A save that leaves USER.md WITHIN budget carries no overBudget flag.
+    process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "vibe-mstore-smallbudget-"));
+    const ok = await appendMemory(cwd, { fact: "uses fish shell", scope: "user" });
+    expect(ok.deduped).toBe(false);
+    expect(ok.overBudget).toBeUndefined();
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prev;
+  }
+});
+
+test("a fact equal to a USER.md header phrase is saved, not falsely deduped (real dup still dedups)", async () => {
+  const prev = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "vibe-mstore-hdrphrase-"));
+  try {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-mstore-hdrphrase-cwd-"));
+    const userPath = join(process.env.XDG_CONFIG_HOME!, "vibe-codr", "memory", "USER.md");
+    // Materialize USER.md WITH its boilerplate header — whose prose contains the
+    // phrase "all projects". A later short fact equal to that phrase must still save
+    // (the header is boilerplate, not stored fact content).
+    await appendMemory(cwd, { fact: "uses fish shell", scope: "user" });
+    const saved = await appendMemory(cwd, { fact: "all projects", scope: "user" });
+    expect(saved.deduped).toBe(false);
+    expect(await Bun.file(userPath).text()).toContain("- all projects");
+    // A genuine duplicate bullet (case + trailing punctuation) still dedups.
+    const dup = await appendMemory(cwd, { fact: "All projects.", scope: "user" });
+    expect(dup.deduped).toBe(true);
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prev;
+  }
+});
+
+test("dated dedup excludes heading boilerplate (the timestamp) but keeps fact content", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-datedhdr-"));
+  await appendMemory(dir, { fact: "the API listens on port 8080" }, new Date("2026-06-30T12:00:00Z"));
+  // "12:00:00" is the `## HH:MM:SS —` heading's timestamp boilerplate, not fact
+  // content — a fact equal to it must NOT be swallowed as a duplicate.
+  const ts = await appendMemory(dir, { fact: "12:00:00" }, new Date("2026-06-30T12:00:05Z"));
+  expect(ts.deduped).toBe(false);
+  // A real duplicate of a stored fact (which lives INSIDE its `## HH:MM:SS —`
+  // heading) still dedups.
+  const dup = await appendMemory(dir, { fact: "The API listens on port 8080." }, new Date("2026-06-30T12:00:06Z"));
+  expect(dup.deduped).toBe(true);
+});
+
+test("appendMemory writes atomically and leaves no stray temp file on success", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-atomic-"));
+  const now = new Date("2026-06-30T08:00:00Z");
+  await appendMemory(dir, { fact: "uses bun test for the suite" }, now);
+  const memDir = join(dir, ".vibe", "memory");
+  // The temp+rename append must clean up after itself — no `*.tmp` sibling left.
+  expect(readdirSync(memDir).some((f) => f.includes(".tmp"))).toBe(false);
+  expect(await Bun.file(join(memDir, "2026-06-30.md")).text()).toContain("uses bun test");
+});
+
+test("a mid-append write failure leaves the existing dated file intact with no temp", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-atomicfail-"));
+  await appendMemory(dir, { fact: "first durable fact about neon" }, new Date("2026-06-30T08:00:00Z"));
+  const file = join(dir, ".vibe", "memory", "2026-06-30.md");
+  const before = await Bun.file(file).text();
+  const orig = Bun.write;
+  try {
+    (Bun as unknown as { write: unknown }).write = () => {
+      throw new Error("injected append failure");
+    };
+    await expect(
+      appendMemory(dir, { fact: "second fact about postgres" }, new Date("2026-06-30T08:00:05Z")),
+    ).rejects.toThrow("injected append failure");
+  } finally {
+    (Bun as unknown as { write: typeof orig }).write = orig;
+  }
+  // The prior day file is byte-for-byte intact (temp+rename never replaced it) …
+  expect(await Bun.file(file).text()).toBe(before);
+  // … and no temp leaked from the failed write.
+  expect(readdirSync(join(dir, ".vibe", "memory")).some((f) => f.includes(".tmp"))).toBe(false);
+});
+
+test("a paraphrased near-duplicate DIGEST is fuzzily deduped (exact-substring misses it)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-fuzzy-"));
+  // A reordering of the same session summary — NOT a verbatim substring, so the
+  // exact `containsFact` check misses it; the session-digest fuzzy guard catches it.
+  const d1 = "atomic temp file rename added to edit and write tools plus fuzzy digest dedup guard";
+  const d2 = "fuzzy digest dedup guard plus atomic temp file rename added to edit and write tools now";
+  const first = await appendMemory(dir, { fact: d1, tags: ["session-digest"] }, new Date("2026-06-30T09:00:01Z"));
+  expect(first.deduped).toBe(false);
+  const second = await appendMemory(dir, { fact: d2, tags: ["session-digest"] }, new Date("2026-06-30T09:00:02Z"));
+  expect(second.deduped).toBe(true);
+  // No second heading was appended.
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  expect(text.match(/^## /gm)).toHaveLength(1);
+});
+
+test("a genuinely different DIGEST still saves (fuzzy guard doesn't over-dedup)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-fuzzy2-"));
+  const d1 = "atomic temp file rename added to edit and write tools plus fuzzy digest dedup guard";
+  const d3 = "the build pipeline now runs turbo across every workspace and caches compiled outputs remotely";
+  await appendMemory(dir, { fact: d1, tags: ["session-digest"] }, new Date("2026-06-30T09:00:01Z"));
+  const other = await appendMemory(dir, { fact: d3, tags: ["session-digest"] }, new Date("2026-06-30T09:00:02Z"));
+  expect(other.deduped).toBe(false);
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  expect(text.match(/^## /gm)).toHaveLength(2);
+});
+
+test("a SHORT digest is never fuzzily deduped away (min-token guard against false positives)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-fuzzyshort-"));
+  // Two SHORT digests that are pure reorderings (Jaccard 1.0) — but below the
+  // fuzzy min-token threshold, so the near-match guard does NOT apply and both save.
+  const s1 = "uses bun turbo and biome";
+  const s2 = "biome and turbo bun uses";
+  const first = await appendMemory(dir, { fact: s1, tags: ["session-digest"] }, new Date("2026-06-30T09:00:01Z"));
+  expect(first.deduped).toBe(false);
+  const second = await appendMemory(dir, { fact: s2, tags: ["session-digest"] }, new Date("2026-06-30T09:00:02Z"));
+  expect(second.deduped).toBe(false);
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  expect(text.match(/^## /gm)).toHaveLength(2);
+});
+
+test("an untagged plain save is NOT fuzzily deduped (fuzzy guard is digest-only)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-fuzzyuntagged-"));
+  const d1 = "atomic temp file rename added to edit and write tools plus fuzzy digest dedup guard";
+  const d2 = "fuzzy digest dedup guard plus atomic temp file rename added to edit and write tools now";
+  // Without the session-digest tag, only exact-substring dedup applies — a
+  // reworded near-dup still saves (a model-intended save is never fuzzily dropped).
+  await appendMemory(dir, { fact: d1 }, new Date("2026-06-30T09:00:01Z"));
+  const second = await appendMemory(dir, { fact: d2 }, new Date("2026-06-30T09:00:02Z"));
+  expect(second.deduped).toBe(false);
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  expect(text.match(/^## /gm)).toHaveLength(2);
 });
 
 test("concurrent saves to the same dated file don't lose entries (atomic append)", async () => {

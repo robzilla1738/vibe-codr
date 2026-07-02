@@ -1,8 +1,9 @@
 import { join, resolve } from "node:path";
 import type { EngineCommand, UIEvent } from "@vibe/shared";
+import { ACCENT_PRESETS, THEME_NAMES } from "@vibe/shared";
 import type { Config, ModelPrice } from "@vibe/config";
 import type { CatalogService, ProviderRegistry, ModelInfo } from "@vibe/providers";
-import type { Toolset } from "@vibe/tools";
+import type { SandboxPolicy, Toolset } from "@vibe/tools";
 import type { CommandRegistry, SkillRegistry } from "@vibe/plugins";
 import type { Session } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
@@ -25,11 +26,14 @@ import { searchSessions, formatRecall } from "./recall.ts";
 import { formatMemoryHits } from "./memory-search.ts";
 import type { MemoryService } from "./memory-service.ts";
 import { loadMemorySources, formatMemory } from "./memory.ts";
-import { reasoningSupported } from "./model-tuning.ts";
+import { reasoningCategory } from "./model-tuning.ts";
 import type { CheckpointManager } from "./checkpoints.ts";
 import type { SessionStore } from "./store.ts";
 import type { GitRunResult } from "./git-info.ts";
 import type { McpServerStatus } from "./mcp.ts";
+import type { LspStatus } from "./diagnostics.ts";
+import { crashDoctorCheck, recentCrashes } from "./crash.ts";
+import { readUpdateCache, updateDoctorCheck } from "./update-check.ts";
 
 /** Char cap for a diff embedded into a `/review` prompt — bounds the token cost
  * of reviewing a large working tree (the model reads specific files for more). */
@@ -70,6 +74,8 @@ export interface EngineHandle {
   readonly checkpoints: CheckpointManager;
   /** Saved-session store for /resume. */
   readonly store: SessionStore;
+  /** Resolved OS-sandbox policy (for /doctor). */
+  readonly sandbox: SandboxPolicy;
 
   /** Emit a UI notice. */
   notice(message: string, level?: "info" | "warn" | "error"): void;
@@ -107,6 +113,8 @@ export interface EngineHandle {
   resolvePricing(model: string): Promise<(ModelPrice & { estimated?: boolean }) | undefined>;
   /** Snapshot of connected/failed MCP servers. */
   mcpStatus(): McpServerStatus[];
+  /** Per-language LSP server status (empty on the TS-only path). */
+  lspStatus(): LspStatus[];
   /** Run a git command in the workspace. */
   git(args: string[]): Promise<GitRunResult>;
 }
@@ -533,13 +541,26 @@ function handleReasoning(h: EngineHandle, args: string): void {
   }
   h.config.reasoning.effort = next;
   void h.persistConfig({ reasoning: { effort: next } });
-  if (reasoningSupported(h.session.model)) {
-    h.notice(`Reasoning effort: ${next}.`);
-  } else {
-    h.notice(
-      `Reasoning effort: ${next}. Note: ${h.session.model} likely ignores it (local/non-reasoning model).`,
-      "warn",
-    );
+  // Tell the truth about whether the effort actually reaches the model: only
+  // forwarded providers (anthropic, openai) send the hint. A natively-reasoning
+  // model on an openai-compatible transport (xai, openrouter, codex, deepseek)
+  // reasons regardless but never sees the hint, so an affirmative confirmation
+  // there would be a fabricated success.
+  switch (reasoningCategory(h.session.model)) {
+    case "forwarded":
+      h.notice(`Reasoning effort: ${next}.`);
+      break;
+    case "native":
+      h.notice(
+        `Reasoning effort: ${next}. Note: ${h.session.model} reasons natively — the effort hint is not forwarded on this transport.`,
+      );
+      break;
+    default:
+      h.notice(
+        `Reasoning effort: ${next}. Note: ${h.session.model} likely ignores it (local/non-reasoning model).`,
+        "warn",
+      );
+      break;
   }
 }
 
@@ -558,8 +579,8 @@ function handleTheme(h: EngineHandle, args: string): void {
     return;
   }
   // Validate before confirming so we don't report success for a name that
-  // silently falls back to the default palette. (Mirrors tui's THEME_NAMES;
-  // core can't import the UI package, so the known set is kept in sync here.)
+  // silently falls back to the default palette. The known set IS the shared
+  // `THEME_NAMES` (see KNOWN_THEMES) — the TUI renders the matching palette.
   if (!KNOWN_THEMES.has(next)) {
     h.notice(`Unknown theme "${next}". Available: ${themeList()}.`, "warn");
     return;
@@ -750,6 +771,13 @@ async function handleDoctor(h: EngineHandle): Promise<void> {
   });
 
   checks.push(searchDoctorCheck(h.config.search.enabled, h.config.search.apiKey || process.env.TINYFISH_API_KEY));
+  checks.push(lspDoctorCheck(h.config.lsp.enabled, h.lspStatus()));
+  checks.push(sandboxDoctorCheck(h.sandbox));
+
+  // Update status (read from the cached startup check — no network here) and
+  // recent-crash visibility, so a silent crash or a stale build surfaces here.
+  checks.push(updateDoctorCheck(await readUpdateCache()));
+  checks.push(crashDoctorCheck(recentCrashes(7)));
 
   h.notice(formatDoctor(checks));
 }
@@ -769,6 +797,63 @@ export function searchDoctorCheck(enabled: boolean, key: string | undefined): Do
       : key
         ? "enabled (keyless engines + TinyFish key)"
         : "enabled (keyless engines; set TINYFISH_API_KEY to add TinyFish)",
+  };
+}
+
+/**
+ * The `/doctor` multi-language LSP line. Honest by design (LSP is advisory,
+ * never a gate): `ok:null` when off or when nothing is active yet (no non-TS file
+ * has been diagnosed and nothing is configured-but-missing — a neutral `○`, not a
+ * failure); `ok:false` only when a server crashed (restart gave up) or a
+ * configured/edited language has no server binary; else `ok:true` with the running
+ * servers. Pure over the status snapshot so the honesty invariant is tested.
+ */
+export function lspDoctorCheck(enabled: boolean, servers: LspStatus[]): DoctorCheck {
+  if (!enabled) {
+    return { label: "lsp", ok: null, detail: "off (set lsp.enabled to use multi-language diagnostics)" };
+  }
+  if (servers.length === 0) {
+    return { label: "lsp", ok: null, detail: "no language servers active (no non-TS files diagnosed)" };
+  }
+  const crashed = servers.filter((s) => s.state === "crashed");
+  const missing = servers.filter((s) => s.state === "missing");
+  const live = servers.filter((s) => s.state === "running" || s.state === "starting" || s.state === "idle");
+  const parts: string[] = [];
+  if (live.length) {
+    parts.push(live.map((s) => `${s.language}→${s.command ?? "?"}`).join(", "));
+  }
+  if (missing.length) parts.push(`no server for: ${missing.map((s) => s.language).join(", ")}`);
+  if (crashed.length) parts.push(`crashed: ${crashed.map((s) => s.language).join(", ")}`);
+  return {
+    label: "lsp",
+    // A missing server for a language actually edited/configured is a real gap
+    // worth flagging (✗); a crash is a ✗. Otherwise the running set is ✓.
+    ok: crashed.length === 0 && missing.length === 0,
+    detail: parts.join(" · ") || "no language servers active",
+  };
+}
+
+/**
+ * The `/doctor` OS-sandbox line. `off` and `unavailable` are honestly `ok:null`
+ * (a neutral `○`, not a failure — off is the shipped default and an unsupported
+ * platform is expected); an active backstop is `ok:true`. Pure + exported so the
+ * honesty invariant is tested.
+ */
+export function sandboxDoctorCheck(policy: SandboxPolicy): DoctorCheck {
+  if (policy.mode === "off") {
+    return {
+      label: "sandbox",
+      ok: null,
+      detail: "off (opt-in — set sandbox.mode to workspace-write or read-only)",
+    };
+  }
+  if (!policy.available) {
+    return { label: "sandbox", ok: null, detail: policy.warning ?? "unavailable on this platform" };
+  }
+  return {
+    label: "sandbox",
+    ok: true,
+    detail: `${policy.backend} · mode:${policy.mode} · network:${policy.network}`,
   };
 }
 
@@ -814,40 +899,11 @@ async function handleCheckpoints(h: EngineHandle): Promise<void> {
   );
 }
 
-/** Selectable UI theme names (kept in sync with `@vibe/tui`'s THEME_NAMES). */
-const KNOWN_THEMES = new Set([
-  "default",
-  "dark",
-  "light",
-  "contrast",
-  "opencode",
-  "tokyonight",
-  "catppuccin",
-  "gruvbox",
-  "nord",
-  "one-dark",
-  "dracula",
-  "rosepine",
-  "kanagawa",
-  "everforest",
-  "flexoki",
-  "vesper",
-]);
-
-/** Named accent presets (kept in sync with `@vibe/tui`'s ACCENT_PRESETS — core
- * can't import the UI package). `/accent orange` resolves here to its hex, so
- * the emitted `accent-changed` always carries a hex and the UIs need no map. */
-const ACCENT_PRESETS: Record<string, string> = {
-  blue: "#70cbf4",
-  orange: "#fab283",
-  ember: "#ff966c",
-  amber: "#e0af68",
-  green: "#9ece6a",
-  teal: "#2ac3de",
-  violet: "#bb9af7",
-  rose: "#f7768e",
-  white: "#e6e6e6",
-};
+/** Selectable UI theme names — the single source of truth is `@vibe/shared`'s
+ * `THEME_NAMES` (the TUI keeps the matching palettes; `ACCENT_PRESETS` is shared
+ * likewise). Core validates `/theme` against this set so a name that would fall
+ * back to the default palette is rejected instead of silently confirmed. */
+const KNOWN_THEMES = new Set(THEME_NAMES);
 
 /** Safety-critical built-in slash commands a custom command must not shadow.
  * Only names with a real built-in handler belong here — listing a phantom (there

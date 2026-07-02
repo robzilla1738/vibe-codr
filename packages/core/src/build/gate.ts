@@ -53,7 +53,12 @@ export async function runGate(
   const exec = opts.exec ?? bunExec();
   const checks: CheckSignal[] = [];
   for (const { check, command } of runnable) {
-    if (opts.signal?.aborted) break;
+    // Abort is a terminal NON-verdict, never a verdict. A bare `break` here fell
+    // through to the green/red (or "unverified") bucketing below, so an Esc
+    // between checks read as a false GREEN (the checks that DID run all passed)
+    // and an Esc before the first check read as a false "unverified" — both
+    // dishonest. Commands existed and the work is simply unverified-by-interrupt.
+    if (opts.signal?.aborted) return { outcome: "aborted", checks, round };
     const started = Date.now();
     const r = await exec(command, {
       cwd,
@@ -62,10 +67,17 @@ export async function runGate(
       timeoutSec: opts.timeoutSec && opts.timeoutSec > 0 ? opts.timeoutSec : 600,
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
+    // The abort may have KILLED this run mid-flight (SIGTERM → nonzero exit).
+    // parseCheckOutput would bucket that killed run as a real failure (false RED),
+    // so check the signal BEFORE parsing: an interrupt is the honest verdict.
+    if (opts.signal?.aborted) return { outcome: "aborted", checks, round };
     const parsed = parseCheckOutput(check, r.out, r.code);
     checks.push({ check, command, ...parsed, durationMs: Date.now() - started });
     if (!parsed.pass) break; // fail fast
   }
+  // Guard the window between the last exec and bucketing too — an abort that
+  // lands here is still a non-verdict, not the green/red the checks imply.
+  if (opts.signal?.aborted) return { outcome: "aborted", checks, round };
   if (!checks.length) return { outcome: "unverified", checks: [], round };
   return { outcome: checks.every((c) => c.pass) ? "green" : "red", checks, round };
 }
@@ -89,6 +101,12 @@ export function formatGateFailure(summary: GateSummary, maxRounds: number): stri
 export function formatGateOutcome(summary: GateSummary): string {
   if (summary.outcome === "unverified") {
     return "Gate: UNVERIFIED — no build/test command detected, so the work was not machine-verified.";
+  }
+  // ABORTED renders on its own line — it must NOT fall into the per-check parts
+  // map below, which would print a misleading "typecheck ✓" list for checks the
+  // interrupt cut short.
+  if (summary.outcome === "aborted") {
+    return "Gate: ABORTED — interrupted before a verdict; work not machine-verified.";
   }
   const parts = summary.checks.map((c) =>
     c.pass ? `${c.check} ✓${c.total ? ` ${c.total - c.failed}/${c.total}` : ""}` : `${c.check} ✗ ${c.failed} failing`,

@@ -1,9 +1,59 @@
 import { resolve } from "node:path";
+import { rename, chmod, rm } from "node:fs/promises";
+import { statSync, lstatSync, realpathSync } from "node:fs";
 import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "@vibe/shared";
 import { unifiedDiff } from "../diff.ts";
 import { withFileLock } from "../toolset.ts";
 import { assertFresh, recordSeen } from "./freshness.ts";
+
+/** Monotonic per-process counter for unique temp names (paired with the pid), so
+ * two concurrent writers never collide on one temp path. */
+let writeSeq = 0;
+
+/**
+ * Dereference a symlink to the real file it points at. Temp+rename swaps the inode
+ * AT the given path, so renaming over a symlink would replace the LINK with a
+ * regular file and strand its target byte-for-byte stale. Editing THROUGH a link
+ * must instead update the target in place, so we resolve it and land the atomic
+ * swap on the real path (its temp sits beside it, staying on one filesystem).
+ * `lstat` (not `stat`) so the link is detected rather than followed; a non-symlink
+ * — or a path that doesn't exist yet — is returned unchanged.
+ */
+function derefSymlink(full: string): string {
+  try {
+    if (lstatSync(full).isSymbolicLink()) return realpathSync(full);
+  } catch {
+    // Nothing at `full` (or an unreadable link) — nothing to dereference.
+  }
+  return full;
+}
+
+/**
+ * Replace `full`'s contents ATOMICALLY: write to a per-write-unique temp file in
+ * the SAME directory (rename is only atomic WITHIN one filesystem, so a temp in
+ * `/tmp` could cross a mount boundary and silently degrade to a copy), preserve
+ * the original file's mode across the rename, then rename over the target. A
+ * crash mid-write leaves the ORIGINAL byte-for-byte intact — the torn bytes only
+ * ever land in the temp, never the real path, closing the truncation window that
+ * an in-place `Bun.write` leaves open. On any failure we unlink our own temp and
+ * re-throw so the caller still learns the write failed. Mirrors the session
+ * store's temp+rename discipline (pid + counter suffix, cleanup-on-failure).
+ */
+async function atomicReplace(full: string, data: string, mode: number): Promise<void> {
+  const target = derefSymlink(full);
+  const tmp = `${target}.${process.pid}.${writeSeq++}.tmp`;
+  try {
+    await Bun.write(tmp, data);
+    // rename drops the original inode, so its mode would be lost — an edited
+    // executable script must stay +x. Carry the original mode onto the temp.
+    await chmod(tmp, mode);
+    await rename(tmp, target);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw err;
+  }
+}
 
 const SingleEdit = z.object({
   oldString: z.string().describe("Exact text to replace."),
@@ -160,7 +210,9 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
         return { output: `No changes: replacement matched existing content in ${path}.` };
       }
 
-      await Bun.write(full, buffer);
+      // Temp+rename so a crash can't leave a truncated file (see atomicReplace).
+      // The file exists (checked above), so its mode is preservable.
+      await atomicReplace(full, buffer, statSync(full).mode);
       // Advance the freshness baseline to our own write's mtime so the next edit
       // in this session doesn't mistake our change for an external one.
       recordSeen(ctx.sessionId, full);

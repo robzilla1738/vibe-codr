@@ -137,11 +137,15 @@ function loadReadable(): Promise<ReadableFn | null> {
   if (readableLoader) return readableLoader;
   readableLoader = (async () => {
     try {
-      // Non-literal specifiers: absent deps degrade to htmlToText, never throw at boot.
-      const linkedom = (await import("linkedom" as string)) as {
+      // Non-literal specifiers via VARIABLES: absent deps degrade to htmlToText,
+      // never throw at boot (a cast erases at transpile time and the bundler
+      // would statically pull these into the compiled binary).
+      const linkedomSpec = "linkedom";
+      const linkedom = (await import(linkedomSpec)) as {
         parseHTML: (html: string) => { document: unknown };
       };
-      const readability = (await import("@mozilla/readability" as string)) as {
+      const readabilitySpec = "@mozilla/readability";
+      const readability = (await import(readabilitySpec)) as {
         Readability: new (doc: unknown) => { parse: () => { textContent?: string } | null };
       };
       return (html: string, _url: string): string | null => {

@@ -66,8 +66,13 @@ let pwLoader: Promise<PlaywrightModule | null> | undefined;
 export function loadPlaywright(): Promise<PlaywrightModule | null> {
   pwLoader ??= (async () => {
     try {
-      // Non-literal specifier: an absent optional dep degrades, never throws at boot.
-      return (await import("playwright" as string)) as unknown as PlaywrightModule;
+      // Non-literal specifier via a VARIABLE: an absent optional dep degrades,
+      // never throws at boot. A cast (`"playwright" as string`) is NOT enough —
+      // it erases at transpile time, leaving a literal import("playwright") that
+      // `bun build --compile` statically bundles, and playwright-core's own
+      // optional requires (chromium-bidi) then fail the whole binary build.
+      const specifier = "playwright";
+      return (await import(specifier)) as unknown as PlaywrightModule;
     } catch {
       return null;
     }

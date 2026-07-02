@@ -56,8 +56,10 @@ let tsLoader: Promise<TsModule | null> | undefined;
 function loadTs(): Promise<TsModule | null> {
   tsLoader ??= (async () => {
     try {
-      // Non-literal specifier: an absent optional dep degrades, never throws at boot.
-      return (await import("typescript" as string)) as unknown as TsModule;
+      // Non-literal specifier via a VARIABLE (a cast erases at transpile time and
+      // `bun build --compile` would bundle the whole compiler into the binary).
+      const specifier = "typescript";
+      return (await import(specifier)) as unknown as TsModule;
     } catch {
       return null;
     }

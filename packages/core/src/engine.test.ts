@@ -160,6 +160,47 @@ test("/plan then /execute never silently lands in YOLO — approvals reset to as
   expect(engine.snapshot().mode).toBe("execute");
 });
 
+test("a RAW set-mode always lands in gated ask — the engine owns the invariant", () => {
+  // The TUI maps typed /plan and /execute to bare `set-mode` commands (NOT the
+  // run-slash handlers), and scripted clients send set-mode directly — so the
+  // re-gate must live in the engine's set-mode path itself, or a YOLO session
+  // that visits plan mode comes back still in YOLO. set-mode/set-approvals are
+  // immediate (not queued), so the snapshot asserts synchronously.
+  const engine = makeEngine();
+  engine.send({ type: "set-approvals", mode: "auto" });
+  expect(engine.snapshot().approvalMode).toBe("auto");
+  engine.send({ type: "set-mode", mode: "plan" });
+  expect(engine.snapshot().mode).toBe("plan");
+  expect(engine.snapshot().approvalMode).toBe("ask");
+  engine.send({ type: "set-mode", mode: "execute" });
+  expect(engine.snapshot().mode).toBe("execute");
+  expect(engine.snapshot().approvalMode).toBe("ask");
+  // Deliberate YOLO still works: the explicit set-approvals lands AFTER the
+  // set-mode (the exact pair the TUI's Shift+Tab yolo target sends)…
+  engine.send({ type: "set-mode", mode: "execute" });
+  engine.send({ type: "set-approvals", mode: "auto" });
+  expect(engine.snapshot().approvalMode).toBe("auto");
+  // …and a fresh set-mode re-arms the gate even without a mode change (an
+  // explicit /execute in execute means "back to gated", forgetting grants).
+  engine.send({ type: "set-mode", mode: "execute" });
+  expect(engine.snapshot().approvalMode).toBe("ask");
+});
+
+test("/yolo switches to execute with approvals auto, loudly", async () => {
+  const engine = makeEngine();
+  const { events, stop } = collect(engine);
+  engine.send({ type: "run-slash", name: "yolo", args: "" });
+  await engine.whenIdle();
+  stop();
+  expect(engine.snapshot().mode).toBe("execute");
+  expect(engine.snapshot().approvalMode).toBe("auto");
+  // Entering the no-prompts state leaves a transcript-visible warn — the red
+  // chip alone is easy to miss.
+  expect(
+    events.some((e) => e.type === "notice" && e.level === "warn" && /YOLO/.test(e.message)),
+  ).toBe(true);
+});
+
 test("/goal sets and clears the goal", async () => {
   const engine = makeEngine();
   collect(engine);

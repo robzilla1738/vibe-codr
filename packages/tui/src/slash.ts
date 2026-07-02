@@ -28,8 +28,10 @@ export function lineToCommand(line: string): EngineCommand {
     case "execute":
       return { type: "set-mode", mode: "execute" };
     case "approvals":
-      // Route a valid ask|auto straight to the immediate command; bare/unknown
-      // args fall through to the slash handler, which prints current state/usage.
+      // Route a valid ask|auto straight to the immediate command (NOT quiet — a
+      // typed switch deserves its one-line confirm, unlike the Shift+Tab cycle);
+      // bare/unknown args fall through to the slash handler, which prints
+      // current state/usage.
       return args === "ask" || args === "auto"
         ? { type: "set-approvals", mode: args }
         : { type: "run-slash", name, args };
@@ -46,10 +48,23 @@ export function lineToCommand(line: string): EngineCommand {
   }
 }
 
-/** Map a typed answer to a permission decision (default deny). Shared by both UIs. */
-export function parsePermissionDecision(
-  input: string,
-): "once" | "always" | "deny" {
-  const c = input.trim().toLowerCase()[0];
-  return c === "y" ? "once" : c === "a" ? "always" : "deny";
+/**
+ * Map a typed answer to a permission decision. Shared by both UIs.
+ *
+ * Only EXACT tokens grant: the old first-letter parse turned "actually, wait…"
+ * into a silent ALWAYS-allow and "sure" into a deny — an innocent sentence
+ * could escalate a permission. Everything that isn't an exact yes/always/no is
+ * a DENY carrying the text as feedback, which the engine folds into the deny
+ * reason the model reads ("denied by user — use staging instead") — so typing
+ * why steers the next attempt instead of being thrown away.
+ */
+export function parsePermissionDecision(input: string): {
+  decision: "once" | "always" | "deny";
+  feedback?: string;
+} {
+  const t = input.trim().toLowerCase();
+  if (t === "y" || t === "yes" || t === "allow" || t === "once") return { decision: "once" };
+  if (t === "a" || t === "always") return { decision: "always" };
+  if (!t || t === "n" || t === "no" || t === "deny") return { decision: "deny" };
+  return { decision: "deny", feedback: input.trim() };
 }

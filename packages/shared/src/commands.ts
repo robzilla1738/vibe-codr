@@ -9,7 +9,10 @@ export type EngineCommand =
   | { type: "submit-prompt"; text: string }
   | { type: "run-slash"; name: string; args: string }
   | { type: "set-mode"; mode: Mode }
-  | { type: "set-approvals"; mode: "ask" | "auto" }
+  // `quiet` suppresses the confirmation notice — the Shift+Tab mode cycle sets
+  // it (the mode chip is the feedback there); a typed `/approvals <v>` doesn't,
+  // so an explicit switch gets its one-line confirm in the transcript.
+  | { type: "set-approvals"; mode: "ask" | "auto"; quiet?: boolean }
   | { type: "set-model"; model: string }
   // Set (or, with `null`, clear → inherit main) the dedicated subagent model.
   | { type: "set-subagent-model"; model: string | null }
@@ -30,6 +33,10 @@ export type EngineCommand =
       type: "resolve-permission";
       id: string;
       decision: "once" | "always" | "deny";
+      /** Free-text the user typed instead of y/a/n — forwarded to the model as
+       * the deny reason ("denied by user — use staging instead"), so a denial
+       * can steer the next attempt rather than leave the model guessing. */
+      feedback?: string;
     }
   // Resolve a presented plan: accept → switch to execute + start against the plan;
   // edit → re-plan with the feedback text; keep-planning → dismiss, stay in plan.

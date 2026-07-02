@@ -245,21 +245,24 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       break;
     }
     case "plan":
-      h.session.setMode("plan");
-      // Couple approvals to the mode transition, exactly like the Shift+Tab
-      // path (commandsForUiMode): reset to `ask` so leaving plan later lands in
-      // gated EXECUTE, never silently in YOLO. Without this, `/plan` from a YOLO
-      // session stayed on `auto`, and a following `/execute` was YOLO with no
-      // approval prompt. Quiet — the mode pill already reflects the change.
-      handleApprovals(h, "ask", true);
-      break;
     case "execute":
-      h.session.setMode("execute");
-      // `/execute` requests the GATED execute mode (the UiMode "execute" == ASK);
-      // reset approvals to `ask` so it can't inherit a lingering `auto` from a
-      // prior YOLO/plan state and run unprompted. YOLO is entered deliberately
-      // via Shift+Tab, not by falling through here.
-      handleApprovals(h, "ask", true);
+      // Route through the engine's ONE canonical `set-mode` transition, which
+      // owns the full invariant set: a real transition re-gates approvals to
+      // `ask` (leaving plan can never inherit a lingering YOLO `auto`), leaving
+      // plan right after a presented plan arms the execute handoff (so the
+      // documented "/execute to proceed" flow actually proceeds), and returning
+      // to plan disarms it. Duplicating half of that here is how the paths
+      // drifted apart before.
+      h.send({ type: "set-mode", mode: name });
+      break;
+    case "yolo":
+      // Explicit, deliberate YOLO: gated-execute transition first (arming a
+      // plan handoff if one was just presented), then approvals off. The warn
+      // notice is the transcript-side record of entering the no-prompts state —
+      // the red chip alone is easy to miss.
+      h.send({ type: "set-mode", mode: "execute" });
+      handleApprovals(h, "auto", true);
+      h.notice("YOLO — approvals off; tools run without prompting. /execute re-gates.", "warn");
       break;
     case "goal":
       h.session.setGoal(args || null);

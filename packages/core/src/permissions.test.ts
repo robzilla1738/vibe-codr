@@ -34,6 +34,25 @@ test("ask consults the resolver", async () => {
   expect((await deny.check("write", {})).allowed).toBe(false);
 });
 
+test("a denial's typed feedback lands in the reason the MODEL reads", async () => {
+  // "denied by user — use staging instead" steers the next attempt; a bare
+  // boolean deny just blocks. Both shapes must produce a reason.
+  const withFeedback = new PermissionChecker([{ tool: "bash", action: "ask" }], () => ({
+    allowed: false,
+    feedback: "use the staging config instead",
+  }));
+  const res = await withFeedback.check("bash", { command: "deploy prod" });
+  expect(res.allowed).toBe(false);
+  expect(res.allowed === false && res.reason).toBe(
+    "denied by user — use the staging config instead",
+  );
+  const bare = new PermissionChecker([{ tool: "bash", action: "ask" }], () => ({
+    allowed: false,
+  }));
+  const bareRes = await bare.check("bash", { command: "deploy prod" });
+  expect(bareRes.allowed === false && bareRes.reason).toBe("denied by user");
+});
+
 // ---------------------------------------------------------------- scoped rules + egress
 
 test("content-scoped rules: bash command globs allow/deny specific commands", async () => {

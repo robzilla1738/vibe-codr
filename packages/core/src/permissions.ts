@@ -3,6 +3,11 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import type { PermissionResult } from "@vibe/shared";
 import type { PermissionRule } from "@vibe/config";
 
+/** A resolver's verdict: plain boolean, or a denial carrying the user's typed
+ * feedback — which becomes part of the deny reason the MODEL sees, so "no, use
+ * the staging config" actually steers the next attempt. */
+export type PermissionReply = boolean | { allowed: false; feedback?: string };
+
 /** Asks the user to approve a tool call. Returns true to allow. */
 export type PermissionResolver = (req: {
   toolName: string;
@@ -15,7 +20,7 @@ export type PermissionResolver = (req: {
    * become `allow` in headless/CI.
    */
   explicit: boolean;
-}) => boolean | Promise<boolean>;
+}) => PermissionReply | Promise<PermissionReply>;
 
 /**
  * Convert a simple glob (only `*`) to an anchored RegExp, with flags chosen by
@@ -252,7 +257,15 @@ export class PermissionChecker {
     const explicitAsk = action === "ask" && applicable.some((r) => r.action === "ask");
     if (action === "allow") return { allowed: true };
     if (action === "deny") return { allowed: false, reason: "denied by policy" };
-    const ok = await this.#resolve({ toolName, input, explicit: explicitAsk });
-    return ok ? { allowed: true } : { allowed: false, reason: "denied by user" };
+    const reply = await this.#resolve({ toolName, input, explicit: explicitAsk });
+    if (reply === true) return { allowed: true };
+    // A denial may carry the user's typed feedback; folding it into the reason
+    // puts it in the tool-error the model reads, so the denial steers rather
+    // than just blocks.
+    const feedback = typeof reply === "object" ? reply.feedback?.trim() : undefined;
+    return {
+      allowed: false,
+      reason: feedback ? `denied by user — ${feedback}` : "denied by user",
+    };
   }
 }

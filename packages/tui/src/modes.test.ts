@@ -5,7 +5,6 @@ import {
   commandsForUiMode,
   modeColor,
   MODE_COLORS,
-  modeLabel,
   type UiMode,
 } from "./modes.ts";
 
@@ -22,18 +21,20 @@ test("nextUiMode cycles plan -> execute -> yolo -> plan", () => {
   expect(nextUiMode("yolo")).toBe("plan");
 });
 
-test("commandsForUiMode sets the right engine state for each mode", () => {
+test("commandsForUiMode sets the right engine state for each mode — quietly", () => {
+  // All Shift+Tab approval flips are quiet (the mode chip is the feedback);
+  // the transcript confirm is reserved for a typed /approvals.
   expect(commandsForUiMode("plan")).toEqual([
     { type: "set-mode", mode: "plan" },
-    { type: "set-approvals", mode: "ask" },
+    { type: "set-approvals", mode: "ask", quiet: true },
   ]);
   expect(commandsForUiMode("execute")).toEqual([
     { type: "set-mode", mode: "execute" },
-    { type: "set-approvals", mode: "ask" },
+    { type: "set-approvals", mode: "ask", quiet: true },
   ]);
   expect(commandsForUiMode("yolo")).toEqual([
     { type: "set-mode", mode: "execute" },
-    { type: "set-approvals", mode: "auto" },
+    { type: "set-approvals", mode: "auto", quiet: true },
   ]);
 });
 
@@ -61,11 +62,6 @@ test("a full Shift+Tab cycle visits every mode and returns to start", () => {
     seen.push(cur);
   }
   expect(seen).toEqual(["execute", "yolo", "plan", "execute"]);
-});
-
-test("modeLabel is distinct and non-empty per mode", () => {
-  const labels = new Set(["plan", "execute", "yolo"].map((m) => modeLabel(m as UiMode)));
-  expect(labels.size).toBe(3);
 });
 
 test("modeColor maps ASK→blue, PLAN→green, YOLO→red (distinct hexes)", () => {

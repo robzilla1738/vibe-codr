@@ -22,31 +22,29 @@ export function nextUiMode(cur: UiMode): UiMode {
   return cur === "plan" ? "execute" : cur === "execute" ? "yolo" : "plan";
 }
 
-/** The engine commands that put the session into `target` (order matters). */
+/** The engine commands that put the session into `target` (order matters:
+ * set-mode always lands in gated `ask` engine-side, so yolo's `auto` must
+ * follow it). All `set-approvals` here are quiet: this is the Shift+Tab cycle,
+ * where the mode chip is the feedback — the transcript confirm is for typed
+ * /approvals. */
 export function commandsForUiMode(target: UiMode): EngineCommand[] {
   switch (target) {
     case "plan":
-      // Reset approvals to ask so leaving plan later lands in execute, not yolo.
       return [
         { type: "set-mode", mode: "plan" },
-        { type: "set-approvals", mode: "ask" },
+        { type: "set-approvals", mode: "ask", quiet: true },
       ];
     case "execute":
       return [
         { type: "set-mode", mode: "execute" },
-        { type: "set-approvals", mode: "ask" },
+        { type: "set-approvals", mode: "ask", quiet: true },
       ];
     case "yolo":
       return [
         { type: "set-mode", mode: "execute" },
-        { type: "set-approvals", mode: "auto" },
+        { type: "set-approvals", mode: "auto", quiet: true },
       ];
   }
-}
-
-/** Short label with a leading glyph, e.g. for the header pill and input title. */
-export function modeLabel(m: UiMode): string {
-  return m === "plan" ? "◑ PLAN" : m === "execute" ? "▶ EXECUTE" : "⚡ YOLO";
 }
 
 /**

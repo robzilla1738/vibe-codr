@@ -31,9 +31,17 @@ test("/model with no argument falls through to run-slash", () => {
   });
 });
 
-test("/plan and /execute map to mode changes", () => {
+test("/plan and /execute map to mode changes; /yolo routes to the engine handler", () => {
   expect(lineToCommand("/plan")).toEqual({ type: "set-mode", mode: "plan" });
   expect(lineToCommand("/execute")).toEqual({ type: "set-mode", mode: "execute" });
+  // /yolo needs BOTH settings (mode + approvals), so it runs engine-side.
+  expect(lineToCommand("/yolo")).toEqual({ type: "run-slash", name: "yolo", args: "" });
+});
+
+test("a typed /approvals ask|auto is the VERBOSE immediate command (confirm notice)", () => {
+  // No `quiet` flag: only the Shift+Tab cycle (commandsForUiMode) is quiet.
+  expect(lineToCommand("/approvals auto")).toEqual({ type: "set-approvals", mode: "auto" });
+  expect(lineToCommand("/approvals ask")).toEqual({ type: "set-approvals", mode: "ask" });
 });
 
 test("/goal sets and clears", () => {
@@ -44,13 +52,34 @@ test("/goal sets and clears", () => {
   expect(lineToCommand("/goal")).toEqual({ type: "set-goal", goal: null });
 });
 
-test("parsePermissionDecision maps y/a/* to once/always/deny", () => {
-  expect(parsePermissionDecision("y")).toBe("once");
-  expect(parsePermissionDecision("Yes")).toBe("once");
-  expect(parsePermissionDecision("a")).toBe("always");
-  expect(parsePermissionDecision("always")).toBe("always");
-  expect(parsePermissionDecision("n")).toBe("deny");
-  expect(parsePermissionDecision("")).toBe("deny");
+test("parsePermissionDecision grants only on EXACT tokens", () => {
+  expect(parsePermissionDecision("y")).toEqual({ decision: "once" });
+  expect(parsePermissionDecision("Yes")).toEqual({ decision: "once" });
+  expect(parsePermissionDecision("allow")).toEqual({ decision: "once" });
+  expect(parsePermissionDecision("a")).toEqual({ decision: "always" });
+  expect(parsePermissionDecision("Always")).toEqual({ decision: "always" });
+  expect(parsePermissionDecision("n")).toEqual({ decision: "deny" });
+  expect(parsePermissionDecision("no")).toEqual({ decision: "deny" });
+  expect(parsePermissionDecision("")).toEqual({ decision: "deny" });
+});
+
+test("a typed sentence DENIES with the text as feedback — never first-letter grants", () => {
+  // The old first-char parse turned "actually, wait…" into a silent ALWAYS
+  // grant and threw the user's words away. Now any non-token reply is a deny
+  // that carries the text, which the engine folds into the model-visible
+  // deny reason so the denial steers the next attempt.
+  expect(parsePermissionDecision("actually, wait — use staging")).toEqual({
+    decision: "deny",
+    feedback: "actually, wait — use staging",
+  });
+  expect(parsePermissionDecision("yes but only the src dir")).toEqual({
+    decision: "deny",
+    feedback: "yes but only the src dir",
+  });
+  expect(parsePermissionDecision("never push to main")).toEqual({
+    decision: "deny",
+    feedback: "never push to main",
+  });
 });
 
 test("unknown slash commands pass through with their args", () => {

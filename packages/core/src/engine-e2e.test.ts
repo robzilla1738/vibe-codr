@@ -161,6 +161,13 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
   await collector;
 
   expect(prompts.at(-1)).toContain("approved by the user");
+  // Approving by mode-switch is no longer silent: the user is told the plan is
+  // armed and that their NEXT message starts it (unlike the card's immediate run).
+  expect(
+    events.some(
+      (e) => e.type === "notice" && "message" in e && e.message.includes("Plan approved"),
+    ),
+  ).toBe(true);
 
   // Once the handoff is consumed the persisted plan is DISCARDED, so a later
   // --resume can't reload it into #lastPlan and re-fire the already-executed

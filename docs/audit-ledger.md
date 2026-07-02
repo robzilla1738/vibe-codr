@@ -232,6 +232,13 @@ Three auditors (policy engine, mode transitions, plus direct reproduction).
   YOLO session ran unprompted. Fixed: all three transition paths reset approvals to
   `ask` (matching the Shift+Tab coupling). Regression: *"/plan then /execute never
   silently lands in YOLO"*.
+  *(Strengthened 2026-07-02, modes-flow pass: the per-path fix left a fourth path
+  exposed — the TUI maps typed `/plan`/`/execute` to bare `set-mode`, which bypassed
+  the run-slash handlers. The invariant now lives in the engine's `set-mode` itself:
+  requesting a mode always lands in gated `ask` (grants forgotten); YOLO is only ever
+  an explicit `set-approvals auto` sent after. The slash handlers now delegate to
+  `set-mode`, so plan approval by handoff also works via `/execute`. Regression:
+  "a RAW set-mode always lands in gated ask".)*
 - **[MEDIUM] Explicit `ask` rules auto-allowed headlessly** (`engine.ts #askPermission`).
   Fixed: resolver now carries an `explicit` flag; a non-interactive run fails an
   explicit gate closed. Regression: *"non-interactive: an EXPLICIT ask rule fails CLOSED"*.
@@ -259,6 +266,10 @@ Three auditors (policy engine, mode transitions, plus direct reproduction).
   never YOLO). Acceptable; documented as intentional fail-safe.
 - [LOW] `pendingHandoff` can linger if a plan is approved via Shift+Tab while the card is
   still visible (TUI dismissal gap). Recorded for the TUI pass (subsystem 11).
+  *(Closed 2026-07-02, modes-flow pass: the TUI dismisses the plan card on any
+  mode-changed away from plan — the double-accept affordance is gone — and the engine
+  disarms `pendingHandoff` when re-entering plan, so a revoked approval can't inject
+  an execute directive into a read-only turn.)*
 - [LOW] Symlink path-canonicalization (uses `resolve`, not `realpath`) — an in-tree
   symlink to `/etc` evades a `/etc/*` path deny. `realpath` is async + fails on
   nonexistent targets; recorded, lower priority than the string-bypass fixes above.

@@ -4,6 +4,7 @@ import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
 import { renderHeadless } from "./headless.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
+import { permissionPreview, toolLabel } from "./tool-icons.ts";
 
 /**
  * Start the interactive UI. Tries the OpenTUI app first; if OpenTUI isn't
@@ -52,10 +53,17 @@ async function startRepl(engine: EngineClient): Promise<void> {
     for await (const event of engine.events()) {
       if (event.type === "permission-request") {
         pendingPerms.push(event.id);
+        // The friendly label + a content preview (full command / edit -/+ lines /
+        // write head) — same treatment as the rich TUI card, so the REPL user
+        // isn't approving off raw truncated JSON.
+        const preview = permissionPreview(event.toolName, event.input);
+        const previewText = preview
+          ? `${preview.lines.map((l) => `  ${ansi.dim(l)}`).join("\n")}\n`
+          : "";
         process.stdout.write(
-          `\n${ansi.yellow(`${GLYPH.warn} permission`)} ${ansi.bold(event.toolName)} wants to run ` +
-            `${ansi.dim(truncate(JSON.stringify(event.input ?? {}), 100))}\n` +
-            ansi.dim("  Allow? [y]es · [a]lways · [n]o\n"),
+          `\n${ansi.yellow(`${GLYPH.warn} permission`)} ${ansi.bold(toolLabel(event.toolName, event.input))}\n` +
+            previewText +
+            ansi.dim("  Allow? y once · a always · n deny — or type why to deny with feedback\n"),
         );
       }
     }
@@ -81,10 +89,12 @@ async function startRepl(engine: EngineClient): Promise<void> {
     rl.question(buffer.length ? ansi.dim("… ") : ansi.green("› "), (line) => {
       const permId = pendingPerms.shift();
       if (permId) {
+        const parsed = parsePermissionDecision(line.trim());
         engine.send({
           type: "resolve-permission",
           id: permId,
-          decision: parsePermissionDecision(line.trim()),
+          decision: parsed.decision,
+          ...(parsed.feedback ? { feedback: parsed.feedback } : {}),
         });
         ask();
         return;
@@ -108,8 +118,4 @@ async function startRepl(engine: EngineClient): Promise<void> {
   ask();
 
   await new Promise<void>((resolve) => rl.on("close", resolve));
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s;
 }

@@ -39,7 +39,7 @@ import {
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
 import { BUILTIN_COMMANDS } from "./commands.ts";
-import { type PermissionResolver, scopeString } from "./permissions.ts";
+import { type PermissionReply, type PermissionResolver, scopeString } from "./permissions.ts";
 import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./agents.ts";
 import { resolveRepoProfile } from "./build/profile.ts";
 import { appendLedger, manifestHash, commandsHash } from "./build/ledger.ts";
@@ -156,7 +156,10 @@ export class Engine implements EngineClient {
   #permissionResolver: PermissionResolver | undefined;
   #interactive: boolean;
   #alwaysAllow = new Set<string>();
-  #pendingPermissions = new Map<string, (d: "once" | "always" | "deny") => void>();
+  #pendingPermissions = new Map<
+    string,
+    (d: "once" | "always" | "deny", feedback?: string) => void
+  >();
   #store: SessionStore;
   #checkpoints: CheckpointManager;
   #mcp: McpHub;
@@ -655,10 +658,33 @@ export class Engine implements EngineClient {
         const approvingPlan =
           this.#session.mode === "plan" && command.mode === "execute" && this.#lastPlan !== undefined;
         this.#session.setMode(command.mode);
+        // Requesting a mode ALWAYS lands in the gated baseline (approvals →
+        // ask, `always` grants forgotten) — an ENGINE-owned invariant, not a UI
+        // courtesy. Every client (typed /plan → /execute, Shift+Tab, scripts
+        // embedding the engine) leaves plan in gated EXECUTE, never inheriting
+        // a lingering `auto` from a prior YOLO; and an explicit re-request of
+        // the current mode re-arms the gate. Deliberate YOLO is a
+        // `set-approvals auto` sent AFTER this (exactly what the TUI's yolo
+        // target does), so it survives.
+        handleApprovals(this.#getCommandHandle(), "ask", true);
         if (approvingPlan) {
           this.#pendingHandoff = true;
           // Persist the armed handoff so quitting between approval and the next
           // prompt doesn't drop the approval on --resume.
+          void this.#persistEngineState();
+          // Without this, approving by mode-switch is silent and the user
+          // doesn't know the plan is armed but NOT yet running (unlike the plan
+          // card's accept, which starts immediately).
+          this.#bus.emit({
+            type: "notice",
+            level: "info",
+            message: "Plan approved — your next message starts implementation.",
+          });
+        } else if (command.mode === "plan" && this.#pendingHandoff) {
+          // Returning to plan mode revokes a pending approval: a handoff that
+          // survived into plan would prepend "proceed with implementing it now"
+          // to a read-only turn — a directive the mode can't honor.
+          this.#pendingHandoff = false;
           void this.#persistEngineState();
         }
         break;
@@ -666,9 +692,9 @@ export class Engine implements EngineClient {
       case "set-approvals":
         // Immediate (not queued), mirroring set-mode — the mode toggle must
         // take effect at once so the next turn sees the new approval policy.
-        // Quiet: the Shift+Tab toggle is reflected by the header pill, so it
-        // shouldn't flood the transcript with approval-mode notices.
-        handleApprovals(this.#getCommandHandle(), command.mode, true);
+        // Quiet only when the sender says so (the Shift+Tab cycle, where the
+        // mode chip is the feedback); a typed `/approvals <v>` gets its confirm.
+        handleApprovals(this.#getCommandHandle(), command.mode, command.quiet ?? false);
         break;
       case "set-model":
         // Persist too, so the choice is remembered across sessions (the menu and
@@ -743,7 +769,7 @@ export class Engine implements EngineClient {
         const resolve = this.#pendingPermissions.get(command.id);
         if (resolve) {
           this.#pendingPermissions.delete(command.id);
-          resolve(command.decision);
+          resolve(command.decision, command.feedback);
         }
         break;
       }
@@ -767,7 +793,7 @@ export class Engine implements EngineClient {
     toolName: string;
     input: unknown;
     explicit?: boolean;
-  }): Promise<boolean> {
+  }): Promise<PermissionReply> {
     // Non-interactive (headless/`-p`/CI): a frictionless DEFAULT ask auto-allows
     // so scripted runs aren't wedged waiting for a human, but an EXPLICIT gate
     // (`{action:"ask"}` a user deliberately authored) fails CLOSED — there is no
@@ -781,18 +807,23 @@ export class Engine implements EngineClient {
     const key = this.#alwaysAllowKey(req.toolName, req.input);
     if (this.#alwaysAllow.has(key)) return true;
     const id = createId("perm");
-    const decision = await new Promise<"once" | "always" | "deny">((resolve) => {
-      this.#pendingPermissions.set(id, resolve);
-      this.#bus.emit({
-        type: "permission-request",
-        sessionId: this.#session.id,
-        id,
-        toolName: req.toolName,
-        input: req.input,
-      });
-    });
-    if (decision === "always") this.#alwaysAllow.add(key);
-    return decision !== "deny";
+    const reply = await new Promise<{ decision: "once" | "always" | "deny"; feedback?: string }>(
+      (resolve) => {
+        this.#pendingPermissions.set(id, (decision, feedback) => resolve({ decision, feedback }));
+        this.#bus.emit({
+          type: "permission-request",
+          sessionId: this.#session.id,
+          id,
+          toolName: req.toolName,
+          input: req.input,
+        });
+      },
+    );
+    if (reply.decision === "always") this.#alwaysAllow.add(key);
+    if (reply.decision !== "deny") return true;
+    // A denial with typed feedback travels to the model as the deny reason —
+    // "denied by user — use staging instead" steers; a bare denial just blocks.
+    return { allowed: false, ...(reply.feedback ? { feedback: reply.feedback } : {}) };
   }
 
   /** Memory key for an `always`-allow decision: tool name plus its content scope

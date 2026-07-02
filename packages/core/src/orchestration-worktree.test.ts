@@ -12,6 +12,7 @@ import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { spawnGit } from "./git-info.ts";
 import { commitWorktree, gitAddWorktree, gitMergeWorktreeBranch } from "./build/gitops.ts";
+import { worktreeSlug } from "./orchestration/orchestrator-runner.ts";
 
 // ── shared test scaffolding (mirrors orchestration-advanced.test.ts) ─────────
 
@@ -121,6 +122,24 @@ function orchConfig() {
   c.orchestration = { enabled: true };
   return c;
 }
+
+// ── worktree slug: distinct ids that sanitize alike must NOT collide ─────────
+
+test("worktreeSlug disambiguates ids that sanitize to the same fragment", () => {
+  // `auth.login` and `auth_login` both sanitize to `auth_login`; without a hash
+  // of the FULL id they'd share one worktree path/branch and the second task's
+  // gitAddWorktree would force-remove the first's live worktree.
+  expect(worktreeSlug("auth.login")).not.toBe(worktreeSlug("auth_login"));
+  // …but the human-readable prefix is preserved for both.
+  expect(worktreeSlug("auth.login").startsWith("auth_login-")).toBe(true);
+  expect(worktreeSlug("auth_login").startsWith("auth_login-")).toBe(true);
+  // Stable: same id → same slug (deterministic path/branch across a resume).
+  expect(worktreeSlug("auth.login")).toBe(worktreeSlug("auth.login"));
+  // Two >64-char ids differing only past char 64 also stay distinct.
+  const a = `x${"y".repeat(70)}A`;
+  const b = `x${"y".repeat(70)}B`;
+  expect(worktreeSlug(a)).not.toBe(worktreeSlug(b));
+});
 
 // ── gitops units: commitWorktree + non-destructive merge cleanup ─────────────
 
@@ -336,6 +355,142 @@ test("ensemble (n=2, hard): the attempt that passes the in-worktree gate wins; l
   // Two attempts ran (both children were spawned).
   const started = events.filter((e) => e.type === "subagent-started").length;
   expect(started).toBe(2);
+});
+
+// ── interrupted child → failed task, NO partial merge ────────────────────────
+//
+// FINDING: an aborted/interrupted child sets `interrupted=true` but leaves
+// `lastError=null`. #childOutcome must NOT read that as a clean completion — a
+// worktree task would otherwise commit + squash-merge the child's PARTIAL edits
+// into the main tree and journal the task "completed" (silent data loss on resume).
+
+test("an interrupted worktree child fails the task and does NOT merge its partial work", async () => {
+  const cwd = await gitRepo();
+  // The child writes a partial file, then — mid-turn — the parent session is
+  // aborted (the user presses Esc). The abort propagates to the child (Session
+  // marks it `interrupted`, NOT `lastError`), so the child's next step unwinds.
+  const holder: { abort: () => void } = { abort: () => {} };
+  const interruptingApply: ToolDefinition<{ path?: string; content: string }> = {
+    ...applyTool,
+    async execute(args, ctx) {
+      const r = await applyTool.execute(args, ctx);
+      holder.abort(); // Esc: aborts the parent turn while this child is mid-run.
+      return r;
+    },
+  };
+  const model = routedModel((p) => {
+    if (p.includes("INTERRUPT-RUN")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "t", objective: "task-x: write then get interrupted", worktree: true }]);
+    }
+    if (p.includes("APPLIED")) return textStep("should never finish"); // aborted before this lands
+    return toolCallStep("apply", { path: "leak.txt", content: "PARTIAL" });
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config: orchConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([interruptingApply]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  holder.abort = () => session.abort();
+  await session.run("INTERRUPT-RUN");
+  bus.close();
+  await done;
+
+  const orch = events.filter((e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task");
+  expect(orch.some((e) => e.status === "failed" && e.taskId === "t")).toBe(true);
+  expect(orch.some((e) => e.status === "completed")).toBe(false);
+  // The child's PARTIAL edit must NOT have been committed + merged into the main tree.
+  expect(existsSync(join(cwd, "leak.txt"))).toBe(false);
+  // And the worktree + branch were still cleaned up (the finally teardown ran).
+  expect(await worktreeBranches(cwd)).toEqual([]);
+});
+
+// ── ensemble on an unborn HEAD → shared-tree fallback (never hard-fail) ───────
+
+test("a hard/ensemble task in a repo with no commits falls back to the shared tree", async () => {
+  const cwd = tmpCwd();
+  await spawnGit(cwd, ["init", "-q", "-b", "main"]); // unborn HEAD — inside a work tree but no commit
+  const config = orchConfig();
+  config.build.ensemble = { n: 2 };
+  const model = routedModel((p) => {
+    if (p.includes("UNBORN-RUN")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "h", objective: "solve it", hard: true }]);
+    }
+    if (p.includes("APPLIED")) return textStep("done");
+    return toolCallStep("apply", { path: "made.txt", content: "shared" });
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([applyTool]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("UNBORN-RUN");
+  bus.close();
+  await done;
+
+  const out = spawnTasksOutput(events);
+  expect(out).toContain("1 completed");
+  // It ran in the shared tree (its write landed there) rather than failing every
+  // 'worktree-unavailable' ensemble attempt.
+  expect(readFileSync(join(cwd, "made.txt"), "utf8").trim()).toBe("shared");
+  const notice = events.find((e) => e.type === "notice" && e.message.includes("worktrees unavailable"));
+  expect(notice).toBeDefined();
+});
+
+// ── worktree task gate runs on the merged tree (inside the merge lock) ────────
+
+test("a worktree task with check:true fails when the merged tree is red", async () => {
+  const cwd = await gitRepo();
+  const model = routedModel((p) => {
+    if (p.includes("GATE-RUN")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "g", objective: "task-g: write BAD", worktree: true, check: true }]);
+    }
+    if (p.includes("APPLIED")) return textStep("child report");
+    return toolCallStep("apply", { path: "result.txt", content: "BAD" });
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config: orchConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([applyTool]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    repoProfile: fakeProfile({ typecheck: "grep -q GOOD result.txt" }),
+  });
+  await session.run("GATE-RUN");
+  bus.close();
+  await done;
+
+  const out = spawnTasksOutput(events);
+  // The gate ran on the MERGED main tree and was red → the task failed.
+  expect(out).toContain("Checks failed on the merged tree");
+  // The change still merged (the failure is a verdict on the merged state), and
+  // the worktree was torn down.
+  expect(readFileSync(join(cwd, "result.txt"), "utf8").trim()).toBe("BAD");
+  expect(await worktreeBranches(cwd)).toEqual([]);
 });
 
 // ── live child activity tap ──────────────────────────────────────────────────

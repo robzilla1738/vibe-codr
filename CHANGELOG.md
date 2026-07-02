@@ -4,6 +4,54 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — post-release adversarial review (46 verified defects) + token economy
+
+A multi-agent adversarial review (one finder per subsystem, every finding
+cross-examined by three independent refuters) surfaced 46 confirmed defects;
+all are fixed, each with a regression test. Highlights:
+
+- **Prompt-cache economy.** The system prompt is now byte-stable across a
+  session: the volatile task list and gathered-sources block moved out of it
+  into a `<workspace-state>` reminder folded into the newest user turn. A
+  changing task list no longer invalidates the whole cached conversation prefix
+  every turn. The conversation cache breakpoint now trails the current message
+  on **every** step (not just turn start), so a long multi-step turn caches its
+  growing tail instead of re-billing it. Mid-turn offload projection no longer
+  double-counts the within-turn tail (it fired microcompaction far too early).
+  Cumulative cache-read tokens now survive `--resume`.
+- **Worktree safety.** `.vibe/` is excluded from the repo via `.git/info/exclude`
+  when a worktree is created (it was leaking into `git status`, checkpoints, and
+  diffs); task ids that sanitize to the same fragment get distinct worktree
+  paths/branches (a collision used to force-remove a sibling's live worktree);
+  an interrupted/aborted child now fails its task instead of being journaled
+  "completed" and squash-merged (silent partial-work loss on resume); the gate +
+  review for a worktree task run inside the merge lock; worktree/branch are torn
+  down on every exit path; a hard/ensemble task falls back to the shared tree
+  when worktrees can't be created (e.g. unborn HEAD).
+- **Recon correctness.** Non-terminating test scripts (`--watchAll`,
+  `react-scripts test`, aliased watches) are rejected so the gate can't hang;
+  a passing multi-package run that prints "no test files" is GREEN, not RED;
+  Python `pytest`/`pip` and a `tsc` typecheck are injected only on real evidence
+  (no more bogus commands for a build-backend-only pyproject or `@typescript-eslint`).
+- **The cross-run ledger is now actually written** on a green gate (it had no
+  caller — the whole feature, and its `build.recon.ledger` toggle, were inert).
+- **Egress & SSRF.** Dedicated `git_push`/`git_commit` tools are now governable
+  by `match` deny rules; path-scoped rules canonicalize the path (no dodging a
+  deny by spelling); MCP tool calls are permission-gated and output-capped, and
+  their resource/prompt reads honor abort + a deadline; the NAT64 `64:ff9b::/96`
+  prefix is blocked; `isPrivateV4` no longer over-blocks `192.0.0.0/16`
+  (it's `/24`); Wayback never receives a private URL; `crawl_docs` re-checks the
+  same-domain bound after redirects.
+- **Process lifecycle.** Gate-check timeouts and aborted bash now kill the whole
+  process tree; shutdown awaits the SIGKILL escalation so a dev server can't be
+  orphaned; `read`/`grep`/`repo_map` stream and bound their I/O instead of
+  slurping whole files/outputs into memory.
+- **UX.** A `/`-line that isn't a command is sent as normal text, not discarded;
+  the Tasks/Subagents/Queue panels cap their rows so a big fan-out can't push the
+  input off-screen; `/doctor` reports keyless web search as healthy; `/review`
+  and `/<skill>` cap what they inject; new TS files written mid-session are
+  diagnosed and the language service is rebuilt when tsconfig changes.
+
 ### Added — engine-owned build intelligence, industry-leading agentic core
 
 - **Deterministic repo recon, injected everywhere.** At startup the engine

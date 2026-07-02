@@ -270,6 +270,16 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
       // never mistaken for the live page.
       const fetchWayback = async (): Promise<string | null> => {
         try {
+          // Never disclose an internal/private URL to archive.org — even when the
+          // policy opts internal hosts in for the LIVE fetch. The wayback lookup
+          // embeds the raw url (host + path + query, incl. tokens) in a public
+          // request, so gate it on the DEFAULT-DENY policy (no allow overrides):
+          // a non-public target simply forfeits the archive fallback.
+          try {
+            await assertFetchAllowed(url, {}, opts.lookup);
+          } catch {
+            return null;
+          }
           const snap = await (opts.waybackLookup ?? defaultWaybackLookup)(url, signal);
           if (!snap) return null;
           const text = await fetchOne(snap.url.replace(/^http:/, "https:"));
@@ -346,6 +356,11 @@ export interface GuardedFetchOptions {
   /** Return the charset-decoded body VERBATIM (no HTML→text reduction) — for
    * callers that need the markup itself (link discovery in a crawler). */
   raw?: boolean;
+  /** Confine the fetch (incl. every redirect hop) to this exact origin. A
+   * server-side redirect that leaves it throws instead of being followed — so a
+   * crawler's same-domain bound holds even against an open-redirector to an
+   * external host, not just at link-extraction time. */
+  sameOrigin?: string;
 }
 
 /**
@@ -361,6 +376,12 @@ export async function guardedFetchText(startUrl: string, opts: GuardedFetchOptio
   let current = startUrl;
   let res: Response | undefined;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    // Same-domain confinement (crawler bound): re-checked on the FINAL resolved
+    // URL of every hop, so a redirect off-origin can't smuggle external content
+    // back under the crawl's trusted domain.
+    if (opts.sameOrigin && new URL(current).origin !== opts.sameOrigin) {
+      throw new Error(`refusing to follow a redirect off ${opts.sameOrigin} (to ${current})`);
+    }
     const target = await assertFetchAllowed(current, policy, opts.lookup);
     // Connect to the exact IP the guard verified (when it resolved a hostname),
     // keeping the original Host header + TLS SNI, so a DNS rebind can't point

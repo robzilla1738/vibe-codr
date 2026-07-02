@@ -26,16 +26,25 @@ export function parseCheckOutput(
     const passed = num(text, /(\d+)\s+pass(?:ed)?\b/i);
     const totalM = num(text, /(\d+)\s+total/i);
     const total = totalM || (passed != null || failed != null ? (passed ?? 0) + (failed ?? 0) : 0);
-    if (failed == null) failed = ok ? 0 : Math.max(1, countErrors(ls));
+    // The exit code is the source of truth. A run the RUNNER reported as passing
+    // (exit 0) must never be flipped red by a "<N> failed" token scraped from
+    // arbitrary log noise (a fixture string, a `console.log("Batch 3 failed")`).
+    // Only trust a scraped failure count on a run that actually exited nonzero.
+    if (ok) failed = 0;
+    else if (failed == null) failed = Math.max(1, countErrors(ls));
     // "No tests" requires EXPLICIT evidence of zero collection. A passing
     // command that simply doesn't print a parseable count (Go `go test` → "ok
     // pkg", custom runners) must NOT be treated as "no tests" — that would turn
-    // a genuinely green tree red.
-    const noTests =
-      total === 0 && /no tests? (ran|found|collected)|0 passed|collected 0 items|no test files/i.test(text);
+    // a genuinely green tree red. Go's per-package "[no test files]" is likewise
+    // NOT a whole-run verdict: a `go test ./...` where SOME package ran tests
+    // (an `ok  pkg` line) is green despite testless sibling packages; only a run
+    // where NOTHING ran (no passing package line) is unverified.
+    const zeroCollected = /no tests? (ran|found|collected)|0 passed|collected 0 items/i.test(text);
+    const goNoTests = /no test files/i.test(text) && !/^ok\s/m.test(text);
+    const noTests = total === 0 && (zeroCollected || goNoTests);
     const failures = ls.filter((l) => /✕|✗|FAIL(ED)?\b|\bfailed\b|panicked|AssertionError|Error:/.test(l)).slice(0, 5);
     return {
-      pass: ok && (failed ?? 0) === 0 && !noTests,
+      pass: ok && !noTests,
       failed: failed ?? 0,
       total,
       firstFailures: noTests ? ["no tests ran — establish a test command / add tests", ...failures] : failures,

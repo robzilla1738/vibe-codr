@@ -649,6 +649,19 @@ if (capRow >= 0) {
   check("selecting text flashes the copy toast", frame.includes("Copied to clipboard"));
 }
 
+// 14) A wide subagent fan-out must NOT push the input/status off-screen. The
+// status panels are flexShrink={0}, so an uncapped list would overflow the bottom;
+// the panel caps its rows at PANEL_MAX_ROWS and collapses the rest to "+N more",
+// keeping the under-input status line visible. (Earlier turns cleared the panel.)
+push({ type: "user-message", text: "fan out the work" });
+for (let i = 0; i < 30; i++) {
+  push({ type: "subagent-started", subagentId: `fan_${i}`, prompt: `subtask number ${i}` } as UIEvent);
+}
+await settle();
+frame = t.captureCharFrame();
+check("wide subagent fan-out collapses overflow to +N more", frame.includes("more"));
+check("wide subagent fan-out keeps the under-input status visible", frame.includes("ollama/glm-5.2"));
+
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);
   process.exit(1);

@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
-import { grepTool, builtinGrep, _resetRipgrepTypeCache } from "./grep.ts";
+import { grepTool, builtinGrep, readCappedLines, _resetRipgrepTypeCache } from "./grep.ts";
 
 beforeEach(() => _resetRipgrepTypeCache());
 
@@ -178,18 +178,61 @@ test("fileType with an rg-unknown extension still filters via a glob fallback", 
   expect(r.output).not.toContain("b.txt");
 });
 
-test("fallback honors git tracking: untracked files are skipped in a git repo", async () => {
+test("fallback matches untracked-but-not-ignored files (ripgrep parity), skips ignored", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-grep-git-"));
   await Bun.write(join(dir, "tracked.ts"), "needle in tracked\n");
   await Bun.write(join(dir, "untracked.ts"), "needle in untracked\n");
+  await Bun.write(join(dir, "ignored.ts"), "needle in ignored\n");
+  await Bun.write(join(dir, ".gitignore"), "ignored.ts\n");
   git(dir, "init");
-  git(dir, "add", "tracked.ts");
+  git(dir, "add", "tracked.ts", ".gitignore");
 
   const r = await builtinGrep({ pattern: "needle" }, ctx(dir));
   expect(r.output).toContain("tracked.ts:1:needle in tracked");
-  // untracked.ts is not in `git ls-files`, so the fallback must not scan it
-  // (ripgrep respects .gitignore/tracking; the fallback now matches that).
-  expect(r.output).not.toContain("untracked");
+  // A just-written, not-yet-added file IS searched now — ripgrep would match it,
+  // so the fallback must too (else the model wrongly concludes a symbol is absent).
+  expect(r.output).toContain("untracked.ts:1:needle in untracked");
+  // …but .gitignore is still honored (rg parity): an ignored file is NOT scanned.
+  expect(r.output).not.toContain("in ignored");
+});
+
+test("readCappedLines caps DURING streaming — it cancels the source instead of draining it", async () => {
+  // The ripgrep path must not buffer all stdout before slicing to 500: a near-
+  // universal pattern streams hundreds of MB. This reader stops at LIMIT+1 lines
+  // and cancels the stream, so a source that would produce far more is never drained.
+  let produced = 0;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (produced >= 100_000) {
+        controller.close();
+        return;
+      }
+      produced++;
+      controller.enqueue(new TextEncoder().encode(`file.ts:${produced}:match\n`));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  const { lines, truncated } = await readCappedLines(stream, 500);
+  expect(truncated).toBe(true);
+  expect(lines.length).toBe(501); // LIMIT + 1 (capResults then slices + marks)
+  expect(cancelled).toBe(true); // the stream was cancelled, not exhausted
+  expect(produced).toBeLessThan(1000); // stopped early — did NOT stream all 100k lines
+});
+
+test("readCappedLines returns every line (untruncated) when under the cap", async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("a.ts:1:x\nb.ts:2:y\n"));
+      controller.close();
+    },
+  });
+  const { lines, truncated } = await readCappedLines(stream, 500);
+  expect(truncated).toBe(false);
+  expect(lines).toEqual(["a.ts:1:x", "b.ts:2:y"]);
 });
 
 test("VIBE_GREP_NO_RIPGREP forces the built-in fallback path", async () => {

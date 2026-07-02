@@ -9,18 +9,11 @@ export interface SystemPromptInputs {
   /** Pre-rendered "REPO FACTS" block from deterministic recon (build/profile.ts)
    * — the repo's real build/test commands, so no agent ever guesses them. */
   repoFacts?: string;
-  /** The live task list, re-injected every turn so it survives compaction
-   * deterministically instead of via the summarizer's whim. */
-  tasks?: { title: string; status: TaskStatus }[];
   /** Project memory (VIBE.md / AGENTS.md / CLAUDE.md) contents, if present. */
   projectMemory?: string;
   /** Proactively-recalled relevant past context (saved memory / prior sessions),
    * injected at session start when `memory.proactiveRecall` is enabled. */
   recalledContext?: string;
-  /** Pre-rendered "sources gathered this session" list (`[n] url — title`),
-   * injected so the model can cite web sources by their stable `[n]` across
-   * turns. Built from the session's SourceLedger; omitted when empty. */
-  sources?: string;
   /** Skill name/description lines for progressive disclosure. */
   skillDescriptions?: string[];
   /** Extra blocks contributed by plugins. */
@@ -138,30 +131,12 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
       `NORTH-STAR GOAL: ${inputs.goal}\nKeep every action aligned with this goal; before finishing, confirm it is advanced.`,
     );
   }
-  // The authoritative in-memory task list, rendered fresh every turn — after a
-  // compaction the transcript's update_tasks calls may be summarized away, so
-  // this is what keeps the model anchored to its own plan.
-  if (inputs.tasks?.length) {
-    const mark = (s: TaskStatus) => (s === "completed" ? "[x]" : s === "in_progress" ? "[~]" : "[ ]");
-    sections.push(
-      `CURRENT TASKS (your live task list — keep exactly one in_progress; update with \`update_tasks\`):\n${inputs.tasks
-        .map((t) => `${mark(t.status)} ${t.title}`)
-        .join("\n")}`,
-    );
-  }
   if (inputs.projectMemory) {
     sections.push(`PROJECT NOTES:\n${inputs.projectMemory}`);
   }
   if (inputs.recalledContext) {
     sections.push(
       `RELEVANT PAST CONTEXT (recalled from long-term memory — may be incomplete or stale; verify against the current workspace before relying on it):\n${inputs.recalledContext}`,
-    );
-  }
-  // The web sources gathered so far this session, with their stable [n] indices,
-  // so citations reference the same numbers turn after turn.
-  if (inputs.sources) {
-    sections.push(
-      `SOURCES GATHERED THIS SESSION (web pages you've already pulled via web_search/webfetch/crawl_docs — cite the relevant ones inline by their [n] and list them in a \`sources\` block when you rely on them; keep these numbers stable):\n${inputs.sources}`,
     );
   }
   if (inputs.subagentsAvailable) {
@@ -180,4 +155,41 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
     sections.push(...inputs.pluginBlocks);
   }
   return sections.join("\n\n");
+}
+
+/**
+ * Render the session's VOLATILE working state — the live task list and gathered
+ * web sources — as a `<workspace-state>` block folded into the current turn's
+ * user message (NOT the system prompt).
+ *
+ * Why not the system prompt: it rides ahead of the whole conversation in the
+ * provider's cache prefix, so embedding a value that changes almost every turn
+ * (the task list flips as `update_tasks` runs) would invalidate the entire
+ * cached conversation on every turn — re-billing all prior messages at full
+ * price. Kept here, in the newest message, the state is always current, still
+ * survives compaction (it's re-derived from the authoritative in-memory list
+ * each turn, never summarized away), and the system + conversation prefix stays
+ * byte-stable and cacheable across turns. Returns undefined when there's nothing
+ * to report.
+ */
+export function formatWorkspaceState(inputs: {
+  tasks?: { title: string; status: TaskStatus }[];
+  sources?: string;
+}): string | undefined {
+  const blocks: string[] = [];
+  if (inputs.tasks?.length) {
+    const mark = (s: TaskStatus) => (s === "completed" ? "[x]" : s === "in_progress" ? "[~]" : "[ ]");
+    blocks.push(
+      `CURRENT TASKS (your live task list — keep exactly one in_progress; update with \`update_tasks\`):\n${inputs.tasks
+        .map((t) => `${mark(t.status)} ${t.title}`)
+        .join("\n")}`,
+    );
+  }
+  if (inputs.sources) {
+    blocks.push(
+      `SOURCES GATHERED THIS SESSION (web pages you've already pulled via web_search/webfetch/crawl_docs — cite the relevant ones inline by their [n] and list them in a \`sources\` block when you rely on them; keep these numbers stable):\n${inputs.sources}`,
+    );
+  }
+  if (!blocks.length) return undefined;
+  return `<workspace-state>\n${blocks.join("\n\n")}\n</workspace-state>`;
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { drainTextStream, type JobInfo, type ToolDefinition } from "@vibe/shared";
-import { killTree } from "./process-tree.ts";
+import { killTree, killTreeAndWait } from "./process-tree.ts";
 
 interface Job {
   id: string;
@@ -139,11 +139,28 @@ export class BackgroundJobs {
   }
 
   /** Reap every still-running job (process teardown) — a background dev server
-   * must not outlive the CLI as an orphan. */
+   * must not outlive the CLI as an orphan. Fire-and-forget SIGTERM→SIGKILL. */
   killAll(): void {
     for (const [id, job] of this.#jobs) {
       if (job.status === "running") this.kill(id);
     }
+  }
+
+  /** Reap every still-running job AND await the SIGKILL escalation. On the
+   * shutdown path the CLI process exits right after this resolves, so the plain
+   * fire-and-forget `killTree` timer would be cancelled before it escalated,
+   * leaving a stuck child (e.g. a dev server ignoring SIGTERM) orphaned. Awaiting
+   * `killTreeAndWait` guarantees the whole tree is gone before the process exits. */
+  async killAllAndWait(graceMs = 1_500): Promise<void> {
+    const trees: Promise<void>[] = [];
+    for (const [, job] of this.#jobs) {
+      if (job.status === "running") {
+        job.status = "killed";
+        trees.push(killTreeAndWait(job.proc.pid, graceMs));
+      }
+    }
+    if (trees.length) this.#onChange?.();
+    await Promise.all(trees);
   }
 }
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Handoff, Mode, ToolDefinition } from "@vibe/shared";
@@ -188,8 +189,8 @@ export class OrchestratorRunner {
           subagentId: child.id,
           prompt,
         });
-        const { timedOut } = await this.#runChildToCompletion(child, prompt, ctx.abortSignal);
-        const outcome = this.#childOutcome(child, timedOut);
+        const { timedOut, aborted } = await this.#runChildToCompletion(child, prompt, ctx.abortSignal);
+        const outcome = this.#childOutcome(child, timedOut, aborted);
         this.#handle.deps.bus.emit({
           type: "subagent-finished",
           sessionId: this.#handle.id,
@@ -344,8 +345,18 @@ export class OrchestratorRunner {
     parentSignal: AbortSignal | undefined,
   ): Promise<TaskResult> {
     const build = this.#handle.deps.config.build;
-    if (build.ensemble.n > 0 && spec.hard && build.worktrees.enabled && (await this.#worktreesUsable())) {
-      return this.#runEnsembleTask(spec, depResults, parentSignal);
+    if (build.ensemble.n > 0 && spec.hard && build.worktrees.enabled) {
+      if (await this.#worktreesUsable()) return this.#runEnsembleTask(spec, depResults, parentSignal);
+      // Worktrees can't be created here (a non-git cwd, or an unborn HEAD — a
+      // greenfield repo with no commit for `worktree add` to fork off). A hard
+      // task must still run: fall back to a single shared-tree attempt rather than
+      // hard-failing every ensemble attempt with 'worktree-unavailable'.
+      this.#handle.deps.bus.emit({
+        type: "notice",
+        level: "info",
+        message: `Task "${spec.id}": git worktrees unavailable — running the ensemble as a single shared-tree task.`,
+      });
+      return this.#runSharedTask(spec, depResults, parentSignal);
     }
     if (spec.worktree && build.worktrees.enabled) {
       // #runWorktreeTask itself falls back to the shared tree if the worktree
@@ -355,11 +366,16 @@ export class OrchestratorRunner {
     return this.#runSharedTask(spec, depResults, parentSignal);
   }
 
-  /** Whether git worktrees can be created in the session cwd (a real repo). */
+  /** Whether git worktrees can actually be created in the session cwd. Requires a
+   * real work tree AND a born HEAD: `git worktree add … HEAD` forks off HEAD, so
+   * an unborn HEAD (a repo with no commit yet) fails even though it IS inside a
+   * work tree — the old `is-inside-work-tree`-only check mis-reported it usable. */
   async #worktreesUsable(): Promise<boolean> {
     try {
-      const r = await spawnGit(this.#handle.deps.cwd, ["rev-parse", "--is-inside-work-tree"]);
-      return r.ok && /true/.test(r.stdout);
+      const repo = await spawnGit(this.#handle.deps.cwd, ["rev-parse", "--is-inside-work-tree"]);
+      if (!(repo.ok && /true/.test(repo.stdout))) return false;
+      const head = await spawnGit(this.#handle.deps.cwd, ["rev-parse", "--verify", "-q", "HEAD"]);
+      return head.ok && !!head.stdout.trim();
     } catch {
       return false;
     }
@@ -389,8 +405,9 @@ export class OrchestratorRunner {
     parentSignal: AbortSignal | undefined,
   ): Promise<TaskResult> {
     const mainCwd = this.#handle.deps.cwd;
-    const wtPath = join(mainCwd, ".vibe", "worktrees", sanitizeId(spec.id));
-    const branch = worktreeBranch(this.#handle.id, spec.id);
+    const slug = worktreeSlug(spec.id);
+    const wtPath = join(mainCwd, ".vibe", "worktrees", slug);
+    const branch = worktreeBranch(this.#handle.id, slug);
     const wt = await gitAddWorktree(mainCwd, { path: wtPath, branch });
     if (!wt) {
       // Never fail a task over worktree unavailability — run it in the shared
@@ -429,71 +446,59 @@ export class OrchestratorRunner {
         return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: this.#spawnCeilingError().output, attempts: 1 });
       }
       this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
-      const { timedOut } = await this.#runChildToCompletion(child, buildTaskKickoff(spec, depResults, ""), parentSignal);
-      const outcome = this.#childOutcome(child, timedOut);
+      const { timedOut, aborted } = await this.#runChildToCompletion(child, buildTaskKickoff(spec, depResults, ""), parentSignal);
+      const outcome = this.#childOutcome(child, timedOut, aborted);
       this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
       if (outcome.isError) {
         return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: outcome.text, attempts: 1 });
       }
       const handoff = parseHandoff(outcome.text) ?? undefined;
 
-      // Commit → squash-merge → remove, all serialized (see #mergeLock). Removal
-      // is inside the lock so the critical section is atomic per the contract.
-      const merged = await this.#mergeLock(async () => {
-        try {
+      // Commit → squash-merge → gate → review, ALL inside ONE critical section.
+      // The gate/review build+test the whole MAIN tree, so a sibling worktree
+      // task's merge landing between this task's merge and its own gate would give
+      // it a nondeterministic verdict (and two builds clobbering one dir). Holding
+      // the merge lock across the verify phase keeps the main tree stable for this
+      // task's gate. Deadlock-free: a review child acquires the (separate) fan-out
+      // semaphore, and siblings release their fan-out slots before they ever queue
+      // on this lock. The worktree removal runs in the outer finally, also serialized.
+      const verdict = await this.#mergeLock(
+        async (): Promise<{ ok: true } | { ok: false; output: string }> => {
           await commitWorktree(wt, `vibecodr(task ${spec.id}): ${spec.objective}`);
-          return await gitMergeWorktreeBranch(mainCwd, branch);
-        } finally {
-          await gitRemoveWorktree(mainCwd, wt, branch);
-        }
-      });
-      if (!merged) {
-        return settle({
-          id: spec.id,
-          objective: spec.objective,
-          outcome: "failed",
-          output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps",
-          attempts: 1,
-          ...(handoff ? { handoff } : {}),
-        });
-      }
-
-      // Verify the MERGED state in the main tree.
-      if (wantsGate) {
-        const gate = await runGate(mainCwd, profile!, 0, {
-          checks: this.#handle.deps.config.build.gate.checks,
-          timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
-          ...(parentSignal ? { signal: parentSignal } : {}),
-        });
-        if (gate.outcome === "red") {
-          return settle({
-            id: spec.id,
-            objective: spec.objective,
-            outcome: "failed",
-            output: `Checks failed on the merged tree:\n${formatGateFailure(gate, 1)}`,
-            attempts: 1,
-            ...(handoff ? { handoff } : {}),
-          });
-        }
-      }
-      if (spec.verify) {
-        const review = await this.#reviewTask(spec, outcome.text, parentSignal);
-        if (!review.clean) {
-          return settle({
-            id: spec.id,
-            objective: spec.objective,
-            outcome: "failed",
-            output: `Post-merge review found issues:\n${review.feedback}`,
-            attempts: 1,
-            ...(handoff ? { handoff } : {}),
-          });
-        }
+          if (!(await gitMergeWorktreeBranch(mainCwd, branch))) {
+            return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
+          }
+          if (wantsGate) {
+            const gate = await runGate(mainCwd, profile!, 0, {
+              checks: this.#handle.deps.config.build.gate.checks,
+              timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+              ...(parentSignal ? { signal: parentSignal } : {}),
+            });
+            if (gate.outcome === "red") {
+              return { ok: false, output: `Checks failed on the merged tree:\n${formatGateFailure(gate, 1)}` };
+            }
+          }
+          if (spec.verify) {
+            const review = await this.#reviewTask(spec, outcome.text, parentSignal);
+            if (!review.clean) return { ok: false, output: `Post-merge review found issues:\n${review.feedback}` };
+          }
+          return { ok: true };
+        },
+      );
+      if (!verdict.ok) {
+        return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: verdict.output, attempts: 1, ...(handoff ? { handoff } : {}) });
       }
       return settle({ id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts: 1, ...(handoff ? { handoff } : {}) });
     } catch (err) {
-      // Cover a throw before the merge lock's finally could remove the worktree.
-      await gitRemoveWorktree(mainCwd, wt, branch).catch(() => {});
       return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: `Worktree task threw: ${(err as Error)?.message ?? String(err)}`, attempts: 1 });
+    } finally {
+      // Always tear down the worktree — the happy path AND every early return/throw
+      // after gitAddWorktree created it (spawn-ceiling, child error/interrupt, a
+      // thrown exception). Without this an early return leaks the worktree + its
+      // branch, and a later re-run of the same id can't recreate the branch (so it
+      // silently loses worktree isolation). Serialized behind the merge lock so
+      // removal can't race a sibling's squash-merge on the shared .git.
+      await this.#mergeLock(() => gitRemoveWorktree(mainCwd, wt, branch)).catch(() => {});
     }
   }
 
@@ -533,6 +538,19 @@ export class OrchestratorRunner {
     const attempts = await Promise.all(
       Array.from({ length: n }, (_, i) => i).map((i) => this.#runEnsembleAttempt(spec, depResults, parentSignal, i, baseRef)),
     );
+
+    // Safety net: if NO attempt could even create a worktree (born HEAD passed the
+    // pre-check but `worktree add` still failed for every attempt), never fail a
+    // hard task over it — fall back to a single shared-tree attempt. No child ran
+    // for a worktree-unavailable attempt, so this wastes no model calls.
+    if (attempts.every((a) => a.wt === null)) {
+      this.#handle.deps.bus.emit({
+        type: "notice",
+        level: "info",
+        message: `Task "${spec.id}": no ensemble worktree could be created — running in the shared tree.`,
+      });
+      return this.#runSharedTask(spec, depResults, parentSignal);
+    }
 
     // Winner: highest score, ties broken by the smaller diff. Must score > 0.
     const winner = [...attempts]
@@ -595,7 +613,7 @@ export class OrchestratorRunner {
     const named = spec.agent ? this.#handle.deps.agents?.get(spec.agent) : undefined;
     const strategy = ENSEMBLE_STRATEGIES[i]!;
     const label = strategy.name;
-    const wtId = `${sanitizeId(spec.id)}-a${i}`;
+    const wtId = `${worktreeSlug(spec.id)}-a${i}`;
     const wtPath = join(mainCwd, ".vibe", "worktrees", wtId);
     const branch = worktreeBranch(this.#handle.id, wtId);
     const base: EnsembleAttempt = { i, label, wt: null, wtPath, branch, text: "", score: -1, diffSize: Infinity, verdict: "not-run" };
@@ -606,8 +624,8 @@ export class OrchestratorRunner {
     if (!child) return { ...base, wt, verdict: "spawn-ceiling" };
     this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
     const kickoff = `${buildTaskKickoff(spec, depResults, "")}\n\n${strategy.directive}`;
-    const { timedOut } = await this.#runChildToCompletion(child, kickoff, parentSignal);
-    const outcome = this.#childOutcome(child, timedOut);
+    const { timedOut, aborted } = await this.#runChildToCompletion(child, kickoff, parentSignal);
+    const outcome = this.#childOutcome(child, timedOut, aborted);
     this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
     const handoff = parseHandoff(outcome.text) ?? undefined;
     if (outcome.isError) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), verdict: "child-error" };
@@ -688,12 +706,12 @@ export class OrchestratorRunner {
         subagentId: child.id,
         prompt: spec.objective,
       });
-      const { timedOut } = await this.#runChildToCompletion(
+      const { timedOut, aborted } = await this.#runChildToCompletion(
         child,
         buildTaskKickoff(spec, depResults, feedback),
         parentSignal,
       );
-      const outcome = this.#childOutcome(child, timedOut);
+      const outcome = this.#childOutcome(child, timedOut, aborted);
       this.#handle.deps.bus.emit({
         type: "subagent-finished",
         sessionId: this.#handle.id,
@@ -988,7 +1006,7 @@ export class OrchestratorRunner {
     child: Session,
     prompt: string,
     parentSignal: AbortSignal | undefined,
-  ): Promise<{ timedOut: boolean }> {
+  ): Promise<{ timedOut: boolean; aborted: boolean }> {
     const onAbort = () => child.abort();
     parentSignal?.addEventListener("abort", onAbort, { once: true });
     let timedOut = false;
@@ -1022,7 +1040,10 @@ export class OrchestratorRunner {
     // runs on an isolated bus), so auto-verify, `/cost`, and the spend guard all
     // account for delegated work.
     this.#handle.onChildSettled(child);
-    return { timedOut };
+    // A parent abort that landed while this child was queued (the gate short-
+    // circuit above) means the child never ran — surface it so #childOutcome
+    // treats the task as interrupted, not a clean (empty) completion.
+    return { timedOut, aborted: parentSignal?.aborted === true };
   }
 
   /** Normalize a finished child into a model-facing text + error flag + a short
@@ -1030,6 +1051,7 @@ export class OrchestratorRunner {
   #childOutcome(
     child: Session,
     timedOut: boolean,
+    aborted = false,
   ): { text: string; isError: boolean; event: string } {
     const partial = child.lastAssistantText();
     if (timedOut) {
@@ -1040,6 +1062,22 @@ export class OrchestratorRunner {
           (partial ? `\n\nPartial output before timeout:\n${partial}` : ""),
         isError: true,
         event: `timed out after ${secs}s`,
+      };
+    }
+    // An interrupted child (Esc / steer aborted it, or it was aborted before it
+    // ever ran because the parent turn was already unwinding) is NOT a clean
+    // completion: its output is partial. Session marks a cancel as `interrupted`
+    // (not `lastError`), so without this the outcome would fall through to
+    // isError:false — and a task would be journaled "completed" and, for a
+    // worktree task, its PARTIAL edits committed + squash-merged into the main
+    // tree. Fail it instead so it re-runs on resume rather than silently losing work.
+    if (child.interrupted || aborted) {
+      return {
+        text: partial
+          ? `Subagent was interrupted before completing.\n\nPartial output before interruption:\n${partial}`
+          : "Subagent was interrupted before completing (no output produced).",
+        isError: true,
+        event: "interrupted",
       };
     }
     if (child.lastError) {
@@ -1165,8 +1203,26 @@ function sanitizeId(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 64);
 }
 
-/** The fresh branch name for a worktree task: `vibe-wt/<session-short>-<id>`. */
-function worktreeBranch(sessionId: string, id: string): string {
+/** A short stable hash of the FULL raw id — appended to the sanitized fragment so
+ * two DAG-distinct ids that sanitize to the same string (e.g. `auth.login` and
+ * `auth_login`, or two >64-char ids differing only past char 64) still get
+ * DISTINCT worktree paths + branches. Without it, the second task's gitAddWorktree
+ * would force-remove the first's live worktree. */
+function idHash(id: string): string {
+  return createHash("sha1").update(id).digest("hex").slice(0, 8);
+}
+
+/** Collision-free, filesystem-safe worktree slug: the sanitized (capped) id plus
+ * a short hash of the raw id. Both the worktree path and branch derive from this
+ * ONE slug so they stay in lockstep. */
+export function worktreeSlug(id: string): string {
+  return `${sanitizeId(id)}-${idHash(id)}`;
+}
+
+/** The fresh branch name for a worktree task: `vibe-wt/<session-short>-<slug>`.
+ * Takes an already-safe slug (from `worktreeSlug`) so it is never re-truncated —
+ * truncating here would chop the disambiguating hash off the tail. */
+function worktreeBranch(sessionId: string, slug: string): string {
   const short = sessionId.replace(/[^A-Za-z0-9]/g, "").slice(-8) || "root";
-  return `vibe-wt/${short}-${sanitizeId(id)}`;
+  return `vibe-wt/${short}-${slug}`;
 }

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import {
@@ -41,6 +41,7 @@ import { BUILTIN_COMMANDS } from "./commands.ts";
 import type { PermissionResolver } from "./permissions.ts";
 import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./agents.ts";
 import { resolveRepoProfile } from "./build/profile.ts";
+import { appendLedger, manifestHash, commandsHash } from "./build/ledger.ts";
 import {
   runGate,
   pickChecks,
@@ -175,9 +176,14 @@ export class Engine implements EngineClient {
   #gateRounds = 0;
   /** Bounded adversarial-diff-review→fix rounds, per user prompt (reset on submit). */
   #reviewRounds = 0;
-  /** The pre-edit checkpoint id for the CURRENT turn — the base the diff reviewer
-   * diffs against. Set in #handlePrompt; undefined when no checkpoint was taken. */
+  /** The pre-edit checkpoint id for the CURRENT turn. Set in #handlePrompt;
+   * undefined when no checkpoint was taken. */
   #turnCheckpointId: string | undefined;
+  /** The pre-edit checkpoint captured at the FIRST turn of the current user
+   * prompt — the base the diff reviewer diffs against, so a red→fix→green
+   * sequence reviews the CUMULATIVE change, not just the last fix turn. Cleared
+   * with the round budgets on a fresh user prompt; internal fix turns keep it. */
+  #promptBaselineId: string | undefined;
   /** Branch-mode commit-on-green: gitPrepare's verdict, cached once per session
    * (null = not yet attempted). A refusal disables branch commits for the session
    * and never re-checks (the work branch is checked out ONCE, then we stay on it). */
@@ -332,7 +338,7 @@ export class Engine implements EngineClient {
       /* absent/corrupt → nothing to restore */
     }
     try {
-      const plan = await Bun.file(join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`)).text();
+      const plan = await Bun.file(this.#planPath()).text();
       // Strip the "# Plan — <id>" header the writer prepends.
       this.#lastPlan = plan.replace(/^# Plan — [^\n]*\n+/, "").trim() || undefined;
     } catch {
@@ -340,13 +346,29 @@ export class Engine implements EngineClient {
     }
   }
 
+  /** Path of the persisted presented-plan file for this session. */
+  #planPath(): string {
+    return join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`);
+  }
+
+  /** Delete the persisted plan once its handoff has been consumed, so a later
+   * --resume doesn't reload it into #lastPlan and re-arm a spent approval. Also
+   * clears the persisted pendingHandoff flag. Best-effort. */
+  async #discardPersistedPlan(): Promise<void> {
+    try {
+      await rm(this.#planPath(), { force: true });
+    } catch {
+      /* best-effort — a leftover plan file is only re-armed if approved again */
+    }
+    void this.#persistEngineState();
+  }
+
   /** Persist an approved-able plan and remember it for the execute handoff. */
   async #onPlanPresented(plan: string): Promise<void> {
     this.#lastPlan = plan;
     try {
-      const path = join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`);
       await mkdir(join(this.#cwd, ".vibe", "plans"), { recursive: true });
-      await Bun.write(path, `# Plan — ${this.#session.id}\n\n${plan}\n`);
+      await Bun.write(this.#planPath(), `# Plan — ${this.#session.id}\n\n${plan}\n`);
       this.#bus.emit({ type: "notice", level: "info", message: `Plan saved to .vibe/plans/${this.#session.id}.md` });
     } catch {
       // Best-effort persistence — never let it disrupt the turn.
@@ -561,8 +583,9 @@ export class Engine implements EngineClient {
     for (const resolve of this.#pendingPermissions.values()) resolve("deny");
     this.#pendingPermissions.clear();
     // Reap surviving background jobs (dev servers etc.) — the process is going
-    // away; leaving them orphaned made every `bash background:true` a leak.
-    this.#jobs.killAll?.();
+    // away; leaving them orphaned made every `bash background:true` a leak. Await
+    // the SIGKILL escalation so a child that ignores SIGTERM can't outlive us.
+    await this.#jobs.killAllAndWait();
     await this.#mcp.close();
     this.#memory?.close();
     this.#bus.close();
@@ -589,10 +612,10 @@ export class Engine implements EngineClient {
     switch (command.type) {
       case "submit-prompt": {
         // A fresh user prompt resets the auto-verify retry budget AND the
-        // green-gate / diff-review round budgets (both bounded per user prompt).
-        this.#verifyAttempts = 0;
-        this.#gateRounds = 0;
-        this.#reviewRounds = 0;
+        // green-gate / diff-review round budgets (all bounded per user prompt),
+        // plus the diff-review baseline — same reset a slash-command-initiated
+        // prompt gets via the handle's resetTurnBudgets().
+        this.#resetPromptBudgets();
         // …and starts a fresh coordination context: the blackboard is per-fan-out
         // scratch (claims, transient decisions), NOT durable state — the task list
         // and long-term memory carry that. Clearing here (not on loop iterations,
@@ -1085,9 +1108,7 @@ export class Engine implements EngineClient {
       send: (command) => engine.send(command),
       persistConfig: (patch) => engine.#persistConfig(patch),
       handlePrompt: (text, opts) => engine.#handlePrompt(text, opts),
-      resetVerifyAttempts: () => {
-        engine.#verifyAttempts = 0;
-      },
+      resetTurnBudgets: () => engine.#resetPromptBudgets(),
       runVerifyCommand: (command) => engine.#runVerifyCommand(command),
       refreshProjectMemory: () => engine.#refreshProjectMemory(),
       createAgent: (name) => engine.#createAgent(name),
@@ -1212,6 +1233,10 @@ export class Engine implements EngineClient {
     const isHandoff = opts.handoff ?? false;
     if (isHandoff) {
       this.#lastPlan = undefined;
+      // Consume the persisted plan too, so --resume can't resurrect an
+      // already-executed plan and re-fire its handoff (the plan file otherwise
+      // repopulates #lastPlan on restore, re-arming a spent approval).
+      void this.#discardPersistedPlan();
       text =
         "The plan you presented was approved by the user — proceed with implementing it " +
         `now (your earlier "stop here" no longer applies).${text.trim() ? `\n\n${text}` : ""}`;
@@ -1229,6 +1254,10 @@ export class Engine implements EngineClient {
       );
       if (cp) {
         this.#turnCheckpointId = cp.id;
+        // The FIRST checkpointed turn of a user prompt sets the diff-review
+        // baseline; subsequent internal fix turns keep it, so the review sees the
+        // cumulative red→fix→green change, not just the last fix turn's diff.
+        if (this.#promptBaselineId === undefined) this.#promptBaselineId = cp.id;
         this.#bus.emit({ type: "checkpoint-created", id: cp.id, label: cp.label });
       }
     }
@@ -1297,6 +1326,18 @@ export class Engine implements EngineClient {
     await this.#runGate(profile);
   }
 
+  /** Reset every per-user-prompt budget + the diff-review baseline. Called once
+   * at the start of a genuine user-initiated prompt (typed submit-prompt, or a
+   * slash command that expands into a prompt) — NEVER by an engine-internal fix
+   * turn (gate-fix / review-fix / verify-fix), so the "bounded per user prompt"
+   * invariant holds and a fix cycle can't reset its own budget mid-flight. */
+  #resetPromptBudgets(): void {
+    this.#verifyAttempts = 0;
+    this.#gateRounds = 0;
+    this.#reviewRounds = 0;
+    this.#promptBaselineId = undefined;
+  }
+
   /** The shared gating for post-turn verification: a mutating execute turn the
    * user didn't interrupt (matches the legacy `#maybeVerify` guards). */
   #turnIsGateable(): boolean {
@@ -1341,12 +1382,38 @@ export class Engine implements EngineClient {
     }
     // GREEN.
     this.#notice(formatGateOutcome(summary), "info");
+    this.#persistGreenLedger(profile);
     await this.#commitOnGreen(summary);
     // Runtime visual verification (web apps only): boot the app headless and
     // find what green checks can't — console errors + dead controls. Its
     // findings ride the SAME adversarial-review fix budget as the diff review.
     const visual = await this.#maybeVisualVerify(profile);
     await this.#maybeReview(visual);
+  }
+
+  /**
+   * Cross-run repo memory: after a GREEN gate, persist the recon-detected
+   * commands (which just ran green) + conventions to `.vibe/ledger.jsonl`, keyed
+   * by the manifest signature, so the NEXT session's recon starts where this one
+   * ended (`resolveRepoProfile` merges them back in via `loadLedger`). Without
+   * this writeback the ledger — and the `build.recon.ledger` toggle — were inert.
+   * Gated on the toggle; best-effort (append failures never block a turn).
+   */
+  #persistGreenLedger(profile: RepoProfile): void {
+    if (!this.#config.build.recon.ledger || profile.greenfield) return;
+    if (!Object.keys(profile.commands).length) return;
+    appendLedger(this.#cwd, {
+      manifestHash: manifestHash({
+        commands: profile.commands,
+        manifestFiles: profile.manifestFiles,
+        packageManager: profile.packageManager,
+        primaryLanguage: profile.primaryLanguage,
+      }),
+      commandsHash: commandsHash(profile.commands),
+      at: Date.now(),
+      commands: profile.commands,
+      conventions: profile.conventions,
+    });
   }
 
   /**
@@ -1429,12 +1496,15 @@ export class Engine implements EngineClient {
     const review = this.#config.build.review;
     if (!review.enabled || this.#reviewRounds >= review.maxRounds) return;
 
-    // The REAL diff of this turn's work. Prefer the pre-turn checkpoint base (the
-    // engine snapshots before every edit turn); fall back to a plain working-tree
-    // diff when checkpoints weren't taken (not a repo / checkpoints disabled).
+    // The REAL diff of this user prompt's work. Prefer the PROMPT baseline (the
+    // checkpoint before the first turn of this prompt) so a red→fix→green
+    // sequence reviews the cumulative change, not just the last fix turn; fall
+    // back to this turn's checkpoint, then a plain working-tree diff when no
+    // checkpoint was taken (not a repo / checkpoints disabled).
+    const baseCheckpoint = this.#promptBaselineId ?? this.#turnCheckpointId;
     let diff: string;
-    if (this.#turnCheckpointId) {
-      diff = await this.#checkpoints.diffFrom(this.#turnCheckpointId);
+    if (baseCheckpoint) {
+      diff = await this.#checkpoints.diffFrom(baseCheckpoint);
     } else {
       const r = await spawnGit(this.#cwd, ["diff"]);
       diff = r.ok ? r.stdout : "";

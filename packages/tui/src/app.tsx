@@ -100,6 +100,12 @@ const CONTENT_MAX = 96;
 const MAX_OUTPUT_LINES = 160;
 /** Max visible rows the input box grows to before it scrolls internally. */
 const INPUT_MAX_ROWS = 10;
+/** Max rows a live status panel (Tasks / Subagents / Queued) renders before it
+ * collapses the overflow to a "+N more" line. These panels are flexShrink={0}, so
+ * an uncapped list (a wide 20–40 subagent fan-out) would push the input + status
+ * bar off the bottom of the screen. Bounding the row count keeps the input usable
+ * mid-turn. Matches the menu window cap (MENU_WINDOW_MAX). */
+const PANEL_MAX_ROWS = 8;
 /** The wordmark is rendered with OpenTUI's native ASCII-font renderable
  * (`<ascii_font font="slick">`) in the brand color — see the empty-state splash. */
 /** Min column width to show the big wordmark (else a compact brand line). */
@@ -1536,7 +1542,7 @@ export function App(props: { engine: EngineClient }) {
           title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
           titleColor={brand()}
         >
-          <For each={tasks()}>
+          <For each={tasks().slice(0, PANEL_MAX_ROWS)}>
             {(task) => {
               const c = () =>
                 task.status === "completed"
@@ -1552,6 +1558,9 @@ export function App(props: { engine: EngineClient }) {
               );
             }}
           </For>
+          <Show when={tasks().length > PANEL_MAX_ROWS}>
+            <text fg={palette().muted}>{`  +${tasks().length - PANEL_MAX_ROWS} more`}</text>
+          </Show>
         </Panel>
       </Show>
       {/* Subagents — live fan-out. ONE truncated line each by default (so a big
@@ -1559,7 +1568,7 @@ export function App(props: { engine: EngineClient }) {
           full prompt + result (bounded), tap again to collapse. Cleared per turn. */}
       <Show when={subagents().length > 0}>
         <Panel title={`Subagents · ${subagents().length}`} titleColor={brand()}>
-          <For each={subagents()}>
+          <For each={subagents().slice(0, PANEL_MAX_ROWS)}>
             {(s) => {
               const open = () => expandedSubs().has(s.id);
               // Calm single tone (no rainbow rotation): a running agent's glyph is
@@ -1605,6 +1614,9 @@ export function App(props: { engine: EngineClient }) {
               );
             }}
           </For>
+          <Show when={subagents().length > PANEL_MAX_ROWS}>
+            <text fg={palette().muted}>{`  +${subagents().length - PANEL_MAX_ROWS} more`}</text>
+          </Show>
         </Panel>
       </Show>
       {/* Queue — prompts you typed ahead while a turn runs. They auto-run in
@@ -1612,7 +1624,7 @@ export function App(props: { engine: EngineClient }) {
           current turn so it runs NOW) and `✕` (drop it). */}
       <Show when={pendingQ().length > 0}>
         <Panel title={`Queued · ${pendingQ().length}`} titleColor={brand()}>
-          <For each={pendingQ()}>
+          <For each={pendingQ().slice(0, PANEL_MAX_ROWS)}>
             {(q, i) => (
               <box flexDirection="row" gap={1}>
                 <text flexShrink={0} fg={palette().muted}>{`${i() + 1}.`}</text>
@@ -1637,6 +1649,9 @@ export function App(props: { engine: EngineClient }) {
               </box>
             )}
           </For>
+          <Show when={pendingQ().length > PANEL_MAX_ROWS}>
+            <text fg={palette().muted}>{`  +${pendingQ().length - PANEL_MAX_ROWS} more queued`}</text>
+          </Show>
           <text fg={palette().muted} marginTop={1}>
             {"steer = run next & interrupt now  ·  ✕ = remove  ·  otherwise they run in order"}
           </text>

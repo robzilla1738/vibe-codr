@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CheckpointManager } from "./checkpoints.ts";
+import { gitAddWorktree } from "./build/gitops.ts";
 
 async function git(cwd: string, args: string[]): Promise<void> {
   const proc = Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" });
@@ -155,6 +156,27 @@ test("undo advances past a dead checkpoint to the next valid one", async () => {
   const restored = await cp.undo();
   expect(restored?.label).toBe("older-valid");
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
+});
+
+test("diffFrom does not surface the engine's .vibe/ worktree state once excluded", async () => {
+  // A nested worktree under .vibe/ would otherwise be staged by diffFrom's
+  // throwaway `git add -A` as an embedded-repo gitlink and burn review budget on
+  // a phantom change. gitAddWorktree writes .vibe/ to the local exclude, so the
+  // green-gate reviewer's diff must stay clean.
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  const base = await cp.snapshot("base");
+  expect(base).not.toBeNull();
+
+  const wtPath = join(dir, ".vibe", "worktrees", "w1");
+  const wt = await gitAddWorktree(dir, { path: wtPath, branch: "vibe-wt/cp" });
+  expect(wt).toBe(wtPath);
+
+  // A real change the reviewer SHOULD see, plus the .vibe/ runtime state it should NOT.
+  await Bun.write(join(dir, "real.txt"), "user change\n");
+  const diff = await cp.diffFrom(base!.id);
+  expect(diff).toContain("real.txt");
+  expect(diff).not.toContain(".vibe");
 });
 
 test("non-git directories are a safe no-op", async () => {

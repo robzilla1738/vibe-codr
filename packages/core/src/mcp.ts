@@ -1,7 +1,9 @@
 import {
+  capText,
   createLogger,
   type JsonSchema,
   type Logger,
+  omittedMarker,
   type ToolDefinition,
 } from "@vibe/shared";
 import type { McpServer } from "@vibe/config";
@@ -36,6 +38,17 @@ export interface McpPrompt {
  * hung MCP server call must not wedge the turn (Esc also now cancels it). */
 export const MCP_CALL_TIMEOUT_MS = 120_000;
 
+/** Output cap for MCP tool/resource/prompt results. An MCP result lands in the
+ * prompt verbatim like any built-in's, so — same invariant as `read` (100k) —
+ * an untrusted server can't dump a multi-MB blob that blows context accounting
+ * and 400s the next turn. head+tail keeps a trailing error/summary line. */
+export const MCP_MAX_OUTPUT = 100_000;
+
+/** Cap a rendered MCP result the same way built-ins cap their output. */
+function capMcpOutput(text: string): string {
+  return capText(text, { cap: MCP_MAX_OUTPUT, keep: "head+tail", marker: omittedMarker });
+}
+
 /** A connected MCP server, reduced to what the hub needs. */
 export interface McpClient {
   listTools(): Promise<McpToolSpec[]>;
@@ -46,12 +59,21 @@ export interface McpClient {
   ): Promise<{ content: unknown; isError?: boolean }>;
   /** List the server's resources (optional capability). */
   listResources?(): Promise<McpResource[]>;
-  /** Read a resource's contents by uri (optional capability). */
-  readResource?(uri: string): Promise<{ content: unknown }>;
+  /** Read a resource's contents by uri (optional capability). Threads the turn's
+   * abort signal + a per-call deadline so a hung read is cancellable (like callTool). */
+  readResource?(
+    uri: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<{ content: unknown }>;
   /** List the server's prompts (optional capability). */
   listPrompts?(): Promise<McpPrompt[]>;
-  /** Render a prompt to text by name + args (optional capability). */
-  getPrompt?(name: string, args: Record<string, unknown>): Promise<{ content: unknown }>;
+  /** Render a prompt to text by name + args (optional capability). Threads abort
+   * + deadline like readResource/callTool so a wedged server can't hold the turn. */
+  getPrompt?(
+    name: string,
+    args: Record<string, unknown>,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<{ content: unknown }>;
   /** Live transport health — false once the connection drops (so `/mcp` and
    * `/doctor` stop reporting a crashed server as healthy). Optional; absent =
    * assumed connected. */
@@ -149,6 +171,12 @@ export class McpHub {
    * later RECONNECT still gets them surfaced to the model. */
   #resourceToolRegistered = false;
   #promptToolRegistered = false;
+  /** Every exposed tool name currently live ACROSS all servers. Two servers whose
+   * keys sanitize to the same string (e.g. `gh.prod` and `gh_prod`) can produce
+   * identical `mcp__<server>__<tool>` names; a per-server `used` set never sees
+   * the cross-server clash and the registry silently overwrites the first. This
+   * hub-wide set catches it so the later one gets a stable hash suffix. */
+  #usedNames = new Set<string>();
 
   constructor(deps: McpHubDeps) {
     this.#deps = deps;
@@ -227,17 +255,19 @@ export class McpHub {
   /** Register a server's current tool set, recording the exposed names so a later
    * re-list or drop can cleanly unregister them. */
   #registerServerTools(entry: McpEntry, tools: McpToolSpec[], client: McpClient): void {
-    // Two DISTINCT real tool names can sanitize to the same exposed name (e.g.
-    // `db.get` and `db/get` → `mcp__srv__db_get`); registering both would let the
-    // second silently overwrite the first, leaving one tool uncallable. Detect the
-    // collision here and disambiguate the later one with a stable hash of its real
-    // name, so the common (readable) name is preserved and only clashes get a suffix.
-    const used = new Set<string>();
+    // Two DISTINCT real tool names can sanitize to the same exposed name — within
+    // ONE server (`db.get` and `db/get`) OR ACROSS servers whose keys collapse to
+    // the same string (`gh.prod` and `gh_prod` both → `mcp__gh_prod__…`).
+    // Registering both would let the second silently overwrite the first, leaving
+    // one tool uncallable. Check the hub-wide live set (a fresh per-server set was
+    // blind to cross-server clashes) and disambiguate the later one with a stable
+    // hash of its (server, real-name) so the common readable name is preserved and
+    // only clashes get a suffix.
     const names: string[] = [];
     for (const spec of tools) {
       let name = mcpToolName(entry.name, spec.name);
-      if (used.has(name)) name = withHashSuffix(name, djb2(`${entry.name}\u0000${spec.name}`));
-      used.add(name);
+      if (this.#usedNames.has(name)) name = withHashSuffix(name, djb2(`${entry.name}\u0000${spec.name}`));
+      this.#usedNames.add(name);
       names.push(name);
       this.#deps.registerTool(toToolDefinition(entry.name, spec, client, name));
     }
@@ -247,8 +277,11 @@ export class McpHub {
 
   /** Unregister every tool currently exposed by a server (re-list / drop / close). */
   #unregisterServerTools(entry: McpEntry): void {
-    if (this.#deps.unregisterTool) {
-      for (const name of entry.toolNames) this.#deps.unregisterTool(name);
+    for (const name of entry.toolNames) {
+      // Free the exposed name in the hub-wide set too, so a re-list of THIS server
+      // doesn't see its own just-removed names as cross-server collisions.
+      this.#usedNames.delete(name);
+      this.#deps.unregisterTool?.(name);
     }
     entry.toolNames = [];
     entry.toolCount = 0;
@@ -346,12 +379,23 @@ export class McpHub {
         `listing tools for MCP server "${name}"`,
       );
       // Resources + prompts are optional capabilities — a server that doesn't
-      // support them throws "method not found"; treat that as "none".
+      // support them throws "method not found"; treat that as "none". Each
+      // enumeration runs under the SAME connect deadline: a server that answers
+      // tools/list fast but STALLS on resources/list must not block boot past its
+      // configured timeout (a plain `.catch` swallows a rejection, not a hang).
       const resources = client.listResources
-        ? await client.listResources().catch(() => [] as McpResource[])
+        ? await withTimeout(
+            client.listResources(),
+            deadline,
+            `listing resources for MCP server "${name}"`,
+          ).catch(() => [] as McpResource[])
         : [];
       const prompts = client.listPrompts
-        ? await client.listPrompts().catch(() => [] as McpPrompt[])
+        ? await withTimeout(
+            client.listPrompts(),
+            deadline,
+            `listing prompts for MCP server "${name}"`,
+          ).catch(() => [] as McpPrompt[])
         : [];
       return { client, tools, resources, prompts };
     } catch (err) {
@@ -372,23 +416,32 @@ export class McpHub {
   }
 
   /** Read a resource by uri (optionally scoped to a server). */
-  async readResource(uri: string, server?: string): Promise<string> {
+  async readResource(
+    uri: string,
+    server?: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<string> {
     const entry = this.#entries.find(
       (e) => e.client?.readResource && (server ? e.name === server : e.resources.some((r) => r.uri === uri)),
     );
     if (!entry?.client?.readResource) {
       throw new Error(`no MCP server provides resource "${uri}"`);
     }
-    const res = await entry.client.readResource(uri);
-    return renderContent(res.content);
+    const res = await entry.client.readResource(uri, opts);
+    return capMcpOutput(renderContent(res.content));
   }
 
   /** Render a server prompt to text by name + args. */
-  async getPrompt(server: string, name: string, args: Record<string, unknown>): Promise<string> {
+  async getPrompt(
+    server: string,
+    name: string,
+    args: Record<string, unknown>,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<string> {
     const entry = this.#entries.find((e) => e.name === server);
     if (!entry?.client?.getPrompt) throw new Error(`MCP server "${server}" has no prompt "${name}"`);
-    const res = await entry.client.getPrompt(name, args);
-    return renderContent(res.content);
+    const res = await entry.client.getPrompt(name, args, opts);
+    return capMcpOutput(renderContent(res.content));
   }
 
   /** The read_mcp_resource tool: list resources, or read one by uri. */
@@ -405,7 +458,7 @@ export class McpHub {
         },
       },
       readOnly: true,
-      execute: async (args) => {
+      execute: async (args, ctx) => {
         const { uri, server } = (args ?? {}) as { uri?: string; server?: string };
         if (!uri) {
           const list = this.resources();
@@ -416,7 +469,14 @@ export class McpHub {
           return { output: `MCP resources:\n${lines.join("\n")}` };
         }
         try {
-          return { output: await this.readResource(uri, server) };
+          // Thread the turn's abort signal + a per-call deadline so a hung read
+          // is cancellable by Esc and bounded (parity with MCP tool calls).
+          return {
+            output: await this.readResource(uri, server, {
+              signal: ctx.abortSignal,
+              timeoutMs: MCP_CALL_TIMEOUT_MS,
+            }),
+          };
         } catch (err) {
           return { output: (err as Error).message, isError: true };
         }
@@ -439,7 +499,7 @@ export class McpHub {
         },
       },
       readOnly: true,
-      execute: async (input) => {
+      execute: async (input, ctx) => {
         const { server, name, args } = (input ?? {}) as {
           server?: string;
           name?: string;
@@ -456,7 +516,13 @@ export class McpHub {
         }
         if (!server) return { output: "Pass `server` to render a prompt.", isError: true };
         try {
-          return { output: await this.getPrompt(server, name, args ?? {}) };
+          // Thread abort + deadline so a wedged prompt render is cancellable/bounded.
+          return {
+            output: await this.getPrompt(server, name, args ?? {}, {
+              signal: ctx.abortSignal,
+              timeoutMs: MCP_CALL_TIMEOUT_MS,
+            }),
+          };
         } catch (err) {
           return { output: (err as Error).message, isError: true };
         }
@@ -512,6 +578,18 @@ function withHashSuffix(sanitized: string, hash: number): string {
   return `${sanitized.slice(0, 64 - suffix.length)}${suffix}`;
 }
 
+/** Map the hub's `{signal, timeoutMs}` onto the SDK's request options
+ * (`{signal, timeout}`), omitting absent fields so the SDK keeps its defaults. */
+function mcpRequestOptions(opts?: { signal?: AbortSignal; timeoutMs?: number }): {
+  signal?: AbortSignal;
+  timeout?: number;
+} {
+  return {
+    ...(opts?.signal ? { signal: opts.signal } : {}),
+    ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+  };
+}
+
 /** Tiny deterministic string hash (djb2) — for unique truncation suffixes. */
 function djb2(s: string): number {
   let h = 5381;
@@ -534,15 +612,22 @@ export function toToolDefinition(
     name: exposedName,
     description: spec.description ?? `MCP tool "${spec.name}" from "${server}".`,
     inputSchema: spec.inputSchema ?? { type: "object", properties: {} },
-    // Honor the server's readOnlyHint: a genuinely read-only MCP tool skips the
-    // permission gate and works in plan mode. Default conservative (false).
+    // Honor the server's readOnlyHint: a genuinely read-only MCP tool works in
+    // plan mode. Default conservative (false).
     readOnly: spec.annotations?.readOnlyHint === true,
+    // Every MCP tool reaches an external server — that IS network egress. Flag it
+    // so the permission gate always consults the rules (a `readOnlyHint:true` tool
+    // must NOT short-circuit the gate on server-supplied metadata: a deny/ask rule
+    // on `mcp__web__fetch` has to be able to fire). A read-only MCP tool keeps the
+    // frictionless allow-default (no prompt) but stays governable; a mutating one
+    // gets the interactive prompt.
+    network: true,
     execute: async (args, ctx) => {
       const res = await client.callTool(spec.name, args, {
         signal: ctx.abortSignal,
         timeoutMs: MCP_CALL_TIMEOUT_MS,
       });
-      return { output: renderContent(res.content), isError: res.isError };
+      return { output: capMcpOutput(renderContent(res.content)), isError: res.isError };
     },
   };
 }
@@ -560,6 +645,8 @@ function renderPart(p: unknown): string {
     type?: string;
     text?: string;
     data?: string;
+    blob?: string;
+    uri?: string;
     mimeType?: string;
     resource?: { uri?: string; mimeType?: string; text?: string; blob?: string };
   };
@@ -577,6 +664,15 @@ function renderPart(p: unknown): string {
       return `[resource ${r.uri ?? ""}${mime}, ~${approxBase64Bytes(r.blob)} bytes omitted]`;
     }
     return `[resource ${r.uri ?? ""}]`;
+  }
+  // `resources/read` contents items have NO `type` discriminator — they are bare
+  // `{ uri, mimeType, text }` (text resource) or `{ uri, mimeType, blob }` (binary).
+  // Render text verbatim; summarize a binary blob (mime + byte length) rather than
+  // dump megabytes of raw base64 into the prompt (blows context, 400s the next turn).
+  if (typeof part?.text === "string") return part.text;
+  if (typeof part?.blob === "string") {
+    const mime = part.mimeType ? ` ${part.mimeType}` : "";
+    return `[resource ${part.uri ?? ""}${mime}, ~${approxBase64Bytes(part.blob)} bytes omitted]`;
   }
   return JSON.stringify(p);
 }
@@ -691,10 +787,7 @@ const defaultConnect: McpConnect = async (name, config) => {
           arguments: (args ?? {}) as Record<string, unknown>,
         },
         undefined,
-        {
-          ...(opts?.signal ? { signal: opts.signal } : {}),
-          ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
-        },
+        mcpRequestOptions(opts),
       );
       return { content: res.content, isError: Boolean(res.isError) };
     },
@@ -707,8 +800,10 @@ const defaultConnect: McpConnect = async (name, config) => {
         ...(r.mimeType ? { mimeType: r.mimeType } : {}),
       }));
     },
-    async readResource(uri) {
-      const res = await client.readResource({ uri });
+    async readResource(uri, opts) {
+      // Thread abort + deadline into the SDK exactly like callTool, so Esc cancels
+      // a hung read and a wedged server can't hold the turn past the deadline.
+      const res = await client.readResource({ uri }, mcpRequestOptions(opts));
       return { content: res.contents };
     },
     async listPrompts() {
@@ -719,8 +814,8 @@ const defaultConnect: McpConnect = async (name, config) => {
         ...(p.arguments ? { arguments: p.arguments } : {}),
       }));
     },
-    async getPrompt(name, args) {
-      const res = await client.getPrompt({ name, arguments: args });
+    async getPrompt(name, args, opts) {
+      const res = await client.getPrompt({ name, arguments: args }, mcpRequestOptions(opts));
       // Prompt messages → flatten each message's content for the model.
       const content = (res.messages ?? []).map((m) => m.content);
       return { content };
@@ -761,7 +856,10 @@ interface McpSdkClient {
   listResources(): Promise<{
     resources?: { uri: string; name?: string; description?: string; mimeType?: string }[];
   }>;
-  readResource(req: { uri: string }): Promise<{ contents: unknown }>;
+  readResource(
+    req: { uri: string },
+    options?: { signal?: AbortSignal; timeout?: number },
+  ): Promise<{ contents: unknown }>;
   listPrompts(): Promise<{
     prompts?: {
       name: string;
@@ -769,9 +867,12 @@ interface McpSdkClient {
       arguments?: { name: string; description?: string; required?: boolean }[];
     }[];
   }>;
-  getPrompt(req: {
-    name: string;
-    arguments: Record<string, unknown>;
-  }): Promise<{ messages?: { content: unknown }[] }>;
+  getPrompt(
+    req: {
+      name: string;
+      arguments: Record<string, unknown>;
+    },
+    options?: { signal?: AbortSignal; timeout?: number },
+  ): Promise<{ messages?: { content: unknown }[] }>;
   close(): Promise<void>;
 }

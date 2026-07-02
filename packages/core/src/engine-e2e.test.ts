@@ -161,6 +161,17 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
   await collector;
 
   expect(prompts.at(-1)).toContain("approved by the user");
+
+  // Once the handoff is consumed the persisted plan is DISCARDED, so a later
+  // --resume can't reload it into #lastPlan and re-fire the already-executed
+  // plan's handoff (silently re-running finished work).
+  let planStillThere = true;
+  try {
+    await Bun.file(join(cwd, ".vibe", "plans", `${sessionId}.md`)).text();
+  } catch {
+    planStillThere = false;
+  }
+  expect(planStillThere).toBe(false);
 });
 
 test("Engine planning: resolve-plan accept switches to execute, seeds tasks, runs the handoff", async () => {

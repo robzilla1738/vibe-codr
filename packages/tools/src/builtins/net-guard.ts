@@ -37,7 +37,7 @@ function isPrivateV4(ip: string): boolean {
   if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
     return true;
   }
-  const [a, b] = parts as [number, number, number, number];
+  const [a, b, c] = parts as [number, number, number, number];
   if (a === 0) return true; // 0.0.0.0/8 "this host"
   if (a === 10) return true; // 10/8 private
   if (a === 127) return true; // loopback
@@ -45,7 +45,7 @@ function isPrivateV4(ip: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12 private
   if (a === 192 && b === 168) return true; // 192.168/16 private
   if (a === 100 && b >= 64 && b <= 127) return true; // 100.64/10 CGNAT
-  if (a === 192 && b === 0) return true; // 192.0.0/24 (IETF protocol assignments)
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0/24 (IETF protocol assignments) — NOT /16
   if (a === 198 && (b === 18 || b === 19)) return true; // 198.18/15 benchmarking
   if (a >= 224) return true; // 224+/4 multicast + reserved/future
   return false;
@@ -70,6 +70,15 @@ function isPrivateV6(ip: string): boolean {
   // `::1` (loopback) fall under the compat form and resolve to private v4s too.
   if (firstFiveZero && (h[5] === 0xffff || h[5] === 0)) {
     if (h[5] === 0 && h[6] === 0 && (h[7] === 0 || h[7] === 1)) return true; // :: / ::1
+    const g6 = h[6]!;
+    const g7 = h[7]!;
+    return isPrivateV4(`${g6 >>> 8}.${g6 & 0xff}.${g7 >>> 8}.${g7 & 0xff}`);
+  }
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): the low 32 bits are an
+  // embedded IPv4 the NAT64 gateway routes to. A DNS64 resolver synthesizes this
+  // AAAA from an A record, so 64:ff9b::a9fe:a9fe reaches 169.254.169.254 — judge
+  // the embedded v4 so metadata/private targets can't be reached via NAT64.
+  if (h[0] === 0x0064 && h[1] === 0xff9b && h[2] === 0 && h[3] === 0 && h[4] === 0 && h[5] === 0) {
     const g6 = h[6]!;
     const g7 = h[7]!;
     return isPrivateV4(`${g6 >>> 8}.${g6 & 0xff}.${g7 >>> 8}.${g7 & 0xff}`);

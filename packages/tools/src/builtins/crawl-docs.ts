@@ -81,6 +81,11 @@ export function crawlDocsTool(opts: CrawlDocsOptions = {}): ToolDefinition<z.inf
     async execute({ url, query, maxPages }, ctx) {
       const budget = Math.min(maxPages ?? DEFAULT_MAX_PAGES, 15);
       const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(opts.timeoutMs ?? 30_000)]);
+      // The crawl is bounded to the start page's origin (extractLinks only
+      // enqueues same-origin links); pin that same origin THROUGH redirects so a
+      // server-side redirect to an external host can't escape the crawl scope and
+      // have its content stored under a trusted docs URL.
+      const crawlOrigin = new URL(url).origin;
       const fetchPage =
         opts.fetchPage ??
         ((u: string, s: AbortSignal) =>
@@ -88,6 +93,7 @@ export function crawlDocsTool(opts: CrawlDocsOptions = {}): ToolDefinition<z.inf
             signal: s,
             maxBytes: PAGE_BYTES,
             raw: true,
+            sameOrigin: crawlOrigin,
             ...(opts.policy ? { policy: opts.policy } : {}),
             ...(opts.lookup ? { lookup: opts.lookup } : {}),
           }));

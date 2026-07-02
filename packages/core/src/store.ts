@@ -10,8 +10,10 @@ export interface SessionMeta {
   goal: string | null;
   /** The working task list at the time of the last save. */
   tasks?: Task[];
-  /** Cumulative token usage + accrued cost at the time of the last save. */
-  usage?: { inputTokens: number; outputTokens: number; costUSD?: number };
+  /** Cumulative token usage + accrued cost at the time of the last save. The
+   * cache-read total is persisted too, so `--resume` keeps a truthful running
+   * usage/cost instead of silently zeroing the cached slice. */
+  usage?: { inputTokens: number; outputTokens: number; costUSD?: number; cachedInputTokens?: number };
   /** The proactively-recalled context block, so a resumed session keeps the
    * same injected memory instead of silently dropping (or re-deriving) it. */
   recalledContext?: string;

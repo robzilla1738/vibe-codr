@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { composeSystemPrompt } from "./system-prompt.ts";
+import { composeSystemPrompt, formatWorkspaceState } from "./system-prompt.ts";
 
 test("plan mode forbids edits; execute mode allows them", () => {
   expect(composeSystemPrompt({ mode: "plan", goal: null })).toContain("MUST NOT modify");
@@ -138,20 +138,24 @@ test("repo facts (recon) are injected before the goal", () => {
   expect(composeSystemPrompt({ mode: "execute", goal: null })).not.toContain("REPO FACTS");
 });
 
-test("the live task list is re-injected every turn with status marks", () => {
-  const out = composeSystemPrompt({
-    mode: "execute",
-    goal: null,
-    tasks: [
-      { title: "read the code", status: "completed" },
-      { title: "write the fix", status: "in_progress" },
-      { title: "run the tests", status: "pending" },
-    ],
-  });
-  expect(out).toContain("CURRENT TASKS");
-  expect(out).toContain("[x] read the code");
-  expect(out).toContain("[~] write the fix");
-  expect(out).toContain("[ ] run the tests");
-  // No block for an empty list.
-  expect(composeSystemPrompt({ mode: "execute", goal: null, tasks: [] })).not.toContain("CURRENT TASKS");
+test("the task list lives in the workspace-state block, NOT the (cache-stable) system prompt", () => {
+  const tasks = [
+    { title: "read the code", status: "completed" as const },
+    { title: "write the fix", status: "in_progress" as const },
+    { title: "run the tests", status: "pending" as const },
+  ];
+  // The system prompt must stay byte-stable across turns for cross-turn caching,
+  // so the volatile task list is NOT in it.
+  const sys = composeSystemPrompt({ mode: "execute", goal: null });
+  expect(sys).not.toContain("CURRENT TASKS");
+  // It rides in the workspace-state reminder folded into the user turn instead.
+  const state = formatWorkspaceState({ tasks });
+  expect(state).toContain("<workspace-state>");
+  expect(state).toContain("CURRENT TASKS");
+  expect(state).toContain("[x] read the code");
+  expect(state).toContain("[~] write the fix");
+  expect(state).toContain("[ ] run the tests");
+  // Nothing to report → no block at all (so no needless tokens on the user turn).
+  expect(formatWorkspaceState({ tasks: [] })).toBeUndefined();
+  expect(formatWorkspaceState({})).toBeUndefined();
 });

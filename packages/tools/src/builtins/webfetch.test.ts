@@ -336,3 +336,24 @@ test("an SSRF-guard rejection does NOT consult the Wayback Machine (no URL leak)
   expect(res.isError).toBe(true);
   expect(waybackAsked).toBe(false);
 });
+
+test("Wayback is NOT consulted for an internal URL even when allowPrivateHosts is set", async () => {
+  // allowPrivateHosts lets the LIVE fetch reach the intranet host; its genuine
+  // HTTP 404 would otherwise fall through to the archive.org lookup and leak the
+  // internal host + path + token to a public third party.
+  let waybackAsked = false;
+  const privateLookup = async () => [{ address: "10.0.0.5" }]; // intranet resolves private
+  globalThis.fetch = (async () =>
+    new Response("not found", { status: 404, headers: { "content-type": "text/plain" } })) as unknown as typeof fetch;
+  const res = await webfetchTool({
+    allowPrivateHosts: true,
+    lookup: privateLookup,
+    waybackLookup: async () => {
+      waybackAsked = true;
+      return { url: "https://web.archive.org/web/2024/x" };
+    },
+  }).execute({ url: "http://intranet.corp/admin?token=SECRET" }, ctx());
+  expect(res.isError).toBe(true);
+  expect(String(res.output)).toContain("HTTP 404");
+  expect(waybackAsked).toBe(false); // the internal URL never reached archive.org
+});

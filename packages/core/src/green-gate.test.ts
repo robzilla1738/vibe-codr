@@ -6,8 +6,10 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig, type Config } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
+import { readFileSync } from "node:fs";
 import { Engine } from "./engine.ts";
 import { CheckpointManager } from "./checkpoints.ts";
+import { ledgerPath } from "./build/ledger.ts";
 
 const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
@@ -122,6 +124,39 @@ test("green gate: passing checks → GREEN notice + green checkpoint + review ru
   // The adversarial diff review ran and came back clean.
   expect(reviewCalls()).toBe(1);
   expect(notices(events).some((n) => n.message.includes("Diff review: clean"))).toBe(true);
+
+  // Cross-run ledger writeback: the green gate persisted the confirmed commands
+  // to .vibe/ledger.jsonl so the NEXT session's recon inherits them. (Previously
+  // appendLedger had no caller, so the whole ledger feature was dead code.)
+  const ledger = readFileSync(ledgerPath(dir), "utf8").trim().split("\n").filter(Boolean);
+  expect(ledger.length).toBeGreaterThanOrEqual(1);
+  const rec = JSON.parse(ledger[ledger.length - 1]!) as {
+    commands: Record<string, string>;
+    manifestHash: string;
+    commandsHash: string;
+  };
+  expect(rec.commands.test).toBe("bun run test");
+  expect(rec.manifestHash).toBeTruthy();
+  expect(rec.commandsHash).toBeTruthy();
+});
+
+test("ledger writeback respects the build.recon.ledger kill-switch (no file when off)", async () => {
+  const dir = initGitRepo({
+    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "bun.lock": "",
+    "src.ts": "export const x = 1;\n",
+  });
+  const { model } = mutatingModel("REVIEW-CLEAN");
+  await runEngine(dir, model, (c) => {
+    c.build.recon.ledger = false;
+  });
+  let existed = true;
+  try {
+    readFileSync(ledgerPath(dir), "utf8");
+  } catch {
+    existed = false;
+  }
+  expect(existed).toBe(false);
 });
 
 test("red gate: failing checks enqueue a bounded fix turn, then stop with a warn", async () => {

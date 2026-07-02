@@ -53,6 +53,73 @@ test("detectCommands: a watch test script is NOT a usable gate command", () => {
   expect(cmds.test).toBeUndefined();
 });
 
+test("detectCommands: non-terminating test scripts are rejected, one-shot forms kept", () => {
+  // [script value, whether cmds.test should be defined]
+  const cases: [string, boolean][] = [
+    ["jest --watchAll", false], // --watch\b missed --watchAll → hung the gate
+    ["jest --watch", false],
+    ["react-scripts test", false], // CRA runs Jest in watch mode unless CI=true
+    ["CI=true react-scripts test", true], // explicit one-shot is fine
+    ["vitest", false], // bare vitest watches by default
+    ["vitest watch", false],
+    ["npm run test:watch", false], // watch aliased through another script
+    ["yarn watch", false],
+    ["vitest run", true],
+    ["jest --ci", true],
+    ["jest", true],
+    ["bun test", true],
+  ];
+  for (const [script, defined] of cases) {
+    const cmds = detectCommands(manifests({ packageJson: JSON.stringify({ scripts: { test: script } }) }));
+    expect([script, cmds.test !== undefined]).toEqual([script, defined]);
+  }
+});
+
+test("detectCommands: @typescript-eslint devDep alone does NOT inject a tsc typecheck", () => {
+  // A pure-JS repo whose only "typescript"-ish dep is the eslint plugin must not
+  // get `npx tsc --noEmit` (no tsconfig / no .ts → TS18003 → spurious RED gate).
+  const cmds = detectCommands(
+    manifests({
+      packageJson: JSON.stringify({
+        scripts: {},
+        devDependencies: { "@typescript-eslint/parser": "^6", "typescript-eslint": "^7" },
+      }),
+    }),
+  );
+  expect(cmds.typecheck).toBeUndefined();
+  // …but a real `typescript` dependency key still yields tsc.
+  const real = detectCommands(
+    manifests({ packageJson: JSON.stringify({ scripts: {}, devDependencies: { typescript: "^5" } }) }),
+  );
+  expect(real.typecheck).toBe("npx tsc --noEmit");
+});
+
+test("detectCommands: tooling-only pyproject gets NO pip/pytest command", () => {
+  // Only [tool.ruff] config — no build backend, pytest not in use. Injecting
+  // `pip install -e .` / `python -m pytest -q` would be confidently wrong.
+  const tooling = detectCommands(manifests({ pyproject: "[tool.ruff]\nline-length = 100" }));
+  expect(tooling.install).toBeUndefined();
+  expect(tooling.test).toBeUndefined();
+  expect(tooling.lint).toBe("ruff check .");
+
+  // A build-backend-only pyproject is installable but has no pytest.
+  const backend = detectCommands(
+    manifests({ pyproject: "[build-system]\nrequires = ['hatchling']\nbuild-backend = 'hatchling.build'" }),
+  );
+  expect(backend.install).toBe("pip install -e .");
+  expect(backend.test).toBeUndefined();
+
+  // Real pytest evidence (a dep and a config table) → the pytest command.
+  const pytest = detectCommands(
+    manifests({
+      pyproject:
+        "[project]\nname = 'x'\ndependencies = ['requests']\n[tool.pytest.ini_options]\naddopts = '-ra'\n",
+    }),
+  );
+  expect(pytest.install).toBe("pip install -e .");
+  expect(pytest.test).toBe("python -m pytest -q");
+});
+
 test("detectCommands: 'vite build' is not falsely rejected as a dev server", () => {
   const cmds = detectCommands(
     manifests({ packageJson: JSON.stringify({ scripts: { build: "vite build" } }) }),

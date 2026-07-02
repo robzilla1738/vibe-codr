@@ -166,6 +166,18 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   `[A-Za-z0-9_-]`, cap 64 with a hash suffix); the real MCP name is used only for
   `callTool`. Hosted providers 400 on dotted/over-long function names.
 - **Subsystem invariants (don't regress these — each has a test):**
+  - **The system prompt must stay byte-stable across a session** (so the whole
+    cached conversation prefix survives turn-to-turn). Volatile working state —
+    the live task list and gathered-sources block — must NOT go in it; it rides
+    in a `<workspace-state>` block folded into the newest user turn
+    (`formatWorkspaceState`, appended in `#pushUser` to the model content only,
+    never `#history`/the UI bubble). The conversation cache breakpoint is placed
+    by `markConversationTail` in `prepareStep` on the CURRENT last message every
+    step (sole placer — exactly one conversation breakpoint; system + tools +
+    this = 3 ≤ the 4-breakpoint cap). Mid-turn offload projection anchors on
+    `#lastSentEstimate` (the estimate of what was actually sent last step), NOT
+    `estimateTokens(#modelMessages)` — the latter double-counted the within-turn
+    tool-result tail and fired microcompaction far too early.
   - `Session.fork()` (subagents) must NOT inherit the parent's `initial*`
     seed/`store`/`extraSystem`/`createdAt` — a resumed parent would otherwise
     leak its whole history + double-count cost into children, and children would

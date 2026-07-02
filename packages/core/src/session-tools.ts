@@ -22,6 +22,12 @@ export interface SessionToolsHandle {
   setTasks(incoming: { title: string; status: TaskStatus }[]): Task[];
 }
 
+/** Cap on the SKILL.md body injected by `use_skill` — a skill body lands in the
+ * prompt verbatim, so a multi-thousand-line catalog would blow the context window
+ * and 400 the turn. Same head-cap discipline as read/edit/spawn_subagent (matches
+ * the memory-injection cap). The model gets the head + a pointer to the full file. */
+export const MAX_SKILL_BODY = 32 * 1024;
+
 /** Build the `use_skill` tool that loads a skill's full body into context. */
 export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ name: string }> {
   const skills = handle.deps.skills;
@@ -39,7 +45,11 @@ export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ 
         return { output: `Unknown skill "${name}".`, isError: true };
       }
       const body = await skill.load();
-      return { output: `# Skill: ${skill.name}\n\n${body}` };
+      const capped =
+        body.length > MAX_SKILL_BODY
+          ? `${body.slice(0, MAX_SKILL_BODY)}\n\n…(skill body truncated at ${MAX_SKILL_BODY} chars — read the full file at ${skill.dir}/SKILL.md for the rest)`
+          : body;
+      return { output: `# Skill: ${skill.name}\n\n${capped}` };
     },
   };
 }

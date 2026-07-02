@@ -65,3 +65,22 @@ test("unknown slash commands pass through with their args", () => {
     args: "30s check --max 3",
   });
 });
+
+test("a slash line that isn't a command name is sent to the model, not swallowed", () => {
+  // A path, a comment, or an endpoint that merely starts with "/" is user text —
+  // routing it to run-slash makes the engine print "Unknown command" and drop the
+  // whole message (including any following lines), so it must be a prompt instead.
+  expect(lineToCommand("/etc/hosts is world-readable")).toEqual({
+    type: "submit-prompt",
+    text: "/etc/hosts is world-readable",
+  });
+  expect(lineToCommand("// TODO: fix this later")).toEqual({
+    type: "submit-prompt",
+    text: "// TODO: fix this later",
+  });
+  // Multi-line bug report: the trailing lines must survive too.
+  expect(lineToCommand("/api/users returns 500\n<stack trace>")).toEqual({
+    type: "submit-prompt",
+    text: "/api/users returns 500\n<stack trace>",
+  });
+});

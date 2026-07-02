@@ -60,6 +60,31 @@ test("caps a single huge line with a truncation marker", async () => {
   expect(r.output).toContain("truncated at 100000 chars");
 });
 
+test("detects a binary file whose first NUL is past the 4096-byte head sniff", async () => {
+  // The head sniff only reads the first 4096 bytes; a file whose NUL appears
+  // deeper used to be fully slurped by `await file.text()` and dumped as mojibake.
+  // The streaming read now sniffs the bytes it actually reads and refuses.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-read-binmid-"));
+  const head = new Uint8Array(5000).fill(0x61); // 5000 'a' — no NUL in the head
+  const withNul = new Uint8Array([...head, 0x00, 0x62, 0x63]);
+  await Bun.write(join(cwd, "mid.bin"), withNul);
+  const r = await readTool.execute({ path: "mid.bin" }, ctx(cwd));
+  expect(r.isError).toBe(true);
+  expect(r.output).toContain("binary file");
+});
+
+test("offset/limit read only the requested window of a large file (no full slurp)", async () => {
+  // A huge tail after the requested window must never be materialized. The window
+  // is returned intact with correct 1-based line numbers, and none of the tail leaks.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-read-window-"));
+  const tail = "Z".repeat(40_000_000); // 40MB on line 4 — must not be loaded
+  await Bun.write(join(cwd, "big.log"), `L1\nL2\nL3\n${tail}`);
+  const r = await readTool.execute({ path: "big.log", offset: 0, limit: 3 }, ctx(cwd));
+  expect(r.isError).toBeUndefined();
+  expect(r.output).toBe("1\tL1\n2\tL2\n3\tL3");
+  expect(String(r.output)).not.toContain("Z");
+});
+
 test("flags an offset past the end of a non-empty file", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-read-off-"));
   await Bun.write(join(cwd, "f.txt"), "a\nb\nc");

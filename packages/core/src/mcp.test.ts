@@ -1,6 +1,13 @@
 import { test, expect } from "bun:test";
 import type { ToolDefinition } from "@vibe/shared";
-import { McpHub, toToolDefinition, mcpToolName, renderContent, type McpClient } from "./mcp.ts";
+import {
+  McpHub,
+  toToolDefinition,
+  mcpToolName,
+  renderContent,
+  MCP_MAX_OUTPUT,
+  type McpClient,
+} from "./mcp.ts";
 
 /** A fake MCP server exposing one echo tool. */
 function fakeClient(calls: { name: string; args: unknown }[]): McpClient {
@@ -24,6 +31,11 @@ function fakeClient(calls: { name: string; args: unknown }[]): McpClient {
     },
     async close() {},
   };
+}
+
+/** A minimal ToolContext for driving a tool's execute() directly. */
+function ctx(signal: AbortSignal = new AbortController().signal) {
+  return { cwd: "/", sessionId: "s", toolCallId: "t", emit: () => {}, abortSignal: signal } as never;
 }
 
 test("hub registers MCP tools as gated mcp__<server>__<tool> definitions", async () => {
@@ -433,6 +445,128 @@ test("status reflects a transport that dropped after connecting", async () => {
   live = false; // the transport drops mid-session
   expect(hub.status()[0]!.connected).toBe(false);
   expect(hub.status()[0]!.toolCount).toBe(1);
+});
+
+test("renderContent renders resources/read contents (no `type` field) — text and blob", () => {
+  // The real transport's resources/read returns bare `{uri, mimeType, text|blob}`
+  // items with NO `type` discriminator (unlike tool-call content parts).
+  expect(
+    renderContent([{ uri: "file:///a.md", mimeType: "text/markdown", text: "# hello" }]),
+  ).toBe("# hello");
+  const bigB64 = "A".repeat(80_000);
+  const blobOut = renderContent([{ uri: "file:///img.png", mimeType: "image/png", blob: bigB64 }]);
+  expect(blobOut).not.toContain(bigB64); // raw base64 is NOT dumped into the prompt
+  expect(blobOut).toContain("image/png");
+  expect(blobOut).toMatch(/omitted/);
+  expect(blobOut).toContain("file:///img.png");
+});
+
+test("read_mcp_resource renders a text resource's contents (real transport shape)", async () => {
+  const registered: ToolDefinition[] = [];
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    listResources: async () => [{ uri: "file:///readme.md", mimeType: "text/markdown" }],
+    // The SDK returns bare content items with no `type` — text must pass through
+    // verbatim, not be JSON-stringified.
+    readResource: async (uri) => ({
+      content: [{ uri, mimeType: "text/markdown", text: "project readme body" }],
+    }),
+    close: async () => {},
+  };
+  const hub = new McpHub({ registerTool: (d) => registered.push(d), connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  const readTool = registered.find((t) => t.name === "read_mcp_resource")!;
+  const out = String((await readTool.execute({ uri: "file:///readme.md" }, ctx())).output);
+  expect(out).toBe("project readme body"); // not `{"uri":...,"text":...}`
+});
+
+test("MCP tool-call output is capped like a built-in (no unbounded blob into context)", async () => {
+  const huge = "x".repeat(MCP_MAX_OUTPUT * 2);
+  const client: McpClient = {
+    listTools: async () => [{ name: "dump" }],
+    callTool: async () => ({ content: [{ type: "text", text: huge }] }),
+    close: async () => {},
+  };
+  const def = toToolDefinition("srv", { name: "dump" }, client);
+  const out = String((await def.execute({}, ctx())).output);
+  expect(out.length).toBeLessThan(huge.length); // truncated
+  expect(out.length).toBeLessThanOrEqual(MCP_MAX_OUTPUT + 64); // ≤ cap + marker
+  expect(out).toMatch(/chars omitted/);
+});
+
+test("every MCP tool is flagged network:true so the permission gate governs egress", async () => {
+  // A server-declared readOnlyHint must NOT short-circuit the gate — the tool
+  // still reaches an external server (egress). network:true keeps the gate live.
+  const ro = toToolDefinition("s", { name: "fetch", annotations: { readOnlyHint: true } }, {} as McpClient);
+  expect(ro.readOnly).toBe(true);
+  expect(ro.network).toBe(true);
+  const rw = toToolDefinition("s", { name: "write" }, {} as McpClient);
+  expect(rw.readOnly).toBe(false);
+  expect(rw.network).toBe(true);
+});
+
+test("read_mcp_resource / get_mcp_prompt thread the abort signal and per-call deadline", async () => {
+  let readOpts: { signal?: AbortSignal; timeoutMs?: number } | undefined;
+  let promptOpts: { signal?: AbortSignal; timeoutMs?: number } | undefined;
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    listResources: async () => [{ uri: "file:///r" }],
+    readResource: async (_uri, opts) => {
+      readOpts = opts;
+      return { content: "hi" };
+    },
+    listPrompts: async () => [{ name: "p" }],
+    getPrompt: async (_name, _args, opts) => {
+      promptOpts = opts;
+      return { content: "rendered" };
+    },
+    close: async () => {},
+  };
+  const registered: ToolDefinition[] = [];
+  const hub = new McpHub({ registerTool: (d) => registered.push(d), connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  const controller = new AbortController();
+  const readTool = registered.find((t) => t.name === "read_mcp_resource")!;
+  await readTool.execute({ uri: "file:///r" }, ctx(controller.signal));
+  expect(readOpts?.signal).toBe(controller.signal);
+  expect(readOpts?.timeoutMs).toBeGreaterThan(0);
+  const promptTool = registered.find((t) => t.name === "get_mcp_prompt")!;
+  await promptTool.execute({ server: "demo", name: "p" }, ctx(controller.signal));
+  expect(promptOpts?.signal).toBe(controller.signal);
+  expect(promptOpts?.timeoutMs).toBeGreaterThan(0);
+});
+
+test("a server that STALLS on resources/list can't block boot past the connect deadline", async () => {
+  const reg = registry();
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    // Answers tools/list fast but hangs forever on resources/list.
+    listResources: () => new Promise<never>(() => {}),
+    close: async () => {},
+  };
+  const hub = new McpHub({ ...reg, connectTimeoutMs: 50, connect: async () => client });
+  const t0 = performance.now();
+  await hub.start({ demo: { command: "x" } });
+  const elapsed = performance.now() - t0;
+  expect(elapsed).toBeLessThan(2_000); // bounded by the 50ms deadline, not the hang
+  expect(reg.names()).toEqual(["mcp__demo__echo"]); // the fast tools still registered
+  expect(hub.resources()).toEqual([]); // the hung enumeration degraded to none
+});
+
+test("two SERVERS whose keys sanitize to the same string keep both tools callable", async () => {
+  const reg = registry();
+  // `gh.prod` and `gh_prod` both sanitize to `gh_prod` → same `mcp__gh_prod__echo`.
+  const hub = new McpHub({ ...reg, connect: async () => fakeClient([]) });
+  await hub.start({ "gh.prod": { command: "x" }, gh_prod: { command: "y" } });
+  const names = reg.names();
+  expect(names).toHaveLength(2); // no silent overwrite across servers
+  expect(new Set(names).size).toBe(2);
+  expect(names).toContain("mcp__gh_prod__echo"); // the first keeps the readable name
+  expect(names.every((n) => /^[A-Za-z0-9_-]+$/.test(n) && n.length <= 64)).toBe(true);
+  await hub.close();
 });
 
 test("MCP tool calls thread the turn's abort signal and a per-call deadline", async () => {

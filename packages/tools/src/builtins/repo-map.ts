@@ -202,7 +202,7 @@ export interface RepoMapResult {
  */
 export async function buildRepoMap(
   cwd: string,
-  opts: { path?: string; maxFiles?: number; charBudget?: number } = {},
+  opts: { path?: string; maxFiles?: number; charBudget?: number; readLimit?: number } = {},
 ): Promise<RepoMapResult> {
   const all = await listFiles(cwd, opts.path);
   if (!all.length) return { text: "", fileCount: 0, truncated: false };
@@ -214,9 +214,20 @@ export async function buildRepoMap(
     mapCache.set(cacheKey, cache);
   }
 
+  // Bound the number of files we actually READ+parse, not just the count we
+  // rank/render. The git path lists EVERY tracked code file; reading all of them
+  // to build the import graph stalls bootstrap on a large monorepo (30k files)
+  // and re-pays that cost every fresh CLI run. Pre-rank by the cheap path
+  // heuristic and parse only the top slice — the in-degree refinement below then
+  // reorders within it. `known` still spans every file so imports resolve to
+  // files we didn't parse.
+  const maxFiles = opts.maxFiles ?? DEFAULT_MAX_FILES;
+  const readLimit = opts.readLimit ?? Math.max(maxFiles * 4, 400);
+  const toRead = all.length > readLimit ? rankFiles(all).slice(0, readLimit) : all;
+
   const known = new Set(all);
   const entries = new Map<string, FileEntry>();
-  for (const file of all) {
+  for (const file of toRead) {
     const full = join(cwd, file);
     let mtimeMs = 0;
     try {
@@ -254,7 +265,7 @@ export async function buildRepoMap(
     }
   }
 
-  const ranked = rankFiles([...entries.keys()], inDegree).slice(0, opts.maxFiles ?? DEFAULT_MAX_FILES);
+  const ranked = rankFiles([...entries.keys()], inDegree).slice(0, maxFiles);
   let budget = opts.charBudget ?? CHAR_BUDGET;
   const blocks: string[] = [];
   let withSymbols = 0;
@@ -274,7 +285,7 @@ export async function buildRepoMap(
   return {
     text: blocks.join("\n\n"),
     fileCount: withSymbols,
-    truncated: truncated || ranked.length < entries.size,
+    truncated: truncated || ranked.length < entries.size || toRead.length < all.length,
   };
 }
 

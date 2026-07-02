@@ -112,6 +112,28 @@ test("save leaves no .tmp files behind", async () => {
   expect(files.some((f) => f.endsWith(".tmp"))).toBe(false);
 });
 
+test("meta round-trips the cumulative cache-read total (usage fidelity on --resume)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-usage-"));
+  const store = new SessionStore(cwd);
+  await store.save(
+    {
+      id: "ses_u",
+      model: "anthropic/claude-x",
+      mode: "execute",
+      goal: null,
+      usage: { inputTokens: 1000, outputTokens: 200, costUSD: 0.05, cachedInputTokens: 640 },
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    [],
+    [],
+  );
+  const loaded = await store.load("ses_u");
+  // The cached-token slice survives persistence, so resumed cost/usage stays truthful.
+  expect(loaded?.meta.usage?.cachedInputTokens).toBe(640);
+  expect(loaded?.meta.usage?.inputTokens).toBe(1000);
+});
+
 test("meta round-trips the recalled-context block for --resume fidelity", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-recall-"));
   const store = new SessionStore(cwd);

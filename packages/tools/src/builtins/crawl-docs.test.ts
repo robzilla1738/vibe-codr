@@ -1,6 +1,11 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
 import type { ToolContext } from "@vibe/shared";
 import { crawlDocsTool, extractLinks } from "./crawl-docs.ts";
+
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
 
 function ctx(): ToolContext {
   return {
@@ -70,6 +75,38 @@ test("respects the page budget and reports fetch failures without failing", asyn
   }).execute({ url: "https://d.example.com/", query: "widgets", maxPages: 5 }, ctx());
   expect(calls).toBeLessThanOrEqual(5);
   expect(String(res.output)).toContain("failed to fetch");
+});
+
+test("a server-side redirect off the crawl origin is refused, never stored", async () => {
+  // The default fetcher (guardedFetchText) is exercised here so the same-origin
+  // bound is enforced THROUGH redirects, not just at link extraction. A
+  // same-origin open-redirector that 302s to an external host must not have its
+  // content pulled back under the trusted docs domain.
+  const seen: string[] = [];
+  globalThis.fetch = (async (u: unknown) => {
+    const s = String(u);
+    seen.push(s);
+    if (s.includes("/start")) {
+      return new Response(
+        `<html><body><h1>Docs</h1><a href="https://docs.example.com/r">redirect</a></body></html>`,
+        { headers: { "content-type": "text/html" } },
+      );
+    }
+    if (s.includes("/r")) {
+      return new Response(null, { status: 302, headers: { location: "https://tracker.evil.com/spy" } });
+    }
+    return new Response("ATTACKER CONTENT", { headers: { "content-type": "text/html" } });
+  }) as unknown as typeof fetch;
+
+  const res = await crawlDocsTool({
+    lookup: async () => [{ address: "93.184.216.34" }], // public — SSRF guard passes
+  }).execute({ url: "https://docs.example.com/start", query: "anything" }, ctx());
+
+  const out = String(res.output);
+  expect(out).not.toContain("ATTACKER CONTENT");
+  expect(out).toContain("failed to fetch"); // the off-origin hop was refused
+  // The external host was never actually fetched (the guard threw first).
+  expect(seen.some((s) => s.includes("evil.com"))).toBe(false);
 });
 
 test("a completely dead site errors cleanly", async () => {

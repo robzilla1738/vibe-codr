@@ -20,6 +20,7 @@ import {
   type DoctorCheck,
 } from "./introspect.ts";
 import type { NamedAgent } from "./agents.ts";
+import { MAX_SKILL_BODY } from "./session-tools.ts";
 import { searchSessions, formatRecall } from "./recall.ts";
 import { formatMemoryHits } from "./memory-search.ts";
 import type { MemoryService } from "./memory-service.ts";
@@ -29,6 +30,10 @@ import type { CheckpointManager } from "./checkpoints.ts";
 import type { SessionStore } from "./store.ts";
 import type { GitRunResult } from "./git-info.ts";
 import type { McpServerStatus } from "./mcp.ts";
+
+/** Char cap for a diff embedded into a `/review` prompt — bounds the token cost
+ * of reviewing a large working tree (the model reads specific files for more). */
+const REVIEW_DIFF_CAP = 20_000;
 
 /**
  * The minimal Engine surface the slash-command handlers need.
@@ -76,8 +81,13 @@ export interface EngineHandle {
   persistConfig(patch: Record<string, unknown>): Promise<void>;
   /** Run a text prompt through the full turn pipeline. */
   handlePrompt(text: string, opts?: { handoff?: boolean }): Promise<void>;
-  /** Reset the auto-verify retry budget (a fresh user-initiated turn). */
-  resetVerifyAttempts(): void;
+  /** Reset ALL per-user-prompt budgets — auto-verify retries AND the green-gate /
+   * diff-review fix-round counts — plus the diff-review baseline. A slash command
+   * that expands into a prompt (custom command, /review, /<skill>) is a fresh
+   * user-initiated turn, so it must start each budget clean, exactly like a typed
+   * prompt (submit-prompt). Engine-internal fix turns never call this, so the
+   * "bounded per user prompt" invariant holds. */
+  resetTurnBudgets(): void;
   /** Run the verify command, emitting start/finish events. */
   runVerifyCommand(command: string): Promise<{ ok: boolean; output: string }>;
   /** Re-read project memory into the live session. */
@@ -205,7 +215,7 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     if (result.kind === "prompt") {
       // Treat an expanded command like a user prompt: checkpoint, hooks,
       // and auto-verify all apply, and it starts a fresh verify budget.
-      h.resetVerifyAttempts();
+      h.resetTurnBudgets();
       await h.handlePrompt(result.text);
     } else if (result.kind === "command") h.send(result.command);
     else h.notice(result.message);
@@ -414,9 +424,15 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       // precedence, so a skill can't shadow them.
       const skill = h.skills.get(name);
       if (skill) {
-        const body = await skill.load();
+        const raw = await skill.load();
+        // Cap the injected body (same discipline as the use_skill tool) so a huge
+        // SKILL.md can't blow up the prompt; the model reads the file for the rest.
+        const body =
+          raw.length > MAX_SKILL_BODY
+            ? `${raw.slice(0, MAX_SKILL_BODY)}\n\n…(skill body truncated at ${MAX_SKILL_BODY} chars — read ${skill.dir}/SKILL.md for the rest)`
+            : raw;
         const task = args.trim() ? `\n\nTask: ${args.trim()}` : "";
-        h.resetVerifyAttempts();
+        h.resetTurnBudgets();
         await h.handlePrompt(
           `Use the "${skill.name}" skill.${task}\n\n# Skill: ${skill.name}\n\n${body}`,
         );
@@ -571,12 +587,19 @@ async function handleReview(h: EngineHandle): Promise<void> {
     h.notice("Not a git repository; nothing to review.", "warn");
     return;
   }
-  const diff = (await h.git(["--no-pager", "diff", "HEAD"])).stdout.trim();
-  if (!diff) {
+  const raw = (await h.git(["--no-pager", "diff", "HEAD"])).stdout.trim();
+  if (!raw) {
     h.notice("No changes in the working tree to review.");
     return;
   }
-  h.resetVerifyAttempts();
+  // Cap the embedded diff so a large working tree can't blow up the prompt (and
+  // token bill) — the model reviews the head of the diff and can read specific
+  // files for the rest. Same bound the diff-review path uses.
+  const diff =
+    raw.length > REVIEW_DIFF_CAP
+      ? `${raw.slice(0, REVIEW_DIFF_CAP)}\n…(diff truncated at ${REVIEW_DIFF_CAP} chars — read specific files for the rest)`
+      : raw;
+  h.resetTurnBudgets();
   await h.handlePrompt(
     "Review the current working-tree changes for correctness, bugs, missed edge " +
       "cases, and style consistency with the surrounding code. Be concrete and " +
@@ -698,19 +721,27 @@ async function handleDoctor(h: EngineHandle): Promise<void> {
     detail: h.config.verify.command ?? "no verify command set",
   });
 
-  const searchOk = h.config.search.enabled;
-  const searchKey = h.config.search.apiKey || process.env.TINYFISH_API_KEY;
-  checks.push({
-    label: "web search",
-    ok: searchOk ? Boolean(searchKey) : null,
-    detail: !searchOk
-      ? "disabled"
-      : searchKey
-        ? "enabled, key present"
-        : "enabled but no TINYFISH_API_KEY (searches will fail)",
-  });
+  checks.push(searchDoctorCheck(h.config.search.enabled, h.config.search.apiKey || process.env.TINYFISH_API_KEY));
 
   h.notice(formatDoctor(checks));
+}
+
+/**
+ * The `/doctor` web-search health line. Search is KEYLESS by default (DuckDuckGo
+ * et al.); a TinyFish key only prepends an extra engine — so "enabled" is healthy
+ * WITHOUT a key. Reporting it broken (the old behavior) told users searches would
+ * fail when they work fine. Pure + exported so the honesty invariant is tested.
+ */
+export function searchDoctorCheck(enabled: boolean, key: string | undefined): DoctorCheck {
+  return {
+    label: "web search",
+    ok: enabled ? true : null,
+    detail: !enabled
+      ? "disabled"
+      : key
+        ? "enabled (keyless engines + TinyFish key)"
+        : "enabled (keyless engines; set TINYFISH_API_KEY to add TinyFish)",
+  };
 }
 
 /** `/verify` — run the verify command on demand. */

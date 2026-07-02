@@ -38,7 +38,7 @@ const BINARY_EXT =
 export const grepTool: ToolDefinition<GrepInput> = {
   name: "grep",
   description:
-    "Search file contents by regex (ripgrep when available, otherwise a built-in scan). Supports ignoreCase, context lines (0-10 around each match), a glob filter, and a fileType filter (e.g. \"ts\"). Returns matching lines with file:line prefixes. Inside a git repo the built-in fallback searches only tracked files (honoring .gitignore, like ripgrep).",
+    "Search file contents by regex (ripgrep when available, otherwise a built-in scan). Supports ignoreCase, context lines (0-10 around each match), a glob filter, and a fileType filter (e.g. \"ts\"). Returns matching lines with file:line prefixes. Inside a git repo the built-in fallback searches tracked files plus untracked-but-not-ignored files (honoring .gitignore), matching ripgrep's default file set.",
   inputSchema: Input,
   readOnly: true,
   concurrencySafe: true,
@@ -109,16 +109,64 @@ async function ripgrepSearch(
     stderr: "pipe",
     signal: ctx.abortSignal,
   });
-  const out = await new Response(proc.stdout).text();
+  // Cap DURING streaming, not after: a near-universal pattern (`.`/`e`/`import`)
+  // over a large repo streams hundreds of MB of matches; buffering all of it into
+  // one string before slicing to LIMIT spikes memory / OOMs. Stop at LIMIT+1 lines
+  // and cancel rg (it dies on the broken pipe), so retained memory stays bounded.
+  const { lines, truncated } = await readCappedLines(proc.stdout, LIMIT);
+  if (truncated) {
+    // We deliberately closed rg's pipe early; its (likely non-zero) exit is ours,
+    // not a genuine search error — report the capped matches we collected.
+    proc.kill();
+    await proc.exited;
+    return capResults(lines);
+  }
   const code = await proc.exited;
   if (code === 1) return { output: "(no matches)" };
   if (code > 1) {
     const err = await new Response(proc.stderr).text();
     return { output: `ripgrep error: ${err}`, isError: true };
   }
-  const lines = out.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   return capResults(lines);
+}
+
+/** Read newline-delimited lines from a stream up to `limit`, then STOP (cancel
+ * the stream). Returns `truncated: true` once more than `limit` lines exist, so
+ * the caller need not drain (and buffer) the rest. Shared shape with capResults:
+ * a `truncated` batch carries `limit + 1` lines (capResults slices to `limit`
+ * and appends the marker). Exported for a deterministic streaming-cap test. */
+export async function readCappedLines(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<{ lines: string[]; truncated: boolean }> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const lines: string[] = [];
+  let buf = "";
+  let truncated = false;
+  try {
+    while (!truncated) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        lines.push(buf.slice(0, nl));
+        buf = buf.slice(nl + 1);
+        if (lines.length > limit) {
+          truncated = true;
+          break;
+        }
+      }
+    }
+    if (!truncated) {
+      buf += decoder.decode();
+      if (buf) lines.push(buf); // trailing line with no terminating newline
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return { lines, truncated };
 }
 
 /** Fallback: a built-in regex scan over the tracked/globbed files. */
@@ -200,26 +248,29 @@ async function listFiles(
 ): Promise<string[]> {
   const info = await stat(join(cwd, root)).catch(() => null);
   if (info?.isFile()) return [root];
-  // Prefer git-tracked files so the fallback honors .gitignore basics (parity
-  // with ripgrep, which respects .gitignore). Outside a git repo, walk the tree.
-  const tracked = await gitTrackedFiles(cwd, root);
-  const raw = tracked ?? (await walkFiles(cwd, root));
+  // Prefer git's own file set so the fallback honors .gitignore (parity with
+  // ripgrep, which respects .gitignore). Outside a git repo, walk the tree.
+  const gitFiles = await gitCandidateFiles(cwd, root);
+  const raw = gitFiles ?? (await walkFiles(cwd, root));
   return filterFiles(raw, glob, fileType);
 }
 
-/** Files git tracks under `root` (honors .gitignore, skips untracked), or null
- * when this isn't a git repo / git is unavailable (→ caller walks the tree). */
-async function gitTrackedFiles(cwd: string, root: string): Promise<string[] | null> {
+/** git's default search set under `root`: tracked files (`--cached`) PLUS
+ * untracked-but-not-ignored files (`--others --exclude-standard`) — exactly what
+ * ripgrep searches by default. A prior version listed only tracked files, so the
+ * fallback silently missed a just-written, not-yet-added file that rg would match
+ * (the model would then conclude the symbol doesn't exist). Returns null when this
+ * isn't a git repo / git is unavailable (→ caller walks the tree). */
+async function gitCandidateFiles(cwd: string, root: string): Promise<string[] | null> {
   try {
     const sub = root === "." || root === "" ? "." : root;
-    const proc = Bun.spawn(["git", "ls-files", "-z", "--", sub], {
-      cwd,
-      stdout: "pipe",
-      stderr: "ignore",
-    });
+    const proc = Bun.spawn(
+      ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", sub],
+      { cwd, stdout: "pipe", stderr: "ignore" },
+    );
     const out = await new Response(proc.stdout).text();
-    // Exit 0 means we ARE in a git repo: return the tracked set (possibly empty
-    // — an empty result deliberately means "nothing tracked here", NOT "walk").
+    // Exit 0 means we ARE in a git repo: return the set (possibly empty — an empty
+    // result deliberately means "nothing to search here", NOT "walk").
     if ((await proc.exited) === 0) return out.split("\0").filter(Boolean);
   } catch {
     /* git missing — fall through to the filesystem walk */

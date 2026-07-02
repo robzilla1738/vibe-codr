@@ -15,6 +15,13 @@ export function lineToCommand(line: string): EngineCommand {
 
   const name = m[1] ?? "";
   const args = (m[2] ?? "").trim();
+  // A slash line is only a command when the token after "/" is a plausible
+  // command NAME (letters/digits/`_`/`-`, no embedded "/" or "."). Otherwise it's
+  // ordinary user text that merely starts with a slash — a path (`/etc/hosts is
+  // world-readable`), a comment (`// TODO …`), an endpoint (`/api/users returns
+  // 500`) — and must be SENT to the model, not swallowed as an unknown command
+  // (the engine would print "Unknown command" and lose the whole message).
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return { type: "submit-prompt", text: trimmed };
   switch (name) {
     case "plan":
       return { type: "set-mode", mode: "plan" };

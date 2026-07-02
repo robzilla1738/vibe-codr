@@ -75,3 +75,48 @@ test("the fallback option overrides the default for unmatched network tools", as
   // …but a network read-only tool passes its allow fallback (no prompt):
   expect((await checker.check("webfetch", { url: "https://x.dev" }, { fallback: "allow" })).allowed).toBe(true);
 });
+
+test("egress deny rules govern the dedicated git_push / git_commit tools", async () => {
+  // The dedicated tools have no command/path/url field, so before scopeString
+  // exposed their command form a `match` rule silently never applied and (in
+  // approvalMode auto → default allow) the push went out unprompted.
+  const bashRecipe = new PermissionChecker(
+    [{ tool: "git_push", match: "git push*", action: "deny" }],
+    undefined,
+    "allow",
+  );
+  expect((await bashRecipe.check("git_push", { remote: "origin", branch: "main" })).allowed).toBe(false);
+
+  // A targeted glob fires now that git_push carries the command it runs.
+  const targeted = new PermissionChecker(
+    [{ tool: "git_push", match: "git push origin main*", action: "deny" }],
+    undefined,
+    "allow",
+  );
+  expect((await targeted.check("git_push", { remote: "origin", branch: "main" })).allowed).toBe(false);
+  expect((await targeted.check("git_push", { remote: "origin", branch: "dev" })).allowed).toBe(true);
+
+  // git_commit is governable the same way.
+  const commit = new PermissionChecker(
+    [{ tool: "git_commit", match: "git commit*", action: "deny" }],
+    undefined,
+    "allow",
+  );
+  expect((await commit.check("git_commit", { message: "wip" })).allowed).toBe(false);
+});
+
+test("path-scoped deny can't be evaded by an equivalent path spelling", async () => {
+  const checker = new PermissionChecker(
+    [{ tool: "write", match: "/etc/*", action: "deny" }],
+    undefined,
+    "allow",
+    "/home/user/project/pkg", // canonicalization base (the session cwd)
+  );
+  // A relative traversal that resolves into /etc is denied (was evaded: the raw
+  // string `../../../../etc/passwd` never matched `^/etc/.*$`).
+  expect((await checker.check("write", { path: "../../../../etc/passwd" })).allowed).toBe(false);
+  // A direct absolute path is denied too.
+  expect((await checker.check("write", { path: "/etc/hosts" })).allowed).toBe(false);
+  // An unrelated in-tree path is still allowed.
+  expect((await checker.check("write", { path: "src/index.ts" })).allowed).toBe(true);
+});

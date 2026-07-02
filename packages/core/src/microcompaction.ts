@@ -94,11 +94,27 @@ export function classifyToolResults(messages: ModelMessage[]): ToolResultRef[] {
   return out;
 }
 
-/** The file path a read-like tool call targets, when it has one. */
-function targetPath(ref: ToolResultRef): string | undefined {
+/** The file path a read-like tool call targets, when it has one. Canonicalized
+ * (when a canonicalizer is supplied) so an absolute-path read and a later
+ * relative-path edit of the SAME file are recognized as the same path — without
+ * it, supersession silently misses across path spellings. */
+function targetPath(ref: ToolResultRef, canonicalize?: (p: string) => string): string | undefined {
   const input = ref.input as { path?: unknown } | undefined;
   const p = input && typeof input === "object" ? input.path : undefined;
-  return typeof p === "string" ? p : undefined;
+  if (typeof p !== "string") return undefined;
+  return canonicalize ? canonicalize(p) : p;
+}
+
+/** Slice a preview to at most `n` UTF-16 code units WITHOUT splitting a
+ * surrogate pair — a lone surrogate serializes to an invalid string some
+ * providers reject. Backs off one unit when the cut lands mid-pair. */
+function surrogateSafeSlice(s: string, n: number): string {
+  if (n <= 0 || n >= s.length) return s.slice(0, Math.max(0, n));
+  const code = s.charCodeAt(n - 1);
+  // A high surrogate (0xD800–0xDBFF) at the last kept position pairs with the
+  // dropped next unit — drop it too rather than emit a lone half.
+  const end = code >= 0xd800 && code <= 0xdbff ? n - 1 : n;
+  return s.slice(0, end);
 }
 
 const READ_LIKE = new Set(["read", "ls", "grep", "glob"]);
@@ -113,6 +129,10 @@ export interface PlanOptions {
   targetChars: number;
   /** Call ids already offloaded (skip re-planning them). */
   existing: ReadonlySet<string>;
+  /** Canonicalize a tool-call path (e.g. resolve against cwd) so supersession
+   * matches across absolute/relative spellings of the same file. Identity when
+   * omitted (keeps planOffloads pure/testable without a filesystem). */
+  canonicalize?: (p: string) => string;
 }
 
 /**
@@ -133,11 +153,11 @@ export function planOffloads(messages: ModelMessage[], opts: PlanOptions): ToolR
   // read-like result for that path is superseded.
   const lastTouch = new Map<string, number>();
   refs.forEach((r, i) => {
-    const p = targetPath(r);
+    const p = targetPath(r, opts.canonicalize);
     if (p && WRITE_LIKE.has(r.toolName)) lastTouch.set(p, i);
   });
   const isSuperseded = (r: ToolResultRef): boolean => {
-    const p = targetPath(r);
+    const p = targetPath(r, opts.canonicalize);
     if (!p || !READ_LIKE.has(r.toolName)) return false;
     const last = lastTouch.get(p);
     return last !== undefined && last > refs.indexOf(r);
@@ -187,7 +207,7 @@ export function applyOffloads(
       if (full.length <= previewChars || full.startsWith(OFFLOAD_SENTINEL)) return p;
       const note =
         `${OFFLOAD_SENTINEL}${rec.toolName} result: full ${rec.fullChars} chars saved to ${rec.path} — ` +
-        `use the read tool on that path if you need the rest. Preview:]\n${full.slice(0, previewChars)}`;
+        `use the read tool on that path if you need the rest. Preview:]\n${surrogateSafeSlice(full, previewChars)}`;
       return { ...p, output: { type: "text", value: note } };
     });
     return { ...m, content: rebuilt } as ModelMessage;

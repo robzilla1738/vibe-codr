@@ -7,7 +7,7 @@ import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
-import { composeSystemPrompt } from "./system-prompt.ts";
+import { composeSystemPrompt, formatWorkspaceState } from "./system-prompt.ts";
 import { handleSlash, type EngineHandle } from "./engine-commands.ts";
 import { SourceLedger, canonicalizeUrl, harvestUrls } from "./source-ledger.ts";
 
@@ -111,21 +111,22 @@ test("harvestUrls dedupes exact repeats, caps at max, and keeps balanced parens"
   ]);
 });
 
-// ── composeSystemPrompt sources block ──────────────────────────────────────
+// ── workspace-state sources block ──────────────────────────────────────────
 
-test("composeSystemPrompt injects the SOURCES GATHERED block only when sources are present", () => {
-  const withSrc = composeSystemPrompt({
-    mode: "execute",
-    goal: null,
+test("the gathered-sources list lives in the workspace-state block, not the system prompt", () => {
+  const withSrc = formatWorkspaceState({
     sources: "[1] https://foo.com/a — Foo\n[2] https://bar.com/b",
   });
   expect(withSrc).toContain("SOURCES GATHERED THIS SESSION");
   expect(withSrc).toContain("[1] https://foo.com/a — Foo");
-  // The always-on citation instruction lives in the base web-context block.
-  expect(withSrc).toMatch(/CITE YOUR SOURCES/);
+  expect(withSrc).toContain("<workspace-state>");
+  // The always-on citation instruction stays in the (cache-stable) base prompt.
+  expect(composeSystemPrompt({ mode: "execute", goal: null })).toMatch(/CITE YOUR SOURCES/);
+  // But the volatile source list is NOT in the system prompt (cache stability).
   expect(composeSystemPrompt({ mode: "execute", goal: null })).not.toContain(
     "SOURCES GATHERED THIS SESSION",
   );
+  expect(formatWorkspaceState({})).toBeUndefined();
 });
 
 // ── session integration ────────────────────────────────────────────────────
@@ -217,11 +218,18 @@ test("session harvests URLs from a web_search result and injects them into the n
   ]);
 
   await session.run("follow up");
+  // The gathered-sources block rides in the NEWEST user turn (workspace-state),
+  // NOT the system prompt — so it stays current without invalidating the
+  // cache-stable system prefix. It must never leak into the system message.
   const sys = lastPrompt.find((m) => m.role === "system");
   const sysText = typeof sys?.content === "string" ? sys.content : JSON.stringify(sys?.content);
-  expect(sysText).toContain("SOURCES GATHERED THIS SESSION");
-  expect(sysText).toContain("[1] https://foo.example.com/a");
-  expect(sysText).toContain("[2] https://bar.example.com/b");
+  expect(sysText).not.toContain("SOURCES GATHERED THIS SESSION");
+  const users = lastPrompt.filter((m) => m.role === "user");
+  const lastUser = JSON.stringify(users[users.length - 1]?.content);
+  expect(lastUser).toContain("SOURCES GATHERED THIS SESSION");
+  expect(lastUser).toContain("[1] https://foo.example.com/a");
+  expect(lastUser).toContain("[2] https://bar.example.com/b");
+  expect(lastUser).toContain("<workspace-state>");
 });
 
 // ── /sources command ───────────────────────────────────────────────────────

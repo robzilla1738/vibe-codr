@@ -23,6 +23,33 @@ test("isPrivateIp allows ordinary public v4", () => {
   }
 });
 
+test("192.0.0.0 special-use is /24, not /16 (public 192.0.x is not over-blocked)", () => {
+  expect(isPrivateIp("192.0.0.1")).toBe(true); // 192.0.0/24 IETF protocol assignments
+  expect(isPrivateIp("192.0.0.255")).toBe(true);
+  // The rest of 192.0.0.0/16 is ordinary public space — must stay reachable.
+  expect(isPrivateIp("192.0.1.1")).toBe(false);
+  expect(isPrivateIp("192.0.5.5")).toBe(false);
+  expect(isPrivateIp("192.0.255.1")).toBe(false);
+});
+
+test("isPrivateIp blocks NAT64 well-known-prefix addresses (64:ff9b::/96) by embedded v4", () => {
+  // A DNS64 resolver synthesizes 64:ff9b::<v4> from an A record, and the NAT64
+  // gateway routes it to that v4 — so metadata/private embedded targets are unsafe.
+  expect(isPrivateIp("64:ff9b::a9fe:a9fe")).toBe(true); // 169.254.169.254 metadata
+  expect(isPrivateIp("64:ff9b::a00:1")).toBe(true); // 10.0.0.1 private
+  expect(isPrivateIp("64:ff9b::7f00:1")).toBe(true); // 127.0.0.1 loopback
+  // A public embedded v4 over NAT64 is legitimately routable — not blocked.
+  expect(isPrivateIp("64:ff9b::808:808")).toBe(false); // 8.8.8.8
+});
+
+test("assertFetchAllowed blocks a host that resolves to a NAT64 metadata address (DNS64)", async () => {
+  await expect(
+    assertFetchAllowed("https://dns64.example.com", {}, async () => [
+      { address: "64:ff9b::a9fe:a9fe" }, // synthesized AAAA for 169.254.169.254
+    ]),
+  ).rejects.toThrow(/private address/);
+});
+
 test("isPrivateIp handles v6 loopback / link-local / ULA / mapped", () => {
   for (const ip of [
     "::1",

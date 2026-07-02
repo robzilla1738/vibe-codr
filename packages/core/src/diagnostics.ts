@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Logger } from "@vibe/shared";
 
@@ -68,6 +69,19 @@ interface ServiceEntry {
   service: TsLanguageService;
   fileNames: Set<string>;
   versions: Map<string, number>;
+  /** The tsconfig's raw text at build time — the cache is rebuilt when it changes. */
+  configText: string | undefined;
+}
+
+/** File mtime in ms, or 0 when unstattable. Folded into the script version so a
+ * dependency edited OUT-OF-BAND (a `bash` sed, not routed through `diagnose`)
+ * still busts the service's cached snapshot instead of serving stale content. */
+function mtimeOf(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -95,7 +109,11 @@ export class TsDiagnostics {
     if (!ts) return undefined;
     try {
       const entry = this.#serviceFor(ts, absPath);
-      if (!entry?.fileNames.has(absPath)) return undefined;
+      if (!entry) return undefined;
+      // A file WRITTEN after the service was first built (e.g. the model just
+      // created it) isn't in the tsconfig's resolved fileNames yet — add it so
+      // freshly-authored code is diagnosed too, instead of silently skipped.
+      if (!entry.fileNames.has(absPath)) entry.fileNames.add(absPath);
       // Bump the version so the service re-reads the just-written file.
       entry.versions.set(absPath, (entry.versions.get(absPath) ?? 0) + 1);
       const diags = [
@@ -123,8 +141,12 @@ export class TsDiagnostics {
   #serviceFor(ts: TsModule, absPath: string): ServiceEntry | undefined {
     const configPath = ts.findConfigFile(dirname(absPath), ts.sys.fileExists, "tsconfig.json");
     if (!configPath) return undefined;
+    // Rebuild when tsconfig.json changes (strict/paths/include edits): its own
+    // path isn't a TS file, so nothing else invalidates the cache and diagnostics
+    // would otherwise keep using stale compilerOptions/fileNames for the session.
+    const configText = ts.sys.readFile(configPath);
     const cached = this.#services.get(configPath);
-    if (cached) return cached;
+    if (cached && cached.configText === configText) return cached;
 
     const raw = ts.readConfigFile(configPath, ts.sys.readFile);
     if (!raw.config) return undefined;
@@ -134,7 +156,9 @@ export class TsDiagnostics {
 
     const host = {
       getScriptFileNames: () => [...fileNames],
-      getScriptVersion: (f: string) => String(versions.get(f) ?? 0),
+      // Version = the explicit `diagnose` bump COMBINED with the file's mtime, so
+      // both a re-write through the tool and an out-of-band change are re-read.
+      getScriptVersion: (f: string) => `${versions.get(f) ?? 0}:${mtimeOf(f)}`,
       getScriptSnapshot: (f: string) => {
         const content = ts.sys.readFile(f);
         return content === undefined ? undefined : ts.ScriptSnapshot.fromString(content);
@@ -147,7 +171,7 @@ export class TsDiagnostics {
       readDirectory: ts.sys.readDirectory,
       useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
     };
-    const entry: ServiceEntry = { service: ts.createLanguageService(host), fileNames, versions };
+    const entry: ServiceEntry = { service: ts.createLanguageService(host), fileNames, versions, configText };
     this.#services.set(configPath, entry);
     return entry;
   }

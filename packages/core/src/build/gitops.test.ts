@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -100,6 +100,28 @@ test("conflicting squash-merge is aborted cleanly and returns false", async () =
   // Tree is clean after the aborted merge (no half-merged state).
   const status = await run(cwd, ["status", "--porcelain"]);
   expect(status.stdout.trim()).toBe("");
+});
+
+test("gitAddWorktree excludes .vibe/ via .git/info/exclude (idempotently) so the worktree doesn't leak into git status", async () => {
+  const cwd = await makeRepo();
+  const wtPath = join(cwd, ".vibe", "worktrees", "e1");
+  expect(await gitAddWorktree(cwd, { path: wtPath, branch: "vibe-wt/e1" })).toBe(wtPath);
+
+  // The engine's runtime dir is excluded via the LOCAL exclude — not the tracked
+  // .gitignore (which we never touch).
+  const exclude = readFileSync(join(cwd, ".git", "info", "exclude"), "utf8");
+  expect(exclude).toMatch(/^\.vibe\/$/m);
+  expect(existsSync(join(cwd, ".gitignore"))).toBe(false);
+
+  // The nested worktree therefore does NOT surface in the user's status (no
+  // `?? .vibe/` and no embedded-repo gitlink for a bare `git add -A`).
+  const status = await run(cwd, ["status", "--porcelain"]);
+  expect(status.stdout).not.toContain(".vibe");
+
+  // Idempotent: a second worktree add doesn't append a duplicate `.vibe/` line.
+  await gitAddWorktree(cwd, { path: join(cwd, ".vibe", "worktrees", "e2"), branch: "vibe-wt/e2" });
+  const again = readFileSync(join(cwd, ".git", "info", "exclude"), "utf8");
+  expect((again.match(/^\.vibe\/$/gm) ?? []).length).toBe(1);
 });
 
 test("gitAddWorktree clears a stale leftover at the same path", async () => {

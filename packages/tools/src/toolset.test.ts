@@ -387,6 +387,43 @@ test("a THROWN tool error is normalized into the ERROR contract (not a raw throw
   expect(errors).toEqual([["t1", true]]);
 });
 
+test("a read-only NETWORK tool still consults the permission gate (MCP egress governance)", async () => {
+  // An MCP tool the server marks readOnlyHint:true is exposed as readOnly:true +
+  // network:true. readOnly must NOT short-circuit the gate — a deny/ask rule on
+  // its name has to be reachable, and it must consult rules with a fallback allow.
+  const calls: string[] = [];
+  const netTool: ToolDefinition = {
+    name: "mcp__web__fetch",
+    description: "network fetch",
+    inputSchema: z.object({}),
+    readOnly: true,
+    network: true,
+    concurrencySafe: true,
+    execute: async () => {
+      calls.push("ran");
+      return { output: "fetched" };
+    },
+  };
+  const seen: { name: string; fallback?: string }[] = [];
+  const denied = await (
+    toAISDKTool(netTool, {
+      cwd: "/",
+      sessionId: "s",
+      emit: () => {},
+      checkPermission: (name, _input, opts) => {
+        seen.push({ name, fallback: opts?.fallback });
+        return { allowed: false, reason: "policy" }; // a deny rule fires
+      },
+    }) as { execute: (i: unknown, o: unknown) => Promise<unknown> }
+  ).execute({}, { toolCallId: "t1", abortSignal: new AbortController().signal });
+
+  // The gate WAS consulted (not bypassed by readOnly), with the frictionless
+  // allow-fallback for a read-only network tool — and the deny took effect.
+  expect(seen).toEqual([{ name: "mcp__web__fetch", fallback: "allow" }]);
+  expect(String(denied)).toContain("not permitted");
+  expect(calls).toHaveLength(0); // never executed
+});
+
 test("an abort-driven throw still propagates (cancellation is not a tool failure)", async () => {
   const controller = new AbortController();
   const aborter: ToolDefinition = {

@@ -139,7 +139,13 @@ test("deep mode fans the query into multiple phrasings (more engine calls)", asy
   const shallow = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });
   await webSearchTool({ fetchImpl: shallow.fetch }).execute({ query: "how do I use bun test" }, ctx());
   const deep = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });
-  await webSearchTool({ fetchImpl: deep.fetch }).execute({ query: "how do I use bun test", deep: true }, ctx());
+  // Inject `enrichFetch` (as the sibling deep tests do) so deep mode's top-page
+  // enrichment hits the stub, not real bun.sh/example.com over the network — the
+  // uncontrolled egress that made this test intermittently exceed Bun's 5s timeout.
+  await webSearchTool({
+    fetchImpl: deep.fetch,
+    enrichFetch: async () => "Enriched page body for the deep-mode fan-out test.",
+  }).execute({ query: "how do I use bun test", deep: true }, ctx());
   // A question-shaped query expands to several phrasings → strictly more calls.
   expect(deep.seen.urls.length).toBeGreaterThan(shallow.seen.urls.length);
 });

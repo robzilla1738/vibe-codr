@@ -1,3 +1,5 @@
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import type { RepoProfile } from "@vibe/shared";
 import { type GitRunner, spawnGit } from "../git-info.ts";
 import { looksGreenfield } from "./codeintel.ts";
@@ -118,11 +120,44 @@ export async function gitAddWorktree(
   const run = opts.run ?? spawnGit;
   const repo = await run(cwd, ["rev-parse", "--is-inside-work-tree"]);
   if (!repo.ok || !/true/.test(repo.stdout)) return null;
+  // Keep the engine's runtime state (`.vibe/` — worktrees, journals, reports,
+  // checkpoints) out of the user's git view via the repo's LOCAL exclude, so a
+  // nested worktree can't leak into `git status`, the green-gate diff reviewer,
+  // checkpoint snapshots, or a branch-mode `git add -A`. We never touch the
+  // user's tracked `.gitignore`; this is idempotent and best-effort.
+  await excludeVibeRuntime(cwd, run);
   await run(cwd, id(["worktree", "remove", "--force", opts.path]));
   Bun.spawnSync(["rm", "-rf", opts.path]);
   await run(cwd, id(["worktree", "prune"]));
   const r = await run(cwd, id(["worktree", "add", "-b", opts.branch, opts.path, "HEAD"]));
   return r.ok ? opts.path : null;
+}
+
+/**
+ * Idempotently exclude the engine's `.vibe/` runtime directory via the repo's
+ * LOCAL exclude file (`$GIT_COMMON_DIR/info/exclude`) — never the user's tracked
+ * `.gitignore`. Written once per worktree creation so the engine's own state
+ * (nested worktrees especially, which `git add -A` would otherwise stage as an
+ * embedded-repo gitlink) never surfaces in the user's status/diffs/commits.
+ * Best-effort: a failure to read/write the exclude file must never fail worktree
+ * creation.
+ */
+async function excludeVibeRuntime(cwd: string, run: GitRunner): Promise<void> {
+  try {
+    // The exclude lives in the COMMON git dir (shared across linked worktrees),
+    // not a per-worktree `.git` file, so resolve `--git-common-dir`.
+    const r = await run(cwd, ["rev-parse", "--git-common-dir"]);
+    const gitDir = firstLine(r.stdout);
+    if (!r.ok || !gitDir) return;
+    const excludePath = join(isAbsolute(gitDir) ? gitDir : join(cwd, gitDir), "info", "exclude");
+    const existing = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
+    if (/^\s*\.vibe\/?\s*$/m.test(existing)) return; // already excluded → no-op
+    mkdirSync(dirname(excludePath), { recursive: true });
+    const sep = existing && !existing.endsWith("\n") ? "\n" : "";
+    appendFileSync(excludePath, `${sep}.vibe/\n`);
+  } catch {
+    /* best-effort: never fail a worktree over a local-exclude write */
+  }
 }
 
 /**

@@ -39,6 +39,35 @@ test("test: a passing run with an unparseable count is NOT treated as 'no tests'
   expect(r.pass).toBe(true);
 });
 
+test("test: Go multi-package with a testless package (exit 0) stays GREEN", () => {
+  // `go test ./...`: one package passes, one has no tests. "[no test files]" is
+  // a per-package note, not a whole-run "zero tests" verdict.
+  const r = parseCheckOutput(
+    "test",
+    "ok  \tgithub.com/x/foo\t0.512s\n?   \tgithub.com/x/bar\t[no test files]",
+    0,
+  );
+  expect(r.pass).toBe(true);
+});
+
+test("test: an all-testless Go run (nothing ran) is still 'no tests', not green", () => {
+  const r = parseCheckOutput(
+    "test",
+    "?   \tgithub.com/x/foo\t[no test files]\n?   \tgithub.com/x/bar\t[no test files]",
+    0,
+  );
+  expect(r.pass).toBe(false);
+  expect(r.firstFailures[0]).toContain("no tests ran");
+});
+
+test("test: exit-0 run is not flipped RED by a '<N> failed' token in log noise", () => {
+  // Output contains "Batch 3 failed" / a fixture "2 failed" but the runner
+  // exited 0 — the exit code is the source of truth, so this stays green.
+  const r = parseCheckOutput("test", 'console.log("Batch 3 failed")\nfixture emits: 2 failed\nOK', 0);
+  expect(r.pass).toBe(true);
+  expect(r.failed).toBe(0);
+});
+
 test("lint: error count parsed; build: exit code is the source of truth", () => {
   const lint = parseCheckOutput("lint", "12 problems (3 errors, 9 warnings)", 1);
   expect(lint.pass).toBe(false);

@@ -18,7 +18,7 @@ import {
   type Usage,
 } from "@vibe/shared";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Config, ModelPrice } from "@vibe/config";
 import type { ProviderRegistry } from "@vibe/providers";
 import {
@@ -30,7 +30,7 @@ import {
 } from "@vibe/tools";
 import type { HookBus, SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
-import { composeSystemPrompt } from "./system-prompt.ts";
+import { composeSystemPrompt, formatWorkspaceState } from "./system-prompt.ts";
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages, estimateTokens } from "./compaction.ts";
@@ -223,6 +223,11 @@ export class Session {
    * estimate, measured from step usage — anchors the mid-turn fill projection
    * (the raw estimate can't see prompt scaffolding). */
   #overheadTokens = 0;
+  /** Estimated token size of the exact message array sent on the last step (set
+   * in prepareStep). Overhead = real inputTokens − this, so it isolates the
+   * system+tools scaffolding WITHOUT re-counting the within-turn tail the older
+   * "estimate of #modelMessages" formula folded in (which fired offloads early). */
+  #lastSentEstimate = 0;
   /** This session's web-source ledger: URLs harvested from web_search/webfetch/
    * crawl_docs results, deduped + stably numbered. Injected into the system
    * prompt so the model cites `[n]` consistently, and shown by `/sources`. A
@@ -242,6 +247,11 @@ export class Session {
     this.#usage = {
       inputTokens: deps.initialUsage?.inputTokens ?? 0,
       outputTokens: deps.initialUsage?.outputTokens ?? 0,
+      // Preserve the cumulative cache-read total across --resume, so the restored
+      // session's cost/usage reporting doesn't silently reset it to zero.
+      ...(deps.initialUsage?.cachedInputTokens
+        ? { cachedInputTokens: deps.initialUsage.cachedInputTokens }
+        : {}),
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
     this.#recalledContext = deps.initialRecalledContext;
@@ -610,7 +620,15 @@ export class Session {
         });
         return;
       }
-      this.#pushUser(input, images, opts.display);
+      // Fold the volatile working state (live tasks + gathered sources) into THIS
+      // turn's model-facing message so it stays current and survives compaction,
+      // without polluting the cacheable system prefix. It's model-only — never
+      // shown in the UI transcript (#history) or the user bubble.
+      const stateReminder = formatWorkspaceState({
+        tasks: this.#tasks,
+        sources: this.#sources.size ? this.#sources.format() : undefined,
+      });
+      this.#pushUser(input, images, opts.display, stateReminder);
       userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
       histRef = this.#history[this.#history.length - 1];
 
@@ -646,19 +664,15 @@ export class Session {
               .map((a) => `${a.name} — ${a.description}`)
           : [];
       const repoFacts = this.#deps.repoProfile ? formatRepoFacts(this.#deps.repoProfile) : undefined;
-      // The sources gathered so far this session (bounded to ~2k chars) — so the
-      // model can cite them by their stable [n] consistently across turns.
-      const sources = this.#sources.size ? this.#sources.format() : undefined;
+      // The system prompt holds ONLY session-stable content, so its cache prefix
+      // (and the whole conversation cached behind it) survives every turn. The
+      // volatile working state — the live task list and gathered sources — rides
+      // in the newest user message instead (see #pushUser + formatWorkspaceState).
       const system = composeSystemPrompt({
         mode: this.mode,
         cwd: this.#deps.cwd,
         goal: this.goal,
         ...(repoFacts ? { repoFacts } : {}),
-        ...(sources ? { sources } : {}),
-        // Re-inject the live task list every turn so it survives compaction
-        // deterministically (the transcript's update_tasks calls may be
-        // summarized away; #tasks is the authority).
-        ...(this.#tasks.length ? { tasks: this.#tasks } : {}),
         projectMemory: this.#deps.projectMemory,
         ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
         pluginBlocks: this.#deps.extraSystem,
@@ -672,6 +686,10 @@ export class Session {
         config.permissions,
         this.#deps.permissionResolver,
         config.approvalMode === "auto" ? "allow" : "ask",
+        // Canonicalize path-scoped rules against THIS session's cwd (which
+        // edit/write resolve against), so an absolute deny can't be dodged by a
+        // relative spelling — and vice-versa.
+        this.#deps.cwd,
       );
       const hooks = this.#deps.hooks;
       const base: ToolRuntimeBase = {
@@ -790,24 +808,17 @@ export class Session {
       // it into a superset (below) so cost, the live context %, and the compaction
       // trigger all reflect the true prompt size rather than the uncached slice.
       const foldCachedIntoInput = cacheTokensDisjointFromInput(this.model);
-      let outgoing: ModelMessage[] = tuning.cacheSystem
+      // First breakpoint: the system message (stable across the whole session
+      // now that volatile state rides in the user turn), so its prefix is a cache
+      // hit every turn. The SECOND breakpoint — the trailing conversation message
+      // — is placed in `prepareStep` (markConversationTail) every step, not here,
+      // so the growing within-turn tail is cached step-to-step.
+      const messages: ModelMessage[] = tuning.cacheSystem
         ? [
             { role: "system", content: system, providerOptions: ANTHROPIC_CACHE_CONTROL },
             ...this.#modelMessages,
           ]
         : this.#modelMessages;
-      // Second breakpoint: the trailing conversation message, so this turn's
-      // whole prefix is a cache hit on the next step/turn. Applied to a COPY —
-      // the stored history must not accumulate markers (Anthropic caps
-      // breakpoints at 4; system + tools + this = 3).
-      if (tuning.cacheConversation && outgoing.length > 1) {
-        const last = outgoing[outgoing.length - 1]!;
-        outgoing = [
-          ...outgoing.slice(0, -1),
-          { ...last, providerOptions: { ...last.providerOptions, ...ANTHROPIC_CACHE_CONTROL } } as ModelMessage,
-        ];
-      }
-      const messages: ModelMessage[] = outgoing;
       // Third breakpoint: the tool block. Tool schemas are big and perfectly
       // stable within a turn — without a marker every step re-bills all of them.
       if (tuning.cacheTools) {
@@ -838,36 +849,46 @@ export class Session {
         // window RIGHT NOW. Failures degrade to the untrimmed prompt; a throw
         // here would fail the whole turn.
         prepareStep: async ({ messages: stepMessages }) => {
+          const offload = config.compaction.offload;
+          let next = stepMessages;
           try {
-            const offload = config.compaction.offload;
-            if (!offload.enabled || this.#aborted()) {
-              return this.#offloaded.size
-                ? { messages: applyOffloads(stepMessages, this.#offloaded, offload.previewBytes) }
-                : undefined;
+            if (offload.enabled && !this.#aborted()) {
+              // Project this step's fill against the window. `#overheadTokens` is
+              // the provider's real prompt size minus the estimate of what we
+              // actually SENT last step (system + tools), so adding it to the
+              // current stepMessages estimate does NOT double-count the within-turn
+              // tail (that tail is already inside stepMessages).
+              const projected = estimateTokens(stepMessages) + this.#overheadTokens;
+              const limit = offload.threshold * this.#contextWindow;
+              if (projected >= limit) {
+                const plan = planOffloads(stepMessages, {
+                  maxResultBytes: offload.maxResultBytes,
+                  keepLiveResults: offload.keepLiveResults,
+                  // Free enough to land comfortably under the threshold (chars ≈ 4/token).
+                  targetChars: Math.max(0, (projected - limit * 0.85) * 4),
+                  existing: new Set(this.#offloaded.keys()),
+                  // Match superseded reads across abs/relative spellings of a file.
+                  canonicalize: (p) => resolve(this.#deps.cwd, p),
+                });
+                for (const ref of plan) await this.#writeOffload(ref, stepMessages);
+              }
             }
-            const projected = estimateTokens(stepMessages) + this.#overheadTokens;
-            const limit = offload.threshold * this.#contextWindow;
-            if (projected >= limit) {
-              const plan = planOffloads(stepMessages, {
-                maxResultBytes: offload.maxResultBytes,
-                keepLiveResults: offload.keepLiveResults,
-                // Free enough to land comfortably under the threshold (chars ≈ 4/token).
-                targetChars: Math.max(0, (projected - limit * 0.85) * 4),
-                existing: new Set(this.#offloaded.keys()),
-              });
-              for (const ref of plan) await this.#writeOffload(ref, stepMessages);
+            if (this.#offloaded.size) {
+              next = applyOffloads(stepMessages, this.#offloaded, offload.previewBytes);
             }
-            return this.#offloaded.size
-              ? { messages: applyOffloads(stepMessages, this.#offloaded, offload.previewBytes) }
-              : undefined;
           } catch (err) {
             bus.emit({
               type: "notice",
               level: "warn",
               message: `context offload skipped: ${(err as Error).message}`,
             });
-            return undefined;
+            next = stepMessages; // degrade to the untrimmed prompt — never fail the turn
           }
+          // Conversation cache breakpoint on the current tail, every step.
+          if (tuning.cacheConversation) next = markConversationTail(next);
+          // Anchor next step's overhead calc on exactly what we send this step.
+          this.#lastSentEstimate = estimateTokens(next);
+          return next === stepMessages ? undefined : { messages: next };
         },
         onError: ({ error }) => {
           bus.emit({
@@ -915,13 +936,14 @@ export class Session {
           // schemas, so it read far too low.
           if (stepUsage?.inputTokens) {
             this.#lastInputTokens = stepUsage.inputTokens;
-            // Anchor the mid-turn fill projection: the delta between the real
-            // prompt size and the message-text estimate IS the system+tools
-            // overhead the estimate can't see.
-            this.#overheadTokens = Math.max(
-              0,
-              stepUsage.inputTokens - estimateTokens(this.#modelMessages),
-            );
+            // Anchor the mid-turn fill projection on the delta between the real
+            // prompt size and the estimate of exactly what we SENT this step
+            // (#lastSentEstimate). That isolates the system+tools scaffolding the
+            // estimate can't see; measuring against #modelMessages instead folded
+            // the within-turn tool-result tail into "overhead" and then
+            // double-counted it in prepareStep, firing offloads far too early.
+            const sentEstimate = this.#lastSentEstimate || estimateTokens(this.#modelMessages);
+            this.#overheadTokens = Math.max(0, stepUsage.inputTokens - sentEstimate);
             bus.emit({
               type: "context-updated",
               sessionId: this.id,
@@ -1264,19 +1286,29 @@ export class Session {
     });
   }
 
-  #pushUser(input: string, images: ImageAttachment[] = [], display?: string | null): void {
+  #pushUser(
+    input: string,
+    images: ImageAttachment[] = [],
+    display?: string | null,
+    stateReminder?: string,
+  ): void {
+    // The model-facing text: the user's input, then (when present) the workspace
+    // state block APPENDED so the user's own words lead and the ambient state
+    // trails. This block is model-only — it is deliberately absent from the UI
+    // parts (#history) and the user-message event below.
+    const modelText = stateReminder ? `${input}\n\n${stateReminder}` : input;
     // Multimodal user turn when images are attached; plain string otherwise so
     // existing text-only behaviour and persistence are unchanged.
     const content = images.length
       ? [
-          { type: "text" as const, text: input },
+          { type: "text" as const, text: modelText },
           ...images.map((img) => ({
             type: "image" as const,
             image: img.data,
             mediaType: img.mediaType,
           })),
         ]
-      : input;
+      : modelText;
     this.#modelMessages.push({ role: "user", content });
     const parts: Part[] = [{ type: "text", text: input }];
     for (const img of images) parts.push({ type: "text", text: `[image: ${img.path}]` });
@@ -1467,6 +1499,26 @@ function appendText(message: Message, delta: string): void {
   } else {
     message.parts.push({ type: "text", text: delta });
   }
+}
+
+/**
+ * Place the Anthropic conversation cache breakpoint on the LAST message of a
+ * step's prompt. Called every step so a multi-step turn caches its growing tail
+ * one step at a time — without a marker on the current tail each step re-bills
+ * every accumulated tool result at full price. Copy-on-write (the stored
+ * `#modelMessages` are never marked); the system message keeps its own separate
+ * breakpoint, so this is the SOLE placer of the conversation marker — exactly one
+ * ever exists (system + tools + this = 3 ≤ the 4-breakpoint cap). No-op when
+ * there's nothing but a system message.
+ */
+function markConversationTail(messages: ModelMessage[]): ModelMessage[] {
+  const lastIdx = messages.length - 1;
+  if (lastIdx < 0 || messages[lastIdx]?.role === "system") return messages;
+  const last = messages[lastIdx]!;
+  return [
+    ...messages.slice(0, lastIdx),
+    { ...last, providerOptions: { ...last.providerOptions, ...ANTHROPIC_CACHE_CONTROL } } as ModelMessage,
+  ];
 }
 
 function normalizeUsage(usage: unknown): Usage | undefined {

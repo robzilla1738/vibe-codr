@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import type { Message, ToolDefinition } from "@vibe/shared";
 import { ConfigSchema } from "@vibe/config";
+import { searchDoctorCheck } from "./engine-commands.ts";
 import {
   formatStatus,
   formatCost,
@@ -187,4 +188,16 @@ test("formatDoctor reports all-clear", () => {
   expect(formatDoctor([{ label: "git", ok: true, detail: "ok" }])).toContain(
     "All checks passed.",
   );
+});
+
+test("/doctor treats keyless web search as healthy (never 'searches will fail')", () => {
+  // Enabled without a TinyFish key is HEALTHY — search is keyless (DuckDuckGo).
+  const noKey = searchDoctorCheck(true, undefined);
+  expect(noKey.ok).toBe(true);
+  expect(noKey.detail).not.toMatch(/will fail/i);
+  expect(noKey.detail).toContain("keyless");
+  // A key adds an engine but isn't required.
+  expect(searchDoctorCheck(true, "tf_key").ok).toBe(true);
+  // Disabled is the only non-healthy state (neutral, not a failure).
+  expect(searchDoctorCheck(false, undefined).ok).toBeNull();
 });

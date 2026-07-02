@@ -103,3 +103,49 @@ test("resultText handles text, json, and content-array outputs", () => {
     "x\ny",
   );
 });
+
+test("planOffloads canonicalizes paths so an abs read is superseded by a relative edit of the same file", () => {
+  const messages = [
+    call("abs-read", "read", { path: "/repo/src/a.ts" }),
+    result("abs-read", "read", BIG),
+    call("rel-edit", "edit", { path: "src/a.ts", oldString: "x", newString: "y" }),
+    result("rel-edit", "edit", "Edited"),
+    call("keep", "read", { path: "src/b.ts" }),
+    result("keep", "read", BIG),
+  ];
+  const canonicalize = (p: string) => (p.startsWith("/") ? p : `/repo/${p}`);
+  // Without canonicalize the abs read is NOT seen as superseded (different string).
+  const naive = planOffloads(messages, { maxResultBytes: 16_000, keepLiveResults: 1, targetChars: 1, existing: new Set() });
+  expect(naive.find((r) => r.callId === "abs-read")?.callId).toBe("abs-read"); // picked as oldest, not as superseded
+  // With canonicalize, the abs read is recognized as superseded by the relative
+  // edit and prioritized as the first victim.
+  const canon = planOffloads(messages, {
+    maxResultBytes: 16_000,
+    keepLiveResults: 1,
+    targetChars: 1,
+    existing: new Set(),
+    canonicalize,
+  });
+  expect(canon[0]?.callId).toBe("abs-read");
+});
+
+test("applyOffloads preview never splits a surrogate pair at the cut", () => {
+  // An emoji (surrogate pair) straddling the preview boundary must not leave a
+  // lone surrogate in the output (some providers 400 on invalid UTF-16).
+  const body = `${"a".repeat(9)}😀${"b".repeat(20_000)}`; // 😀 spans positions 9–10
+  const messages = [call("c", "read", { path: "f" }), result("c", "read", body)];
+  const offloaded = new Map<string, OffloadRecord>([
+    ["c", { path: ".vibe/x.txt", toolName: "read", fullChars: body.length }],
+  ]);
+  const next = applyOffloads(messages, offloaded, 10); // cut lands mid-emoji
+  const text = resultText((next[1] as { content: { output: { value: string } }[] }).content[0]!.output);
+  // No unpaired surrogate anywhere in the preview.
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) expect(text.charCodeAt(i + 1)).toBeGreaterThanOrEqual(0xdc00);
+    if (c >= 0xdc00 && c <= 0xdfff) {
+      const prev = text.charCodeAt(i - 1);
+      expect(prev >= 0xd800 && prev <= 0xdbff).toBe(true);
+    }
+  }
+});

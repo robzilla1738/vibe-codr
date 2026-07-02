@@ -87,6 +87,32 @@ test("a command that exceeds its timeout is reported as a timeout, not a bare ex
   expect(String(r.output).startsWith("exit")).toBe(false);
 });
 
+test("aborting a foreground bash reaps the whole process tree (grandchildren too)", async () => {
+  // Esc/steer aborts the turn. Bun's own signal handling SIGTERMs only the direct
+  // `bash` child, orphaning a backgrounded grandchild (node/vite under a dev
+  // server) which reparents to PID 1 and leaks its port. The tool must kill the
+  // whole tree — while bash is still alive to be the grandchild's parent.
+  const ac = new AbortController();
+  const c: ToolContext = { ...ctx(cwd()), abortSignal: ac.signal };
+  const uniq = 910_000 + Math.floor(Math.random() * 80_000);
+  const done = bashTool().execute({ command: `sleep ${uniq} & wait` }, c);
+  await Bun.sleep(300); // let the grandchild sleep spawn
+
+  const before = new TextDecoder()
+    .decode(Bun.spawnSync(["pgrep", "-f", `sleep ${uniq}`]).stdout)
+    .trim();
+  expect(before).not.toBe(""); // grandchild is running
+
+  ac.abort();
+  await done.catch(() => {}); // old code may reject on abort; new code resolves
+  await Bun.sleep(400); // let the tree-kill propagate
+
+  const after = new TextDecoder()
+    .decode(Bun.spawnSync(["pgrep", "-f", `sleep ${uniq}`]).stdout)
+    .trim();
+  expect(after).toBe(""); // the orphaned grandchild was reaped
+});
+
 test("background run without a job registry is rejected cleanly", async () => {
   const r = await bashTool().execute({ command: "sleep 1", background: true }, ctx(cwd()));
   expect(r.isError).toBe(true);

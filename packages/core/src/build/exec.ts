@@ -6,6 +6,8 @@
  * recon/gitops. Mirrors agentswarm's SandboxRuntime["exec"] contract.
  */
 
+import { killTree } from "@vibe/tools";
+
 export interface ExecResult {
   out: string;
   code: number;
@@ -54,13 +56,16 @@ export function bunExec(): Exec {
         stdin: "ignore",
         ...(signal ? { signal } : {}),
       });
+      // On timeout, kill the whole PROCESS TREE, not just the `bash -lc` child.
+      // A `bash -lc "vitest run"` (or any command with a worker pool / spawned
+      // server) leaves grandchildren holding the inherited stdout/stderr pipe
+      // write-ends after a bare `proc.kill()`; `readBounded` then never observes
+      // `done`, the reader `Promise.all` never resolves, and `bunExec` hangs
+      // forever — wedging the green-gate (which passes no abort signal). Killing
+      // the tree closes those pipes so the readers finish and the gate unwinds.
       const timer = timeoutSec
         ? setTimeout(() => {
-            try {
-              proc.kill();
-            } catch {
-              /* already gone */
-            }
+            killTree(proc.pid);
           }, timeoutSec * 1000)
         : undefined;
       try {

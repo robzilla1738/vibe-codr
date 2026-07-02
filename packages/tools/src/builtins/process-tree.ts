@@ -41,9 +41,9 @@ export function processTree(rootPid: number, maxProcs = 256): number[] {
   return order.reverse();
 }
 
-/** SIGTERM the whole tree (leaves first); escalate stragglers to SIGKILL after
- * `graceMs`. Never throws. */
-export function killTree(rootPid: number, graceMs = 1_500): void {
+/** SIGTERM the whole tree (leaves first). Never throws. Returns the tree it
+ * signaled so an awaiting caller can escalate the same set. */
+function sigtermTree(rootPid: number): number[] {
   const pids = processTree(rootPid);
   for (const pid of pids) {
     try {
@@ -52,6 +52,18 @@ export function killTree(rootPid: number, graceMs = 1_500): void {
       /* already gone */
     }
   }
+  return pids;
+}
+
+/** Fire-and-forget: SIGTERM the whole tree (leaves first); escalate stragglers
+ * to SIGKILL after `graceMs`. Never throws. The escalation timer is UNREF'd so
+ * it can't hold a shutting-down process open — which means it only fires while
+ * something else keeps the loop alive (the pump/read awaits in `bash`/`bunExec`
+ * during a kill do). A caller that must GUARANTEE escalation on a path with no
+ * other pending work (engine shutdown, `jobs.killAll`) should await
+ * `killTreeAndWait` instead. */
+export function killTree(rootPid: number, graceMs = 1_500): void {
+  const pids = sigtermTree(rootPid);
   setTimeout(() => {
     for (const pid of pids) {
       try {
@@ -61,4 +73,21 @@ export function killTree(rootPid: number, graceMs = 1_500): void {
       }
     }
   }, graceMs).unref();
+}
+
+/** Awaited variant: SIGTERM the tree, wait out `graceMs` on a REF'd timer (so
+ * the escalation is guaranteed to run even when nothing else keeps the event
+ * loop alive), then SIGKILL any survivor. A SIGTERM-ignoring descendant
+ * (`trap '' TERM`, a hung server) is therefore always reaped rather than left as
+ * an orphan when the caller exits within the grace window. Never throws. */
+export async function killTreeAndWait(rootPid: number, graceMs = 1_500): Promise<void> {
+  const pids = sigtermTree(rootPid);
+  await Bun.sleep(graceMs);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already gone — the normal case */
+    }
+  }
 }

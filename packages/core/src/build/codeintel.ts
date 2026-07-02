@@ -124,12 +124,29 @@ function lines(s: string | undefined): string[] {
 }
 
 /**
- * Watch/dev-server scripts never terminate — they can't be a build/test gate.
- * dev/serve/start only match as an actual command (line start or after &&/;/|),
- * so a build like "vite build" or a path like "serve-dist" is NOT falsely rejected.
+ * Watch/dev-server scripts never terminate — they can't be a build/test gate;
+ * accepting one hangs the green gate for the full per-check timeout. Beyond the
+ * literal watch flags (`--watch`, `--watchAll`), several test runners default to
+ * watch (bare `vitest`) or alias a watcher through another script (`npm run
+ * test:watch`, `yarn watch`), all of which must be rejected. dev/serve/start
+ * only match as an actual command (line start or after &&/;/|), so a build like
+ * "vite build" or a path like "serve-dist" is NOT falsely rejected; `vitest run`
+ * (the one-shot form) is explicitly kept.
  */
 const NON_TERMINATING =
-  /--watch\b|\bnodemon\b|\bwebpack-dev-server\b|(?:^|&&|;|\|)\s*(?:next\s+dev|serve|http-server|(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve))(?:\s|$)/i;
+  /--watch|\bnodemon\b|\bwebpack-dev-server\b|\bvitest\b(?!\s+(?:run\b|--run\b))|(?:^|&&|;|\|)\s*(?:next\s+dev|serve|http-server|(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve|\S*watch\S*))(?:\s|$)/i;
+
+/**
+ * Whether a package.json script value can never serve as a terminating gate.
+ * Wraps NON_TERMINATING plus the CRA carve-out: `react-scripts test` runs Jest
+ * in WATCH mode unless CI=true, so a bare `react-scripts test` is non-terminating
+ * (an explicit `CI=true react-scripts test` is a legitimate one-shot).
+ */
+function isNonTerminating(script: string): boolean {
+  if (NON_TERMINATING.test(script)) return true;
+  if (/\breact-scripts\s+test\b/.test(script) && !/\bCI=(?:true|1)\b/.test(script)) return true;
+  return false;
+}
 
 function parsePackageJson(raw: string | undefined): { scripts: Record<string, string>; deps: string } | null {
   if (!raw) return null;
@@ -169,7 +186,7 @@ export function detectCommands(m: RepoManifests): CodeCommands {
     const pm = detectPackageManager(m) ?? "npm";
     const runnable = (name: string): string | undefined => {
       const v = pkg.scripts[name];
-      if (!v || NON_TERMINATING.test(v)) return undefined;
+      if (!v || isNonTerminating(v)) return undefined;
       return `${pm} run ${name}`;
     };
     cmds.install =
@@ -178,12 +195,15 @@ export function detectCommands(m: RepoManifests): CodeCommands {
     if (build) cmds.build = build;
     const test =
       runnable("test") ??
-      (pkg.scripts.test && !NON_TERMINATING.test(pkg.scripts.test) ? `${pm} test` : undefined);
+      (pkg.scripts.test && !isNonTerminating(pkg.scripts.test) ? `${pm} test` : undefined);
     if (test) cmds.test = test;
     const typecheck =
       runnable("typecheck") ??
       runnable("tsc") ??
-      (/"typescript"/.test(m.packageJson ?? "") || /typescript/.test(pkg.deps) ? "npx tsc --noEmit" : undefined);
+      // Match a real `typescript` dependency KEY, not any substring: an
+      // unanchored /typescript/ fired on @typescript-eslint/* devDeps alone and
+      // injected a bogus tsc typecheck into pure-JS repos.
+      (/"typescript":/.test(pkg.deps) ? "npx tsc --noEmit" : undefined);
     if (typecheck) cmds.typecheck = typecheck;
     const lint = runnable("lint");
     if (lint) cmds.lint = lint;
@@ -197,8 +217,12 @@ export function detectCommands(m: RepoManifests): CodeCommands {
   }
   if (m.pyproject) {
     const p = m.pyproject;
-    cmds.install = "pip install -e .";
-    cmds.test = "python -m pytest -q";
+    // Only claim a command backed by evidence — a confidently-wrong command is
+    // worse than none. `pip install -e .` needs a real build backend / project
+    // table (a tooling-only pyproject with just [tool.ruff] has none), and
+    // pytest must actually be in use (a dep or a [tool.pytest.*] config).
+    if (/\[build-system\]|\[project\]/.test(p)) cmds.install = "pip install -e .";
+    if (/\bpytest\b/.test(p)) cmds.test = "python -m pytest -q";
     if (/mypy/.test(p)) cmds.typecheck = "mypy .";
     if (/\bruff\b/.test(p)) cmds.lint = "ruff check .";
     else if (/flake8/.test(p)) cmds.lint = "flake8";

@@ -3,6 +3,7 @@ export { Session, type SessionDeps } from "./session.ts";
 export { EventBus } from "./event-bus.ts";
 export {
   composeSystemPrompt,
+  formatWorkspaceState,
   type SystemPromptInputs,
 } from "./system-prompt.ts";
 export {

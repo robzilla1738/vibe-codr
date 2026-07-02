@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CappedText, drainTextStream, omittedMarker, type ToolDefinition } from "@vibe/shared";
 import type { BackgroundJobs } from "./jobs.ts";
-import { killTree } from "./process-tree.ts";
+import { killTreeAndWait } from "./process-tree.ts";
 
 const Input = z.object({
   command: z.string().describe("Shell command to execute."),
@@ -44,11 +44,16 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
         };
       }
 
+      // NOTE: we do NOT hand Bun the abort signal. Bun's `signal` SIGTERMs only
+      // the direct `bash` child; its grandchildren (node/vite under `npm run
+      // dev`) then reparent to PID 1 and leak, holding their port. We kill the
+      // whole tree ourselves — while bash is still alive to be its children's
+      // parent, so `pgrep -P` can still find them (a deferred kill after bash
+      // exits would find nothing).
       const proc = Bun.spawn(["bash", "-lc", command], {
         cwd: ctx.cwd,
         stdout: "pipe",
         stderr: "pipe",
-        signal: ctx.abortSignal,
       });
 
       const limit = timeoutMs ?? DEFAULT_TIMEOUT;
@@ -59,8 +64,13 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
       let timedOut = false;
       const timer = setTimeout(() => {
         timedOut = true;
-        killTree(proc.pid);
+        void killTreeAndWait(proc.pid).catch(() => {});
       }, limit);
+      // Esc/steer aborts the turn: reap the tree the same way (a foreground
+      // `npm run dev` must not outlive the aborted turn as an orphan).
+      const onAbort = () => void killTreeAndWait(proc.pid).catch(() => {});
+      ctx.abortSignal.addEventListener("abort", onAbort, { once: true });
+      if (ctx.abortSignal.aborted) onAbort();
 
       // Bound the retained buffer to the cap DURING streaming, not after: a
       // high-volume command (`yes`, a chatty build) is drained as fast as it's
@@ -80,9 +90,14 @@ export function bashTool(jobs?: BackgroundJobs): ToolDefinition<z.infer<typeof I
           out.push(chunk);
         });
 
-      await Promise.all([pump(proc.stdout), pump(proc.stderr)]);
-      const code = await proc.exited;
-      clearTimeout(timer);
+      let code: number;
+      try {
+        await Promise.all([pump(proc.stdout), pump(proc.stderr)]);
+        code = await proc.exited;
+      } finally {
+        clearTimeout(timer);
+        ctx.abortSignal.removeEventListener("abort", onAbort);
+      }
 
       const trimmed = out.toString();
       const status = timedOut

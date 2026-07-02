@@ -110,6 +110,25 @@ test("buildRepoMap respects the char budget with an explicit truncated flag", as
   expect(res.text.length).toBeLessThanOrEqual(220);
 });
 
+test("buildRepoMap caps the number of files it READS, not just the count it renders", async () => {
+  // On a huge repo, reading every tracked file to build the import graph stalls
+  // bootstrap. With a read cap, only the top-ranked candidates are parsed at all —
+  // a low-ranked file's symbols must be ABSENT even when the render budget/maxFiles
+  // are generous (proving it was never read, not merely trimmed from the output).
+  const dir = mkdtempSync(join(tmpdir(), "vibe-repomap-readcap-"));
+  mkdirSync(join(dir, "deep", "nested"), { recursive: true });
+  writeFileSync(join(dir, "index.ts"), "export function mainEntry() {}\n"); // ranks first
+  writeFileSync(join(dir, "alpha.ts"), "export function alphaFn() {}\n"); // shallow → high
+  writeFileSync(join(dir, "zeta.ts"), "export function zetaFn() {}\n"); // shallow → high
+  writeFileSync(join(dir, "deep", "nested", "thing.test.ts"), "export function deepThing() {}\n"); // tests rank last
+
+  // maxFiles/charBudget are generous; readLimit is the only thing trimming.
+  const res = await buildRepoMap(dir, { readLimit: 2, maxFiles: 100, charBudget: 100_000 });
+  expect(res.text).toContain("mainEntry"); // index.ts is read (top-ranked)
+  expect(res.text).not.toContain("deepThing"); // the test file is never read
+  expect(res.truncated).toBe(true); // more files exist than were read
+});
+
 test("repo_map produces a declaration map for a directory (no git)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-repomap-"));
   mkdirSync(join(dir, "src"), { recursive: true });

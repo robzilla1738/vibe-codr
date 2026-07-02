@@ -326,6 +326,40 @@ export function parseSources(body: string): Source[] {
   return sources;
 }
 
+/**
+ * Parse a web-search TOOL's raw output ("Search results for …" then numbered
+ * entries of title / URL / snippet lines) into source cards, so the expanded
+ * view renders as the same clean source treatment as ```sources``` blocks
+ * instead of dumped text. Lines before the first numbered entry (the preamble)
+ * are skipped; within an entry, the first URL-ish line is the link and every
+ * other line joins the snippet.
+ */
+export function parseSearchResults(text: string): Source[] {
+  const sources: Source[] = [];
+  let cur: Source | null = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
+    const numbered = /^\d+[.)]\s+(.*)$/.exec(line);
+    if (numbered) {
+      if (cur) sources.push(cur);
+      // Tidy the title: collapse the " , " spacing artifacts search output has.
+      cur = { title: numbered[1]!.replace(/\s+,/g, ",").trim() };
+      continue;
+    }
+    if (!cur) continue; // preamble ("Search results for …")
+    const url = /^(https?:\/\/\S+)$/i.exec(line);
+    if (url && !cur.url) {
+      cur.url = url[1]!;
+      cur.domain = hostOf(url[1]!) || undefined;
+      continue;
+    }
+    cur.snippet = cur.snippet ? `${cur.snippet} ${line}` : line;
+  }
+  if (cur) sources.push(cur);
+  return sources;
+}
+
 // ── Render primitives ────────────────────────────────────────────────────────
 
 /** Eighth-block glyphs for sub-cell bar precision (1/8 … 7/8 of a cell). */

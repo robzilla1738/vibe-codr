@@ -4,6 +4,49 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Changed — TUI visual polish pass
+
+A screenshot-verified sweep over every view of the OpenTUI app (all 17 render
+scenes were rasterized, audited, and re-verified after each change):
+
+- **Thin, ghost-free rails.** Every block accent (user/reply cards, input, plan,
+  permission, toast, quotes) is drawn by a new `Rail` component — a thin `▎`
+  quarter-block glyph column clipped to the block — replacing every
+  `border={["left"]}`. The border renderable painted outside content flow: it
+  gapped `│` into dashes on terminals with line spacing and could leave stray
+  ghost segments behind on reflow/scroll. Glyph content in flow is always
+  clipped, cleared, and repainted with its block. Chrome borders are now banned
+  by the design-language header.
+- **Plan & permission approvals are proper cards** — the same filled panel +
+  rail language as the turns and input (PLAN green / amber), with bright-key
+  hints (`Enter accept & run · type to revise · Esc keep planning`, `y/a/n`)
+  and a scroll affordance only when the plan actually overflows.
+- **Heading underlines removed.** Both the filled-band rule (which read as a
+  stray grey bar) and any `─` rule are gone; accent color + bold + spacing
+  carry h1/h2.
+- **Slash menu reformatted.** Two-tone rows (aligned name column, muted
+  description), a full-width selection band instead of a ragged text-length
+  tint, the `●` current-marker column only in menus that have a current value,
+  a `↑↓ move · Tab complete · Enter run` hint, and a tightly capped name column.
+- **Sources are calm and everywhere.** Card numbers no longer rotate through
+  the series palette; expanded `web_search` tool output now renders as the same
+  clean source cards (title / underlined domain link / muted snippet) via a new
+  `parseSearchResults`, instead of a raw text dump.
+- **Charts.** Bar fills paint as one seamless background band (no per-glyph
+  hairlines) with an eighth-block fractional tail; the pie is a larger coherent
+  disc with a percentage-aligned legend.
+- **Status lines never hard-clip.** The top-left context line (cwd · git ·
+  goal) and the under-input status drop their least-important trailing segments
+  first, then ellipsize; the git summary is now font-safe `on main 3● ↑1 ↓0`
+  (the `⎇` glyph has spotty terminal-font coverage).
+- **Layout & feel.** The chat column is capped at 84 columns (was 96); the copy
+  toast matches the input block's height and language; streamed tokens flush at
+  ~40fps (was ~25) while staying frame-coalesced.
+- **Faithful screenshots.** The README screenshot rasterizer pins every
+  non-ASCII glyph to its terminal cell (no more font-fallback drift clipping
+  line tails) and paints block elements (`▎ ▀ ▄ █`, sparkline eighths) as true
+  fractional cell fills, exactly like a terminal.
+
 ### Fixed — post-release adversarial review (46 verified defects) + token economy
 
 A multi-agent adversarial review (one finder per subsystem, every finding

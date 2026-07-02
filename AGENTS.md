@@ -394,12 +394,20 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   but only when they fit beside the status (`footerFits()`), else the hints drop to
   their own left-aligned row so the two never collide/clip on a narrow terminal.
   Hints show only on the empty splash or while a job runs (`showHints()`), so the
-  working footer is just the left-aligned status and the input sits low. **The slash-command menu
-  renders INSIDE the input frame** — the input is one bordered box whose top border
-  carries the mode chip; when `menuModel().open`, the menu (a context label, the
-  rows, `+N more`, then a `─` divider) renders ABOVE the input line in that same
-  frame, so the field fluidly grows UPWARD and reads as one control, not a separate
-  popup. The box has no fixed height — it auto-sizes to the menu + divider + input
+  working footer is just the left-aligned status and the input sits low.
+  **Chrome is NEVER drawn with `border={[…]}`** — the border renderable paints
+  outside content flow (it gaps `│` into dashes on terminals with line spacing and
+  can ghost stray segments on reflow/scroll). Every block accent (user/reply
+  cards, input, plan, permission, toast, quotes) goes through the **`Rail`
+  component**: a thin `▎` quarter-block glyph column, absolutely positioned over
+  the block's reserved first column and clipped to its height — ordinary content
+  that is always clipped/cleared/repainted with its block. **The slash-command
+  menu renders INSIDE the input block** — the input is a filled *elevated* box on
+  the mode-hued Rail whose prompt reads `MODE ❯ …`; when `menuModel().open`, the
+  menu (title, key hint, two-tone rows with a full-width selection band, `+N
+  more`, a blank spacer) renders ABOVE the prompt row in that same block, so the
+  field fluidly grows UPWARD and reads as one control, not a separate popup. The
+  box has no fixed height — it auto-sizes to the menu + input
   (`height={inputRows()}`) stack. Opening it shrinks the scrollable transcript
   above rather than covering it; the input stays pinned at the bottom. The
   transcript is `<scrollbox flexGrow={1}
@@ -430,23 +438,18 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   every turn. Assistant/tool/notice blocks are NOT click targets — folding is
   driven from the user message only; do NOT reintroduce an emission-time `turn`
   field on blocks.
-  **The input is a clean closed box** (`border` all sides, default light style) with a
-  **white frame** (`borderColor={brand()}`, and `brand()` is now neutral white — see
-  Color discipline). Its top border carries the **mode word** as the title via
-  `modeWord()` (` ASK `/` PLAN `/` YOLO ` — no glyph; **execute reads "ASK"** because
-  every action is gated by an approval prompt, vs YOLO = no prompts), and the title is
-  the **mode CHIP** — the one mode-colored thing — via `accent()` = `modeColor(uiMode())`
-  (ASK blue · PLAN green · YOLO red, fixed constants in `modes.ts`). There is **no `❯`
-  prompt glyph inside** the input; the placeholder is "Send a message or type / to
-  start". The input has **no background fill at all** — just the bordered frame and
-  the text on the black backdrop: the box sets no `backgroundColor` and the
-  `<input>`'s `backgroundColor`/`focusedBackgroundColor` are **`"transparent"`** (an
-  OpenTUI Textarea otherwise paints its whole row, which bled a grey surface past
-  the frame; don't reintroduce an `elevated` fill here). **All status
-  details live UNDER the input**, not in a
-  header: line 1 is `detailsLeft()` / `detailsRight()` = `cwd · git  /  model ·
-  changed · ctx · usage · cost`; line 2 is the key hints (left) and the goal `★ …`
-  (right). Git state comes from `readGitInfo()` (`git-info.ts`, an injectable-
+  **The input is a filled block on the mode Rail**: an `elevated`-bg padded box
+  (vertical padding 1 — the user explicitly wants the thick padded strip, don't
+  slim it) on a thin `Rail` in the mode hue, whose prompt row reads
+  **`MODE ❯ …`** — `modeWord()` (`ASK`/`PLAN`/`YOLO` — **execute reads "ASK"**
+  because every action is gated by an approval prompt, vs YOLO = no prompts) in
+  `accent()` = `modeColor(uiMode())` (ASK blue · PLAN green · YOLO red, fixed
+  constants in `modes.ts`), then a `brand()` `❯` caret glyph. The `<input>`'s own
+  `backgroundColor`/`focusedBackgroundColor` are **`"transparent"`** (an OpenTUI
+  Textarea otherwise paints its whole row a different shade past the block's
+  fill). The placeholder is "Send a message or type / to start". **All status
+  details live UNDER the input**, not in a header (and cwd · git · goal sit
+  top-left). Git state comes from `readGitInfo()` (`git-info.ts`, an injectable-
   runner module unit-tested against fixed porcelain output; the engine keeps a thin
   `#git` wrapper + `#emitGit`) via the
   `git-updated` event + the snapshot `git` field; `changedSummary()` condenses the
@@ -456,8 +459,9 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   dump every full multi-line prompt and flood the screen); tap a row
   (`toggleSub`/`expandedSubs`) to expand its full prompt + result, bounded by
   `truncate(…, 700)` so an expanded row can't run off-screen. User message blocks
-  reuse the input's heavy `brand` left-gutter frame (`elevated` bg, `❯` caret) so a
-  sent message reads as a quoted echo of where you type.
+  are filled `panel` cards on the `brand()` Rail (the turn's reply/tool card sits
+  on a muted `gutter` Rail) so a sent message reads as a quoted echo of where you
+  type.
 - **Spacing (uniform rhythm):** the chat column carries `padding={1}` (a one-cell
   inset on every side) and is centered by the two `flexGrow` gutters. Every region
   stacked below the transcript (working spinner, plan, Tasks panel, Subagents

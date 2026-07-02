@@ -19,10 +19,12 @@
  * terminals add line/letter spacing, which turns box-drawing borders (│─┼) into
  * broken dashes and makes multi-row background fills read as messy floating
  * rectangles. Flat text stays uniform on ANY terminal. The ONLY filled/bar elements
- * are: (a) the turn-thread RAIL — a thin solid bg bar (git-graph style) down the
- * left of each turn; (b) DATA VIZ — bar/line/pie charts, whose colored fills ARE
- * the content; (c) thin left rails on code/quote blocks. A filled cell fills its
- * whole rect, so these bars/fills stay solid everywhere.
+ * are: (a) the RAIL — a solid 1-col bg bar (git-graph style, see `Rail`) down the
+ * left of every block card (turns, input, plan, permission, toast, quotes); (b)
+ * DATA VIZ — bar/line/pie charts, whose colored fills ARE the content. A filled
+ * cell fills its whole rect, so these bars/fills stay solid everywhere. NEVER use
+ * `border={[…]}` for chrome: border glyphs gap into dashes and can ghost when a
+ * block reflows or scrolls (the Rail docstring has the full story).
  *
  * A fresh screen shows a centered VIBE CODR wordmark. Once you start: the scrolling
  * transcript renders as connected TURN THREADS (a `◆` node carries your prompt, a
@@ -61,10 +63,12 @@ import {
   compactNum,
   parseChart,
   parseSeries,
+  parseSearchResults,
   parseSources,
   parseWeather,
   pieGrid,
   richKind,
+  type Source as SourceItem,
   sharePercents,
   sparkline,
   weatherIcon,
@@ -95,7 +99,7 @@ import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
 /** The chat column's maximum width. At or below this the column fills the
  * terminal; above it the column stays centered with quiet side gutters
  * (ChatGPT-style — a readable, bounded conversation measure). */
-const CONTENT_MAX = 96;
+const CONTENT_MAX = 84;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
 /** Max visible rows the input box grows to before it scrolls internally. */
@@ -348,12 +352,13 @@ export function App(props: { engine: EngineClient }) {
   onCleanup(() => {
     if (toastTimer) clearInterval(toastTimer);
   });
-  // Vertical offset for the slide animation: rises from off-screen (−3) to row 1,
-  // holds, then slides back up on exit. A 4-frame ease at each end.
+  // Vertical offset for the slide animation: rises from off-screen (−4, the full
+  // 3-row card + a row of slack) to row 1, holds, then slides back up on exit.
+  // A 4-frame ease at each end.
   const toastTop = () => {
     const f = toastFrame();
     const HOLD = 1;
-    const HIDDEN = -3;
+    const HIDDEN = -4;
     if (f < 0) return HIDDEN;
     if (f < 4) return HIDDEN + Math.round(((HOLD - HIDDEN) * f) / 4);
     if (f < TOAST_FRAMES - 4) return HOLD;
@@ -391,19 +396,24 @@ export function App(props: { engine: EngineClient }) {
     return Math.min(INPUT_MAX_ROWS, Math.max(1, rows >= 2 ? rows + 1 : rows));
   };
 
-  // The presented-plan panel is bounded so its (often long) content scrolls
-  // INSIDE the panel instead of pushing the input + approval hint off-screen. Cap
+  // The presented-plan card is bounded so its (often long) content scrolls
+  // INSIDE the card instead of pushing the input + approval hint off-screen. Cap
   // at most of the terminal, leaving room for the input/status; if the plan is
-  // short, the panel shrinks to fit it (rough wrap estimate — the scrollbox handles
-  // the exact overflow).
-  const planPanelRows = () => {
-    const cap = Math.max(6, dims().height - 12);
-    const inner = Math.max(20, contentWidth() - 4);
-    const est = (plan() ?? "")
+  // short, the card shrinks to fit it (rough wrap estimate — the scrollbox handles
+  // the exact overflow). The card's chrome is 5 rows: padding (2) + title + a
+  // blank rhythm row + the hint.
+  const planContentRows = () => {
+    const inner = Math.max(20, contentWidth() - 6);
+    return (plan() ?? "")
       .split("\n")
       .reduce((n, l) => n + Math.max(1, Math.ceil(l.length / inner)), 0);
-    return Math.min(cap, est + 2); // +2 = the approval hint + a blank rhythm row
   };
+  const planPanelRows = () => {
+    const cap = Math.max(9, dims().height - 12);
+    return Math.min(cap, planContentRows() + 5);
+  };
+  // Whether the plan overflows its card (→ show the scroll affordance in the hint).
+  const planOverflows = () => planContentRows() + 5 > Math.max(9, dims().height - 12);
 
   const [selIdx, setSelIdx] = createSignal(0);
   // The menu window's scroll offset (top visible row). Kept SEPARATE from the
@@ -436,8 +446,9 @@ export function App(props: { engine: EngineClient }) {
 
   // One normalized menu row — its `choose` carries the row's own action, so the
   // keyboard handler, click handler, and renderer share a single path regardless
-  // of which kind of menu produced it.
-  type MenuRow = { text: string; current?: boolean; choose: (run: boolean) => void };
+  // of which kind of menu produced it. `label` is the primary token (aligned into
+  // a column); `desc` is the muted explanation beside it.
+  type MenuRow = { label: string; desc?: string; current?: boolean; choose: (run: boolean) => void };
 
   // The unified slash menu — three shapes, one row list:
   //   • command — the flat `/command` list (filters as you type)
@@ -476,9 +487,9 @@ export function App(props: { engine: EngineClient }) {
         })
         .map((mdl) => {
           const full = `${mdl.providerId}/${mdl.id}`;
-          const ctx = mdl.contextWindow ? `  (${fmtContext(mdl.contextWindow)})` : "";
           return {
-            text: `${full}${ctx}`,
+            label: full,
+            desc: mdl.contextWindow ? fmtContext(mdl.contextWindow) : "",
             current: cur === full,
             choose: () => {
               if (isAgent) {
@@ -512,8 +523,9 @@ export function App(props: { engine: EngineClient }) {
               ? `key set · ${p.env[0] ?? ""}`
               : `no key — set ${p.env[0] ?? "key"}`;
           return {
-            // The ✓/○ in the text conveys status; no ● (that marks a "current" pick).
-            text: `${p.configured ? "✓" : "○"} ${p.id.padEnd(12)} ${status}`,
+            // The ✓/○ in the label conveys status; no ● (that marks a "current" pick).
+            label: `${p.configured ? "✓" : "○"} ${p.id}`,
+            desc: status,
             // Configured/keyless → browse its models; unconfigured → prefill the key
             // entry (reuses the existing `/model key <provider> …` engine path).
             choose: () => setDraft(p.configured ? `/model ${p.id}/` : `/model key ${p.id} `),
@@ -531,22 +543,23 @@ export function App(props: { engine: EngineClient }) {
       const rows: MenuRow[] = all
         .filter((a) => !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q))
         .map((a) => ({
-          text: `${a.name.padEnd(12)} ${(a.model ?? "inherits").padEnd(24)} ${a.mode}`,
+          label: a.name,
+          desc: `${a.model ?? "inherits"} · ${a.mode}`,
           // Selecting an agent opens the model picker targeting it.
           choose: () => setDraft(`/model agent ${a.name} `),
         }));
       // A trailing affordance to scaffold a new agent.
-      rows.push({ text: "＋ new agent…", choose: () => setDraft("/agents new ") });
+      rows.push({ label: "＋ new agent…", choose: () => setDraft("/agents new ") });
       return { open: rows.length > 0, loading: false, kind: "agents" as const, title, hint, rows };
     }
     const st = paletteState(draft());
     if (!st.open) return { open: false, loading: false, kind: "command" as const, title: "", hint: "", rows: [] as MenuRow[] };
     if (st.mode === "command") {
-      const nameW = Math.min(14, Math.max(...st.items.map((c) => c.name.length + 1)));
       const rows: MenuRow[] = st.items.map((c, idx) => {
         const hint = c.values ? ` (${c.values.join("|")})` : c.arg ? ` ${c.arg}` : "";
         return {
-          text: `${`/${c.name}`.padEnd(nameW + 1)}  ${c.description}${hint}`,
+          label: `/${c.name}`,
+          desc: `${c.description}${hint}`,
           choose: (run: boolean) => {
             const res = applyPalette(st, idx);
             if (!res) return;
@@ -555,11 +568,18 @@ export function App(props: { engine: EngineClient }) {
           },
         };
       });
-      return { open: true, loading: false, kind: "command" as const, title: "commands", hint: "", rows };
+      return {
+        open: true,
+        loading: false,
+        kind: "command" as const,
+        title: "commands",
+        hint: "↑↓ move · Tab complete · Enter run",
+        rows,
+      };
     }
     const cur = currentValueFor(st.command.name);
     const rows: MenuRow[] = st.items.map((v) => ({
-      text: `${st.command.name} → ${v}`,
+      label: v,
       current: cur === v,
       choose: (run: boolean) => {
         const line = `/${st.command.name} ${v}`;
@@ -624,7 +644,10 @@ export function App(props: { engine: EngineClient }) {
   // Windowed rows for rendering (≤ menuWindow() visible, scrolled to keep the
   // highlight in view). The window scroll (`menuStart`) is arrow-driven, NOT derived
   // from the highlight — so hovering never scrolls. Each view row carries its
-  // absolute index so a click selects + runs it.
+  // absolute index so a click selects + runs it. Labels are padded into one
+  // aligned column (across ALL rows, not just the visible window, so the column
+  // doesn't shift as you scroll); the `●` current-marker column renders only for
+  // menus that HAVE a current value (value/models), keeping the others tight.
   const menuView = () => {
     const m = menuModel();
     if (!m.open) return null;
@@ -632,14 +655,19 @@ export function App(props: { engine: EngineClient }) {
     const rows = m.rows;
     const sel = Math.min(Math.max(0, selIdx()), Math.max(0, rows.length - 1));
     const start = Math.min(Math.max(0, menuStart()), Math.max(0, rows.length - win));
+    // Cap the label column tight — one very long name shouldn't push every
+    // description into the far distance; outliers just run long on their row.
+    const labelW = Math.min(12, Math.max(0, ...rows.map((r) => (r.desc ? [...r.label].length : 0))));
+    const marker = m.kind === "value" || m.kind === "models";
     const view = rows.slice(start, start + win).map((r, i) => ({
       active: start + i === sel,
       current: !!r.current,
-      text: r.text,
+      label: r.desc ? r.label.padEnd(labelW + 2) : r.label,
+      desc: r.desc ?? "",
       idx: start + i,
     }));
     const more = rows.length > win ? `+${rows.length - win} more · type to filter` : "";
-    return { rows: view, title: m.title, hint: m.hint, more, loading: m.loading };
+    return { rows: view, title: m.title, hint: m.hint, more, marker, loading: m.loading };
   };
 
   // ── Transcript state ────────────────────────────────────────────────────────
@@ -656,12 +684,12 @@ export function App(props: { engine: EngineClient }) {
   };
 
   // Streamed deltas are COALESCED: tokens accumulate in a buffer and flush on a
-  // short timer (~25fps) instead of one reduce + <markdown> re-parse per token.
+  // short timer (~40fps) instead of one reduce + <markdown> re-parse per token.
   // Re-parsing growing text on every token is O(n²) and was the source of the
   // streaming lag on long replies; flushing per frame keeps it smooth.
   let pendingDelta = "";
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
-  const STREAM_FLUSH_MS = 40;
+  const STREAM_FLUSH_MS = 24;
   const landPending = () => {
     if (flushTimer) {
       clearTimeout(flushTimer);
@@ -1085,7 +1113,10 @@ export function App(props: { engine: EngineClient }) {
   const gitSummary = () => {
     const g = git();
     if (!g) return "";
-    let s = `⎇ ${g.branch}`;
+    // "on <branch>" (starship-style) — the `⎇` branch glyph has spotty coverage
+    // across terminal fonts (it falls back to a clipped placeholder), so plain
+    // words keep the context line clean everywhere.
+    let s = `on ${g.branch}`;
     if (g.dirty > 0) s += ` ${g.dirty}●`;
     if (g.ahead > 0 || g.behind > 0) s += ` ↑${g.ahead} ↓${g.behind}`;
     if (g.worktree) s += " ⌂";
@@ -1106,15 +1137,29 @@ export function App(props: { engine: EngineClient }) {
   // ascii-font logo, then a one-line glyph. The column padding eats 2 cols.
   const showWordmark = () =>
     contentWidth() - 2 >= WORDMARK_COLS && dims().height >= 16;
+  // Fit `parts` into `width` columns: join with `  ·  `, dropping trailing parts
+  // (least important last) until the line fits, then ellipsis-truncate as a last
+  // resort — so a narrow terminal NEVER hard-clips a status line mid-word.
+  const fitParts = (parts: string[], width: number): string => {
+    const keep = parts.filter(Boolean);
+    while (keep.length > 1 && [...keep.join("  ·  ")].length > width) keep.pop();
+    return truncate(keep.join("  ·  "), Math.max(8, width));
+  };
   // The persistent "where am I" context — location · git · goal — sits at the
   // TOP-LEFT of the column (out of the way), not under the input.
   const topLeftLine = () =>
-    [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}` : ""]
-      .filter(Boolean)
-      .join("  ·  ");
-  // Live status shown under the input: model · changed · ctx · cost.
+    fitParts(
+      [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}` : ""],
+      contentWidth() - 2,
+    );
+  // Live status shown under the input: model · changed · ctx · cost. The metrics
+  // string re-splits on the same separator so fitting can drop its least-important
+  // tail pieces individually (queued/cost/tokens) instead of the whole group.
   const detailsRight = () =>
-    [headModel(), changedSummary(), metrics()].filter(Boolean).join("  ·  ");
+    fitParts(
+      [headModel(), changedSummary(), ...metrics().split(/\s+·\s+/)],
+      contentWidth() - 2,
+    );
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
   // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in
   // the bright foreground; descriptors + separators stay muted. Shown on the empty
@@ -1178,20 +1223,24 @@ export function App(props: { engine: EngineClient }) {
       style={{ height: "100%" }}
       onMouseDown={refocusInput}
     >
-      {/* Copy toast — a small "Copied to clipboard" card that slides in at the
-          top-right corner on a selection copy, holds, then slides out (see
-          flashCopied / toastTop). Absolutely positioned so it overlays the column. */}
+      {/* Copy toast — a "Copied to clipboard" card that slides in at the top-right
+          corner on a selection copy, holds, then slides out (see flashCopied /
+          toastTop). Absolutely positioned so it overlays the column. Same block
+          language (and height) as the compact input strip: accent rail + elevated
+          surface. */}
       <Show when={toastFrame() >= 0}>
         <box position="absolute" top={toastTop()} right={2} flexShrink={0}>
-          <box
-            backgroundColor={palette().panel}
-            border={["left", "right"]}
-            borderColor={brand()}
-            paddingLeft={2}
-            paddingRight={2}
-          >
-            <text fg={palette().assistant}>{"Copied to clipboard"}</text>
-          </box>
+          <Rail color={brand()}>
+            <box
+              backgroundColor={palette().elevated}
+              paddingTop={1}
+              paddingBottom={1}
+              paddingLeft={2}
+              paddingRight={2}
+            >
+              <text fg={palette().assistant}>{`${GLYPH.check} Copied to clipboard`}</text>
+            </box>
+          </Rail>
         </box>
       </Show>
 
@@ -1387,12 +1436,7 @@ export function App(props: { engine: EngineClient }) {
                       accent edge. The fill makes it read as one clean, uniform solid
                       block on any terminal; the accent is a thin line, not a bar. */}
                   <Show when={turn().user}>
-                    <box
-                      border={["left"]}
-                      borderColor={brand()}
-                      flexShrink={0}
-                      onMouseDown={foldTap}
-                    >
+                    <Rail color={brand()} onMouseDown={foldTap}>
                       <box
                         backgroundColor={palette().panel}
                         flexDirection="column"
@@ -1410,17 +1454,12 @@ export function App(props: { engine: EngineClient }) {
                           </text>
                         </Show>
                       </box>
-                    </box>
+                    </Rail>
                   </Show>
                   {/* The turn's output — assistant answer + tool steps + notices — in a
                       single uniform panel block with a subtle left accent. */}
                   <Show when={!folded() && items().length > 0}>
-                    <box
-                      border={["left"]}
-                      borderColor={palette().gutter}
-                      flexShrink={0}
-                      marginTop={hasNode() ? 1 : 0}
-                    >
+                    <Rail color={palette().gutter} marginTop={hasNode() ? 1 : 0}>
                       <box
                         backgroundColor={palette().panel}
                         flexDirection="column"
@@ -1483,7 +1522,7 @@ export function App(props: { engine: EngineClient }) {
                           }}
                         </Index>
                       </box>
-                    </box>
+                    </Rail>
                   </Show>
                 </box>
               );
@@ -1510,30 +1549,59 @@ export function App(props: { engine: EngineClient }) {
       </Show>
       <Show when={plan()}>
         {/* Bounded + scrollable: the plan can be long, so its content scrolls
-            inside the FILLED card (mouse wheel / drag) while the approval hint below
-            it and the input stay on-screen — instead of the whole thing overflowing.
-            A filled surface (no line border) stays a clean box on any terminal. */}
-        <box
-          flexDirection="column"
-          flexShrink={0}
-          marginTop={1}
-          height={planPanelRows() + 1}
-        >
-          <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"Plan"}</text>
-          <scrollbox flexGrow={1} flexShrink={1} stickyScroll={false}>
-            <AssistantText
-              text={plan() ?? ""}
-              streaming={false}
-              style={mdStyle}
-              fg={palette().assistant}
-              palette={palette()}
-              width={contentWidth() - 2}
-            />
-          </scrollbox>
-          <text fg={palette().muted} flexShrink={0}>
-            {`${GLYPH.check} Enter accept & execute  ·  type to revise  ·  Esc keep planning  ·  scroll to read`}
-          </text>
-        </box>
+            inside the card (mouse wheel / drag) while the approval hint below it
+            and the input stay on-screen — instead of the whole thing overflowing.
+            Same block language as the turns + input: a filled panel surface with a
+            thin left accent in the PLAN hue, so the approval moment reads as one
+            coherent card. */}
+        <Rail color={modeColor("plan")} marginTop={1} height={planPanelRows()}>
+          <box
+            backgroundColor={palette().panel}
+            flexDirection="column"
+            flexGrow={1}
+            paddingTop={1}
+            paddingBottom={1}
+            paddingLeft={2}
+            paddingRight={1}
+          >
+            <text flexShrink={0} fg={modeColor("plan")} attributes={TextAttributes.BOLD}>
+              {"Plan · review & approve"}
+            </text>
+            <scrollbox flexGrow={1} flexShrink={1} stickyScroll={false} scrollbarOptions={{ visible: false }}>
+              <AssistantText
+                text={plan() ?? ""}
+                streaming={false}
+                style={mdStyle}
+                fg={palette().assistant}
+                palette={palette()}
+                width={contentWidth() - 6}
+              />
+            </scrollbox>
+            {/* Approval hint — actionable keys pop bright, descriptors stay muted. */}
+            <box flexDirection="row" flexShrink={0} marginTop={1}>
+              <For
+                each={(() => {
+                  const lit = palette().assistant;
+                  const dim = palette().muted;
+                  const segs: Seg[] = [
+                    { t: "Enter", fg: lit },
+                    { t: " accept & run", fg: dim },
+                    { t: "  ·  ", fg: dim },
+                    { t: "type", fg: lit },
+                    { t: " to revise", fg: dim },
+                    { t: "  ·  ", fg: dim },
+                    { t: "Esc", fg: lit },
+                    { t: " keep planning", fg: dim },
+                  ];
+                  if (planOverflows()) segs.push({ t: "  ·  ", fg: dim }, { t: "scroll", fg: lit }, { t: " to read", fg: dim });
+                  return segs;
+                })()}
+              >
+                {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
+              </For>
+            </box>
+          </box>
+        </Rail>
       </Show>
       {/* Tasks — the live to-do list, just above the input; hides once everything
           is done so a finished list doesn't linger. */}
@@ -1657,30 +1725,55 @@ export function App(props: { engine: EngineClient }) {
           </text>
         </Panel>
       </Show>
-      {/* Permission request — a FLAT amber-titled block (no fill) with the tool
-          action and y/a/n. Flat chrome stays uniform on any terminal. */}
+      {/* Permission request — the same block language as the turns + input: a
+          filled panel card with a thin amber left accent. The tool action reads in
+          the body tone; the y/a/n keys pop bright over muted descriptors. */}
       <Show when={perms()[0]}>
         {(p) => (
-          <box flexDirection="column" flexShrink={0} marginTop={1}>
-            <text fg={palette().notice} attributes={TextAttributes.BOLD}>
-              {`${GLYPH.warn} permission required · ${p().toolName}`}
-            </text>
-            <text fg={palette().assistant}>{`  ${toolLabel(p().toolName, p().input)}`}</text>
-            <text fg={palette().muted}>{"  [y]es once  ·  [a]lways  ·  [n]o"}</text>
-            <Show when={perms().length > 1}>
-              <text fg={palette().muted}>{`  +${perms().length - 1} more pending`}</text>
-            </Show>
-          </box>
+          <Rail color={palette().notice} marginTop={1}>
+            <box
+              backgroundColor={palette().panel}
+              flexDirection="column"
+              paddingTop={1}
+              paddingBottom={1}
+              paddingLeft={2}
+              paddingRight={1}
+            >
+              <text fg={palette().notice} attributes={TextAttributes.BOLD}>
+                {`${GLYPH.warn} Permission required · ${p().toolName}`}
+              </text>
+              <text fg={palette().assistant} wrapMode="word">{toolLabel(p().toolName, p().input)}</text>
+              <box flexDirection="row" flexShrink={0} marginTop={1}>
+                <For
+                  each={[
+                    { t: "y", fg: palette().assistant },
+                    { t: " yes once", fg: palette().muted },
+                    { t: "  ·  ", fg: palette().muted },
+                    { t: "a", fg: palette().assistant },
+                    { t: " always", fg: palette().muted },
+                    { t: "  ·  ", fg: palette().muted },
+                    { t: "n", fg: palette().assistant },
+                    { t: " no", fg: palette().muted },
+                  ] satisfies Seg[]}
+                >
+                  {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
+                </For>
+                <Show when={perms().length > 1}>
+                  <text flexShrink={0} fg={palette().muted}>{`  ·  +${perms().length - 1} more pending`}</text>
+                </Show>
+              </box>
+            </box>
+          </Rail>
         )}
       </Show>
-      {/* The input — a UNIFORM filled block (same language as the message blocks): a
-          raised ELEVATED surface (a shade above the panel blocks, so the active field
-          stands out) with padding and a thin left accent in the MODE hue (ASK blue /
-          PLAN green / YOLO red). The prompt reads `MODE ❯ …`; typing `/` opens the
-          command menu as rows inside the SAME block above the prompt — one connected
-          control. A background fill (not a line frame) stays a clean solid box on any
-          terminal. */}
-      <box border={["left"]} borderColor={accent()} flexShrink={0} marginTop={1}>
+      {/* The input — a UNIFORM filled block (same language as the message blocks):
+          a raised ELEVATED surface (a shade above the panel blocks, so the active
+          field stands out) with padding and a thin left rail in the MODE hue
+          (ASK blue / PLAN green / YOLO red). The prompt reads `MODE ❯ …`; typing
+          `/` opens the command menu as rows inside the SAME block above the prompt
+          — one connected control. A background fill (not a line frame) stays a
+          clean solid box on any terminal. */}
+      <Rail color={accent()} marginTop={1}>
         <box
           backgroundColor={palette().elevated}
           flexDirection="column"
@@ -1705,27 +1798,53 @@ export function App(props: { engine: EngineClient }) {
                 <text fg={palette().muted}>{"Loading…"}</text>
               </Show>
               <For each={menuView()?.rows ?? []}>
-                {/* Hover highlights (only on real pointer movement — see hoverRow),
-                    click selects + runs. Keyboard nav is global via useKeyboard;
-                    terminal text rows have no DOM focus, hence the a11y ignore. */}
+                {/* Two-column rows — the label (command/model/value) in the body
+                    tone, its description muted beside it; the highlighted row gets
+                    a FULL-WIDTH selection band (bg on the row box, with a flex
+                    spacer) instead of a ragged text-length tint. Hover highlights
+                    (only on real pointer movement — see hoverRow), click selects +
+                    runs. Keyboard nav is global via useKeyboard; terminal rows
+                    have no DOM focus, hence the a11y ignore. */}
                 {(row) => (
                   // biome-ignore lint/a11y/useKeyWithMouseEvents: terminal UI — no text-row focus; keyboard nav is global (useKeyboard)
-                  <text
-                    fg={row.active ? brand() : palette().muted}
-                    bg={row.active ? palette().selBg : undefined}
-                    attributes={row.active ? TextAttributes.BOLD : undefined}
+                  <box
+                    flexDirection="row"
+                    flexShrink={0}
+                    backgroundColor={row.active ? palette().selBg : undefined}
                     onMouseOver={(e: { x: number; y: number }) => hoverRow(row.idx, e)}
                     onMouseDown={() => {
                       chooseAt(row.idx, true);
                       refocusInput();
                     }}
                   >
-                    {`${row.active ? "❯" : " "} ${row.current ? "●" : " "} ${row.text}`}
-                  </text>
+                    <text flexShrink={0} fg={row.active ? brand() : palette().muted}>
+                      {`${row.active ? "❯" : " "} `}
+                    </text>
+                    <Show when={menuView()?.marker}>
+                      <text flexShrink={0} fg={row.current ? brand() : palette().muted}>
+                        {row.current ? "● " : "  "}
+                      </text>
+                    </Show>
+                    <text
+                      flexShrink={0}
+                      fg={row.active ? brand() : palette().assistant}
+                      attributes={row.active ? TextAttributes.BOLD : undefined}
+                    >
+                      {row.label}
+                    </text>
+                    <Show when={row.desc}>
+                      <text flexShrink={1} wrapMode="none" fg={row.active ? palette().selFg : palette().muted}>
+                        {row.desc}
+                      </text>
+                    </Show>
+                    <box flexGrow={1} />
+                  </box>
                 )}
               </For>
               <Show when={menuView()?.more}>
-                <text fg={palette().muted}>{`     ${menuView()?.more}`}</text>
+                {/* Indent matches the 2-char `❯ ` row prefix so the affordance
+                    aligns with the label column above it. */}
+                <text fg={palette().muted}>{`  ${menuView()?.more}`}</text>
               </Show>
               <text flexShrink={0}>{" "}</text>
             </box>
@@ -1756,7 +1875,7 @@ export function App(props: { engine: EngineClient }) {
             </box>
           </box>
         </box>
-      </box>
+      </Rail>
       {/* Under-input status bar — a justified row, NOT centered: the live status
           (model · changed · ctx · cost) hugs the LEFT edge (aligned with the
           top-left context line), and the key hints hug the RIGHT edge. Hints show
@@ -1785,6 +1904,51 @@ export function App(props: { engine: EngineClient }) {
 
 /** One coloured run in a {@link SegRow} — bright tokens on muted scaffolding. */
 type Seg = { t: string; fg: string };
+
+/** The rail glyph column: `▎` (left one-quarter block) per row — a THIN solid
+ * line. Block elements render edge-to-edge (no inter-row gaps, unlike `│`), so
+ * the line stays continuous on any terminal. Pre-built tall and clipped to the
+ * card height by the overflow-hidden box in {@link Rail}. */
+const RAIL_GLYPHS = Array(512).fill("▎").join("\n");
+
+/**
+ * A block with a thin left accent RAIL (git-graph style): a 1-column strip of
+ * `▎` quarter-block glyphs, absolutely positioned over the block's reserved
+ * first column and clipped to its height. This is deliberately NOT a
+ * `border={["left"]}`: the border renderable paints outside normal content
+ * flow, which (a) gaps `│` into dashes on terminals with line spacing and
+ * (b) can leave stray ghost segments behind when a block reflows or scrolls
+ * partially out of a scrollbox. Glyph content in flow is always clipped,
+ * cleared, and repainted with its block.
+ */
+function Rail(props: {
+  color: string;
+  marginTop?: number;
+  height?: number;
+  onMouseDown?: () => void;
+  children: unknown;
+}) {
+  return (
+    <box
+      position="relative"
+      flexDirection="row"
+      flexShrink={0}
+      marginTop={props.marginTop ?? 0}
+      height={props.height}
+      onMouseDown={props.onMouseDown}
+    >
+      {/* Reserve the rail column in layout so content starts at column 2. */}
+      <box width={1} flexShrink={0} />
+      <box flexDirection="column" flexGrow={1}>
+        {props.children}
+      </box>
+      {/* The thin line itself — stretched to the block height, clipped. */}
+      <box position="absolute" left={0} top={0} bottom={0} width={1} overflow="hidden">
+        <text fg={props.color} wrapMode="none">{RAIL_GLYPHS}</text>
+      </box>
+    </box>
+  );
+}
 
 /**
  * A single line built from coloured text runs, rendered as a row of adjacent
@@ -1926,32 +2090,24 @@ function AssistantText(props: {
   );
 }
 
-/** A markdown heading — bold accent text; h1/h2 get a thin underline rule so the
- * document structure reads at a glance. Deeper levels are just bold accent text. */
+/** A markdown heading — bold accent text, no underline rule. Any rule (a filled
+ * band OR a `─` run) reads as stray chrome at terminal scale; the accent color +
+ * bold + surrounding blank rows carry the document structure on their own. */
 function HeadingBlock(props: { block: () => Extract<MdBlock, { kind: "heading" }>; palette: Palette }) {
   const p = props.palette;
-  const b = props.block;
-  // A thin FILLED underline bar (not a `─` rule) under h1/h2 — a filled band has no
-  // seams on terminals that gap box-drawing glyphs.
-  const ruleW = () => (b().level <= 2 ? Math.max(3, displayWidth(b().text)) : 0);
   return (
-    <box flexDirection="column">
-      <text fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="word">
-        {b().text}
-      </text>
-      <Show when={ruleW() > 0}>
-        <text flexShrink={0} bg={p.border} fg={p.border}>{" ".repeat(ruleW())}</text>
-      </Show>
-    </box>
+    <text fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="word">
+      {props.block().text}
+    </text>
   );
 }
 
-/** A blockquote — a thin `│` left accent (a border char, NOT a full-cell bar) with
- * muted, italic quoted text hanging beside it. */
+/** A blockquote — a solid left accent bar (a bg-filled column, same rail language
+ * as the blocks) with muted, italic quoted text hanging beside it. */
 function QuoteBlock(props: { block: () => Extract<MdBlock, { kind: "quote" }>; palette: Palette }) {
   const p = props.palette;
   return (
-    <box border={["left"]} borderColor={p.gutter} flexShrink={0}>
+    <Rail color={p.gutter}>
       <box flexDirection="column" flexGrow={1} paddingLeft={1}>
         <For each={props.block().lines}>
           {(l) => (
@@ -1961,7 +2117,7 @@ function QuoteBlock(props: { block: () => Extract<MdBlock, { kind: "quote" }>; p
           )}
         </For>
       </box>
-    </box>
+    </Rail>
   );
 }
 
@@ -2109,10 +2265,16 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
     const track = Math.max(6, props.width - labelW - valueW - 5);
     return data.map((d, i) => {
       const bar = barGlyphs(d.value / max, track);
+      // Split the bar into its FULL cells (painted as a background fill — one
+      // seamless band, no per-glyph hairlines) and the fractional eighth-block
+      // tail (a fg glyph, which is the only place sub-cell precision needs one).
+      const fullCells = /^█*/.exec(bar)![0].length;
+      const tailGlyph = bar.slice(fullCells);
       const gap = " ".repeat(Math.max(0, track - displayWidth(bar)));
       return {
         label: padRight(clampWidth(d.label, labelW), labelW),
-        bar,
+        full: fullCells,
+        tailGlyph,
         tail: `${gap}  ${padLeft(d.display, valueW)}`,
         color: p.series[i % p.series.length]!,
       };
@@ -2130,7 +2292,12 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
         {(r) => (
           <box flexDirection="row" flexShrink={0}>
             <text flexShrink={0} fg={p.muted}>{`${r.label}  `}</text>
-            <text flexShrink={0} fg={r.color}>{r.bar}</text>
+            <Show when={r.full > 0}>
+              <text flexShrink={0} bg={r.color}>{" ".repeat(r.full)}</text>
+            </Show>
+            <Show when={r.tailGlyph}>
+              <text flexShrink={0} fg={r.color}>{r.tailGlyph}</text>
+            </Show>
             <text flexShrink={0} fg={p.assistant}>{r.tail}</text>
           </box>
         )}
@@ -2206,7 +2373,7 @@ function LineChart(props: { body: string; palette: Palette; width: number; spark
   );
 }
 
-/** A pie/donut chart: a circular grid of colored blocks beside a legend of
+/** A pie/donut chart: a circular disc of colored half-blocks beside a legend of
  * `■ label  pct%` rows. Slices start at 12 o'clock, sized by share of the total. */
 function PieChart(props: { body: string; palette: Palette; width: number }) {
   const p = props.palette;
@@ -2215,10 +2382,10 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
     const { data } = model();
     const values = data.map((d) => d.value);
     const pct = sharePercents(values);
-    const labelW = Math.max(1, ...data.map((d) => displayWidth(d.label)));
+    const labelW = Math.min(20, Math.max(1, ...data.map((d) => displayWidth(d.label))));
     const legendW = Math.min(30, labelW + 8);
     const avail = props.width - legendW - 2;
-    const cols = Math.max(10, Math.min(18, avail % 2 === 0 ? avail : avail - 1));
+    const cols = Math.max(10, Math.min(22, avail % 2 === 0 ? avail : avail - 1));
     const pieRows = Math.max(5, Math.round(cols / 2));
     // A SOLID disc (not a donut) — at terminal cell sizes a filled circle reads
     // unmistakably as a pie, where a hole fragments into scattered arcs.
@@ -2226,11 +2393,10 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
     return {
       grid,
       legend: data.map((d, i) => ({
-        label: d.label,
+        label: padRight(clampWidth(d.label, labelW), labelW),
         pct: pct[i]!,
         color: p.series[i % p.series.length]!,
       })),
-      height: pieRows,
     };
   };
   return (
@@ -2242,7 +2408,8 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
         {/* The circular grid, painted as background-colored cells (run-length
             encoded per row). A bg-filled space fills the whole cell rect — solid
             edge-to-edge regardless of the block-glyph's font metrics, where a run
-            of `█` foreground glyphs can seam at a color boundary. */}
+            of `█` foreground glyphs can seam at a color boundary. Full-cell steps
+            keep the rim coherent (half-cell smoothing reads as torn edges here). */}
         <box flexDirection="column" flexShrink={0}>
           <For each={view().grid}>
             {(gridRow) => (
@@ -2258,7 +2425,7 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
             )}
           </For>
         </box>
-        {/* Legend: swatch · label · percentage. */}
+        {/* Legend: swatch · label (padded so the percentages align) · share. */}
         <box flexDirection="column" flexShrink={0} paddingLeft={2}>
           <For each={view().legend}>
             {(l) => (
@@ -2341,19 +2508,23 @@ function WeatherCard(props: { body: string; palette: Palette }) {
  * HYPERLINKS (via the `link` prop), so Cmd/Ctrl-click opens the source in a browser
  * on any terminal that supports terminal hyperlinks. */
 function SourceCards(props: { body: string; palette: Palette; width: number }) {
+  return <SourceList sources={parseSources(props.body)} palette={props.palette} width={props.width} />;
+}
+
+/** The shared source-card list renderer (```sources``` blocks AND expanded
+ * web-search tool output). Numbers stay quiet muted — one calm treatment, no
+ * per-entry color rotation. */
+function SourceList(props: { sources: SourceItem[]; palette: Palette; width: number }) {
   const p = props.palette;
-  const sources = () => parseSources(props.body);
   // A clickable href: use the URL as-is if it has a scheme, else assume https.
   const href = (s: { url?: string }): { url: string } | undefined =>
     s.url ? { url: /^[a-z]+:\/\//i.test(s.url) ? s.url : `https://${s.url}` } : undefined;
   return (
     <box flexDirection="column" flexShrink={0}>
-      <For each={sources()}>
+      <For each={props.sources}>
         {(s, i) => (
           <box flexDirection="row" flexShrink={0} marginTop={i() > 0 ? 1 : 0}>
-            <text flexShrink={0} fg={p.series[i() % p.series.length]!} attributes={TextAttributes.BOLD}>
-              {`${i() + 1}  `}
-            </text>
+            <text flexShrink={0} fg={p.muted}>{`${i() + 1}  `}</text>
             <box flexDirection="column" flexGrow={1}>
               <text flexShrink={0} fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="none" link={href(s)}>
                 {clampWidth(s.title, Math.max(8, props.width - 4))}
@@ -2453,8 +2624,7 @@ function ToolBlockView(props: {
         </Show>
       </box>
       <Show when={!b().collapsed && expandable()}>
-        <Show
-          when={b().isMarkdown}
+        <Switch
           fallback={
             <box flexDirection="column">
               <For each={visible()}>
@@ -2474,19 +2644,32 @@ function ToolBlockView(props: {
             </box>
           }
         >
+          {/* Web-search output expands to the clean source-card treatment (title /
+              domain / snippet), not a raw text dump. */}
+          <Match when={b().isSources}>
+            <box flexDirection="column" paddingLeft={2} paddingTop={1} paddingBottom={1}>
+              <SourceList
+                sources={parseSearchResults(b().output.join("\n"))}
+                palette={p}
+                width={(props.width ?? 80) - 2}
+              />
+            </box>
+          </Match>
           {/* A subagent's reply is markdown prose — render headers/bold/lists/code
               (and tables where supported) instead of raw text. */}
-          <box flexDirection="column" paddingLeft={1} paddingRight={1}>
-            <AssistantText
-              text={b().output.join("\n")}
-              streaming={false}
-              style={props.style}
-              fg={p.assistant}
-              palette={p}
-              width={(props.width ?? 80) - 2}
-            />
-          </box>
-        </Show>
+          <Match when={b().isMarkdown}>
+            <box flexDirection="column" paddingLeft={1} paddingRight={1}>
+              <AssistantText
+                text={b().output.join("\n")}
+                streaming={false}
+                style={props.style}
+                fg={p.assistant}
+                palette={p}
+                width={(props.width ?? 80) - 2}
+              />
+            </box>
+          </Match>
+        </Switch>
       </Show>
     </box>
   );

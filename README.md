@@ -67,33 +67,35 @@ latest) — never hardcoded.
 ## Screenshots
 
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberate
-color language: a **black background** and **neutral grey chrome borders**, with a
-single **Blue 300 (`#70cbf4`) accent** reserved for titles and markers — the
-**VIBE CODR wordmark** (a calm light→deep blue fade), panel titles, the **`❯` user
-gutter**, the active task/step, the selected menu row, the **braille thinking
-spinner**, and the input caret. The input's **mode chip** (ASK blue · PLAN green ·
-YOLO red) on its top border makes switching mode unmistakable without repainting
-the screen. Override the accent with `/accent <hex>` — the wordmark fade follows
-it. The other colors are purely functional — green/red on diffs, amber on warnings,
-and one **calm muted tone** for the tool-step / subagent gutters. The layout is a
-**single, centered chat column** (ChatGPT-style): it fills a narrow terminal and
-centers on a wide one, with **no sidebar and no top header**. A fresh screen shows a
-**centered VIBE CODR wordmark**; once you start, the column is the scrolling
-**transcript**, the live status — the plan's **task list** and live **subagents**
-(one tidy line each, tap to expand) — in panels above the input, and the input
-itself: a **clean grey closed box whose top border carries the mode chip**. **All
-the details sit under the input** — cwd · git, then model · changed-files · context
-· cost, plus key hints and the goal. Each user turn sits in a heavy left-gutter
-block (**tap your message to fold the whole exchange** under it), with the calm step
-gutters and the input frame aligned on one left edge; **assistant replies render
-beautifully** — prose as Markdown, with **headings in the accent, blockquotes with a
-gutter bar, and code blocks + tables as clean native primitives** (aligned columns,
-accent header row); tool calls read as a distinct icon + action (`$` bash, `→` read,
-`←` edit, `✱` glob/grep, `◈` websearch, `±` git…) and **condense to one line you
-click to expand**, while edits fold into a single diff row with the hunk shown
-beneath it; a blue braille spinner shows live work; the **slash menu docks flush to
-the input as one connected control** and drills into rich submenus (a searchable
-model picker, clickable toggles).
+color language: a **black background** with **filled panel cards** and a **thin
+left rail** on every block (no box-drawing borders — they gap into dashes on
+terminals with line spacing), and a single **Blue 300 (`#70cbf4`) accent**
+reserved for titles and markers — the **VIBE CODR wordmark** (a calm light→deep
+blue fade), panel titles, the **user-message rail**, the active task/step, the
+selected menu row, the **braille thinking spinner**, and the input caret. The
+input's **mode label + rail** (`ASK ❯` blue · `PLAN ❯` green · `YOLO ❯` red) make
+switching mode unmistakable without repainting the screen. Override the accent
+with `/accent <hex>` — the wordmark fade follows it. The other colors are purely
+functional — green/red on diffs, amber on warnings, and one **calm muted tone**
+for the tool-step / subagent rails. The layout is a **single, centered chat
+column** (ChatGPT-style): it fills a narrow terminal and centers on a wide one,
+with **no sidebar and no top header**. A fresh screen shows a **centered VIBE
+CODR wordmark**; once you start, the column is the scrolling **transcript**, the
+live status — the plan's **task list** and live **subagents** (one tidy line
+each, tap to expand) — in panels above the input, and the input itself: a
+**raised filled block with the mode-hued rail**. **All the details sit under the
+input** — cwd · git, then model · changed-files · context · cost, plus key hints
+and the goal. Each user turn sits in a filled card on the accent rail (**tap your
+message to fold the whole exchange** under it), with the calm step rails and the
+input aligned on one left edge; **assistant replies render beautifully** — prose
+as Markdown, with **headings in the accent, blockquotes with a rail bar, and code
+blocks + tables as clean native primitives** (aligned columns, accent header
+row); tool calls read as a distinct icon + action (`$` bash, `→` read, `←` edit,
+`✱` glob/grep, `◈` websearch, `±` git…) and **condense to one line you click to
+expand**, while edits fold into a single diff row with the hunk shown beneath it
+and **search steps expand to clean source cards**; a blue braille spinner shows
+live work; the **slash menu docks flush to the input as one connected control**
+and drills into rich submenus (a searchable model picker, clickable toggles).
 
 | Chat + tool calls | Live diff |
 |---|---|
@@ -238,8 +240,8 @@ Highlights:
   all persisted), `/models` (`/models refresh` force-pulls the latest), `/plan`,
   `/execute`, `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
   `/theme <default|light|contrast|opencode>`.
-  Press **Shift+Tab** to cycle the mode (the colored chip on the input's top
-  border): **plan → execute → yolo → plan**.
+  Press **Shift+Tab** to cycle the mode (the colored `MODE ❯` label + rail on
+  the input): **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>`,
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
   `/queue` (`/queue clear`).
@@ -254,29 +256,32 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
-  deliberate color language: a **black background** and **neutral grey chrome
-  borders**, with a single **Blue 300 (`#70cbf4`) accent** reserved for titles and
+  deliberate color language: a **black background** with **filled panel cards**
+  and a **thin left rail** on every block (no box-drawing chrome borders), and a
+  single **Blue 300 (`#70cbf4`) accent** reserved for titles and
   markers — the **VIBE CODR wordmark** (a calm light→deep blue fade), panel titles,
-  the **`❯` user gutter**, the active task/step, the selected menu row, the
-  **braille thinking spinner**, and the caret; the input's **mode chip** (ASK blue /
-  PLAN green / YOLO red) sits on its top border; green/red/amber stay reserved for
-  diffs and warnings, and one **calm muted tone** carries the tool-step / subagent
-  gutters (override the accent with `/accent <hex>` — the wordmark fade follows it).
+  the **user-message rail**, the active task/step, the selected menu row, the
+  **braille thinking spinner**, and the caret; the input's **mode label + rail**
+  (`ASK ❯` blue / `PLAN ❯` green / `YOLO ❯` red) carry the mode; green/red/amber
+  stay reserved for diffs and warnings, and one **calm muted tone** carries the
+  tool-step / subagent rails (override the accent with `/accent <hex>` — the
+  wordmark fade follows it).
   A **single, centered chat column** (ChatGPT-style — no sidebar, **no top header**)
   fills a narrow terminal and centers on a wide one: a fresh screen shows the
   wordmark, then the scrolling transcript, the **task list** and live **subagents**
-  (one line each, tap to expand) in panels above the input, the input as a **clean
-  grey closed box whose top border carries the mode chip**, and **all the details
-  under it** (cwd · git / model · changed · ctx · cost, plus hints + goal). The user
-  gutter, the calm step gutters, and the input frame all align on one left edge.
-  User turns render in a heavy left-gutter block (**tap your message to fold the
-  whole exchange**); **assistant replies render beautifully** — prose through
+  (one line each, tap to expand) in panels above the input, the input as a
+  **raised filled block on the mode-hued rail**, and **all the details
+  under it** (cwd · git / model · changed · ctx · cost, plus hints + goal). The
+  user rail, the calm step rails, and the input all align on one left edge.
+  User turns render in a filled card on the accent rail (**tap your message to fold
+  the whole exchange**); **assistant replies render beautifully** — prose through
   OpenTUI's native Markdown (inline bold/italic/code concealed), with **headings in
-  the accent, blockquotes with a gutter bar, and code blocks + GFM tables as clean
+  the accent, blockquotes with a rail bar, and code blocks + GFM tables as clean
   native primitives** (aligned columns, accent header row); tool calls read as a
   distinct icon + action label (`$` bash, `→` read, `←` edit/write, `✱` glob/grep,
   `◈` websearch, `±` git, `✦` subagent…) and **condense to one line you click to
-  expand**, while edits fold into a single diff row with the hunk beneath it.
+  expand**, while edits fold into a single diff row with the hunk beneath it and
+  **search steps expand to clean source cards**.
   Streamed text is coalesced so long replies stay smooth. A blue braille spinner
   with elapsed time shows live work (**Esc** interrupts the turn). The **slash menu
   docks flush to the input as one connected control** and drills into real,

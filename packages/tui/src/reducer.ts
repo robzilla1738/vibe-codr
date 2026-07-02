@@ -29,6 +29,8 @@ export type Block =
       isDiff: boolean;
       /** Output is markdown prose (a subagent's reply) → render via <markdown>. */
       isMarkdown?: boolean;
+      /** Output is a web-search result list → render as clean source cards. */
+      isSources?: boolean;
       isError: boolean;
     }
   | { kind: "notice"; id: number; text: string; level: "info" | "warn" | "error" };
@@ -147,9 +149,10 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
     case "tool-start": {
       const f = finalizeActive(s);
       const label = toolLabel(a.toolName, a.input);
-      // Subagent replies and web-search results are markdown — render them when
-      // expanded instead of raw lines.
-      const isMarkdown = a.toolName === "spawn_subagent" || a.toolName === "web_search";
+      // A subagent reply is markdown prose; a web-search result list renders as
+      // clean source cards — both instead of raw dumped lines when expanded.
+      const isMarkdown = a.toolName === "spawn_subagent";
+      const isSources = a.toolName === "web_search";
       const blocks = [
         ...f.blocks,
         {
@@ -162,6 +165,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           collapsed: a.toolName !== "spawn_subagent",
           isDiff: false,
           isMarkdown,
+          isSources,
           isError: false,
         },
       ];

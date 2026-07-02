@@ -4,6 +4,7 @@ import {
   parseChart,
   parseSeries,
   parseWeather,
+  parseSearchResults,
   parseSources,
   weatherIcon,
   hostOf,
@@ -138,6 +139,33 @@ test("parseSources reads a trailing bare URL", () => {
 test("hostOf strips protocol and www", () => {
   expect(hostOf("https://www.example.com/path?q=1")).toBe("example.com");
   expect(hostOf("coindesk.com")).toBe("coindesk.com");
+});
+
+// ── parseSearchResults ───────────────────────────────────────────────────────
+test("parseSearchResults turns numbered search output into source cards", () => {
+  const out = parseSearchResults(
+    [
+      'Search results for "btc price"',
+      "",
+      "1. Bitcoin price today , BTC to USD live price , marketcap and ...",
+      "   https://www.coindesk.com/price/bitcoin",
+      "   The price of Bitcoin (BTC) is $58,021.09 today,",
+      "   with a 24-hour trading volume of $16.48B.",
+      "",
+      "2. Bitcoin USD PRICE (BTC-USD) - Yahoo Finance",
+      "   https://finance.yahoo.com/quote/BTC-USD/",
+      "   The last known price of Bitcoin is 59,280.37 USD.",
+    ].join("\n"),
+  );
+  expect(out.length).toBe(2);
+  expect(out[0]!.title).toBe("Bitcoin price today, BTC to USD live price, marketcap and ...");
+  expect(out[0]!.url).toBe("https://www.coindesk.com/price/bitcoin");
+  expect(out[0]!.domain).toBe("coindesk.com");
+  expect(out[0]!.snippet).toContain("24-hour trading volume");
+  expect(out[1]!.domain).toBe("finance.yahoo.com");
+});
+test("parseSearchResults returns nothing for un-numbered output", () => {
+  expect(parseSearchResults("plain tool output\nno entries here")).toEqual([]);
 });
 
 // ── barGlyphs ────────────────────────────────────────────────────────────────

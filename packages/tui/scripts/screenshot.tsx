@@ -16,6 +16,7 @@ import { chromium } from "playwright";
 import { testRender } from "@opentui/solid";
 import type { EngineClient, EngineCommand, UIEvent } from "@vibe/shared";
 import { App } from "../src/app.tsx";
+import { displayWidth } from "../src/markdown-blocks.ts";
 
 /** Resolve a Chromium: the pinned CI build if present, else Playwright's managed one. */
 function resolveChrome(): string | undefined {
@@ -413,7 +414,38 @@ function spanHtml(s: Span): string {
   if (a & 2) st.push("opacity:.55");
   if (a & 4) st.push("font-style:italic");
   if (a & 8) st.push("text-decoration:underline");
+  // ASCII flows at exactly 1ch per char, so one pinned span suffices. Any other
+  // glyph (⎇ ● ★ ▸ emoji …) may render wider/narrower than its terminal cell
+  // count in the browser font — which would shift every following character and
+  // clip the span's tail. Pin EACH such character to its own cell box instead,
+  // so the line stays on the terminal grid no matter how the font draws a glyph.
+  if (!/^[\x20-\x7e]*$/.test(s.text)) {
+    const chars = [...s.text]
+      .map((ch) => {
+        // Block elements: terminals draw U+2580–259F procedurally, filling the
+        // ENTIRE cell (including any line-spacing) — a font glyph only covers the
+        // em box, which would leave gaps between rows (a rail of ▎ turns into
+        // dashes). Paint them as fractional cell fills instead, like a terminal.
+        const grad = blockFill(ch);
+        if (grad) return `<span style="width:1ch;background-image:${grad(`rgb(${r},${g},${b})`)}"> </span>`;
+        return `<span style="width:${displayWidth(ch)}ch">${esc(ch) || " "}</span>`;
+      })
+      .join("");
+    return `<span style="${st.join(";")}">${chars}</span>`;
+  }
   return `<span style="${st.join(";")}">${esc(s.text) || " "}</span>`;
+}
+
+/** CSS gradient painter for a block-element glyph (left/bottom/top fractional
+ * fills + full block), or null for any other character. */
+function blockFill(ch: string): ((color: string) => string) | null {
+  const LEFT: Record<string, number> = { "▏": 12.5, "▎": 25, "▍": 37.5, "▌": 50, "▋": 62.5, "▊": 75, "▉": 87.5 };
+  const BOTTOM: Record<string, number> = { "▁": 12.5, "▂": 25, "▃": 37.5, "▄": 50, "▅": 62.5, "▆": 75, "▇": 87.5 };
+  if (ch === "█") return (c) => `linear-gradient(${c},${c})`;
+  if (ch === "▀") return (c) => `linear-gradient(to bottom, ${c} 0 50%, transparent 50%)`;
+  if (ch in LEFT) return (c) => `linear-gradient(to right, ${c} 0 ${LEFT[ch]}%, transparent ${LEFT[ch]}%)`;
+  if (ch in BOTTOM) return (c) => `linear-gradient(to top, ${c} 0 ${BOTTOM[ch]}%, transparent ${BOTTOM[ch]}%)`;
+  return null;
 }
 function frameHtml(spans: { lines: { spans: Span[] }[] }, cwd: string): string {
   const rows = spans.lines
@@ -426,7 +458,7 @@ function frameHtml(spans: { lines: { spans: Span[] }[] }, cwd: string): string {
   .bar{display:flex;align-items:center;gap:8px;background:#0a0a0c;padding:10px 14px;border-bottom:1px solid #1c1c22}
   .dot{width:12px;height:12px;border-radius:50%}
   .barttl{color:#8a8a92;margin-left:8px;font-size:12px;font-family:Menlo,monospace}
-  .grid{padding:14px 16px;font-family:"DejaVu Sans Mono",Menlo,"Liberation Mono",Consolas,monospace;font-size:14px;line-height:1.5;letter-spacing:0}
+  .grid{padding:14px 16px;font-family:Menlo,"DejaVu Sans Mono","Liberation Mono",Consolas,monospace;font-size:14px;line-height:1.5;letter-spacing:0}
   /* Each row is a fixed 1.5em box and every cell-span is an inline-block that fills
      that full height — so a background-colored cell (rail, panel, table band, pie)
      paints its ENTIRE cell rect and adjacent rows touch seamlessly, exactly like a
@@ -434,6 +466,10 @@ function frameHtml(spans: { lines: { spans: Span[] }[] }, cwd: string): string {
      leading would leave gaps between filled rows. */
   .row{white-space:pre;font-variant-ligatures:none;height:1.5em}
   .row span{display:inline-block;height:1.5em;vertical-align:top}
+  /* Per-character cell boxes (non-ASCII glyphs): keep each glyph inside its own
+     terminal cell — a font-fallback glyph with a wider advance is centered and
+     clipped to the cell instead of shifting the rest of the line off-grid. */
+  .row span span{overflow:hidden;text-align:center}
   </style></head><body>
   <div class="term">
     <div class="bar">

@@ -65,11 +65,16 @@ function resolveDdgHref(href: string): string {
   return href.startsWith("http") ? href : "";
 }
 
-/** Parse a DuckDuckGo HTML results page into structured results (pure). */
+/** Parse a DuckDuckGo HTML results page into structured results (pure).
+ *
+ * The anchor-body captures are the LINEAR unrolled form `(?:[^<]|<(?!\/a[\s>]))*`
+ * with an optional close — NOT a lazy `[\s\S]*?<\/a>`, which re-scans to EOF for
+ * every unclosed `<a …>` opener → O(n²) and froze the (uncapped, synchronous)
+ * keyless-search parse on an oversized/garbled results page (~4.5s at 720KB). */
 export function parseDuckDuckGoHtml(html: string): SearchResult[] {
-  const snippetRe = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  const snippetRe = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/g;
   const snippets = [...html.matchAll(snippetRe)].map((m) => stripTags(m[1] ?? ""));
-  const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/g;
   const results: SearchResult[] = [];
   let m: RegExpExecArray | null;
   let i = 0;

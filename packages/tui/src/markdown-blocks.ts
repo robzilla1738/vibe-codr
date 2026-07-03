@@ -120,7 +120,11 @@ export function stripInline(s: string): string {
     // Italic `*` needs CommonMark's flanking rule (content starts AND ends on a
     // non-space) or literal asterisk pairs get eaten: `*.ts and *.js` (globs) and
     // `2 * 3 and 4 * 5` (math) must survive — only real `*emphasis*` is stripped.
-    .replace(/\*(\S(?:.*?\S)?)\*/g, "$1") // italic *
+    // The body is `[^*]`-bounded (never `.*?`, which backtracks O(n²) on `*`-dense
+    // text and froze the TUI render thread ~1.8s on a 96KB line — this pass re-runs
+    // per streamed markdown chunk): `[^*]*` can't scan past the next `*`, so it's
+    // linear, and it still honors flanking (leading/trailing char is `\S`).
+    .replace(/\*(\S[^*]*\S|\S)\*/g, "$1") // italic *
     .replace(/(?<![\p{L}\p{N}_])_(.+?)_(?![\p{L}\p{N}_])/gu, "$1") // italic _
     .replace(/~~(.+?)~~/g, "$1") // strikethrough
     .replace(/`([^`]+)`/g, "$1") // inline code

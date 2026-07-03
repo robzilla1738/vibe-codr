@@ -31,6 +31,18 @@ test("parseDuckDuckGoHtml returns [] for a page with no results", () => {
   expect(parseDuckDuckGoHtml("<html><body>no results</body></html>")).toEqual([]);
 });
 
+test("parseDuckDuckGoHtml is LINEAR on unclosed anchors (adversarial P7-W1)", () => {
+  // The snippet/link captures used a lazy `[\s\S]*?</a>` that re-scans to EOF per
+  // unclosed `<a …>` opener → O(n²); the keyless-search fetch reads res.text()
+  // UNCAPPED and parses synchronously, so an oversized/garbled results page froze
+  // web_search (~4.5s at 720KB). The unrolled `(?:[^<]|<(?!/a[\s>]))*` is linear.
+  const evil = `<a class="result__snippet" href="/x">`.repeat(16000) + "tail"; // ~0.7MB
+  const t0 = performance.now();
+  const out = parseDuckDuckGoHtml(evil);
+  expect(performance.now() - t0).toBeLessThan(1000); // was ~4500ms
+  expect(Array.isArray(out)).toBe(true);
+});
+
 test("duckDuckGoSearch fetches the html endpoint and applies maxResults", async () => {
   let calledUrl = "";
   const result = await duckDuckGoSearch(

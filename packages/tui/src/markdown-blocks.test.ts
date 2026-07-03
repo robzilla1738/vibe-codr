@@ -164,6 +164,26 @@ test("stripInline preserves intraword underscores in identifiers", () => {
   expect(stripInline("_note_: use api_key_id")).toBe("note: use api_key_id");
 });
 
+test("stripInline italic honors CommonMark flanking (globs/math survive)", () => {
+  // The `*` pass must not eat literal asterisk pairs: content must start AND end
+  // on a non-space. (Guards the `[^*]`-bounded rewrite that fixed the O(n²) freeze.)
+  expect(stripInline("*emphasis* here")).toBe("emphasis here");
+  expect(stripInline("*.ts and *.js globs")).toBe("*.ts and *.js globs");
+  expect(stripInline("2 * 3 and 4 * 5")).toBe("2 * 3 and 4 * 5");
+  expect(stripInline("*a* and *b* pair")).toBe("a and b pair");
+});
+
+test("stripInline is LINEAR on a `*`-dense line (adversarial P7-W2)", () => {
+  // `\S(?:.*?\S)?` backtracked O(n²) on `*`-flanked tokens; stripInline runs on
+  // the TUI render thread per streamed markdown chunk, so a ~96KB line froze the
+  // UI ~1.8s. The `[^*]`-bounded body can't scan past the next `*` → linear.
+  const evil = "*a ".repeat(32000); // ~96KB single line
+  const t0 = performance.now();
+  const out = stripInline(evil);
+  expect(performance.now() - t0).toBeLessThan(500); // was ~1800ms
+  expect(typeof out).toBe("string");
+});
+
 test("renderTable conceals inline markdown in cells (no raw ** leaks)", () => {
   const lines = renderTable(
     [["**Metric**", "**BTC**"], ["**Supply**", "21M `hard cap`"]],

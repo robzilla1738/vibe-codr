@@ -128,6 +128,22 @@ test("htmlToText still preserves structure and strips blocks (linear rewrite par
   for (const gone of ["evil()", ".x{}", "menu", "foot", "note"]) expect(out).not.toContain(gone);
 });
 
+test("htmlToText keeps the body after a WHITESPACE-variant close tag (adversarial P7-1)", () => {
+  // Valid HTML allows `</script >`, `</pre\n>`, `</h1 >`. An exact `/tag>` close
+  // lookahead missed those, so the unrolled body ran to EOF and the optional close
+  // DELETED the entire rest of the document. The close detector must tolerate
+  // whitespace/attrs so the article body downstream of the block survives.
+  const out = htmlToText(
+    "<h1>Getting Started</h1><script>analytics()</script >" +
+      "<h2 >Section 1</h2><p>body paragraph 1</p><pre>codeblock</pre >tail-after-pre<footer>foot</footer>",
+  );
+  expect(out).toContain("Section 1"); // whitespace-close heading
+  expect(out).toContain("body paragraph 1"); // survives `</script >`
+  expect(out).toContain("tail-after-pre"); // survives `</pre >`, NOT swallowed into the fence
+  expect(out).not.toContain("analytics()"); // script still removed
+  expect(out).not.toContain("foot");
+});
+
 test("returns non-HTML bodies verbatim", async () => {
   stubFetch('{"ok":true}', "application/json");
   const res = await fetcher().execute({ url: "https://api.example.com/x" }, ctx());

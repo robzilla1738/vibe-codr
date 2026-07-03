@@ -1793,3 +1793,39 @@ crawl_docs bounds (page budget `min(maxPages,15)`, `MAX_DEPTH=2`, redirect cap 5
 (unknown/late tool ids benign, exit-code ↔ gate consistent, JSON shape stable).
 
 Clean-pass counter after Pass 6: 0 (2 confirmed → all fixed). TWO consecutive CLEAN passes still required.
+
+
+### Pass 7 — 3 CONFIRMED (1 a regression in the pass-6 fix, 2 the same O(n²) class in other files; all FIXED + regression-tested)
+Two skeptics (pass-6-`htmlToText`-correctness / wide super-linear-regex hunt), executed repros. The
+pass-6 `htmlToText` rewrite had a real regression, and the O(n²)-regex hunt found the SAME class in two
+files the htmlToText fix didn't touch — the audit generalizing its own finding.
+- **[MEDIUM] P7-1 the pass-6 `htmlToText` rewrite REGRESSED on whitespace-variant close tags** — the
+  optional-close design's close detector was the exact literal `(?!\/tag>)`, but valid HTML allows
+  `</script >`, `</pre\n>`, `</h1 >`. On those the lookahead missed the real close, the unrolled body ran
+  to EOF, and the optional close DELETED the entire rest of the document (for `<pre>`/headings it absorbed
+  the tail into the fence/heading). Worse than the pre-pass-6 lazy version, which merely leaked one script
+  line but kept the article. Fixed: the close detector is now whitespace/attribute tolerant —
+  `<(?!\/tag[\s>])` stops the body at the close-tag START, `</tag[^>]*>` consumes the real close. Verified:
+  the article body survives a `</script >`, still linear (~7ms on the 703KB adversarial page). Regression:
+  *"htmlToText keeps the body after a WHITESPACE-variant close tag"*.
+- **[LOW-MED] P7-W1 `parseDuckDuckGoHtml` had the same O(n²) snippet/link regex** — `[\s\S]*?<\/a>`
+  re-scans to EOF per unclosed `<a …>`, and the keyless-search fetch reads `res.text()` UNCAPPED and parses
+  synchronously (the enrich path caps at `DEEP_FETCH_BYTES`; this path didn't), so an oversized/garbled/
+  captcha/MITM results page froze `web_search` (~4.5s at 720KB). Fixed: both captures are now the linear
+  unrolled `(?:[^<]|<(?!\/a[\s>]))*`. (`parseBingHtml` was already safe — it splits into bounded `b_algo`
+  blocks first; REFUTED.) Verified 720KB adversarial: ~4.5s → ~44ms. Regression: *"parseDuckDuckGoHtml is
+  LINEAR on unclosed anchors"*.
+- **[LOW] P7-W2 `stripInline` italic regex was O(n²) on the TUI render thread** — `/\*(\S(?:.*?\S)?)\*/g`'s
+  `.*?` backtracks quadratically on `*`-dense text; `stripInline` runs on every heading/quote/table-cell of
+  streamed markdown and re-runs per chunk, so a ~96KB `*`-flanked line froze the UI ~1.8s. Fixed: the body
+  is `[^*]`-bounded (`\*(\S[^*]*\S|\S)\*`) — can't scan past the next `*`, so it's linear and still honors
+  CommonMark flanking (globs `*.ts` / math `2 * 3` survive, byte-identical output on all cases). Verified
+  96KB: ~1.8s → ~0.3ms. Regression: *"stripInline is LINEAR on a `*`-dense line"* + a flanking-parity test.
+
+REFUTED with executed disproofs: `htmlToText` old-vs-new parity on attributes-containing-`>`, nested
+same/different tags, `<pre>`-with-`<code>`, `</script>`-in-a-string, comments with `--`/`->`, CDATA,
+entities/br/tables/lists, and the `\b` real-tag-stripping guard (all byte-identical or improved); searchcore
+crash sites `detectDate`/`canonicalizeUrl`/`mergeCandidates` on adversarial input (no throw); the TinyFish
+sanitizer on non-http/huge-url/float-position; `parseBingHtml` complexity (bounded blocks).
+
+Clean-pass counter after Pass 7: 0 (3 confirmed → all fixed). TWO consecutive CLEAN passes still required.

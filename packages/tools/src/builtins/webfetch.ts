@@ -73,7 +73,15 @@ function decodeEntities(s: string): string {
  * in ONE pass (O(n)) instead of a lazy `[\s\S]*?<\/tag>` re-scanning to EOF per
  * opener (O(n²)). `\b` after the tag avoids matching `<header>` as `<head>`. */
 function stripBlock(s: string, tag: string): string {
-  return s.replace(new RegExp(`<${tag}\\b[^>]*>[^<]*(?:<(?!/${tag}>)[^<]*)*(?:</${tag}>)?`, "gi"), " ");
+  // The close-tag detector must be WHITESPACE/ATTRIBUTE tolerant: valid HTML allows
+  // `</script >`, `</pre\n>`, `</h1 foo>`. An exact `/tag>` lookahead would miss the
+  // real close, so the body would consume to EOF and the optional close would delete
+  // the ENTIRE rest of the document. `<(?!/tag[\s>])` stops the body at the close-tag
+  // START (whatever follows the name); `</tag[^>]*>` then consumes the real close.
+  return s.replace(
+    new RegExp(`<${tag}\\b[^>]*>[^<]*(?:<(?!/${tag}[\\s>])[^<]*)*(?:</${tag}[^>]*>)?`, "gi"),
+    " ",
+  );
 }
 
 /** Linear-time HTML-comment removal (same O(n²) trap as {@link stripBlock} for
@@ -102,12 +110,12 @@ export function htmlToText(html: string): string {
     s = stripBlock(s, tag);
   }
   // Code blocks first (their inner whitespace must survive verbatim).
-  s = s.replace(/<pre[^>]*>([^<]*(?:<(?!\/pre>)[^<]*)*)(?:<\/pre>)?/gi, (_, body: string) => {
+  s = s.replace(/<pre[^>]*>([^<]*(?:<(?!\/pre[\s>])[^<]*)*)(?:<\/pre[^>]*>)?/gi, (_, body: string) => {
     const code = decodeEntities(body.replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
     return `\n\`\`\`\n${code}\n\`\`\`\n`;
   });
   // Headings → markdown heading lines.
-  s = s.replace(/<h([1-6])[^>]*>((?:[^<]|<(?!\/h\1>))*)(?:<\/h\1>)?/gi, (_, level: string, body: string) => {
+  s = s.replace(/<h([1-6])[^>]*>((?:[^<]|<(?!\/h\1[\s>]))*)(?:<\/h\1[^>]*>)?/gi, (_, level: string, body: string) => {
     const text = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n";
   });

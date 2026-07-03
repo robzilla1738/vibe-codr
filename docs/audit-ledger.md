@@ -779,7 +779,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 3 | Prompt-cache economy | REOPENED |
 | 4 | Subagent orchestration | PASS |
 | 5 | Coding loop | PASS |
-| 6 | Context gathering | REOPENED |
+| 6 | Context gathering | PASS |
 | 7 | Memory | REOPENED |
 | 8 | Research stack | REOPENED |
 | 9 | Providers & model catalog | REOPENED |
@@ -1049,6 +1049,52 @@ authority holds on every check branch; abort windows return aborted/unverified, 
 - diff coarse-fallback multiset diff reports +0/-0 on a pure reordering of a huge file; capDiff
   surrogate-split cosmetic; diff.ts 40M-cell cap is memory-aggressive at the boundary. All LOW,
   recorded.
+
+
+## v2 §6. Context gathering — PASS
+
+Scope read end-to-end: mentions.ts, repo-map.ts, codeintel.ts (batched recon probe), profile.ts,
+loaders.ts. One reader + author repro/fix.
+
+### CONFIRMED & FIXED
+- **[MED] V2-22 `--watchAll=false` one-shot test scripts wrongly rejected → CRA/Jest CI loses its
+  test gate** — the un-anchored `--watch` in NON_TERMINATING is a substring of `--watchAll=false`, so
+  the canonical `react-scripts test --watchAll=false` / `jest --watchAll=false` were classified
+  non-terminating and dropped, leaving those repos with NO test gate. Fixed: an ONE_SHOT_OVERRIDE
+  (`--run` / `--no-watch` / `--watch(All)?=(false|0)`), checked first in isNonTerminating, treats an
+  explicit watch-disable flag as terminating — also covers `vitest --watch=false`. Regression: 4 new
+  rows in *"non-terminating test scripts are rejected, one-shot forms kept"* (codeintel.test.ts).
+- **[LOW-MED] V2-23 buildRepoMap slurped every file whole (no per-file byte cap)** — `readLimit`
+  bounds the file COUNT but each was read via `.text()` with no size guard, so a tracked multi-MB
+  generated/bundled `.ts` spiked memory on every non-cached build (and several can be in flight when a
+  gate refresh overlaps a subagent build). Fixed: skip files over MAX_FILE_BYTES (512 KiB) using the
+  already-available statSync size. Regression: *"skips a file larger than the per-file byte cap"*
+  (repo-map.test.ts).
+- **[LOW] V2-24 mentions TOCTOU defeated the pre-read size guard** — the oversize branch keyed on the
+  STAT size, so a file that grew between stat and read was fully slurped (the exact blowup the
+  slice-read prevents). Fixed: always slice-read the byte budget (cap+1 to detect overflow) off the
+  ACTUAL bytes, for both text and image paths. Regression: *"an over-cap image is skipped by the
+  bounded read"* + the existing over-cap text test now exercises the stat-independent path.
+- **[LOW] V2-25 empty `ls -A` misclassified as greenfield** — `looksGreenfield([])` is true, and the
+  probe suppresses ls errors, so a dir whose listing failed (EACCES/odd mount) with git + a manifest
+  present was reported greenfield → ALL command detection suppressed. Fixed: an empty listing WITH
+  other evidence (inside a work tree, or any manifest section) is not greenfield. Regression: *"an
+  empty ls listing with other signals is NOT reported greenfield"* (codeintel.test.ts).
+
+### REFUTED / verified clean
+- Recon re-entrancy: reconRepo holds no shared state (per-call marker, pure detectors, fresh profile)
+  — two overlapping runs can't corrupt each other or the profile. buildRepoMap mapCache mutated only
+  in synchronous loops; a concurrent build causes eviction (perf), not stale symbols. Recon sentinel
+  nonce unspoofable; no shell injection (section names are literals). State relocation: recon /
+  repo-map / mentions / loaders write NOTHING into cwd .vibe (read-only) — fresh scaffold stays clean.
+  @typescript-eslint false-positive avoided; Makefile `:=` rejected; vitest run/-run carve-out;
+  mentions NUL-binary skip + byte-accurate cap + @-after-whitespace; loaders per-file isolation;
+  applyArgs single-pass 2-digit cap. All sound.
+
+### Accepted-risk (recorded)
+- repo-map sub-path build evicts cache outside the sub-path (perf, v1 accepted-risk, unchanged);
+  repo-map `truncated` flag conflates budget-cut with count-cut (cosmetic — only the "…more files"
+  note); applyArgs `$100+` caps at 2 digits (documented spec). All LOW.
 
 ## v2 DECISIONS (this subsystem)
 - **Ensemble isolated-scoring gate (V2-F1) recommended design:** score attempts by a cheaper isolated

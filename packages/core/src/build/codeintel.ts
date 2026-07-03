@@ -81,7 +81,17 @@ export async function reconRepo(exec: Exec, workdir: string, signal?: AbortSigna
 
   const sections = splitSections(out, marker);
   const entries = lines(sections.LS);
-  if (looksGreenfield(entries)) return { ...GREENFIELD_PROFILE };
+  // An EMPTY listing with other evidence (inside a git work tree, or any manifest
+  // present) means `ls` failed/was suppressed, NOT that the repo is empty — don't
+  // misreport greenfield (which would suppress ALL command detection).
+  const hasOtherSignal =
+    /true/.test(sections.GITREPO ?? "") ||
+    [sections.PKG, sections.PYPROJECT, sections.CARGO, sections.GOMOD, sections.MAKEFILE, sections.LOCK].some(
+      (s) => s?.trim(),
+    );
+  if (looksGreenfield(entries) && !(entries.length === 0 && hasOtherSignal)) {
+    return { ...GREENFIELD_PROFILE };
+  }
 
   const manifests: RepoManifests = {
     ...(sections.PKG?.trim() ? { packageJson: sections.PKG.trim() } : {}),
@@ -145,6 +155,11 @@ function lines(s: string | undefined): string[] {
 const NON_TERMINATING =
   /--watch|\bnodemon\b|\bwebpack-dev-server\b|\bvitest\b(?!\s+(?:run\b|--run\b))|(?:^|&&|;|\|)\s*(?:next\s+dev|serve|http-server|(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve|\S*watch\S*))(?:\s|$)/i;
 
+/** Explicit one-shot / watch-DISABLE flags: a script carrying one runs once and
+ * terminates, overriding every watch heuristic (`vitest` defaults to watch;
+ * `--watchAll=false` is the canonical Jest/CRA CI form; `--run` is vitest's). */
+const ONE_SHOT_OVERRIDE = /(?:^|\s)--(?:run|no-watch|watch(?:All)?=(?:false|0))\b/i;
+
 /**
  * Whether a package.json script value can never serve as a terminating gate.
  * Wraps NON_TERMINATING plus the CRA carve-out: `react-scripts test` runs Jest
@@ -152,6 +167,9 @@ const NON_TERMINATING =
  * (an explicit `CI=true react-scripts test` is a legitimate one-shot).
  */
 function isNonTerminating(script: string): boolean {
+  // An explicit watch-disable / one-shot flag means it terminates — checked
+  // FIRST so it overrides both the watch heuristic and the CRA carve-out.
+  if (ONE_SHOT_OVERRIDE.test(script)) return false;
   if (NON_TERMINATING.test(script)) return true;
   if (/\breact-scripts\s+test\b/.test(script) && !/\bCI=(?:true|1)\b/.test(script)) return true;
   return false;

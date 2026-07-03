@@ -21,6 +21,22 @@ test("looksGreenfield: dotfiles/README/LICENSE only", () => {
   expect(looksGreenfield(["src", "package.json"])).toBe(false);
 });
 
+test("reconRepo: an empty ls listing with other signals is NOT reported greenfield", async () => {
+  // `ls -A 2>/dev/null` can produce an empty section (EACCES on the dir / odd
+  // mount) while git + a manifest are clearly present — that must not suppress
+  // all command detection by mislabelling the repo greenfield.
+  const fake = fakeRecon({
+    LS: "", // empty listing (ls failed / suppressed) — but other signals present
+    GITREPO: "true",
+    PKG: JSON.stringify({ scripts: { test: "vitest run", build: "vite build" } }),
+    LOCK: "package-lock.json",
+  });
+  const profile = await reconRepo(fake, "/fake");
+  expect(profile.greenfield).toBe(false);
+  // …and command detection actually ran off the manifest.
+  expect(profile.commands.test).toBe("npm run test");
+});
+
 test("detectCommands: package.json scripts, watch/dev scripts rejected", () => {
   const cmds = detectCommands(
     manifests({
@@ -58,6 +74,10 @@ test("detectCommands: non-terminating test scripts are rejected, one-shot forms 
   const cases: [string, boolean][] = [
     ["jest --watchAll", false], // --watch\b missed --watchAll → hung the gate
     ["jest --watch", false],
+    ["react-scripts test --watchAll=false", true], // CI one-shot: =false disables watch
+    ["jest --watchAll=false", true], // ditto — the canonical Jest CI form
+    ["jest --watch=0", true], // numeric disable
+    ["vitest --watch=false", true],
     ["react-scripts test", false], // CRA runs Jest in watch mode unless CI=true
     ["CI=true react-scripts test", true], // explicit one-shot is fine
     ["vitest", false], // bare vitest watches by default

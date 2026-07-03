@@ -144,3 +144,19 @@ test("repo_map produces a declaration map for a directory (no git)", async () =>
   expect(out).toContain("export class Helper");
   expect(out).not.toContain("README.md"); // non-code excluded
 });
+
+test("buildRepoMap skips a file larger than the per-file byte cap (no whole-file slurp)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-repomap-bigfile-"));
+  mkdirSync(join(dir, "src"), { recursive: true });
+  // A small real source file whose symbol MUST appear.
+  writeFileSync(join(dir, "src", "small.ts"), "export function realSymbol() {}\n");
+  // A >512KB tracked .ts (e.g. a committed bundle/generated file) with a unique
+  // symbol that must NOT be extracted — the file is skipped, not slurped+regexed.
+  const big = `export function hugeGeneratedSymbol() {}\n${"// filler\n".repeat(60_000)}`;
+  expect(big.length).toBeGreaterThan(512 * 1024);
+  writeFileSync(join(dir, "src", "generated.ts"), big);
+
+  const res = await buildRepoMap(dir);
+  expect(res.text).toContain("realSymbol");
+  expect(res.text).not.toContain("hugeGeneratedSymbol"); // over-cap file never parsed
+});

@@ -90,3 +90,14 @@ test("an over-cap text file reads only its head (bounded read, not whole-file sl
   expect(r.notices.some((n) => n.includes("truncated"))).toBe(true);
   expect(Buffer.byteLength(r.text, "utf8")).toBeLessThan(64_000 + 2_000);
 });
+
+test("an over-cap image is skipped by the bounded read, not slurped whole", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-bigimg-"));
+  // A 6MB "png" (> the 5MB image cap): a valid PNG header + filler. The bounded
+  // read (cap+1) must reject it with a notice rather than attach a partial image.
+  const header = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  await Bun.write(join(cwd, "big.png"), Buffer.concat([header, Buffer.alloc(6 * 1024 * 1024)]));
+  const r = await expandMentions("@big.png", cwd);
+  expect(r.images.length).toBe(0);
+  expect(r.notices.some((n) => /big\.png.*(exceeds|skipped|max)/i.test(n))).toBe(true);
+});

@@ -92,21 +92,26 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
         );
         continue;
       }
-      images.push({ path: token, mediaType, data: new Uint8Array(await file.arrayBuffer()) });
+      // Bound the actual read too (not just the stat check above): read one byte
+      // past the cap and reject if the file grew past it since the stat (TOCTOU) —
+      // a partial image is useless, so oversize skips rather than truncates.
+      const buf = await file.slice(0, MAX_IMAGE_BYTES + 1).arrayBuffer();
+      if (buf.byteLength > MAX_IMAGE_BYTES) {
+        notices.push(`${token} skipped: image exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB`);
+        continue;
+      }
+      images.push({ path: token, mediaType, data: new Uint8Array(buf) });
       continue;
     }
-    // Bound the READ to the byte budget, not just the output: read only the first
-    // MAX_TEXT_BYTES of an over-cap file instead of slurping a multi-hundred-MB
-    // `@huge.log` into memory and only then truncating.
-    let raw: string;
-    let preTruncated = false;
-    if (size > MAX_TEXT_BYTES) {
-      const buf = await file.slice(0, MAX_TEXT_BYTES).arrayBuffer();
-      raw = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buf)).replace(/�+$/, "");
-      preTruncated = true;
-    } else {
-      raw = await file.text();
-    }
+    // Bound the READ to the byte budget, not just the output, and do it off the
+    // ACTUAL bytes rather than the stat `size` — a file that grew between the
+    // stat above and this read must still not be slurped whole (TOCTOU). Read
+    // one extra byte to detect that there was more.
+    const buf = await file.slice(0, MAX_TEXT_BYTES + 1).arrayBuffer();
+    const readBytes = new Uint8Array(buf);
+    const preTruncated = readBytes.length > MAX_TEXT_BYTES;
+    const kept = preTruncated ? readBytes.subarray(0, MAX_TEXT_BYTES) : readBytes;
+    const raw = new TextDecoder("utf-8", { fatal: false }).decode(kept).replace(/�+$/, "");
     // A non-image binary file (PDF/wasm/mp4/zip/…) would otherwise be UTF-8
     // decoded into up to 64KB of mojibake and injected as "text" — wasted tokens
     // and polluted context. A NUL byte is the reliable binary tell; skip + notice.

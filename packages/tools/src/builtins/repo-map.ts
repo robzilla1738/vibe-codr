@@ -182,6 +182,12 @@ interface FileEntry {
  * on subsequent calls (the tool used to re-read up to 150 files every call). */
 const mapCache = new Map<string, Map<string, FileEntry>>();
 
+/** Skip symbol-extracting a single file larger than this (bytes). A tracked but
+ * generated/bundled/fixture file (a committed multi-MB `.pb.ts` or bundle) would
+ * otherwise be slurped whole into memory on every non-cached build — and several
+ * such reads can be in flight when a gate refresh overlaps a subagent's build. */
+const MAX_FILE_BYTES = 512 * 1024;
+
 /** Test hook: drop the incremental cache so tests can't leak state. */
 export function _resetRepoMapCache(): void {
   mapCache.clear();
@@ -230,11 +236,16 @@ export async function buildRepoMap(
   for (const file of toRead) {
     const full = join(cwd, file);
     let mtimeMs = 0;
+    let sizeBytes = 0;
     try {
-      mtimeMs = statSync(full).mtimeMs;
+      const st = statSync(full);
+      mtimeMs = st.mtimeMs;
+      sizeBytes = st.size;
     } catch {
       continue; // listed but unreadable — skip
     }
+    // Don't slurp a huge generated/bundled file just to regex it for symbols.
+    if (sizeBytes > MAX_FILE_BYTES) continue;
     const cached = cache.get(file);
     if (cached && cached.mtimeMs === mtimeMs) {
       entries.set(file, cached);

@@ -59,50 +59,52 @@ export interface Palette {
   series: string[];
 }
 
-/** Black + Blue-300 dark palette (the default). */
-// Black background + neutral grey CHROME BORDERS (input frame, panels), with a
-// single Blue 300 (#70cbf4) ACCENT reserved for titles + markers: panel titles,
+/** Warm graphite + peach dark palette (the default) — the opencode look. */
+// Near-black graphite background + neutral grey CHROME BORDERS, with opencode's
+// signature peach (#fab283) ACCENT reserved for titles + markers: panel titles,
 // the `❯` user marker + gutter, the active task/step, the selected menu row, the
-// input caret, and the mode chip (ASK blue / PLAN green / YOLO red). The wordmark
-// sweeps a light→deep shade of that same blue; tool/subagent threads share one
-// calm muted `gutter` tone (no rainbow rotation). Neutral charcoal surfaces
-// (panel/elevated) are raised on the black; green/red stay functional on diffs,
-// amber on warnings. Override the accent with any hue via `accentColor` /
-// `/accent <hex>` — the wordmark sweep follows it.
+// input caret, and the mode chip (ASK peach / PLAN green / YOLO red). The
+// wordmark sweeps a light→deep shade of that same peach; tool/subagent threads
+// share one calm muted `gutter` tone (no rainbow rotation). Neutral charcoal
+// surfaces (panel/elevated) are raised on the graphite; green/red stay
+// functional on diffs, amber on warnings. This is deliberately the same DARK
+// look as the `opencode` theme — the default must never drift light; `light`
+// exists only as an explicit `/theme light` opt-in. Override the accent with
+// any hue via `accentColor` / `/accent <hex>` — the wordmark sweep follows it.
 const DEFAULT: Palette = {
-  user: "#e6e6e6",
-  assistant: "#e6e6e6",
-  tool: "#7dcfff",
-  notice: "#e0af68",
-  plan: "#bb9af7",
-  subagent: "#9ece6a",
-  add: "#9ece6a",
-  del: "#f7768e",
-  ctx: "#8a8a92",
-  taskDone: "#6a6a72",
-  taskActive: "#70cbf4",
-  taskPending: "#e6e6e6",
-  accent: "#70cbf4",
-  // Blue 300 chrome accent: panel titles, the `❯` user marker + gutter, active
+  user: "#5c9cf5",
+  assistant: "#eeeeee",
+  tool: "#56b6c2",
+  notice: "#f5a742",
+  plan: "#9d7cd8",
+  subagent: "#7fd88f",
+  add: "#4fd6be",
+  del: "#c53b53",
+  ctx: "#828bb8",
+  taskDone: "#808080",
+  taskActive: "#56b6c2",
+  taskPending: "#eeeeee",
+  accent: "#fab283",
+  // Peach chrome accent: panel titles, the `❯` user marker + gutter, active
   // task/step, the selected menu row, and the caret. Borders stay neutral grey.
   // Override with a single hue via accentColor / `/accent <hex>`.
-  primary: "#70cbf4",
-  border: "#34343a",
-  muted: "#8a8a92",
-  background: "#000000",
-  panel: "#161618",
-  elevated: "#1e1e22",
-  selBg: "#22333d",
-  selFg: "#e6e6e6",
-  addBg: "#15231a",
-  delBg: "#26171c",
-  gutter: "#3f5766",
-  heading: "#70cbf4",
-  code: "#9cdcfe",
-  // A calm, distinct 6-hue ramp for charts/pies/sources on black: blue, green,
-  // violet, amber, rose, teal — spaced around the wheel so adjacent series never
-  // read as the same color, all bright enough to pop on the black backdrop.
-  series: ["#70cbf4", "#9ece6a", "#bb9af7", "#e0af68", "#f7768e", "#2ac3de"],
+  primary: "#fab283",
+  border: "#3c3c3c",
+  muted: "#808080",
+  background: "#0a0a0a",
+  panel: "#141414",
+  elevated: "#1e1e1e",
+  selBg: "#2a2a2a",
+  selFg: "#eeeeee",
+  addBg: "#20303b",
+  delBg: "#37222c",
+  gutter: "#544c44",
+  heading: "#fab283",
+  code: "#56b6c2",
+  // A calm, distinct 6-hue ramp for charts/pies/sources on graphite: peach,
+  // green, violet, blue, red, teal — spaced around the wheel so adjacent series
+  // never read as the same color, all bright enough to pop on the dark backdrop.
+  series: ["#fab283", "#7fd88f", "#9d7cd8", "#5c9cf5", "#c53b53", "#4fd6be"],
 };
 
 /** Light palette for bright terminals. */

@@ -100,8 +100,11 @@ import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
 
 /** The chat column's maximum width. At or below this the column fills the
  * terminal; above it the column stays centered with quiet side gutters
- * (ChatGPT-style — a readable, bounded conversation measure). */
-const CONTENT_MAX = 84;
+ * (ChatGPT-style — a readable, bounded conversation measure). 100 (up from 84)
+ * trades a little line-length purity for information density — code, diffs,
+ * tables and tool output show meaningfully more per row on a normal terminal
+ * while narrow panes still just fill the window. */
+const CONTENT_MAX = 100;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
 /** Max visible rows the input box grows to before it scrolls internally. */
@@ -230,7 +233,7 @@ export function App(props: { engine: EngineClient }) {
   // The goal (★) shown in the header's second row; updated via /goal.
   const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
   const cwd = shortCwd();
-  // The chrome accent: Blue 300 by default (the DEFAULT palette's primary),
+  // The chrome accent: opencode peach by default (the DEFAULT palette's primary),
   // overridable to any hue via `/accent <hex>`. Reserved for titles + markers —
   // panel titles, the `❯` user marker + gutter, the active task/step, the selected
   // menu row, and the caret — plus the wordmark sweep and the spinner. Box borders
@@ -239,7 +242,7 @@ export function App(props: { engine: EngineClient }) {
   const brand = () => accentColor() || palette().primary;
   // The mode chip + input rail hue — the one mode-driven color in the UI. ASK
   // (execute, the everyday state) FOLLOWS the brand accent so `/accent orange`
-  // recolors the whole input control coherently (a fixed blue chip would clash
+  // recolors the whole input control coherently (a fixed hue chip would clash
   // with a warm accent); PLAN green and YOLO red stay fixed alert hues.
   const accent = () => (uiMode() === "execute" ? brand() : modeColor(uiMode()));
   // The mode word shown on the input's top border. "execute" means "every action
@@ -397,14 +400,23 @@ export function App(props: { engine: EngineClient }) {
   // How many rows the input needs for the current draft: each explicit line
   // soft-wraps to ceil(width / inner-width) rows. Drives the input box height so
   // it grows with the text (capped at INPUT_MAX_ROWS, then it scrolls inside).
-  // `inner` = column inner (contentWidth−2) minus the input's border+padding (4).
+  // `inner` = the FIELD's true width: the column minus the block chrome (rail 1
+  // + padding 2+2) minus the `MODE ❯ ` prompt prefix on the same row. Estimating
+  // against a wider width than the field really has (the old `contentWidth − 6`)
+  // meant a draft near the edge horizontally SCROLLED for a few chars before the
+  // box grew — the "text doesn't wrap" glitch — then over-reserved blank rows.
   // Once the draft wraps we add one row of headroom: the edit buffer keeps the
   // cursor's trailing position visible, so without it the first line scrolls off.
   const inputRows = () => {
-    const inner = Math.max(8, contentWidth() - 6);
-    const rows = draft()
-      .split("\n")
-      .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / inner)), 0);
+    const inner = Math.max(8, contentWidth() - 5 - (modeWord().length + 3));
+    // The trailing line reserves one extra cell for the cursor, so a draft that
+    // exactly fills a row wraps the caret to the next line instead of scrolling.
+    const lines = draft().split("\n");
+    const rows = lines.reduce(
+      (sum, line, i) =>
+        sum + Math.max(1, Math.ceil((displayWidth(line) + (i === lines.length - 1 ? 1 : 0)) / inner)),
+      0,
+    );
     return Math.min(INPUT_MAX_ROWS, Math.max(1, rows >= 2 ? rows + 1 : rows));
   };
 
@@ -415,10 +427,10 @@ export function App(props: { engine: EngineClient }) {
   // the exact overflow). The card's chrome is 5 rows: padding (2) + title + a
   // blank rhythm row + the hint.
   const planContentRows = () => {
-    const inner = Math.max(20, contentWidth() - 6);
+    const inner = Math.max(20, contentWidth() - 7);
     return (plan() ?? "")
       .split("\n")
-      .reduce((n, l) => n + Math.max(1, Math.ceil(l.length / inner)), 0);
+      .reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / inner)), 0);
   };
   const planPanelRows = () => {
     const cap = Math.max(9, dims().height - 12);
@@ -672,18 +684,29 @@ export function App(props: { engine: EngineClient }) {
     const rows = m.rows;
     const sel = Math.min(Math.max(0, selIdx()), Math.max(0, rows.length - 1));
     const start = Math.min(Math.max(0, menuStart()), Math.max(0, rows.length - win));
-    // Cap the label column tight — one very long name shouldn't push every
-    // description into the far distance; outliers just run long on their row.
-    const labelW = Math.min(12, Math.max(0, ...rows.map((r) => (r.desc ? [...r.label].length : 0))));
+    // Cap the label column so one very long name can't push every description
+    // into the far distance. 32 keeps real-world model ids
+    // (`anthropic/claude-opus-4-8`) in one aligned column; an outlier past the
+    // cap still gets a 2-space gap before its description — the gap must never
+    // collapse to zero (labels used to run straight into the desc: "…-4-81M").
+    const labelW = Math.min(32, Math.max(0, ...rows.map((r) => (r.desc ? [...r.label].length : 0))));
     const marker = m.kind === "value" || m.kind === "models";
-    const view = rows.slice(start, start + win).map((r, i) => ({
-      active: start + i === sel,
-      current: !!r.current,
-      label: r.desc ? r.label.padEnd(labelW + 2) : r.label,
-      desc: r.desc ?? "",
-      fg: r.fg,
-      idx: start + i,
-    }));
+    // Ellipsize a description that would clip at the column edge (wrapMode="none"
+    // hard-cuts mid-word with no affordance): prefix `❯ ` (2) + optional marker
+    // column (2) + the padded label are already spent; the desc gets the rest.
+    const descW = (labelLen: number) =>
+      Math.max(8, contentWidth() - 7 - 2 - (marker ? 2 : 0) - labelLen);
+    const view = rows.slice(start, start + win).map((r, i) => {
+      const label = r.desc ? `${r.label.padEnd(labelW)}  ` : r.label;
+      return {
+        active: start + i === sel,
+        current: !!r.current,
+        label,
+        desc: r.desc ? truncate(r.desc, descW([...label].length)) : "",
+        fg: r.fg,
+        idx: start + i,
+      };
+    });
     const more = rows.length > win ? `+${rows.length - win} more · type to filter` : "";
     return { rows: view, title: m.title, hint: m.hint, more, marker, loading: m.loading };
   };
@@ -1546,11 +1569,11 @@ export function App(props: { engine: EngineClient }) {
                       </Show>
                     }
                   >
-                    {/* ░██ block wordmark with a clean left→right single-hue blue
+                    {/* ░██ block wordmark with a clean left→right single-hue brand
                         sweep: each row is a line of per-character <text>s colored by
                         COLUMN position, so column i shares a ramp position across
                         every row and the whole block reads as one smooth light→deep
-                        blue fade, not per-letter confetti. Follows `/accent`. Static
+                        brand fade, not per-letter confetti. Follows `/accent`. Static
                         (rendered once on the idle splash) — no idle timer. */}
                     <For each={WORDMARK}>
                       {(line) => <BrandLine line={line} cols={WORDMARK_COLS} hue={brand()} />}
@@ -1607,8 +1630,8 @@ export function App(props: { engine: EngineClient }) {
                 if (hasNode() && items().length > 0) anchoredToggle(() => toggleTurn(turn().key));
               };
               // Content width inside a block = column pad(2) + block left border(1) +
-              // block padding L(2)+R(1) = 6 consumed.
-              const blockInner = () => contentWidth() - 6;
+              // block padding L(2)+R(2) = 7 consumed.
+              const blockInner = () => contentWidth() - 7;
               return (
                 // Every block (including the first, below the top-left context line)
                 // gets the same 1-row top gap, so spacing is uniform throughout.
@@ -1625,7 +1648,7 @@ export function App(props: { engine: EngineClient }) {
                         paddingTop={1}
                         paddingBottom={1}
                         paddingLeft={2}
-                        paddingRight={1}
+                        paddingRight={2}
                       >
                         <text flexShrink={0} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
                           {turn().user!.text}
@@ -1648,7 +1671,7 @@ export function App(props: { engine: EngineClient }) {
                         paddingTop={1}
                         paddingBottom={1}
                         paddingLeft={2}
-                        paddingRight={1}
+                        paddingRight={2}
                       >
                         <Index each={items()}>
                           {(blk, i) => {
@@ -1717,7 +1740,12 @@ export function App(props: { engine: EngineClient }) {
                                     }
                                     marginTop={i > 0 ? 1 : 0}
                                   >
-                                    {`· ${(blk() as { text: string }).text}`}
+                                    {/* Clamped per line so one long unbroken notice
+                                        (an error payload) can't widen the panel. */}
+                                    {`· ${(blk() as { text: string }).text
+                                      .split("\n")
+                                      .map((l) => truncate(l, Math.max(20, blockInner() - 2)))
+                                      .join("\n")}`}
                                   </text>
                                 </Show>
                               </>
@@ -1790,7 +1818,7 @@ export function App(props: { engine: EngineClient }) {
             paddingTop={1}
             paddingBottom={1}
             paddingLeft={2}
-            paddingRight={1}
+            paddingRight={2}
           >
             <text flexShrink={0} fg={modeColor("plan")} attributes={TextAttributes.BOLD}>
               {"Plan · review & approve"}
@@ -1802,7 +1830,7 @@ export function App(props: { engine: EngineClient }) {
                 style={mdStyle}
                 fg={palette().assistant}
                 palette={palette()}
-                width={contentWidth() - 6}
+                width={contentWidth() - 7}
               />
             </scrollbox>
             {/* Approval hint — actionable keys pop bright, descriptors stay muted. */}
@@ -2007,7 +2035,7 @@ export function App(props: { engine: EngineClient }) {
                 paddingTop={1}
                 paddingBottom={1}
                 paddingLeft={2}
-                paddingRight={1}
+                paddingRight={2}
               >
                 <text fg={palette().notice} attributes={TextAttributes.BOLD}>
                   {`${GLYPH.warn} Permission required · ${p().toolName}`}
@@ -2015,6 +2043,8 @@ export function App(props: { engine: EngineClient }) {
                 <text fg={palette().assistant} wrapMode="word">{toolLabel(p().toolName, p().input)}</text>
                 <Show when={preview()}>
                   <box flexDirection="column" flexShrink={0} marginTop={1}>
+                    {/* Clamped to the card width — an unclamped wrapMode="none"
+                        line (a long command) would widen the card past the column. */}
                     <For each={preview()!.lines}>
                       {(line) => (
                         <text
@@ -2022,7 +2052,7 @@ export function App(props: { engine: EngineClient }) {
                           wrapMode="none"
                           fg={preview()!.diff ? diffColor(line, palette()) : palette().muted}
                         >
-                          {`  ${line || " "}`}
+                          {`  ${truncate(line, Math.max(20, contentWidth() - 9)) || " "}`}
                         </text>
                       )}
                     </For>
@@ -2060,7 +2090,7 @@ export function App(props: { engine: EngineClient }) {
       {/* The input — a UNIFORM filled block (same language as the message blocks):
           a raised ELEVATED surface (a shade above the panel blocks, so the active
           field stands out) with padding and a thin left rail in the MODE hue
-          (ASK blue / PLAN green / YOLO red). The prompt reads `MODE ❯ …`; typing
+          (ASK peach / PLAN green / YOLO red). The prompt reads `MODE ❯ …`; typing
           `/` opens the command menu as rows inside the SAME block above the prompt
           — one connected control. A background fill (not a line frame) stays a
           clean solid box on any terminal. */}
@@ -2071,7 +2101,7 @@ export function App(props: { engine: EngineClient }) {
           paddingTop={1}
           paddingBottom={1}
           paddingLeft={2}
-          paddingRight={1}
+          paddingRight={2}
         >
           {/* Command menu / submenus, inside the block above the prompt while typing
               `/`. ↑/↓ (or hover) highlight, Tab completes, Enter (or click) runs, Esc
@@ -2269,7 +2299,7 @@ function SegRow(props: { segs: Seg[]; center?: boolean; marginTop?: number }) {
 }
 
 /**
- * One wordmark row as a left→right single-hue blue fade: a flex ROW of one
+ * One wordmark row as a left→right single-hue brand fade: a flex ROW of one
  * `<text>` per character, each colored by its COLUMN position (`cols` = the full
  * block width, so every row shares the same ramp position per column → one clean
  * light→deep sweep, not per-letter confetti). `hue` is the live accent so the
@@ -2417,19 +2447,29 @@ function QuoteBlock(props: { block: () => Extract<MdBlock, { kind: "quote" }>; p
 
 /** A fenced code block — an inset ELEVATED surface (a shade above the message panel
  * so it reads as a distinct code block) with monospace code in its own hue. No left
- * bar; the fill + code color set it apart. The language is a quiet muted tag. */
-function CodeBlock(props: { block: () => Extract<MdBlock, { kind: "code" }>; palette: Palette }) {
+ * bar; the fill + code color set it apart. The language is a quiet muted tag. Every
+ * line is clamped (ellipsis) to `width`: an unclamped wrapMode="none" line widens
+ * the elevated box past the chat column and paints stray filled strips into the
+ * side gutter (the "weird elements" overflow). Code intentionally clips rather
+ * than wraps — wrapped code reads as broken indentation. */
+function CodeBlock(props: {
+  block: () => Extract<MdBlock, { kind: "code" }>;
+  palette: Palette;
+  /** Inner width budget (terminal cells); lines clamp to it minus the padding. */
+  width?: number;
+}) {
   const p = props.palette;
   const lines = () => {
     const l = props.block().lines;
     return l.length ? l : [""];
   };
+  const w = () => Math.max(12, (props.width ?? 96) - 2);
   return (
     <box flexDirection="column" flexShrink={0} backgroundColor={p.elevated} paddingLeft={1} paddingRight={1}>
       <Show when={props.block().lang}>
         <text fg={p.muted}>{props.block().lang}</text>
       </Show>
-      <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{l || " "}</text>}</For>
+      <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{clampWidth(l, w()) || " "}</text>}</For>
     </box>
   );
 }
@@ -2532,7 +2572,7 @@ function RichOrCode(props: { block: () => Extract<MdBlock, { kind: "code" }>; pa
   const body = () => props.block().lines.join("\n");
   const w = () => Math.max(12, props.width);
   return (
-    <Switch fallback={<CodeBlock block={props.block} palette={props.palette} />}>
+    <Switch fallback={<CodeBlock block={props.block} palette={props.palette} width={props.width} />}>
       <Match when={kind() === "bar"}>
         <BarChart body={body()} palette={props.palette} width={w()} />
       </Match>
@@ -2543,7 +2583,7 @@ function RichOrCode(props: { block: () => Extract<MdBlock, { kind: "code" }>; pa
         <PieChart body={body()} palette={props.palette} width={w()} />
       </Match>
       <Match when={kind() === "weather"}>
-        <WeatherCard body={body()} palette={props.palette} />
+        <WeatherCard body={body()} palette={props.palette} width={w()} />
       </Match>
       <Match when={kind() === "sources"}>
         <SourceCards body={body()} palette={props.palette} width={w()} />
@@ -2619,7 +2659,7 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
         <text fg={p.heading} attributes={TextAttributes.BOLD}>{model().title}</text>
       </Show>
       <Show when={model().data.length === 0}>
-        <CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />
+        <CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />
       </Show>
       <For each={rows()}>
         {(r) => (
@@ -2675,7 +2715,7 @@ function LineChart(props: { body: string; palette: Palette; width: number; spark
     // as an ordinary code block (same fallback bar/pie use).
     <Show
       when={model().series.length > 0}
-      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />}
+      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />}
     >
       <box flexDirection="column" flexShrink={0}>
         <Show when={model().title}>
@@ -2744,7 +2784,7 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
     // would draw an invisible disc beside an all-0% legend; show the raw text.
     <Show
       when={model().data.some((d) => d.value > 0)}
-      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />}
+      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />}
     >
       <box flexDirection="row" flexShrink={0}>
         {/* The circular grid, painted as background-colored cells (run-length
@@ -2786,7 +2826,7 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
 
 /** A weather card: a bordered panel with the location, a big glyph + temperature +
  * condition, then a chip row (hi/lo, humidity, wind, …) and an optional forecast. */
-function WeatherCard(props: { body: string; palette: Palette }) {
+function WeatherCard(props: { body: string; palette: Palette; width?: number }) {
   const p = props.palette;
   const w = () => parseWeather(props.body);
   // Nothing recognizable parsed → the block would render as a lone default ⛅
@@ -2798,7 +2838,7 @@ function WeatherCard(props: { body: string; palette: Palette }) {
   return (
     <Show
       when={hasContent()}
-      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} />}
+      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />}
     >
     <box flexDirection="column" flexShrink={0}>
       <Show when={w().location}>
@@ -2994,7 +3034,18 @@ function ToolBlockView(props: {
       <box flexDirection="row" flexShrink={0}>
         <text flexShrink={0} fg={!b().done ? p.tool : p.muted}>{`${chevron()} `}</text>
         <text flexShrink={0} fg={b().isError ? p.del : p.tool}>{icon()}</text>
-        <text flexShrink={1} wrapMode="none" fg={b().isError ? p.del : p.muted}>{` ${summary()}`}</text>
+        {/* The summary is PRE-truncated with an ellipsis to the width left after
+            the meta column — flexShrink alone hard-clips it mid-word straight
+            into the meta ("…comparison 202  2.1s · 5 results"), reading as broken. */}
+        <text flexShrink={1} wrapMode="none" fg={b().isError ? p.del : p.muted}>
+          {` ${truncate(
+            summary(),
+            Math.max(
+              12,
+              (props.width ?? 80) - 3 - displayWidth(icon()) - (meta() ? displayWidth(meta()) + 2 : 0),
+            ),
+          )}`}
+        </text>
         <box flexGrow={1} />
         <Show when={meta()}>
           <text flexShrink={0} fg={b().isError ? p.del : p.gutter}>{`  ${meta()}`}</text>
@@ -3011,14 +3062,22 @@ function ToolBlockView(props: {
         <Switch
           fallback={
             <box flexDirection="column">
+              {/* Every output line is clamped to the panel width: an unclamped
+                  wrapMode="none" line (a minified bundle, a long log line) makes
+                  the panel overflow the column and paint stray strips into the
+                  side gutter — the "weird elements" bug. */}
               <For each={visible()}>
                 {(line) =>
                   b().isDiff ? (
                     // Fg-only diff: green additions, red deletions, dim context — no
                     // background band (flat stays uniform on any terminal).
-                    <text fg={diffColor(line, p)} wrapMode="none">{`  ${line || " "}`}</text>
+                    <text fg={diffColor(line, p)} wrapMode="none">
+                      {`  ${truncate(line, Math.max(20, (props.width ?? 80) - 2)) || " "}`}
+                    </text>
                   ) : (
-                    <text fg={p.muted}>{`  ${line}`}</text>
+                    <text fg={p.muted} wrapMode="none">
+                      {`  ${truncate(line, Math.max(20, (props.width ?? 80) - 2))}`}
+                    </text>
                   )
                 }
               </For>

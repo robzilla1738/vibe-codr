@@ -265,10 +265,22 @@ function sliceByWidth(s: string, w: number): [string, string] {
  * hard-broken. A cell that already fits is returned verbatim (preserving any
  * intentional internal spacing — re-flow only runs on genuine overflow). Widths
  * are measured in terminal cells so CJK/emoji wrap correctly. Always returns at
- * least one (possibly empty) line. */
+ * least one (possibly empty) line. A cell that reads as a LIST ITEM (`• x` /
+ * `- x` / `1. x`) hangs its continuation lines under the item TEXT, not the
+ * marker — a wrapped bullet stays one visual item instead of the overflow
+ * snapping back flush-left under the `•`. */
 function wrapCell(s: string, width: number): string[] {
   const w = Math.max(1, width);
   if (displayWidth(s) <= w) return [s];
+  // List-item hanging indent: wrap the text after the marker into a narrower
+  // budget, then re-indent the continuations. Skipped when the column is too
+  // tight for the indent to leave legible text (≥3 cells).
+  const marker = /^([-•*·]|\d{1,3}[.)])\s+/.exec(s);
+  if (marker && w - marker[0].length >= 3) {
+    const indent = " ".repeat(marker[0].length);
+    const rest = wrapCell(s.slice(marker[0].length), w - marker[0].length);
+    return rest.map((line, i) => (i === 0 ? marker[0] + line : indent + line));
+  }
   const lines: string[] = [];
   let cur = "";
   for (let word of s.split(/\s+/).filter(Boolean)) {

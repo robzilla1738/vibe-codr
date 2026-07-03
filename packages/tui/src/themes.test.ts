@@ -63,11 +63,14 @@ test("the opencode theme ships with its signature warm primary", () => {
   expect(oc.delBg).not.toBe(oc.panel);
 });
 
-test("the default theme is Blue 300 accented and defines the new text tokens", () => {
+test("the default theme is peach accented (opencode look), DARK, and defines the new text tokens", () => {
   const d = getTheme("default");
-  expect(d.primary).toBe("#70cbf4");
-  expect(d.accent).toBe("#70cbf4");
-  expect(d.heading).toBe("#70cbf4");
+  expect(d.primary).toBe("#fab283");
+  expect(d.accent).toBe("#fab283");
+  expect(d.heading).toBe("#fab283");
+  // The default must never drift light — its surfaces stay near-black.
+  expect(d.background).toBe("#0a0a0a");
+  expect(d.background).not.toBe(getTheme("light").background);
   // gutter/code are their own tones, distinct from the accent and from borders.
   expect(d.gutter).not.toBe(d.primary);
   expect(d.gutter).not.toBe(d.border);
@@ -139,13 +142,15 @@ test("every theme keeps panel/elevated raised surfaces distinct from the backdro
   }
 });
 
-test("accent presets: valid hexes, orange is opencode's peach, blue is the default", () => {
+test("accent presets: valid hexes, orange (opencode's peach) is the default brand", () => {
   expect(ACCENT_NAMES.length).toBeGreaterThanOrEqual(6);
   for (const name of ACCENT_NAMES) {
     expect(ACCENT_PRESETS[name]).toMatch(/^#[0-9a-f]{6}$/);
   }
   expect(ACCENT_PRESETS.orange).toBe("#fab283");
-  expect(ACCENT_PRESETS.blue).toBe(getTheme("default").primary);
+  // The default theme carries the opencode peach as its brand — the same hue as
+  // the `orange` preset (so `/accent orange` is a no-op on the default).
+  expect(ACCENT_PRESETS.orange).toBe(getTheme("default").primary);
   // Distinct swatches — two names must never set the same hue.
   expect(new Set(Object.values(ACCENT_PRESETS)).size).toBe(ACCENT_NAMES.length);
 });

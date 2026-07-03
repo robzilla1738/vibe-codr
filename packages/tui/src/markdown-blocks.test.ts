@@ -195,6 +195,37 @@ test("renderTable wraps (not truncates) cells to fit a narrow width, losing no t
   expect(lines.filter((l) => l.role === "row").length).toBeGreaterThan(1);
 });
 
+test("a wrapped list-item cell hangs its continuation under the text, not the marker", () => {
+  const lines = renderTable(
+    [["Pros"], ["• Smart contracts plus a huge dapp ecosystem"]],
+    ["left"],
+    24,
+  );
+  const rows = lines.filter((l) => l.role === "row") as { cells: string[] }[];
+  expect(rows.length).toBeGreaterThan(1);
+  // The first physical line carries the bullet; every continuation is indented
+  // past the `• ` marker so the wrapped words align under the item text.
+  expect(rows[0]!.cells[0]!.startsWith("• ")).toBe(true);
+  for (const r of rows.slice(1)) {
+    const cell = r.cells[0]!;
+    if (!cell.trim()) continue; // padding row from a sibling column
+    expect(cell.startsWith("  ")).toBe(true);
+    expect(cell.trimStart().startsWith("•")).toBe(false);
+  }
+});
+
+test("a numbered list-item cell also hangs its wrap (1. / 12) markers)", () => {
+  const lines = renderTable(
+    [["Steps"], ["12. resolve the pricing catalog and cache it for a day"]],
+    ["left"],
+    26,
+  );
+  const rows = lines.filter((l) => l.role === "row") as { cells: string[] }[];
+  expect(rows.length).toBeGreaterThan(1);
+  expect(rows[0]!.cells[0]!.startsWith("12. ")).toBe(true);
+  for (const r of rows.slice(1)) expect(r.cells[0]!.startsWith("    ")).toBe(true);
+});
+
 test("every wrapped table line is the same visual width", () => {
   const lines = renderTable(
     [["Name", "Detail"], ["Alpha", "a longer detail that must wrap across lines"]],

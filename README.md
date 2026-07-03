@@ -86,15 +86,15 @@ latest) — never hardcoded.
 ## Screenshots
 
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberate
-color language: a **black background** with **filled panel cards** and a **thin
-left rail** on every block (no box-drawing borders — they gap into dashes on
-terminals with line spacing), and a single **Blue 300 (`#70cbf4`) accent**
-reserved for titles and markers — the **VIBE CODR wordmark** (a calm light→deep
-blue fade), panel titles, the **user-message rail**, the active task/step, the
-selected menu row, the **braille thinking spinner**, and the input caret. The
-input's **mode label + rail** (`ASK ❯` in the accent · `PLAN ❯` green · `YOLO ❯`
-red) make switching mode unmistakable without repainting the screen. Swap the
-accent in one word — **`/accent orange`** (opencode's warm peach), or `blue`,
+color language: a **near-black graphite background** with **filled panel cards**
+and a **thin left rail** on every block (no box-drawing borders — they gap into
+dashes on terminals with line spacing), and opencode's signature **peach
+(`#fab283`) accent** reserved for titles and markers — the **VIBE CODR wordmark**
+(a calm light→deep peach fade), panel titles, the **user-message rail**, the
+active task/step, the selected menu row, the **braille thinking spinner**, and
+the input caret. The input's **mode label + rail** (`ASK ❯` in the accent ·
+`PLAN ❯` green · `YOLO ❯` red) make switching mode unmistakable without
+repainting the screen. Swap the accent in one word — **`/accent blue`**, or
 `ember`, `amber`, `green`, `teal`, `violet`, `rose`, `white`, or any
 `/accent <hex>` — the swatch submenu previews each hue live, and the wordmark
 fade, markers, and input rail all follow it. The other colors are purely
@@ -115,7 +115,7 @@ blocks + tables as clean native primitives** (aligned columns, accent header
 row); tool calls read as a distinct icon + action (`$` bash, `→` read, `←` edit,
 `✱` glob/grep, `◈` websearch, `±` git…) and **condense to one line you click to
 expand**, while edits fold into a single diff row with the hunk shown beneath it
-and **search steps expand to clean source cards**; a blue braille spinner shows
+and **search steps expand to clean source cards**; a peach braille spinner shows
 live work; the **slash menu docks flush to the input as one connected control**
 and drills into rich submenus (a searchable model picker, clickable toggles).
 
@@ -329,16 +329,16 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
-  deliberate color language: a **black background** with **filled panel cards**
-  and a **thin left rail** on every block (no box-drawing chrome borders), and a
-  single **Blue 300 (`#70cbf4`) accent** reserved for titles and
-  markers — the **VIBE CODR wordmark** (a calm light→deep blue fade), panel titles,
+  deliberate color language: a **near-black graphite background** with **filled
+  panel cards** and a **thin left rail** on every block (no box-drawing chrome
+  borders), and opencode's signature **peach (`#fab283`) accent** reserved for titles and
+  markers — the **VIBE CODR wordmark** (a calm light→deep peach fade), panel titles,
   the **user-message rail**, the active task/step, the selected menu row, the
   **braille thinking spinner**, and the caret; the input's **mode label + rail**
   (`ASK ❯` in the accent / `PLAN ❯` green / `YOLO ❯` red) carry the mode;
   green/red/amber stay reserved for diffs and warnings, and one **calm muted
   tone** carries the tool-step / subagent rails. Swap the accent in one word —
-  `/accent orange` (or ember, amber, green, teal, violet, rose, white, blue, or
+  `/accent blue` (or ember, amber, green, teal, violet, rose, white, orange, or
   any hex) — the swatch submenu previews each hue and the wordmark fade, markers,
   and input rail follow.
   A **single, centered chat column** (ChatGPT-style — no sidebar, **no top header**)
@@ -390,8 +390,8 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `n`/Esc (deny), **or type a reason**: any other text denies AND travels to the
   model as the deny reason (`denied by user — use staging instead`), so a denial
   steers the next attempt instead of leaving the model guessing. Fifteen themes
-  ship — `default` (black, blue
-  accent), `light`, `contrast`, `opencode` (warm peach), and ported classics:
+  ship — `default` (the opencode look: graphite, peach
+  accent), `light`, `contrast`, `opencode`, and ported classics:
   `tokyonight`, `catppuccin`, `gruvbox`, `nord`, `one-dark`, `dracula`,
   `rosepine`, `kanagawa`, `everforest`, `flexoki` (burnt orange), `vesper` (peach).
 - **Plan / execute / yolo** — three modes, cycled with **Shift+Tab** (or
@@ -410,7 +410,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   plan can never silently inherit a lingering YOLO — YOLO is always an explicit
   choice, and entering it via `/yolo` leaves a warn notice in the transcript.
   The mode chip on the
-  input's top border is color-coded (ASK blue / PLAN green / YOLO red) so the
+  input's top border is color-coded (ASK peach / PLAN green / YOLO red) so the
   active mode is unmistakable, while the rest of the chrome stays neutral.
 - **Resilience & git/process tools** — provider calls retry transient failures
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a
@@ -711,7 +711,7 @@ All planned phases are implemented and tested:
 9. ✅ TUI UX — the plan/execute/yolo mode shown (and color-coded) on the input's
    top border (Shift+Tab to cycle), an interactive slash-command menu, first-class Ollama Cloud, and a
    guided `vibecodr setup`; the OpenTUI app is covered by `bun run smoke:tui`.
-10. ✅ opencode-inspired UI — black, centered single-column chat (no top header:
+10. ✅ opencode-inspired UI — dark graphite, centered single-column chat (no top header:
     a VIBE CODR wordmark splash, the transcript, tasks/subagents panels above the
     input, the mode break on the input's top border, and all details under it),
     tap-your-message-to-fold, a **`/jobs` sub-view** (running shell commands +

@@ -4,6 +4,35 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Changed — default theme is the opencode look, wider column, overflow fixes
+
+- **The default theme is now the opencode look** — peach (`#fab283`) accent on
+  near-black graphite surfaces (`#0a0a0a` / `#141414` / `#1e1e1e`), replacing
+  the black + Blue 300 palette. The wordmark sweep, markers, spinner, and mode
+  chip all follow; the smoke test now asserts the default is peach-accented AND
+  dark, so a light-mode (or blue) regression fails CI. `light` remains an
+  explicit `/theme light` opt-in only.
+- **Wider chat column.** `CONTENT_MAX` 84 → 100 — code, diffs, tables and tool
+  output show meaningfully more per row; narrow terminals still just fill.
+- **No more gutter "ghost" strips.** Every `wrapMode="none"` line — fenced code
+  blocks, expanded tool output, diffs, permission previews, notices — is now
+  clamped (ellipsis) to the panel width. One long unbroken line (a minified
+  bundle, a long log line) used to widen the panel past the column and paint
+  stray filled strips into the side gutter.
+- **Input wraps exactly at the edge.** The input's height estimate now measures
+  the field's true width (it ignored the `ASK ❯ ` prefix, so text near the edge
+  horizontally scrolled for a few chars before the box grew, then over-reserved
+  blank rows) and reserves a cell for the cursor.
+- **Tool rows breathe.** Panel cards use symmetric padding (right 2, was 1), and
+  a tool row's summary is pre-truncated with an ellipsis against its meta column
+  instead of hard-clipping mid-word into `2.1s · 5 results`.
+- **Menu columns align.** The slash-menu/model-picker label column cap (12 → 32)
+  collapsed to a zero gap on real model ids (`openai/o4-mini200k`); labels now
+  always keep a 2-space gap and descriptions ellipsize instead of hard-clipping
+  at the right edge.
+- **Tables hang wrapped list items** under the item text (not the `•` marker),
+  and input/plan height math is display-width aware (CJK/emoji).
+
 ### Added — production & distribution layer
 
 - **Two install channels.** Prebuilt **standalone binaries** (darwin/linux ×

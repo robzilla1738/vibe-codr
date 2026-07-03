@@ -40,7 +40,7 @@ const engine: EngineClient = {
     tasks: [],
     theme: "default",
     // No /accent override → brand() falls back to the theme's Blue 300 primary, so
-    // the smoke exercises the real default chrome (blue wordmark/markers/spinner).
+    // the smoke exercises the real default chrome (peach wordmark/markers/spinner).
     accentColor: "",
     commandNames: ["help", "cost", "model", "myskill"],
     git: { branch: "main", dirty: 3, ahead: 1, behind: 0, worktree: false },
@@ -117,23 +117,24 @@ check("input shows the placeholder", frame.includes("Send a message"));
 check("input border shows the ASK mode", frame.includes("ASK"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));
 
-// The wordmark must be a single-hue BLUE gradient: many distinct per-column
-// colors (a real sweep, not a flat fill) that are ALL blue-dominant (no rainbow).
+// The wordmark must be a single-hue PEACH gradient (the opencode brand): many
+// distinct per-column colors (a real sweep, not a flat fill) that are ALL
+// warm red-dominant (no rainbow, and no drift back to the old blue).
 // captureCharFrame is color-blind, so inspect the per-span fg via captureSpans.
 // This guards both the regression where inline fg didn't paint (all white) and a
 // reintroduction of the multi-hue rainbow.
 const wordmarkColors = new Set<string>();
-let wordmarkAllBlue = true;
+let wordmarkAllWarm = true;
 for (const line of t.captureSpans().lines) {
   if (!line.spans.some((s) => s.text.includes("░") || s.text.includes("█"))) continue;
   for (const s of line.spans) {
     if (!s.text.trim()) continue;
     wordmarkColors.add(`${s.fg.r},${s.fg.g},${s.fg.b}`);
-    if (s.fg.b < s.fg.r || s.fg.b < s.fg.g) wordmarkAllBlue = false;
+    if (s.fg.r < s.fg.g || s.fg.r < s.fg.b) wordmarkAllWarm = false;
   }
 }
-check(`wordmark is a single-hue blue gradient (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
-check("wordmark colors are all blue-dominant (no rainbow)", wordmarkAllBlue);
+check(`wordmark is a single-hue peach gradient (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
+check("wordmark colors are all warm-dominant (no rainbow)", wordmarkAllWarm);
 // The default theme paints a BLACK background — guards the regression where a
 // persisted `theme: light` (or a non-black default) turned the whole UI white.
 const bgBlack = t
@@ -176,16 +177,16 @@ check("assistant bold markers are concealed (no raw **)", !frame.includes("**"))
 // A turn is in flight (no turn-finished yet) → the working spinner shows.
 check("working indicator renders while a turn runs", frame.includes("Working"));
 // The spinner glyph is the flat brand accent — assert the braille glyph span
-// carries a SATURATED, blue-dominant fg (not the muted/white default, and not the
+// carries a SATURATED, warm red-dominant fg (not the muted/white default, and not the
 // old rainbow). Same per-<text fg> mechanism the wordmark uses.
 const saturated = (fg: { r: number; g: number; b: number }) =>
   Math.max(fg.r, fg.g, fg.b) - Math.min(fg.r, fg.g, fg.b) > 0.2;
-const spinnerBlue = t
+const spinnerWarm = t
   .captureSpans()
   .lines.some((l) =>
-    l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg) && s.fg.b >= s.fg.r && s.fg.b >= s.fg.g),
+    l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg) && s.fg.r >= s.fg.g && s.fg.r >= s.fg.b),
   );
-check("working spinner glyph is brand-blue", spinnerBlue);
+check("working spinner glyph is brand-peach", spinnerWarm);
 
 // 4) A tool call renders with its icon + summary, and its output is condensed.
 push({ type: "tool-call-started", toolCallId: "t1", toolName: "read", input: { path: "x" } } as UIEvent);
@@ -593,7 +594,7 @@ check("rich reply: the table is a box-drawing grid", frame.includes("┌") && fr
 const headerAccent = t
   .captureSpans()
   .lines.flatMap((l) => l.spans)
-  .some((s) => s.text.includes("Name") && s.fg.b >= s.fg.r && s.fg.b >= s.fg.g && s.fg.b - Math.min(s.fg.r, s.fg.g) > 0.15);
+  .some((s) => s.text.includes("Name") && s.fg.r >= s.fg.g && s.fg.r >= s.fg.b && s.fg.r - Math.min(s.fg.g, s.fg.b) > 0.15);
 check("rich reply: the table header is accent-colored", headerAccent);
 // Table cells conceal inline markdown — the `**Name**` header must not leak raw
 // `**` (and the whole reply, prose + table, has no stray markers).
@@ -607,12 +608,12 @@ const quoteBar = t
     (l) => l.spans.some((s) => s.text.includes("RICHQUOTE")) && l.spans.some((s) => s.bg.r + s.bg.g + s.bg.b > 0.1),
   );
 check("rich reply: the blockquote renders with a filled gutter bar", frame.includes("RICHQUOTE") && quoteBar);
-// The heading is painted in the blue accent (the `heading` token), not body white.
-const headingBlue = t
+// The heading is painted in the peach accent (the `heading` token), not body white.
+const headingWarm = t
   .captureSpans()
   .lines.flatMap((l) => l.spans)
-  .some((s) => s.text.includes("RICHHEAD") && s.fg.b >= s.fg.r && s.fg.b >= s.fg.g && s.fg.b - Math.min(s.fg.r, s.fg.g) > 0.15);
-check("rich reply: the heading is accent-blue", headingBlue);
+  .some((s) => s.text.includes("RICHHEAD") && s.fg.r >= s.fg.g && s.fg.r >= s.fg.b && s.fg.r - Math.min(s.fg.g, s.fg.b) > 0.15);
+check("rich reply: the heading is accent-peach", headingWarm);
 
 // 12) Rich data views: a reply with fenced chart / pie / sources blocks renders as
 // beautiful views (bars, a colored pie disc + legend, numbered source cards) rather

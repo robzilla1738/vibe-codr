@@ -43,7 +43,7 @@ export class ReportStore {
   get(taskId: string): StoredReport | null {
     const hit = this.#mem.get(taskId);
     if (hit) return hit;
-    const disk = readTaskReport(this.#cwd, taskReportPath(this.#sessionId, taskId));
+    const disk = readTaskReport(this.#cwd, taskReportPath(this.#cwd, this.#sessionId, taskId));
     return disk !== null ? { objective: taskId, output: disk } : null;
   }
 }

@@ -421,6 +421,97 @@ test("an interrupted worktree child fails the task and does NOT merge its partia
   expect(await worktreeBranches(cwd)).toEqual([]);
 });
 
+// ── ensemble re-gates the MERGED tree, not just each isolated worktree ────────
+//
+// FINDING (V2 §4): #runEnsembleTask merged the winner and settled `completed`
+// with NO gate on the combined tree — unlike #runWorktreeTask, which re-runs the
+// gate on the merged main tree. The winner's green was produced in ISOLATION off
+// a checkout that lacks the main tree's untracked/gitignored state, so a hard
+// task could land a red main tree while reporting success.
+test("ensemble re-gates the merged tree — a winner green in isolation but red combined fails", async () => {
+  const cwd = await gitRepo();
+  const config = orchConfig();
+  config.build.ensemble = { n: 2 };
+  // An UNTRACKED file present only in the main tree (a worktree checks out
+  // tracked files only): the gate `test ! -f block.txt` is green inside each
+  // isolated worktree but red after the winner merges into the main tree.
+  writeFileSync(join(cwd, "block.txt"), "x\n");
+  const model = routedModel((p) => {
+    if (p.includes("ENS-MERGE-GATE")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "hard", objective: "solve", hard: true, check: true }]);
+    }
+    if (p.includes("APPLIED")) return textStep("attempt report");
+    return toolCallStep("apply", { path: "result.txt", content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD" });
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([applyTool]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    repoProfile: fakeProfile({ typecheck: "test ! -f block.txt" }),
+  });
+  await session.run("ENS-MERGE-GATE");
+  bus.close();
+  await done;
+
+  const orch = events.filter((e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task");
+  // The winner passed in isolation but the merged tree is red → the task FAILS,
+  // instead of the old silent "completed" on a red main tree.
+  expect(orch.some((e) => e.status === "failed" && e.taskId === "hard")).toBe(true);
+  expect(orch.some((e) => e.status === "completed")).toBe(false);
+  const out = spawnTasksOutput(events);
+  expect(out).toMatch(/MERGED tree is red/i);
+  // Every attempt's worktree + branch was still cleaned up.
+  expect(await worktreeBranches(cwd)).toEqual([]);
+});
+
+// ── a task's ```handoff fence is stripped from its report prose ───────────────
+//
+// FINDING (V2 §4): stripHandoffFence was dead (no call site), so the child's raw
+// ```handoff machine block was stored verbatim in the report + threaded into the
+// planner summary and dependents' kickoffs as noise (the structured handoff is
+// already surfaced separately).
+test("a task's handoff fence is stripped from its report prose", async () => {
+  const cwd = await gitRepo();
+  const fenced =
+    'Implemented the parser.\n```handoff\n{"keyFacts":["parser done"],"filesTouched":["p.ts"],"openQuestions":[]}\n```';
+  const model = routedModel((p) => {
+    if (p.includes("FENCE-RUN")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "t", objective: "build the parser" }]);
+    }
+    return textStep(fenced); // the child's final message carries the fence
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config: orchConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("FENCE-RUN");
+  bus.close();
+  await done;
+
+  const out = spawnTasksOutput(events);
+  expect(out).toContain("Implemented the parser."); // prose kept
+  expect(out).not.toContain("```handoff"); // machine fence stripped
+});
+
 // ── ensemble on an unborn HEAD → shared-tree fallback (never hard-fail) ───────
 
 test("a hard/ensemble task in a repo with no commits falls back to the shared tree", async () => {

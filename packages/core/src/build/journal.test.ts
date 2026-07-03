@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, appendFileSync } from "node:fs";
+import { mkdtempSync, appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   readTaskReport,
   loadCompletedTasks,
 } from "./journal.ts";
+import { globalStateDir } from "../state-dir.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "vibe-journal-"));
 
@@ -38,8 +39,40 @@ test("failed tasks are not seeded; torn/malformed lines tolerated", () => {
   appendOrchestrationEvent(cwd, ses, {
     type: "task-finished", at: 1, id: "bad", objective: "x", outcome: "failed", attempts: 2,
   });
-  appendFileSync(join(cwd, ".vibe", "orchestration", `${ses}.jsonl`), '{"type":"task-fin');
+  // Append a torn line to the ACTUAL (global) journal the writer used.
+  appendFileSync(join(globalStateDir(cwd), "orchestration", `${ses}.jsonl`), '{"type":"task-fin');
   expect(loadCompletedTasks(cwd, ses)).toEqual([]);
+});
+
+test("orchestration state is written OUT of the project cwd (global state dir)", () => {
+  // Machine state must not dirty a fresh scaffold target — the same relocation
+  // that moved sessions/checkpoints. The report path is absolute under the
+  // global state dir, never inside the project's .vibe/.
+  const cwd = tmp();
+  const ses = "ses_reloc";
+  appendOrchestrationEvent(cwd, ses, { type: "task-started", at: 1, id: "t", objective: "o", deps: [] });
+  const reportPath = persistTaskReport(cwd, ses, "t", "report body")!;
+  expect(reportPath.startsWith(globalStateDir(cwd))).toBe(true);
+  expect(reportPath).not.toContain(join(cwd, ".vibe"));
+  expect(existsSync(join(cwd, ".vibe", "orchestration"))).toBe(false);
+  // The absolute report path round-trips through read.
+  expect(readTaskReport(cwd, reportPath)).toBe("report body");
+});
+
+test("a pre-relocation in-cwd journal + report still resume (legacy read fallback)", () => {
+  const cwd = tmp();
+  const ses = "ses_legacy";
+  const legacyDir = join(cwd, ".vibe", "orchestration");
+  mkdirSync(join(legacyDir, "reports"), { recursive: true });
+  const relReport = join(".vibe", "orchestration", "reports", "legacy.md");
+  writeFileSync(join(cwd, relReport), "legacy report");
+  writeFileSync(
+    join(legacyDir, `${ses}.jsonl`),
+    `${JSON.stringify({ type: "task-finished", at: 1, id: "t", objective: "o", outcome: "completed", attempts: 1, reportPath: relReport })}\n`,
+  );
+  const [seeded] = loadCompletedTasks(cwd, ses);
+  expect(seeded?.id).toBe("t");
+  expect(seeded?.output).toBe("legacy report"); // relative legacy path resolved against cwd
 });
 
 test("missing journal loads empty; missing report degrades to a placeholder", () => {

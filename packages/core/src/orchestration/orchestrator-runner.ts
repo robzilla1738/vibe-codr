@@ -25,6 +25,7 @@ import {
   HANDOFF_INSTRUCTION,
   formatHandoffForKickoff,
   parseHandoff,
+  stripHandoffFence,
 } from "../build/handoff.ts";
 import {
   appendOrchestrationEvent,
@@ -667,7 +668,15 @@ export class OrchestratorRunner {
       ...(spec.tier ? { tier: spec.tier } : {}),
     });
     const settle = (partial: Omit<TaskResult, "durationMs">): TaskResult => {
-      const result: TaskResult = { ...partial, durationMs: Date.now() - startedAt };
+      // The child's raw final message carries the ```handoff fence, already
+      // parsed into the structured `handoff` field — strip it from the prose so
+      // read_report, the planner summary, and dependents' kickoffs don't all
+      // repeat the machine block as noise.
+      const result: TaskResult = {
+        ...partial,
+        output: stripHandoffFence(partial.output),
+        durationMs: Date.now() - startedAt,
+      };
       this.#recordFinished(spec, result);
       return result;
     };
@@ -775,7 +784,15 @@ export class OrchestratorRunner {
       ...(spec.tier ? { tier: spec.tier } : {}),
     });
     const settle = (partial: Omit<TaskResult, "durationMs">): TaskResult => {
-      const result: TaskResult = { ...partial, durationMs: Date.now() - startedAt };
+      // The child's raw final message carries the ```handoff fence, already
+      // parsed into the structured `handoff` field — strip it from the prose so
+      // read_report, the planner summary, and dependents' kickoffs don't all
+      // repeat the machine block as noise.
+      const result: TaskResult = {
+        ...partial,
+        output: stripHandoffFence(partial.output),
+        durationMs: Date.now() - startedAt,
+      };
       this.#recordFinished(spec, result);
       return result;
     };
@@ -797,7 +814,11 @@ export class OrchestratorRunner {
         level: "info",
         message: `Task "${spec.id}": no ensemble worktree could be created — running in the shared tree.`,
       });
-      return this.#runSharedTask(spec, depResults, parentSignal);
+      // Forward suspendParentSlot: a DETACHED batch already released the root's
+      // tree-global limiter slot (suspendParentSlot=false), so the shared-tree
+      // fallback must not re-suspend a slot the idle parent no longer holds —
+      // that over-releases the limiter and admits an extra concurrent turn.
+      return this.#runSharedTask(spec, depResults, parentSignal, suspendParentSlot);
     }
 
     // Winner: highest score, ties broken by the smaller diff. Must score > 0.
@@ -818,13 +839,41 @@ export class OrchestratorRunner {
           attempts: n,
         });
       }
-      const merged = await this.#mergeLock(() => gitMergeWorktreeBranch(mainCwd, winner.branch));
-      if (!merged) {
+      // Merge AND re-gate the MERGED main tree inside one lock hold — mirroring
+      // #runWorktreeTask. The winner's green was produced in ISOLATION off a
+      // baseRef captured at ensemble start; by merge time sibling tasks may have
+      // advanced the tree, so the winner's isolated verdict is stale and the
+      // COMBINED result must be re-verified or a hard task could land a red main
+      // tree while reporting success.
+      const profile = this.#handle.deps.repoProfile;
+      const wantsGate = (spec.check || spec.verify) && !!profile;
+      const mergeVerdict = await this.#mergeLock(
+        async (): Promise<{ ok: true } | { ok: false; output: string }> => {
+          if (!(await gitMergeWorktreeBranch(mainCwd, winner.branch))) {
+            return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
+          }
+          if (wantsGate) {
+            const gate = await runGate(mainCwd, profile!, 0, {
+              checks: this.#handle.deps.config.build.gate.checks,
+              timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+              ...(parentSignal ? { signal: parentSignal } : {}),
+            });
+            if (gate.outcome === "red") {
+              return { ok: false, output: `Ensemble winner passed in isolation but the MERGED tree is red:\n${formatGateFailure(gate, 1)}` };
+            }
+            if (gate.outcome === "aborted") {
+              return { ok: false, output: "Gate interrupted before a verdict — merged changes discarded." };
+            }
+          }
+          return { ok: true };
+        },
+      );
+      if (!mergeVerdict.ok) {
         return settle({
           id: spec.id,
           objective: spec.objective,
           outcome: "failed",
-          output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps",
+          output: mergeVerdict.output,
           attempts: n,
           ...(winner.handoff ? { handoff: winner.handoff } : {}),
         });
@@ -953,7 +1002,15 @@ export class OrchestratorRunner {
     // Every terminal path records the report (store + persist + journal) and
     // stamps the wall-clock so the UIEvent + journal carry it.
     const settle = (partial: Omit<TaskResult, "durationMs">): TaskResult => {
-      const result: TaskResult = { ...partial, durationMs: Date.now() - startedAt };
+      // The child's raw final message carries the ```handoff fence, already
+      // parsed into the structured `handoff` field — strip it from the prose so
+      // read_report, the planner summary, and dependents' kickoffs don't all
+      // repeat the machine block as noise.
+      const result: TaskResult = {
+        ...partial,
+        output: stripHandoffFence(partial.output),
+        durationMs: Date.now() - startedAt,
+      };
       this.#recordFinished(spec, result);
       return result;
     };

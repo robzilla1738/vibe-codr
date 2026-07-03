@@ -777,7 +777,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 1 | Modes & approvals | PASS |
 | 2 | Compaction & microcompaction | PASS |
 | 3 | Prompt-cache economy | REOPENED |
-| 4 | Subagent orchestration | REOPENED |
+| 4 | Subagent orchestration | PASS |
 | 5 | Coding loop | REOPENED |
 | 6 | Context gathering | REOPENED |
 | 7 | Memory | REOPENED |
@@ -921,6 +921,76 @@ algorithm + offload lifecycle) + author repro/fix.
 
 Stale docs fixed: `OffloadRecord.path` "cwd-relative" → ABSOLUTE; module header notes the absolute
 global-state path.
+
+
+## v2 §4. Subagent orchestration — PASS
+
+Scope read end-to-end: orchestrator.ts (DAG runDag/validateDag), orchestration/orchestrator-runner.ts
+(shared/worktree/ensemble task paths), child-registry.ts, limiter.ts (AIMD + suspend pairing),
+blackboard.ts, agents.ts, build/gitops.ts, build/journal.ts, build/handoff.ts. Two independent
+readers (scheduler+concurrency / worktree+journal+ensemble) + author repro/fix.
+
+### CONFIRMED & FIXED
+- **[MED] V2-12 Orchestration journal + reports still wrote into project cwd `.vibe/`** —
+  inconsistent with the deliberate state relocation (sessions/checkpoints/offloads → global state
+  dir), re-introducing the exact scaffold-pollution class (`create-next-app .` fails on an existing
+  `.vibe/`) for any spawn_tasks run. Fixed: journal + reports moved to
+  `globalStateDir(cwd)/orchestration/…`; `taskReportPath` returns an ABSOLUTE path; `readTaskReport`
+  handles absolute (current) and cwd-relative (legacy) forms; `loadCompletedTasks` reads the global
+  journal then falls back to the legacy in-cwd one. Regressions: *"orchestration state is written OUT
+  of the project cwd"*, *"a pre-relocation in-cwd journal + report still resume"* (journal.test.ts).
+- **[MED] V2-13 Ensemble winner merged with NO post-merge gate** — #runEnsembleTask squash-merged the
+  winner and settled `completed` with no gate on the COMBINED tree, unlike #runWorktreeTask. The
+  winner's green was produced in isolation off a baseRef captured at ensemble start, so a `hard`
+  task could land a red main tree while reporting success. Fixed: merge + re-gate the merged main
+  tree inside one #mergeLock hold (mirrors #runWorktreeTask); red/aborted → task fails, changes
+  discarded. Regression: *"ensemble re-gates the merged tree — a winner green in isolation but red
+  combined fails"* (orchestration-worktree.test.ts).
+- **[LOW] V2-14 `stripHandoffFence` was dead (no call site)** — the child's raw ```handoff machine
+  block was stored verbatim in the report and threaded into the planner summary + dependents'
+  kickoffs as noise (the structured handoff is surfaced separately). Fixed: strip the fence in the
+  three `settle` wrappers so TaskResult.output is fence-free at the source for every consumer.
+  Regression: *"a task's handoff fence is stripped from its report prose"*.
+- **[LOW] V2-15 (ORCH-1) `suspendParentSlot` dropped on the ensemble→shared-tree fallback** — the
+  all-worktree-add-failed fallback called `#runSharedTask(spec, depResults, parentSignal)` omitting
+  the 4th arg (defaults `true`), so a DETACHED batch (which released the root's tree-global limiter
+  slot) would re-suspend a slot the idle parent no longer holds → a transient over-admit of one
+  concurrent turn. Both readers flagged it independently. Fixed: forward `suspendParentSlot`, matching
+  the file's three other `#runSharedTask` call sites. Fixed-by-consistency: the exact failure needs an
+  injected internal `worktree add` failure that the `#worktreesUsable` pre-check passes — intractable
+  to construct cleanly; the one-line fix is verbatim the sibling call sites, and the ensemble path is
+  covered by V2-13's + V2-14's end-to-end tests.
+
+### REFUTED / verified clean (both readers)
+- Limiter suspend/resume balance (ref-counted release/acquire, N-parallel-spawn, throwing fn, abort
+  mid-child, no-signal re-acquire can't wedge); runDag settle-before-race ordering, termination, and
+  the (unreachable-but-correct) fail-closed fill; journal seed fixpoint + plan-drift guard;
+  tree-global #mergeLock through nested spawn_tasks with no merge/childGate deadlock; ensemble
+  sibling-leak fix (attempt never throws) + full teardown on every exit path; gitAddWorktree stale
+  worktree+branch cleanup; surgical squash-merge conflict cleanup (no blanket reset); interrupt →
+  failed, never merged-as-completed; journal corruption tolerance; concurrent sync journal appends;
+  report/worktree path collision hashes; child-registry retention never resumes a torn-down worktree;
+  detached cap has no check-then-register await gap; handoff parse never throws.
+
+### Accepted-risk (recorded)
+- **V2-F1 [MED] Ensemble in-worktree scoring gate runs in a tracked-files-only checkout** — for a
+  project whose deps are gitignored (Python venv, pnpm/turbo workspaces resolving root via a manifest
+  absent in the worktree), each attempt's isolated gate can't start its build tooling → all red → no
+  winner, so a hard ensemble task can fail even on correct code; and where Node ancestor-`node_modules`
+  resolution rescues it, N attempts' gates run concurrently (NOT under #mergeLock) sharing
+  `node_modules/.cache` → clobber. See DECISIONS. Ensemble is opt-in and OFF by default
+  (`build.ensemble.n` default 0), which bounds exposure. V2-13's post-merge gate now at least verifies
+  the COMBINED tree, so a false-green can't land silently — the residual is false-RED (a correct hard
+  task reported failed), which fails safe.
+
+### v2 DECISIONS (this subsystem)
+- **Ensemble isolated-scoring gate (V2-F1) recommended design:** score attempts by a cheaper isolated
+  signal (child success + diff size), then merge the top candidate to main and gate THERE (reusing the
+  V2-13 post-merge gate), trying the next candidate on red — so the SCORING gate never runs in a
+  dep-less checkout. Deferred: a real redesign of the ensemble scoring loop, not safely testable
+  without running a true multi-attempt ensemble against a dep-heavy repo; ensemble is off by default,
+  and V2-13 already closes the silent-false-green hole. Alternatively, provision gitignored deps into
+  each worktree (symlink node_modules), but that is fragile across ecosystems.
 
 ## v2 DECISIONS
 

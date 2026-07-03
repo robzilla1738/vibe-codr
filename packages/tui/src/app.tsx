@@ -452,7 +452,7 @@ export function App(props: { engine: EngineClient }) {
   // (a dims−12 cap let a long plan squeeze the transcript to a sliver). If the
   // plan is short, the card shrinks to fit it (rough wrap estimate — the
   // scrollbox handles the exact overflow). The card's chrome is 5 rows:
-  // padding (2) + title + a blank rhythm row + the hint.
+  // padding (2) + title + the meta line + the hint box (its marginTop=1 row).
   // The card's scrollable body: the plan markdown plus a compact sources list
   // (the pages the plan is grounded in), so evidence is reviewable in place.
   const planDisplayText = () => {
@@ -957,6 +957,15 @@ export function App(props: { engine: EngineClient }) {
         answerPlan("keep-planning");
         return;
       }
+    }
+    // While a plan card is up, Esc discards a half-typed REVISION (so the input
+    // returns to empty and the plan-approval shortcuts take over) rather than
+    // aborting — the plan turn already ended, and the draft-clear branch below is
+    // otherwise shadowed because working() stays true while the card is shown.
+    if (key.name === "escape" && !m.open && plan() && draft().trim() && perms().length === 0) {
+      key.preventDefault?.();
+      setDraft("");
+      return;
     }
     // Esc interrupts an in-flight turn when nothing else claims the key.
     if (key.name === "escape" && !m.open && working() && perms().length === 0) {
@@ -1894,7 +1903,7 @@ export function App(props: { engine: EngineClient }) {
               {"Plan · review & approve"}
             </text>
             <Show when={plan()?.ungrounded}>
-              <text flexShrink={0} fg={palette().del} attributes={TextAttributes.BOLD}>
+              <text flexShrink={0} fg={palette().notice} attributes={TextAttributes.BOLD}>
                 {"⚠ ungrounded — presented without the research this request required"}
               </text>
             </Show>

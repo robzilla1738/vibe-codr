@@ -182,6 +182,10 @@ test("red gate: failing checks enqueue a bounded fix turn, then stop with a warn
   expect(reviewCalls()).toBe(0);
   const cps = await new CheckpointManager(dir).list();
   expect(cps.some((c) => c.green)).toBe(false);
+  // engine-idle carries the terminal RED verdict, so a headless one-shot exits
+  // non-zero (CI parity) instead of reporting success on a broken build.
+  const idle = events.find((e) => e.type === "engine-idle");
+  expect(idle && "gate" in idle ? idle.gate : undefined).toBe("red");
 });
 
 test("unverified: no detected command → honest 'not machine-verified' notice, no checkpoint/review", async () => {

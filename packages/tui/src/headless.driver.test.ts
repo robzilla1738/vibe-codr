@@ -166,3 +166,80 @@ test("runOneShot prints ALL turns of a multi-turn prompt (gate-fix follow-up not
     process.stdout.write = orig;
   }
 });
+
+function captureStdout(): { get: () => string; restore: () => void } {
+  let out = "";
+  const orig = process.stdout.write.bind(process.stdout);
+  process.stdout.write = ((s: string) => {
+    out += s;
+    return true;
+  }) as typeof process.stdout.write;
+  return { get: () => out, restore: () => (process.stdout.write = orig) };
+}
+
+test("runOneShot returns FALSE on a persistently-red gate (headless exits non-zero for CI)", async () => {
+  // A gate still RED after maxRounds is a failure even without an engine-error —
+  // engine-idle carries gate:"red" so `vibe -p … && deploy` can't proceed.
+  const script: UIEvent[] = [
+    { type: "user-message", sessionId: sid, text: "impl" },
+    { type: "assistant-text-delta", sessionId: sid, delta: "did the work" },
+    { type: "notice", level: "warn", message: "Gate: RED … STILL RED after 5 fix round(s)." },
+    { type: "session-idle", sessionId: sid },
+    { type: "engine-idle", sessionId: sid, gate: "red" },
+  ];
+  const cap = captureStdout();
+  try {
+    const ok = await runOneShot(new MockEngine(script) as unknown as EngineClient, "impl");
+    expect(ok).toBe(false); // red gate → non-zero exit
+  } finally {
+    cap.restore();
+  }
+});
+
+test("runOneShot JSON carries gate outcome + tasks (TUI parity)", async () => {
+  const script: UIEvent[] = [
+    { type: "user-message", sessionId: sid, text: "go" },
+    { type: "assistant-text-delta", sessionId: sid, delta: "done" },
+    { type: "tasks-updated", sessionId: sid, tasks: [{ id: "t1", title: "step one", status: "completed" }] },
+    { type: "engine-idle", sessionId: sid, gate: "green" },
+  ];
+  const cap = captureStdout();
+  try {
+    const ok = await runOneShot(new MockEngine(script) as unknown as EngineClient, "go", { outputFormat: "json" });
+    expect(ok).toBe(true);
+    const parsed = JSON.parse(cap.get()) as { gate: string; tasks: { title: string; status: string }[] };
+    expect(parsed.gate).toBe("green");
+    expect(parsed.tasks).toEqual([{ title: "step one", status: "completed" }]);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("runOneShot surfaces plan grounding metadata (sources/assumptions/ungrounded)", async () => {
+  const script: UIEvent[] = [
+    { type: "user-message", sessionId: sid, text: "plan it" },
+    {
+      type: "plan-presented",
+      sessionId: sid,
+      plan: "1. Do X",
+      sources: [{ url: "https://example.com/a", title: "A" }],
+      assumptions: ["exact API unknown"],
+      ungrounded: true,
+    },
+    { type: "engine-idle", sessionId: sid },
+  ];
+  const cap = captureStdout();
+  try {
+    await runOneShot(new MockEngine(script) as unknown as EngineClient, "plan it", { outputFormat: "json" });
+    const parsed = JSON.parse(cap.get()) as {
+      ungrounded: boolean;
+      sources: { url: string }[];
+      assumptions: string[];
+    };
+    expect(parsed.ungrounded).toBe(true);
+    expect(parsed.sources[0]!.url).toBe("https://example.com/a");
+    expect(parsed.assumptions).toEqual(["exact API unknown"]);
+  } finally {
+    cap.restore();
+  }
+});

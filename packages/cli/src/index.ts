@@ -82,8 +82,18 @@ export async function run(argv: string[]): Promise<number> {
   const cwd = values.cwd ?? process.cwd();
   const overrides: Partial<Config> = {};
   if (values.model) overrides.model = values.model;
-  if (values.mode === "plan" || values.mode === "execute") {
+  if (values.mode !== undefined) {
+    // Error on an unrecognized --mode rather than silently defaulting to execute
+    // (a `--mode plann` typo would otherwise run in the wrong mode with no signal).
+    if (values.mode !== "plan" && values.mode !== "execute") {
+      process.stderr.write(`vibecodr: invalid --mode "${values.mode}" (expected "plan" or "execute")\n`);
+      return 1;
+    }
     overrides.mode = values.mode;
+  }
+  if (values["output-format"] !== undefined && values["output-format"] !== "json" && values["output-format"] !== "text") {
+    process.stderr.write(`vibecodr: invalid --output-format "${values["output-format"]}" (expected "json" or "text")\n`);
+    return 1;
   }
 
   // `vibecodr sessions` — list saved sessions and exit (no engine needed).
@@ -181,11 +191,19 @@ export async function run(argv: string[]): Promise<number> {
   if (values.prompt !== undefined) {
     const outputFormat = values["output-format"] === "json" ? "json" : "text";
     // `-p -` (or an empty `-p` with piped input) reads the prompt from stdin,
-    // so `cat task.md | vibecodr -p -` works for scripting.
-    const prompt =
-      values.prompt === "-" || values.prompt === ""
-        ? (await Bun.stdin.text()).trim()
-        : values.prompt;
+    // so `cat task.md | vibecodr -p -` works for scripting. On a TTY with no
+    // pipe, `Bun.stdin.text()` would block on EOF (looks like a hang) — error
+    // with a hint instead, since a `-p ""` typo is the likely trigger.
+    const wantsStdin = values.prompt === "-" || values.prompt === "";
+    if (wantsStdin && process.stdin.isTTY) {
+      process.stderr.write(
+        'vibecodr: -p reads the prompt from stdin here, but stdin is a terminal (no piped input). ' +
+          'Pipe input (`cat task.md | vibecodr -p -`) or pass the prompt directly (`vibecodr -p "…"`).\n',
+      );
+      await engine.finalize();
+      return 1;
+    }
+    const prompt = wantsStdin ? (await Bun.stdin.text()).trim() : values.prompt;
     const ok = await runOneShot(engine, prompt, {
       showReasoning: values.reasoning,
       outputFormat,

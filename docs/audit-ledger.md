@@ -784,7 +784,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 8 | Research stack | PASS |
 | 9 | Providers & model catalog | PASS |
 | 10 | Sessions/persistence/resume | PASS |
-| 11 | TUI + headless parity | REOPENED |
+| 11 | TUI + headless parity | PASS |
 | 12 | Config, MCP, skills/plugins, onboarding, fresh install | REOPENED |
 
 
@@ -1327,6 +1327,58 @@ re-evaluation of v1 deferred items.
   recorded rather than churn the hash. ensureVibeIgnored no-ops in a git worktree (.git is a file)
   and doesn't recognize a `!.vibe` negation — both LOW, recorded (post-relocation .vibe/ holds only
   user-facing config).
+
+
+## v2 §11. TUI + headless parity — PASS
+
+Scope read end-to-end: app.tsx (3356 lines — plan-card math, key handler, reducer), modes.ts,
+markdown-blocks.ts, reducer.ts, themes.ts; headless.ts, cli/index.ts, engine.ts headless paths. Two
+readers (TUI plan-card / headless parity) + author repro/fix.
+
+### CONFIRMED & FIXED
+- **[HIGH] V2-46 Headless exited 0 on a persistently-red gate — CI ships broken builds** — a gate
+  still RED after maxRounds emitted only a warn NOTICE, never an engine-error, so runOneShot returned
+  success and the CLI exited 0. `vibe -p "impl X" && deploy` proceeded on a broken tree. Fixed:
+  engine-idle now carries the terminal `gate` verdict (tracked per prompt across fix rounds);
+  runOneShot returns false on `gate:"red"`. Regressions: *"returns FALSE on a persistently-red gate"*
+  (headless.driver.test.ts), *"engine-idle carries the terminal RED verdict"* (green-gate.test.ts).
+- **[HIGH] V2-47 Plan grounding (sources/assumptions/ungrounded) invisible in headless** — the v2
+  grounding pipeline that the TUI renders (⚠ ungrounded banner, sources, assumptions) was dropped in
+  BOTH headless text and JSON — a CI plan run had zero signal a plan was ungrounded. Fixed: text mode
+  prints the banner + Sources/Assumptions blocks; JSON carries `sources`/`assumptions`/`ungrounded`.
+  Regression: *"surfaces plan grounding metadata"* (headless.driver.test.ts).
+- **[MED-HIGH] V2-48 JSON output dropped gate outcome + task list** — a `--output-format json`
+  consumer couldn't tell GREEN from RED/UNVERIFIED or see the final checklist. Fixed: OneShotResult
+  gains `gate` + `tasks`. Regression: *"JSON carries gate outcome + tasks"*.
+- **[LOW-MED] V2-49 Esc aborted the turn instead of clearing a revision draft while a plan is up** —
+  working() stays true during the plan card, so an Esc on a half-typed revision fell through to the
+  abort branch (draft + card lingered) instead of the shadowed clear-draft branch. Fixed: a
+  plan-pending Esc with a draft clears the draft (first Esc discards the revision, second keeps
+  planning).
+- **[LOW] V2-50 Ungrounded banner used the destructive-red `del` token, not the warning `notice`
+  (amber)** — a caution rendered as an error/destructive event. Fixed: `palette().notice`.
+- **[LOW] V2-51 Invalid --mode / --output-format silently defaulted** — `--mode plann` ran in the
+  wrong mode with no diagnostic. Fixed: error on an unrecognized enum value (exit 1). **[LOW] V2-52
+  `-p ""`/`-p -` on a TTY blocked on EOF (looked like a hang)** — now errors with a pipe-or-pass hint.
+- **[cleanup]** Fixed the stale "blank rhythm row" plan-card chrome comment (app.tsx:454).
+
+### REFUTED / verified clean
+- ^Y is a true ctrl chord (`key.ctrl && key.name==="y"`); the whole plan-shortcut block is gated on an
+  empty draft, so a typed "yes…" revision can't fire accept, and plain y/Y falls through to the
+  textarea. Enter/^Y/Esc all preventDefault (no double-fire). Plan card always dismissible (setPlan
+  null on every resolution + user-message + /clear); mode-change survival doesn't strand it. Zero- and
+  many-source overflow math exact at CONTENT_MAX. Reducer ordering/unknown-id handling, reasoning
+  bounded, mode colors from the palette. engine-idle always terminates the loop (no headless hang);
+  non-interactive permissions never hang; JSON valid on every path; multi-turn follow-ups captured;
+  unknown flag → clean exit 1; --continue+--resume (resume wins). All sound.
+
+### Accepted-risk (recorded)
+- **V2-T1 [LOW]** Plan-card height undercounts WRAPPED chrome (banner/hint) at narrow widths
+  (≲68 cols) — a minor 1-row clip; the scrollbox handles content overflow and the math is exact at
+  CONTENT_MAX. Recommended follow-up: estimate wrapped rows for the banner/hint. Recorded.
+- Unbounded transcript blocks (v1 accepted-risk, unchanged — only /clear resets); permission card
+  hard to answer with a non-empty draft (v1); reducer drops a tool-finish for an unknown callId
+  (benign, v1). All recorded.
 
 ## v2 DECISIONS (this subsystem)
 - **Concurrent index-prune staleness (V2-M2) recommended design:** serialize `SemanticMemory.index()`

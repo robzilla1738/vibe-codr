@@ -158,7 +158,10 @@ export type UIEvent =
   | { type: "session-idle"; sessionId: string }
   /** The engine's work queue fully drained: the submitted prompt AND every
    * follow-up turn it spawned are done, and nothing is running. This is the true
-   * terminal signal for a headless one-shot (unlike per-turn `session-idle`). */
-  | { type: "engine-idle"; sessionId: string };
+   * terminal signal for a headless one-shot (unlike per-turn `session-idle`).
+   * `gate` carries the LAST green-gate outcome of the drained work (absent when
+   * no gate ran), so a headless run can exit non-zero on a persistently-red gate
+   * that the TUI would show as an amber "STILL RED" notice. */
+  | { type: "engine-idle"; sessionId: string; gate?: "green" | "red" | "unverified" | "aborted" };
 
 export type UIEventType = UIEvent["type"];

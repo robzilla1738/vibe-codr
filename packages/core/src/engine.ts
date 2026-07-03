@@ -248,6 +248,10 @@ export class Engine implements EngineClient {
    * mutating turn; we only re-scan when a build manifest actually changed (which
    * is exactly the scaffold signal the refresh exists for). */
   #lastGateReconSig: string | undefined;
+  /** The last green-gate verdict produced during the current prompt's work
+   * (across fix rounds), surfaced on `engine-idle` so a headless one-shot can
+   * exit non-zero on a persistently-red gate. Reset per user prompt. */
+  #lastGateOutcome: "green" | "red" | "unverified" | "aborted" | undefined;
   /** Bounded adversarial-diff-review→fix rounds, per user prompt (reset on submit). */
   #reviewRounds = 0;
   /** The pre-edit checkpoint id for the CURRENT turn. Set in #handlePrompt;
@@ -1592,7 +1596,11 @@ export class Engine implements EngineClient {
     // (gate-fix / review-fix / verify-fix) are done. Signal the true terminal
     // point so a headless one-shot stops HERE, not on the first per-turn
     // `session-idle` (which would cut off follow-up output and race finalize()).
-    this.#bus.emit({ type: "engine-idle", sessionId: this.#session.id });
+    this.#bus.emit({
+      type: "engine-idle",
+      sessionId: this.#session.id,
+      ...(this.#lastGateOutcome ? { gate: this.#lastGateOutcome } : {}),
+    });
     void this.hooks.run("session.idle", { sessionId: this.#session.id });
     for (const resolve of this.#idleResolvers.splice(0)) resolve();
   }
@@ -1733,6 +1741,7 @@ export class Engine implements EngineClient {
       // when NOTHING machine-verified the work do we say so — never silently green.
       const verified = await this.#maybeVerify();
       if (!verified) {
+        this.#lastGateOutcome = "unverified";
         this.#notice(
           "Gate: UNVERIFIED — no build/test/typecheck command was detected (even after re-scanning), " +
             "so this turn's work was not machine-verified. Adding a build or test script to the " +
@@ -1742,6 +1751,9 @@ export class Engine implements EngineClient {
       }
     } else {
       outcome = await this.#runGate(profile);
+      // Record the verdict (green/red/unverified/aborted) as the prompt's latest
+      // gate state — the terminal one after fix rounds is what engine-idle reports.
+      this.#lastGateOutcome = outcome;
     }
     // A RED gate already enqueued its own fix turn (which re-enters #afterTurn),
     // and an aborted gate means the user interrupted — both skip the task check.
@@ -1808,6 +1820,7 @@ export class Engine implements EngineClient {
     this.#reviewRounds = 0;
     this.#taskContinueRounds = 0;
     this.#planExecutionActive = false;
+    this.#lastGateOutcome = undefined;
     this.#promptBaselineId = undefined;
   }
 

@@ -108,6 +108,16 @@ export interface OneShotResult {
   mode: string;
   text: string;
   usage: SessionUsage;
+  /** The last green-gate verdict (parity with the TUI's Gate notice) — a
+   * consumer can tell GREEN from RED/UNVERIFIED, which the exit code alone can't. */
+  gate?: "green" | "red" | "unverified" | "aborted";
+  /** The final task checklist, when a plan seeded one. */
+  tasks?: { title: string; status: string }[];
+  /** Plan grounding (parity with the TUI plan card) — present on a plan-mode run. */
+  sources?: { url: string; title?: string }[];
+  assumptions?: string[];
+  /** True when the plan was presented WITHOUT the research the gate required. */
+  ungrounded?: boolean;
   error?: string;
 }
 
@@ -194,7 +204,22 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
         : `${ansi.dim(
             "Approve with /execute — your next message starts implementation. Or reply to refine the plan.",
           )}\n`;
-      process.stdout.write(`\n${ansi.magenta(ansi.bold("── Plan ──"))}\n${event.plan}\n${hint}`);
+      // Surface the v2 grounding metadata the TUI shows, so a headless/CI plan
+      // run isn't blind to an UNGROUNDED plan or its sources/assumptions.
+      const banner = event.ungrounded
+        ? `${ansi.yellow("⚠ UNGROUNDED — presented without the research this request required")}\n`
+        : event.sources?.length
+          ? `${ansi.dim(`Grounded in ${event.sources.length} source(s)`)}\n`
+          : "";
+      const sourceLines = event.sources?.length
+        ? `${ansi.dim("Sources:")}\n${event.sources.map((s) => `  - ${s.url}${s.title ? ` (${s.title})` : ""}`).join("\n")}\n`
+        : "";
+      const assumptionLines = event.assumptions?.length
+        ? `${ansi.dim("Assumptions (unverified):")}\n${event.assumptions.map((a) => `  - ${a}`).join("\n")}\n`
+        : "";
+      process.stdout.write(
+        `\n${ansi.magenta(ansi.bold("── Plan ──"))}\n${banner}${event.plan}\n${sourceLines}${assumptionLines}${hint}`,
+      );
       break;
     }
     case "tasks-updated":
@@ -254,6 +279,11 @@ export async function runOneShot(
   let usage: SessionUsage | undefined;
   let text = "";
   let error: string | undefined;
+  let gate: OneShotResult["gate"];
+  let tasks: OneShotResult["tasks"];
+  let sources: OneShotResult["sources"];
+  let assumptions: OneShotResult["assumptions"];
+  let ungrounded: boolean | undefined;
   for await (const event of events) {
     if (event.type === "usage-updated") usage = event.usage;
     // In JSON mode, accumulate the answer silently instead of streaming it; in
@@ -262,8 +292,16 @@ export async function runOneShot(
     // A plan-mode turn's output IS the presented plan (delivered via
     // plan-presented, not assistant-text-delta), so capture it too — otherwise a
     // headless `--mode plan --output-format json` run returns empty text and the
-    // plan is silently lost. Text mode already renders it to stdout.
-    if (event.type === "plan-presented") text += (text ? "\n\n" : "") + event.plan;
+    // plan is silently lost. Text mode already renders it to stdout. Capture the
+    // grounding metadata too (TUI parity — an ungrounded plan must be visible).
+    if (event.type === "plan-presented") {
+      text += (text ? "\n\n" : "") + event.plan;
+      if (event.sources?.length) sources = event.sources;
+      if (event.assumptions?.length) assumptions = event.assumptions;
+      if (event.ungrounded) ungrounded = true;
+    }
+    if (event.type === "tasks-updated") tasks = event.tasks.map((t) => ({ title: t.title, status: t.status }));
+    if (event.type === "engine-idle" && event.gate) gate = event.gate;
     if (event.type === "engine-error") error = event.message;
     if (!json) render(event, opts);
     // Stop on `engine-idle` — the queue is FULLY drained, i.e. the prompt AND
@@ -277,6 +315,11 @@ export async function runOneShot(
   }
 
   const finalUsage = usage ?? emptyUsage();
+  // A persistently-RED gate is a FAILURE even without an engine-error — a bare
+  // `vibe -p …` that leaves the build red must exit non-zero so `… && deploy`
+  // and CI chains don't proceed on a broken tree (the TUI shows an amber notice;
+  // the exit code must agree).
+  const ok = error === undefined && gate !== "red";
   if (json) {
     const snap = engine.snapshot();
     process.stdout.write(
@@ -286,10 +329,15 @@ export async function runOneShot(
         mode: snap.mode,
         text: text.trim(),
         usage: finalUsage,
+        ...(gate ? { gate } : {}),
+        ...(tasks?.length ? { tasks } : {}),
+        ...(sources?.length ? { sources } : {}),
+        ...(assumptions?.length ? { assumptions } : {}),
+        ...(ungrounded ? { ungrounded: true } : {}),
         ...(error ? { error } : {}),
       })}\n`,
     );
-    return error === undefined;
+    return ok;
   }
 
   process.stdout.write("\n");
@@ -297,7 +345,7 @@ export async function runOneShot(
     process.stderr.write(`${ansi.dim(formatUsage(finalUsage))}\n`);
   }
   // false → the caller exits non-zero (scripting/CI correctness).
-  return error === undefined;
+  return ok;
 }
 
 function emptyUsage(): SessionUsage {

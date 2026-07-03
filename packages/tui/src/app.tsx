@@ -15,7 +15,10 @@
  * On a WIDE terminal (≥ SIDEBAR_MIN_TERM) with live work (tasks / a running
  * turn), a fixed-width RIGHT SIDEBAR takes the Tasks panel and the live
  * thinking stream out of the chat column, so the transcript keeps its vertical
- * space; on narrow panes both fall back inline exactly as before.
+ * space; on narrow panes both fall back inline exactly as before. The sidebar
+ * spans the SAME height as the chat column — Tasks hug the top, the Thinking
+ * block grows to fill the rest, and the thought trail persists until the next
+ * message is sent.
  *
  * DESIGN LANGUAGE — flat chrome, filled content. Structural chrome (status
  * sections, the input, cards) is drawn FLAT: accent-colored titles + spacing on the
@@ -404,20 +407,12 @@ export function App(props: { engine: EngineClient }) {
   // 2-line wraps) so a long list can't push the thinking section off-screen.
   const sideTaskCap = () =>
     Math.max(PANEL_MAX_ROWS, Math.min(16, Math.floor((dims().height - 10) / 4)));
-  // The thought-log scrollbox is sized to its WRAPPED content (hug), capped to
-  // the rows left under the Tasks block — a scrollbox given only max/flex
-  // bounds claims them all, painting a mostly-empty panel down to the bottom
-  // of the screen. Same estimate-then-cap approach as the plan card. 7 =
-  // sidebar padding (2) + rail column (1) + block padding L(2)+R(2).
-  const sideInnerW = SIDEBAR_W - 7;
-  // −5 wrap slack: word-wrap breaks early at word boundaries, so a bare
-  // width÷columns estimate undercounts and sticky-bottom then scrolls the
-  // head of the log out of a box that "exactly" fits. Overestimating slightly
-  // costs at most a blank row or two; undercounting hides content.
-  const thoughtRows = () =>
-    thoughtLog().reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / (sideInnerW - 5))), 0);
-  const thoughtBoxRows = () =>
-    Math.min(Math.max(6, dims().height - 16), Math.max(1, thoughtRows()));
+  // The thought-log block GROWS to fill every row left under the Tasks block,
+  // so the sidebar spans the same height as the chat column — its top block
+  // sits level with the first transcript block and its bottom lands level with
+  // the input, one continuous column instead of a short box floating over
+  // empty space. The scrollbox inside inherits that height; content shorter
+  // than the box top-aligns, longer content scrolls (sticky-bottom).
 
   // The live "Working… Ns" elapsed label. It reads `tick()` so Solid re-renders it
   // on every spinner frame — without a signal dependency the clock would render
@@ -1105,14 +1100,19 @@ export function App(props: { engine: EngineClient }) {
       let thinkingStartedAt = 0;
       const pushReasoning = (delta: string) => {
         if (!reasoningBuf) thinkingStartedAt = Date.now();
-        turnThoughtsBuf = (turnThoughtsBuf + delta).slice(-16_000);
-        setThoughtLog(
-          turnThoughtsBuf
-            .split("\n")
-            .map((l) => l.trim())
-            .filter(Boolean)
-            .slice(-160),
-        );
+        // Deep caps (the log fills a full-height scrollable column): keep the
+        // whole trail for any realistic turn, tail-trimmed only as a runaway
+        // guard. Blank lines collapse to ONE so bursts read as paragraphs
+        // instead of a run-together wall (the render maps "" to a spacer row).
+        turnThoughtsBuf = (turnThoughtsBuf + delta).slice(-64_000);
+        const trail: string[] = [];
+        for (const raw of turnThoughtsBuf.split("\n")) {
+          const l = raw.trim();
+          if (l) trail.push(l);
+          else if (trail.length > 0 && trail[trail.length - 1] !== "") trail.push("");
+        }
+        while (trail.length > 0 && trail[trail.length - 1] === "") trail.pop();
+        setThoughtLog(trail.slice(-512));
         // Bounded: keep the HEAD of a huge think (the framing) rather than an
         // arbitrary mid-sentence tail; the live stack tracks the newest lines
         // via its own small rolling window (a delta alone can be a partial line).
@@ -2476,12 +2476,15 @@ export function App(props: { engine: EngineClient }) {
               word-wrapped stream in a bottom-sticky scrollbox (newest thought
               always in view, history scrollable). It does NOT clear when a
               burst lands as a transcript row, and it lingers after the turn
-              ends — the thought process stays readable until the next turn. */}
+              ends — the thought process stays readable until the next message
+              is sent. The block GROWS to fill the rows under the Tasks panel,
+              so the sidebar's bottom lines up with the chat column. */}
           <Show when={working() || thoughtLog().length > 0}>
-            <Rail color={palette().gutter} marginTop={1} shrink>
+            <Rail color={palette().gutter} marginTop={1} grow>
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"
+                flexGrow={1}
                 flexShrink={1}
                 paddingTop={1}
                 paddingBottom={1}
@@ -2493,8 +2496,8 @@ export function App(props: { engine: EngineClient }) {
                   <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"Thinking"}</text>
                 </box>
                 <scrollbox
+                  flexGrow={1}
                   flexShrink={1}
-                  height={thoughtBoxRows()}
                   stickyScroll
                   stickyStart="bottom"
                   scrollY
@@ -2548,10 +2551,13 @@ function Rail(props: {
   color: string;
   marginTop?: number;
   height?: number;
-  /** Hug content but SHRINK when the parent runs out of rows (the sidebar's
-   * thinking block: natural height while short, bounded + scrolling when the
-   * log outgrows the space under the Tasks block). Default stays rigid. */
+  /** Hug content but SHRINK when the parent runs out of rows. Default stays
+   * rigid. */
   shrink?: boolean;
+  /** GROW to fill the parent's remaining rows (and shrink under pressure) —
+   * the sidebar's thinking block stretches so the sidebar spans the same
+   * height as the chat column. */
+  grow?: boolean;
   onMouseDown?: () => void;
   children: unknown;
 }) {
@@ -2559,7 +2565,8 @@ function Rail(props: {
     <box
       position="relative"
       flexDirection="row"
-      flexShrink={props.shrink ? 1 : 0}
+      flexGrow={props.grow ? 1 : 0}
+      flexShrink={props.shrink || props.grow ? 1 : 0}
       marginTop={props.marginTop ?? 0}
       height={props.height}
       onMouseDown={props.onMouseDown}

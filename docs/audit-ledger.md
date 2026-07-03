@@ -1943,3 +1943,32 @@ Two skeptics (pass-10-`httpUrl`-edges + recent-fix re-attack / coding-loop-edit-
   ANSI, but the width-measured surfaces are fed markdown/labels, not raw bash ANSI (no confirmed repro).
 
 Clean-pass counter after Pass 11: 1. ONE more consecutive CLEAN pass required.
+
+
+### Pass 12 — CLEAN (clean-pass #2). CONVERGENCE REACHED — two consecutive clean passes
+Two skeptics (high-risk-logic re-sweep / completeness-critic), executed repros, explicitly instructed
+that a clean result after 11 passes is a legitimate outcome and not to invent defects.
+- **High-risk logic re-sweep — REFUTED (4 executed repros).** Concurrency limiter under a burst exceeding
+  the cap with mixed abort/complete (aborted waiters splice out, `active` stays balanced, no wedge);
+  task-DAG with a two-dep dependent where one dep fails (dependent SKIPPED with `attempts:0`, healthy
+  sibling still completes); compaction token-budget boundary (`<` at exactly threshold compacts — the safe
+  direction, no off-by-one); journal-write-after-merge is the documented interrupted-turn accepted-risk
+  (protected by the merge-abort-on-overlap + tree-global `#mergeLock`). 31/31 touched-suite tests green.
+- **Completeness critic — CLEAN (24 executed probes).** Independently re-verified the DECISIONS against the
+  real code: permission precedence (name-only `deny` kill-switch, absolute-path `deny` un-evadable by
+  `../`, `dangerouslyUnsandboxed` under a blanket `*` fails closed, sentinel `!unsandboxed` pre-auth,
+  in-tree symlink not matching a scoped allow); `@mention` dir/missing/binary/huge/glob handling; SSRF
+  `file:`/`data:`/`gopher:` rejected at the scheme check before the allowlist + `sameSite`
+  suffix/downgrade/port tricks rejected; JSONC block/line/trailing-comma/string-`//` edge cases + MCP stdio
+  spec; memory RRF relevance floor (junk query → empty, real hit ranks first); `SourceLedger` canonical
+  dedup + hydrate cap invariant; `computeCost` tier repricing with no cache double-count. Its one initial
+  "failure" (symlink confinement) was the probe's OWN missing-`cwd` bug — re-run confirmed the confinement
+  holds. Completeness notes: the known gaps (V2-M1 MCP interactive-OAuth first-grant; v2 §3 prompt-cache
+  PASS resting on inspection because byte-stability is hard to unit-test E2E) are documented/honest, not new.
+
+Clean-pass counter after Pass 12: **2 — CONVERGED.** Two consecutive full adversarial passes over the
+ledger's weakest areas produced ZERO new confirmed findings. The adversarial-verification requirement of
+the goal is satisfied. Across passes 1–12, every confirmed defect (incl. the entire O(n²)-regex class, the
+gitops rename/unicode revert, checkpoint session scoping, catalog NaN-price, web_search/TinyFish sanitizing,
+htmlToText linearity + code-content preservation, and the scheme-less-baseURL fresh-install trap) was fixed
+AND regression-tested; the gate (typecheck, lint, full suite) is green after every pass.

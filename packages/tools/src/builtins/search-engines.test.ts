@@ -36,7 +36,7 @@ test("parseDuckDuckGoHtml is LINEAR on unclosed anchors (adversarial P7-W1)", ()
   // unclosed `<a …>` opener → O(n²); the keyless-search fetch reads res.text()
   // UNCAPPED and parses synchronously, so an oversized/garbled results page froze
   // web_search (~4.5s at 720KB). The unrolled `(?:[^<]|<(?!/a[\s>]))*` is linear.
-  const evil = `<a class="result__snippet" href="/x">`.repeat(16000) + "tail"; // ~0.7MB
+  const evil = `${`<a class="result__snippet" href="/x">`.repeat(16000)}tail`; // ~0.7MB
   const t0 = performance.now();
   const out = parseDuckDuckGoHtml(evil);
   expect(performance.now() - t0).toBeLessThan(1000); // was ~4500ms
@@ -86,6 +86,18 @@ test("parseBingHtml extracts links, decodes entities, and unwraps /ck/ redirects
 
 test("parseBingHtml returns [] for a page with no results", () => {
   expect(parseBingHtml("<html><body>no results</body></html>")).toEqual([]);
+});
+
+test("parseBingHtml is LINEAR on an unbounded single block (adversarial P8)", () => {
+  // A page with no `b_algo` split point becomes ONE giant block; the per-block
+  // `<h2>…<a>([\s\S]*?)</a>` / `<p>([\s\S]*?)</p>` `.exec` then retries at every
+  // `<h2>` when the close is missing → O(n²) (~6.7s at 720KB). Unrolled bodies
+  // match on the first attempt.
+  const evil = `<li class="b_algo"><h2><a href="x">${`<h2><a href="x">`.repeat(32000)}tail`;
+  const t0 = performance.now();
+  const out = parseBingHtml(evil);
+  expect(performance.now() - t0).toBeLessThan(1000); // was ~6700ms
+  expect(Array.isArray(out)).toBe(true);
 });
 
 test("bingSearch fetches the search endpoint, applies recency + maxResults", async () => {

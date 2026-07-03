@@ -88,5 +88,14 @@ export function formatHandoffForKickoff(taskId: string, handoff: Handoff): strin
 /** Strip the handoff fence from a report for display/prose contexts where the
  * structured block would be noise (the UI shows it separately). */
 export function stripHandoffFence(text: string): string {
-  return (text ?? "").replace(/```handoff\s*\n[\s\S]*?```\s*$/g, "").trimEnd();
+  const t = text ?? "";
+  // Anchor to the LAST ```handoff, not a global `$`-anchored lazy scan: with N
+  // ```handoff markers and no closing fence, `[\s\S]*?```\s*$` retries to EOF at
+  // every marker → O(n²) (a large/garbled report froze this ~4.9s at 344KB). A
+  // trailing fence is the last marker, so match from there with ONE `^`-anchored
+  // attempt.
+  const idx = t.lastIndexOf("```handoff");
+  if (idx === -1) return t.trimEnd();
+  const tail = t.slice(idx);
+  return /^```handoff\s*\n[\s\S]*```\s*$/.test(tail) ? t.slice(0, idx).trimEnd() : t.trimEnd();
 }

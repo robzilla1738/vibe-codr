@@ -55,6 +55,20 @@ test("stripHandoffFence removes a trailing block, leaves prose intact", () => {
   const text = "The work is done.\n\n```handoff\nkey_facts:\n- x\n```";
   expect(stripHandoffFence(text)).toBe("The work is done.");
   expect(stripHandoffFence("no fence here")).toBe("no fence here");
+  // A ```handoff fence that is NOT trailing (prose follows) is left in place.
+  const midFence = "```handoff\nkey_facts:\n- x\n```\n\ntrailing prose";
+  expect(stripHandoffFence(midFence)).toBe(midFence);
+});
+
+test("stripHandoffFence is LINEAR on many ```handoff markers with no close (adversarial P8)", () => {
+  // The old global `$`-anchored lazy `[\s\S]*?```\s*$` retried to EOF at every
+  // ```handoff marker → O(n²) (~4.9s at 344KB of a garbled report). Anchoring to
+  // the LAST marker makes it a single `^`-anchored attempt.
+  const evil = "```handoff\n".repeat(32000) + "x".repeat(100);
+  const t0 = performance.now();
+  const out = stripHandoffFence(evil);
+  expect(performance.now() - t0).toBeLessThan(500); // was ~4900ms
+  expect(typeof out).toBe("string");
 });
 
 test("the kickoff instruction mentions every section", () => {

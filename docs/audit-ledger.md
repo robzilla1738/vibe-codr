@@ -1829,3 +1829,31 @@ crash sites `detectDate`/`canonicalizeUrl`/`mergeCandidates` on adversarial inpu
 sanitizer on non-http/huge-url/float-position; `parseBingHtml` complexity (bounded blocks).
 
 Clean-pass counter after Pass 7: 0 (3 confirmed → all fixed). TWO consecutive CLEAN passes still required.
+
+
+### Pass 8 — proactive O(n²)-regex CLASS sweep — 2 CONFIRMED (both FIXED + regression-tested)
+Passes 6–7 kept surfacing the same super-linear-regex defect one instance at a time, so rather than
+whack-a-mole, this pass EXHAUSTIVELY enumerated every lazy/nested-quantifier regex over
+non-constant input across all packages (`grep` for `[\s\S]*?`, `.*?`, `.+?`) and reproduced each
+against adversarial input. Two more genuine O(n²) instances the pass-7 skeptics missed:
+- **[LOW-MED] P8-1 `parseBingHtml` was O(n²) on an unbounded block** — the pass-7 skeptic marked Bing
+  REFUTED by testing a small bounded `b_algo` block, but a results page with NO `b_algo` split point is
+  parsed as ONE giant block, and the per-block `<h2>…<a>([\s\S]*?)<\/a>` / `<p>([\s\S]*?)<\/p>` `.exec`
+  then retries at every `<h2>` when the close is missing → ~6.7s at 720KB (executed). Fixed: both bodies
+  are the linear unrolled `(?:[^<]|<(?!\/tag[\s>]))*`; ~6.7s → ~40ms, parsing unchanged. Regression:
+  *"parseBingHtml is LINEAR on an unbounded single block"*.
+- **[LOW] P8-2 `stripHandoffFence` was O(n²) on many `` ```handoff `` markers** — the global `$`-anchored
+  lazy `[\s\S]*?```\s*$` retries to EOF at every ` ```handoff ` marker when there's no closing fence, so a
+  large/garbled subagent report froze ~4.9s at 344KB (executed). Fixed: anchor to the LAST ` ```handoff `
+  via `lastIndexOf`, then a single `^`-anchored test; ~4.9s → ~0ms, and a non-trailing fence is correctly
+  left in place. Regression: *"stripHandoffFence is LINEAR on many ```handoff markers"* + a
+  non-trailing-fence-preserved assertion.
+
+Enumerated-and-CLEARED (verified linear/bounded, executed): `webfetch.ts` fenced-code `split` (pairs
+fences locally; a lone unclosed ``` scans to EOF once — O(n)); `structured-output.ts` + `handoff.ts:37`
+fenced-JSON/handoff `matchAll` (fence-paired, O(n)); `skills.ts` frontmatter `^---…` (`^`-anchored single
+attempt); `plan-gate`/other bounded character-class regexes. The O(n²) HTML/markdown-extraction class
+introduced across the codebase's untrusted-input parsers is now fully closed (htmlToText, DDG, Bing,
+stripInline, stripHandoffFence).
+
+Clean-pass counter after Pass 8: 0 (2 confirmed → all fixed). TWO consecutive CLEAN passes still required.

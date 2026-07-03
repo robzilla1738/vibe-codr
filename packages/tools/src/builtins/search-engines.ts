@@ -138,13 +138,17 @@ export function parseBingHtml(html: string): SearchResult[] {
   const blocks = html.split(/<li class="b_algo[^"]*"/i).slice(1);
   let i = 0;
   for (const block of blocks) {
-    const link = /<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i.exec(block);
+    // Linear unrolled anchor/paragraph bodies (NOT lazy `[\s\S]*?</a>`): a block
+    // with no `b_algo` split point is the WHOLE page, and a lazy match retries at
+    // every `<h2>` when the close is missing → O(n²) (a garbled/MITM'd results page
+    // froze the parse ~6.7s at 720KB). The unrolled body matches on the first try.
+    const link = /<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/i.exec(block);
     if (!link) continue;
     const url = decodeBingUrl(decodeEntities(link[1] ?? ""));
     if (!url || !/^https?:\/\//.test(url)) continue;
     const title = stripTags(link[2] ?? "");
     if (!title) continue;
-    const sn = /<p[^>]*>([\s\S]*?)<\/p>/i.exec(block);
+    const sn = /<p[^>]*>((?:[^<]|<(?!\/p[\s>]))*)(?:<\/p[^>]*>)?/i.exec(block);
     const snippet = sn ? stripTags(sn[1] ?? "") : "";
     results.push({ position: i + 1, site_name: hostOf(url), title, url, snippet });
     i++;

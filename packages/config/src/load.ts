@@ -83,6 +83,39 @@ function stripJsonComments(input: string): string {
   return out;
 }
 
+/**
+ * Remove trailing commas (`, }` / `, ]`) so config files may use JSONC's other
+ * common convenience — `JSON.parse` rejects them. String-aware: a comma inside a
+ * string value is never touched. Runs on already comment-stripped input.
+ */
+function stripTrailingCommas(input: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (inString) {
+      out += ch;
+      if (ch === "\\") {
+        if (input[i + 1] !== undefined) out += input[++i];
+      } else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === ",") {
+      // Look ahead past whitespace: a comma immediately before `}`/`]` is trailing.
+      let j = i + 1;
+      while (j < input.length && /\s/.test(input[j]!)) j++;
+      if (input[j] === "}" || input[j] === "]") continue; // drop the trailing comma
+    }
+    out += ch;
+  }
+  return out;
+}
+
 async function readConfigFile(
   path: string,
 ): Promise<Record<string, unknown> | null> {
@@ -90,7 +123,7 @@ async function readConfigFile(
   if (!(await file.exists())) return null;
   try {
     const raw = await file.text();
-    return JSON.parse(stripJsonComments(raw)) as Record<string, unknown>;
+    return JSON.parse(stripTrailingCommas(stripJsonComments(raw))) as Record<string, unknown>;
   } catch (err) {
     throw new ConfigError(
       `Failed to parse config at ${path}: ${(err as Error).message}`,
@@ -194,6 +227,26 @@ export function writeGlobalConfig(
     () => undefined,
   );
   return result;
+}
+
+/**
+ * Report top-level config keys that no schema field recognizes, per file.
+ * `ConfigSchema` has no `.strict()` (forward-compat), so a misspelled top-level
+ * key (`"modle"`, `"complaction"`) is silently dropped by `loadConfig` and the
+ * setting never takes effect. `/doctor` surfaces these as a soft warning. Only
+ * TOP-LEVEL keys are checked — nested union schemas make deep strictness fragile.
+ * Best-effort: an unreadable/unparseable file contributes nothing.
+ */
+export async function configUnknownKeys(cwd: string): Promise<{ path: string; keys: string[] }[]> {
+  const known = new Set(Object.keys(ConfigSchema.shape));
+  const out: { path: string; keys: string[] }[] = [];
+  for (const path of configLocations(cwd)) {
+    const parsed = await readConfigFile(path).catch(() => null);
+    if (!parsed) continue;
+    const unknown = Object.keys(parsed).filter((k) => !known.has(k));
+    if (unknown.length) out.push({ path, keys: unknown });
+  }
+  return out;
 }
 
 /**

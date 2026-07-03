@@ -38,6 +38,15 @@ test("ensureVibeIgnored appends .vibe/ once, only in a git repo", async () => {
   expect(await Bun.file(join(plain, ".gitignore")).exists()).toBe(false);
 });
 
+test("ensureVibeIgnored works in a git WORKTREE where .git is a FILE, not a dir", async () => {
+  // A linked worktree / submodule has a `.git` FILE (a `gitdir:` pointer), so the
+  // old `.git/HEAD` check silently skipped it — leaving .vibe/ un-ignored.
+  const wt = mkdtempSync(join(tmpdir(), "vibe-sd-wt-"));
+  writeFileSync(join(wt, ".git"), "gitdir: /some/repo/.git/worktrees/wt\n"); // .git is a FILE
+  await ensureVibeIgnored(wt);
+  expect(readFileSync(join(wt, ".gitignore"), "utf8")).toBe(".vibe/\n");
+});
+
 test("ensureVibeIgnored creates .gitignore when absent and respects existing entries", async () => {
   const repo = mkdtempSync(join(tmpdir(), "vibe-sd-git2-"));
   mkdirSync(join(repo, ".git"));

@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigSchema, defaultConfig, loadConfig, writeGlobalConfig, globalConfigPath } from "./index.ts";
+import { ConfigSchema, defaultConfig, loadConfig, configUnknownKeys, writeGlobalConfig, globalConfigPath } from "./index.ts";
 
 test("defaultConfig is valid and carries the documented defaults", () => {
   const c = defaultConfig();
@@ -222,17 +222,55 @@ test("concurrent writeGlobalConfig calls don't clobber each other (serialized RM
   }
 });
 
-test("compaction rejects offload.threshold >= threshold (the layering must hold)", () => {
-  // offload (lossless) must fire BELOW the summary (lossy) threshold; inverting
-  // them silently summarizes before ever offloading.
-  const bad = ConfigSchema.safeParse({
-    compaction: { threshold: 0.75, offload: { threshold: 0.9 } },
-  });
-  expect(bad.success).toBe(false);
+test("compaction CLAMPS offload.threshold below threshold (layering holds, config never rejected)", () => {
+  // offload (lossless) must fire BELOW the summary (lossy) threshold. An inverted
+  // pair is CLAMPED, not rejected — and, crucially, lowering ONLY `threshold`
+  // below the offload DEFAULT must not reject a config the user barely touched.
+  const inverted = ConfigSchema.safeParse({ compaction: { threshold: 0.75, offload: { threshold: 0.9 } } });
+  expect(inverted.success).toBe(true);
+  if (inverted.success) expect(inverted.data.compaction.offload.threshold).toBeLessThan(0.75);
 
-  const ok = ConfigSchema.safeParse({
-    compaction: { threshold: 0.75, offload: { threshold: 0.6 } },
-  });
+  // The regression this guards: only `threshold` set, below the 0.6 offload
+  // default → must still LOAD (a hard reject would break a barely-touched config).
+  const lowered = ConfigSchema.safeParse({ compaction: { threshold: 0.5 } });
+  expect(lowered.success).toBe(true);
+  if (lowered.success) expect(lowered.data.compaction.offload.threshold).toBeLessThan(0.5);
+
+  const ok = ConfigSchema.safeParse({ compaction: { threshold: 0.75, offload: { threshold: 0.6 } } });
   expect(ok.success).toBe(true);
   if (ok.success) expect(ok.data.compaction.offload.maxArtifactBytes).toBe(64 * 1024 * 1024);
+});
+
+test("loadConfig tolerates JSONC trailing commas (idiomatic for VS Code users)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-tc-"));
+  await mkdir(join(cwd, ".vibe"), { recursive: true });
+  await writeFile(
+    join(cwd, ".vibe", "config.json"),
+    `{
+      "model": "deepseek/deepseek-chat",
+      "maxSteps": 10,
+    }`, // <- trailing comma
+  );
+  const cfg = await loadConfig({ cwd });
+  expect(cfg.model).toBe("deepseek/deepseek-chat");
+  expect(cfg.maxSteps).toBe(10);
+  // A comma INSIDE a string value must be untouched.
+  await writeFile(join(cwd, ".vibe", "config.json"), `{ "model": "a,b/c,d", "maxSteps": 3, }`);
+  expect((await loadConfig({ cwd })).model).toBe("a,b/c,d");
+});
+
+test("configUnknownKeys reports misspelled top-level keys per file", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-unk-"));
+  await mkdir(join(cwd, ".vibe"), { recursive: true });
+  await writeFile(
+    join(cwd, ".vibe", "config.json"),
+    `{ "model": "x/y", "modle": "typo", "complaction": {} }`,
+  );
+  const unknown = await configUnknownKeys(cwd);
+  const project = unknown.find((u) => u.path.includes(".vibe"));
+  expect(project).toBeDefined();
+  expect(project!.keys.sort()).toEqual(["complaction", "modle"]);
+  // A clean config yields nothing.
+  await writeFile(join(cwd, ".vibe", "config.json"), `{ "model": "x/y", "maxSteps": 5 }`);
+  expect((await configUnknownKeys(cwd)).some((u) => u.path.includes(".vibe"))).toBe(false);
 });

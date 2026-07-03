@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import type { EngineCommand, UIEvent } from "@vibe/shared";
 import { ACCENT_PRESETS, THEME_NAMES } from "@vibe/shared";
 import type { Config, ModelPrice } from "@vibe/config";
+import { configUnknownKeys } from "@vibe/config";
 import type { CatalogService, ProviderRegistry, ModelInfo } from "@vibe/providers";
 import type { SandboxPolicy, Toolset } from "@vibe/tools";
 import type { CommandRegistry, SkillRegistry } from "@vibe/plugins";
@@ -778,6 +779,20 @@ async function handleDoctor(h: EngineHandle): Promise<void> {
   // recent-crash visibility, so a silent crash or a stale build surfaces here.
   checks.push(updateDoctorCheck(await readUpdateCache()));
   checks.push(crashDoctorCheck(recentCrashes(7)));
+
+  // Surface misspelled/unknown top-level config keys — the schema silently drops
+  // them (no .strict(), for forward-compat), so a typo like "modle" never takes
+  // effect with no other signal.
+  const unknown = await configUnknownKeys(h.cwd);
+  if (unknown.length) {
+    checks.push({
+      label: "config keys",
+      ok: null,
+      detail: unknown
+        .map((u) => `unknown in ${u.path}: ${u.keys.join(", ")}`)
+        .join("; "),
+    });
+  }
 
   h.notice(formatDoctor(checks));
 }

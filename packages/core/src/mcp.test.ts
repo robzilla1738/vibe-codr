@@ -587,3 +587,33 @@ test("MCP tool calls thread the turn's abort signal and a per-call deadline", as
   expect(seenOpts?.signal).toBe(controller.signal);
   expect(seenOpts?.timeoutMs).toBeGreaterThan(0);
 });
+
+test("close() during start() closes the freshly-connected client and does not repopulate entries", async () => {
+  let clientClosed = false;
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const registered: ToolDefinition[] = [];
+  const hub = new McpHub({
+    registerTool: (def) => registered.push(def),
+    connect: async () => {
+      await gate; // block the connect until we've called close()
+      return {
+        listTools: async () => [{ name: "echo" }],
+        callTool: async () => ({ content: "ok" }),
+        close: async () => {
+          clientClosed = true;
+        },
+      } as unknown as McpClient;
+    },
+  });
+  const startP = hub.start({ demo: { command: "x" } });
+  await hub.close(); // teardown while the connect is still in flight
+  release(); // now the connect resolves and start() resumes
+  await startP;
+
+  // The late-connecting client is closed (no orphan transport) and start() bailed
+  // without registering tools or repopulating entries after teardown.
+  expect(clientClosed).toBe(true);
+  expect(registered.length).toBe(0);
+  expect(hub.status().length).toBe(0);
+});

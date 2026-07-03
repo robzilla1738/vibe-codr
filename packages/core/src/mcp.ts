@@ -198,6 +198,16 @@ export class McpHub {
     const results = await Promise.allSettled(
       entries.map(([name, config]) => this.#connectAndList(name, config)),
     );
+    // close() may have run during the connect await (boot/quit overlap): it set
+    // #closed and cleared #entries, so repopulating them now would leak the
+    // freshly-connected transports past teardown. Close them and bail — mirrors
+    // the #closed guard in #scheduleReconnect.
+    if (this.#closed) {
+      for (const r of results) {
+        if (r.status === "fulfilled") await r.value.client.close().catch(() => {});
+      }
+      return;
+    }
     for (let i = 0; i < entries.length; i++) {
       const [name, config] = entries[i]!;
       const r = results[i]!;

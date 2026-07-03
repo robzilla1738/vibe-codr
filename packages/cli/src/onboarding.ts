@@ -234,8 +234,15 @@ function select<T>(
       const it = items[idx];
       if (it) done(it.value);
     } else if (k.str && /^[1-9]$/.test(k.str)) {
-      const n = Number(k.str) - 1;
-      const it = items[n];
+      // Map the digit to the Nth VISIBLE (windowed) row, not the Nth absolute
+      // item: the menu scrolls and shows no numbers, so absolute indexing
+      // silently selected an off-screen entry once the list scrolled.
+      const start = Math.min(
+        Math.max(0, idx - Math.floor(WINDOW / 2)),
+        Math.max(0, items.length - WINDOW),
+      );
+      const n = start + Number(k.str) - 1;
+      const it = n < start + WINDOW ? items[n] : undefined;
       if (it) {
         idx = n;
         done(it.value);

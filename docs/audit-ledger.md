@@ -785,7 +785,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 9 | Providers & model catalog | PASS |
 | 10 | Sessions/persistence/resume | PASS |
 | 11 | TUI + headless parity | PASS |
-| 12 | Config, MCP, skills/plugins, onboarding, fresh install | REOPENED |
+| 12 | Config, MCP, skills/plugins, onboarding, fresh install | PASS |
 
 
 ## v2 §1. Modes & approvals — PASS
@@ -1379,6 +1379,63 @@ readers (TUI plan-card / headless parity) + author repro/fix.
 - Unbounded transcript blocks (v1 accepted-risk, unchanged — only /clear resets); permission card
   hard to answer with a non-empty draft (v1); reducer drops a tool-finish for an unknown callId
   (benign, v1). All recorded.
+
+
+## v2 §12. Config, MCP, skills/plugins, onboarding, fresh install — PASS
+
+Scope read end-to-end: config schema/load/index, mcp.ts + mcp-oauth.ts, commands.ts (initProject),
+plugins (plugin/skills/commands/hooks), onboarding, /doctor. One reader + author repro/fix.
+
+### CONFIRMED & FIXED
+- **[LOW-MED] V2-53 (regression from my own V2-10) Compaction config REJECTED a barely-touched
+  config** — the `.refine(offload.threshold < threshold)` I added in v2 §3 hard-rejected a config
+  that set ONLY `compaction.threshold` below the offload DEFAULT (0.6) — e.g. `{threshold:0.5}` →
+  ConfigError, CLI won't load. A hard reject is worse than the mild layering issue it guarded. Fixed:
+  replaced the refine with a `.transform` that CLAMPS offload.threshold below threshold (auto-corrects,
+  never rejects). Regression rewritten: *"compaction CLAMPS offload.threshold below threshold"*
+  (config.test.ts).
+- **[LOW-MED] V2-54 ensureVibeIgnored no-op in git worktrees/submodules** — the `.git/HEAD` check
+  failed where `.git` is a FILE (a gitdir pointer), so `.vibe/` was never gitignored in a worktree.
+  Fixed: detect `.git` as a directory OR a file. Regression: *"works in a git WORKTREE where .git is
+  a FILE"* (state-dir.test.ts).
+- **[LOW] V2-55 JSONC trailing commas rejected** despite the "config may use JSONC" claim — `{…,}`
+  threw ConfigError at startup. Fixed: a string-aware trailing-comma stripper. Regression: *"tolerates
+  JSONC trailing commas"* (config.test.ts).
+- **[LOW] V2-56 Unknown/misspelled config keys silently dropped** (v1 recommended-but-deferred — now
+  IMPLEMENTED) — a typo like `"modle"` never took effect with no signal. Added `configUnknownKeys` and
+  a `/doctor` soft-warning line (top-level only; nested union schemas make deep strictness fragile).
+  Regression: *"configUnknownKeys reports misspelled top-level keys"* (config.test.ts).
+- **[LOW] V2-57 Onboarding digit shortcut mis-selected against a windowed list** — digit N picked the
+  Nth ABSOLUTE item while the menu (24 choices) scrolled and showed no numbers. Fixed: map the digit
+  to the Nth VISIBLE (windowed) row.
+- **[LOW] V2-58 McpHub.close() racing start() leaked freshly-connected clients** — start() repopulated
+  #entries after teardown. Fixed: after the connect settle, if #closed, close the late clients and
+  bail (mirrors the reconnect guard). Regression: *"close() during start() closes the freshly-connected
+  client"* (mcp.test.ts).
+
+### CONFIRMED — recorded / doc-fixed
+- **V2-M1 [MED] MCP interactive OAuth first grant is non-functional** — `redirectToAuthorization`
+  opens the browser but NOTHING binds the redirect URI or calls the SDK's `finishAuth(code)`, so an
+  interactive first grant never completes (the server is skipped with an auth error). Auto-refresh of
+  PRE-EXISTING tokens works. Fixed the schema doc to be honest (was advertised as a working flow) and
+  RECORDED the callback-listener implementation as the tracked follow-up — implementing + testing a
+  local OAuth callback server safely needs a real OAuth provider to test against, out of scope for a
+  blind audit fix.
+
+### REFUTED / verified clean
+- compaction schema coherent (empty / only-threshold / only-offload / inverted all load); writeGlobalConfig
+  validates before write; planModel any-string + fallback; loadConfig precedence + deepMerge +
+  structuredClone anti-aliasing; MCP connect-timeout late-close, parallel start + per-server deadline,
+  name-collision hash, reconnect #closed guard, stdio env inheritance; OAuth store corrupt-file rename +
+  atomic merge; HookBus/loader per-item isolation; plugin register() 15s deadline (sync throw + reject);
+  RESERVED_SLASH blocks builtin shadowing; onboarding honest "Almost there" + custom-endpoint baseURL;
+  initProject auto-creates .vibe/, non-git early-return, template has no absolute paths/secrets. Sound.
+
+### Accepted-risk (recorded)
+- **V2-C1 [LOW]** compaction clamp is non-strict at the `threshold=0.1` floor (offload can't go below
+  the 0.1 schema min, so both fire together at the pathological minimum) — degenerate edge, recorded.
+- fresh-install zero-keys errors rather than keyless-default; keyless providers report configured when
+  daemon down (v1 accepted-risk, unchanged).
 
 ## v2 DECISIONS (this subsystem)
 - **Concurrent index-prune staleness (V2-M2) recommended design:** serialize `SemanticMemory.index()`

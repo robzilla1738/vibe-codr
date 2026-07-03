@@ -27,6 +27,7 @@ export {
   loadConfig,
   defaultConfig,
   configLocations,
+  configUnknownKeys,
   writeGlobalConfig,
   globalConfigPath,
   type LoadOptions,

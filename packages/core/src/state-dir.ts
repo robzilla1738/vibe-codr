@@ -45,8 +45,14 @@ export async function ensureStateDir(cwd: string): Promise<string> {
  */
 export async function ensureVibeIgnored(cwd: string): Promise<void> {
   try {
-    const root = join(cwd, ".git");
-    if (!(await Bun.file(join(root, "HEAD")).exists())) return;
+    // A git repo's cwd has a `.git` — a DIRECTORY in a normal checkout, but a
+    // FILE (a `gitdir:` pointer) in a linked worktree or submodule. The old
+    // `.git/HEAD` check silently skipped every worktree/submodule, leaving
+    // `.vibe/` un-ignored there. Detect either shape.
+    const dotGit = join(cwd, ".git");
+    const hasDir = await Bun.file(join(dotGit, "HEAD")).exists(); // normal checkout
+    const hasFile = await Bun.file(dotGit).exists(); // worktree/submodule pointer file
+    if (!hasDir && !hasFile) return;
     const gitignore = join(cwd, ".gitignore");
     let current = "";
     try {

@@ -107,8 +107,12 @@ export const ModelPriceSchema = z.object({
   cacheWrite: z.number().nonnegative().optional(),
 });
 
-/** OAuth 2.1 for a remote MCP server. When present, the client runs the SDK's
- * authorization-code + PKCE flow and persists tokens locally (auto-refreshed). */
+/** OAuth 2.1 for a remote MCP server. Persisted tokens are auto-refreshed via
+ * the SDK's PKCE flow. NOTE: the initial interactive authorization-code grant is
+ * NOT yet wired (no local callback listener binds the redirect URI), so the FIRST
+ * grant must be obtained out-of-band and the tokens placed in the OAuth store; a
+ * server needing an interactive first grant is skipped with an auth error rather
+ * than connecting. See docs/audit-ledger.md v2 §12 for the tracked follow-up. */
 export const McpOAuthSchema = z.object({
   /** Requested scopes. */
   scopes: z.array(z.string()).optional(),
@@ -421,12 +425,16 @@ export const ConfigSchema = z.object({
           maxArtifactBytes: 64 * 1024 * 1024,
         }),
     })
-    .refine((c) => c.offload.threshold < c.threshold, {
+    .transform((c) => {
       // The layering only works if the lossless offload fires BELOW the lossy
-      // summary threshold. Inverting them (offload.threshold ≥ threshold) would
-      // silently summarize before ever offloading — defeating the design.
-      message: "compaction.offload.threshold must be below compaction.threshold",
-      path: ["offload", "threshold"],
+      // summary threshold. Rather than REJECT an inverted pair (which would also
+      // reject a user who merely lowers `threshold` below the offload DEFAULT
+      // without touching offload), CLAMP offload.threshold below threshold — the
+      // config always loads and the invariant always holds.
+      if (c.offload.threshold >= c.threshold) {
+        c.offload.threshold = Math.max(0.1, Math.min(c.offload.threshold, c.threshold - 0.05));
+      }
+      return c;
     })
     .default({
       threshold: 0.75,

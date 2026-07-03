@@ -1857,3 +1857,33 @@ introduced across the codebase's untrusted-input parsers is now fully closed (ht
 stripInline, stripHandoffFence).
 
 Clean-pass counter after Pass 8: 0 (2 confirmed → all fixed). TWO consecutive CLEAN passes still required.
+
+
+### Pass 9 — 1 CONFIRMED (a PRE-EXISTING content-corruption bug, not a regression; FIXED + regression-tested)
+Two skeptics (parser-fix-correctness+regex-remnants / broad-logic-sweep), executed repros. The
+broad-logic sweep came back fully CLEAN (see below); the correctness sweep found one real content bug.
+- **[MEDIUM] P9-1 `htmlToText` deleted `<…>` spans inside `<pre>` code** — the `<pre>` pass decodes its
+  body's entities into the fence (`&lt;`→`<`, correct — code must survive verbatim), but the global
+  catch-all `<[^>]+>` tag-strip ran over the WHOLE string, including the decoded fence, BEFORE the
+  fence-protection split — so `Vec<T>`, `Map<K,V>`, `i < n`, `cmd > out`, JSX examples got silently
+  deleted from code the model reads. **Pre-existing** (the decode-early/strip-late ordering predates the
+  pass-6 rewrite; the skeptic mislabeled its origin — verified against the original) but a real
+  data-corruption bug on a core webfetch use case. Fixed: split on the fenced blocks FIRST and run ALL
+  remaining heading/list/catch-all tag processing only on the non-fence segments, so decoded code is
+  never re-touched. Verified: code spans + structure both preserved, still linear (~7.6ms adversarial).
+  Regression: *"htmlToText keeps `<…>` spans inside <pre> code"* + a structure-parity assertion.
+
+REFUTED with executed disproofs — the broad-logic sweep (agent 2) was CLEAN: cost/token math (tier
+boundary strict-`>`, cache-superset peeling, huge/negative token clamps, tiers-without-base-price, the
+`finiteNum` NaN guard, estimated-price budget-stop skip); orchestration DAG resume (objective-drift
+fixpoint cascade re-runs stale dependents, journal seeds only completed tasks so a failed task re-runs,
+cycle detection); compaction/microcompaction/store (tool-boundary walk, offload preview-credit +
+surrogate-safe slicing + durable absolute-path pointers that resolve in a fresh process, u8 binary
+round-trip); config transform clamp; limiter release/acquire balance. Agent 1 also REFUTED: DDG/Bing
+snippet↔link pairing parity, `stripInline` italic fuzz (`*a**b*`/`**a*b**`/nested — byte-correct),
+`stripHandoffFence` multi-fence/non-trailing/whitespace, `parseHandoff` `matchAll` linearity (fence-paired),
+the fenced-code `split` linearity, TinyFish/`finiteNum` coercion, and a full super-linear-regex re-sweep of
+the TUI ANSI (char-scanning, no regex)/markdown/diff/slash + skills frontmatter — NO remaining super-linear
+regex found. The O(n²) class is closed.
+
+Clean-pass counter after Pass 9: 0 (1 confirmed → fixed). TWO consecutive CLEAN passes still required.

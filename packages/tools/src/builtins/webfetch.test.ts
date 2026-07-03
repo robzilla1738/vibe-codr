@@ -144,6 +144,25 @@ test("htmlToText keeps the body after a WHITESPACE-variant close tag (adversaria
   expect(out).not.toContain("foot");
 });
 
+test("htmlToText keeps `<…>` spans inside <pre> code (adversarial P9-1)", () => {
+  // The <pre> pass decodes entities into the fence (`&lt;`→`<`), so a global
+  // `<[^>]+>` catch-all running over the fence deleted real code spans — generics,
+  // comparisons, shell redirects. Fence-protecting BEFORE the strip keeps code verbatim.
+  const out = htmlToText(
+    "<h1>Ex</h1><pre><code>if (a &lt; b &amp;&amp; c &gt; d) { x(); }\nlet v: Vec&lt;T&gt; = 0; cmd &gt; out</code></pre><p>after</p>",
+  );
+  expect(out).toContain("if (a < b && c > d) { x(); }"); // comparison span survived
+  expect(out).toContain("Vec<T>"); // generic survived
+  expect(out).toContain("cmd > out"); // shell redirect survived
+  expect(out).toContain("# Ex");
+  expect(out).toContain("after");
+  // Outside a fence, `<…>` is still stripped as a tag (structure parity).
+  const structure = htmlToText("<ul><li>one</li></ul><p>a <b>bold</b> word</p>");
+  expect(structure).toContain("- one");
+  expect(structure).toContain("a bold word");
+  expect(structure).not.toContain("<b>");
+});
+
 test("returns non-HTML bodies verbatim", async () => {
   stubFetch('{"ok":true}', "application/json");
   const res = await fetcher().execute({ url: "https://api.example.com/x" }, ctx());

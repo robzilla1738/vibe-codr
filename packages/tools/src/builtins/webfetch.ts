@@ -114,31 +114,36 @@ export function htmlToText(html: string): string {
     const code = decodeEntities(body.replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
     return `\n\`\`\`\n${code}\n\`\`\`\n`;
   });
-  // Headings → markdown heading lines.
-  s = s.replace(/<h([1-6])[^>]*>((?:[^<]|<(?!\/h\1[\s>]))*)(?:<\/h\1[^>]*>)?/gi, (_, level: string, body: string) => {
-    const text = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n";
-  });
-  // List items → bullets; block-level closers → line breaks; cells → separators.
-  s = s
-    .replace(/<li[^>]*>/gi, "\n- ")
-    .replace(/<\/(?:p|div|section|article|li|ul|ol|table|blockquote|figure)>/gi, "\n")
-    .replace(/<(?:br|hr)\s*\/?>/gi, "\n")
-    .replace(/<\/t[dh]>/gi, " | ")
-    .replace(/<\/tr>/gi, "\n")
-    .replace(/<[^>]+>/g, " ");
-  // Collapse whitespace per line (never across lines), keep fenced code intact.
+  // Split on the fenced code blocks created above and do ALL remaining tag/entity
+  // processing ONLY on the non-fence segments. The <pre> pass already decoded its
+  // body's entities (`&lt;`/`&gt;` → literal `<`/`>`), so if the catch-all
+  // `<[^>]+>` strip ran over the whole string it would delete real `<…>` spans
+  // inside code — `Vec<T>`, `Map<K,V>`, `i < n`, `cmd > out`, JSX examples — that
+  // pages routinely encode. Fence-protecting BEFORE the strip keeps code verbatim.
   const parts = s.split(/(```[\s\S]*?```)/);
   const cleaned = parts
-    .map((part, i) =>
-      i % 2 === 1
-        ? part // inside a fence — verbatim
-        : decodeEntities(part)
-            .split("\n")
-            .map((line) => line.replace(/[ \t]+/g, " ").trim())
-            .join("\n")
-            .replace(/\n{3,}/g, "\n\n"),
-    )
+    .map((part, i) => {
+      if (i % 2 === 1) return part; // fenced code — verbatim
+      const stripped = part
+        // Headings → markdown heading lines.
+        .replace(/<h([1-6])[^>]*>((?:[^<]|<(?!\/h\1[\s>]))*)(?:<\/h\1[^>]*>)?/gi, (_, level: string, body: string) => {
+          const text = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+          return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n";
+        })
+        // List items → bullets; block-level closers → line breaks; cells → separators.
+        .replace(/<li[^>]*>/gi, "\n- ")
+        .replace(/<\/(?:p|div|section|article|li|ul|ol|table|blockquote|figure)>/gi, "\n")
+        .replace(/<(?:br|hr)\s*\/?>/gi, "\n")
+        .replace(/<\/t[dh]>/gi, " | ")
+        .replace(/<\/tr>/gi, "\n")
+        .replace(/<[^>]+>/g, " ");
+      // Collapse whitespace per line (never across lines).
+      return decodeEntities(stripped)
+        .split("\n")
+        .map((line) => line.replace(/[ \t]+/g, " ").trim())
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n");
+    })
     .join("\n");
   return cleaned.trim();
 }

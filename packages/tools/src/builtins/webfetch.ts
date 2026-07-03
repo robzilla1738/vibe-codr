@@ -67,6 +67,21 @@ function decodeEntities(s: string): string {
   });
 }
 
+/** Linear-time removal of a block element and ALL its content, tolerant of an
+ * unclosed opener. The unrolled `[^<]*(?:<(?!\/tag>)[^<]*)*` consumes each char
+ * once; the optional close means N unclosed `<tag>` openers are swallowed to EOF
+ * in ONE pass (O(n)) instead of a lazy `[\s\S]*?<\/tag>` re-scanning to EOF per
+ * opener (O(n²)). `\b` after the tag avoids matching `<header>` as `<head>`. */
+function stripBlock(s: string, tag: string): string {
+  return s.replace(new RegExp(`<${tag}\\b[^>]*>[^<]*(?:<(?!/${tag}>)[^<]*)*(?:</${tag}>)?`, "gi"), " ");
+}
+
+/** Linear-time HTML-comment removal (same O(n²) trap as {@link stripBlock} for
+ * `"<!--".repeat(n)` with no `-->`). Unrolled over the `-` delimiter. */
+function stripComments(s: string): string {
+  return s.replace(/<!--[^-]*(?:-(?!->)[^-]*)*(?:-->)?/g, " ");
+}
+
 /**
  * HTML -> structure-preserving markdown-ish text: headings become `#` lines,
  * list items become `- ` bullets, `<pre>` blocks become fenced code, and block
@@ -75,21 +90,24 @@ function decodeEntities(s: string): string {
  * structure models need to comprehend docs pages). Dependency-free.
  */
 export function htmlToText(html: string): string {
-  let s = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<head[\s\S]*?<\/head>/gi, " ")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
-    .replace(/<(?:aside|template)[\s\S]*?<\/(?:aside|template)>/gi, " ");
+  // EVERY tag-stripping pass below MUST be linear. A lazy `[\s\S]*?<\/tag>` scans
+  // to end-of-string for each UNCLOSED opener, so N unclosed `<script>` (or
+  // `<pre>`/`<h1>`/`<!--`) openers cost O(N²) — and this runs synchronously after
+  // the fetch, so the tool's AbortSignal timeout can't bound it (a 703KB adversarial
+  // page of unclosed `<script>` froze webfetch ~31s, 4× its declared 8s timeout).
+  // The unrolled `[^<]*(?:<(?!\/tag)[^<]*)*` with an OPTIONAL close consumes each
+  // char exactly once and swallows an unclosed opener to EOF exactly ONCE — O(n).
+  let s = stripComments(html);
+  for (const tag of ["script", "style", "head", "nav", "footer", "aside", "template"]) {
+    s = stripBlock(s, tag);
+  }
   // Code blocks first (their inner whitespace must survive verbatim).
-  s = s.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, body: string) => {
+  s = s.replace(/<pre[^>]*>([^<]*(?:<(?!\/pre>)[^<]*)*)(?:<\/pre>)?/gi, (_, body: string) => {
     const code = decodeEntities(body.replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
     return `\n\`\`\`\n${code}\n\`\`\`\n`;
   });
   // Headings → markdown heading lines.
-  s = s.replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, level: string, body: string) => {
+  s = s.replace(/<h([1-6])[^>]*>((?:[^<]|<(?!\/h\1>))*)(?:<\/h\1>)?/gi, (_, level: string, body: string) => {
     const text = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
     return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n";
   });

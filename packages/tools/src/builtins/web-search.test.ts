@@ -131,6 +131,25 @@ test("a malformed TinyFish 200 (non-array results) doesn't sink the batch (adver
   delete process.env.TINYFISH_API_KEY;
 });
 
+test("a malformed TinyFish ELEMENT (missing snippet/url) doesn't sink the batch (adversarial P6-1)", async () => {
+  // The container guard (P5-W1) isn't enough: a well-formed array whose ENTRIES omit
+  // `snippet`/`url` still threw in collect() (detectDate(undefined) / canonicalizeUrl(undefined)),
+  // sinking the whole tool. Entries are now coerced to strings and url-less ones dropped.
+  const bodies = [
+    '{"results":[{"title":"T","url":"https://ex.com/a"}]}', // no snippet
+    '{"results":[{"title":"T","snippet":"s"}]}', // no url → dropped
+    '{"results":[{"position":"x","site_name":null,"title":42,"snippet":{},"url":"https://ex.com/b"}]}', // wrong types
+  ];
+  for (const body of bodies) {
+    process.env.TINYFISH_API_KEY = "set";
+    const { fetch } = routingFetch({ tinyfish: { body }, ddg: { body: DDG_HTML }, bing: { body: "" } });
+    const res = await webSearchTool({ apiKey: "set", fetchImpl: fetch }).execute({ query: "bun docs" }, ctx());
+    expect([body, res.isError]).toEqual([body, undefined]);
+    expect(String(res.output)).toContain("https://bun.sh/docs"); // keyless results still win
+  }
+  delete process.env.TINYFISH_API_KEY;
+});
+
 test("maxResults trims the merged, ranked list", async () => {
   delete process.env.TINYFISH_API_KEY;
   const { fetch } = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });

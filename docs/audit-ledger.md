@@ -1755,3 +1755,41 @@ accepted sandbox-boundary DECISION (the `PermissionChecker`, not the primitive, 
 defect. The multi-session dangling-ref-on-prune is cosmetic, within the accepted multi-session-race DECISION.
 
 Clean-pass counter after Pass 5: 0 (3 confirmed → all fixed). TWO consecutive CLEAN passes still required.
+
+
+### Pass 6 — 2 CONFIRMED (1 a gap in a pass-5 fix, 1 the deepest find yet; both FIXED + regression-tested)
+Two skeptics (pass-5-fixes+compaction+context / memory+research+TUI-parity), executed repros.
+- **[LOW-MED] P6-1 the pass-5 web_search fix (P5-W1) was INCOMPLETE** — `Array.isArray(data.results)`
+  guarded the container but not the ELEMENTS. TinyFish is external+unvalidated; a well-formed array
+  whose entries omit `url`/`snippet` still threw synchronously in `collect()` (`detectDate(undefined)`
+  → `undefined.matchAll`; `canonicalizeUrl(undefined)` → `undefined.toLowerCase()`), outside the
+  per-engine settle guard, sinking the whole fan-out and discarding the keyless DDG+Bing results — the
+  exact failure P5-W1 targeted. Fixed: `tinyFishSearch` now sanitizes EVERY entry to the `SearchResult`
+  shape (coerce title/site_name/snippet via `String(… ?? "")`, position to a number) and DROPS entries
+  with no usable URL. Regression: *"a malformed TinyFish ELEMENT … doesn't sink the batch"*.
+- **[MEDIUM] P6-W1 `htmlToText` was O(n²) — pathological HTML froze webfetch/crawl_docs past their
+  timeouts** — every tag-stripping pass used a lazy `[\s\S]*?<\/tag>`, which scans to end-of-string for
+  EACH unclosed opener, so `"<script>".repeat(90000)` (703KB, well under the 4MB cap) cost O(N²). It
+  runs SYNCHRONOUSLY after the fetch, so the tool's `AbortSignal.timeout` never bounded it and the byte
+  caps didn't help (cost is O(bytes²), not linear): end-to-end the tool blocked **31.5s vs its declared
+  8s timeout** — in the TUI, a full UI-thread freeze; readability deps are absent on a default install so
+  `htmlToText` is the DEFAULT extraction path. Fixed: rewrote the removal passes (`stripBlock`/
+  `stripComments`) and the `<pre>`/heading captures as the LINEAR unrolled-loop
+  `[^<]*(?:<(?!\/tag>)[^<]*)*` with an OPTIONAL close — each char consumed once, an unclosed opener
+  swallowed to EOF exactly ONCE. Verified: the 703KB adversarial page drops from ~31s to ~8ms, all
+  pathological shapes <30ms, and well-formed structure (headings/code-fences/bullets, script/style/nav/
+  footer/comment removal) is preserved. Regressions: *"htmlToText extraction is LINEAR on pathological
+  unclosed tags"* + *"…preserves structure and strips blocks (linear rewrite parity)"* (webfetch.test.ts).
+
+REFUTED with executed disproofs: stubscan `[mc][tj]s` (no C#-`.cs` collision, no lost test-exclusion),
+catalog `finiteNum` (all-undefined-price tier still selected; a legit `0` preserved; `undefined` already
+a valid unpriced value), compaction on all-tool-messages (returns null cleanly; tool-boundary walk-back +
+empty-summary guard + leading-user fold correct — the string-nor-array `user` content edge is unreachable
+in `ai`'s runtime `ModelMessage`), context gathering (repo_map bounds huge files at 512KB, doesn't follow
+symlinks, excludes binaries, empty repo → empty map; `@mention` path resolution is user-intent per the
+edit/write path-scoping DECISION), memory (empty/whitespace/all-stopword/match-nothing queries → 0 hits;
+unicode/regex-special/heading-injection facts round-trip + dedup safely; no project↔project scope leak),
+crawl_docs bounds (page budget `min(maxPages,15)`, `MAX_DEPTH=2`, redirect cap 5), TUI reducer/headless
+(unknown/late tool ids benign, exit-code ↔ gate consistent, JSON shape stable).
+
+Clean-pass counter after Pass 6: 0 (2 confirmed → all fixed). TWO consecutive CLEAN passes still required.

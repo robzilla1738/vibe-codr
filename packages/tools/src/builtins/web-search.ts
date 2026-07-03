@@ -298,11 +298,29 @@ async function tinyFishSearch(
     throw new Error(`HTTP ${res.status}${detail}`);
   }
   const data = JSON.parse(await res.text()) as { results?: unknown };
-  // Guard a truthy NON-array `results` (an error-envelope 200 like
-  // `{"results":{"error":"quota exceeded"}}` or `{"results":"rate limited"}`).
-  // `?? []` only catches null/undefined; a non-array would reach `collect()`'s
-  // `.entries()` and throw, discarding the keyless engines' successful results.
-  return Array.isArray(data.results) ? (data.results as EngineResult[]) : [];
+  // TinyFish is an external, unvalidated engine, so sanitize FULLY — both the
+  // container and every element. `?? []` only catches null/undefined; a truthy
+  // non-array (an error-envelope 200 like `{"results":{"error":…}}`) or an array
+  // whose entries omit `url`/`snippet` would reach `collect()`'s `.entries()`,
+  // `detectDate(r.snippet)`, or `canonicalizeUrl(r.url)` and THROW synchronously
+  // (outside the per-engine settle guard), sinking the whole fan-out and discarding
+  // the keyless DDG+Bing results. Coerce each entry to the SearchResult shape
+  // (strings, never undefined) and drop entries with no usable URL.
+  const raw = Array.isArray(data.results) ? data.results : [];
+  return raw.flatMap((r): EngineResult[] => {
+    const e = r as Record<string, unknown>;
+    const url = typeof e?.url === "string" ? e.url.trim() : "";
+    if (!url) return [];
+    return [
+      {
+        position: typeof e?.position === "number" ? e.position : 0,
+        site_name: String(e?.site_name ?? ""),
+        title: String(e?.title ?? ""),
+        snippet: String(e?.snippet ?? ""),
+        url,
+      },
+    ];
+  });
 }
 
 /** Render results as a markdown numbered list (title / URL / snippet) — clean for

@@ -100,6 +100,34 @@ test("reduces HTML to readable text, stripping scripts/styles/tags", async () =>
   expect(out).not.toContain("<");
 });
 
+test("htmlToText extraction is LINEAR on pathological unclosed tags (adversarial P6-W1)", () => {
+  // A lazy `[\s\S]*?<\/tag>` scans to EOF for EACH unclosed opener, so
+  // `"<script>".repeat(N)` cost O(N²) — a 703KB page froze webfetch ~31s (4× its
+  // own 8s timeout), synchronously, so the AbortSignal never bounded it. Each of
+  // these adversarial inputs must now complete near-instantly.
+  for (const opener of ["<script>", "<pre>", "<h1>", "<style>", "<!--", "<footer>"]) {
+    const evil = `${opener.repeat(90000)}x`; // ~0.4–0.7MB of unclosed openers
+    const t0 = performance.now();
+    const out = htmlToText(evil);
+    const ms = performance.now() - t0;
+    expect([opener, ms < 1000]).toEqual([opener, true]); // was tens of SECONDS; now single-digit ms
+    expect(typeof out).toBe("string");
+  }
+});
+
+test("htmlToText still preserves structure and strips blocks (linear rewrite parity)", () => {
+  const out = htmlToText(
+    "<head><style>.x{}</style></head><script>evil()</script><h1>Hi</h1><p>a <b>b</b> c</p>" +
+      "<pre>code\nline</pre><nav>menu</nav><footer>foot</footer><ul><li>one</li><li>two</li></ul><!-- note -->",
+  );
+  expect(out).toContain("# Hi");
+  expect(out).toContain("```");
+  expect(out).toContain("code\nline");
+  expect(out).toContain("- one");
+  expect(out).toContain("- two");
+  for (const gone of ["evil()", ".x{}", "menu", "foot", "note"]) expect(out).not.toContain(gone);
+});
+
 test("returns non-HTML bodies verbatim", async () => {
   stubFetch('{"ok":true}', "application/json");
   const res = await fetcher().execute({ url: "https://api.example.com/x" }, ctx());

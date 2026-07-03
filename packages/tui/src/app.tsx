@@ -109,6 +109,15 @@ const CONTENT_MAX = 130;
 const MAX_OUTPUT_LINES = 160;
 /** Max visible rows the input box grows to before it scrolls internally. */
 const INPUT_MAX_ROWS = 10;
+/** Prompt-field keybinding overrides (merged over the textarea defaults):
+ * Enter submits the draft (chat-prompt semantics, not the textarea's default
+ * newline) and Shift+Enter inserts a real newline for multi-line prompts. */
+const PROMPT_KEYS = [
+  { name: "return", action: "submit" as const },
+  { name: "kpenter", action: "submit" as const },
+  { name: "linefeed", action: "submit" as const },
+  { name: "return", shift: true, action: "newline" as const },
+];
 /** Max rows a live status panel (Tasks / Subagents / Queued) renders before it
  * collapses the overflow to a "+N more" line. These panels are flexShrink={0}, so
  * an uncapped list (a wide 20–40 subagent fan-out) would push the input + status
@@ -195,13 +204,31 @@ export function App(props: { engine: EngineClient }) {
   let goal = snap.goal;
   let usage: SessionUsage = snap.usage;
   let ctx: { usedTokens: number; contextWindow: number } | null = null;
-  // A handle to the text input so we can restore focus after a mouse click — a
-  // click on any renderable blurs the input, which would otherwise leave the
-  // user unable to type until they click the field again.
-  let inputEl: { focus: () => void } | undefined;
+  // A handle to the prompt textarea so we can restore focus after a mouse click
+  // (a click on any renderable blurs it, which would otherwise leave the user
+  // unable to type until they click the field again) and push programmatic
+  // draft writes (Tab completion, Esc clear) into its edit buffer.
+  let inputEl:
+    | {
+        focus: () => void;
+        editBuffer: { getText: () => string; setText: (t: string) => void; setCursorByOffset: (o: number) => void };
+      }
+    | undefined;
   // Defer past the renderer's own post-click focus handling (which would
   // otherwise blur the input right after our synchronous focus() call).
   const refocusInput = () => queueMicrotask(() => inputEl?.focus());
+  // Programmatic draft writes (Tab completion, Esc/Ctrl+C clear, menu prefills)
+  // flow INTO the textarea's edit buffer; user typing flows out via
+  // onContentChange. The equality guard breaks the two-way echo, and the cursor
+  // jumps to the end so a completion keeps the caret where typing resumes.
+  createEffect(() => {
+    const v = draft();
+    const el = inputEl;
+    if (el && el.editBuffer.getText() !== v) {
+      el.editBuffer.setText(v);
+      el.editBuffer.setCursorByOffset(v.length);
+    }
+  });
   // The transcript scrollbox, captured so expand/collapse can hold the clicked
   // row in place instead of letting sticky-scroll snap to the bottom.
   let scrollEl: { scrollTop: number; stickyScroll: boolean } | undefined;
@@ -397,47 +424,42 @@ export function App(props: { engine: EngineClient }) {
     }
   });
 
-  // How many rows the input needs for the current draft: each explicit line
-  // soft-wraps to ceil(width / inner-width) rows. Drives the input box height so
-  // it grows with the text (capped at INPUT_MAX_ROWS, then it scrolls inside).
-  // `inner` = the FIELD's true width: the column minus the block chrome (rail 1
-  // + padding 2+2) minus the `MODE ❯ ` prompt prefix on the same row. Estimating
-  // against a wider width than the field really has (the old `contentWidth − 6`)
-  // meant a draft near the edge horizontally SCROLLED for a few chars before the
-  // box grew — the "text doesn't wrap" glitch — then over-reserved blank rows.
-  // Once the draft wraps we add one row of headroom: the edit buffer keeps the
-  // cursor's trailing position visible, so without it the first line scrolls off.
+  // ESTIMATE of the input's current row count, used only to budget the menu
+  // window height (`menuWindow`). The prompt textarea sizes ITSELF (it wraps
+  // natively and auto-grows between minHeight 1 and maxHeight INPUT_MAX_ROWS,
+  // then scrolls internally) — the render path no longer consumes this, so an
+  // off-by-one here costs a menu row, not a clipped draft.
   const inputRows = () => {
     const inner = Math.max(8, contentWidth() - 5 - (modeWord().length + 3));
-    // The trailing line reserves one extra cell for the cursor, so a draft that
-    // exactly fills a row wraps the caret to the next line instead of scrolling.
     const lines = draft().split("\n");
     const rows = lines.reduce(
       (sum, line, i) =>
         sum + Math.max(1, Math.ceil((displayWidth(line) + (i === lines.length - 1 ? 1 : 0)) / inner)),
       0,
     );
-    return Math.min(INPUT_MAX_ROWS, Math.max(1, rows >= 2 ? rows + 1 : rows));
+    return Math.min(INPUT_MAX_ROWS, Math.max(1, rows));
   };
 
   // The presented-plan card is bounded so its (often long) content scrolls
-  // INSIDE the card instead of pushing the input + approval hint off-screen. Cap
-  // at most of the terminal, leaving room for the input/status; if the plan is
-  // short, the card shrinks to fit it (rough wrap estimate — the scrollbox handles
-  // the exact overflow). The card's chrome is 5 rows: padding (2) + title + a
-  // blank rhythm row + the hint.
+  // INSIDE the card instead of pushing the input + approval hint off-screen —
+  // AND so the transcript above keeps ~8 usable rows: the user must still be
+  // able to scroll up and re-read their own message while deciding on the plan
+  // (a dims−12 cap let a long plan squeeze the transcript to a sliver). If the
+  // plan is short, the card shrinks to fit it (rough wrap estimate — the
+  // scrollbox handles the exact overflow). The card's chrome is 5 rows:
+  // padding (2) + title + a blank rhythm row + the hint.
   const planContentRows = () => {
     const inner = Math.max(20, contentWidth() - 7);
     return (plan() ?? "")
       .split("\n")
       .reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / inner)), 0);
   };
-  const planPanelRows = () => {
-    const cap = Math.max(9, dims().height - 12);
-    return Math.min(cap, planContentRows() + 5);
-  };
+  // ~8 rows of app chrome (context line, input, status, padding) + ~8 rows of
+  // transcript stay reserved; the floor keeps the card usable on tiny panes.
+  const planPanelCap = () => Math.max(9, dims().height - 20);
+  const planPanelRows = () => Math.min(planPanelCap(), planContentRows() + 5);
   // Whether the plan overflows its card (→ show the scroll affordance in the hint).
-  const planOverflows = () => planContentRows() + 5 > Math.max(9, dims().height - 12);
+  const planOverflows = () => planContentRows() + 5 > planPanelCap();
 
   const [selIdx, setSelIdx] = createSignal(0);
   // The menu window's scroll offset (top visible row). Kept SEPARATE from the
@@ -2179,25 +2201,40 @@ export function App(props: { engine: EngineClient }) {
               on the first line. */}
           <box flexDirection="row" flexShrink={0}>
             <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>{`${modeWord()} `}</text>
-            <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"❯ "}</text>
-            <box flexDirection="column" flexGrow={1} height={inputRows()}>
-              <input
-                ref={(el: { focus: () => void }) => (inputEl = el)}
-                focused
-                flexGrow={1}
-                wrapMode="word"
-                value={draft()}
-                onInput={(v: string) => setDraft(v)}
-                onSubmit={submit}
-                placeholder="Send a message or type / to start"
-                backgroundColor="transparent"
-                focusedBackgroundColor="transparent"
-                textColor={palette().assistant}
-                focusedTextColor={palette().assistant}
-                placeholderColor={palette().muted}
-                cursorColor={brand()}
-              />
-            </box>
+            <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>{"❯ "}</text>
+            {/* A TEXTAREA, not an <input>: OpenTUI's InputRenderable is
+                single-line by design (height 1, no wrapping), so long drafts
+                horizontally scrolled out of the box instead of wrapping — the
+                "text going out of the input area" bug. The textarea wraps for
+                real and OWNS its height: it auto-grows from one row up to
+                INPUT_MAX_ROWS, then scrolls internally — no estimated row
+                count to drift out of sync. PROMPT_KEYS restores chat semantics
+                (Enter submits, Shift+Enter inserts a newline). Content flows
+                textarea → draft via onContentChange; programmatic draft writes
+                flow back through the createEffect near refocusInput. onSubmit
+                receives a SubmitEvent, so it must not shadow submit's optional
+                draft-override parameter. */}
+            <textarea
+              ref={(el: NonNullable<typeof inputEl>) => (inputEl = el)}
+              focused
+              flexGrow={1}
+              minHeight={1}
+              maxHeight={INPUT_MAX_ROWS}
+              wrapMode="word"
+              keyBindings={PROMPT_KEYS}
+              onContentChange={() => {
+                const v = inputEl?.editBuffer.getText() ?? "";
+                if (v !== draft()) setDraft(v);
+              }}
+              onSubmit={() => submit()}
+              placeholder="Send a message or type / to start"
+              backgroundColor="transparent"
+              focusedBackgroundColor="transparent"
+              textColor={palette().assistant}
+              focusedTextColor={palette().assistant}
+              placeholderColor={palette().muted}
+              cursorColor={accent()}
+            />
           </box>
         </box>
       </Rail>

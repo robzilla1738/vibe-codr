@@ -1,11 +1,52 @@
 import { test, expect } from "bun:test";
-import { composeSystemPrompt, formatWorkspaceState } from "./system-prompt.ts";
+import { composeSystemPrompt, formatToday, formatWorkspaceState } from "./system-prompt.ts";
 
 test("plan mode forbids edits; execute mode allows them", () => {
-  expect(composeSystemPrompt({ mode: "plan", goal: null })).toContain("MUST NOT modify");
+  expect(composeSystemPrompt({ mode: "plan", goal: null })).toContain("do NOT modify");
   expect(composeSystemPrompt({ mode: "execute", goal: null })).toContain(
     "may read and modify",
   );
+});
+
+test("plan mode carries the research pipeline: triage → gather → ground → critique → present", () => {
+  const out = composeSystemPrompt({ mode: "plan", goal: null });
+  // The pipeline stages, in doctrine order (the agentswarm grounded-research shape).
+  expect(out).toMatch(/TRIAGE(.|\n)*GATHER(.|\n)*GROUND(.|\n)*SELF-CRITIQUE(.|\n)*PRESENT/);
+  // Triage short-circuits: trivial work must not be taxed with research theater.
+  expect(out).toMatch(/research theater/);
+  // Time-sensitive claims verified on the web, dates resolved against the
+  // injected current date (the "yesterday's game as today" bug).
+  expect(out).toMatch(/web_search/);
+  expect(out).toMatch(/yesterday's event is never presented as today's/);
+  // Stack versions come from package_info/official docs, never memory.
+  expect(out).toMatch(/package_info/);
+  expect(out).toMatch(/NEVER name a version from memory/);
+  // Grounded-vs-inferred honesty: unresearched claims are marked, not asserted.
+  expect(out).toMatch(/inferred — verify/);
+  // Research-before-present ordering.
+  expect(out).toMatch(/present_plan(.|\n)*LAST/);
+  // Execute mode doesn't carry the plan pipeline.
+  expect(composeSystemPrompt({ mode: "execute", goal: null })).not.toMatch(/SELF-CRITIQUE/);
+});
+
+test("today's date is injected into ENVIRONMENT with a staleness warning", () => {
+  const out = composeSystemPrompt({
+    mode: "execute",
+    goal: null,
+    cwd: "/Users/me/proj",
+    today: "Thursday, July 2, 2026 (2026-07-02)",
+  });
+  expect(out).toContain("Today's date: Thursday, July 2, 2026 (2026-07-02)");
+  expect(out).toMatch(/training data predates/);
+  // The date alone is enough to render the ENVIRONMENT block (headless contexts).
+  const noCwd = composeSystemPrompt({ mode: "execute", goal: null, today: "X (2026-07-02)" });
+  expect(noCwd).toContain("ENVIRONMENT:");
+  expect(noCwd).not.toContain("Working directory");
+});
+
+test("formatToday renders a weekday long form with an ISO anchor", () => {
+  expect(formatToday(new Date(2026, 6, 2))).toBe("Thursday, July 2, 2026 (2026-07-02)");
+  expect(formatToday(new Date(2026, 0, 9))).toBe("Friday, January 9, 2026 (2026-01-09)");
 });
 
 test("the base prompt sets the quality bar: conventions, verification, concision, scope", () => {

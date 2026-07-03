@@ -500,6 +500,27 @@ check(
   "typing while the plan card is up revises the plan (resolve-plan edit)",
   sent.some((c) => c.type === "resolve-plan" && c.decision === "edit"),
 );
+// A LONG plan must not squeeze the transcript to a sliver — the card caps at
+// dims−20 so ~8 transcript rows stay visible and the user can still scroll up
+// to re-read their message while deciding.
+sent.length = 0;
+push({
+  type: "plan-presented",
+  sessionId: "smoke",
+  plan: `## Plan\n${Array.from({ length: 60 }, (_, i) => `- [ ] Step number ${i + 1}`).join("\n")}`,
+} as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+// The card is capped at dims−20, so its title must leave real transcript rows
+// above it (the tasks/subagent panels below eat a few more). Pre-fix (dims−12)
+// a long plan pushed the title to the very top and the transcript to a sliver.
+const planTitleRow = frame.split("\n").findIndex((l) => l.includes("Plan · review & approve"));
+check(
+  `a long plan card leaves the transcript visible above it (title at row ${planTitleRow})`,
+  planTitleRow >= 6,
+);
+t.mockInput.pressEscape(); // keep planning → dismiss the long card
+await settle();
 // Empty Enter on a fresh plan card accepts & executes it.
 sent.length = 0;
 push({ type: "plan-presented", sessionId: "smoke", plan: "## Plan\n- [ ] One" } as UIEvent);
@@ -754,6 +775,24 @@ frame = t.captureCharFrame();
 check("theme submenu lists the ported classics", frame.includes("tokyonight") && frame.includes("gruvbox"));
 t.mockInput.pressEscape();
 await settle();
+
+// 19) A long draft WRAPS inside the prompt textarea — it must never scroll out
+// of the box horizontally (the old single-line InputRenderable bug) or hide the
+// tail. The tail check strips the rail glyph a wrapped line starts with.
+const LONG_DRAFT =
+  "Write me a detailed summary of everything that happened in the world cup games today and make it easy to skim for a casual fan.";
+await t.mockInput.typeText(LONG_DRAFT);
+await settle();
+frame = t.captureCharFrame();
+const flat = frame.replace(/[▎│]/g, " ").replace(/\s+/g, " ");
+check("long draft stays fully visible in the input (wraps, no h-scroll)", flat.includes("for a casual fan."));
+check(
+  "long draft occupies multiple wrapped rows",
+  frame.split("\n").filter((l) => /world cup|casual fan|detailed summary/.test(l)).length >= 2,
+);
+t.mockInput.pressEscape();
+await settle();
+check("Esc clears the long draft", !t.captureCharFrame().includes("casual fan"));
 
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);

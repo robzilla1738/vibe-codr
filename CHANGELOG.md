@@ -4,6 +4,48 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Changed — royal violet theme, rainbow spinner, wider column, real input wrapping, grounded planning
+
+- **The default theme is now royal violet** — `#8b5cf6` accent on the same
+  near-black graphite surfaces, replacing the opencode peach (which lives on as
+  `/theme opencode`). The wordmark sweep, markers, mode chip, and chart ramp all
+  follow; a new `purple` entry in `ACCENT_PRESETS` makes `/accent purple` the
+  default brand. Tests and the smoke render now assert violet dominance.
+- **Rainbow thinking spinner.** The live working spinner (and the `✻` glyph on
+  the streaming reasoning stack) hue-cycles through the full wheel (~3.6s/rev,
+  starting on the brand violet) via a new `rainbow(tick)` in `gradient.ts` — a
+  deliberate exception to the single-hue rule so "the model is thinking" has its
+  own signature. All other spinners stay in the flat brand accent.
+- **Wider chat column.** `CONTENT_MAX` 100 → 130.
+- **The prompt input finally wraps for real.** The prompt field is now an
+  OpenTUI `<textarea>` — the old `<input>` renderable is single-line *by design*
+  (height 1, no wrapping), so long drafts horizontally scrolled out of the box
+  with the tail hidden and the cursor painting past the panel edge. The textarea
+  wraps natively and owns its height (auto-grows 1 → 10 rows, then scrolls
+  internally), killing the estimated-row-count drift entirely. **Enter** still
+  submits; **Shift+Enter** now inserts a real newline. Verified by a
+  9-terminal-width × 163-keystroke sweep; smoke guards added.
+- **The `❯` prompt arrow and text cursor follow the mode color** (PLAN green,
+  YOLO red) like the chip and rail — they were stuck on the brand accent.
+- **A long plan card no longer buries the transcript.** The approval card caps
+  at `dims−20` (was `dims−12`), so ~8 transcript rows stay visible and
+  scrollable — you can re-read your own message while deciding on the plan.
+- **Planning is grounded now.** The system prompt injects **today's date**
+  (with a "your training data predates this" warning), the always-on web
+  doctrine forbids stating "latest" versions from memory, and PLAN mode carries
+  a research pipeline modeled on agentswarm's grounded-research phase:
+  **triage** (self-contained work skips research) → **gather** (parallel
+  `web_search` with recency, `webfetch` of authoritative docs, `package_info`
+  for real versions, subagent scouts) → **ground** (verified facts with sources
+  and real dates; unverified needs marked *inferred — verify*) →
+  **adversarial self-critique** ("what does the real thing have that this plan
+  is missing?") → `present_plan` last. Fixes plans that called yesterday's
+  event "today" and specified stale majors from memory.
+- **Output polish.** A single-datum `chart` block renders as a stat line
+  (bold value + muted label) instead of one meaningless always-100% bar; diff
+  sign columns align across hunks (`diffPad`); the `/accent` hex hint shows the
+  new brand. README screenshots regenerated in the new theme.
+
 ### Changed — default theme is the opencode look, wider column, overflow fixes
 
 - **The default theme is now the opencode look** — peach (`#fab283`) accent on

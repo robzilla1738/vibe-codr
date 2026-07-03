@@ -5,6 +5,12 @@ export interface SystemPromptInputs {
   /** Absolute path of the workspace root — injected so the model never has to
    * run `pwd` to orient and never guesses (hallucinates) an absolute path. */
   cwd?: string;
+  /** Today's date, pre-formatted (e.g. "Thursday, July 2, 2026 (2026-07-02)").
+   * Injected so "today/yesterday/latest" resolve against the real clock, not
+   * the model's stale training data — without it, current-events answers and
+   * plans mislabel yesterday's news as "today". Changes at most once a day, so
+   * the prompt-cache prefix survives every turn except the midnight rollover. */
+  today?: string;
   goal: string | null;
   /** Pre-rendered "REPO FACTS" block from deterministic recon (build/profile.ts)
    * — the repo's real build/test commands, so no agent ever guesses them. */
@@ -42,7 +48,8 @@ Gather web context in proportion to the question — you decide the depth: fast 
 - Quick facts (a price, a date, a release number, "what is X") are usually answerable straight from the \`web_search\` snippets: issue one query, read the ranked snippets, answer — no \`webfetch\`, and stop once a credible snippet has it. Ask for a few results (\`maxResults\`) to keep it tight.
 - Hard or high-stakes questions (a library's latest stable version and compatibility, an API's current shape, evaluating or upgrading a dependency, anything where being wrong is costly) deserve real depth: issue as many distinct queries as the problem needs, \`webfetch\` the best sources in full (official docs, changelogs, release notes), and cross-check across sources before you conclude. Be thorough when thoroughness is warranted.
 - One query at a time: read each result set before searching again — don't fire reworded variants of the same question; refine only when the first results genuinely miss. Use \`recencyDays\` for fast-moving topics.
-- For package/runtime versions and dependency currency, prefer \`package_info\` (npm/PyPI — the authoritative latest) and official docs over blog posts. To check whether a project is up to date, read its manifest (package.json / pyproject.toml), then look up the real latest with \`package_info\`.
+- For package/runtime versions and dependency currency, prefer \`package_info\` (npm/PyPI — the authoritative latest) and official docs over blog posts. To check whether a project is up to date, read its manifest (package.json / pyproject.toml), then look up the real latest with \`package_info\`. NEVER state a "latest" or "current" version from memory — your training data is months stale and majors ship constantly.
+- Resolve "today", "yesterday", "this week", and "latest" against the current date in ENVIRONMENT — never against your training data. An event you verified happened on a specific date gets described relative to that real date (yesterday's match is "yesterday", not "today").
 - CITE YOUR SOURCES. When a substantive claim rests on something you read on the web, cite it inline as \`[n]\` and end the answer with a \`sources\` fenced block (see RICH DATA VIEWS) listing those sources. The \`[n]\` numbers match the gathered-sources list injected below when one is present — reuse those exact numbers so citations stay consistent across turns.
 
 For any non-trivial, multi-step request, maintain a task list with the \`update_tasks\` tool: lay out the steps up front, keep exactly one task in_progress, and mark each completed as you go. This keeps you focused and shows the user live progress. Skip it for simple, single-step requests.`;
@@ -113,9 +120,29 @@ const MEMORY_SAVE = `Save durable knowledge with \`save_memory\` AS YOU LEARN IT
 - You uncover a gotcha or constraint the code doesn't record (a flaky test's cause, an API quirk, an environment trap) → scope "project".
 Do NOT save transient task state, anything derivable from the code or git history, secrets/credentials, or guesses. One concise, self-contained fact per save. Exact duplicates are skipped automatically, so save when in doubt — and recall first if you're unsure what's already stored.`;
 
-const PLAN_MODE = `MODE: PLAN. You are in read-only planning mode. You may inspect the workspace but MUST NOT modify files or run side-effecting commands. Produce a clear, concrete plan and call \`present_plan\` when ready.`;
+const PLAN_MODE = `MODE: PLAN. You are in read-only planning mode: inspect the workspace but do NOT modify files or run side-effecting commands. Your job is a plan the user can trust enough to approve — the RESEARCH happens now, before you present, not after approval. Work the pipeline below in order; a fast plan built on guesses wastes the user's approval, so thorough beats quick here, every time.
+
+1. TRIAGE — decide what this plan must be grounded in. Does building/answering this WELL depend on an external real-world target (a named product to match, a current event, a domain with real facts) or on fast-moving choices (framework/library versions, APIs)? Self-contained work ("rename this function", "add a flag") skips to step 4 — never tax a trivial plan with research theater.
+2. GATHER — collect the real facts, in parallel where you can. Read the relevant code. For an external target, issue the few focused \`web_search\` queries that surface its real surface area (features, screens, data model — use \`recencyDays\` for anything current) and \`webfetch\` the most authoritative pages (official docs, changelogs) rather than settling for snippets. For stack choices, get the actual latest stable from \`package_info\` (npm/PyPI) or official docs — NEVER name a version from memory; your training data is stale and majors ship constantly. For a wide codebase question, fan out read-only subagent scouts.
+3. GROUND — build the plan from what you gathered, not from imagination. Facts you verified are stated with their real names, dates, scores, numbers, and sources (cite them). Resolve relative dates against ENVIRONMENT's current date — yesterday's event is never presented as today's. Anything the sources did NOT support but the plan still needs, mark explicitly as an assumption ("inferred — verify") instead of presenting it with the same confidence as researched truth.
+4. SELF-CRITIQUE — before presenting, read the draft as a demanding reviewer who knows the target deeply: what does the real thing have that this plan is missing? Which claims are still unverified? Which choices lack a rationale? Close the real gaps (go back to step 2 if needed); don't pad with nice-to-haves.
+5. PRESENT — call \`present_plan\` LAST, never while unverified claims or unresearched choices remain. A plan is ready when it names: the concrete steps in order, the files/artifacts each step touches, the key decisions with a one-line rationale each, how the result will be verified, and any open questions the user should settle (surfaced, not silently guessed).`;
 
 const EXECUTE_MODE = `MODE: EXECUTE. You may read and modify the workspace and run commands. Verify your work as you go.`;
+
+/** Today in the session's local timezone, formatted for the ENVIRONMENT block:
+ * "Thursday, July 2, 2026 (2026-07-02)". The ISO form gives the model an exact
+ * anchor for date math; the long form spares it deriving the weekday. */
+export function formatToday(now: Date = new Date()): string {
+  const long = now.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  return `${long} (${iso})`;
+}
 
 /** Assemble the system prompt. Regenerated each turn so it survives compaction. */
 export function composeSystemPrompt(inputs: SystemPromptInputs): string {
@@ -129,10 +156,19 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   // writing to a hallucinated `/Users/someone/...`) and burns a whole step
   // running `pwd` to orient — both observed in the wild. The cwd is the single
   // highest-value orientation fact, so it goes near the top.
-  if (inputs.cwd) {
-    sections.push(
-      `ENVIRONMENT:\nWorking directory (cwd): ${inputs.cwd}\nThis is the workspace root. You already know it — do not run \`pwd\` to discover it. Resolve relative paths against this directory and prefer relative paths; never invent an absolute path for a file or folder you haven't actually located.`,
-    );
+  if (inputs.cwd || inputs.today) {
+    const env: string[] = ["ENVIRONMENT:"];
+    if (inputs.cwd) {
+      env.push(
+        `Working directory (cwd): ${inputs.cwd}\nThis is the workspace root. You already know it — do not run \`pwd\` to discover it. Resolve relative paths against this directory and prefer relative paths; never invent an absolute path for a file or folder you haven't actually located.`,
+      );
+    }
+    if (inputs.today) {
+      env.push(
+        `Today's date: ${inputs.today}. Your training data predates this — resolve "today/yesterday/latest" and describe any dated event relative to THIS date, and verify time-sensitive facts on the web instead of answering from memory.`,
+      );
+    }
+    sections.push(env.join("\n"));
   }
 
   // Deterministic recon facts sit right after the environment: they orient the

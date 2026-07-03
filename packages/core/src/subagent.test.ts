@@ -472,7 +472,7 @@ test("spawn_subagent routes to a named agent (its mode + system apply)", async (
   // The child (second model call) ran with the named agent's system body and in
   // its declared plan mode (read-only), not the parent's execute mode.
   expect(systems[1]).toContain("EXPLORE-AGENT-MARKER");
-  expect(systems[1]).toContain("MUST NOT modify"); // plan-mode marker
+  expect(systems[1]).toContain("do NOT modify"); // plan-mode marker
 });
 
 test("a plan-mode parent's subagents are coerced read-only (even if execute is requested)", async () => {
@@ -524,7 +524,7 @@ test("a plan-mode parent's subagents are coerced read-only (even if execute is r
 
   await session.run("plan a refactor");
   // The child (second model call) ran in plan mode despite requesting execute.
-  expect(systems[1]).toContain("MUST NOT modify");
+  expect(systems[1]).toContain("do NOT modify");
 });
 
 test("a plan-mode parent rejects an execute-only named agent (no child runs)", async () => {

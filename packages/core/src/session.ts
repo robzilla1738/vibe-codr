@@ -30,7 +30,7 @@ import {
 } from "@vibe/tools";
 import type { HookBus, SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
-import { composeSystemPrompt, formatWorkspaceState } from "./system-prompt.ts";
+import { composeSystemPrompt, formatToday, formatWorkspaceState } from "./system-prompt.ts";
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages, estimateTokens } from "./compaction.ts";
@@ -774,6 +774,7 @@ export class Session {
       const system = composeSystemPrompt({
         mode: this.mode,
         cwd: this.#deps.cwd,
+        today: formatToday(),
         goal: this.goal,
         ...(repoFacts ? { repoFacts } : {}),
         projectMemory: this.#deps.projectMemory,

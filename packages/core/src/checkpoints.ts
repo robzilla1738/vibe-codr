@@ -27,6 +27,11 @@ export interface Checkpoint {
   green?: boolean;
   /** The gate summary that produced a green checkpoint (absent otherwise). */
   gate?: GateSummary;
+  /** The session that took this snapshot. `undo` only considers THIS session's
+   * checkpoints (the shared cwd-keyed file accumulates every session's, so
+   * without scoping a resumed session's /undo could revert ANOTHER session's
+   * work). Absent on pre-scoping entries → treated as belonging to any session. */
+  sessionId?: string;
 }
 
 interface GitResult {
@@ -56,14 +61,26 @@ export class CheckpointManager {
   #list: Checkpoint[] = [];
   #isGit: boolean | null = null;
   #loaded = false;
+  /** Lazy getter for the owning session id (evaluated at snapshot time — the
+   * session may not exist when the manager is constructed). */
+  #sessionId: (() => string | undefined) | undefined;
 
-  constructor(cwd: string) {
+  constructor(cwd: string, sessionId?: () => string | undefined) {
     this.#cwd = cwd;
+    this.#sessionId = sessionId;
     // Checkpoint METADATA is machine state → the project's global state dir
     // (the snapshots themselves are hidden git refs inside the repo). The old
     // in-project `.vibe/checkpoints.json` is read as a legacy fallback.
     this.#file = join(globalStateDir(cwd), "checkpoints.json");
     this.#legacyFile = join(cwd, ".vibe", "checkpoints.json");
+  }
+
+  /** Whether checkpoint `c` belongs to THIS session (so /undo + the visible list
+   * are scoped to it). An untagged legacy checkpoint, or a manager with no
+   * session id (tests), belongs to everyone — back-compat. */
+  #ownedByThisSession(c: Checkpoint): boolean {
+    const mine = this.#sessionId?.();
+    return !mine || !c.sessionId || c.sessionId === mine;
   }
 
   async #git(args: string[], env?: Record<string, string>): Promise<GitResult> {
@@ -98,7 +115,11 @@ export class CheckpointManager {
       try {
         const file = Bun.file(path);
         if (await file.exists()) {
-          this.#list = (await file.json()) as Checkpoint[];
+          // The shared cwd-keyed file holds EVERY session's checkpoints; scope the
+          // in-memory list (which /undo + the visible list operate on) to THIS
+          // session's, so a resumed session can't undo another session's work.
+          // #save still re-reads the full file and merges, so nothing is dropped.
+          this.#list = ((await file.json()) as Checkpoint[]).filter((c) => this.#ownedByThisSession(c));
           return;
         }
       } catch {
@@ -190,6 +211,7 @@ export class CheckpointManager {
 
     await this.#git(["update-ref", `refs/vibecodr/${id}`, commit]);
 
+    const owner = this.#sessionId?.();
     const cp: Checkpoint = {
       id,
       label,
@@ -198,6 +220,7 @@ export class CheckpointManager {
       ...(conversation ? { conversation } : {}),
       ...(opts?.green ? { green: true } : {}),
       ...(opts?.gate ? { gate: opts.gate } : {}),
+      ...(owner ? { sessionId: owner } : {}),
     };
     this.#list.push(cp);
     // Prune the oldest checkpoints so refs don't grow without bound.

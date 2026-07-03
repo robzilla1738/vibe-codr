@@ -69,7 +69,7 @@ const CURRENT_EVENTS =
  * `spring boot`, `react 19`) ARE kept — only the bare English-overloaded forms
  * (`node`, `react`, `spring`, `express`, `solid` alone) were dropped. */
 const STACK_NAMES =
-  /\b(next\.?js|node\.?js|nodejs|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|spring ?boot|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b|\b(react|vue|svelte|angular|node|express|django|rails)\s+\d/i;
+  /\b(next\.?js|node\.?js|nodejs|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|spring ?boot|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b|\breact\s+v?\d/i;
 
 /** Greenfield build verbs + artifact nouns → stack choices are being made. */
 const BUILD_REQUEST =

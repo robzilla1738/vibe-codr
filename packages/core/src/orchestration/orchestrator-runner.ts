@@ -710,13 +710,16 @@ export class OrchestratorRunner {
       const verdict = await this.#mergeLock(
         async (): Promise<{ ok: true; diff?: string } | { ok: false; output: string }> => {
           await commitWorktree(wt, `vibecodr(task ${spec.id}): ${spec.objective}`);
+          // Sibling tasks' already-staged (uncommitted) changes in this shared tree,
+          // captured BEFORE our merge so the revert set is OUR delta only.
+          const preStaged = new Set(await gitStagedFiles(mainCwd));
           if (!(await gitMergeWorktreeBranch(mainCwd, branch))) {
             return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
           }
-          // What the squash-merge staged — reverted on a red/aborted gate so main
-          // isn't left holding the failing changes (only these paths; a sibling's
-          // disjoint staged changes survive).
-          const mergedFiles = await gitStagedFiles(mainCwd);
+          // Exactly what OUR squash-merge staged — reverted on a red/aborted gate so
+          // main isn't left holding the failing changes; a sibling's disjoint staged
+          // changes (in preStaged) survive.
+          const mergedFiles = (await gitStagedFiles(mainCwd)).filter((f) => !preStaged.has(f));
           if (wantsGate) {
             const gate = await runGate(mainCwd, profile!, 0, {
               checks: this.#handle.deps.config.build.gate.checks,
@@ -857,13 +860,17 @@ export class OrchestratorRunner {
       const wantsGate = (spec.check || spec.verify) && !!profile;
       const mergeVerdict = await this.#mergeLock(
         async (): Promise<{ ok: true } | { ok: false; output: string }> => {
+          // Files a SIBLING task already squash-merged into this shared uncommitted
+          // tree (staged, not yet committed). Capture them BEFORE our merge so the
+          // revert set below is OUR merge's DELTA only — never the whole index.
+          const preStaged = new Set(await gitStagedFiles(mainCwd));
           if (!(await gitMergeWorktreeBranch(mainCwd, winner.branch))) {
             return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
           }
-          // Capture exactly what the squash-merge staged, so a RED gate can revert
-          // THOSE paths — leaving main clean instead of landing the failing content
-          // (a sibling task's disjoint staged changes are untouched).
-          const mergedFiles = await gitStagedFiles(mainCwd);
+          // Exactly what OUR squash-merge added to the staged set — a RED gate
+          // reverts THESE paths, leaving main clean, while a sibling's disjoint
+          // staged changes (in preStaged) are untouched.
+          const mergedFiles = (await gitStagedFiles(mainCwd)).filter((f) => !preStaged.has(f));
           if (wantsGate) {
             const gate = await runGate(mainCwd, profile!, 0, {
               checks: this.#handle.deps.config.build.gate.checks,

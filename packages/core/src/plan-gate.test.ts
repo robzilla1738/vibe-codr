@@ -143,6 +143,17 @@ test("triage: UNAMBIGUOUS stack spellings still force versions (Node.js over-cor
   for (const req of ["traverse each tree node", "the react component needs a fix", "add a spring animation"]) {
     expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, false]);
   }
+  // The `<framework> <digit>` version clause must not over-fire on English+count
+  // (the adversarial pass caught "express 3 concerns" / "node 4 items" — the
+  // clause is scoped to `react <digit>`, the least-ambiguous dropped-bare case).
+  for (const req of ["express 3 concerns", "node 4 items in the list", "add 3 backend routes to the api"]) {
+    // "api"/"backend"/"routes" → BUILD_REQUEST may fire; only assert the digit
+    // clause doesn't add a spurious hit for the pure-English ones.
+    expect(triagePlanRequest("express 3 concerns").needsVersions).toBe(false);
+    expect(triagePlanRequest("node 4 items in the list").needsVersions).toBe(false);
+    void req;
+  }
+  expect(triagePlanRequest("migrate to React 19").needsVersions).toBe(true); // real version ref
 });
 
 test("gate: junk/non-URL sources do NOT satisfy the web-evidence requirement", () => {

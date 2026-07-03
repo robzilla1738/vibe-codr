@@ -139,7 +139,13 @@ export function manifestSignature(cwd: string): string {
   try {
     // The top-level entry name set — a new file/dir (a test dir, a manifest, a
     // source file in a new language) flips the sig even if no manifest mtime did.
-    parts.push(`entries:${readdirSync(cwd).sort().join(",")}`);
+    // Exclude clearly-incidental churn (dotfiles/OS cruft, logs, scratch notes)
+    // so a `scratch.log`/`.DS_Store` doesn't re-recon a check-less repo every turn
+    // — only entries that could plausibly make CHECKS detectable count.
+    const relevant = readdirSync(cwd)
+      .filter((e) => !/^\.|\.(log|tmp|temp|swp|swo|bak|orig|md|txt|lock|cache|DS_Store)$/i.test(e))
+      .sort();
+    parts.push(`entries:${relevant.join(",")}`);
   } catch {
     /* unreadable cwd → manifests alone drive the sig */
   }
@@ -318,7 +324,10 @@ export class Engine implements EngineClient {
     this.#permissionResolver =
       opts.permissionResolver ?? ((req) => this.#askPermission(req));
     this.#store = new SessionStore(this.#cwd);
-    this.#checkpoints = new CheckpointManager(this.#cwd);
+    // Lazy getter: #session is assigned below, but a checkpoint is only ever
+    // taken later (during a turn), so the id is available by then. Scopes /undo
+    // to this session on the shared cwd-keyed checkpoints file.
+    this.#checkpoints = new CheckpointManager(this.#cwd, () => this.#session?.id);
     this.#mcp = new McpHub({
       registerTool: (def) => this.toolset.register(def),
       unregisterTool: (name) => this.toolset.unregister(name),

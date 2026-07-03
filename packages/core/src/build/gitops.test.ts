@@ -8,6 +8,8 @@ import {
   gitAddWorktree,
   gitRemoveWorktree,
   gitMergeWorktreeBranch,
+  gitStagedFiles,
+  gitRestoreFiles,
   gitDiffSince,
   codeCacheCleanCommand,
 } from "./gitops.ts";
@@ -149,4 +151,44 @@ test("codeCacheCleanCommand: JS caches only, never node_modules/dist; null for u
     conventions: [], manifestFiles: [],
   });
   expect(none).toBeNull();
+});
+
+test("gitStagedFiles + gitRestoreFiles: revert reverts new+modified merged paths, keeps sibling work", async () => {
+  // A red post-merge gate must revert EXACTLY the merged paths — new files
+  // removed, modified files restored to HEAD — while a sibling task's disjoint
+  // changes survive. (A single `checkout HEAD -- <all>` aborts on a new path,
+  // which is why gitRestoreFiles classifies added vs modified.)
+  const cwd = await makeRepo();
+  writeFileSync(join(cwd, "new.txt"), "winner-new\n");
+  await run(cwd, ["add", "new.txt"]);
+  writeFileSync(join(cwd, "a.txt"), "one\nwinner-mod\n"); // a.txt exists from makeRepo
+  await run(cwd, ["add", "a.txt"]);
+  writeFileSync(join(cwd, "sibling.txt"), "sibling\n"); // disjoint, untracked
+
+  const merged = await gitStagedFiles(cwd);
+  expect(merged.sort()).toEqual(["a.txt", "new.txt"]);
+  await gitRestoreFiles(cwd, merged);
+
+  expect(existsSync(join(cwd, "new.txt"))).toBe(false); // new file removed
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n"); // modified restored to HEAD
+  expect(existsSync(join(cwd, "sibling.txt"))).toBe(true); // sibling untouched
+  expect(await gitStagedFiles(cwd)).toEqual([]); // nothing left staged for the merged paths
+});
+
+test("revert scoped to the merge DELTA preserves a sibling's already-staged work (whole-index bug)", async () => {
+  // Mirrors the orchestrator: sibling A already squash-merged (its file staged,
+  // uncommitted) into the shared tree; task B merges then its gate goes red. The
+  // revert must use B's DELTA (files newly staged by B's merge), NOT the whole
+  // index — or A's completed green work is destroyed.
+  const cwd = await makeRepo();
+  writeFileSync(join(cwd, "siblingA.txt"), "A done\n"); // A's merged (staged) work
+  await run(cwd, ["add", "siblingA.txt"]);
+  const preStaged = new Set(await gitStagedFiles(cwd)); // captured BEFORE B's merge
+  writeFileSync(join(cwd, "taskB.txt"), "B\n"); // B's merge stages its own file
+  await run(cwd, ["add", "taskB.txt"]);
+  const delta = (await gitStagedFiles(cwd)).filter((f) => !preStaged.has(f));
+  expect(delta).toEqual(["taskB.txt"]); // only B's file, not A's
+  await gitRestoreFiles(cwd, delta); // B's gate red → revert B's delta
+  expect(existsSync(join(cwd, "siblingA.txt"))).toBe(true); // A's work survives
+  expect(existsSync(join(cwd, "taskB.txt"))).toBe(false); // B's reverted
 });

@@ -253,9 +253,25 @@ export async function gitRestoreFiles(
   run: GitRunner = spawnGit,
 ): Promise<void> {
   if (!files.length) return;
-  await run(cwd, id(["reset", "--quiet", "--", ...files]));
-  await run(cwd, id(["checkout", "--quiet", "HEAD", "--", ...files]));
-  await run(cwd, id(["clean", "-fdq", "--", ...files]));
+  // Classify each staged path BEFORE touching the index: a NEW file (added, not
+  // in HEAD) must be REMOVED, a MODIFIED/DELETED tracked file RESTORED from HEAD.
+  // Critically, `git checkout HEAD -- <all>` ABORTS on the first path not in HEAD
+  // (a new file), leaving the modified files unrestored — so the two shapes must
+  // be reverted with separate commands over their own path sets.
+  const wanted = new Set(files);
+  const statusR = await run(cwd, ["diff", "--cached", "--name-status"]);
+  const added: string[] = [];
+  const tracked: string[] = [];
+  if (statusR.ok) {
+    for (const line of statusR.stdout.split("\n")) {
+      const m = /^([A-Z])\d*\t(.+)$/.exec(line.trim());
+      if (!m || !wanted.has(m[2]!)) continue;
+      (m[1] === "A" ? added : tracked).push(m[2]!);
+    }
+  }
+  await run(cwd, id(["reset", "--quiet", "--", ...files])); // unstage all
+  if (tracked.length) await run(cwd, id(["checkout", "HEAD", "--", ...tracked])); // restore modified/deleted
+  if (added.length) await run(cwd, id(["clean", "-fdq", "--", ...added])); // remove new files
 }
 
 /** Files changed vs a ref (a worktree branch's diff scope). */

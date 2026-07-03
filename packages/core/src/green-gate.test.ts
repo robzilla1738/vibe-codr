@@ -488,3 +488,19 @@ test("manifestSignature: flips when checks arrive via a NON-manifest file (a tes
   writeFileSync(join(dir, "test_app.py"), "def test_ok():\n    assert True\n");
   expect(manifestSignature(dir)).not.toBe(before); // top-level entry set changed
 });
+
+test("manifestSignature ignores incidental files (a scratch log doesn't thrash recon)", async () => {
+  const { manifestSignature } = await import("./engine.ts");
+  const dir = mkdtempSync(join(tmpdir(), "vibe-sig-inc-"));
+  writeFileSync(join(dir, "pyproject.toml"), "[project]\nname='x'\n");
+  const before = manifestSignature(dir);
+  // Incidental churn on a check-less repo must NOT flip the sig (would re-recon
+  // every turn — the V2-18 thrash the entry-set could otherwise re-introduce).
+  writeFileSync(join(dir, "scratch.log"), "noise\n");
+  writeFileSync(join(dir, "notes.md"), "notes\n");
+  writeFileSync(join(dir, ".DS_Store"), "cruft\n");
+  expect(manifestSignature(dir)).toBe(before);
+  // But a real source/test file still flips it.
+  writeFileSync(join(dir, "test_app.py"), "def test_ok(): assert True\n");
+  expect(manifestSignature(dir)).not.toBe(before);
+});

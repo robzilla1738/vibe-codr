@@ -309,3 +309,23 @@ test("/undo restores THIS session's checkpoint, never a concurrent session's (no
   expect(restored?.label).toBe("A-safety");
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("A-original\n");
 });
+
+test("a resumed manager's /undo is scoped to ITS session, not others in the shared file", async () => {
+  // The cwd-keyed checkpoints.json accumulates every session's entries. A fresh
+  // (resumed) manager for session A must load only A's checkpoints, so /undo
+  // reverts A's own work — not session B's — after a restart.
+  const dir = await initRepo();
+  const A1 = new CheckpointManager(dir, () => "sesA");
+  const B1 = new CheckpointManager(dir, () => "sesB");
+  await Bun.write(join(dir, "a.txt"), "A-original\n");
+  await A1.snapshot("A-safety"); // sesA, captures A-original
+  await Bun.write(join(dir, "a.txt"), "B-work\n");
+  await B1.snapshot("B-work"); // sesB, more recent, on disk with A's
+
+  await Bun.write(join(dir, "a.txt"), "current\n");
+  // Simulate a restart: a FRESH manager for sesA reads the shared file.
+  const A2 = new CheckpointManager(dir, () => "sesA");
+  const restored = await A2.undo();
+  expect(restored?.label).toBe("A-safety"); // A's own, not B-work
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("A-original\n");
+});

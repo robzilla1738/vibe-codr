@@ -1572,3 +1572,44 @@ searchcore, and all cross-subsystem seams (engine-idle gate ↔ TUI reducer defa
 version round-trip; offload-eviction ↔ checkpoints/journal paths) all held under adversarial input —
 REFUTED. Recorded caveats (not regressions): no-results guard scoped to web_search; SESSION_META_VERSION
 is inert forward-compat (written, not yet read); compaction clamp equals-at-threshold=0.1 floor (V2-C1).
+
+
+### Pass 2 — 4 CONFIRMED (2 reviewers, both independently caught C1; all FIXED + regression-tested)
+Two adversarial reviewers (pass-1-fixes / weakest-areas re-sweep). One found a bug in the OTHER's
+in-flight fix — the process working as intended.
+- **[HIGH] AP2-C1 gitRestoreFiles reverted the WHOLE index → destroyed a prior green sibling's work**
+  — the AP1-3 revert captured `gitStagedFiles` = the entire index, but sibling worktree/ensemble
+  merges accumulate as UNCOMMITTED staged changes in the shared main tree, so a later task's red gate
+  reverted every sibling's staged work too. (Both reviewers reproduced it against real git.) Fixed:
+  capture the staged set BEFORE our merge (`preStaged`) and revert only OUR delta
+  (`stagedAfter − preStaged`) in both the ensemble and worktree paths. Also hardened `gitRestoreFiles`
+  itself (found by author check): `git checkout HEAD -- <all>` ABORTS on a new path, leaving modified
+  files unrestored — now classifies added (clean -fd) vs modified/deleted (checkout HEAD) and reverts
+  each with its own command. Regressions: *"revert scoped to the merge DELTA preserves a sibling's
+  already-staged work"* + *"gitStagedFiles + gitRestoreFiles: revert reverts new+modified merged
+  paths, keeps sibling work"* (gitops.test.ts).
+- **[LOW] AP2-C2 plan-gate `<framework>\s+\d` re-introduced false positives** — "express 3 concerns",
+  "node 4 items" wrongly triggered needsVersions. Fixed: scoped the digit clause to `react\s+v?\d`
+  (the least-ambiguous dropped-bare framework where "React 19" is a common version ref and "react N"
+  is rarely English); the explicit `.js`/`spring boot` spellings + BUILD_REQUEST cover the rest.
+  Regression: added to *"UNAMBIGUOUS stack spellings still force versions"*.
+- **[LOW-MED] AP2-C3 manifestSignature entry-set thrashed recon on a check-less repo** — any incidental
+  top-level file (`scratch.log`, `.DS_Store`) flipped the sig → re-recon every mutating turn, partly
+  re-introducing the V2-18 thrash. Fixed: exclude clearly-incidental entries (dotfiles/OS cruft, logs,
+  scratch notes) from the entry set; a real source/test file still flips it. Regression:
+  *"manifestSignature ignores incidental files"*.
+- **[MED] AP2-C4 checkpoint cross-session /undo survived a RESTART** — AP1-2 scoped the LIVE list, but
+  a resumed manager's #ensureLoaded loaded the whole shared file (all sessions' checkpoints), so a
+  restarted session's /undo could revert another session's work. Fixed: stamp each checkpoint with its
+  `sessionId` (a lazy getter from the engine) and filter the in-memory list to THIS session on load
+  (the disk merge still keeps every session's, so nothing is lost; untagged legacy entries belong to
+  any session). Regression: *"a resumed manager's /undo is scoped to ITS session"*.
+
+Everything else the reviewers probed held under adversarial input — REFUTED with disproof: SSRF guard
+(7/7 bypass attempts incl. IPv4-mapped/NAT64/decimal-int/dual-stack — all blocked), plan-gate junk-source
++ re-arm + zero-result-search, checkpoint concurrent-save lock (no clobber), engine unverified-guard
+(all red/green/unverified orderings correct), interrupted-turn alternation (cumulative buffer ends on a
+tool result), budget estimated-price stop, store corrupt-meta resume, manifest thrash on repos WITH
+checks. The planModel-restore edge (exec model == planModel) is deliberate/low, unchanged.
+
+Clean-pass counter after Pass 2: 0 (4 confirmed → all fixed). Two more CLEAN passes required.

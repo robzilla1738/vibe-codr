@@ -1,7 +1,8 @@
-import { rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createId, type GateSummary } from "@vibe/shared";
+import { globalStateDir } from "./state-dir.ts";
 
 export interface Checkpoint {
   id: string;
@@ -41,13 +42,18 @@ const MAX_DIFF = 20_000;
 export class CheckpointManager {
   #cwd: string;
   #file: string;
+  #legacyFile: string;
   #list: Checkpoint[] = [];
   #isGit: boolean | null = null;
   #loaded = false;
 
   constructor(cwd: string) {
     this.#cwd = cwd;
-    this.#file = join(cwd, ".vibe", "checkpoints.json");
+    // Checkpoint METADATA is machine state → the project's global state dir
+    // (the snapshots themselves are hidden git refs inside the repo). The old
+    // in-project `.vibe/checkpoints.json` is read as a legacy fallback.
+    this.#file = join(globalStateDir(cwd), "checkpoints.json");
+    this.#legacyFile = join(cwd, ".vibe", "checkpoints.json");
   }
 
   async #git(args: string[], env?: Record<string, string>): Promise<GitResult> {
@@ -77,16 +83,24 @@ export class CheckpointManager {
   async #ensureLoaded(): Promise<void> {
     if (this.#loaded) return;
     this.#loaded = true;
-    try {
-      const file = Bun.file(this.#file);
-      if (await file.exists()) this.#list = (await file.json()) as Checkpoint[];
-    } catch {
-      this.#list = [];
+    // Global state dir first; fall back to a pre-relocation in-project log.
+    for (const path of [this.#file, this.#legacyFile]) {
+      try {
+        const file = Bun.file(path);
+        if (await file.exists()) {
+          this.#list = (await file.json()) as Checkpoint[];
+          return;
+        }
+      } catch {
+        /* try the next location */
+      }
     }
+    this.#list = [];
   }
 
   async #save(): Promise<void> {
     try {
+      await mkdir(dirname(this.#file), { recursive: true });
       await Bun.write(this.#file, `${JSON.stringify(this.#list, null, 2)}\n`);
     } catch {
       // Non-fatal: a missing checkpoint log just means /undo can't span restarts.

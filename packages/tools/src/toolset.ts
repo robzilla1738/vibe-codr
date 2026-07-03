@@ -48,6 +48,8 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
   lockFile?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
   /** Compiler diagnostics for a just-mutated file (see ToolContext.diagnose). */
   diagnose?: (absPath: string) => Promise<string | undefined>;
+  /** Plan-readiness gate consulted by present_plan (see ToolContext.planGate). */
+  planGate?: ToolContext["planGate"];
   /**
    * Record whether a tool call ended in a (handled) error, keyed by toolCallId.
    * Handled errors are returned to the model as ordinary string results, so the

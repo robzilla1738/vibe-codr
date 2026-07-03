@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 import type { Message, Part } from "@vibe/shared";
 import { SessionStore, type SessionMeta } from "./store.ts";
+import { globalStateDir } from "./state-dir.ts";
 import { queryTerms, rankBm25 } from "./bm25.ts";
 
 /**
@@ -30,12 +31,19 @@ export function _resetRecallCache(): void {
  * there's no mtime to key on) — mirroring `SessionStore.loadHistory`.
  */
 async function loadHistoryCached(cwd: string, store: SessionStore, id: string): Promise<Message[]> {
-  const path = join(cwd, ".vibe", "sessions", id, "history.jsonl");
+  // Sessions live in the project's global state dir; older ones may still sit
+  // in the legacy in-project location — stat whichever exists for the mtime key.
+  let path = join(globalStateDir(cwd), "sessions", id, "history.jsonl");
   let mtimeMs: number;
   try {
     mtimeMs = statSync(path).mtimeMs;
   } catch {
-    return [];
+    path = join(cwd, ".vibe", "sessions", id, "history.jsonl");
+    try {
+      mtimeMs = statSync(path).mtimeMs;
+    } catch {
+      return [];
+    }
   }
   const cached = scanCache.get(path);
   if (cached && cached.mtimeMs === mtimeMs) return cached.messages;
@@ -191,12 +199,15 @@ export function formatRecall(query: string, hits: RecallHit[]): string {
   return `Recall — ${hits.length} match(es) for "${query}":\n${lines.join("\n")}`;
 }
 
-/** Used by the directory listing; mirrors SessionStore's base path. */
+/** Used by the directory listing; mirrors SessionStore's base paths (global
+ * state dir first, legacy in-project fallback). */
 export async function hasSavedSessions(cwd: string): Promise<boolean> {
-  try {
-    const entries = await readdir(join(cwd, ".vibe", "sessions"));
-    return entries.length > 0;
-  } catch {
-    return false;
+  for (const base of [join(globalStateDir(cwd), "sessions"), join(cwd, ".vibe", "sessions")]) {
+    try {
+      if ((await readdir(base)).length > 0) return true;
+    } catch {
+      /* try the next location */
+    }
   }
+  return false;
 }

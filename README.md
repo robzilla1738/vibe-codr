@@ -634,13 +634,14 @@ Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/confi
 ```jsonc
 {
   "model": "anthropic/claude-opus-4-8",
+  "planModel": "anthropic/claude-opus-4-8",             // optional dedicated PLANNING model (plan mode only)
   "subagent": {                                         // fan-out + concurrency
     "model": "anthropic/claude-haiku-4-5", "maxDepth": 3, "maxParallel": 4,
     "providerConcurrency": 16, "timeoutMs": 300000, "verifyMaxAttempts": 2
   },
   "orchestration": { "enabled": true },                 // spawn_tasks DAG (default on)
   "build": {                                            // engine-owned build intelligence
-    "gate": { "maxRounds": 2, "checks": ["typecheck", "test", "build"] },
+    "gate": { "maxRounds": 5, "checks": ["typecheck", "test", "build"] },
     "commit": { "mode": "checkpoint" },                 // green checkpoints | "branch" | "off"
     "review": { "enabled": true, "stubScan": true },    // adversarial diff review
     "visualVerify": true,                               // browser check (playwright peer)

@@ -35,6 +35,8 @@ import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages, estimateTokens } from "./compaction.ts";
 import { SourceLedger, harvestUrls, RESEARCH_TOOL_NAMES, type SourceEntry } from "./source-ledger.ts";
+import { PlanGate } from "./plan-gate.ts";
+import { globalStateDir } from "./state-dir.ts";
 import {
   applyOffloads,
   planOffloads,
@@ -259,6 +261,11 @@ export class Session {
    * fresh instance per Session — forks (new Session) get their own, never the
    * parent's, so a subagent's reads don't re-harvest into the parent. */
   #sources = new SourceLedger();
+  /** Plan-readiness gate for the CURRENT plan cycle (undefined outside plan
+   * mode). Created lazily on the first plan-mode turn; triage accumulates
+   * across revision prompts and telemetry across the whole cycle; retired by
+   * setMode when the session leaves plan mode. */
+  #planGate: PlanGate | undefined;
 
   constructor(deps: SessionDeps) {
     this.#deps = deps;
@@ -313,6 +320,7 @@ export class Session {
       onChildSettled: (child) => self.#foldChildUsage(child),
       suspendLimiterSlot: (fn) => self.suspendLimiterSlot(fn),
       setTasks: (incoming) => self.setTasks(incoming),
+      patchTasks: (updates, add) => self.patchTasks(updates, add),
     };
   }
 
@@ -432,6 +440,10 @@ export class Session {
 
   setMode(mode: Mode): void {
     this.mode = mode;
+    // A plan cycle's readiness gate (triage + research telemetry) is scoped to
+    // one continuous stay in plan mode — leaving it retires the gate so a later
+    // plan cycle starts with fresh requirements and counters.
+    if (mode !== "plan") this.#planGate = undefined;
     this.#deps.bus.emit({ type: "mode-changed", sessionId: this.id, mode });
   }
 
@@ -677,6 +689,37 @@ export class Session {
     return this.#tasks;
   }
 
+  /**
+   * Patch the task list in place: status updates addressed by 1-based position
+   * (the `t<N>` short ids the model sees in CURRENT TASKS), plus appended new
+   * tasks. Partial by design — no verbatim-title matching, so a weak model can
+   * flip one task without re-sending (and possibly rewording) the whole list.
+   * Out-of-range indices are ignored (reported by the tool layer). Emits
+   * `tasks-updated`.
+   */
+  patchTasks(
+    updates: { index: number; status: TaskStatus }[],
+    add: string[] = [],
+  ): { tasks: Task[]; applied: number; ignored: number[] } {
+    let applied = 0;
+    const ignored: number[] = [];
+    for (const u of updates) {
+      const task = this.#tasks[u.index - 1];
+      if (task) {
+        task.status = u.status;
+        applied++;
+      } else {
+        ignored.push(u.index);
+      }
+    }
+    for (const title of add) {
+      const trimmed = title.trim();
+      if (trimmed) this.#tasks.push({ id: createId("task"), title: trimmed, status: "pending" });
+    }
+    this.#deps.bus.emit({ type: "tasks-updated", sessionId: this.id, tasks: this.#tasks });
+    return { tasks: this.#tasks, applied, ignored };
+  }
+
   /** Execute one agentic turn for `input`. Resolves when the turn ends. */
   async run(
     input: string,
@@ -734,6 +777,17 @@ export class Session {
       this.#pushUser(input, images, opts.display, stateReminder);
       userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
       histRef = this.#history[this.#history.length - 1];
+
+      // Plan-readiness gate: fold this prompt into the cycle's triage so
+      // present_plan can be held to what the request actually demands (fresh
+      // web facts, real versions, code actually read). Lazily created — the
+      // gate lives for one continuous stay in plan mode.
+      if (this.mode === "plan") {
+        this.#planGate ??= new PlanGate({
+          greenfield: this.#deps.repoProfile?.greenfield === true,
+        });
+        this.#planGate.noteRequest(input);
+      }
 
       const model = await this.#resolveWithFallback(registry, config);
       if (this.#aborted()) {
@@ -823,6 +877,11 @@ export class Session {
           : {}),
         checkPermission: (name: string, input: unknown, opts?: { fallback?: "allow" | "deny" | "ask" }) =>
           checker.check(name, input, opts),
+        // Plan-readiness gate for present_plan (plan mode only): rejects a plan
+        // whose triage-required research never happened, bounded, then warns.
+        ...(this.mode === "plan" && this.#planGate
+          ? { planGate: (plan: { sources?: { url: string }[] }) => this.#planGate!.evaluate(plan) }
+          : {}),
         ...(hooks
           ? {
               beforeTool: async (toolName: string, input: unknown) => {
@@ -1239,11 +1298,20 @@ export class Session {
     const full = offloadResultText(part.output);
     if (!full) return;
     try {
-      const rel = join(".vibe", "sessions", this.id, "tool-results", `${ref.callId.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 64)}.txt`);
-      const abs = join(this.#deps.cwd, rel);
+      // Offload artifacts are machine state → the project's global state dir
+      // (an in-project write here used to dirty a fresh scaffold target). The
+      // recorded path is ABSOLUTE so the `read`-back pointer in the preview
+      // resolves regardless of cwd.
+      const abs = join(
+        globalStateDir(this.#deps.cwd),
+        "sessions",
+        this.id,
+        "tool-results",
+        `${ref.callId.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 64)}.txt`,
+      );
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, full, "utf8");
-      this.#offloaded.set(ref.callId, { path: rel, toolName: ref.toolName, fullChars: full.length });
+      this.#offloaded.set(ref.callId, { path: abs, toolName: ref.toolName, fullChars: full.length });
     } catch {
       /* offloading is an enhancement — a failed write must never fail the turn */
     }
@@ -1548,6 +1616,9 @@ export class Session {
           // adapter's side-channel so the UI doesn't render a denied write as a
           // successful tool call.
           const isError = this.#toolCallErrors.get(part.toolCallId) ?? false;
+          // Count successful research/exploration toward the plan-readiness
+          // gate's telemetry — the evidence trail present_plan is judged against.
+          if (!isError && this.mode === "plan") this.#planGate?.recordToolUse(part.toolName);
           // Harvest sources: on a SUCCESSFUL research-tool result, extract the
           // URLs it surfaced and record them in the session's source ledger
           // (deduped + stably numbered), so later turns can cite them by [n].

@@ -17,7 +17,9 @@ test("plan mode carries the research pipeline: triage → gather → ground → 
   // Time-sensitive claims verified on the web, dates resolved against the
   // injected current date (the "yesterday's game as today" bug).
   expect(out).toMatch(/web_search/);
-  expect(out).toMatch(/yesterday's event is never presented as today's/);
+  expect(out).toMatch(/the plan MUST be about events on or after that date/);
+  // The readiness gate is announced so the model knows rejection is enforced.
+  expect(out).toMatch(/THE GATE IS REAL/);
   // Stack versions come from package_info/official docs, never memory.
   expect(out).toMatch(/package_info/);
   expect(out).toMatch(/NEVER name a version from memory/);
@@ -207,16 +209,19 @@ test("the task list lives in the workspace-state block, NOT the (cache-stable) s
     { title: "run the tests", status: "pending" as const },
   ];
   // The system prompt must stay byte-stable across turns for cross-turn caching,
-  // so the volatile task list is NOT in it.
+  // so the volatile task list CONTENT is NOT in it (BASE may NAME the CURRENT
+  // TASKS block as a stable pointer — that's fine; the entries are not there).
   const sys = composeSystemPrompt({ mode: "execute", goal: null });
-  expect(sys).not.toContain("CURRENT TASKS");
-  // It rides in the workspace-state reminder folded into the user turn instead.
+  expect(sys).not.toContain("your live task list");
+  expect(sys).not.toContain("read the code");
+  // It rides in the workspace-state reminder folded into the user turn instead,
+  // with positional t<N> ids the model uses for update_tasks patches.
   const state = formatWorkspaceState({ tasks });
   expect(state).toContain("<workspace-state>");
   expect(state).toContain("CURRENT TASKS");
-  expect(state).toContain("[x] read the code");
-  expect(state).toContain("[~] write the fix");
-  expect(state).toContain("[ ] run the tests");
+  expect(state).toContain("t1 [x] read the code");
+  expect(state).toContain("t2 [~] write the fix");
+  expect(state).toContain("t3 [ ] run the tests");
   // Nothing to report → no block at all (so no needless tokens on the user turn).
   expect(formatWorkspaceState({ tasks: [] })).toBeUndefined();
   expect(formatWorkspaceState({})).toBeUndefined();

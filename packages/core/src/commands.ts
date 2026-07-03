@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { ModelInfo } from "@vibe/providers";
 import type { SlashCommand } from "@vibe/plugins";
+import { ensureVibeIgnored } from "./state-dir.ts";
 
 export interface BuiltinCommandMeta {
   name: string;
@@ -154,6 +155,8 @@ export async function initProject(cwd: string): Promise<string[]> {
   if (!(await Bun.file(configPath).exists())) {
     await Bun.write(configPath, CONFIG_TEMPLATE);
     created.push(".vibe/config.json");
+    // The in-project .vibe/ just came into existence — keep it out of git.
+    await ensureVibeIgnored(cwd);
   }
   if (!(await Bun.file(memoryPath).exists())) {
     await Bun.write(memoryPath, MEMORY_TEMPLATE);

@@ -3,6 +3,10 @@ import { z } from "zod";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Machine state (sessions, offload artifacts) goes to the per-project GLOBAL
+// state dir — pin it to a temp root so tests never touch ~/.vibe/state.
+process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { RepoProfile, ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -300,10 +304,12 @@ test("mid-turn microcompaction: older bulky results are offloaded, previewed, an
   expect(step3).toContain("saved to");
   const blobCount = step3.split(BLOB).length - 1;
   expect(blobCount).toBe(1); // big2 stays whole, big1 is previewed
-  // The artifact holds the FULL text, retrievable via the read tool.
-  const rel = /\.vibe[^"\\]+tool-results[^"\\]+\.txt/.exec(step3)?.[0];
-  expect(rel).toBeDefined();
-  expect(await Bun.file(join(cwd, rel!)).text()).toBe(BLOB);
+  // The artifact holds the FULL text, retrievable via the read tool. Offload
+  // artifacts live in the project's GLOBAL state dir now, recorded as an
+  // ABSOLUTE path (so the pointer resolves regardless of cwd).
+  const abs = /\/[^"\\]*tool-results[^"\\]+\.txt/.exec(step3)?.[0];
+  expect(abs).toBeDefined();
+  expect(await Bun.file(abs!).text()).toBe(BLOB);
   // The DURABLE history (what persists + feeds the next turn) carries the
   // preview too — the ephemeral prepareStep edit was folded in at end-of-turn.
   expect(session.contextTokens).toBeLessThan(12_000);

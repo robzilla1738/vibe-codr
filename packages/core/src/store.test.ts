@@ -5,6 +5,14 @@ import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import type { Message } from "@vibe/shared";
 import { SessionStore, type SessionMeta } from "./store.ts";
+import { globalStateDir } from "./state-dir.ts";
+
+// Sessions persist to the per-project GLOBAL state dir — point it at a temp
+// root so tests never touch the real ~/.vibe/state.
+process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
+
+/** Where a session's files land for a given project cwd. */
+const sessionDir = (cwd: string, id: string) => join(globalStateDir(cwd), "sessions", id);
 
 function fixture(): { meta: SessionMeta; model: ModelMessage[]; history: Message[] } {
   const meta: SessionMeta = {
@@ -140,7 +148,7 @@ test("a corrupt meta.json yields null on load and is skipped by list", async () 
   const a = fixture();
   await store.save({ ...a.meta, id: "good", updatedAt: 5 }, a.model, a.history);
   // Corrupt a second session's meta.json (simulates a crash mid-write).
-  await Bun.write(join(cwd, ".vibe", "sessions", "bad", "meta.json"), "{ not json");
+  await Bun.write(join(sessionDir(cwd, "bad"), "meta.json"), "{ not json");
 
   expect(await store.load("bad")).toBeNull(); // doesn't throw
   const list = await store.list(); // skips the corrupt one, keeps the good one
@@ -154,7 +162,7 @@ test("load tolerates a truncated trailing line in messages.jsonl", async () => {
   const a = fixture();
   await store.save(a.meta, a.model, a.history);
   // Append a half-written line (a crash mid-append) — load should skip it.
-  const path = join(cwd, ".vibe", "sessions", a.meta.id, "messages.jsonl");
+  const path = join(sessionDir(cwd, a.meta.id), "messages.jsonl");
   await Bun.write(path, `${await Bun.file(path).text()}\n{"role":"assistant","cont`);
   const loaded = await store.load(a.meta.id);
   expect(loaded!.modelMessages).toEqual(a.model); // the good lines survive
@@ -166,7 +174,7 @@ test("save leaves no .tmp files behind", async () => {
   const a = fixture();
   await store.save(a.meta, a.model, a.history);
   const { readdirSync } = await import("node:fs");
-  const files = readdirSync(join(cwd, ".vibe", "sessions", a.meta.id));
+  const files = readdirSync(sessionDir(cwd, a.meta.id));
   expect(files.some((f) => f.endsWith(".tmp"))).toBe(false);
 });
 
@@ -190,6 +198,27 @@ test("meta round-trips the cumulative cache-read total (usage fidelity on --resu
   // The cached-token slice survives persistence, so resumed cost/usage stays truthful.
   expect(loaded?.meta.usage?.cachedInputTokens).toBe(640);
   expect(loaded?.meta.usage?.inputTokens).toBe(1000);
+});
+
+test("legacy in-project sessions (<cwd>/.vibe/sessions) are still loadable and listed", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-legacy-"));
+  const { meta, model, history } = fixture();
+  // Simulate a session persisted by a pre-relocation version.
+  const legacy = join(cwd, ".vibe", "sessions", meta.id);
+  await Bun.write(join(legacy, "meta.json"), JSON.stringify(meta));
+  await Bun.write(join(legacy, "messages.jsonl"), model.map((m) => JSON.stringify(m)).join("\n"));
+  await Bun.write(join(legacy, "history.jsonl"), history.map((m) => JSON.stringify(m)).join("\n"));
+
+  const store = new SessionStore(cwd);
+  const loaded = await store.load(meta.id);
+  expect(loaded?.meta.id).toBe(meta.id);
+  expect(loaded?.modelMessages).toEqual(model);
+  expect((await store.list()).map((m) => m.id)).toEqual([meta.id]);
+
+  // A new save for the SAME id goes to the global dir and wins over legacy.
+  await store.save({ ...meta, goal: "updated", updatedAt: 99 }, model, history);
+  expect((await store.load(meta.id))?.meta.goal).toBe("updated");
+  expect(await store.list()).toHaveLength(1);
 });
 
 test("meta round-trips the recalled-context block for --resume fidelity", async () => {

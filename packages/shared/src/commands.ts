@@ -40,10 +40,13 @@ export type EngineCommand =
     }
   // Resolve a presented plan: accept → switch to execute + start against the plan;
   // edit → re-plan with the feedback text; keep-planning → dismiss, stay in plan.
+  // `approvals:"auto"` on an accept launches execution in YOLO (no per-tool
+  // prompts) — the plan card's `Y` shortcut sends it.
   | {
       type: "resolve-plan";
       decision: "accept" | "edit" | "keep-planning";
       edit?: string;
+      approvals?: "auto";
     }
   | { type: "shutdown" };
 

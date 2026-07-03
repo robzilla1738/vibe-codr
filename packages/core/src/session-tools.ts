@@ -20,6 +20,11 @@ export interface SessionToolsHandle {
   readonly deps: SessionDeps;
   /** Replace the working task list (emits `tasks-updated`). */
   setTasks(incoming: { title: string; status: TaskStatus }[]): Task[];
+  /** Patch task statuses by 1-based position (`t<N>`) and append new tasks. */
+  patchTasks(
+    updates: { index: number; status: TaskStatus }[],
+    add?: string[],
+  ): { tasks: Task[]; applied: number; ignored: number[] };
 }
 
 /** Cap on the SKILL.md body injected by `use_skill` — a skill body lands in the
@@ -249,31 +254,91 @@ export function buildRunCheckTool(handle: SessionToolsHandle): ToolDefinition<{
   };
 }
 
-/** Build the per-session `update_tasks` tool (closes over this session). */
+/** Parse a task reference the model may spell as `"t3"`, `"3"`, or `3` into a
+ * 1-based position. Returns undefined for anything unparseable. */
+export function parseTaskRef(ref: string | number): number | undefined {
+  if (typeof ref === "number") return Number.isInteger(ref) && ref > 0 ? ref : undefined;
+  const m = /^t?(\d+)$/i.exec(ref.trim());
+  const n = m ? Number(m[1]) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/** Build the per-session `update_tasks` tool (closes over this session).
+ *
+ * Two shapes, one tool:
+ * - `updates`/`add` — the PRIMARY, id-addressed form: flip one task's status by
+ *   its `t<N>` id (shown in CURRENT TASKS) without re-sending the list. Partial
+ *   updates are what weak models actually manage to do mid-execution; the old
+ *   replace-the-whole-list-by-verbatim-title contract silently desynced the
+ *   moment a model reworded a title.
+ * - `tasks` — the legacy full-list replace, kept for laying out a fresh list
+ *   (and for anything still speaking the old shape).
+ */
 export function buildTasksTool(handle: SessionToolsHandle): ToolDefinition<{
-  tasks: { title: string; status: TaskStatus }[];
+  tasks?: { title: string; status: TaskStatus }[];
+  updates?: { id: string | number; status: TaskStatus }[];
+  add?: string[];
 }> {
-  const Task = z.object({
+  const Status = z
+    .enum(["pending", "in_progress", "completed"])
+    .describe("Exactly one task should be in_progress at a time.");
+  const TaskItem = z.object({
     title: z.string().describe("Short imperative description of the task."),
-    status: z
-      .enum(["pending", "in_progress", "completed"])
-      .describe("Exactly one task should be in_progress at a time."),
+    status: Status,
+  });
+  const Update = z.object({
+    id: z
+      .union([z.string(), z.number()])
+      .describe('Task id as shown in CURRENT TASKS — "t3" (or just 3).'),
+    status: Status,
   });
   return {
     name: "update_tasks",
     description:
-      "Record and update your working task list for a multi-step request. " +
-      "Pass the COMPLETE list every time (it replaces the previous one). " +
-      "Keep exactly one task in_progress, mark tasks completed as you finish " +
-      "them, and add new tasks as they emerge. Use this to plan and to show " +
-      "the user live progress on non-trivial work.",
-    inputSchema: z.object({ tasks: z.array(Task) }),
+      "Update your working task list. PREFERRED: pass `updates` with the task ids " +
+      'from CURRENT TASKS to change statuses — e.g. {"updates":[{"id":"t2","status":"in_progress"}]} ' +
+      "— and `add` to append new task titles. Mark a task in_progress when you start it and " +
+      "completed the moment you verify it, keeping exactly one in_progress. To lay out a brand-new " +
+      "list, pass `tasks` (the complete list; it replaces any previous one). Use this on every " +
+      "non-trivial multi-step request — it shows the user live progress.",
+    inputSchema: z.object({
+      tasks: z.array(TaskItem).optional().describe("Full replacement list (new plans only)."),
+      updates: z.array(Update).optional().describe("Status changes by task id (preferred)."),
+      add: z.array(z.string()).optional().describe("New task titles to append as pending."),
+    }),
     readOnly: true,
     concurrencySafe: false,
-    execute: async ({ tasks }) => {
-      const updated = handle.setTasks(tasks);
-      const done = updated.filter((t) => t.status === "completed").length;
-      return { output: `Task list updated (${done}/${updated.length} complete).` };
+    execute: async ({ tasks, updates, add }) => {
+      if (tasks?.length) {
+        const updated = handle.setTasks(tasks);
+        const done = updated.filter((t) => t.status === "completed").length;
+        return { output: `Task list updated (${done}/${updated.length} complete).` };
+      }
+      if (!updates?.length && !add?.length) {
+        return {
+          output:
+            "Nothing to do — pass `updates` (status changes by id), `add` (new titles), or `tasks` (a full new list).",
+          isError: true,
+        };
+      }
+      const parsed: { index: number; status: TaskStatus }[] = [];
+      const bad: (string | number)[] = [];
+      for (const u of updates ?? []) {
+        const index = parseTaskRef(u.id);
+        if (index === undefined) bad.push(u.id);
+        else parsed.push({ index, status: u.status });
+      }
+      const { tasks: all, ignored } = handle.patchTasks(parsed, add ?? []);
+      const done = all.filter((t) => t.status === "completed").length;
+      const problems = [
+        ...bad.map((b) => `unparseable id "${b}"`),
+        ...ignored.map((i) => `t${i} does not exist`),
+      ];
+      return {
+        output:
+          `Task list updated (${done}/${all.length} complete).` +
+          (problems.length ? ` Ignored: ${problems.join(", ")}.` : ""),
+      };
     },
   };
 }

@@ -1,4 +1,4 @@
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, rm } from "node:fs/promises";
 import { generateObject, generateText } from "ai";
@@ -80,6 +80,7 @@ import { createLimiter, type Limiter } from "./limiter.ts";
 import { createBlackboard } from "./blackboard.ts";
 import { registerConfigHooks } from "./config-hooks.ts";
 import { loadProjectMemory, vibeConfigDir } from "./memory.ts";
+import { globalStateDir } from "./state-dir.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
 import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
@@ -196,6 +197,13 @@ export class Engine implements EngineClient {
   /** Bounded red→fix→re-gate rounds for the green-gate, per user prompt (reset
    * on submit-prompt alongside #verifyAttempts). */
   #gateRounds = 0;
+  /** Bounded plan-task continuation turns per user prompt (shares the gate's
+   * maxRounds budget shape; reset with the other prompt budgets). */
+  #taskContinueRounds = 0;
+  /** True while a plan-execution chain is live: armed when the plan→execute
+   * handoff turn starts, cleared by the next REAL user prompt (or when the
+   * seeded list finishes/caps out). Scopes the completion check to plan runs. */
+  #planExecutionActive = false;
   /** Bounded adversarial-diff-review→fix rounds, per user prompt (reset on submit). */
   #reviewRounds = 0;
   /** The pre-edit checkpoint id for the CURRENT turn. Set in #handlePrompt;
@@ -236,6 +244,8 @@ export class Engine implements EngineClient {
         vibeConfigDir(),
         process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
         join(this.#cwd, ".vibe"),
+        // Per-project machine state (sessions/plans/checkpoints) now lives here.
+        globalStateDir(this.#cwd),
       ],
     });
     // The registry was created before the policy resolved (field initializer);
@@ -357,19 +367,20 @@ export class Engine implements EngineClient {
 
   async #watchInternalEvents(): Promise<void> {
     for await (const event of this.#bus.subscribe()) {
-      if (event.type === "plan-presented") await this.#onPlanPresented(event.plan);
+      if (event.type === "plan-presented") await this.#onPlanPresented(event);
     }
   }
 
   /** Engine-side per-session state that must survive --resume but belongs to
-   * the ENGINE, not the conversation: today just the armed plan handoff. */
+   * the ENGINE, not the conversation: today just the armed plan handoff. Lives
+   * in the project's GLOBAL state dir (machine state never dirties the cwd). */
   #engineStatePath(): string {
-    return join(this.#cwd, ".vibe", "sessions", this.#session.id, "engine.json");
+    return join(globalStateDir(this.#cwd), "sessions", this.#session.id, "engine.json");
   }
 
   async #persistEngineState(): Promise<void> {
     try {
-      await mkdir(join(this.#cwd, ".vibe", "sessions", this.#session.id), { recursive: true });
+      await mkdir(dirname(this.#engineStatePath()), { recursive: true });
       await Bun.write(this.#engineStatePath(), JSON.stringify({ pendingHandoff: this.#pendingHandoff }));
     } catch {
       /* best-effort — losing this on a crash only loses one convenience flag */
@@ -384,18 +395,22 @@ export class Engine implements EngineClient {
     } catch {
       /* absent/corrupt → nothing to restore */
     }
-    try {
-      const plan = await Bun.file(this.#planPath()).text();
-      // Strip the "# Plan — <id>" header the writer prepends.
-      this.#lastPlan = plan.replace(/^# Plan — [^\n]*\n+/, "").trim() || undefined;
-    } catch {
-      /* no persisted plan */
+    // Global path first, then the pre-relocation in-project path.
+    for (const path of [this.#planPath(), join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`)]) {
+      try {
+        const plan = await Bun.file(path).text();
+        // Strip the "# Plan — <id>" header the writer prepends.
+        this.#lastPlan = plan.replace(/^# Plan — [^\n]*\n+/, "").trim() || undefined;
+        break;
+      } catch {
+        /* try the next location */
+      }
     }
   }
 
   /** Path of the persisted presented-plan file for this session. */
   #planPath(): string {
-    return join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`);
+    return join(globalStateDir(this.#cwd), "plans", `${this.#session.id}.md`);
   }
 
   /** Delete the persisted plan once its handoff has been consumed, so a later
@@ -410,13 +425,28 @@ export class Engine implements EngineClient {
     void this.#persistEngineState();
   }
 
-  /** Persist an approved-able plan and remember it for the execute handoff. */
-  async #onPlanPresented(plan: string): Promise<void> {
-    this.#lastPlan = plan;
+  /** Persist an approved-able plan and remember it for the execute handoff.
+   * Grounding metadata rides along: sources are appended to the persisted file,
+   * and an ungrounded plan (the gate's rejection budget ran out) is stamped. */
+  async #onPlanPresented(event: {
+    plan: string;
+    sources?: { url: string; title?: string }[];
+    ungrounded?: boolean;
+  }): Promise<void> {
+    this.#lastPlan = event.plan;
     try {
-      await mkdir(join(this.#cwd, ".vibe", "plans"), { recursive: true });
-      await Bun.write(this.#planPath(), `# Plan — ${this.#session.id}\n\n${plan}\n`);
-      this.#bus.emit({ type: "notice", level: "info", message: `Plan saved to .vibe/plans/${this.#session.id}.md` });
+      const sourceBlock = event.sources?.length
+        ? `\n\n## Sources\n${event.sources.map((s) => `- ${s.url}${s.title ? ` — ${s.title}` : ""}`).join("\n")}`
+        : "";
+      const banner = event.ungrounded
+        ? "\n\n> ⚠ UNGROUNDED — presented without the research this request required.\n"
+        : "";
+      await mkdir(dirname(this.#planPath()), { recursive: true });
+      await Bun.write(
+        this.#planPath(),
+        `# Plan — ${this.#session.id}\n${banner}\n${event.plan}${sourceBlock}\n`,
+      );
+      this.#bus.emit({ type: "notice", level: "info", message: `Plan saved to ${this.#planPath()}` });
     } catch {
       // Best-effort persistence — never let it disrupt the turn.
     }
@@ -429,13 +459,35 @@ export class Engine implements EngineClient {
    * - `edit` → re-enter plan mode with the user's feedback so the model revises it;
    * - `keep-planning` → dismiss the card and stay in plan mode.
    */
-  #resolvePlan(decision: "accept" | "edit" | "keep-planning", edit?: string): void {
+  #resolvePlan(
+    decision: "accept" | "edit" | "keep-planning",
+    edit?: string,
+    approvals?: "auto",
+  ): void {
     if (decision === "edit") {
       const feedback = edit?.trim();
-      if (feedback) this.#enqueue(queueLabel(feedback), () => this.#handlePrompt(feedback));
+      if (!feedback) return;
+      // Revision feedback means RE-PLAN. The card can outlive a mode switch
+      // (it persists until resolved), so re-enter plan mode first — otherwise
+      // the feedback would run as an execute turn (and, with a deferred
+      // approval armed, kick off implementation of the plan being revised).
+      if (this.#session.mode !== "plan") {
+        if (this.#pendingHandoff) {
+          this.#pendingHandoff = false;
+          void this.#persistEngineState();
+        }
+        this.#setModeGated("plan");
+      }
+      this.#enqueue(queueLabel(feedback), () => this.#handlePrompt(feedback));
       return;
     }
     if (decision === "keep-planning") {
+      // Also revoke a deferred approval a mode switch may have armed while the
+      // card was up — "keep planning" must mean NOTHING starts implementation.
+      if (this.#pendingHandoff) {
+        this.#pendingHandoff = false;
+        void this.#persistEngineState();
+      }
       this.#bus.emit({ type: "notice", level: "info", message: "Kept planning — the plan wasn't started." });
       return;
     }
@@ -444,7 +496,7 @@ export class Engine implements EngineClient {
     // #lastPlan synchronously, so a second resolve-plan{accept} fails this guard
     // instead of seeding the task list twice + firing two execute turns.
     if (!this.#lastPlan) return;
-    this.#approvePlan(true);
+    this.#approvePlan(true, approvals);
   }
 
   /**
@@ -458,6 +510,31 @@ export class Engine implements EngineClient {
   #setModeGated(mode: Mode): void {
     this.#session.setMode(mode);
     handleApprovals(this.#getCommandHandle(), "ask", true);
+    this.#applyPlanModel(mode);
+  }
+
+  /** The execution model to restore when a `planModel`-driven switch ends. */
+  #planModelPrev: string | undefined;
+
+  /**
+   * Dedicated planning model (config.planModel): entering plan mode visibly
+   * switches the session to it, leaving plan mode restores the execution model.
+   * A manual `/model` while planning wins — the restore only fires when the
+   * session is still on the plan model.
+   */
+  #applyPlanModel(mode: Mode): void {
+    const planModel = this.#config.planModel;
+    if (!planModel) return;
+    if (mode === "plan") {
+      if (this.#session.model !== planModel) {
+        this.#planModelPrev = this.#session.model;
+        this.#session.setModel(planModel);
+        this.#notice(`Planning on ${planModel} (execution stays on ${this.#planModelPrev}).`);
+      }
+    } else if (this.#session.model === planModel && this.#planModelPrev) {
+      this.#session.setModel(this.#planModelPrev);
+      this.#planModelPrev = undefined;
+    }
   }
 
   /**
@@ -474,16 +551,34 @@ export class Engine implements EngineClient {
    *     between approval and the next prompt survives --resume) so the user's NEXT
    *     message carries the approval, and notice that it's armed-not-running.
    */
-  #approvePlan(start: boolean): void {
+  #approvePlan(start: boolean, approvals?: "auto"): void {
+    // Whether execution should run un-gated (YOLO): an explicit override from
+    // the plan card's `Y`, or the user already being in auto-approvals when they
+    // accepted (e.g. Shift+Tab'd to yolo while the card was up). Captured BEFORE
+    // #setModeGated resets approvals to the gated baseline.
+    const wantAuto = approvals === "auto" || this.#config.approvalMode === "auto";
     this.#setModeGated("execute");
+    if (wantAuto) handleApprovals(this.#getCommandHandle(), "auto", true);
     if (start) {
       const plan = this.#lastPlan;
       this.#lastPlan = undefined;
+      // An immediate accept supersedes any deferred approval a prior mode switch
+      // armed — otherwise the user's NEXT message would fire a second handoff.
+      if (this.#pendingHandoff) {
+        this.#pendingHandoff = false;
+        void this.#persistEngineState();
+      }
       if (plan) this.#seedTasksFromPlan(plan);
+      // #handlePrompt's handoff directive names the seeded tasks by id and
+      // states the update contract, so the kickoff itself stays minimal.
       this.#enqueue("execute plan", () =>
         this.#handlePrompt("Proceed with the approved plan.", { handoff: true }),
       );
     } else {
+      // Deferred approval (mode-switch): seed the task list NOW so the user sees
+      // it immediately and the handoff turn starts with ids in CURRENT TASKS —
+      // the deferred path used to skip seeding entirely, losing the list.
+      if (this.#lastPlan) this.#seedTasksFromPlan(this.#lastPlan);
       this.#pendingHandoff = true;
       void this.#persistEngineState();
       this.#bus.emit({
@@ -493,6 +588,7 @@ export class Engine implements EngineClient {
       });
     }
   }
+
 
   /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps. */
   #seedTasksFromPlan(plan: string): void {
@@ -589,6 +685,10 @@ export class Engine implements EngineClient {
     // Seed the header's git context (branch/dirty/ahead-behind/worktree) so it's
     // in the first snapshot; cheap, and only at startup.
     await this.#emitGit();
+
+    // A session that STARTS in plan mode (config/--mode/resume) gets the
+    // dedicated planning model too — otherwise only a runtime mode switch would.
+    this.#applyPlanModel(this.#session.mode);
   }
 
   /** Recon the working directory and attach the profile + symbol map to the
@@ -862,7 +962,7 @@ export class Engine implements EngineClient {
         break;
       }
       case "resolve-plan":
-        this.#resolvePlan(command.decision, command.edit);
+        this.#resolvePlan(command.decision, command.edit, command.approvals);
         break;
       case "shutdown":
         // Kick off the awaitable finalize (session digest + teardown). The CLI
@@ -1435,14 +1535,25 @@ export class Engine implements EngineClient {
     // turn's handoff.
     const isHandoff = opts.handoff ?? false;
     if (isHandoff) {
+      // Arm the plan-execution completion check (see #maybeContinueTasks):
+      // from here until the next real user prompt, unfinished seeded tasks at
+      // turn end re-enqueue bounded continuation turns instead of stopping.
+      this.#planExecutionActive = true;
       this.#lastPlan = undefined;
       // Consume the persisted plan too, so --resume can't resurrect an
       // already-executed plan and re-fire its handoff (the plan file otherwise
       // repopulates #lastPlan on restore, re-arming a spent approval).
       void this.#discardPersistedPlan();
+      const tasks = this.#session.tasks;
+      const taskContract = tasks.length
+        ? `\nIt was seeded as this task list:\n${tasks.map((t, i) => `t${i + 1} ${t.title}`).join("\n")}\n` +
+          'Before starting each task call update_tasks({updates:[{id:"t<N>",status:"in_progress"}]}), and mark it ' +
+          "completed the moment you verify it — exactly one task in_progress at a time. Do not stop until every " +
+          "task is completed and the project's checks pass."
+        : "";
       text =
         "The plan you presented was approved by the user — proceed with implementing it " +
-        `now (your earlier "stop here" no longer applies).${text.trim() ? `\n\n${text}` : ""}`;
+        `now (your earlier "stop here" no longer applies).${taskContract}${text.trim() ? `\n\n${text}` : ""}`;
       this.#notice("Executing the approved plan…");
     }
     // Snapshot the workspace before an edit turn so /undo can roll it back — and
@@ -1511,8 +1622,20 @@ export class Engine implements EngineClient {
     // reach the gate — inherited from this call site.)
     if (!this.#turnIsGateable()) return;
 
-    const profile = this.#session.repoProfile;
-    const runnable = profile ? pickChecks(profile, build.gate.checks) : [];
+    let profile = this.#session.repoProfile;
+    let runnable = profile ? pickChecks(profile, build.gate.checks) : [];
+    // The recon profile is captured at session start — a turn that just
+    // SCAFFOLDED a project (create-next-app in an empty dir) leaves it stale
+    // with no runnable checks, which used to make the gate silently no-op for
+    // the rest of the session ("Gate: UNVERIFIED" while `next build` was
+    // sitting right there, red). A mutating turn with no runnable checks is
+    // exactly that signature, so re-derive the profile before giving up.
+    if (!runnable.length) {
+      await this.#runRecon();
+      profile = this.#session.repoProfile;
+      runnable = profile ? pickChecks(profile, build.gate.checks) : [];
+    }
+    let outcome: GateSummary["outcome"] | "skipped" = "skipped";
     if (!profile || !runnable.length) {
       // No trustworthy check command for the gate. Fall back to a configured
       // legacy verify command if one exists (recon fills verify.command); only
@@ -1520,13 +1643,72 @@ export class Engine implements EngineClient {
       const verified = await this.#maybeVerify();
       if (!verified) {
         this.#notice(
-          "Gate: UNVERIFIED — no build/test command detected, so this turn's work was not machine-verified.",
+          "Gate: UNVERIFIED — no build/test/typecheck command was detected (even after re-scanning), " +
+            "so this turn's work was not machine-verified. Adding a build or test script to the " +
+            "project manifest makes future turns verifiable.",
           "info",
         );
       }
+    } else {
+      outcome = await this.#runGate(profile);
+    }
+    // A RED gate already enqueued its own fix turn (which re-enters #afterTurn),
+    // and an aborted gate means the user interrupted — both skip the task check.
+    if (outcome !== "red" && outcome !== "aborted") {
+      this.#maybeContinueTasks(outcome === "green");
+    }
+  }
+
+  /**
+   * Plan-execution completion check: after a gated turn, unfinished seeded
+   * tasks mean the approved plan is NOT done — the turn ending is not the work
+   * ending. GREEN checks with only in_progress stragglers auto-complete them
+   * (the model did the work and forgot the bookkeeping); anything still pending
+   * re-enqueues a bounded continuation naming the unfinished ids. Scoped to
+   * plan-execution chains (armed by the handoff, cleared by the next real user
+   * prompt) so an unrelated request never gets nagged about a stale list.
+   */
+  #maybeContinueTasks(green: boolean): void {
+    if (!this.#planExecutionActive) return;
+    const tasks = this.#session.tasks;
+    if (!tasks.length) return;
+    const unfinished = tasks
+      .map((t, i) => ({ ref: `t${i + 1}`, index: i + 1, title: t.title, status: t.status }))
+      .filter((t) => t.status !== "completed");
+    if (!unfinished.length) {
+      this.#planExecutionActive = false;
       return;
     }
-    await this.#runGate(profile);
+    if (green && !unfinished.some((t) => t.status === "pending")) {
+      this.#session.patchTasks(
+        unfinished.map((t) => ({ index: t.index, status: "completed" as const })),
+      );
+      this.#notice(
+        `Checks are green — marked ${unfinished.length} lingering in-progress task${unfinished.length === 1 ? "" : "s"} completed.`,
+      );
+      this.#planExecutionActive = false;
+      return;
+    }
+    const max = this.#config.build.gate.maxRounds;
+    if (this.#taskContinueRounds >= max) {
+      this.#planExecutionActive = false;
+      this.#notice(
+        `Plan tasks still unfinished after ${max} continuation round${max === 1 ? "" : "s"} — ` +
+          `needs your attention: ${unfinished.map((t) => t.ref).join(", ")}.`,
+        "warn",
+      );
+      return;
+    }
+    this.#taskContinueRounds += 1;
+    const list = unfinished.map((t) => `${t.ref} (${t.status}): ${t.title}`).join("\n");
+    this.#enqueue("continue plan tasks", () =>
+      this.#handlePrompt(
+        `The approved plan is not finished — these tasks remain:\n${list}\n` +
+          "Continue working through them now. Mark each in_progress when you start it and completed " +
+          'the moment you verify it (update_tasks({updates:[{id:"t<N>",status:"completed"}]})). ' +
+          "Do not stop until every task is completed and the project's checks pass.",
+      ),
+    );
   }
 
   /** Reset every per-user-prompt budget + the diff-review baseline. Called once
@@ -1538,6 +1720,8 @@ export class Engine implements EngineClient {
     this.#verifyAttempts = 0;
     this.#gateRounds = 0;
     this.#reviewRounds = 0;
+    this.#taskContinueRounds = 0;
+    this.#planExecutionActive = false;
     this.#promptBaselineId = undefined;
   }
 
@@ -1556,7 +1740,7 @@ export class Engine implements EngineClient {
    * outcome: RED enqueues ONE bounded fix turn (formatGateFailure), GREEN commits
    * on green + runs the adversarial diff review, UNVERIFIED just notices honestly.
    */
-  async #runGate(profile: RepoProfile): Promise<void> {
+  async #runGate(profile: RepoProfile): Promise<GateSummary["outcome"]> {
     const gate = this.#config.build.gate;
     const summary = await runGate(this.#cwd, profile, this.#gateRounds, {
       checks: gate.checks,
@@ -1576,28 +1760,30 @@ export class Engine implements EngineClient {
       // enqueue, no #gateRounds increment, no green-ledger persist, no
       // commit-on-green, no adversarial review. Just a quiet, honest notice.
       this.#notice(formatGateOutcome(summary), "info");
-      return;
+      return summary.outcome;
     }
     if (summary.outcome === "unverified") {
       // pickChecks found commands but the gate produced no verdict (every check
       // aborted / no output) — still honest, never green.
       this.#notice(formatGateOutcome(summary), "info");
-      return;
+      return summary.outcome;
     }
     if (summary.outcome === "red") {
       if (this.#gateRounds >= gate.maxRounds) {
         this.#notice(
-          `${formatGateOutcome(summary)} — still red after ${gate.maxRounds} fix round(s); stopping.`,
+          `${formatGateOutcome(summary)} — STILL RED after ${gate.maxRounds} fix round(s). ` +
+            "Stopping so you can look: the build/tests are broken and the automatic fix budget is spent " +
+            "(raise build.gate.maxRounds to give it more rounds).",
           "warn",
         );
-        return;
+        return summary.outcome;
       }
       this.#gateRounds += 1;
       this.#notice(formatGateOutcome(summary), "warn");
       this.#enqueue("gate-fix", () =>
         this.#handlePrompt(formatGateFailure(summary, gate.maxRounds)),
       );
-      return;
+      return summary.outcome;
     }
     // GREEN.
     this.#notice(formatGateOutcome(summary), "info");
@@ -1608,6 +1794,7 @@ export class Engine implements EngineClient {
     // findings ride the SAME adversarial-review fix budget as the diff review.
     const visual = await this.#maybeVisualVerify(profile);
     await this.#maybeReview(visual);
+    return summary.outcome;
   }
 
   /**

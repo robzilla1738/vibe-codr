@@ -182,6 +182,12 @@ export const LspConfigSchema = z.object({
 export const ConfigSchema = z.object({
   /** Default model string, e.g. "anthropic/claude-opus-4-8" or "lmstudio/<id>". */
   model: z.string().default("anthropic/claude-opus-4-8"),
+  /** Optional dedicated PLANNING model. When set, plan-mode turns run on this
+   * model (the session visibly switches on entering plan mode and back on
+   * leaving); execute/yolo keep `model`. Lets a small/local execution model be
+   * paired with a stronger planner — plan quality is bounded by the planning
+   * model, and the grounding gate can't fix weak plan prose. */
+  planModel: z.string().optional(),
   /** Failover chain: when the active model can't be RESOLVED (missing key,
    * unknown provider/model), the session switches to the first resolvable
    * entry — with a visible notice + model-changed event — instead of dying.
@@ -308,8 +314,10 @@ export const ConfigSchema = z.object({
       gate: z
         .object({
           enabled: z.boolean().default(true),
-          /** Bounded red→fix→re-gate rounds per user prompt. */
-          maxRounds: z.number().int().min(0).max(10).default(2),
+          /** Bounded red→fix→re-gate rounds per user prompt. Generous by
+           * default: "stopped with a broken build" costs the user far more than
+           * a few extra fix rounds, and the rounds only run while checks fail. */
+          maxRounds: z.number().int().min(0).max(10).default(5),
           /** Which detected checks the gate runs (fail-fast order is fixed:
            * typecheck → test → build → lint). */
           checks: z
@@ -318,7 +326,7 @@ export const ConfigSchema = z.object({
           /** Per-check wall clock (seconds). */
           timeoutSec: z.number().int().positive().default(600),
         })
-        .default({ enabled: true, maxRounds: 2, checks: ["typecheck", "test", "build"], timeoutSec: 600 }),
+        .default({ enabled: true, maxRounds: 5, checks: ["typecheck", "test", "build"], timeoutSec: 600 }),
       commit: z
         .object({
           /** "checkpoint" (default): a passing gate writes a hidden-ref GREEN
@@ -354,7 +362,7 @@ export const ConfigSchema = z.object({
       enabled: true,
       visualVerify: true,
       recon: { enabled: true, ledger: true },
-      gate: { enabled: true, maxRounds: 2, checks: ["typecheck", "test", "build"], timeoutSec: 600 },
+      gate: { enabled: true, maxRounds: 5, checks: ["typecheck", "test", "build"], timeoutSec: 600 },
       commit: { mode: "checkpoint", branchPrefix: "vibe/" },
       review: { enabled: true, maxRounds: 1, stubScan: true },
       worktrees: { enabled: true },

@@ -7,6 +7,11 @@ import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
 import { Engine } from "./engine.ts";
+import { globalStateDir } from "./state-dir.ts";
+
+// Machine state (persisted plans, sessions) lives in the per-project GLOBAL
+// state dir — point it at a temp root so tests never touch ~/.vibe/state.
+process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
 
 function stream(chunks: unknown[]) {
   return {
@@ -146,10 +151,10 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
 
   engine.send({ type: "submit-prompt", text: "plan a refactor" });
   await engine.whenIdle();
-  // The plan was presented and persisted to .vibe/plans/<session>.md.
+  // The plan was presented and persisted to the global state dir's plans/.
   expect(events.some((e) => e.type === "plan-presented")).toBe(true);
   const sessionId = engine.snapshot().sessionId;
-  const planFile = await Bun.file(join(cwd, ".vibe", "plans", `${sessionId}.md`)).text();
+  const planFile = await Bun.file(join(globalStateDir(cwd), "plans", `${sessionId}.md`)).text();
   expect(planFile).toContain("Refactor the loader");
 
   // Approve: switch to execute, then run a turn — the model's prompt carries the
@@ -174,7 +179,7 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
   // plan's handoff (silently re-running finished work).
   let planStillThere = true;
   try {
-    await Bun.file(join(cwd, ".vibe", "plans", `${sessionId}.md`)).text();
+    await Bun.file(join(globalStateDir(cwd), "plans", `${sessionId}.md`)).text();
   } catch {
     planStillThere = false;
   }
@@ -242,9 +247,14 @@ test("Engine planning: resolve-plan accept switches to execute, seeds tasks, run
     "Refactor the loader",
     "Add tests",
   ]);
-  // Switched to execute and ran the turn with the approval handoff.
+  // Switched to execute and ran the turn with the approval handoff — which
+  // names the seeded tasks BY ID with the update contract, so execution flips
+  // statuses live instead of sitting at 0/N.
   expect(events.some((e) => e.type === "mode-changed" && e.mode === "execute")).toBe(true);
   expect(prompts.at(-1)).toContain("approved by the user");
+  expect(prompts.at(-1)).toContain("t1 Refactor the loader");
+  expect(prompts.at(-1)).toContain("t2 Add tests");
+  expect(prompts.at(-1)).toContain("update_tasks");
   // The internal handoff directive goes to the MODEL but must NOT render as a user
   // message the user "sent" — instead a clean "Executing the approved plan…" notice.
   const userMsgs = events.filter((e) => e.type === "user-message" && "text" in e) as {
@@ -254,6 +264,60 @@ test("Engine planning: resolve-plan accept switches to execute, seeds tasks, run
   expect(
     events.some((e) => e.type === "notice" && "message" in e && e.message.includes("Executing the approved plan")),
   ).toBe(true);
+
+  engine.send({ type: "shutdown" });
+  await collector;
+});
+
+test("Engine planning: accept with approvals:'auto' (the plan card's ^Y) launches yolo execution", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-plan-yolo-"));
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify({ plan: "- [ ] Do the thing" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "a" },
+      { type: "text-delta", id: "a", delta: "Plan presented." },
+      { type: "text-end", id: "a" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "b" },
+      { type: "text-delta", id: "b", delta: "Doing it." },
+      { type: "text-end", id: "b" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const engine = new Engine({
+    // Gated ask baseline — the override alone must produce yolo execution.
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan", approvalMode: "ask" },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const collector = (async () => {
+    for await (const _ of engine.events()) void _;
+  })();
+
+  engine.send({ type: "submit-prompt", text: "plan the thing" });
+  await engine.whenIdle();
+  engine.send({ type: "resolve-plan", decision: "accept", approvals: "auto" });
+  await engine.whenIdle();
+
+  expect(engine.snapshot().mode).toBe("execute");
+  expect(engine.snapshot().approvalMode).toBe("auto");
 
   engine.send({ type: "shutdown" });
   await collector;

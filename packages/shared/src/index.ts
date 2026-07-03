@@ -35,6 +35,7 @@ export type {
   JsonSchema,
   PermissionResult,
   CheckPermission,
+  PlanGateVerdict,
 } from "./tool.ts";
 
 // Errors

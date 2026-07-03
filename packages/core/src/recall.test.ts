@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@vibe/shared";
 import { SessionStore } from "./store.ts";
+import { globalStateDir } from "./state-dir.ts";
 import { searchSessions, formatRecall, _resetRecallCache } from "./recall.ts";
+import { mkdtempSync } from "node:fs";
+
+// Sessions persist to the per-project GLOBAL state dir — point it at a temp
+// root so tests never touch the real ~/.vibe/state.
+process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
 
 beforeEach(() => _resetRecallCache());
 
@@ -95,7 +101,7 @@ test("a rarer (higher-IDF) term outranks a ubiquitous one", async () => {
 
 test("serves an unchanged session from the scan cache, and re-reads on mtime change", async () => {
   const dir = await seed();
-  const historyPath = join(dir, ".vibe", "sessions", "ses_a", "history.jsonl");
+  const historyPath = join(globalStateDir(dir), "sessions", "ses_a", "history.jsonl");
   const FIXED = new Date(1_600_000_000_000);
 
   // Pin a known mtime, then run the first search to populate the cache.

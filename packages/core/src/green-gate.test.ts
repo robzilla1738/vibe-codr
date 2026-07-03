@@ -177,7 +177,7 @@ test("red gate: failing checks enqueue a bounded fix turn, then stop with a warn
   // A fix turn was enqueued carrying the structured, actionable gate failure.
   expect(prompts.some((p) => p.includes("FAIL") && p.includes("RED"))).toBe(true);
   // After the round budget it stops with a warn — never a false green.
-  expect(notices(events).some((n) => n.level === "warn" && n.message.includes("still red"))).toBe(true);
+  expect(notices(events).some((n) => n.level === "warn" && /still red/i.test(n.message))).toBe(true);
   // Red never triggers commit-on-green or a diff review.
   expect(reviewCalls()).toBe(0);
   const cps = await new CheckpointManager(dir).list();
@@ -195,6 +195,47 @@ test("unverified: no detected command → honest 'not machine-verified' notice, 
   expect(notices(events).some((n) => n.message.includes("not machine-verified"))).toBe(true);
   expect(reviewCalls()).toBe(0); // no review on an unverified turn
   expect((await new CheckpointManager(dir).list()).length).toBe(0); // no checkpoint
+});
+
+test("scaffold refresh: a greenfield session that CREATES a manifest re-derives the profile and gates it", async () => {
+  // The observed field bug: a session started in an EMPTY dir captures a
+  // greenfield profile (no commands) ONCE; after the agent scaffolds a project
+  // (create-next-app), the stale profile made the gate report UNVERIFIED
+  // forever while `next build` sat there red. The gate must re-recon when a
+  // mutating turn leaves it with no runnable checks.
+  const dir = initGitRepo({ ".keep": "" }); // greenfield: dotfiles only
+  const prompts: string[] = [];
+  let i = 0;
+  const failing = JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '2 failed'; exit 1" } });
+  const steps = [
+    // Turn 1: the "scaffold" — writes a manifest whose test script FAILS.
+    writeStep("w0", "package.json", failing),
+    textStep("scaffolded"),
+    // Gate-fix turn: pretend to fix something (keeps the red script; bounded).
+    writeStep("w1", "src.ts", "export const x = 1;\n"),
+    textStep("fixed?"),
+  ];
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return steps[i++] as never;
+    },
+    doGenerate: async () => ({
+      content: [{ type: "text", text: "REVIEW-CLEAN" }],
+      finishReason: "stop" as const,
+      usage: USAGE,
+      warnings: [],
+    }),
+  });
+  const events = await runEngine(dir, model, (c) => {
+    c.build.gate.maxRounds = 1; // one fix round, then stop
+  });
+
+  // The refreshed profile found the new test command and the gate went RED —
+  // NOT the old silent "UNVERIFIED" path.
+  expect(notices(events).some((n) => n.message.includes("not machine-verified"))).toBe(false);
+  expect(prompts.some((p) => p.includes("FAIL") && p.includes("RED"))).toBe(true);
+  expect(notices(events).some((n) => n.level === "warn" && /still red/i.test(n.message))).toBe(true);
 });
 
 test("dirty review: NOT REVIEW-CLEAN enqueues one fix; a 2nd review is bounded by maxRounds", async () => {

@@ -73,18 +73,20 @@ test("the system prompt is byte-stable across turns even when the task list chan
     return typeof s?.content === "string" ? s.content : JSON.stringify(s?.content);
   };
   // The system message is identical turn-to-turn despite the task-list change —
-  // the whole cached conversation prefix behind it survives.
+  // the whole cached conversation prefix behind it survives. (BASE may NAME the
+  // CURRENT TASKS block as a stable pointer; the volatile ENTRIES are not there.)
   expect(sysOf(prompts[0]!)).toBe(sysOf(prompts[1]!));
-  expect(sysOf(prompts[0]!)).not.toContain("CURRENT TASKS");
+  expect(sysOf(prompts[0]!)).not.toContain("first task");
 
-  // The changing task list rode in each turn's newest user message instead.
+  // The changing task list rode in each turn's newest user message instead,
+  // with positional t<N> ids for id-addressed update_tasks patches.
   const lastUser = (p: { role: string; content: unknown }[]) => {
     const us = p.filter((m) => m.role === "user");
     return JSON.stringify(us[us.length - 1]?.content);
   };
-  expect(lastUser(prompts[0]!)).toContain("[~] first task");
-  expect(lastUser(prompts[1]!)).toContain("[x] first task");
-  expect(lastUser(prompts[1]!)).toContain("[~] second task");
+  expect(lastUser(prompts[0]!)).toContain("t1 [~] first task");
+  expect(lastUser(prompts[1]!)).toContain("t1 [x] first task");
+  expect(lastUser(prompts[1]!)).toContain("t2 [~] second task");
 });
 
 test("exactly one conversation cache breakpoint rides the trailing message (plus the system one)", async () => {

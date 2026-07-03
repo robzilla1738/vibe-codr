@@ -16,3 +16,4 @@ coverage/
 # .vibe/memory/*.md (which stays tracked so saved facts can be committed).
 .vibe/memory/index.sqlite
 .vibe/memory/index.sqlite-*
+.supergoal/

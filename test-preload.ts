@@ -20,3 +20,8 @@ const root = mkdtempSync(join(tmpdir(), "vibe-test-xdg-"));
 // isolate both so the suite never touches the developer's real files.
 process.env.XDG_CONFIG_HOME = join(root, "config");
 process.env.XDG_CACHE_HOME = join(root, "cache");
+// Per-project machine state (sessions, plans, checkpoints, offload artifacts)
+// lives under ~/.vibe/state — isolate it too so engine/session tests never
+// write into the developer's real state dir. Individual test files may still
+// override with their own temp root.
+process.env.VIBE_STATE_DIR = join(root, "state");

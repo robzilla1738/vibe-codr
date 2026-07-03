@@ -178,7 +178,12 @@ export function App(props: { engine: EngineClient }) {
     });
   // Files touched this session (path → cumulative line delta), summarized in the footer.
   const [changedFiles, setChangedFiles] = createSignal<ChangedFile[]>([]);
-  const [plan, setPlan] = createSignal<string | null>(null);
+  const [plan, setPlan] = createSignal<{
+    text: string;
+    sources?: { url: string; title?: string }[];
+    assumptions?: string[];
+    ungrounded?: boolean;
+  } | null>(null);
   // The full queue of prompts waiting behind the running turn (id + label), so we
   // can show the stack and offer per-item steer/remove — not just a count.
   const [pendingQ, setPendingQ] = createSignal<{ id: string; label: string }[]>([]);
@@ -448,18 +453,36 @@ export function App(props: { engine: EngineClient }) {
   // plan is short, the card shrinks to fit it (rough wrap estimate — the
   // scrollbox handles the exact overflow). The card's chrome is 5 rows:
   // padding (2) + title + a blank rhythm row + the hint.
+  // The card's scrollable body: the plan markdown plus a compact sources list
+  // (the pages the plan is grounded in), so evidence is reviewable in place.
+  const planDisplayText = () => {
+    const p = plan();
+    if (!p) return "";
+    const sources = p.sources?.length
+      ? `\n\nSources:\n${p.sources.map((s, i) => `${i + 1}. ${s.url}${s.title ? ` — ${s.title}` : ""}`).join("\n")}`
+      : "";
+    const assumptions = p.assumptions?.length
+      ? `\n\nAssumptions (unverified):\n${p.assumptions.map((a) => `- ${a}`).join("\n")}`
+      : "";
+    return `${p.text}${sources}${assumptions}`;
+  };
   const planContentRows = () => {
     const inner = Math.max(20, contentWidth() - 7);
-    return (plan() ?? "")
+    return planDisplayText()
       .split("\n")
       .reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / inner)), 0);
   };
+  // Extra fixed chrome rows the grounding metadata adds above the scrollbox
+  // (the ⚠ ungrounded banner and/or the "Grounded in N sources" line).
+  const planMetaRows = () =>
+    (plan()?.ungrounded ? 1 : 0) +
+    (plan()?.sources?.length || plan()?.assumptions?.length ? 1 : 0);
   // ~8 rows of app chrome (context line, input, status, padding) + ~8 rows of
   // transcript stay reserved; the floor keeps the card usable on tiny panes.
   const planPanelCap = () => Math.max(9, dims().height - 20);
-  const planPanelRows = () => Math.min(planPanelCap(), planContentRows() + 5);
+  const planPanelRows = () => Math.min(planPanelCap(), planContentRows() + 5 + planMetaRows());
   // Whether the plan overflows its card (→ show the scroll affordance in the hint).
-  const planOverflows = () => planContentRows() + 5 > planPanelCap();
+  const planOverflows = () => planContentRows() + 5 + planMetaRows() > planPanelCap();
 
   const [selIdx, setSelIdx] = createSignal(0);
   // The menu window's scroll offset (top visible row). Kept SEPARATE from the
@@ -823,8 +846,18 @@ export function App(props: { engine: EngineClient }) {
     setPerms((p) => p.slice(1));
   };
   // Resolve a presented plan from the approval card, then dismiss it.
-  const answerPlan = (decision: "accept" | "edit" | "keep-planning", edit?: string) => {
-    props.engine.send({ type: "resolve-plan", decision, ...(edit ? { edit } : {}) });
+  // `approvals:"auto"` (the Ctrl+Y shortcut) launches execution in yolo.
+  const answerPlan = (
+    decision: "accept" | "edit" | "keep-planning",
+    edit?: string,
+    approvals?: "auto",
+  ) => {
+    props.engine.send({
+      type: "resolve-plan",
+      decision,
+      ...(edit ? { edit } : {}),
+      ...(approvals ? { approvals } : {}),
+    });
     setPlan(null);
   };
 
@@ -910,6 +943,13 @@ export function App(props: { engine: EngineClient }) {
       if (key.name === "return" || key.name === "enter") {
         key.preventDefault?.();
         answerPlan("accept");
+        return;
+      }
+      // Ctrl+Y: accept AND run unattended (yolo approvals). Ctrl-chorded so a
+      // typed revision starting with "y"/"Y" can never fire it by accident.
+      if (key.ctrl && key.name === "y") {
+        key.preventDefault?.();
+        answerPlan("accept", undefined, "auto");
         return;
       }
       if (key.name === "escape") {
@@ -1144,7 +1184,12 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "plan-presented":
             finalizeAssistant();
-            setPlan(event.plan);
+            setPlan({
+              text: event.plan,
+              ...(event.sources?.length ? { sources: event.sources } : {}),
+              ...(event.assumptions?.length ? { assumptions: event.assumptions } : {}),
+              ...(event.ungrounded ? { ungrounded: true } : {}),
+            });
             break;
           case "subagent-started":
             setSubagents((prev) => [
@@ -1181,10 +1226,12 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "mode-changed":
             mode = event.mode;
-            // Leaving plan mode moots a still-open plan card — the user approved
-            // by mode-switch (the engine armed the handoff and said so). A stale
-            // "review & approve" card would offer a second, double-firing accept.
-            if (event.mode !== "plan") setPlan(null);
+            // The plan card SURVIVES a mode switch while unresolved: switching
+            // to execute/yolo arms a deferred approval engine-side, and the card
+            // stays so the user can still Enter (run now, superseding the
+            // deferred handoff), Ctrl+Y (run in yolo), Esc (revoke), or type to
+            // revise — instead of the card vanishing and the approval silently
+            // deferring. The engine guards double-accepts.
             refreshStatus();
             break;
           case "model-changed":
@@ -1846,9 +1893,28 @@ export function App(props: { engine: EngineClient }) {
             <text flexShrink={0} fg={modeColor("plan")} attributes={TextAttributes.BOLD}>
               {"Plan · review & approve"}
             </text>
+            <Show when={plan()?.ungrounded}>
+              <text flexShrink={0} fg={palette().del} attributes={TextAttributes.BOLD}>
+                {"⚠ ungrounded — presented without the research this request required"}
+              </text>
+            </Show>
+            <Show when={plan()?.sources?.length || plan()?.assumptions?.length}>
+              <text flexShrink={0} fg={palette().muted}>
+                {[
+                  plan()?.sources?.length
+                    ? `Grounded in ${plan()!.sources!.length} web source${plan()!.sources!.length === 1 ? "" : "s"}`
+                    : "",
+                  plan()?.assumptions?.length
+                    ? `${plan()!.assumptions!.length} assumption${plan()!.assumptions!.length === 1 ? "" : "s"} flagged`
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </text>
+            </Show>
             <scrollbox flexGrow={1} flexShrink={1} stickyScroll={false} scrollbarOptions={{ visible: false }}>
               <AssistantText
-                text={plan() ?? ""}
+                text={planDisplayText()}
                 streaming={false}
                 style={mdStyle}
                 fg={palette().assistant}
@@ -1865,6 +1931,9 @@ export function App(props: { engine: EngineClient }) {
                   const segs: Seg[] = [
                     { t: "Enter", fg: lit },
                     { t: " accept & run", fg: dim },
+                    { t: "  ·  ", fg: dim },
+                    { t: "^Y", fg: lit },
+                    { t: " run in yolo", fg: dim },
                     { t: "  ·  ", fg: dim },
                     { t: "type", fg: lit },
                     { t: " to revise", fg: dim },

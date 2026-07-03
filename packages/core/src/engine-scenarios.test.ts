@@ -153,15 +153,17 @@ test("auto-verify: a failing check feeds back and the agent self-corrects", asyn
 test("plan approval: card-accept and mode-switch share one routine (same execute + ask + handoff effects)", async () => {
   // Both approval surfaces funnel through the SAME #approvePlan/#setModeGated
   // routine, so neither can drift from the engine-owned invariant: approving a
-  // plan lands in gated EXECUTE (mode execute, approvals re-gated to ask) and
-  // arms the plan→execute handoff (the execute turn's model prompt carries the
-  // "approved by the user" directive). The two differ ONLY in WHEN the turn runs
-  // — the card immediately, the mode switch on the next message — so we assert
-  // the SHARED effects, not a byte-identical event stream.
+  // plan lands in EXECUTE with the USER'S approval preference honored (auto
+  // stays auto — approving a plan from yolo must launch unattended execution,
+  // not silently re-gate it; ask stays gated ask) and arms the plan→execute
+  // handoff (the execute turn's model prompt carries the "approved by the
+  // user" directive). The two differ ONLY in WHEN the turn runs — the card
+  // immediately, the mode switch on the next message — so we assert the
+  // SHARED effects, not a byte-identical event stream.
   const PLAN = "## Steps\n- [ ] Refactor the loader\n- [ ] Add tests";
 
-  async function approveVia(method: "card" | "mode") {
-    const cwd = mkdtempSync(join(tmpdir(), `vibe-scn-approve-${method}-`));
+  async function approveVia(method: "card" | "mode", baseline: "ask" | "auto" = "auto") {
+    const cwd = mkdtempSync(join(tmpdir(), `vibe-scn-approve-${method}-${baseline}-`));
     const prompts: string[] = [];
     const steps = [
       stream([
@@ -182,11 +184,10 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
     const registry = new ProviderRegistry([
       { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
     ]);
-    // Start in YOLO (approvals auto) so the shared "re-gate to ask" effect is
-    // observable on BOTH paths (a plan approved from a no-prompts session must
-    // land back in gated execute).
+    // The baseline approval preference is what approval must HONOR: auto in →
+    // auto out (yolo execution), ask in → gated ask.
     const engine = new Engine({
-      config: { ...defaultConfig(), model: "mock/test", mode: "plan", approvalMode: "auto" },
+      config: { ...defaultConfig(), model: "mock/test", mode: "plan", approvalMode: baseline },
       cwd,
       registry,
       interactive: false,
@@ -222,15 +223,22 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
   const card = await approveVia("card");
   const mode = await approveVia("mode");
 
-  // Shared effect 1+2: both land in gated EXECUTE, re-gating approvals auto→ask.
+  // Shared effect 1: both land in EXECUTE.
   expect(card.mode).toBe("execute");
   expect(mode.mode).toBe("execute");
-  expect(card.approvals).toBe("ask");
-  expect(mode.approvals).toBe("ask");
-  expect(card.reGatedToAsk).toBe(true);
-  expect(mode.reGatedToAsk).toBe(true);
+  // Shared effect 2: the user's AUTO preference survives approval on both
+  // surfaces — a plan approved from yolo runs unattended.
+  expect(card.approvals).toBe("auto");
+  expect(mode.approvals).toBe("auto");
   // Shared effect 3: both arm the handoff — the execute turn's model prompt
   // carries the approval directive (its present_plan "stop here" no longer holds).
   expect(card.execPrompt).toContain("approved by the user");
   expect(mode.execPrompt).toContain("approved by the user");
+
+  // With a gated ASK baseline the same routine keeps execution gated: approvals
+  // land (and stay) in ask on both surfaces.
+  const cardAsk = await approveVia("card", "ask");
+  expect(cardAsk.mode).toBe("execute");
+  expect(cardAsk.approvals).toBe("ask");
+  expect(cardAsk.execPrompt).toContain("approved by the user");
 });

@@ -54,6 +54,25 @@ export interface ToolContext {
    * the file is clean or diagnostics don't apply.
    */
   diagnose?: (absPath: string) => Promise<string | undefined>;
+  /**
+   * Plan-readiness gate (set by core in plan mode). `present_plan` consults it
+   * before surfacing a plan: a triage of the user's request decides what
+   * research the plan must be grounded in, and the session's observed research
+   * telemetry decides whether that happened. A rejection re-enters the loop
+   * with concrete instructions; after the rejection budget is spent the plan is
+   * allowed through with `ungrounded: true` so the UI can warn instead of the
+   * model deadlocking.
+   */
+  planGate?: (plan: { sources?: { url: string }[] }) => PlanGateVerdict;
+}
+
+/** Verdict from the plan-readiness gate (see {@link ToolContext.planGate}). */
+export interface PlanGateVerdict {
+  allow: boolean;
+  /** When rejected: exactly what research is missing, model-facing. */
+  reason?: string;
+  /** Allowed only because the rejection budget ran out — research never happened. */
+  ungrounded?: boolean;
 }
 
 /** Result returned by a tool execution. */

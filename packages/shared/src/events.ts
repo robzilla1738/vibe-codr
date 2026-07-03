@@ -67,7 +67,19 @@ export type UIEvent =
       jobs: JobInfo[];
     }
   | { type: "approvals-changed"; mode: "ask" | "auto" }
-  | { type: "plan-presented"; sessionId: string; plan: string }
+  | {
+      /** A finished plan surfaced from plan mode's `present_plan`. `sources` are
+       * the web pages the plan is grounded in; `assumptions` are items the model
+       * could not verify; `ungrounded` marks a plan the readiness gate let
+       * through only after its rejection budget was exhausted (the required
+       * research never happened) — the UI renders it with a warning banner. */
+      type: "plan-presented";
+      sessionId: string;
+      plan: string;
+      sources?: { url: string; title?: string }[];
+      assumptions?: string[];
+      ungrounded?: boolean;
+    }
   | {
       type: "permission-request";
       sessionId: string;

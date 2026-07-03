@@ -1,8 +1,9 @@
-import { readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import type { Message, Mode, Task } from "@vibe/shared";
 import type { SourceEntry } from "./source-ledger.ts";
+import { ensureStateDir, globalStateDir } from "./state-dir.ts";
 
 export interface SessionMeta {
   id: string;
@@ -57,18 +58,28 @@ function u8Reviver(_key: string, value: unknown): unknown {
 }
 
 /**
- * Persists sessions under `.vibe/sessions/<id>/` so runs are resumable.
+ * Persists sessions under the project's GLOBAL state dir
+ * (`~/.vibe/state/<cwd-hash>/sessions/<id>/`) so runs are resumable without
+ * dirtying the project directory (a `.vibe/` in a fresh dir broke scaffolders).
  * `messages.jsonl` holds the authoritative model context; `history.jsonl`
- * holds the UI message log; `meta.json` holds session metadata.
+ * holds the UI message log; `meta.json` holds session metadata. Sessions saved
+ * by older versions under `<cwd>/.vibe/sessions/` are still readable (legacy
+ * fallback on load/list); all writes go to the global dir.
  */
 export class SessionStore {
   #base: string;
+  /** Read-only fallback: the pre-relocation in-project sessions dir. */
+  #legacy: string;
+  #cwd: string;
+  #ensured = false;
   /** Monotonic per-process counter for unique temp-file names (with pid), so
    * concurrent saves never share a temp path. */
   static #writeSeq = 0;
 
   constructor(cwd: string) {
-    this.#base = join(cwd, ".vibe", "sessions");
+    this.#cwd = cwd;
+    this.#base = join(globalStateDir(cwd), "sessions");
+    this.#legacy = join(cwd, ".vibe", "sessions");
   }
 
   #dir(id: string): string {
@@ -80,7 +91,12 @@ export class SessionStore {
     modelMessages: ModelMessage[],
     history: Message[],
   ): Promise<void> {
+    if (!this.#ensured) {
+      this.#ensured = true;
+      await ensureStateDir(this.#cwd);
+    }
     const dir = this.#dir(meta.id);
+    await mkdir(dir, { recursive: true });
     // A PER-WRITE-UNIQUE temp suffix (pid + monotonic counter): two vibe-codr
     // instances resuming the SAME session (two `--continue` terminals in one repo)
     // otherwise both write the FIXED `messages.jsonl.tmp` and their interleaved
@@ -122,29 +138,35 @@ export class SessionStore {
   }
 
   async load(id: string): Promise<PersistedSession | null> {
-    const dir = this.#dir(id);
-    const metaFile = Bun.file(join(dir, "meta.json"));
-    if (!(await metaFile.exists())) return null;
-    let meta: SessionMeta;
-    try {
-      meta = (await metaFile.json()) as SessionMeta;
-    } catch {
-      // A corrupt/partial meta.json means the session is unusable — treat it as
-      // absent so callers fall back to "start fresh" rather than crashing.
-      return null;
+    // Global dir first; sessions persisted by older versions fall back to the
+    // legacy in-project dir (read-only — the next save writes globally).
+    for (const dir of [this.#dir(id), join(this.#legacy, id)]) {
+      const metaFile = Bun.file(join(dir, "meta.json"));
+      if (!(await metaFile.exists())) continue;
+      let meta: SessionMeta;
+      try {
+        meta = (await metaFile.json()) as SessionMeta;
+      } catch {
+        // A corrupt/partial meta.json means the session is unusable — treat it as
+        // absent so callers fall back to "start fresh" rather than crashing.
+        return null;
+      }
+      const modelMessages = await this.#readJsonl<ModelMessage>(
+        join(dir, "messages.jsonl"),
+      );
+      const history = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
+      return { meta, modelMessages, history };
     }
-    const modelMessages = await this.#readJsonl<ModelMessage>(
-      join(dir, "messages.jsonl"),
-    );
-    const history = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
-    return { meta, modelMessages, history };
+    return null;
   }
 
   /** Load only a session's UI history (history.jsonl) — recall searches this and
    * doesn't need the much larger authoritative model transcript (messages.jsonl).
    * Returns [] if the session or its history is absent/unreadable. */
   async loadHistory(id: string): Promise<Message[]> {
-    return this.#readJsonl<Message>(join(this.#dir(id), "history.jsonl"));
+    const current = await this.#readJsonl<Message>(join(this.#dir(id), "history.jsonl"));
+    if (current.length) return current;
+    return this.#readJsonl<Message>(join(this.#legacy, id, "history.jsonl"));
   }
 
   async #readJsonl<T>(path: string): Promise<T[]> {
@@ -164,25 +186,29 @@ export class SessionStore {
     return out;
   }
 
-  /** All persisted sessions, newest first. */
+  /** All persisted sessions, newest first — the global dir merged with any
+   * legacy in-project sessions (deduped by id; global wins). */
   async list(): Promise<SessionMeta[]> {
-    let ids: string[];
-    try {
-      ids = await readdir(this.#base);
-    } catch {
-      return [];
-    }
-    const metas: SessionMeta[] = [];
-    for (const id of ids) {
-      const file = Bun.file(join(this.#dir(id), "meta.json"));
-      // One corrupt session must not break listing/resume for all the others.
+    const seen = new Map<string, SessionMeta>();
+    for (const base of [this.#base, this.#legacy]) {
+      let ids: string[];
       try {
-        if (await file.exists()) metas.push((await file.json()) as SessionMeta);
+        ids = await readdir(base);
       } catch {
-        /* skip corrupt session */
+        continue;
+      }
+      for (const id of ids) {
+        if (seen.has(id)) continue;
+        const file = Bun.file(join(base, id, "meta.json"));
+        // One corrupt session must not break listing/resume for all the others.
+        try {
+          if (await file.exists()) seen.set(id, (await file.json()) as SessionMeta);
+        } catch {
+          /* skip corrupt session */
+        }
       }
     }
-    return metas.sort((a, b) => b.updatedAt - a.updatedAt);
+    return [...seen.values()].sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   /** Id of the most recently updated session, if any. */

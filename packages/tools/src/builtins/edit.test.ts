@@ -218,3 +218,18 @@ test("write emits a file-changed event with an all-additions diff for a new file
   expect(changed && changed.type === "file-changed" && changed.added).toBe(2);
   expect(changed && changed.type === "file-changed" && changed.removed).toBe(0);
 });
+
+test("a trailing-newline-only edit reports the change honestly, not a misleading +0 -0", async () => {
+  // Removing the final newline is a real byte change but leaves the line-based
+  // diff empty — the output must say so rather than read as a no-op.
+  const { cwd, path } = await seed("foo\n");
+  const events: UIEvent[] = [];
+  const r = await editTool.execute({ path, oldString: "foo\n", newString: "foo" }, ctx(cwd, events));
+  expect(r.isError).toBeFalsy();
+  expect(String(r.output)).not.toContain("(+0 -0)");
+  expect(String(r.output).toLowerCase()).toContain("newline");
+  // The file really changed on disk.
+  expect(await Bun.file(join(cwd, path)).text()).toBe("foo");
+  // And a file-changed event still fired.
+  expect(events.some((e) => e.type === "file-changed")).toBe(true);
+});

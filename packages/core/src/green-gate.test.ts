@@ -321,6 +321,102 @@ test("review failure: a rejected diff-review call degrades — turn completes, n
   expect((await new CheckpointManager(dir).list()).some((c) => c.green)).toBe(true);
 });
 
+// Drive a full plan→execute chain over a GREEN repo. `handoffSteps` is the
+// sequence the model streams AFTER the plan is accepted (the handoff turn, then
+// any continuation turns). Returns collected events + captured prompts.
+async function runPlanChain(
+  dir: string,
+  planChecklist: string,
+  handoffSteps: unknown[],
+): Promise<{ events: UIEvent[]; prompts: string[] }> {
+  const prompts: string[] = [];
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: planChecklist }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    textStep("Plan presented."),
+    ...handoffSteps,
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return (steps[call++] ?? textStep("idle")) as never;
+    },
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
+    cwd: dir,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+  engine.send({ type: "submit-prompt", text: "plan the work" });
+  await engine.whenIdle();
+  engine.send({ type: "resolve-plan", decision: "accept" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+  return { events, prompts };
+}
+
+const updateTasksStep = (id: string, updates: { id: string; status: string }[]) =>
+  stream([
+    { type: "stream-start", warnings: [] },
+    { type: "tool-call", toolCallId: id, toolName: "update_tasks", input: JSON.stringify({ updates }) },
+    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+  ]);
+
+test("plan chain: a GREEN gate does NOT auto-complete an in-progress task the model never finished", async () => {
+  const dir = initGitRepo({
+    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "bun.lock": "",
+    "src.ts": "export const x = 1;\n",
+  });
+  // Handoff turn: mutate + mark ONLY t1 completed (t2 left in_progress), then
+  // finish. The gate is green — but greenness is orthogonal to whether t2's own
+  // work was done, so t2 must NOT be auto-completed. A continuation is enqueued;
+  // on it the model finishes t2 so the chain converges.
+  const handoff = [
+    writeStep("w1", "out.txt", "did t1\n"),
+    updateTasksStep("u1", [{ id: "t1", status: "completed" }]),
+    textStep("t1 done."),
+    // continuation turn:
+    updateTasksStep("u2", [{ id: "t2", status: "completed" }]),
+    textStep("t2 done."),
+  ];
+  const { events, prompts } = await runPlanChain(dir, "## Steps\n- [ ] Do t1\n- [ ] Do t2", handoff);
+
+  // The old false-complete notice must NOT appear.
+  expect(notices(events).some((n) => /marked .*in-progress task/i.test(n.message))).toBe(false);
+  // Instead a bounded continuation was enqueued naming the unfinished task.
+  expect(prompts.some((p) => p.includes("The approved plan is not finished"))).toBe(true);
+});
+
+test("plan chain: a non-mutating handoff turn still nudges unfinished tasks (no silent stall)", async () => {
+  const dir = initGitRepo({
+    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "bun.lock": "",
+    "src.ts": "export const x = 1;\n",
+  });
+  // Handoff turn does NOT mutate — just narrates. The chain must not die silently
+  // with tasks pending; a continuation is enqueued. On it the model finishes.
+  const handoff = [
+    textStep("Thinking about how to start…"), // non-mutating → non-gateable
+    writeStep("w1", "out.txt", "did it\n"),
+    updateTasksStep("u1", [{ id: "t1", status: "completed" }]),
+    textStep("t1 done."),
+  ];
+  const { prompts } = await runPlanChain(dir, "## Steps\n- [ ] Do t1", handoff);
+  expect(prompts.some((p) => p.includes("The approved plan is not finished"))).toBe(true);
+});
+
 test("legacy fallback: build.enabled=false runs the old verify.auto loop (no gate)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-gate-legacy-"));
   const { model, reviewCalls } = mutatingModel("REVIEW-CLEAN");
@@ -335,4 +431,18 @@ test("legacy fallback: build.enabled=false runs the old verify.auto loop (no gat
   // No gate / review machinery engaged on the legacy path.
   expect(notices(events).some((n) => n.message.startsWith("Gate:"))).toBe(false);
   expect(reviewCalls()).toBe(0);
+});
+
+test("manifestSignature: stable when unchanged, flips when a build manifest appears", async () => {
+  const { manifestSignature } = await import("./engine.ts");
+  const dir = mkdtempSync(join(tmpdir(), "vibe-sig-"));
+  const empty = manifestSignature(dir);
+  // A check-less repo (no manifests) → stable signature across turns → the gate
+  // refresh skips the repeat recon instead of thrashing.
+  expect(manifestSignature(dir)).toBe(empty);
+  // A scaffolder writing package.json flips the signature → refresh re-scans.
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { build: "tsc" } }));
+  const scaffolded = manifestSignature(dir);
+  expect(scaffolded).not.toBe(empty);
+  expect(scaffolded).toBe(manifestSignature(dir)); // stable again until it changes
 });

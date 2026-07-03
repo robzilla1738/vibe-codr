@@ -91,3 +91,49 @@ test("non-TS files and files outside any tsconfig are ignored", async () => {
   // string safely — so assert only that it doesn't throw.)
   await diag.diagnose(orphan);
 });
+
+test("a tsconfig-EXCLUDED edited file does not surface project-membership noise", async () => {
+  // The project includes only src/**; a file under scripts/ is excluded. Editing
+  // it must not append "not under rootDir / not in project" meta-diagnostics as
+  // "fix before moving on" — those are about membership, not the code.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-diag-excl-"));
+  writeFileSync(
+    join(dir, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: { strict: true, noEmit: true, rootDir: "src" },
+      include: ["src/**/*.ts"],
+    }),
+  );
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(join(dir, "src"), { recursive: true });
+  mkdirSync(join(dir, "scripts"), { recursive: true });
+  writeFileSync(join(dir, "src", "ok.ts"), "export const x: number = 1;\n");
+  const excluded = join(dir, "scripts", "tool.ts");
+  // Clean code, but it lives outside rootDir → TS would emit TS6059 as a program root.
+  writeFileSync(excluded, "export const y: number = 2;\n");
+
+  const diag = new TsDiagnostics();
+  const out = await diag.diagnose(excluded);
+  // No membership-noise leaked (TS6059 "not under rootDir" / TS6307). Clean code
+  // → undefined, not a spurious "fix before moving on" block.
+  expect(out).toBeUndefined();
+});
+
+test("force-added out-of-project files are bounded (no unbounded root-set growth)", async () => {
+  // Diagnose many distinct files not in the tsconfig; the service's force-added
+  // root set must stay bounded rather than growing once per distinct path.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-diag-cap-"));
+  writeFileSync(
+    join(dir, "tsconfig.json"),
+    JSON.stringify({ compilerOptions: { strict: true, noEmit: true }, include: ["included.ts"] }),
+  );
+  writeFileSync(join(dir, "included.ts"), "export const a = 1;\n");
+  const diag = new TsDiagnostics();
+  // Real errors so each diagnose does its full add+bump path.
+  for (let i = 0; i < 30; i++) {
+    const f = join(dir, `extra${i}.ts`);
+    writeFileSync(f, `const bad${i}: number = "x";\nexport { bad${i} };\n`);
+    const out = await diag.diagnose(f);
+    expect(out).toContain("TS2322"); // still diagnosed correctly under the cap
+  }
+});

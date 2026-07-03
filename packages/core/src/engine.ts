@@ -1,6 +1,7 @@
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, rm } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import {
@@ -94,6 +95,44 @@ import {
   setSubagentModel,
   type EngineHandle,
 } from "./engine-commands.ts";
+
+/** Build manifests whose appearance/change signals the project's check set may
+ * have shifted (a scaffolder ran) — used by the gate's no-checks refresh guard. */
+const GATE_MANIFEST_FILES = [
+  "package.json",
+  "tsconfig.json",
+  "deno.json",
+  "deno.jsonc",
+  "Cargo.toml",
+  "go.mod",
+  "pyproject.toml",
+  "setup.py",
+  "requirements.txt",
+  "Gemfile",
+  "pom.xml",
+  "build.gradle",
+  "Makefile",
+  "composer.json",
+];
+
+/**
+ * A cheap fingerprint of the build manifests present in `cwd` (name:mtime). The
+ * gate's no-runnable-checks refresh compares it turn-over-turn so it can tell "a
+ * scaffolder just wrote a manifest" (signature changed → re-scan) from "this repo
+ * simply has no checks" (signature stable → skip the repeat full recon that would
+ * otherwise run every mutating turn). Pure + injectable for testing.
+ */
+export function manifestSignature(cwd: string): string {
+  const parts: string[] = [];
+  for (const m of GATE_MANIFEST_FILES) {
+    try {
+      parts.push(`${m}:${statSync(join(cwd, m)).mtimeMs}`);
+    } catch {
+      /* absent → contributes nothing (its later appearance flips the sig) */
+    }
+  }
+  return parts.join("|");
+}
 
 export interface EngineOptions {
   config: Config;
@@ -204,6 +243,11 @@ export class Engine implements EngineClient {
    * handoff turn starts, cleared by the next REAL user prompt (or when the
    * seeded list finishes/caps out). Scopes the completion check to plan runs. */
   #planExecutionActive = false;
+  /** Manifest fingerprint at the last no-runnable-checks gate refresh. A repo
+   * that legitimately has no checks would otherwise re-run full recon on EVERY
+   * mutating turn; we only re-scan when a build manifest actually changed (which
+   * is exactly the scaffold signal the refresh exists for). */
+  #lastGateReconSig: string | undefined;
   /** Bounded adversarial-diff-review→fix rounds, per user prompt (reset on submit). */
   #reviewRounds = 0;
   /** The pre-edit checkpoint id for the CURRENT turn. Set in #handlePrompt;
@@ -1642,13 +1686,23 @@ export class Engine implements EngineClient {
     if (!(build.enabled && build.gate.enabled)) {
       // Build intelligence off (or gate disabled): legacy verify behavior verbatim.
       await this.#maybeVerify();
+      // An active plan chain must still advance when the gate is off — otherwise
+      // it stalls silently with tasks pending (no green signal → green=false).
+      if (!this.#session.interrupted) this.#maybeContinueTasks(false);
       return;
     }
     // The gate runs on the same terms the legacy verify did: only after a
     // mutating execute turn the user didn't interrupt. (/loop iterations run on
     // an ephemeral session and never route through #handlePrompt, so they never
     // reach the gate — inherited from this call site.)
-    if (!this.#turnIsGateable()) return;
+    if (!this.#turnIsGateable()) {
+      // A plan-execution turn that produced no edit (the model narrated or asked
+      // instead of working) must not silently strand the chain — nudge the
+      // unfinished tasks. Skip when the user interrupted (Esc means stop), and
+      // #maybeContinueTasks no-ops outside an active plan chain.
+      if (!this.#session.interrupted) this.#maybeContinueTasks(false);
+      return;
+    }
 
     let profile = this.#session.repoProfile;
     let runnable = profile ? pickChecks(profile, build.gate.checks) : [];
@@ -1659,9 +1713,17 @@ export class Engine implements EngineClient {
     // sitting right there, red). A mutating turn with no runnable checks is
     // exactly that signature, so re-derive the profile before giving up.
     if (!runnable.length) {
-      await this.#runRecon();
-      profile = this.#session.repoProfile;
-      runnable = profile ? pickChecks(profile, build.gate.checks) : [];
+      // Only re-scan when a build manifest actually changed since the last empty
+      // refresh — otherwise a repo that genuinely has no checks would re-run full
+      // recon (+ repo-map) on every mutating turn. A scaffolding turn writes a
+      // manifest (package.json, Cargo.toml, …), flipping the signature.
+      const sig = manifestSignature(this.#cwd);
+      if (sig !== this.#lastGateReconSig) {
+        this.#lastGateReconSig = sig;
+        await this.#runRecon();
+        profile = this.#session.repoProfile;
+        runnable = profile ? pickChecks(profile, build.gate.checks) : [];
+      }
     }
     let outcome: GateSummary["outcome"] | "skipped" = "skipped";
     if (!profile || !runnable.length) {
@@ -1688,15 +1750,19 @@ export class Engine implements EngineClient {
   }
 
   /**
-   * Plan-execution completion check: after a gated turn, unfinished seeded
-   * tasks mean the approved plan is NOT done — the turn ending is not the work
-   * ending. GREEN checks with only in_progress stragglers auto-complete them
-   * (the model did the work and forgot the bookkeeping); anything still pending
-   * re-enqueues a bounded continuation naming the unfinished ids. Scoped to
-   * plan-execution chains (armed by the handoff, cleared by the next real user
-   * prompt) so an unrelated request never gets nagged about a stale list.
+   * Plan-execution completion check: after a turn, unfinished seeded tasks mean
+   * the approved plan is NOT done — the turn ending is not the work ending. Any
+   * unfinished task (pending OR in_progress) re-enqueues a bounded continuation
+   * naming the unfinished ids. It does NOT auto-complete in_progress stragglers
+   * on a green gate: greenness proves the build/tests pass, which is orthogonal
+   * to whether a given task's own work was actually done — a model that set a
+   * task in_progress and stopped early on an unrelated-green tree would be
+   * falsely reported done. The continuation instead asks the model to finish the
+   * task or mark it complete if it truly already is. Scoped to plan-execution
+   * chains (armed by the handoff, cleared by the next real user prompt) so an
+   * unrelated request never gets nagged about a stale list.
    */
-  #maybeContinueTasks(green: boolean): void {
+  #maybeContinueTasks(_green: boolean): void {
     if (!this.#planExecutionActive) return;
     const tasks = this.#session.tasks;
     if (!tasks.length) return;
@@ -1704,16 +1770,6 @@ export class Engine implements EngineClient {
       .map((t, i) => ({ ref: `t${i + 1}`, index: i + 1, title: t.title, status: t.status }))
       .filter((t) => t.status !== "completed");
     if (!unfinished.length) {
-      this.#planExecutionActive = false;
-      return;
-    }
-    if (green && !unfinished.some((t) => t.status === "pending")) {
-      this.#session.patchTasks(
-        unfinished.map((t) => ({ index: t.index, status: "completed" as const })),
-      );
-      this.#notice(
-        `Checks are green — marked ${unfinished.length} lingering in-progress task${unfinished.length === 1 ? "" : "s"} completed.`,
-      );
       this.#planExecutionActive = false;
       return;
     }
@@ -1732,8 +1788,9 @@ export class Engine implements EngineClient {
     this.#enqueue("continue plan tasks", () =>
       this.#handlePrompt(
         `The approved plan is not finished — these tasks remain:\n${list}\n` +
-          "Continue working through them now. Mark each in_progress when you start it and completed " +
-          'the moment you verify it (update_tasks({updates:[{id:"t<N>",status:"completed"}]})). ' +
+          "For each: if it is already fully done, mark it completed now " +
+          '(update_tasks({updates:[{id:"t<N>",status:"completed"}]})); otherwise finish it, ' +
+          "marking it in_progress when you start and completed the moment you verify it. " +
           "Do not stop until every task is completed and the project's checks pass.",
       ),
     );

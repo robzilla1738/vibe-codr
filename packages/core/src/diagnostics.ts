@@ -51,6 +51,19 @@ interface TsLanguageService {
 const TS_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
 /** Cap on rendered diagnostics per call — the first errors are the signal. */
 const MAX_DIAGNOSTICS = 8;
+/** Cap on force-added (not-in-tsconfig) files retained per service, so a
+ * long-lived process editing thousands of out-of-project files can't grow the
+ * root set unbounded. The project's OWN fileNames are never evicted. */
+const MAX_FORCE_ADDED = 2_000;
+/** TS "this file isn't part of the project" meta-diagnostics. They fire ONLY
+ * because we force-add an edited file the tsconfig excludes / places outside
+ * rootDir — they're about project membership, not code correctness, so surfacing
+ * them as "fix before moving on" is noise. Dropped for force-added files. */
+const PROJECT_MEMBERSHIP_CODES = new Set([
+  6059, // File is not under 'rootDir'
+  6307, // File is not listed within the file list of project (via include)
+  6504, // File is a JavaScript file … 'allowJs'
+]);
 
 /** Whether a path is TS/JS — the composite router uses this to keep TS/JS on the
  * cheap in-process fast path and send everything else to the LSP layer. */
@@ -104,6 +117,9 @@ interface ServiceEntry {
   service: TsLanguageService;
   fileNames: Set<string>;
   versions: Map<string, number>;
+  /** Force-added (not-in-tsconfig) files, in insertion order, for bounded LRU
+   * eviction — the project's own fileNames never appear here. */
+  forceAdded: string[];
   /** The tsconfig's raw text at build time — the cache is rebuilt when it changes. */
   configText: string | undefined;
 }
@@ -148,13 +164,31 @@ export class TsDiagnostics implements Diagnostics {
       // A file WRITTEN after the service was first built (e.g. the model just
       // created it) isn't in the tsconfig's resolved fileNames yet — add it so
       // freshly-authored code is diagnosed too, instead of silently skipped.
-      if (!entry.fileNames.has(absPath)) entry.fileNames.add(absPath);
+      const inProject = entry.fileNames.has(absPath);
+      if (!inProject) {
+        entry.fileNames.add(absPath);
+        // Track force-added files in insertion order and evict the oldest beyond
+        // the cap, so a long-lived process editing thousands of out-of-project
+        // files can't grow the root set unbounded. The project's own fileNames
+        // are never in this list, so they're never evicted.
+        entry.forceAdded.push(absPath);
+        while (entry.forceAdded.length > MAX_FORCE_ADDED) {
+          const evict = entry.forceAdded.shift()!;
+          entry.fileNames.delete(evict);
+          entry.versions.delete(evict);
+        }
+      }
       // Bump the version so the service re-reads the just-written file.
       entry.versions.set(absPath, (entry.versions.get(absPath) ?? 0) + 1);
-      const diags = [
+      let diags = [
         ...entry.service.getSyntacticDiagnostics(absPath),
         ...entry.service.getSemanticDiagnostics(absPath),
       ];
+      // A force-added file the tsconfig deliberately excludes (or that sits
+      // outside rootDir) triggers "not part of the project" meta-diagnostics —
+      // noise about project membership, not code correctness. Drop those for a
+      // file that wasn't already in the project.
+      if (!inProject) diags = diags.filter((d) => !PROJECT_MEMBERSHIP_CODES.has(d.code));
       if (!diags.length) return undefined;
       const lines = diags.slice(0, MAX_DIAGNOSTICS).map((d) => {
         const message = ts.flattenDiagnosticMessageText(d.messageText, " ");
@@ -206,7 +240,7 @@ export class TsDiagnostics implements Diagnostics {
       readDirectory: ts.sys.readDirectory,
       useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
     };
-    const entry: ServiceEntry = { service: ts.createLanguageService(host), fileNames, versions, configText };
+    const entry: ServiceEntry = { service: ts.createLanguageService(host), fileNames, versions, forceAdded: [], configText };
     this.#services.set(configPath, entry);
     return entry;
   }

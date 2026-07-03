@@ -778,7 +778,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 2 | Compaction & microcompaction | PASS |
 | 3 | Prompt-cache economy | REOPENED |
 | 4 | Subagent orchestration | PASS |
-| 5 | Coding loop | REOPENED |
+| 5 | Coding loop | PASS |
 | 6 | Context gathering | REOPENED |
 | 7 | Memory | REOPENED |
 | 8 | Research stack | REOPENED |
@@ -983,7 +983,74 @@ readers (scheduler+concurrency / worktree+journal+ensemble) + author repro/fix.
   the COMBINED tree, so a false-green can't land silently — the residual is false-RED (a correct hard
   task reported failed), which fails safe.
 
-### v2 DECISIONS (this subsystem)
+#
+## v2 §5. Coding loop — PASS
+
+Scope read end-to-end: builtins/edit.ts, write.ts, diff.ts, diagnostics.ts; build/{gate,check,exec,
+stubscan,ledger}.ts, checkpoints.ts; engine.ts green-gate orchestration (#afterTurn, #runGate,
+#runRecon refresh, #maybeContinueTasks, undo). Two independent readers (edit/write/diff+diagnostics /
+gate+checkpoints+stubscan) + author repro/fix. FALSE-GREEN hunted hardest — NONE found (exit-code
+authority holds on every check branch; abort windows return aborted/unverified, never green).
+
+### CONFIRMED & FIXED
+- **[MED] V2-16 Green auto-complete marked never-done tasks completed** — #maybeContinueTasks
+  force-completed in_progress stragglers whenever the gate was green with no pending tasks, but
+  greenness (build/tests pass) is ORTHOGONAL to whether a given task's own work was done: a model
+  that set a task in_progress and stopped early on an unrelated-green tree had it silently reported
+  done. Fixed: removed the green auto-complete; unfinished tasks (pending OR in_progress) now flow
+  into the bounded continuation, which asks the model to finish the task or mark it complete if it
+  truly is. Regression: *"a GREEN gate does NOT auto-complete an in-progress task the model never
+  finished"* (green-gate.test.ts).
+- **[MED] V2-17 Plan-execution continuation stalled silently on a non-mutating turn** — both
+  #afterTurn early returns (gate off; non-gateable turn) bypassed #maybeContinueTasks, so a
+  mid-plan turn that narrated without editing ended the chain with tasks pending and NO warning.
+  Fixed: call #maybeContinueTasks(false) from both branches, guarded by `!interrupted` (Esc still
+  stops) and no-op outside an active plan chain. Regression: *"a non-mutating handoff turn still
+  nudges unfinished tasks"* (green-gate.test.ts).
+- **[MED] V2-18 Profile-refresh thrash on genuinely check-less repos** — the scaffold-fix refresh
+  fired whenever `!runnable.length`, which is PERMANENTLY true on a docs/script/config repo, so every
+  mutating turn re-ran full recon + repo-map. Fixed: a manifest-fingerprint guard
+  (`manifestSignature`) re-scans only when a build manifest actually changed (the scaffold signal) —
+  a check-less repo re-scans at most once. Regression: *"manifestSignature: stable when unchanged,
+  flips when a build manifest appears"* (green-gate.test.ts).
+- **[LOW-MED] V2-19 Diagnostics surfaced project-membership noise on tsconfig-excluded files** —
+  force-adding an edited file the tsconfig excludes / places outside rootDir triggered TS6059/6307
+  "not part of the project" meta-diagnostics, appended as "fix before moving on" though they're about
+  membership, not code. Fixed: drop PROJECT_MEMBERSHIP_CODES for files not already in the project.
+  Regression: *"a tsconfig-EXCLUDED edited file does not surface project-membership noise"*.
+- **[LOW] V2-20 Unbounded diagnostics root-set growth** — every distinct force-added path lived
+  forever in the service's fileNames/versions. Fixed: bounded LRU (MAX_FORCE_ADDED=2000) over
+  force-added files only; the project's own fileNames are never evicted. Regression: *"force-added
+  out-of-project files are bounded"*.
+- **[LOW] V2-21 Trailing-newline-only edit misreported as `+0 -0`** — a real byte change with an
+  empty line-diff read as a no-op. Fixed: the edit output now says "trailing-newline / whitespace
+  change; no line-level diff". Regression: *"a trailing-newline-only edit reports the change
+  honestly"* (edit.test.ts). Stale MAX_LCS_CELLS comment (claimed small-edit-to-large-file diffs
+  fully — false) corrected.
+
+### REFUTED / verified clean
+- No new false-green anywhere; exit-code authority, abort-window handling, timeoutSec<=0 coercion,
+  empty-checks→unverified all sound. Multi-edit atomicity, non-unique guard, literal replace, strict
+  UTF-8 refusal, symlink deref, atomic temp+rename, stale-write guard, withFileLock TOCTOU-free.
+  diff correctness on empty/no-trailing-newline/identical inputs. Diagnostics lazy-load, optional-dep
+  absence, tsconfig-change rebuild, post-delete handling. checkpoints undo skips green markers,
+  refuses prune on empty ls-tree/read-tree, global-first/legacy-fallback one-way migration. stubscan
+  console-only/empty-return scoping. turnMode gating composes with the gate.
+
+### Accepted-risk (recorded)
+- **V2-G4 [LOW]** Combined gate × task-continuation budget is worst-case maxRounds² (25 at default 5),
+  bounded — separate counters, no infinite loop; flagged, not tightened (a shared budget would starve
+  legitimate multi-task plans).
+- **V2-G5 [LOW]** Two sessions on one repo share checkpoints.json (global dir keyed by cwd) →
+  last-writer-wins can drop a list entry (git refs survive). Pre-existing multi-session edge;
+  recorded (same class as no session pruning).
+- **V2-G6 [LOW]** stubscan misses multi-line/`def f(): pass`/empty-class-method stub bodies (advisory,
+  never hard-blocks). Recorded.
+- diff coarse-fallback multiset diff reports +0/-0 on a pure reordering of a huge file; capDiff
+  surrogate-split cosmetic; diff.ts 40M-cell cap is memory-aggressive at the boundary. All LOW,
+  recorded.
+
+## v2 DECISIONS (this subsystem)
 - **Ensemble isolated-scoring gate (V2-F1) recommended design:** score attempts by a cheaper isolated
   signal (child success + diff size), then merge the top candidate to main and gate THERE (reusing the
   V2-13 post-merge gate), trying the next candidate on red — so the SCORING gate never runs in a

@@ -67,9 +67,10 @@ function toLines(text: string): string[] {
 /**
  * Guard on the LCS matrix size (`(n+1)·(m+1)` numbers): editing or overwriting a
  * large file would otherwise allocate an O(n·m) matrix — a 20k-line file is
- * ~400M entries (multi-GB) and OOM-crashes the process. Sized so ordinary source
- * files (up to ~6000 lines square, or a small edit to a much larger file) still
- * diff fully; only genuinely huge inputs fall back to a cheap coarse diff.
+ * ~400M entries (multi-GB) and OOM-crashes the process. The cap depends only on
+ * the two files' TOTAL line counts, not the edit size: a tiny edit to a ~6300+
+ * line file (product > 40M) also takes the coarse fallback. Ordinary source
+ * files diff fully; only large files fall back to the cheap coarse diff.
  */
 const MAX_LCS_CELLS = 40_000_000;
 

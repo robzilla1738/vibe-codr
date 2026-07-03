@@ -230,9 +230,14 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
       // Compiler feedback in the SAME step: when core wired a language service,
       // fresh diagnostics for the edited file ride along with the diff.
       const diag = await ctx.diagnose?.(full).catch(() => undefined);
-      return {
-        output: `Edited ${path} (+${diff.added} -${diff.removed})\n${capDiff(diff.text)}${diag ? `\n\n${diag}` : ""}`,
-      };
+      // A change confined to the trailing newline (or other line-terminator-only
+      // edit) leaves the line-based diff empty, so `+0 -0` would misreport a real
+      // byte change as a no-op — say so explicitly instead.
+      const summary =
+        diff.added === 0 && diff.removed === 0
+          ? `Edited ${path} (trailing-newline / whitespace change; no line-level diff)`
+          : `Edited ${path} (+${diff.added} -${diff.removed})\n${capDiff(diff.text)}`;
+      return { output: `${summary}${diag ? `\n\n${diag}` : ""}` };
     });
   },
 };

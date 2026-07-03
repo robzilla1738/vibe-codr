@@ -335,7 +335,9 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
   const planStep = () =>
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: "1. Do the thing" }) },
+      // Prose plan (no checklist/numbered items) → no tasks seeded, so this test
+      // stays focused on handoff BINDING without the plan-task continuation loop.
+      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: "Do the thing." }) },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]);
   const textStep = (t: string) =>

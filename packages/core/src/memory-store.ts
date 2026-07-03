@@ -165,13 +165,19 @@ function normalizeFact(fact: string): string {
 function containsFact(existing: string, fact: string): boolean {
   const norm = normalizeFact(fact);
   if (!norm) return true;
-  const hay = normalizeText(factContent(existing));
-  let at = hay.indexOf(norm);
-  while (at !== -1) {
-    const before = at > 0 ? hay[at - 1]! : "";
-    const after = at + norm.length < hay.length ? hay[at + norm.length]! : "";
-    if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
-    at = hay.indexOf(norm, at + 1);
+  // Match within a SINGLE stored fact, never across the boundary between two.
+  // Collapsing the whole scope into one space-joined blob let a new fact that
+  // straddles fact A's tail and fact B's head read as already-stored, silently
+  // dropping a genuinely-new save. Each fact is one line in factContent().
+  for (const line of factContent(existing).split("\n")) {
+    const hay = normalizeText(line);
+    let at = hay.indexOf(norm);
+    while (at !== -1) {
+      const before = at > 0 ? hay[at - 1]! : "";
+      const after = at + norm.length < hay.length ? hay[at + norm.length]! : "";
+      if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+      at = hay.indexOf(norm, at + 1);
+    }
   }
   return false;
 }
@@ -364,11 +370,17 @@ export async function appendMemory(
   const date = now.toISOString().slice(0, 10);
   const time = now.toISOString().slice(11, 19); // HH:MM:SS — second precision cuts
   const path = join(dir, `${date}.md`);
-  const tags = input.tags?.length ? `\n_(${input.tags.join(", ")})_` : "";
+  // Collapse newlines/whitespace in BOTH the fact and each tag: a fact is one
+  // line in its `## HH:MM:SS — <fact>` heading, and an un-collapsed newline in
+  // either would write a line the fact-heading parser reads as a spurious dated
+  // fact (skewing dedup + chunk boundaries).
+  const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+  const cleanTags = input.tags?.map(oneLine).filter(Boolean) ?? [];
+  const tags = cleanTags.length ? `\n_(${cleanTags.join(", ")})_` : "";
   // One heading per fact → one chunk per fact. The trailing blank line keeps
   // sections visually separated and the fact text lives in the heading so the
   // chunk is self-describing.
-  const entry = `## ${time} — ${input.fact.trim()}${tags}\n\n`;
+  const entry = `## ${time} — ${oneLine(input.fact)}${tags}\n\n`;
   let deduped = false;
   // The whole check → read → build → write must be atomic against a concurrent
   // save to the same file, or two racing writes drop an entry (or double-save

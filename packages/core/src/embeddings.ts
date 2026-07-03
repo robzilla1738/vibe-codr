@@ -128,5 +128,9 @@ export function cosineSimilarity(a: number[], b: number[]): number {
     nb += y * y;
   }
   if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+  const sim = dot / (Math.sqrt(na) * Math.sqrt(nb));
+  // A NaN component (a degenerate/corrupt embedding) yields NaN, and NaN
+  // comparisons make the top-k sort order spec-undefined — treat non-finite as
+  // no similarity so ranking stays deterministic.
+  return Number.isFinite(sim) ? sim : 0;
 }

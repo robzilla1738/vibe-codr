@@ -780,7 +780,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 4 | Subagent orchestration | PASS |
 | 5 | Coding loop | PASS |
 | 6 | Context gathering | PASS |
-| 7 | Memory | REOPENED |
+| 7 | Memory | PASS |
 | 8 | Research stack | REOPENED |
 | 9 | Providers & model catalog | REOPENED |
 | 10 | Sessions/persistence/resume | REOPENED |
@@ -1095,6 +1095,63 @@ loaders.ts. One reader + author repro/fix.
 - repo-map sub-path build evicts cache outside the sub-path (perf, v1 accepted-risk, unchanged);
   repo-map `truncated` flag conflates budget-cut with count-cut (cosmetic — only the "…more files"
   note); applyArgs `$100+` caps at 2 digits (documented spec). All LOW.
+
+
+## v2 §7. Memory — PASS
+
+Scope read end-to-end: memory-service.ts, memory-store.ts (396), memory-search.ts, recall.ts,
+bm25.ts, embeddings.ts, vector-store.ts, memory.ts. One reader + author repro/fix. The NEW recall
+relocation (global-then-legacy fallback) verified CLEAN.
+
+### CONFIRMED & FIXED
+- **[MED] V2-26 Dedup matched ACROSS the boundary between two stored facts → silently dropped a
+  new save** — `containsFact` collapsed the whole scope's facts into one space-joined blob (newlines
+  → spaces via normalizeText), so a new fact straddling fact A's tail and fact B's head read as
+  already-stored and was dropped though it was never saved. Fixed: match within each stored fact LINE
+  individually (each fact is one line in factContent), preserving within-fact substring dedup.
+  Regression: *"dedup does not match ACROSS the boundary between two stored facts"* (memory-store.test.ts).
+- **[LOW] V2-27 A NaN embedding component made top-k ordering nondeterministic** — cosineSimilarity
+  guarded zero vectors but not NaN, so a degenerate/corrupt embedding returned NaN and the
+  `b.score - a.score` sort became spec-undefined. Fixed: non-finite similarity → 0. Regression: *"a
+  NaN component yields 0, not NaN"* (embeddings.test.ts).
+- **[LOW] V2-28 A newline in a fact or tag injected a fake dated heading** — the fact/tags were written
+  verbatim into the `## HH:MM:SS — <fact>` heading, so an embedded `
+## …` wrote a line the
+  fact-heading parser reads as a spurious dated fact (skewing dedup + chunk boundaries). Fixed:
+  collapse whitespace/newlines in both the fact and each tag to one line. Regression: *"a fact with an
+  embedded newline (or a tag with one) can't inject a fake dated heading"*.
+
+### REFUTED / verified clean
+- Recall relocation (the main NEW area): SessionStore.list() dedups ids across [global, legacy] with
+  GLOBAL winning; loadHistory returns global-else-legacy; loadHistoryCached keys the cache by the
+  resolved path — all three consistently pick global for an id in both roots (no double-count, no
+  miss). A relocated session forces a cache miss that re-reads correctly. Stat-cache across two roots
+  sound (legacy read-only, global write bumps mtime). Torn session → last line dropped, never crash.
+- BM25 div-zero + non-negative IDF + length-norm; RRF needs no normalization, empty retriever
+  skipped, k=60, deterministic tie-break; relevance floor exempts dense ids; empty-query dense-skip;
+  embedder-failure BM25 fallback; model@dim namespace isolation + 4-byte-aligned decode; corpus-read
+  ENOENT→[] else propagate+degrade-without-prune; curated-file exclusion; atomic saves + per-path
+  dedup lock; dedup fail-open; headless digest-interactive-only + save/recall in -p; no path
+  traversal (scope enum, ISO-date filenames); memoryDirs stops before $HOME. All sound.
+
+### Accepted-risk (recorded)
+- **V2-M2 [LOW]** Two overlapping `MemoryService.search()` calls with a `save_memory` interleaved: the
+  older call's stale-corpus `pruneSourcesExcept` can transiently delete the just-saved source's dense
+  chunks (self-healing on the next reconcile; lexical recall masks it). See DECISIONS.
+- **V2-M4 [LOW]** exact-substring dedup has no minimum length, so a terse new fact equal to a word-run
+  inside ONE longer stored fact is deduped — this is the intended "the knowledge is already in that
+  fuller note" behavior (within a single fact, unlike V2-26's cross-fact bug). Recorded, by-design.
+- Wrong-dim vector silently mis-scored via Math.min truncation (the @dim namespace pins the PROBE dim,
+  not per-vector); vector store O(N)/query no eviction; global memory re-embedded per project. LOW.
+- USER.md pushed at global precedence so a project VIBE/AGENTS note can override a user preference —
+  mixed-signal, likely intentional; recorded for design confirmation.
+
+### v2 DECISIONS (this subsystem)
+- **Concurrent index-prune staleness (V2-M2) recommended design:** serialize `SemanticMemory.index()`
+  per MemoryService (a single-flight lock or a corpus-version check before prune) so an older call's
+  stale prune can't delete a newer call's upsert. Deferred: the window is narrow, self-heals on the
+  next read, and lexical recall covers the gap; a lock adds contention to the hot recall path. Revisit
+  if dense-recall staleness is observed in practice.
 
 ## v2 DECISIONS (this subsystem)
 - **Ensemble isolated-scoring gate (V2-F1) recommended design:** score attempts by a cheaper isolated

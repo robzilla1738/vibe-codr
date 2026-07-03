@@ -24,6 +24,12 @@ test("cosineSimilarity: identical=1, orthogonal=0, opposite=-1", () => {
   expect(cosineSimilarity([0, 0], [1, 1])).toBe(0); // degenerate
 });
 
+test("cosineSimilarity: a NaN component yields 0, not NaN (keeps top-k sort deterministic)", () => {
+  expect(cosineSimilarity([NaN, 1], [1, 1])).toBe(0);
+  expect(cosineSimilarity([1, 1], [NaN, 0])).toBe(0);
+  expect(Number.isFinite(cosineSimilarity([Infinity, 1], [1, 1]))).toBe(true);
+});
+
 test("aiSdkEmbedder wraps an embedding model and returns one vector per input", async () => {
   const e = aiSdkEmbedder("mock/embed", mockEmbedding());
   const vecs = await e.embed(["alpha", "beta"]);

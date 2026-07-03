@@ -104,6 +104,33 @@ test("dedup requires word boundaries — a fact is not swallowed by a longer tok
   expect(text.match(/^## /gm)).toHaveLength(2);
 });
 
+test("dedup does not match ACROSS the boundary between two stored facts", async () => {
+  // Two separate facts whose collapsed adjacency spells a phrase that is not
+  // actually stored as a single fact — a new save of that phrase must NOT be
+  // deduped (it would silently lose the knowledge).
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-cross-"));
+  await appendMemory(dir, { fact: "the queue uses redis" }, new Date("2026-06-30T10:00:00Z"));
+  await appendMemory(dir, { fact: "for caching we picked memcached" }, new Date("2026-06-30T10:05:00Z"));
+  // "redis for caching" straddles fact-1's tail and fact-2's head — never stored.
+  const crossing = await appendMemory(dir, { fact: "redis for caching" }, new Date("2026-06-30T10:10:00Z"));
+  expect(crossing.deduped).toBe(false);
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  expect(text.match(/^## /gm)).toHaveLength(3);
+});
+
+test("a fact with an embedded newline (or a tag with one) can't inject a fake dated heading", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-inject-"));
+  await appendMemory(
+    dir,
+    { fact: "real fact", tags: ["ok\n## 00:00:00 — fake injected fact"] },
+    new Date("2026-06-30T10:00:00Z"),
+  );
+  const text = await Bun.file(join(dir, ".vibe", "memory", "2026-06-30.md")).text();
+  // Exactly ONE dated heading — the injection was flattened to a single line.
+  expect(text.match(/^## /gm)).toHaveLength(1);
+  expect(text).not.toContain("fake injected fact\n");
+});
+
 test("scope 'user' appends one-line bullets to the always-injected USER.md, with dedup", async () => {
   // XDG_CONFIG_HOME is redirected by the test preload; isolate further per-test.
   const prev = process.env.XDG_CONFIG_HOME;

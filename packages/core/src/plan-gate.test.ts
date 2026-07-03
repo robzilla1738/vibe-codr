@@ -143,17 +143,25 @@ test("triage: UNAMBIGUOUS stack spellings still force versions (Node.js over-cor
   for (const req of ["traverse each tree node", "the react component needs a fix", "add a spring animation"]) {
     expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, false]);
   }
-  // The `<framework> <digit>` version clause must not over-fire on English+count
-  // (the adversarial pass caught "express 3 concerns" / "node 4 items" — the
-  // clause is scoped to `react <digit>`, the least-ambiguous dropped-bare case).
-  for (const req of ["express 3 concerns", "node 4 items in the list", "add 3 backend routes to the api"]) {
-    // "api"/"backend"/"routes" → BUILD_REQUEST may fire; only assert the digit
-    // clause doesn't add a spurious hit for the pure-English ones.
-    expect(triagePlanRequest("express 3 concerns").needsVersions).toBe(false);
-    expect(triagePlanRequest("node 4 items in the list").needsVersions).toBe(false);
-    void req;
+  // The `react <digit>` version clause requires TWO digits (`\d{2}\b`) — real
+  // React majors are ≥15 — so the verb sense stays self-contained. The
+  // adversarial P3 pass caught single-digit English ("react 2 seconds", "react 3
+  // times", "react 500 ms") that a bare `\d` clause wrongly grounded.
+  for (const req of [
+    "express 3 concerns",
+    "node 4 items in the list",
+    "make the button react 2 seconds after the click",
+    "have the animation react 3 times before stopping",
+    "we will react 500 milliseconds later",
+    "the UI should react\n3 different ways",
+    "react 2024 retrospective",
+  ]) {
+    expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, false]);
   }
-  expect(triagePlanRequest("migrate to React 19").needsVersions).toBe(true); // real version ref
+  // Two-digit React version refs still ground (14/15/16/17/18/19/20…).
+  for (const req of ["migrate to React 19", "upgrade to react 18", "react v20 rollout"]) {
+    expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, true]);
+  }
 });
 
 test("gate: junk/non-URL sources do NOT satisfy the web-evidence requirement", () => {

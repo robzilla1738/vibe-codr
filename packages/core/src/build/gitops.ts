@@ -221,21 +221,49 @@ export async function gitMergeWorktreeBranch(
   //   (b) started and hit content conflicts → discard just the conflicted paths
   //       back to HEAD (note `merge --squash` leaves no MERGE_HEAD, so detect the
   //       half-merge via unmerged index entries, not a merge-in-progress state).
-  const unmerged = await run(cwd, ["diff", "--name-only", "--diff-filter=U"]);
-  const conflicted = unmerged.ok
-    ? unmerged.stdout.split("\n").map((l) => l.trim()).filter(Boolean)
-    : [];
+  // `-z` (NUL-delimited, raw paths) so a conflicted path with spaces or non-ASCII
+  // characters isn't C-quoted into a bogus pathspec that `checkout` then no-ops on.
+  const unmerged = await run(cwd, ["diff", "--name-only", "--diff-filter=U", "-z"]);
+  const conflicted = unmerged.ok ? unmerged.stdout.split("\0").filter(Boolean) : [];
   if (conflicted.length) await run(cwd, id(["checkout", "HEAD", "--", ...conflicted]));
   return false;
+}
+
+/** Parse `git ... --name-status -z` output into (status, paths) records. The
+ * `-z` stream is `status\0path\0…` with rename/copy (R/C) records carrying TWO
+ * paths (`R100\0old\0new`); every other status carries one. Raw paths — `-z`
+ * disables git's C-quoting, so non-ASCII/space paths survive intact. */
+function parseNameStatusZ(out: string): { status: string; paths: string[] }[] {
+  const toks = out.split("\0").filter((t) => t.length > 0);
+  const recs: { status: string; paths: string[] }[] = [];
+  let i = 0;
+  while (i < toks.length) {
+    const raw = toks[i++]!;
+    const status = raw[0]!;
+    const n = status === "R" || status === "C" ? 2 : 1;
+    const paths = toks.slice(i, i + n);
+    i += n;
+    if (paths.length) recs.push({ status, paths });
+  }
+  return recs;
 }
 
 /** The paths staged in `cwd`'s index — i.e. the files a just-completed clean
  * squash-merge landed as uncommitted changes. Captured so a red post-merge gate
  * can revert EXACTLY those paths (not a blanket reset that would nuke a
- * concurrent disjoint task's staged changes). */
+ * concurrent disjoint task's staged changes). A rename contributes BOTH its old
+ * (deleted) and new (added) paths — reverting it means restoring one AND removing
+ * the other; a copy contributes only its new path (the source is untouched). */
 export async function gitStagedFiles(cwd: string, run: GitRunner = spawnGit): Promise<string[]> {
-  const r = await run(cwd, ["diff", "--cached", "--name-only"]);
-  return r.ok ? r.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  const r = await run(cwd, ["diff", "--cached", "--name-status", "-z"]);
+  if (!r.ok) return [];
+  const out: string[] = [];
+  for (const rec of parseNameStatusZ(r.stdout)) {
+    if (rec.status === "R") out.push(...rec.paths); // old (deleted) + new (added)
+    else if (rec.status === "C") out.push(rec.paths[1] ?? rec.paths[0]!); // only the new copy
+    else out.push(rec.paths[0]!);
+  }
+  return [...new Set(out)];
 }
 
 /** Revert `files` (an uncommitted squash-merge whose post-merge gate went RED)
@@ -259,14 +287,24 @@ export async function gitRestoreFiles(
   // (a new file), leaving the modified files unrestored — so the two shapes must
   // be reverted with separate commands over their own path sets.
   const wanted = new Set(files);
-  const statusR = await run(cwd, ["diff", "--cached", "--name-status"]);
+  const statusR = await run(cwd, ["diff", "--cached", "--name-status", "-z"]);
   const added: string[] = [];
   const tracked: string[] = [];
   if (statusR.ok) {
-    for (const line of statusR.stdout.split("\n")) {
-      const m = /^([A-Z])\d*\t(.+)$/.exec(line.trim());
-      if (!m || !wanted.has(m[2]!)) continue;
-      (m[1] === "A" ? added : tracked).push(m[2]!);
+    for (const rec of parseNameStatusZ(statusR.stdout)) {
+      if (rec.status === "R") {
+        // rename = old path deleted-from-index (restore from HEAD) + new path added (remove).
+        const [oldp, newp] = rec.paths;
+        if (oldp && wanted.has(oldp)) tracked.push(oldp);
+        if (newp && wanted.has(newp)) added.push(newp);
+      } else if (rec.status === "C") {
+        // copy = only the new path is added; the source is untouched in HEAD.
+        const newp = rec.paths[1] ?? rec.paths[0];
+        if (newp && wanted.has(newp)) added.push(newp);
+      } else {
+        const p = rec.paths[0];
+        if (p && wanted.has(p)) (rec.status === "A" ? added : tracked).push(p);
+      }
     }
   }
   await run(cwd, id(["reset", "--quiet", "--", ...files])); // unstage all

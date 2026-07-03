@@ -1515,6 +1515,25 @@ No code change required — a clean re-verification.
   request's research requirements): kept — it fails toward MORE research, pivot-vs-revision can't
   be told apart deterministically, and rejection messages state exactly what's demanded. Leaving
   plan mode resets everything.
+- **Plan-gate telemetry accumulates across requests in one plan stay (P3-W4a, adversarial pass 3):**
+  kept by design, with the same pivot-vs-revision indistinguishability as the triage union — but
+  noting the direction is riskier here (a distinct new ask can present grounded on an EARLIER ask's
+  file reads / package lookups, whereas the triage union only over-demands). Deliberately NOT "fixed"
+  by resetting telemetry per `noteRequest`: that would force a revision round ("also make it about
+  today's match") to RE-run research it already did — regressing the documented "research two turns
+  ago still grounds the plan" property, which is the more valuable one. The bleed is bounded: (a) the
+  strongest requirement, `needsWeb`, is backstopped per-`present_plan`-payload — a web-bound request
+  must cite real http(s) `sources` in ITS OWN call every time, so that evidence is never inherited;
+  only the count-based `needsCode`/`needsVersions` inherit, and "the model read the codebase this plan
+  stay" is a defensible floor; (b) plans are human-reviewed before accept; (c) it's confined to one
+  plan-mode stay (leaving plan mode resets telemetry). Recommended design if this ever bites: give
+  `present_plan` a lightweight "grounded-since" cursor so each present must show evidence gathered
+  after the latest triage requirement arrived — deferred as over-engineering for an advisory gate.
+- **Plan-gate `validSources` regex low bar (P3-W4b):** `/^https?:\/\/\S+\.\S+/i` accepts `http://a.b`
+  and bare IPs and rejects dotless `localhost`. Kept: rejecting localhost is correct for a *web-
+  research citation* gate (localhost isn't a citable external source), and a stricter TLD allow-list
+  risks bouncing legitimate internal/regional domains. Worst case is a weakly-cited plan the human
+  still reviews — not exploitable. Recorded, not tightened.
 
 Stale docs fixed: duplicated JSDoc above `#persistConfig` (engine.ts); MODE_COLORS "aligned to the
 brand accent" claim (modes.ts — the accent is royal violet, ASK blue is just ASK blue).
@@ -1613,3 +1632,46 @@ tool result), budget estimated-price stop, store corrupt-meta resume, manifest t
 checks. The planModel-restore edge (exec model == planModel) is deliberate/low, unchanged.
 
 Clean-pass counter after Pass 2: 0 (4 confirmed → all fixed). Two more CLEAN passes required.
+
+
+### Pass 3 — 4 CONFIRMED (2 skeptics: pass-2-fixes / weakest-areas re-sweep; all FIXED + regression-tested)
+Two adversarial skeptics with executed repros against real git + `MockLanguageModelV2` sessions. The
+pass-2-fixes skeptic broke AP2-C1 in two NEW ways the delta-revert didn't cover; the weakest-areas
+skeptic confirmed the riskiest fixes (interrupted-turn buffer, green-gate state machine) HOLD, and
+surfaced two low-severity edges.
+- **[HIGH] P3-1 gitRestoreFiles corrupted main on a staged RENAME** — a squash-merge that renames a
+  file stages it as `R100\told\tnew`; `gitStagedFiles` used `--name-only` (which collapses a rename to
+  the new path only, losing `old`), and the classifier's `\t`-split regex mis-parsed the `R` line. A
+  red gate then left `old` deleted and `new` as untracked cruft — the exact main-tree corruption the
+  delta-revert exists to prevent. Fixed: both functions now parse `--name-status -z`; a rename
+  contributes BOTH paths (restore old from HEAD + remove new). Regression: *"revert handles a staged
+  RENAME"* (gitops.test.ts).
+- **[HIGH] P3-2 gitRestoreFiles no-op'd on a NON-ASCII path** — git C-quotes non-ASCII paths by default
+  (`"caf\303\251.txt"`), so a `--name-only` capture fed that quoted literal back as a pathspec and the
+  revert silently no-op'd, leaving the failing new file staged on main. Fixed: `-z` emits raw paths
+  (also fixes paths with spaces); applied to the `gitMergeWorktreeBranch` conflict-checkout too.
+  Regressions: *"revert handles a NON-ASCII path"*, *"revert handles a space-in-path delta"*.
+- **[LOW] P3-3 plan-gate `react\s+v?\d` false-fired on the verb + a number** — "make it react 2 seconds",
+  "react 3 times", "react 500 ms" wrongly triggered needsVersions. Fixed: require TWO digits
+  (`\breact\s+v?\d{2}\b`) — real React majors are ≥15, so "React 18/19" still ground while single-digit
+  English no longer does. Regression added to *"UNAMBIGUOUS stack spellings…"*.
+- **[LOW] P3-W3 compaction offload clamp collapsed the layers at the 0.1 floor** — `Math.max(0.1, …)`
+  pinned `offload.threshold` back UP to exactly `threshold` when `threshold=0.1` (compact-at-10%),
+  making the lossless offload and lossy summary coincide. Fixed: drop the floor — `threshold` is
+  schema-bounded ≥0.1, so `threshold-0.05` is always positive AND strictly below. Regression added to
+  *"compaction CLAMPS offload.threshold below threshold"*.
+
+REFUTED with executed disproofs: the green-gate state machine (separate `#gateRounds`/`#taskContinueRounds`,
+both bounded; the `!== "red"` guard errs toward red-persistence, never green-when-red); the interrupted-turn
+cumulative buffer (persist+resume sends a valid role sequence, no orphan tool_use, no double-user — the
+flagged-riskiest fix verified clean end-to-end); the `MAX_REJECTIONS` re-arm loop (no engine-internal reset,
+no infinite reject); compaction tool_use/tool_result cut boundary (`recent[0]` never a tool message). Two
+edges recorded as DECISIONs, not fixed: P3-W4a (telemetry accumulates across requests in one plan stay —
+kept, `needsWeb` is per-payload backstopped; resetting would regress revision inheritance) and P3-W4b
+(`validSources` low bar — defensible for a citation gate). P3-4 (`.txt`/`.lock` entry-set exclusion) is a
+latent risk only — no runnable check is currently reachable through an excluded extension (verified: no
+CMake detection); REFUTED as a current defect. P3-5 (checkpoint sessionId scoping) REFUTED — `#session` is
+assigned synchronously in the Engine constructor before any async `snapshot()`, so untagged checkpoints are
+unreachable; the fix holds.
+
+Clean-pass counter after Pass 3: 0 (4 confirmed → all fixed). TWO consecutive CLEAN passes still required.

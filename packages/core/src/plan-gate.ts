@@ -67,9 +67,12 @@ const CURRENT_EVENTS =
  * signal is preserved without taxing every mention of a common word. The
  * UNAMBIGUOUS spellings that carry no false-positive risk (`node.js`/`nodejs`,
  * `spring boot`, `react 19`) ARE kept — only the bare English-overloaded forms
- * (`node`, `react`, `spring`, `express`, `solid` alone) were dropped. */
+ * (`node`, `react`, `spring`, `express`, `solid` alone) were dropped. The
+ * `react <digit>` version clause requires TWO digits (`\d{2}\b`): real React
+ * majors are all ≥15, so "React 18/19" match while the verb sense ("make it
+ * react 2 seconds", "react 3 times", "react 500 ms") no longer false-fires. */
 const STACK_NAMES =
-  /\b(next\.?js|node\.?js|nodejs|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|spring ?boot|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b|\breact\s+v?\d/i;
+  /\b(next\.?js|node\.?js|nodejs|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|spring ?boot|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b|\breact\s+v?\d{2}\b/i;
 
 /** Greenfield build verbs + artifact nouns → stack choices are being made. */
 const BUILD_REQUEST =

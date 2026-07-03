@@ -192,3 +192,51 @@ test("revert scoped to the merge DELTA preserves a sibling's already-staged work
   expect(existsSync(join(cwd, "siblingA.txt"))).toBe(true); // A's work survives
   expect(existsSync(join(cwd, "taskB.txt"))).toBe(false); // B's reverted
 });
+
+test("revert handles a staged RENAME (adversarial P3-1): old restored, new removed", async () => {
+  // A squash-merge that renames a file stages it as a rename (`R100 old new`).
+  // `--name-only` collapses that to the new path only, and the old classifier's
+  // `\t`-split mis-parsed the `Rxxx\told\tnew` line — so a red gate left `old`
+  // deleted and `new` as untracked cruft. gitStagedFiles now reports BOTH paths
+  // (via `--name-status -z`) and gitRestoreFiles restores old + removes new.
+  const cwd = await makeRepo(); // a.txt committed at HEAD
+  await run(cwd, ["mv", "a.txt", "renamed.txt"]); // stage the rename
+  const merged = await gitStagedFiles(cwd);
+  expect(merged.sort()).toEqual(["a.txt", "renamed.txt"]); // both, not just the new path
+  await gitRestoreFiles(cwd, merged);
+  expect(existsSync(join(cwd, "renamed.txt"))).toBe(false); // new side removed
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n"); // old side restored to HEAD
+  expect(await gitStagedFiles(cwd)).toEqual([]); // clean tree
+});
+
+test("revert handles a NON-ASCII path (adversarial P3-2): unicode new file removed", async () => {
+  // Git C-quotes non-ASCII paths by default (`"caf\303\251.txt"`), so a
+  // name-only capture fed that quoted literal back as a pathspec and the revert
+  // no-op'd — the failing new file survived on main. `-z` emits raw paths.
+  const cwd = await makeRepo();
+  writeFileSync(join(cwd, "café.txt"), "y\n"); // non-ASCII new file from a merge
+  await run(cwd, ["add", "-A"]);
+  const merged = await gitStagedFiles(cwd);
+  expect(merged).toEqual(["café.txt"]); // raw, not `"caf\303\251.txt"`
+  await gitRestoreFiles(cwd, merged);
+  expect(existsSync(join(cwd, "café.txt"))).toBe(false); // removed despite the accent
+  expect(await gitStagedFiles(cwd)).toEqual([]);
+});
+
+test("revert handles a space-in-path delta: sibling preserved, our merge reverted", async () => {
+  // Path-with-space is the other C-quoting trigger; verify the preStaged delta
+  // capture + revert still scopes correctly when paths contain spaces.
+  const cwd = await makeRepo();
+  writeFileSync(join(cwd, "sib.txt"), "sibling staged\n");
+  await run(cwd, ["add", "sib.txt"]); // sibling's prior green work, staged
+  const preStaged = new Set(await gitStagedFiles(cwd));
+  writeFileSync(join(cwd, "a.txt"), "one\nBAD\n"); // our merge modifies a tracked file…
+  writeFileSync(join(cwd, "new one.txt"), "n\n"); // …and adds one with a space
+  await run(cwd, ["add", "-A"]);
+  const delta = (await gitStagedFiles(cwd)).filter((f) => !preStaged.has(f));
+  expect(delta.sort()).toEqual(["a.txt", "new one.txt"]);
+  await gitRestoreFiles(cwd, delta);
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n"); // reverted
+  expect(existsSync(join(cwd, "new one.txt"))).toBe(false); // removed
+  expect(await gitStagedFiles(cwd)).toEqual(["sib.txt"]); // sibling survives, still staged
+});

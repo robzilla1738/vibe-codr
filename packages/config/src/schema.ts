@@ -431,8 +431,14 @@ export const ConfigSchema = z.object({
       // reject a user who merely lowers `threshold` below the offload DEFAULT
       // without touching offload), CLAMP offload.threshold below threshold — the
       // config always loads and the invariant always holds.
+      //
+      // Clamp to `threshold - 0.05` with NO lower floor: `threshold` is bounded
+      // ≥ 0.1 by its own schema, so `threshold - 0.05` is always ≥ 0.05 (positive)
+      // AND strictly below `threshold`. A `Math.max(0.1, …)` floor here would push
+      // offload back UP to exactly `threshold` at the 0.1 minimum (compact-at-10%),
+      // collapsing the two layers — the degenerate the adversarial pass caught.
       if (c.offload.threshold >= c.threshold) {
-        c.offload.threshold = Math.max(0.1, Math.min(c.offload.threshold, c.threshold - 0.05));
+        c.offload.threshold = Math.min(c.offload.threshold, c.threshold - 0.05);
       }
       return c;
     })

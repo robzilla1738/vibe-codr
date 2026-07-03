@@ -239,6 +239,17 @@ test("compaction CLAMPS offload.threshold below threshold (layering holds, confi
   const ok = ConfigSchema.safeParse({ compaction: { threshold: 0.75, offload: { threshold: 0.6 } } });
   expect(ok.success).toBe(true);
   if (ok.success) expect(ok.data.compaction.offload.maxArtifactBytes).toBe(64 * 1024 * 1024);
+
+  // Adversarial P3-W3: at the minimum summary threshold (0.1, compact-at-10%), the
+  // old `Math.max(0.1, …)` floor pinned offload back UP to exactly 0.1 — EQUAL to
+  // threshold — collapsing the lossless/lossy layers. The clamp must keep offload
+  // STRICTLY below threshold even at the floor.
+  const degenerate = ConfigSchema.safeParse({ compaction: { threshold: 0.1 } });
+  expect(degenerate.success).toBe(true);
+  if (degenerate.success) {
+    expect(degenerate.data.compaction.offload.threshold).toBeLessThan(0.1);
+    expect(degenerate.data.compaction.offload.threshold).toBeGreaterThan(0); // still a sane positive fraction
+  }
 });
 
 test("loadConfig tolerates JSONC trailing commas (idiomatic for VS Code users)", async () => {

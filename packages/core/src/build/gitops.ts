@@ -229,6 +229,35 @@ export async function gitMergeWorktreeBranch(
   return false;
 }
 
+/** The paths staged in `cwd`'s index — i.e. the files a just-completed clean
+ * squash-merge landed as uncommitted changes. Captured so a red post-merge gate
+ * can revert EXACTLY those paths (not a blanket reset that would nuke a
+ * concurrent disjoint task's staged changes). */
+export async function gitStagedFiles(cwd: string, run: GitRunner = spawnGit): Promise<string[]> {
+  const r = await run(cwd, ["diff", "--cached", "--name-only"]);
+  return r.ok ? r.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+}
+
+/** Revert `files` (an uncommitted squash-merge whose post-merge gate went RED)
+ * back to HEAD, leaving a clean main tree — touching ONLY the named paths so a
+ * sibling task's disjoint changes survive. Handles all three change shapes:
+ *   - unstage everything (index → HEAD for these paths),
+ *   - restore tracked MODIFIED/DELETED files to HEAD content,
+ *   - remove NEW files the merge added (they're not in HEAD, so `clean` deletes
+ *     them; `checkout` alone would leave them as untracked cruft).
+ * Each step tolerates the paths the others own (a `checkout` of a new path errors
+ * harmlessly), so the combination fully reverts add/modify/delete. */
+export async function gitRestoreFiles(
+  cwd: string,
+  files: string[],
+  run: GitRunner = spawnGit,
+): Promise<void> {
+  if (!files.length) return;
+  await run(cwd, id(["reset", "--quiet", "--", ...files]));
+  await run(cwd, id(["checkout", "--quiet", "HEAD", "--", ...files]));
+  await run(cwd, id(["clean", "-fdq", "--", ...files]));
+}
+
 /** Files changed vs a ref (a worktree branch's diff scope). */
 export async function gitDiffSince(cwd: string, ref: string, run: GitRunner = spawnGit): Promise<string[]> {
   const r = await run(cwd, ["diff", "--name-only", ref]);

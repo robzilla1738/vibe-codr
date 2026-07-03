@@ -1,7 +1,7 @@
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, rm } from "node:fs/promises";
-import { statSync } from "node:fs";
+import { statSync, readdirSync } from "node:fs";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import {
@@ -116,11 +116,16 @@ const GATE_MANIFEST_FILES = [
 ];
 
 /**
- * A cheap fingerprint of the build manifests present in `cwd` (name:mtime). The
- * gate's no-runnable-checks refresh compares it turn-over-turn so it can tell "a
- * scaffolder just wrote a manifest" (signature changed → re-scan) from "this repo
- * simply has no checks" (signature stable → skip the repeat full recon that would
- * otherwise run every mutating turn). Pure + injectable for testing.
+ * A cheap fingerprint of `cwd` for the gate's no-runnable-checks refresh: the
+ * build manifests (name:mtime) PLUS the sorted set of top-level entry names. The
+ * refresh compares it turn-over-turn so it can tell "the check set may have
+ * changed" (a scaffolder wrote a manifest, OR a test dir/file appeared —
+ * signature changed → re-scan) from "this repo simply has no checks" (signature
+ * stable → skip the repeat full recon that would otherwise run every mutating
+ * turn). Including the top-level entry SET catches checks that arrive via a
+ * non-manifest file (a new `tests/` dir, `test_app.py`) without re-scanning every
+ * turn — the guard block is only reached when there are no runnable checks yet.
+ * Pure + injectable for testing.
  */
 export function manifestSignature(cwd: string): string {
   const parts: string[] = [];
@@ -130,6 +135,13 @@ export function manifestSignature(cwd: string): string {
     } catch {
       /* absent → contributes nothing (its later appearance flips the sig) */
     }
+  }
+  try {
+    // The top-level entry name set — a new file/dir (a test dir, a manifest, a
+    // source file in a new language) flips the sig even if no manifest mtime did.
+    parts.push(`entries:${readdirSync(cwd).sort().join(",")}`);
+  } catch {
+    /* unreadable cwd → manifests alone drive the sig */
   }
   return parts.join("|");
 }
@@ -1741,7 +1753,11 @@ export class Engine implements EngineClient {
       // when NOTHING machine-verified the work do we say so — never silently green.
       const verified = await this.#maybeVerify();
       if (!verified) {
-        this.#lastGateOutcome = "unverified";
+        // Don't let a later UNVERIFIED turn MASK an earlier RED within the same
+        // prompt (e.g. a fix turn that deletes the build script): a red build must
+        // keep reporting red at engine-idle so headless/CI still exits non-zero.
+        // A genuine red→green fix DOES overwrite (handled in the gate branch).
+        if (this.#lastGateOutcome !== "red") this.#lastGateOutcome = "unverified";
         this.#notice(
           "Gate: UNVERIFIED — no build/test/typecheck command was detected (even after re-scanning), " +
             "so this turn's work was not machine-verified. Adding a build or test script to the " +

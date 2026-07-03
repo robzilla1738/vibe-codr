@@ -1525,4 +1525,50 @@ brand accent" claim (modes.ts — the accent is royal violet, ASK blue is just A
 
 ## v2 ADVERSARIAL PASSES
 
-(populated by the adversarial phase after all 12 subsystems close)
+Two consecutive full adversarial passes over the audit's OWN diffs (the freshest defect source),
+each fleet of skeptics tasked to BREAK the v2 fixes with executed repros. The clean-pass counter
+resets to 0 on any CONFIRMED finding.
+
+### Pass 1 — 6 CONFIRMED regressions the audit introduced/extended (all FIXED + regression-tested)
+Three adversarial reviewers (run-loop / engine+orchestrator / config+store+search) over the 38
+changed source files + cross-subsystem seams.
+- **[MED] AP1-1 checkpoints concurrent-save still lost entries** — the V2-44 merge narrowed but didn't
+  close the TOCTOU (two managers read the same snapshot, later rename clobbered). Fixed: a per-file
+  in-process save lock (module-level, keyed by path) serializes the read-merge-rename. Regression:
+  *"two managers on one repo merge checkpoints"* now deterministic.
+- **[MED, sharpest] AP1-2 /undo restored ANOTHER session's checkpoint** — V2-44's `this.#list = merged`
+  folded concurrent sessions' entries into this session's undo list, so /undo could revert to another
+  session's uncommitted edit. Fixed: the merge is DISK-ONLY; #list stays scoped to this session.
+  Regression: *"/undo restores THIS session's checkpoint, never a concurrent session's"* (verified it
+  fails without the fix).
+- **[MED] AP1-3 ensemble (and worktree) red merged-gate left main DIRTY** — V2-13's post-merge gate
+  correctly caught a red combined tree but the squash-merge changes were left uncommitted while
+  reporting "discarded" (false). Fixed: `gitStagedFiles` + `gitRestoreFiles` (reset + checkout HEAD +
+  clean -fd) revert EXACTLY the merged paths — new files removed, modified restored, a sibling's
+  disjoint changes untouched — on both the ensemble AND worktree paths. Regressions: *"ensemble
+  re-gates … result.txt reverted"*, and the pre-existing worktree test corrected (it had codified the
+  dirty-tree bug).
+- **[MED] AP1-4 UNVERIFIED masked a prior RED at engine-idle** — within one prompt, a fix turn that
+  removed the checks flipped `#lastGateOutcome` red→unverified → headless exited 0 on a broken build.
+  Fixed: unverified never overwrites red (a genuine red→green fix still does). Regressions: *"engine-idle
+  reports GREEN when a RED gate is fixed to green"* + the existing red-gate engine-idle assertion.
+- **[LOW-MED] AP1-5 manifest-signature missed checks arriving via a NON-manifest file** — V2-18's
+  fingerprint stat'd only manifests, so a new `test_app.py`/`tests/` dir didn't trigger the gate
+  re-recon. Fixed: the signature now includes the sorted top-level entry-name set. Regression:
+  *"manifestSignature flips when checks arrive via a non-manifest file"*.
+- **[LOW-MED] AP1-6 plan-gate over-correction shipped unambiguous Node.js/etc ungrounded** — V2-29
+  dropped bare `node`/`react`/`spring`/`express` wholesale, but `node.js`/`nodejs`/`spring boot`/
+  `react 19` carry no false-positive risk and were lost. Fixed: re-added the unambiguous spellings
+  (mirroring `next.js`) + `<framework> <digit>` + broadened BUILD_REQUEST nouns
+  (project/server/microservice/backend/frontend). Regression: *"UNAMBIGUOUS stack spellings still
+  force versions"* (+ the false-positive guards retained).
+- **[LOW, cosmetic] AP1-7 scorePage www-strip mangled a real `www.<tld>`** — fixed to strip `www.`
+  only when another label follows. Regression: *"does not mangle a real www.<tld>"*.
+
+Reviewer verdicts on the rest: the session run-loop fixes (interrupted-turn cumulative-buffer — the
+riskiest — confirmed correct against the AI SDK source; turn-scoped gate; budget estimated guard;
+zero-result search), JSONC stripper, configUnknownKeys, store legacy fallback, memory dedup, date/
+searchcore, and all cross-subsystem seams (engine-idle gate ↔ TUI reducer default-ignore; SessionMeta
+version round-trip; offload-eviction ↔ checkpoints/journal paths) all held under adversarial input —
+REFUTED. Recorded caveats (not regressions): no-results guard scoped to web_search; SESSION_META_VERSION
+is inert forward-compat (written, not yet read); compaction clamp equals-at-threshold=0.1 floor (V2-C1).

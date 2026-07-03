@@ -64,13 +64,16 @@ const CURRENT_EVENTS =
  * `spring`, `express`) — they false-fire on "tree node", "react component",
  * "SOLID principles", "spring animation", "express the result". A greenfield
  * BUILD_REQUEST ("build a react app") still triggers needsVersions, so the real
- * signal is preserved without taxing every mention of a common word. */
+ * signal is preserved without taxing every mention of a common word. The
+ * UNAMBIGUOUS spellings that carry no false-positive risk (`node.js`/`nodejs`,
+ * `spring boot`, `react 19`) ARE kept — only the bare English-overloaded forms
+ * (`node`, `react`, `spring`, `express`, `solid` alone) were dropped. */
 const STACK_NAMES =
-  /\b(next\.?js|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b/i;
+  /\b(next\.?js|node\.?js|nodejs|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|spring ?boot|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b|\b(react|vue|svelte|angular|node|express|django|rails)\s+\d/i;
 
 /** Greenfield build verbs + artifact nouns → stack choices are being made. */
 const BUILD_REQUEST =
-  /\b(build|create|make|scaffold|set ?up|bootstrap|generate)\b[\s\S]{0,80}\b(app|application|website|web ?site|web ?app|site|page|service|api|dashboard|cli|tool)\b/i;
+  /\b(build|create|make|scaffold|set ?up|bootstrap|generate)\b[\s\S]{0,80}\b(app|application|website|web ?site|web ?app|site|page|service|micro-?service|server|project|api|backend|frontend|dashboard|cli|tool)\b/i;
 
 /** References to the existing workspace → the plan must have read real code. */
 const CODE_REFERENCE =

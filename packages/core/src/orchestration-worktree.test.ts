@@ -468,7 +468,10 @@ test("ensemble re-gates the merged tree — a winner green in isolation but red 
   expect(orch.some((e) => e.status === "failed" && e.taskId === "hard")).toBe(true);
   expect(orch.some((e) => e.status === "completed")).toBe(false);
   const out = spawnTasksOutput(events);
-  expect(out).toMatch(/MERGED tree is red/i);
+  expect(out).toMatch(/MERGED tree is red.*reverted/i);
+  // The winner's squash-merged result.txt was REVERTED — main is not left holding
+  // the failing changes (the old bug landed them despite reporting failure).
+  expect(existsSync(join(cwd, "result.txt"))).toBe(false);
   // Every attempt's worktree + branch was still cleaned up.
   expect(await worktreeBranches(cwd)).toEqual([]);
 });
@@ -586,9 +589,10 @@ test("a worktree task with check:true fails when the merged tree is red", async 
   const out = spawnTasksOutput(events);
   // The gate ran on the MERGED main tree and was red → the task failed.
   expect(out).toContain("Checks failed on the merged tree");
-  // The change still merged (the failure is a verdict on the merged state), and
-  // the worktree was torn down.
-  expect(readFileSync(join(cwd, "result.txt"), "utf8").trim()).toBe("BAD");
+  // And the failing squash-merge was REVERTED — main is NOT left holding the BAD
+  // content (the old behavior landed it despite reporting failure; V2 adversarial
+  // pass 1 caught that dirty-tree bug).
+  expect(existsSync(join(cwd, "result.txt"))).toBe(false);
   expect(await worktreeBranches(cwd)).toEqual([]);
 });
 

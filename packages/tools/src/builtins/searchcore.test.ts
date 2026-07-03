@@ -127,3 +127,17 @@ test("scorePage applies host boosts/penalties to www-prefixed hosts too", () => 
   const other = scorePage({ ...base, domain: "example.com" }, []);
   expect(npm).toBeLessThan(other); // the −2 npm penalty applies to www.npmjs.com
 });
+
+test("scorePage does not mangle a real www.<tld> host to a bare TLD", () => {
+  const base = { url: "https://x/y", title: "t", text: "content", date: undefined };
+  // www.com / www.io ARE real domains — the www-strip must not turn them into a
+  // bare TLD (which would be a non-host). No crash, and no github/npm host match.
+  const wwwCom = scorePage({ ...base, domain: "www.com" }, []);
+  const wwwIo = scorePage({ ...base, domain: "www.io" }, []);
+  expect(Number.isFinite(wwwCom)).toBe(true);
+  expect(Number.isFinite(wwwIo)).toBe(true);
+  // www.github.com still gets the github boost (another label follows).
+  const wwwGh = scorePage({ ...base, domain: "www.github.com" }, []);
+  const gh = scorePage({ ...base, domain: "github.com" }, []);
+  expect(wwwGh).toBe(gh);
+});

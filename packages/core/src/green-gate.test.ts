@@ -450,3 +450,41 @@ test("manifestSignature: stable when unchanged, flips when a build manifest appe
   expect(scaffolded).not.toBe(empty);
   expect(scaffolded).toBe(manifestSignature(dir)); // stable again until it changes
 });
+
+test("engine-idle reports GREEN when a RED gate is fixed to green (guard doesn't pin red)", async () => {
+  // The gate passes only once `pass.txt` exists. Turn 1 (writes out.txt) → RED →
+  // fix turn writes pass.txt → GREEN. engine-idle must report the FIXED green
+  // outcome, not stay pinned red — a genuine red→green fix DOES overwrite.
+  const dir = initGitRepo({
+    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "test -f pass.txt" } }),
+    "bun.lock": "",
+    "src.ts": "export const x = 1;\n",
+  });
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const i = call++;
+      // Turn 1: write out.txt (no pass.txt → red). Fix turn: write pass.txt (→ green).
+      if (i === 0) return writeStep("w0", "out.txt", "x\n") as never;
+      if (i === 1) return textStep("done") as never;
+      if (i === 2) return writeStep("w2", "pass.txt", "ok\n") as never;
+      return textStep("fixed") as never;
+    },
+  });
+  const events = await runEngine(dir, model, (c) => {
+    c.build.gate.maxRounds = 2;
+  });
+  const idle = events.find((e) => e.type === "engine-idle");
+  expect(idle && "gate" in idle ? idle.gate : undefined).toBe("green");
+});
+
+test("manifestSignature: flips when checks arrive via a NON-manifest file (a test file)", async () => {
+  const { manifestSignature } = await import("./engine.ts");
+  const dir = mkdtempSync(join(tmpdir(), "vibe-sig-nm-"));
+  // A repo whose only manifest has no scripts — the sig must still change when a
+  // test file appears, so the gate re-recons instead of staying UNVERIFIED.
+  writeFileSync(join(dir, "pyproject.toml"), "[project]\nname='x'\n");
+  const before = manifestSignature(dir);
+  writeFileSync(join(dir, "test_app.py"), "def test_ok():\n    assert True\n");
+  expect(manifestSignature(dir)).not.toBe(before); // top-level entry set changed
+});

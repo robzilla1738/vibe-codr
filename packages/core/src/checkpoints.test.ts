@@ -285,3 +285,27 @@ test("two managers on one repo merge checkpoints instead of clobbering (and writ
   const files = readdirSync(globalStateDir(dir));
   expect(files.some((f) => f.startsWith("checkpoints.json.") && f.endsWith(".tmp"))).toBe(false);
 });
+
+test("/undo restores THIS session's checkpoint, never a concurrent session's (no #list pollution)", async () => {
+  // The merge fold is disk-only: it must NOT leak another session's entries into
+  // this session's in-memory list, or undo would revert to the OTHER session's
+  // (uncommitted) work instead of this session's own safety snapshot.
+  const dir = await initRepo();
+  const A = new CheckpointManager(dir);
+  const B = new CheckpointManager(dir);
+
+  await Bun.write(join(dir, "a.txt"), "A-original\n");
+  await A.snapshot("A-safety"); // A's own pre-edit safety net (captures A-original)
+
+  await Bun.write(join(dir, "a.txt"), "B-modified\n");
+  await B.snapshot("B-work"); // another session's checkpoint → disk now has both
+
+  await Bun.write(join(dir, "a.txt"), "A-more\n");
+  await A.snapshot("A-green", undefined, { green: true }); // A saves again (re-reads disk)
+
+  // ONE /undo from A: skip its green marker, restore A's OWN pre-edit — a.txt must
+  // be A-original, NOT B-modified (which the pre-fix #list pollution would restore).
+  const restored = await A.undo();
+  expect(restored?.label).toBe("A-safety");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("A-original\n");
+});

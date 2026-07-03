@@ -215,8 +215,10 @@ export interface PageSignal {
 export function scorePage(page: PageSignal, terms: string[]): number {
   let score = 0;
   // Strip a leading `www.` so the exact-host boosts/penalties below apply to
-  // `www.github.com` / `www.npmjs.com` too (safeHost keeps the www prefix).
-  const domain = page.domain.toLowerCase().replace(/^www\./, "");
+  // `www.github.com` / `www.npmjs.com` too (safeHost keeps the www prefix). Only
+  // strip when another label follows, so a real domain like `www.com`/`www.io`
+  // isn't mangled to a bare TLD.
+  const domain = page.domain.toLowerCase().replace(/^www\.(?=.*\.)/, "");
   const url = page.url.toLowerCase();
   const title = page.title.toLowerCase();
   const type = classifySource(domain);

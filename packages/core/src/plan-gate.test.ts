@@ -126,6 +126,25 @@ test("triage: genuine time-sensitive asks are still caught (false-negative fixes
   expect(triagePlanRequest("build a react app").needsVersions).toBe(true);
 });
 
+test("triage: UNAMBIGUOUS stack spellings still force versions (Node.js over-correction fixed)", () => {
+  // node.js / nodejs / spring boot / react 19 carry no false-positive risk, so
+  // they must still trigger needsVersions (bare node/react/spring do NOT).
+  for (const req of [
+    "which Node.js version should we target",
+    "which nodejs version should we target",
+    "set up a Node.js project",
+    "set up an express server",
+    "migrate to React 19",
+    "add a spring boot microservice",
+  ]) {
+    expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, true]);
+  }
+  // …while the ambiguous bare forms stay self-contained (no version tax).
+  for (const req of ["traverse each tree node", "the react component needs a fix", "add a spring animation"]) {
+    expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, false]);
+  }
+});
+
 test("gate: junk/non-URL sources do NOT satisfy the web-evidence requirement", () => {
   const gate = new PlanGate();
   gate.noteRequest("plan a page about today's match");

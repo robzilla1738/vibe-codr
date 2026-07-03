@@ -37,6 +37,8 @@ import {
   gitAddWorktree,
   gitRemoveWorktree,
   gitMergeWorktreeBranch,
+  gitStagedFiles,
+  gitRestoreFiles,
   gitDiffSince,
   commitWorktree,
 } from "../build/gitops.ts";
@@ -711,6 +713,10 @@ export class OrchestratorRunner {
           if (!(await gitMergeWorktreeBranch(mainCwd, branch))) {
             return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
           }
+          // What the squash-merge staged — reverted on a red/aborted gate so main
+          // isn't left holding the failing changes (only these paths; a sibling's
+          // disjoint staged changes survive).
+          const mergedFiles = await gitStagedFiles(mainCwd);
           if (wantsGate) {
             const gate = await runGate(mainCwd, profile!, 0, {
               checks: this.#handle.deps.config.build.gate.checks,
@@ -718,13 +724,15 @@ export class OrchestratorRunner {
               ...(parentSignal ? { signal: parentSignal } : {}),
             });
             if (gate.outcome === "red") {
-              return { ok: false, output: `Checks failed on the merged tree:\n${formatGateFailure(gate, 1)}` };
+              await gitRestoreFiles(mainCwd, mergedFiles);
+              return { ok: false, output: `Checks failed on the merged tree (changes reverted):\n${formatGateFailure(gate, 1)}` };
             }
             // An interrupted gate produced NO verdict — treat it like red so the
-            // task fails and the merged changes are discarded (the outer finally
+            // task fails and the merged changes are reverted (the outer finally
             // tears down the worktree). Never let an interrupt read as a pass.
             if (gate.outcome === "aborted") {
-              return { ok: false, output: "Gate interrupted before a verdict — merged changes discarded." };
+              await gitRestoreFiles(mainCwd, mergedFiles);
+              return { ok: false, output: "Gate interrupted before a verdict — merged changes reverted." };
             }
           }
           // Capture the diff of THIS task's merged changes while the tree is still
@@ -852,6 +860,10 @@ export class OrchestratorRunner {
           if (!(await gitMergeWorktreeBranch(mainCwd, winner.branch))) {
             return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
           }
+          // Capture exactly what the squash-merge staged, so a RED gate can revert
+          // THOSE paths — leaving main clean instead of landing the failing content
+          // (a sibling task's disjoint staged changes are untouched).
+          const mergedFiles = await gitStagedFiles(mainCwd);
           if (wantsGate) {
             const gate = await runGate(mainCwd, profile!, 0, {
               checks: this.#handle.deps.config.build.gate.checks,
@@ -859,10 +871,12 @@ export class OrchestratorRunner {
               ...(parentSignal ? { signal: parentSignal } : {}),
             });
             if (gate.outcome === "red") {
-              return { ok: false, output: `Ensemble winner passed in isolation but the MERGED tree is red:\n${formatGateFailure(gate, 1)}` };
+              await gitRestoreFiles(mainCwd, mergedFiles);
+              return { ok: false, output: `Ensemble winner passed in isolation but the MERGED tree is red (changes reverted):\n${formatGateFailure(gate, 1)}` };
             }
             if (gate.outcome === "aborted") {
-              return { ok: false, output: "Gate interrupted before a verdict — merged changes discarded." };
+              await gitRestoreFiles(mainCwd, mergedFiles);
+              return { ok: false, output: "Gate interrupted before a verdict — merged changes reverted." };
             }
           }
           return { ok: true };

@@ -7,6 +7,13 @@ import { globalStateDir } from "./state-dir.ts";
 /** Monotonic per-process counter for unique checkpoint temp names (with pid). */
 let checkpointWriteSeq = 0;
 
+/** Serializes #save across CheckpointManagers sharing one checkpoints.json (two
+ * sessions in ONE process, e.g. a subagent tree): both re-read + merge + rename,
+ * so without a shared per-file lock they read the same stale snapshot and the
+ * later rename clobbers the earlier merge. Keyed by the file path. (A separate
+ * OS process is a rarer race the merge narrows but can't fully close.) */
+const checkpointSaveLocks = new Map<string, Promise<void>>();
+
 export interface Checkpoint {
   id: string;
   label: string;
@@ -102,6 +109,17 @@ export class CheckpointManager {
   }
 
   async #save(): Promise<void> {
+    // Serialize concurrent saves to the same shared checkpoints.json so the
+    // read-merge-rename critical section can't interleave (the merge alone left a
+    // TOCTOU: two managers read the same snapshot, the later rename clobbered).
+    const prev = checkpointSaveLocks.get(this.#file) ?? Promise.resolve();
+    const run = prev.then(() => this.#saveLocked());
+    // Keep the chain from rejecting so one failed save doesn't wedge the next.
+    checkpointSaveLocks.set(this.#file, run.catch(() => {}));
+    await run;
+  }
+
+  async #saveLocked(): Promise<void> {
     const tmp = `${this.#file}.${process.pid}.${checkpointWriteSeq++}.tmp`;
     try {
       await mkdir(dirname(this.#file), { recursive: true });
@@ -111,12 +129,14 @@ export class CheckpointManager {
       // writes. Re-read the current on-disk list and MERGE by id (our view wins
       // for shared ids — e.g. a green marker we just added), then write via a
       // per-write-unique temp + atomic rename (mirrors the session store).
+      // IMPORTANT: the merge is for the DISK FILE only — do NOT fold other
+      // sessions' entries into this session's in-memory #list, or /undo would
+      // restore ANOTHER session's checkpoint. #list stays scoped to this session.
       const onDisk = await this.#readListFrom(this.#file);
       const byId = new Map<string, Checkpoint>();
       for (const c of onDisk) byId.set(c.id, c);
       for (const c of this.#list) byId.set(c.id, c);
       const merged = [...byId.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_CHECKPOINTS);
-      this.#list = merged;
       await Bun.write(tmp, `${JSON.stringify(merged, null, 2)}\n`);
       await rename(tmp, this.#file);
     } catch {

@@ -750,3 +750,47 @@ HookBus isolate per-item failures.
 - [LOW] Onboarding number-key selection uses an absolute index against a windowed list (latent
   mis-select after scrolling). [LOW] fresh install with zero keys errors rather than defaulting
   keyless. Recorded.
+
+---
+
+# v2 audit (2026-07-03, full from-scratch re-audit)
+
+The 2026-07-02 v1 audit above is retained as historical record. v2 exists because a 34-file
+plan-mode overhaul (code-enforced plan grounding gate, id-addressed tasks, yolo plan approval,
+drive-to-green hardening, machine-state relocation to `~/.vibe/state/<cwd-hash>`) landed AFTER
+v1 closed, and the user chose a full from-scratch re-audit of all 12 subsystems rather than a
+delta. v1 verdicts are prior art, not evidence: every subsystem is re-read end-to-end and every
+suspicion re-verified against the current code. v1 accepted-risk and DECISIONS items may only be
+overturned with new evidence, quoting the v1 rationale.
+
+Gate = `bun run typecheck && bun run lint && bun run test` — must be green after every fix.
+
+**v2 baseline (2026-07-03, commit `8416f2c`):** typecheck 8/8 turbo tasks green; lint clean
+(280 files); tests green — 15/15 turbo tasks: core 676 (79 files), tools 247 (26 files),
+tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file), plugins 7
+(2 files). `bun run smoke:tui` prints SMOKE OK.
+
+## v2 status
+
+| # | Subsystem | Status |
+|---|-----------|--------|
+| 1 | Modes & approvals | REOPENED |
+| 2 | Compaction & microcompaction | REOPENED |
+| 3 | Prompt-cache economy | REOPENED |
+| 4 | Subagent orchestration | REOPENED |
+| 5 | Coding loop | REOPENED |
+| 6 | Context gathering | REOPENED |
+| 7 | Memory | REOPENED |
+| 8 | Research stack | REOPENED |
+| 9 | Providers & model catalog | REOPENED |
+| 10 | Sessions/persistence/resume | REOPENED |
+| 11 | TUI + headless parity | REOPENED |
+| 12 | Config, MCP, skills/plugins, onboarding, fresh install | REOPENED |
+
+## v2 DECISIONS
+
+(populated as subsystem audits record design pushback)
+
+## v2 ADVERSARIAL PASSES
+
+(populated by the adversarial phase after all 12 subsystems close)

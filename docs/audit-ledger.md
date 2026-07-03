@@ -1972,3 +1972,35 @@ the goal is satisfied. Across passes 1–12, every confirmed defect (incl. the e
 gitops rename/unicode revert, checkpoint session scoping, catalog NaN-price, web_search/TinyFish sanitizing,
 htmlToText linearity + code-content preservation, and the scheme-less-baseURL fresh-install trap) was fixed
 AND regression-tested; the gate (typecheck, lint, full suite) is green after every pass.
+
+## v2 Phase 15 — fresh-install smoke + final reconciliation — PASS
+
+Simulated a real fresh install against the converged commit (05e4eb8): a clean `git clone` of the
+local repo into a throwaway dir, then the golden fresh-user paths. **ALL PASS, zero manual fixes:**
+
+- `git clone` (fresh, from local HEAD) → OK.
+- `bun install` → OK (no manual fixes, no post-install steps).
+- `bun run typecheck` → OK.
+- `--version` → exit 0 (`vibe-codr 0.0.0-dev`); `--help` → exit 0 + usage.
+- **No-keys headless** (`-p "say hi"`, all provider env vars stripped, empty HOME) → **clean non-zero
+  exit (1)** with `error: Provider "anthropic" is not configured. Set one of: ANTHROPIC_API_KEY` — no
+  stacktrace, the exact fresh-user experience.
+- `bun run smoke:tui` → OK.
+- **Ollama end-to-end** (local server reachable) → `-p "reply with pong" --model ollama/gemma4:latest`
+  → **`pong`**, exit 0. The keyless local-model path works out of the box.
+
+Smoke harness kept at `.../scratchpad/fresh-install-smoke.sh` (session scratch). Exit 0 / ALL PASS.
+
+### Final reconciliation
+- **All 12 checklist subsystems** have a PASS entry (§1–§12), plus this Phase-15 PASS.
+- **Two consecutive clean adversarial passes** (11 & 12) over the weakest areas → zero new confirmed
+  findings. Total across passes 1–12: **28 confirmed defects, all fixed + regression-tested** (v2 audit
+  63 + adversarial: P1 6, P2 4, P3 4, P5 3, P6 2, P7 3, P8 2, P9 1, P10 1).
+- **Gate green** at HEAD: `typecheck` (8/8), `lint` (280 files, 0 infos), `test` (15/15 turbo tasks,
+  724 core tests). Spot-verified 81 audit regression tests across 5 files (gitops, plan-gate, webfetch,
+  config, search-engines) → 0 fail.
+- **Every fix carries a regression test** (see the per-subsystem and per-pass "Regression:" lines).
+
+**GOAL COMPLETE.** Every completion condition holds: every subsystem PASS; two consecutive clean
+adversarial passes; typecheck+lint+full suite green; every fix regression-tested; fresh-install smoke
+succeeds.

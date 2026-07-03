@@ -116,7 +116,6 @@ test("Ollama Cloud is offered as a key-required choice on the `ollama` provider"
   // (so onboarding prompts for the subscription key even though local is keyless).
   expect(cloud?.registryId).toBe("ollama");
   expect(cloud?.env).toBe("OLLAMA_API_KEY");
-  expect(cloud?.cloud).toBe(true);
   expect(cloud?.localKeyless).toBeUndefined();
   expect(cloud?.defaultModel).toMatch(/^ollama\//);
 });
@@ -145,4 +144,16 @@ test("initialChoiceIndex preselects the provider whose key is in the env", () =>
     initialChoiceIndex(PROVIDER_CHOICES, { OLLAMA_BASE_URL: "http://x" }),
   ).toBe(0);
   expect(initialChoiceIndex(PROVIDER_CHOICES, {})).toBe(0);
+});
+
+test("initialChoiceIndex preselects a provider configured without its env var", () => {
+  // codex is configured by ~/.codex/auth.json — no CODEX_API_KEY in the env.
+  const codex = PROVIDER_CHOICES.findIndex((c) => c.key === "codex");
+  expect(initialChoiceIndex(PROVIDER_CHOICES, {}, new Set(["codex"]))).toBe(codex);
+  // An env-var hit still wins when it comes first in the menu.
+  expect(initialChoiceIndex(PROVIDER_CHOICES, { ANTHROPIC_API_KEY: "x" }, new Set(["codex"]))).toBe(
+    0,
+  );
+  // The custom-endpoint and "Other / advanced" rows never auto-win.
+  expect(initialChoiceIndex(PROVIDER_CHOICES, {}, new Set(["custom", ""]))).toBe(0);
 });

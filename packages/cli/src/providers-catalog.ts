@@ -24,11 +24,6 @@ export interface ProviderChoice {
   env?: string;
   /** Where to get a key. */
   keyUrl?: string;
-  /**
-   * Force a key prompt even though the provider is keyless in the registry —
-   * used for hosted tiers of an otherwise-local provider (Ollama Cloud).
-   */
-  cloud?: boolean;
   /** Local provider that needs no key at all (skip the key prompt entirely). */
   localKeyless?: boolean;
   /** Generic bring-your-own OpenAI-compatible endpoint — prompts for a base URL. */
@@ -176,7 +171,6 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     defaultModel: "ollama/glm-5.2",
     env: "OLLAMA_API_KEY",
     keyUrl: "https://ollama.com/settings/keys",
-    cloud: true,
   },
   {
     key: "ollama-local",
@@ -264,14 +258,21 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
 /**
  * Pick the menu entry to highlight first: the first choice whose key already
  * lives in the environment (so an Ollama Cloud user with `OLLAMA_API_KEY` set
- * lands on the right option), else the first entry. Pure for testing.
+ * lands on the right option), else the first choice whose provider is already
+ * configured another way (a saved config key, or codex's `~/.codex/auth.json`
+ * — pass only non-keyless configured ids), else the first entry. Pure for
+ * testing.
  */
 export function initialChoiceIndex(
   choices: ProviderChoice[],
   env: NodeJS.ProcessEnv,
+  configuredIds?: ReadonlySet<string>,
 ): number {
   const detected = choices.findIndex(
-    (c) => !c.localKeyless && c.env && env[c.env],
+    (c) =>
+      !c.localKeyless &&
+      ((c.env && env[c.env]) ||
+        (!c.customEndpoint && c.registryId !== "" && (configuredIds?.has(c.registryId) ?? false))),
   );
   return detected >= 0 ? detected : 0;
 }

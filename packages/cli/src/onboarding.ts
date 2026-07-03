@@ -441,19 +441,37 @@ export async function runOnboarding(
   stdout.write(banner());
 
   // 1) Provider — preselect whichever key is already in the environment.
+  // A provider can also be configured WITHOUT its menu env var — codex reads
+  // ~/.codex/auth.json (or OPENAI_API_KEY), and a previously-saved config key
+  // counts too — so badge those as detected as well (keyless providers are
+  // "configured" by definition and excluded).
+  const configuredIds = new Set(
+    registry
+      .list()
+      .filter((d) => !d.auth.keyless && registry.isConfigured(d.id, config))
+      .map((d) => d.id),
+  );
   const items: SelectItem<ProviderChoice>[] = PROVIDER_CHOICES.map((c) => {
-    const detected = c.env && process.env[c.env] && !c.localKeyless;
-    const badge = detected
+    const envDetected = Boolean(c.env && process.env[c.env] && !c.localKeyless);
+    const authDetected =
+      !envDetected &&
+      !c.localKeyless &&
+      !c.customEndpoint &&
+      c.registryId !== "" &&
+      configuredIds.has(c.registryId);
+    const badge = envDetected
       ? fg(`✓ ${c.env} detected`, OK)
-      : c.localKeyless
-        ? dim("local · no key")
-        : "";
+      : authDetected
+        ? fg(c.registryId === "codex" ? "✓ codex login detected" : "✓ configured", OK)
+        : c.localKeyless
+          ? dim("local · no key")
+          : "";
     return { label: c.label, value: c, hint: c.blurb, badge };
   });
   const choice = await select(
     "Which model provider?",
     items,
-    initialChoiceIndex(PROVIDER_CHOICES, process.env),
+    initialChoiceIndex(PROVIDER_CHOICES, process.env, configuredIds),
   );
 
   // Custom OpenAI-compatible endpoint: a base URL + optional key + a model id.
@@ -477,23 +495,42 @@ export async function runOnboarding(
         `${fg("✗", WARN)} ${dim("Enter a full http(s) URL with a host, e.g. https://host:8080/v1")}\n`,
       );
     }
+    if (!baseURL) {
+      // The user skipped the endpoint — a key or model id is meaningless
+      // without it, so persist nothing rather than a dangling `custom/…`
+      // config the next launch can't use.
+      stdout.write(
+        `\n${dim("Skipped — run")} ${bold("vibe setup")} ${dim("anytime to configure the custom endpoint.")}\n\n`,
+      );
+      return true;
+    }
     const apiKey =
       (await input("API key (optional)", { mask: true, placeholder: "Enter to skip" })).trim() ||
       undefined;
-    const modelId = (
-      await input("Model id", { placeholder: "model-name", hint: "as the endpoint names it" })
-    ).trim();
+    // Re-prompt until the model id is non-empty: persisting `custom/` (an
+    // empty id) would print "You're all set", then fail to resolve on the
+    // very next launch.
+    let modelId = "";
+    for (;;) {
+      modelId = (
+        await input("Model id", { placeholder: "model-name", hint: "as the endpoint names it" })
+      ).trim();
+      if (modelId) break;
+      stdout.write(
+        `${fg("✗", WARN)} ${dim("A model id is required — the name your endpoint serves, e.g. llama-3.3-70b")}\n`,
+      );
+    }
     return persist(
       {
         model: `custom/${modelId}`,
         providerId: "custom",
         apiKey,
-        baseURL: baseURL || undefined,
+        baseURL,
       },
       // A custom OpenAI-compatible endpoint REQUIRES a base URL (the `custom`
-      // provider throws "base URL required" without one); a key alone is not
-      // enough. Only "all set" once a base URL is set.
-      { configured: Boolean(baseURL) },
+      // provider throws "base URL required" without one); both it and a model
+      // id are guaranteed non-empty above, so this really is "all set".
+      { configured: true },
     );
   }
 

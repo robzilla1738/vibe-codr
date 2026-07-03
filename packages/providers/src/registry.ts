@@ -112,11 +112,19 @@ export class ProviderRegistry {
 
   /** List live models for every configured provider, enriched elsewhere. */
   async listConfiguredModels(config: Config): Promise<ModelInfo[]> {
-    const configured = this.list().filter((d) => this.isConfigured(d.id, config));
+    // Resolve each provider's credentials ONCE — filtering with isConfigured
+    // and then calling resolveAuth would read a token file (a sync disk read,
+    // e.g. codex's ~/.codex/auth.json) twice per provider. resolveAuth throws
+    // exactly when isConfigured is false, so the catch is the filter.
+    const configured = this.list().flatMap((d) => {
+      try {
+        return [{ def: d, auth: this.resolveAuth(d.id, config) }];
+      } catch {
+        return [];
+      }
+    });
     const results = await Promise.all(
-      configured.map((d) =>
-        d.listModels(this.resolveAuth(d.id, config)).catch(() => []),
-      ),
+      configured.map(({ def, auth }) => def.listModels(auth).catch(() => [])),
     );
     return results.flat();
   }

@@ -1678,7 +1678,7 @@ export class Engine implements EngineClient {
       }
     }
     const hooked = await this.hooks.run("user.prompt.submit", { text });
-    // Proactive recall (opt-in): once per session, seed a "relevant past context"
+    // Proactive recall (default-on, opt-out): once per session, seed a "relevant past context"
     // block from long-term memory using the first prompt + goal, injected into
     // the system prompt. Best-effort — a failure must not block the turn.
     await this.#maybeProactiveRecall(hooked.text);

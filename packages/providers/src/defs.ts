@@ -1,5 +1,5 @@
 import type { LanguageModel, EmbeddingModel } from "ai";
-import { ProviderAuthError } from "@vibe/shared";
+import { ProviderAuthError, VibeError } from "@vibe/shared";
 import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
 
@@ -24,14 +24,17 @@ const PROVIDER_MODULES: Record<string, () => Promise<unknown>> = {
  * specifier not in the static map (e.g. a plugin-registered provider); the
  * failure surfaces a clear, actionable error at call time rather than startup.
  */
-async function loadProviderModule(spec: string): Promise<any> {
+async function loadProviderModule(spec: string, providerId: string): Promise<any> {
   try {
     const loader = PROVIDER_MODULES[spec];
     return loader ? await loader() : await import(spec);
   } catch (err) {
-    throw new ProviderAuthError(
-      spec,
-      [`install ${spec} (${(err as Error).message})`],
+    // A missing SDK is a dependency problem, not an auth problem — say so,
+    // with the exact install command, instead of mislabeling the package as
+    // an unconfigured provider.
+    throw new VibeError(
+      `Provider "${providerId}" needs the ${spec} package — install it with \`bun add ${spec}\` (${(err as Error).message})`,
+      "PROVIDER_SDK_MISSING",
     );
   }
 }
@@ -50,7 +53,6 @@ interface BuiltinSpec {
   cloudBaseURL?: string;
   /** Default credential file (e.g. a subscription/OAuth token from another CLI). */
   tokenFile?: string;
-  tokenPath?: string;
   /** SDK package + factory export name. */
   module?: string;
   factory?: string;
@@ -294,7 +296,7 @@ async function buildProvider(
       `set a base URL: config.providers.${spec.id}.baseURL or $${spec.baseURLEnv ?? "BASE_URL"}`,
     ]);
   }
-  const mod = await loadProviderModule(spec.module!);
+  const mod = await loadProviderModule(spec.module!, spec.id);
   const factory = mod[spec.factory!];
   if (typeof factory !== "function") {
     throw new ProviderAuthError(spec.id, [`${spec.module} has no export "${spec.factory}"`]);
@@ -324,7 +326,6 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       baseURLEnv: spec.baseURLEnv,
       keyless: spec.keyless,
       tokenFile: spec.tokenFile,
-      tokenPath: spec.tokenPath,
     },
 
     async create(modelId, opts): Promise<LanguageModel> {

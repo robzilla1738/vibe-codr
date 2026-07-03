@@ -82,3 +82,18 @@ test("gate: revision prompts UNION into the triage; telemetry accumulates", () =
   gate.recordToolUse("web_search");
   expect(gate.evaluate({ sources: [{ url: "https://example.com" }] }).allow).toBe(true);
 });
+
+test("gate: a new prompt re-arms the rejection budget — one exhausted plan can't disarm the next", () => {
+  const gate = new PlanGate();
+  gate.noteRequest("build a site about today's match"); // web-bound
+  expect(gate.evaluate({}).allow).toBe(false); // bounce 1
+  expect(gate.evaluate({}).allow).toBe(false); // bounce 2
+  const waved = gate.evaluate({}); // budget exhausted for THIS request
+  expect(waved.allow).toBe(true);
+  expect(waved.ungrounded).toBe(true);
+
+  // The user pivots to a new ask in the same plan stay: enforcement must be
+  // back, not permanently disabled by the earlier plan's exhausted budget.
+  gate.noteRequest("now plan a page for the latest election results");
+  expect(gate.evaluate({}).allow).toBe(false);
+});

@@ -142,6 +142,11 @@ export class PlanGate {
       needsCode: this.#triage.needsCode || t.needsCode,
       reasons: [...new Set([...this.#triage.reasons, ...t.reasons])],
     };
+    // Each user prompt re-arms the rejection budget. Without this, one plan
+    // that exhausted its bounces would permanently disarm the gate for every
+    // later request in the same plan-mode stay — grounding enforcement would
+    // silently degrade to prompt-only exactly where it's needed most.
+    this.#rejections = 0;
   }
 
   /** Count one successful tool call toward the research telemetry. */

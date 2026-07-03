@@ -774,7 +774,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 
 | # | Subsystem | Status |
 |---|-----------|--------|
-| 1 | Modes & approvals | REOPENED |
+| 1 | Modes & approvals | PASS |
 | 2 | Compaction & microcompaction | REOPENED |
 | 3 | Prompt-cache economy | REOPENED |
 | 4 | Subagent orchestration | REOPENED |
@@ -786,6 +786,85 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 10 | Sessions/persistence/resume | REOPENED |
 | 11 | TUI + headless parity | REOPENED |
 | 12 | Config, MCP, skills/plugins, onboarding, fresh install | REOPENED |
+
+
+## v2 §1. Modes & approvals — PASS
+
+Scope read end-to-end: engine.ts (2163), engine-commands.ts, session.ts (mode/gate/approvals paths),
+permissions.ts (306) + permissions.test.ts (447), plan-gate.ts (207), tui/modes.ts (65),
+shared/commands.ts (77). Two independent end-to-end readers + author verification of every suspicion.
+
+### CONFIRMED & FIXED (each repro'd failing before the fix, passing after)
+- **[MED] V2-1 Stale `#planModelPrev` clobbered an explicit model choice; resume mid-plan stranded
+  execution on the planModel** — entering plan while already ON the plan model (explicit `/model
+  <planModel>`, or a `--resume` of a mid-plan session, where prev is an engine field never
+  persisted) left a stale/absent prev, so leaving plan either restored an outdated model or never
+  restored at all. Fixed: plan-entry with model===planModel clears prev; the restore falls back to
+  `config.model` (the persisted execution-model truth). Regressions: *"planModel restore never
+  clobbers an explicit model choice"*, *"resuming mid-plan does not strand execution on the
+  planModel"* (engine.test.ts).
+- **[MED] V2-2 Mid-turn mode switch broke the in-flight plan turn's gate** — the `planGate` closure
+  non-null-asserted the LIVE `this.#planGate` (retired by setMode) → TypeError inside present_plan;
+  and telemetry recording was gated on live `this.mode === "plan"` → a flip silently discarded the
+  turn's research counts (false rejection). Fixed: a turn-scoped `#turnGate` captured at run()
+  start feeds both the closure and `recordToolUse`. Regression: *"plan gate survives a mid-turn
+  mode switch away from plan"* (plan-gate-session.test.ts).
+- **[MED] V2-3 Exhausted rejection budget permanently disarmed the gate for the rest of the plan
+  stay** — `#rejections` never reset, so after one plan hit MAX_REJECTIONS every later request in
+  the same stay sailed through `ungrounded` on its FIRST ungrounded present. Fixed: `noteRequest`
+  re-arms the budget per user prompt. Regression: *"a new prompt re-arms the rejection budget"*
+  (plan-gate.test.ts).
+- **[LOW-MED] V2-4 Deferred plan approval never spent `#lastPlan`** — plan→execute toggles after a
+  Shift+Tab approval re-entered the approval routine each cycle: duplicate "Plan approved" notices
+  + task list re-seeded (statuses reset). Fixed: the deferred branch clears `#lastPlan` like the
+  immediate branch. Regression: *"deferred plan approval is spent once"* (engine-scenarios.test.ts).
+- **[LOW-MED] V2-5 A mid-turn mode flip smuggled a mutating turn past the green gate** —
+  `#turnIsGateable`/`#maybeVerify` read the LIVE session mode, so an execute turn flipped to plan
+  mid-stream skipped gate AND the UNVERIFIED honesty notice. Fixed: session records `turnMode` at
+  run() start; post-turn gating judges the turn by the mode it STARTED in. Regression: *"a mid-turn
+  mode flip cannot smuggle a mutating turn past the gate"* (engine-scenarios.test.ts).
+- **[LOW] V2-6 `#persistEngineState` writes were fire-and-forget and unserialized** — overlapping
+  writes to engine.json could land out of order and persist a stale `pendingHandoff`. Fixed
+  (hardening, confirmed by inspection — interleave window is real but not deterministically
+  reproducible): writes now serialize on a promise chain, value read at write time. Covered by the
+  existing deferred-approval/resume persistence tests.
+
+### REFUTED / verified clean
+- A second `/execute` after a deferred approval "silently dropping auto": WORKING AS DESIGNED — an
+  explicit mode request always lands in gated ask (the engine-owned invariant); deliberate YOLO is
+  an explicit set-approvals sent after. (V2-4's fix also makes the second `/execute` a plain
+  transition.)
+- `resolve-plan.approvals` garbage values: fail SAFE (anything ≠ "auto" falls through to the config
+  check; can never escalate).
+- Raw `set-mode` invariant, always-grant clearing on re-gate, double-accept guard, plan-mode
+  read-only toolset rebuild, permission precedence + all v1 evasion fixes (newline/case/path-form/
+  sentinel), headless explicit-ask fail-closed: all re-verified against current code + passing
+  regressions.
+
+### Accepted-risk (recorded, consistent with v1)
+- Resume never restores YOLO (approvalMode not persisted) — intentional fail-safe; the new
+  pendingHandoff persistence composes with it: a resumed deferred approval executes GATED. Safe
+  direction; kept.
+- Plan-gate telemetry lags for parallel same-step tool calls (research + present_plan batched in
+  ONE assistant step can false-reject once; the retry sees the counts). Self-healing, false-reject
+  direction only.
+- `(plan, auto)` is unrepresentable on the TUI mode chip (`/approvals auto` while planning shows
+  PLAN; the setting is dropped by the next Shift+Tab). Read-only mode makes it safety-neutral —
+  recorded for subsystem 11's pass.
+
+### v2 DECISIONS (this subsystem)
+- **Plan-approval approvals invariant (revised deliberately 2026-07-02):** v1's "every mode
+  transition re-gates to ask" still holds for RAW transitions; plan approval now COMPOSES with it —
+  #approvePlan captures wantAuto (explicit ^Y or the user already in auto) BEFORE #setModeGated,
+  re-gates, then re-applies auto EXPLICITLY. Yolo after approval is always an explicit
+  re-application, never an inherited flag. Do not "fix" this back.
+- **Plan-gate triage union never subtracts** (a pivot inside one plan stay inherits the earlier
+  request's research requirements): kept — it fails toward MORE research, pivot-vs-revision can't
+  be told apart deterministically, and rejection messages state exactly what's demanded. Leaving
+  plan mode resets everything.
+
+Stale docs fixed: duplicated JSDoc above `#persistConfig` (engine.ts); MODE_COLORS "aligned to the
+brand accent" claim (modes.ts — the accent is royal violet, ASK blue is just ASK blue).
 
 ## v2 DECISIONS
 

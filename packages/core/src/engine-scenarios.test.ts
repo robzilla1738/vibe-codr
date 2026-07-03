@@ -242,3 +242,81 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
   expect(cardAsk.approvals).toBe("ask");
   expect(cardAsk.execPrompt).toContain("approved by the user");
 });
+
+test("deferred plan approval is spent once — plan/execute toggles don't re-approve or re-seed", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-defer-"));
+  const config = { ...defaultConfig(), mode: "plan" as const };
+  const { engine, events, collector } = mockEngine(
+    [toolStep("c1", "present_plan", { plan: "# Plan\n1. do the thing" }), textStep("Plan ready.")],
+    cwd,
+    config,
+  );
+  await engine.bootstrap();
+  engine.send({ type: "submit-prompt", text: "plan the work" });
+  await engine.whenIdle();
+  engine.send({ type: "set-mode", mode: "execute" }); // deferred approval (arms the handoff)
+  engine.send({ type: "set-mode", mode: "plan" }); // return to planning (revokes it)
+  engine.send({ type: "set-mode", mode: "execute" }); // a plain transition, NOT a second approval
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  const approvals = events.filter(
+    (e) => e.type === "notice" && e.message.includes("Plan approved"),
+  );
+  expect(approvals.length).toBe(1);
+  const seeds = events.filter((e) => e.type === "tasks-updated");
+  expect(seeds.length).toBe(1);
+});
+
+test("a mid-turn mode flip cannot smuggle a mutating turn past the gate", async () => {
+  // The turn STARTED in execute and mutated; flipping to plan while it streams
+  // must not make #afterTurn judge it by the new mode and skip verification
+  // entirely (here: the honest UNVERIFIED notice for a checkless workspace).
+  const { z } = await import("zod");
+  const { Toolset } = await import("@vibe/tools");
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-flip-gate-"));
+  let engineRef: Engine;
+  const toolset = new Toolset([
+    {
+      name: "mutate_flip",
+      description: "mutates, then the user flips mode mid-turn",
+      inputSchema: z.object({}),
+      readOnly: false,
+      concurrencySafe: false,
+      execute: async () => {
+        writeFileSync(join(cwd, "made.txt"), "x\n");
+        engineRef.send({ type: "set-mode", mode: "plan" }); // immediate, mid-turn
+        return { output: "mutated" };
+      },
+    },
+  ]);
+  let call = 0;
+  const steps = [toolStep("c1", "mutate_flip", {}), textStep("Done.")];
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const registry = new ProviderRegistry([
+    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+  ]);
+  engineRef = new Engine({
+    config: { ...defaultConfig(), model: "mock/test" },
+    cwd,
+    registry,
+    toolset,
+    interactive: false,
+  });
+  const events: UIEvent[] = [];
+  const sub = engineRef.events();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+  await engineRef.bootstrap();
+  engineRef.send({ type: "submit-prompt", text: "make the file" });
+  await engineRef.whenIdle();
+  engineRef.send({ type: "shutdown" });
+  await collector;
+
+  expect(existsSync(join(cwd, "made.txt"))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && e.message.includes("UNVERIFIED")),
+  ).toBe(true);
+});

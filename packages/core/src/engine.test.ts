@@ -275,3 +275,44 @@ test("a custom /redo command is usable (redo is not a phantom reserved built-in)
     events.some((e) => e.type === "notice" && e.message.includes("Unknown command")),
   ).toBe(false);
 });
+
+test("planModel restore never clobbers an explicit model choice (stale planModelPrev)", async () => {
+  const engine = makeEngine({ ...defaultConfig(), model: "prov/A", planModel: "prov/P" });
+
+  engine.send({ type: "set-mode", mode: "plan" }); // prev=A, model->P
+  await engine.whenIdle();
+  engine.send({ type: "run-slash", name: "model", args: "prov/B" }); // manual switch while planning
+  await engine.whenIdle();
+  engine.send({ type: "set-mode", mode: "execute" }); // B is not P: no restore
+  await engine.whenIdle();
+  engine.send({ type: "run-slash", name: "model", args: "prov/P" }); // EXPLICIT user choice: P
+  await engine.whenIdle();
+  engine.send({ type: "set-mode", mode: "plan" }); // already on P
+  await engine.whenIdle();
+  engine.send({ type: "set-mode", mode: "execute" }); // must NOT revert to stale A
+  await engine.whenIdle();
+
+  expect(engine.snapshot().model).toBe("prov/P");
+});
+
+test("resuming mid-plan does not strand execution on the planModel", async () => {
+  // #planModelPrev is an engine field and is never persisted: a session saved
+  // while planning has meta.model === planModel, so the restore path must fall
+  // back to config.model when leaving plan after a resume.
+  const now = Date.now();
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "prov/A", planModel: "prov/P" },
+    cwd: mkdtempSync(join(tmpdir(), "vibe-engine-resume-plan-")),
+    resume: {
+      meta: { id: "s-plan-resume", model: "prov/P", mode: "plan", goal: null, createdAt: now, updatedAt: now },
+      modelMessages: [],
+      history: [],
+    },
+  });
+  await engine.whenIdle();
+  expect(engine.snapshot().model).toBe("prov/P"); // planning stays on the plan model
+
+  engine.send({ type: "set-mode", mode: "execute" });
+  await engine.whenIdle();
+  expect(engine.snapshot().model).toBe("prov/A"); // execution restored from config
+});

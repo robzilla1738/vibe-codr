@@ -230,6 +230,8 @@ export class Session {
    * spend-stop) rather than completing or erroring. Drives "don't auto-verify a
    * turn the user interrupted" and keeps a cancel from being painted as a fault. */
   #interrupted = false;
+  /** Mode captured at run() start (null before the first turn) — see turnMode. */
+  #turnMode: Mode | null = null;
   /** Per-turn record of which tool calls ended in a handled error (permission
    * deny, plugin veto, or an `isError` execute result). The AI-SDK reports these
    * as ordinary string results, so the stream's `tool-result` part carries no
@@ -266,6 +268,11 @@ export class Session {
    * across revision prompts and telemetry across the whole cycle; retired by
    * setMode when the session leaves plan mode. */
   #planGate: PlanGate | undefined;
+  /** The gate the CURRENT turn started with. A mid-turn mode switch retires
+   * #planGate, but the in-flight plan turn must keep counting telemetry and
+   * evaluating present_plan against the gate it began under — not silently
+   * lose both to the live field going undefined. Reassigned at every run(). */
+  #turnGate: PlanGate | undefined;
 
   constructor(deps: SessionDeps) {
     this.#deps = deps;
@@ -429,6 +436,13 @@ export class Session {
   /** Whether the most recent turn ran a side-effecting (non-read-only) tool. */
   get didMutate(): boolean {
     return this.#turnMutated;
+  }
+
+  /** The mode the most recent turn STARTED in. Post-turn gating must judge a
+   * turn by what it was — a mid-turn Shift+Tab to plan must not let a mutating
+   * execute turn skip the green gate (or the UNVERIFIED honesty notice). */
+  get turnMode(): Mode {
+    return this.#turnMode ?? this.mode;
   }
 
   /** This session's working directory (a fork's, if redirected into a worktree).
@@ -729,6 +743,7 @@ export class Session {
     const { bus, registry, toolset, config } = this.#deps;
     this.busy = true;
     this.#turnMutated = false;
+    this.#turnMode = this.mode;
     this.#lastError = null;
     this.#interrupted = false;
     this.#toolCallErrors.clear();
@@ -788,6 +803,7 @@ export class Session {
         });
         this.#planGate.noteRequest(input);
       }
+      this.#turnGate = this.mode === "plan" ? this.#planGate : undefined;
 
       const model = await this.#resolveWithFallback(registry, config);
       if (this.#aborted()) {
@@ -879,8 +895,14 @@ export class Session {
           checker.check(name, input, opts),
         // Plan-readiness gate for present_plan (plan mode only): rejects a plan
         // whose triage-required research never happened, bounded, then warns.
-        ...(this.mode === "plan" && this.#planGate
-          ? { planGate: (plan: { sources?: { url: string }[] }) => this.#planGate!.evaluate(plan) }
+        // Wired off the turn-scoped gate — a mid-turn mode switch retires
+        // this.#planGate, and the in-flight turn must keep evaluating against
+        // the gate it started with instead of dereferencing undefined.
+        ...(this.#turnGate
+          ? (() => {
+              const gate = this.#turnGate;
+              return { planGate: (plan: { sources?: { url: string }[] }) => gate.evaluate(plan) };
+            })()
           : {}),
         ...(hooks
           ? {
@@ -1618,7 +1640,7 @@ export class Session {
           const isError = this.#toolCallErrors.get(part.toolCallId) ?? false;
           // Count successful research/exploration toward the plan-readiness
           // gate's telemetry — the evidence trail present_plan is judged against.
-          if (!isError && this.mode === "plan") this.#planGate?.recordToolUse(part.toolName);
+          if (!isError) this.#turnGate?.recordToolUse(part.toolName);
           // Harvest sources: on a SUCCESSFUL research-tool result, extract the
           // URLs it surfaced and record them in the session's source ledger
           // (deduped + stably numbered), so later turns can cite them by [n].

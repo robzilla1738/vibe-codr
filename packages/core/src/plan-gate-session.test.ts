@@ -129,3 +129,82 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
   expect(plans[0]!.assumptions).toEqual(["exact lineup unknown until kickoff"]);
   expect(plans[0]!.ungrounded).toBeUndefined();
 });
+
+// A mid-turn mode switch (Shift+Tab / plan-card accept while the plan turn is
+// still streaming) retires #planGate on the Session — but the in-flight turn's
+// planGate closure must keep working off the gate it started with instead of
+// exploding on the now-undefined field.
+test("plan gate survives a mid-turn mode switch away from plan", async () => {
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "web_search",
+        input: JSON.stringify({ query: "world cup match today" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify({
+          plan: "Build a site about tonight's match.",
+          sources: [{ url: "https://fifa.com/todays-match" }],
+        }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "Plan presented." },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const bus = new EventBus();
+  let session: Session;
+  const flippingSearch: ToolDefinition<{ query: string }> = {
+    ...fakeSearch,
+    execute: async () => {
+      session.setMode("execute"); // user flips mode while the plan turn streams
+      return { output: "1. Morocco vs Spain tonight\n   https://fifa.com/todays-match" };
+    },
+  };
+  session = new Session({
+    config: defaultConfig(),
+    registry: new ProviderRegistry([
+      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    ]),
+    toolset: new Toolset([presentPlanTool, flippingSearch]),
+    bus,
+    cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-flip-")),
+    model: "mock/test",
+    mode: "plan",
+  });
+
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+  await session.run("build a next.js site about today's world cup match");
+  bus.close();
+  await collector;
+
+  const present = events.find(
+    (e): e is Extract<UIEvent, { type: "tool-call-finished" }> =>
+      e.type === "tool-call-finished" && e.toolCallId === "p1",
+  );
+  // Grounded (one search happened), so the present must succeed — not throw on
+  // a retired gate.
+  expect(present?.isError).toBeFalsy();
+  expect(events.some((e) => e.type === "plan-presented")).toBe(true);
+});

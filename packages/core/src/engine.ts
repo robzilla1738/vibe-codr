@@ -378,13 +378,24 @@ export class Engine implements EngineClient {
     return join(globalStateDir(this.#cwd), "sessions", this.#session.id, "engine.json");
   }
 
-  async #persistEngineState(): Promise<void> {
-    try {
-      await mkdir(dirname(this.#engineStatePath()), { recursive: true });
-      await Bun.write(this.#engineStatePath(), JSON.stringify({ pendingHandoff: this.#pendingHandoff }));
-    } catch {
-      /* best-effort — losing this on a crash only loses one convenience flag */
-    }
+  /** Serializes #persistEngineState writes: the callers are fire-and-forget
+   * (`void this.#persistEngineState()`), and two overlapping writes to the same
+   * engine.json could otherwise land out of order, persisting a stale flag. */
+  #persistEngineStateChain: Promise<void> = Promise.resolve();
+
+  #persistEngineState(): Promise<void> {
+    const write = async () => {
+      try {
+        await mkdir(dirname(this.#engineStatePath()), { recursive: true });
+        // #pendingHandoff is read at write time, so the LAST queued write always
+        // persists the newest state.
+        await Bun.write(this.#engineStatePath(), JSON.stringify({ pendingHandoff: this.#pendingHandoff }));
+      } catch {
+        /* best-effort — losing this on a crash only loses one convenience flag */
+      }
+    };
+    this.#persistEngineStateChain = this.#persistEngineStateChain.then(write);
+    return this.#persistEngineStateChain;
   }
 
   /** Restore engine-side state + the last presented plan on --resume. */
@@ -530,10 +541,19 @@ export class Engine implements EngineClient {
         this.#planModelPrev = this.#session.model;
         this.#session.setModel(planModel);
         this.#notice(`Planning on ${planModel} (execution stays on ${this.#planModelPrev}).`);
+      } else {
+        // Already on the plan model — an explicit `/model <planModel>` or a
+        // session resumed mid-plan. There is nothing to restore, so a stale
+        // prev from an earlier stay must not linger and clobber that choice.
+        this.#planModelPrev = undefined;
       }
-    } else if (this.#session.model === planModel && this.#planModelPrev) {
-      this.#session.setModel(this.#planModelPrev);
+    } else if (this.#session.model === planModel) {
+      // Leaving plan while on the planning model: restore the execution model.
+      // #planModelPrev covers the in-session switch; config.model covers resume
+      // (prev is an engine field and is never persisted).
+      const target = this.#planModelPrev ?? this.#config.model;
       this.#planModelPrev = undefined;
+      if (target !== planModel) this.#session.setModel(target);
     }
   }
 
@@ -579,6 +599,12 @@ export class Engine implements EngineClient {
       // it immediately and the handoff turn starts with ids in CURRENT TASKS —
       // the deferred path used to skip seeding entirely, losing the list.
       if (this.#lastPlan) this.#seedTasksFromPlan(this.#lastPlan);
+      // The approval SPENDS the plan, same as the immediate path — otherwise a
+      // later plan↔execute toggle re-enters the approval routine and re-seeds
+      // the task list (resetting statuses) with a duplicate "Plan approved"
+      // notice each cycle. Returning to plan mode after this revokes the
+      // handoff; continued planning simply presents a fresh plan.
+      this.#lastPlan = undefined;
       this.#pendingHandoff = true;
       void this.#persistEngineState();
       this.#bus.emit({
@@ -1342,7 +1368,6 @@ export class Engine implements EngineClient {
     this.#bus.emit({ type: "notice", level, message });
   }
 
-  /** Handle a built-in or plugin/file slash command. */
   /** Persist a patch to the user-global config; surface a failure as a notice. */
   async #persistConfig(patch: Record<string, unknown>): Promise<void> {
     try {
@@ -1728,8 +1753,10 @@ export class Engine implements EngineClient {
   /** The shared gating for post-turn verification: a mutating execute turn the
    * user didn't interrupt (matches the legacy `#maybeVerify` guards). */
   #turnIsGateable(): boolean {
+    // turnMode, not mode: the turn is judged by the mode it STARTED in — a
+    // mid-turn flip to plan must not smuggle a mutating turn past the gate.
     return (
-      this.#session.mode === "execute" &&
+      this.#session.turnMode === "execute" &&
       this.#session.didMutate &&
       !this.#session.interrupted
     );
@@ -2012,7 +2039,7 @@ export class Engine implements EngineClient {
   async #maybeVerify(): Promise<boolean> {
     const { command, auto, maxRetries } = this.#config.verify;
     if (!auto || !command) return false;
-    if (this.#session.mode !== "execute" || !this.#session.didMutate) return false;
+    if (this.#session.turnMode !== "execute" || !this.#session.didMutate) return false;
     // The user interrupted this turn (Esc / steer) — don't run verify against a
     // half-applied edit and enqueue an unsolicited "verification failed, fix it"
     // turn behind whatever they steered to.

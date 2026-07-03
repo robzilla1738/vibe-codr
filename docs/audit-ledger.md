@@ -1887,3 +1887,34 @@ the TUI ANSI (char-scanning, no regex)/markdown/diff/slash + skills frontmatter 
 regex found. The O(n²) class is closed.
 
 Clean-pass counter after Pass 9: 0 (1 confirmed → fixed). TWO consecutive CLEAN passes still required.
+
+
+### Pass 10 — 1 CONFIRMED (a fresh-install onboarding trap; FIXED + regression-tested)
+Two skeptics (htmlToText-restructure-correctness / onboarding+fresh-install+memory+parity). The
+correctness sweep of the pass-9 `htmlToText` restructure was CLEAN (verified more-correct than the old
+version on 60-fence docs, alternating headings, entity decode, literal `<h1>` in code — all preserved;
+the triple-backtick-in-`<pre>` mis-pairing is pre-existing/byte-identical and drops no content, REFUTED).
+The onboarding sweep found one real fresh-install trap:
+- **[LOW-MED] P10-W1 onboarding accepted a scheme-less custom base URL and reported success** — the
+  `custom` OpenAI-compatible endpoint validates the base URL only via `z.string().url()`, which delegates
+  to `new URL()`; `new URL("localhost:1234")` PARSES (protocol `localhost:`, EMPTY host), so validation
+  passes, the config is persisted, onboarding shows the green "You're all set" box, and every subsequent
+  run fails at request time. `load.ts` explicitly DOCUMENTS `localhost:1234` as the value its write-time
+  validation rejects to avoid bricking the CLI — but it was actually accepted; the comment/intent was
+  wrong. Fixed at the schema level: a shared `httpUrl()` (requires an http/https scheme AND a non-empty
+  host) now backs the provider `baseURL`, hook webhook `url`, and remote MCP-server `url`; and onboarding
+  re-prompts (friendly `isHttpUrl` loop) on a scheme-less entry instead of throwing a ConfigError out of
+  setup. Verified: `localhost:1234`/`my-endpoint`/`ftp://` rejected, real http(s) accepted. Regression:
+  *"provider baseURL requires an http(s) scheme + host"* (config.test.ts).
+
+REFUTED with executed disproofs: headless `-p` with no provider (clean `Provider … not configured` error,
+exit 1, no stacktrace; JSON form well-formed); `vibe models` keyless (Ollama-only, exit 0); config-dir
+missing/nested (Bun.write creates parents; EACCES rendered cleanly); `vibe setup` non-interactive; onboarding
+Ctrl-C (restores tty, exit 130); env-var key precedence (env→config→token file); headless memory writes
+gated on `#interactive` (no digest persisted for `-p`); malformed skill frontmatter + plugin-load failure
+(guarded per-file + timeout-bounded, degrade not crash); MCP boot connect failure (`allSettled` + per-server
+timeout, skipped not fatal); headless JSON shape (plan text + sources + gate captured, non-zero on error/red).
+`decodeEntities` overflow/surrogate/malformed and `looksLikeShell` "Cloudflare" false-positive noted as
+cosmetic/garbage-input only, not defects.
+
+Clean-pass counter after Pass 10: 0 (1 confirmed → fixed). TWO consecutive CLEAN passes still required.

@@ -318,6 +318,18 @@ interface InputOptions {
   hint?: string;
 }
 
+/** An http(s) URL WITH a host — mirrors the config schema's `httpUrl`. `new URL`
+ * alone accepts a scheme-less `localhost:1234` (protocol `localhost:`, empty host),
+ * so onboarding must check the scheme + host itself before persisting. */
+function isHttpUrl(v: string): boolean {
+  try {
+    const u = new URL(v);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.host !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** Single-line text input (optionally masked for secrets). */
 function input(label: string, opts: InputOptions = {}): Promise<string> {
   let val = "";
@@ -446,12 +458,25 @@ export async function runOnboarding(
 
   // Custom OpenAI-compatible endpoint: a base URL + optional key + a model id.
   if (choice.customEndpoint) {
-    const baseURL = (
-      await input("Base URL", {
-        placeholder: "https://my-endpoint.example.com/v1",
-        hint: "any OpenAI-compatible /v1 endpoint",
-      })
-    ).trim();
+    // Re-prompt until the base URL is a real http(s) URL (or empty = skip). A
+    // scheme-less `localhost:1234` parses as protocol `localhost:` with an EMPTY
+    // host — it would pass a naive check, persist, show "all set", then fail every
+    // request. Reject it here so the caller never writes a bricked config (the
+    // schema also rejects it at write time; this makes the failure a friendly
+    // re-prompt instead of a thrown ConfigError).
+    let baseURL = "";
+    for (;;) {
+      baseURL = (
+        await input("Base URL", {
+          placeholder: "https://my-endpoint.example.com/v1",
+          hint: "any OpenAI-compatible /v1 endpoint",
+        })
+      ).trim();
+      if (!baseURL || isHttpUrl(baseURL)) break;
+      stdout.write(
+        `${fg("✗", WARN)} ${dim("Enter a full http(s) URL with a host, e.g. https://host:8080/v1")}\n`,
+      );
+    }
     const apiKey =
       (await input("API key (optional)", { mask: true, placeholder: "Enter to skip" })).trim() ||
       undefined;

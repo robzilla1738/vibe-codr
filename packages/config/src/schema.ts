@@ -1,9 +1,29 @@
 import { z } from "zod";
 
+/** An http(s) URL WITH a real host — for any endpoint we will actually connect to
+ * (a provider baseURL, a webhook, a remote MCP server). Plain `z.string().url()`
+ * delegates to the URL constructor, which accepts a scheme-less `localhost:1234`
+ * (parsed as protocol `localhost:` + EMPTY host). That value passes validation, is
+ * persisted, shows a green "you're all set", then fails on every request — the exact
+ * fresh-install brick the write-time validation is meant to prevent. Require an
+ * http/https scheme and a non-empty host so a typo'd endpoint is rejected up front. */
+const httpUrl = () =>
+  z.string().refine(
+    (v) => {
+      try {
+        const u = new URL(v);
+        return (u.protocol === "http:" || u.protocol === "https:") && u.host !== "";
+      } catch {
+        return false;
+      }
+    },
+    { message: "must be an http(s) URL with a host (e.g. https://host:port/path)" },
+  );
+
 /** Per-provider overrides (api key + base URL + subscription/OAuth token file). */
 export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
-  baseURL: z.string().url().optional(),
+  baseURL: httpUrl().optional(),
   /**
    * Path to a credential file to read the key/token from (supports `~`). Used to
    * reuse a subscription/OAuth token another CLI already obtained — e.g. Codex's
@@ -67,7 +87,7 @@ export const HookSchema = z.object({
    * `{deny,reason}` (block a tool) or `{input}` (rewrite the tool input). */
   command: z.string().optional(),
   /** URL to POST the payload to (JSON in, JSON out, same protocol as `command`). */
-  url: z.string().url().optional(),
+  url: httpUrl().optional(),
   /** Fire-and-forget: don't await or let it block/deny (e.g. notifications). */
   async: z.boolean().default(false),
 });
@@ -140,7 +160,7 @@ export const McpServerSchema = z.union([
     timeoutMs: z.number().int().positive().optional(),
   }),
   z.object({
-    url: z.string().url(),
+    url: httpUrl(),
     /** Remote transport: "http" (Streamable HTTP, the modern default) or "sse"
      * (legacy). Defaults to "http". */
     transport: z.enum(["http", "sse"]).optional(),

@@ -33,6 +33,22 @@ test("defaultConfig is valid and carries the documented defaults", () => {
   expect(c.lsp.servers).toEqual({});
 });
 
+test("provider baseURL requires an http(s) scheme + host (adversarial P10-W1)", () => {
+  // `z.string().url()` accepts a scheme-less `localhost:1234` (URL parses it as
+  // protocol `localhost:` with an EMPTY host); that would persist and then fail
+  // every request — the fresh-install brick the write-time validation must prevent.
+  const bad = ["localhost:1234", "localhost:1234/v1", "my-endpoint", "ftp://x/y", "://nohost"];
+  for (const url of bad) {
+    const r = ConfigSchema.safeParse({ providers: { custom: { baseURL: url } } });
+    expect([url, r.success]).toEqual([url, false]);
+  }
+  const good = ["http://ok/v1", "https://host:8080/v1", "https://api.example.com"];
+  for (const url of good) {
+    const r = ConfigSchema.safeParse({ providers: { custom: { baseURL: url } } });
+    expect([url, r.success]).toEqual([url, true]);
+  }
+});
+
 test("lsp accepts per-language overrides and a partial block fills defaults", () => {
   const r = ConfigSchema.safeParse({
     lsp: { timeoutMs: 500, disabledLanguages: ["go"], servers: { py: { command: "pyright-langserver", args: ["--stdio"] } } },

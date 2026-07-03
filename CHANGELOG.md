@@ -56,7 +56,7 @@ All notable changes to vibe-codr are documented here.
   longer stalls at 0/N.
 - **Plan approval works in yolo.** The plan card survives a mode switch, and
   approving composes with your approval preference: **Enter** runs with the
-  current mode, **Y** accepts and runs **unattended in yolo**. `#approvePlan`
+  current mode, **Ctrl+Y** accepts and runs **unattended in yolo**. `#approvePlan`
   no longer force-resets approvals to `ask`, so an approved plan can execute
   hands-off.
 - **Drive-to-green execution.** The green gate now **re-derives the repo profile**

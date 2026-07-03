@@ -415,7 +415,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   research instead of shipping a 20-second hallucinated plan.
   When the model calls `present_plan` you get an **interactive approval card** —
   **Enter** accepts & executes (seeding an **id-addressed task list** from the
-  plan's checklist), **Y** accepts and runs in **yolo** (unattended), **typing**
+  plan's checklist), **Ctrl+Y** accepts and runs in **yolo** (unattended), **typing**
   revises the plan, **Esc** keeps planning. Approving by mode-switch
   (`/execute` or Shift+Tab) arms the same handoff — the transcript says so, and
   your next message starts implementation. **Execute** allows

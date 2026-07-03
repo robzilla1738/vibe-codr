@@ -35,3 +35,25 @@ test("extractContextLength prefers the served num_ctx over the architectural max
     }),
   ).toBe(32768);
 });
+
+test("probeOllamaContextWindow does NOT memoize a transient failure (re-probes after recovery)", async () => {
+  const { probeOllamaContextWindow } = await import("./ollama-probe.ts");
+  const realFetch = globalThis.fetch;
+  let fail = true;
+  globalThis.fetch = (async (_url: string | URL) => {
+    if (fail) throw new Error("daemon still starting");
+    return new Response(JSON.stringify({ model_info: { "glm.context_length": 8192 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const model = "ollama/uniq-transient-probe-fixture"; // unique key → no cross-test cache
+    expect(await probeOllamaContextWindow(model, "http://localhost:11434/v1")).toBeUndefined(); // transient fail
+    fail = false;
+    // The failure was NOT cached, so the daemon-recovered probe succeeds.
+    expect(await probeOllamaContextWindow(model, "http://localhost:11434/v1")).toBe(8192);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

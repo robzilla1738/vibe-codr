@@ -33,16 +33,15 @@ export async function probeLmStudioContextWindow(
     .replace(/\/$/, "");
   try {
     const res = await fetch(`${root}/api/v0/models`, { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) {
-      cache.set(model, undefined);
-      return undefined;
-    }
+    // Only a SUCCESSFUL response is a definitive answer worth memoizing — a
+    // transient error (server loading, network, timeout) must not permanently
+    // pin the model to the default; let the next turn re-probe.
+    if (!res.ok) return undefined;
     const body = (await res.json()) as { data?: LmStudioModel[] };
     const ctx = extractLmStudioContext(body.data ?? [], name);
     cache.set(model, ctx);
     return ctx;
   } catch {
-    cache.set(model, undefined);
     return undefined;
   }
 }

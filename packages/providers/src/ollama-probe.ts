@@ -42,15 +42,16 @@ export async function probeOllamaContextWindow(
       body: JSON.stringify({ name }),
       signal: AbortSignal.timeout(4000),
     });
-    if (!res.ok) {
-      cache.set(model, undefined);
-      return undefined;
-    }
+    // Only a SUCCESSFUL response is a definitive answer worth memoizing. A
+    // non-ok status (500, or the daemon still loading), a network error, or a
+    // timeout is TRANSIENT — caching undefined there would permanently pin the
+    // model to the default even after the daemon comes up, so leave it uncached
+    // and let the next turn re-probe.
+    if (!res.ok) return undefined;
     const ctx = extractContextLength((await res.json()) as ShowResponse);
     cache.set(model, ctx);
     return ctx;
   } catch {
-    cache.set(model, undefined);
     return undefined;
   }
 }

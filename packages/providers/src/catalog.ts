@@ -236,14 +236,21 @@ export class CatalogService {
     if (!this.#loadPromise) {
       this.#loadPromise = this.#fetchCatalog().then((raw) => {
         if (raw) {
-          this.#metadata = parseModelsDev(raw);
-          return this.#metadata;
+          const parsed = parseModelsDev(raw);
+          // A wrong-shaped 200 (schema change / error envelope) parses to an
+          // EMPTY map — treat it exactly like a fetch failure below, never poison
+          // #metadata with it (see the no-poison rationale).
+          if (parsed.size > 0) {
+            this.#metadata = parsed;
+            return this.#metadata;
+          }
         }
-        // Fetch failed AND no cache: do NOT poison `#metadata` with an empty map —
-        // that's truthy, so every later contextWindow()/pricing() would take the
-        // fast path and never retry the network, pinning all models to the 128k
-        // default + $0 pricing for the whole process. Clear the in-flight promise
-        // so the NEXT lookup retries; return an empty map for THIS call only.
+        // Fetch failed / empty AND no usable cache: do NOT poison `#metadata` with
+        // an empty map — that's truthy, so every later contextWindow()/pricing()
+        // would take the fast path and never retry the network, pinning all models
+        // to the 128k default + $0 pricing for the whole process. Clear the
+        // in-flight promise so the NEXT lookup retries; return an empty map for
+        // THIS call only.
         this.#loadPromise = null;
         return new Map<string, Partial<ModelInfo>>();
       });
@@ -262,6 +269,10 @@ export class CatalogService {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      // Only persist a 200 that actually parses to models — a wrong-shaped body
+      // (schema change / error envelope) must NOT be cached to disk, or it pins
+      // every model to defaults for the full 24h TTL, surviving restarts.
+      if (parseModelsDev(data).size === 0) throw new Error("empty/unrecognized catalog body");
       await this.#writeCache({ fetchedAt: Date.now(), data });
       return data;
     } catch (err) {

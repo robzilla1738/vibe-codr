@@ -782,7 +782,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 6 | Context gathering | PASS |
 | 7 | Memory | PASS |
 | 8 | Research stack | PASS |
-| 9 | Providers & model catalog | REOPENED |
+| 9 | Providers & model catalog | PASS |
 | 10 | Sessions/persistence/resume | REOPENED |
 | 11 | TUI + headless parity | REOPENED |
 | 12 | Config, MCP, skills/plugins, onboarding, fresh install | REOPENED |
@@ -1214,6 +1214,56 @@ pinning, redirect-to-internal, CRLF-in-Location — all blocked; fail-closed on 
   (inherent). crawl stores the page under the pre-redirect URL (same-origin redirects only → minor).
   With a cache configured, an aborted webfetch that has a prior good entry returns the cached copy
   rather than the abort message (cosmetic; content still returned). All LOW/INFO.
+
+
+## v2 §9. Providers & model catalog — PASS
+
+Scope read end-to-end: registry.ts, resolve.ts, catalog.ts, defs.ts, openai-compat.ts, ollama-probe.ts,
+lmstudio-probe.ts, auth-file.ts, index.ts, types.ts + the core pricing/context-window wiring. One
+reader + author repro/fix. planModel resolution verified CLEAN (never bricks the session).
+
+### CONFIRMED & FIXED
+- **[MED] V2-39 Pre-turn budget gate hard-stopped on ESTIMATED spend** — the in-turn abort correctly
+  guards `!estimated`, but the PRE-turn refusal (blocks the next turn once costUSD ≥ limit) had no such
+  check, so an estimated base-model price (a local ollama/lmstudio tag that fuzzy-matched a cloud rate)
+  would hard-refuse every future turn of a possibly-free session — exactly what the "estimated never
+  hard-stops" invariant forbids. Fixed: the pre-turn gate now also requires `!this.#price?.estimated`.
+  Regression: *"spend guard with onExceed=stop does NOT block the next turn on ESTIMATED spend"*
+  (session.test.ts).
+- **[LOW-MED] V2-40 A malformed models.dev 200 poisoned the catalog (memory + disk, 24h)** — the
+  no-poison guard only covered a fetch FAILURE; a wrong-shaped 200 (schema change / error envelope)
+  parsed to an empty map that was set as truthy #metadata AND written to the disk cache, pinning every
+  model to the 128k default + $0 for the full TTL across restarts. Fixed: a parse of size 0 is treated
+  like a failure — never set as #metadata, never cached to disk. Regression: *"a malformed 200 does NOT
+  poison the catalog (memory or disk)"* (catalog.test.ts).
+- **[LOW] V2-41 Probe failures were memoized forever** — ollama/lmstudio context-window probes cached
+  `undefined` on ANY non-ok/throw, so a transient failure (daemon still starting, momentary timeout)
+  permanently pinned that model to the default even after the daemon came up. Fixed: only a SUCCESSFUL
+  response is memoized; a non-ok status / network error / timeout is left uncached so the next turn
+  re-probes. Regression: *"probeOllamaContextWindow does NOT memoize a transient failure"*
+  (ollama-probe.test.ts); lmstudio-probe fixed symmetrically.
+
+### REFUTED / verified clean
+- planModel: entering plan mode only setModel(planModel) (no network/validation); a bad/unauthenticated
+  planModel surfaces on the next turn via #resolveWithFallback (fails over through modelFallbacks, else
+  errors and restores busy=false — session usable). Routes through the same pricing/context path.
+  modelFallbacks skips self + switches visibly. resolve.ts parsing (empty/no-slash/leading/trailing/
+  multi-slash) correct. LOCALLY_PROBED no-fuzzy-window asymmetry right; ollama→ollama-cloud alias gated
+  on OLLAMA_API_KEY; LM Studio prefers loaded_context_length; extract guards >0 + min(configured,arch).
+  catalog #load failure no-poison + refresh-keeps-good-data intact. selectTier/parseTiers robust;
+  computeCost Math.max(0)/cached-clamp/undefined→0 guards; schema nonnegative/positive. one dead
+  provider never breaks the catalog; header precedence safe; custom-endpoint no-baseURL actionable
+  error; static PROVIDER_MODULES preserves --compile; auth-file missing/empty→undefined. All sound.
+
+### Accepted-risk (recorded)
+- **V2-P4 [LOW]** refresh() racing a slower in-flight #load: the older load's late `.then` can clobber
+  the just-refreshed catalog (both valid catalogs, small window) — recorded, not fixed (a load-vs-refresh
+  generation guard adds complexity for a benign same-data race).
+- Corrupt (valid-file/invalid-JSON) auth credential sent as an opaque Bearer token → 401 rather than a
+  "malformed auth file" message (diagnosability footgun); listConfiguredModels swallows a present-but-
+  invalid key to an empty /models with no signal. Both LOW, recorded. v1 accepted-risk (Codex OAuth no
+  refresh; zero-keys errors vs keyless-default; keyless reports configured when daemon down) unchanged.
+  Model-id/version defaults NOT churned (memory constraint) — none were actual bugs.
 
 ## v2 DECISIONS (this subsystem)
 - **Concurrent index-prune staleness (V2-M2) recommended design:** serialize `SemanticMemory.index()`

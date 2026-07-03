@@ -771,8 +771,11 @@ export class Session {
       // If a prior turn already blew the spend limit under `stop`, refuse the new
       // turn — but do so BEFORE pushing the user message, so we don't leave an
       // orphan user turn with no assistant reply (consecutive same-role messages
-      // 400 on Anthropic/others). The user sees why via a notice.
-      if (config.budget.onExceed === "stop" && this.#enforceBudget()) {
+      // 400 on Anthropic/others). The user sees why via a notice. Only ACTUAL
+      // (non-estimated) spend blocks a new turn: an estimated base-model price
+      // must never hard-stop a possibly-free local session — same invariant the
+      // in-turn abort honors.
+      if (config.budget.onExceed === "stop" && !this.#price?.estimated && this.#enforceBudget()) {
         bus.emit({
           type: "notice",
           level: "warn",

@@ -225,6 +225,42 @@ test("a failed first load does NOT poison the catalog — a later lookup retries
   }
 });
 
+test("a malformed 200 does NOT poison the catalog (memory or disk) — a later good fetch enriches", async () => {
+  // Regression: a wrong-shaped 200 (schema change / error envelope) parsed to an
+  // empty map that was set as truthy #metadata AND written to the 24h disk cache,
+  // pinning every model to defaults for a full day even across restarts.
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const prevCache = process.env.XDG_CACHE_HOME;
+  process.env.XDG_CACHE_HOME = mkdtempSync(join(tmpdir(), "vibe-cat-bad-"));
+  const realFetch = globalThis.fetch;
+  let bad = true;
+  globalThis.fetch = (async (_url: string | URL) => {
+    if (bad) return new Response(JSON.stringify({ unexpected: "shape" }), { status: 200, headers: { "content-type": "application/json" } });
+    return new Response(JSON.stringify({ openai: { models: { "gpt-5.2": { limit: { context: 400000 } } } } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const cat = new CatalogService();
+    const first = await cat.enrich([{ providerId: "openai", id: "gpt-5.2" }]);
+    expect(first[0]!.contextWindow).toBeUndefined(); // malformed → no enrichment…
+    bad = false;
+    const second = await cat.enrich([{ providerId: "openai", id: "gpt-5.2" }]);
+    expect(second[0]!.contextWindow).toBe(400000); // …but NOT poisoned; retries and enriches
+    // And a fresh service on the SAME cache dir isn't stuck on a cached bad body.
+    const fresh = new CatalogService();
+    const third = await fresh.enrich([{ providerId: "openai", id: "gpt-5.2" }]);
+    expect(third[0]!.contextWindow).toBe(400000);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (prevCache === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevCache;
+  }
+});
+
 test("refresh() force-fetches the catalog and returns the model count", async () => {
   const cat = new CatalogService();
   let calls = 0;

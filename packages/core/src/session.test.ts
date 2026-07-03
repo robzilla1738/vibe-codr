@@ -523,6 +523,45 @@ test("spend guard with onExceed=stop aborts after the budget is crossed", async 
   expect(text).not.toContain("SHOULD-NOT-APPEAR");
 });
 
+test("spend guard with onExceed=stop does NOT block the next turn on ESTIMATED spend", async () => {
+  // An estimated (base-model fallback) price must never hard-stop — not in-turn
+  // AND not at the pre-turn gate. A local tag that fuzzy-matched a cloud rate
+  // could otherwise refuse every future turn of a genuinely-free session.
+  const reply = (delta: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+    ]);
+  const replies = [reply("first"), reply("SECOND-RAN")];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => replies[call++] as never });
+  const bus = new EventBus();
+  const session = new Session({
+    config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    // ESTIMATED price → big enough to cross the tiny budget on turn 1.
+    getPricing: async () => ({ input: 1000, output: 1000, estimated: true }),
+  });
+
+  await collect(bus, () => session.run("turn one")); // crosses the (estimated) budget
+  const events = await collect(bus, () => session.run("turn two")); // must NOT be refused
+  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  expect(blocked).toBe(false);
+  const text = events
+    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .map((e) => e.delta)
+    .join("");
+  expect(text).toContain("SECOND-RAN");
+});
+
 test("spend guard with onExceed=warn notifies once but completes the turn", async () => {
   const reply = () =>
     stream([

@@ -407,10 +407,16 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   the system prompt injects today's date so "yesterday" is never presented as
   "today"; unverified needs are marked *inferred — verify*, never asserted), and
   an **adversarial self-critique** ("what does the real thing have that this plan
-  is missing?") before `present_plan` is allowed to be called;
-  when the model calls `present_plan` you get an **interactive approval card** —
-  **Enter** accepts & executes (seeding the task list from the plan's checklist),
-  **typing** revises the plan, **Esc** keeps planning. Approving by mode-switch
+  is missing?") before `present_plan`. The pipeline is **code-enforced, not just
+  prompted**: a deterministic triage decides what evidence the request needs, and
+  the engine **rejects an ungrounded `present_plan`** (with concrete "run
+  web_search / read these files" instructions, up to twice, then presents it
+  stamped *⚠ ungrounded*) — so even a weak local model is bounced back into
+  research instead of shipping a 20-second hallucinated plan.
+  When the model calls `present_plan` you get an **interactive approval card** —
+  **Enter** accepts & executes (seeding an **id-addressed task list** from the
+  plan's checklist), **Y** accepts and runs in **yolo** (unattended), **typing**
+  revises the plan, **Esc** keeps planning. Approving by mode-switch
   (`/execute` or Shift+Tab) arms the same handoff — the transcript says so, and
   your next message starts implementation. **Execute** allows
   edits/commands, each gated by a glob-based allow/deny/ask **permission layer**

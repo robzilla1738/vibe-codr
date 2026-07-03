@@ -30,21 +30,87 @@ All notable changes to vibe-codr are documented here.
 - **A long plan card no longer buries the transcript.** The approval card caps
   at `dims−20` (was `dims−12`), so ~8 transcript rows stay visible and
   scrollable — you can re-read your own message while deciding on the plan.
-- **Planning is grounded now.** The system prompt injects **today's date**
-  (with a "your training data predates this" warning), the always-on web
-  doctrine forbids stating "latest" versions from memory, and PLAN mode carries
-  a research pipeline modeled on agentswarm's grounded-research phase:
-  **triage** (self-contained work skips research) → **gather** (parallel
-  `web_search` with recency, `webfetch` of authoritative docs, `package_info`
-  for real versions, subagent scouts) → **ground** (verified facts with sources
-  and real dates; unverified needs marked *inferred — verify*) →
-  **adversarial self-critique** ("what does the real thing have that this plan
-  is missing?") → `present_plan` last. Fixes plans that called yesterday's
-  event "today" and specified stale majors from memory.
+- **Planning is grounded now — and it's code-enforced, not just prompted.** The
+  system prompt injects **today's date** (with a "your training data predates
+  this" warning), the always-on web doctrine forbids stating "latest" versions
+  from memory, and PLAN mode carries a research pipeline modeled on agentswarm's
+  grounded-research phase: **triage** (self-contained work skips research) →
+  **gather** (parallel `web_search` with recency, `webfetch` of authoritative
+  docs, `package_info` for real versions, subagent scouts) → **ground** (verified
+  facts with sources and real dates; unverified needs marked *inferred — verify*)
+  → **adversarial self-critique** → `present_plan` last. A new **plan-readiness
+  gate** (`plan-gate.ts`) makes this a contract: a deterministic triage of the
+  request decides what evidence the plan needs, and the engine **rejects an
+  ungrounded `present_plan`** with concrete instructions (bounded at two bounces,
+  then presented stamped *⚠ ungrounded*) — so a weak local model that skips
+  straight to presenting is forced back into GATHER instead of shipping a
+  20-second hallucinated plan. An optional `planModel` config routes plan-mode
+  turns to a dedicated model. Fixes plans that called yesterday's event "today"
+  and specified stale majors from memory.
+- **The task list actually updates during execution.** Approving a plan seeds an
+  **id-addressed task list** (`t1`…`tN`); `update_tasks` takes partial
+  `{id,status}` patches (no fragile verbatim-title matching, legacy full-list
+  shape still accepted), the handoff prompt tells the model the tasks already
+  exist with their ids, and a turn-end **reconciliation fallback** flips
+  finished work even when the model forgets to call the tool — so the counter no
+  longer stalls at 0/N.
+- **Plan approval works in yolo.** The plan card survives a mode switch, and
+  approving composes with your approval preference: **Enter** runs with the
+  current mode, **Y** accepts and runs **unattended in yolo**. `#approvePlan`
+  no longer force-resets approvals to `ask`, so an approved plan can execute
+  hands-off.
+- **Drive-to-green execution.** The green gate now **re-derives the repo profile**
+  when a mutating turn changes the build manifest (a `create-next-app` in a
+  formerly-empty dir is now actually built + gated, instead of staying
+  "UNVERIFIED" forever), the fix-round cap defaults to **5** (was 2) and its
+  exhaustion is a loud "needs your attention" notice rather than a silent stop,
+  and EXECUTE mode carries an explicit persistence doctrine (never end a turn on
+  a broken build).
+- **Machine state moved out of the project.** Session transcripts, engine state,
+  and checkpoints now live under **`~/.vibe/state/<cwd-hash>/`** (session-id
+  scoped), so a fresh scaffold target (`create-next-app .`) stays truly empty and
+  `.vibe/` is gitignored when created in a repo. Only user-facing artifacts
+  (`config.json`, `VIBE.md`, saved plans, commands/skills/agents) stay in-project.
 - **Output polish.** A single-datum `chart` block renders as a stat line
   (bold value + muted label) instead of one meaningless always-100% bar; diff
   sign columns align across hunks (`diffPad`); the `/accent` hex hint shows the
   new brand. README screenshots regenerated in the new theme.
+
+### Fixed — full subsystem hardening audit
+
+A from-scratch audit of all 12 subsystems (modes/approvals, compaction,
+prompt-cache, subagent orchestration, coding loop, context gathering, memory,
+research, providers/catalog, sessions/resume, TUI+headless parity, config/MCP/
+onboarding), each read end-to-end and every suspected defect reproduced before
+fixing, then hardened by **twelve adversarial verification passes** until two
+consecutive passes over the weakest areas produced zero new confirmed findings.
+Full findings/verdicts trail in [`docs/audit-ledger.md`](docs/audit-ledger.md).
+Every fix carries a regression test; the gate (typecheck, lint, full suite) is
+green, and a simulated fresh-install smoke (clone → install → first run, incl. a
+keyless Ollama end-to-end) passes with zero manual fixes. Highlights:
+
+- **Closed an O(n²) regex class over untrusted input.** Several HTML/markdown/
+  search parsers used a lazy `[\s\S]*?</tag>` that rescans to end-of-string per
+  unclosed opener — running synchronously after a fetch, so no timeout bounded it
+  (a 703 KB page froze `webfetch` ~31 s). Rewrote `htmlToText`, the DuckDuckGo &
+  Bing result parsers, `stripInline`, and `stripHandoffFence` as linear
+  unrolled-loops; all now complete in single-digit ms.
+- **`htmlToText` no longer deletes `<…>` spans inside `<pre>` code** (generics
+  `Vec<T>`, comparisons `i < n`, shell redirects `cmd > out`) — fence content is
+  protected from the tag-strip pass.
+- **Web search is resilient to a malformed booster.** A garbage TinyFish response
+  (non-array, or entries missing `url`/`snippet`) no longer sinks the whole
+  keyless DuckDuckGo + Bing fan-out.
+- **Cost/budget integrity.** A non-numeric/NaN price from a malformed catalog
+  upstream can no longer produce a `NaN` running cost that silently disables the
+  `budget: {onExceed:"stop"}` cap.
+- **Parallel-writer safety.** The post-merge red-gate revert reverts only its own
+  merge delta (renames and non-ASCII paths included), never a sibling task's
+  already-staged work; `/undo` checkpoints are scoped to their own session across
+  a restart.
+- **Fresh-install trap fixed.** A scheme-less custom base URL (`localhost:1234`)
+  is now rejected up front (schema + onboarding re-prompt) instead of persisting a
+  config that shows "you're all set" then fails every request.
 
 ### Changed — default theme is the opencode look, wider column, overflow fixes
 

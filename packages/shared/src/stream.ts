@@ -105,6 +105,25 @@ export class CappedText {
   }
 }
 
+/** Bytes drained between cooperative macrotask yields (see forEachTextChunk). */
+const DRAIN_YIELD_BYTES = 64 * 1024;
+
+/**
+ * A cooperative-yield budget: accumulates units (bytes, stream parts) and
+ * returns true — resetting — each time the running total crosses `threshold`.
+ * Pure, so hot loops can gate an `await setTimeout(0)` on it and tests can
+ * assert the cadence without timers.
+ */
+export function makeYieldGate(threshold: number): (n: number) => boolean {
+  let acc = 0;
+  return (n: number) => {
+    acc += n;
+    if (acc < threshold) return false;
+    acc = 0;
+    return true;
+  };
+}
+
 /**
  * Iterate a byte stream, streaming-decoding each chunk to text and handing it to
  * `onText`. One `TextDecoder` in streaming mode spans chunk boundaries, so a
@@ -126,6 +145,7 @@ async function forEachTextChunk(
     if (signal.aborted) cancel();
     else signal.addEventListener("abort", cancel, { once: true });
   }
+  const yieldGate = makeYieldGate(DRAIN_YIELD_BYTES);
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -133,6 +153,12 @@ async function forEachTextChunk(
       if (!value) continue;
       const text = decoder.decode(value, { stream: true });
       if (text && onText(text) === true) break;
+      // Cooperative yield: a hot pipe (`yes`, `ls -R`) resolves read() from
+      // its buffer on the MICROTASK queue, so this loop can spin without ever
+      // returning to the macrotask queue — starving stdin (frozen keyboard)
+      // in the shared engine+UI process. A setTimeout(0) every ~64 KB lets
+      // input and timers run between bursts; chunk order is untouched.
+      if (text && yieldGate(text.length)) await new Promise((r) => setTimeout(r, 0));
     }
     const flush = decoder.decode(); // trailing partial bytes, if any
     if (flush) onText(flush);

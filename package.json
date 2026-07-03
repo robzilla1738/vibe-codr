@@ -35,6 +35,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "smoke:tui": "bun packages/tui/scripts/smoke.ts",
+    "smoke:sidebar": "bun packages/tui/scripts/sidebar-smoke.ts",
     "inspect:tui": "bun packages/tui/scripts/inspect.ts",
     "lint": "biome lint packages",
     "format": "biome format --write packages",

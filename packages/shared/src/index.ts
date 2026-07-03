@@ -62,6 +62,7 @@ export {
   CappedText,
   omittedMarker,
   drainTextStream,
+  makeYieldGate,
   readCappedText,
   capText,
   readCappedBytes,

@@ -136,3 +136,14 @@ test("readCappedBytes returns the whole body untruncated when it fits", async ()
   expect([...bytes]).toEqual([1, 2, 3]);
   expect(truncated).toBe(false);
 });
+
+test("makeYieldGate fires each time the accumulated budget crosses the threshold", async () => {
+  const { makeYieldGate } = await import("./stream.ts");
+  const gate = makeYieldGate(100);
+  expect(gate(50)).toBe(false);
+  expect(gate(49)).toBe(false);
+  expect(gate(1)).toBe(true); // 100 reached — fire and reset
+  expect(gate(99)).toBe(false);
+  expect(gate(200)).toBe(true); // a single huge chunk still fires once
+  expect(gate(1)).toBe(false); // …and the budget restarted from zero
+});

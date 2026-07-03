@@ -60,7 +60,7 @@ import type {
   Task,
   UIEvent,
 } from "@vibe/shared";
-import { createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
 import { applyPalette, paletteState } from "./commands-catalog.ts";
 import { displayWidth, renderTable, splitMarkdown, tableFits, type MdBlock } from "./markdown-blocks.ts";
@@ -88,6 +88,7 @@ import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
+import { Trail, windowStartIndex } from "./trail.ts";
 import {
   initialTranscript,
   reduceTranscript,
@@ -136,6 +137,13 @@ const PROMPT_KEYS = [
  * bar off the bottom of the screen. Bounding the row count keeps the input usable
  * mid-turn. Matches the menu window cap (MENU_WINDOW_MAX). */
 const PANEL_MAX_ROWS = 8;
+/** Newest turns kept in the transcript's layout tree; older ones fold behind a
+ * "▸ N earlier turns" row (render windowing — the reducer keeps full history).
+ * Generous: 40 turns is far more than fits on screen, so the fold is only ever
+ * seen while deliberately scrolling back. */
+const WINDOW_TURNS = 40;
+/** Turns each tap of the fold row reveals. */
+const REVEAL_PAGE = 20;
 /** The wordmark is rendered with OpenTUI's native ASCII-font renderable
  * (`<ascii_font font="slick">`) in the brand color — see the empty-state splash. */
 /** Min column width to show the big wordmark (else a compact brand line). */
@@ -172,6 +180,19 @@ export function App(props: { engine: EngineClient }) {
   // a continuous left rail (git-graph style) from the user node at the top down
   // through its tool steps and answer. `turns()` is the pure grouping.
   const turns = createMemo(() => groupIntoTurns(blocks()));
+  // RENDER WINDOWING — the layout tree holds only the newest WINDOW_TURNS turns
+  // (plus any the user revealed); older turns leave the tree entirely behind a
+  // tappable "▸ N earlier turns" fold row. This is the structural half of the
+  // freeze fix: yoga re-measures EVERY child in the scrollbox on each relayout
+  // (viewportCulling only skips paint), so an unbounded transcript made each
+  // commit's relayout cost grow without limit until the shared engine+UI thread
+  // starved stdin. Windowing is a RENDER concern only — the reducer's
+  // `ts.blocks` keeps full history for /export, expansion, and resume.
+  // `turns().length` grows only on a new USER block, so the window is stable
+  // for the whole of a streaming turn: no <Index> reshuffle on the hot path.
+  const [revealTurns, setRevealTurns] = createSignal(0);
+  const windowStart = createMemo(() => windowStartIndex(turns().length, WINDOW_TURNS, revealTurns()));
+  const windowedTurns = createMemo(() => turns().slice(windowStart()));
   // Ctrl+O: fold every turn that has a node + work, or unfold all if any is folded.
   const toggleAllTurns = () =>
     setCollapsedTurns((prev) =>
@@ -214,16 +235,31 @@ export function App(props: { engine: EngineClient }) {
   // transcript row (the moment the model acts) and at turn end. Headless
   // parity: `-p` prints reasoning with --show-reasoning.
   const [reasoningLines, setReasoningLines] = createSignal<string[]>([]);
-  // The sidebar's THOUGHT LOG: the whole turn's reasoning as one continuous,
-  // persistent stream. Unlike `reasoningLines` (the transient inline preview,
-  // cleared every time a burst lands as its `✻ thought` row), this accumulates
-  // across bursts and survives past turn end — so the sidebar shows the thought
-  // process, not a line that vanishes as each action starts. Reset only when
-  // the NEXT turn begins.
+  // The sidebar's TRAIL: the whole turn's reasoning AND tool activity as one
+  // continuous, persistent stream. Unlike `reasoningLines` (the transient
+  // inline preview, cleared every time a burst lands as its `✻ thought` row),
+  // this accumulates across bursts and survives past turn end — so the sidebar
+  // shows the thought process, not a line that vanishes as each action starts.
+  // Reset only when the NEXT turn begins. Activity lines (tool icon + action)
+  // interleave chronologically, so a non-reasoning model still shows a live
+  // trail instead of an empty panel; `trailKind` picks the panel header
+  // ("Thinking" once any reasoning exists this turn, "Activity" otherwise).
   const [thoughtLog, setThoughtLog] = createSignal<string[]>([]);
-  // Its backing buffer — component scope (not the event-loop closure) so the
-  // /clear reset path can wipe it along with the signal.
-  let turnThoughtsBuf = "";
+  const [trailKind, setTrailKind] = createSignal<"none" | "activity" | "reasoning">("none");
+  // Trail backing state — component scope (not the event-loop closure) so the
+  // /clear reset path can wipe it along with the signals. `Trail` (trail.ts)
+  // owns the line state and appends incrementally — only NEW bytes are ever
+  // split, never the whole log (the per-token 64 KB re-split was a
+  // main-thread hot spot).
+  const trail = new Trail();
+  let trailDirty = false;
+  /** Unflushed reasoning bytes — landed once per frame, not per token. */
+  let pendingReasoning = "";
+  // The transcript `✻ thought` row's burst buffers (head-capped full text +
+  // rolling tail for the inline preview).
+  let reasoningBuf = "";
+  let reasoningTailBuf = "";
+  let thinkingStartedAt = 0;
   let turnStartedAt = 0;
   let model = snap.model;
   let mode = snap.mode;
@@ -258,7 +294,7 @@ export function App(props: { engine: EngineClient }) {
   });
   // The transcript scrollbox, captured so expand/collapse can hold the clicked
   // row in place instead of letting sticky-scroll snap to the bottom.
-  let scrollEl: { scrollTop: number; stickyScroll: boolean } | undefined;
+  let scrollEl: { scrollTop: number; scrollHeight: number; stickyScroll: boolean } | undefined;
   // Expand/collapse a row while keeping the clicked line visually fixed. When the
   // turn is idle, clicking is "I'm reading now": disengage auto-follow (otherwise
   // the taller content snaps to the bottom and reads as a jump) and freeze
@@ -276,6 +312,22 @@ export function App(props: { engine: EngineClient }) {
     mutate();
     queueMicrotask(() => {
       if (scrollEl) scrollEl.scrollTop = top;
+    });
+    refocusInput();
+  };
+  // Reveal a page of older turns above the render window, keeping the fold row
+  // (and whatever the user was reading) visually fixed: the height the new
+  // turns add ABOVE the viewport is added back into scrollTop after relayout —
+  // the same anchoring idea as `anchoredToggle`, computed from the scrollHeight
+  // delta because content grew above rather than at the click point.
+  const revealOlder = () => {
+    const el = scrollEl;
+    const oldTop = el?.scrollTop ?? 0;
+    const oldHeight = el?.scrollHeight ?? 0;
+    if (el) el.stickyScroll = false; // reading history — don't snap to bottom
+    setRevealTurns((r) => r + REVEAL_PAGE);
+    queueMicrotask(() => {
+      if (el) el.scrollTop = oldTop + (el.scrollHeight - oldHeight);
     });
     refocusInput();
   };
@@ -809,8 +861,12 @@ export function App(props: { engine: EngineClient }) {
   // cursors; this file mirrors its output into Solid signals for rendering.
   let ts = initialTranscript();
   const commit = () => {
-    setBlocks(ts.blocks);
-    setChangedFiles(ts.changedFiles);
+    // One batched write: without batch(), the two signal writes trigger two
+    // separate downstream recomputes (turns() + full yoga relayout each).
+    batch(() => {
+      setBlocks(ts.blocks);
+      setChangedFiles(ts.changedFiles);
+    });
   };
   const resetTranscript = () => {
     ts = initialTranscript();
@@ -832,6 +888,9 @@ export function App(props: { engine: EngineClient }) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
+    // Reasoning first: the trail + inline preview update in the same frame's
+    // batch, and a thinking row landed by a later action sees the full burst.
+    landReasoning();
     if (pendingProgress.size) {
       for (const [toolCallId, chunk] of pendingProgress) {
         ts = reduceTranscript(ts, { type: "tool-progress", toolCallId, chunk });
@@ -850,8 +909,26 @@ export function App(props: { engine: EngineClient }) {
     if (!flushTimer) flushTimer = setTimeout(flushAssistant, STREAM_FLUSH_MS);
   };
 
-  // Apply a transcript action: land any buffered stream text first (so the action
-  // sees the up-to-date reply), reduce, then mirror the new state to the signals.
+  // Two ways to apply a transcript action. Both land buffered stream text
+  // first (so the action sees the up-to-date reply) and reduce IMMEDIATELY —
+  // `ts` is always in exact event order. They differ only in when the state
+  // is PAINTED:
+  //
+  // `enqueue` — the default for engine-event traffic — defers the commit to
+  // the shared frame timer, so a burst of tool-start/finish/file-changed
+  // events (a scaffold generator touching hundreds of files) costs at most
+  // ONE transcript relayout per frame instead of one per event. Per-event
+  // synchronous commits were the main-thread saturation that froze input:
+  // relayout cost × event rate exceeded the loop budget and stdin starved.
+  const enqueue = (action: TranscriptAction) => {
+    if (action.type !== "delta") landPending();
+    ts = reduceTranscript(ts, action);
+    scheduleFlush();
+  };
+  // `apply` — the immediate path — commits this tick. For user-initiated
+  // mutations (expand/collapse needs its scroll-anchor microtask to run
+  // against a committed layout) and the few events where a frame of latency
+  // is wrong: turn end, plan card, engine errors.
   const apply = (action: TranscriptAction) => {
     if (action.type !== "delta") landPending();
     ts = reduceTranscript(ts, action);
@@ -862,6 +939,77 @@ export function App(props: { engine: EngineClient }) {
   const finalizeAssistant = () => apply({ type: "finalize" });
   // Toggle a tool/diff block's collapsed state (the click-to-expand handler).
   const toggle = (id: number) => apply({ type: "toggle", id });
+
+  // ── The sidebar trail + `✻ thought` burst plumbing ──────────────────────────
+  /** A tool fired — record `{icon} {action}` in the trail so a model that
+   * emits no reasoning still shows a live activity stream in the panel. */
+  const pushActivity = (label: string) => {
+    trail.pushLine(label);
+    if (trailKind() === "none") setTrailKind("activity");
+    trailDirty = true;
+    scheduleFlush();
+  };
+  /** Buffer a reasoning token — O(1); the trail/preview land once per frame. */
+  const pushReasoning = (delta: string) => {
+    if (!reasoningBuf && !pendingReasoning) thinkingStartedAt = Date.now();
+    pendingReasoning += delta;
+    scheduleFlush();
+  };
+  /** Land buffered reasoning + any trail changes as AT MOST one signal write
+   * each — called from landPending (every frame flush) and commitThinking. */
+  const landReasoning = () => {
+    if (pendingReasoning) {
+      const chunk = pendingReasoning;
+      pendingReasoning = "";
+      // Bounded: keep the HEAD of a huge think (the framing) for the transcript
+      // row rather than an arbitrary mid-sentence tail; the preview tracks the
+      // newest lines via its own small rolling window.
+      if (reasoningBuf.length < 20_000) reasoningBuf += chunk;
+      reasoningTailBuf = (reasoningTailBuf + chunk).slice(-8000);
+      trail.append(chunk);
+      trailDirty = true;
+      if (trailKind() !== "reasoning") setTrailKind("reasoning");
+      setReasoningLines(
+        reasoningTailBuf
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .slice(-24),
+      );
+    }
+    if (trailDirty) {
+      trailDirty = false;
+      setThoughtLog(trail.snapshot());
+    }
+  };
+  // Land the accumulated burst as a `✻ thought` transcript row and clear the
+  // preview. Enqueued (frame-coalesced): this runs on every assistant text
+  // token while a burst pends, and the row's paint can share the next frame.
+  const commitThinking = () => {
+    landReasoning();
+    if (reasoningBuf.trim()) {
+      enqueue({
+        type: "thinking",
+        text: reasoningBuf,
+        seconds: Math.round((Date.now() - thinkingStartedAt) / 1000),
+      });
+    }
+    reasoningBuf = "";
+    reasoningTailBuf = "";
+    // Only clear the preview when it has lines: an unconditional fresh-[]
+    // write would force a re-render per token during a reply flood.
+    if (reasoningLines().length > 0) setReasoningLines([]);
+  };
+  /** Per-turn / full reset of every trail + burst buffer (new turn, /clear). */
+  const resetTrail = () => {
+    trail.reset();
+    trailDirty = false;
+    pendingReasoning = "";
+    reasoningBuf = "";
+    reasoningTailBuf = "";
+    if (thoughtLog().length > 0) setThoughtLog([]);
+    if (trailKind() !== "none") setTrailKind("none");
+  };
 
   // Refresh the header chrome + rail projections whenever live status changes.
   const refreshStatus = () => {
@@ -1088,66 +1236,9 @@ export function App(props: { engine: EngineClient }) {
     });
 
     void (async () => {
-      // Reasoning arrives as raw deltas. Two views of the same burst:
-      //  • LIVE — a streaming stack of the last few lines under the spinner
-      //    (newest brightest) while the model thinks;
-      //  • PERMANENT — when the model ACTS (text streams / a tool starts / the
-      //    turn ends), the burst lands as a collapsed `✻ thought` row in the
-      //    transcript, expandable later. Without it the reasoning evaporated
-      //    the moment the answer started.
-      let reasoningBuf = "";
-      let reasoningTailBuf = "";
-      let thinkingStartedAt = 0;
-      const pushReasoning = (delta: string) => {
-        if (!reasoningBuf) thinkingStartedAt = Date.now();
-        // Deep caps (the log fills a full-height scrollable column): keep the
-        // whole trail for any realistic turn, tail-trimmed only as a runaway
-        // guard. Blank lines collapse to ONE so bursts read as paragraphs
-        // instead of a run-together wall (the render maps "" to a spacer row).
-        turnThoughtsBuf = (turnThoughtsBuf + delta).slice(-64_000);
-        const trail: string[] = [];
-        for (const raw of turnThoughtsBuf.split("\n")) {
-          const l = raw.trim();
-          if (l) trail.push(l);
-          else if (trail.length > 0 && trail[trail.length - 1] !== "") trail.push("");
-        }
-        while (trail.length > 0 && trail[trail.length - 1] === "") trail.pop();
-        setThoughtLog(trail.slice(-512));
-        // Bounded: keep the HEAD of a huge think (the framing) rather than an
-        // arbitrary mid-sentence tail; the live stack tracks the newest lines
-        // via its own small rolling window (a delta alone can be a partial line).
-        if (reasoningBuf.length < 20_000) reasoningBuf += delta;
-        reasoningTailBuf = (reasoningTailBuf + delta).slice(-8000);
-        // Stored UNTRUNCATED: the inline stack shows the last 3 lines clipped
-        // to the column, while the sidebar wraps a much deeper tail — each view
-        // trims at render time instead of baking one width in here.
-        setReasoningLines(
-          reasoningTailBuf
-            .split("\n")
-            .map((l) => l.trim())
-            .filter(Boolean)
-            .slice(-24),
-        );
-      };
-      // Land the accumulated burst as a transcript row and clear the preview.
-      const commitThinking = () => {
-        if (reasoningBuf.trim()) {
-          apply({
-            type: "thinking",
-            text: reasoningBuf,
-            seconds: Math.round((Date.now() - thinkingStartedAt) / 1000),
-          });
-        }
-        reasoningBuf = "";
-        reasoningTailBuf = "";
-        // commitThinking runs on EVERY assistant text token (each delta lands the
-        // thinking that preceded it), so an unconditional setReasoningLines([]) —
-        // a fresh `[]` is never `===` the prior array — forced a signal write, and
-        // thus a preview re-render, per token during a reply flood. Only fire when
-        // the live preview actually has lines to clear: the visible collapse is
-        // identical (it was already empty on the write-free path).
-        if (reasoningLines().length > 0) setReasoningLines([]);
-      };
+      // Reasoning plumbing (pushReasoning / landReasoning / commitThinking /
+      // the sidebar trail) lives at component scope, above — shared with
+      // landPending's frame flush and the /clear reset.
       // The reducer owns per-turn call maps; endTurn lands any dangling
       // thinking, finalizes the reply, drops the maps, and stops the spinner.
       const endTurn = () => {
@@ -1156,6 +1247,11 @@ export function App(props: { engine: EngineClient }) {
         setWorking(false);
       };
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
+        // A throwing handler must not kill this loop: the keyboard hook lives
+        // outside it, so an uncaught throw here used to leave a half-alive UI
+        // (typing works, nothing updates) with no visible cause. Surface the
+        // error as a transcript notice and keep consuming.
+        try {
         switch (event.type) {
           case "user-message":
             // Subagents are per-turn activity (tasks persist, they don't) — start
@@ -1163,11 +1259,10 @@ export function App(props: { engine: EngineClient }) {
             // too: a new turn means it was acted on or abandoned.
             setSubagents([]);
             setPlan(null);
-            // The sidebar's thought log spans ONE turn — the previous turn's
-            // stream clears here (not at turn end, so it stays readable while
-            // you review the finished work).
-            turnThoughtsBuf = "";
-            if (thoughtLog().length > 0) setThoughtLog([]);
+            // The sidebar's trail spans ONE turn — the previous turn's stream
+            // clears here (not at turn end, so it stays readable while you
+            // review the finished work).
+            resetTrail();
             apply({ type: "user", text: event.text });
             // A new turn begins: start the working clock/spinner.
             turnStartedAt = Date.now();
@@ -1198,7 +1293,10 @@ export function App(props: { engine: EngineClient }) {
             if (event.subagentId) break; // subagent tools don't enter the transcript
             // The thinking that led to this call lands just above it.
             commitThinking();
-            apply({
+            // And the action itself joins the sidebar trail, chronological with
+            // the reasoning around it — a non-reasoning model's whole trail.
+            pushActivity(toolLabel(event.toolName, event.input));
+            enqueue({
               type: "tool-start",
               toolCallId: event.toolCallId,
               toolName: event.toolName,
@@ -1218,7 +1316,7 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "tool-call-finished":
             if (event.subagentId) break;
-            apply({
+            enqueue({
               type: "tool-finish",
               toolCallId: event.toolCallId,
               output: event.output,
@@ -1230,7 +1328,7 @@ export function App(props: { engine: EngineClient }) {
             // The reducer folds the diff into the EXACT tool block that produced it
             // (by call id), so an edit reads as one row with the hunk beneath it, and
             // accumulates the per-file delta for the footer summary.
-            apply({
+            enqueue({
               type: "file-changed",
               toolCallId: event.toolCallId,
               path: event.path,
@@ -1350,39 +1448,39 @@ export function App(props: { engine: EngineClient }) {
             endTurn();
             break;
           case "notice":
-            apply({ type: "notice", text: event.message, level: event.level });
+            enqueue({ type: "notice", text: event.message, level: event.level });
             break;
           case "compacted":
             // Surface compaction in the transcript (the footer's ctx% also drops),
             // matching the headless printer — otherwise `/compact` looks like a no-op.
-            apply({
+            enqueue({
               type: "notice",
               text: `Compacted history · freed ~${event.freedTokens} tokens`,
               level: "info",
             });
             break;
           case "loop-stopped":
-            apply({ type: "notice", text: `Loop stopped · ${event.reason}`, level: "info" });
+            enqueue({ type: "notice", text: `Loop stopped · ${event.reason}`, level: "info" });
             break;
           case "loop-tick":
             // Mark each `/loop` iteration in the transcript (headless parity) so
             // recurring runs read as separate passes, not one endless turn.
-            apply({ type: "notice", text: `${GLYPH.loopTick} loop iteration ${event.iteration}`, level: "info" });
+            enqueue({ type: "notice", text: `${GLYPH.loopTick} loop iteration ${event.iteration}`, level: "info" });
             break;
           case "checkpoint-restored":
             // /undo landed — say so in the transcript (the headless printer
             // already did); otherwise a successful revert looked like a no-op.
-            apply({ type: "notice", text: `${GLYPH.revert} reverted: ${event.label}`, level: "info" });
+            enqueue({ type: "notice", text: `${GLYPH.revert} reverted: ${event.label}`, level: "info" });
             break;
           case "verify-started":
-            apply({ type: "notice", text: `verifying: ${event.command}`, level: "info" });
+            enqueue({ type: "notice", text: `verifying: ${event.command}`, level: "info" });
             break;
           case "verify-finished": {
             // Failures carry the check's first line so the reason is visible
             // without leaving the transcript (the payload was never shown anywhere).
             const detail =
               !event.ok && event.output ? ` — ${truncate(firstLine(event.output) ?? "", 120)}` : "";
-            apply({
+            enqueue({
               type: "notice",
               text: event.ok ? "verification passed" : `verification failed${detail}`,
               level: event.ok ? "info" : "error",
@@ -1396,8 +1494,25 @@ export function App(props: { engine: EngineClient }) {
           default:
             break;
         }
+        } catch (err) {
+          apply({
+            type: "notice",
+            text: `ui error handling "${event.type}": ${err instanceof Error ? err.message : String(err)}`,
+            level: "error",
+          });
+        }
       }
-    })();
+    })().catch((err) => {
+      // The event iterator itself died (not a per-event throw) — say so in the
+      // transcript instead of a silent half-alive UI. The process-level crash
+      // handlers (crash.ts) still cover anything that escapes past here.
+      apply({
+        type: "notice",
+        text: `event stream stopped: ${err instanceof Error ? err.message : String(err)}`,
+        level: "error",
+      });
+      setWorking(false);
+    });
   });
 
   const runText = (raw: string) => {
@@ -1442,14 +1557,14 @@ export function App(props: { engine: EngineClient }) {
       pendingDelta = "";
       pendingProgress.clear();
       resetTranscript();
-      // The sidebar's thought log outlives its turn by design, so the reset
-      // must wipe it explicitly — otherwise a stale Thinking block keeps the
+      // The sidebar's trail outlives its turn by design, so the reset must
+      // wipe it explicitly — otherwise a stale Thinking block keeps the
       // sidebar mounted over the freshly cleared screen.
-      turnThoughtsBuf = "";
-      setThoughtLog([]);
+      resetTrail();
       setPlan(null);
       setSubagents([]);
       setCollapsedTurns(new Set());
+      setRevealTurns(0);
       setPerms([]);
       setPendingQ([]);
       setWorking(false);
@@ -1771,15 +1886,27 @@ export function App(props: { engine: EngineClient }) {
           stickyScroll
           stickyStart="bottom"
           scrollY
+          viewportCulling
           contentOptions={{ flexDirection: "column" }}
           scrollbarOptions={{ visible: false }}
         >
+          {/* Older turns beyond the render window: a single tappable fold row.
+              Revealing pages them back in (scroll-anchored, see revealOlder) —
+              the data was never dropped, only kept out of the layout tree. */}
+          <Show when={windowStart() > 0}>
+            <box flexDirection="column" flexShrink={0} marginTop={1} onMouseDown={revealOlder}>
+              <text flexShrink={0} fg={palette().muted}>
+                {`▸ ${windowStart()} earlier turn${windowStart() === 1 ? "" : "s"} · tap to load ${Math.min(REVEAL_PAGE, windowStart())} more`}
+              </text>
+            </box>
+          </Show>
           {/* The transcript as connected TURN THREADS. `<Index>` keys by position
-              (turns only ever append), so streaming re-renders only the live turn.
+              (turns only ever append, and the window is stable while a turn
+              streams), so streaming re-renders only the live turn.
               Each turn: a `◆` node carrying the user message, then a continuous
               left rail (git-graph style) running top→bottom through the turn's tool
               steps + answer. Tap the node to fold the whole exchange under it. */}
-          <Index each={turns()}>
+          <Index each={windowedTurns()}>
             {(turn) => {
               const hasNode = () => turn().user !== undefined;
               const items = () => turn().items;
@@ -2427,10 +2554,13 @@ export function App(props: { engine: EngineClient }) {
       <Show when={sidebarOn()}>
         <box flexDirection="column" width={SIDEBAR_W} flexShrink={0} padding={1}>
           {/* One reserved row mirrors the chat column's context line, so the
-              sidebar's first block sits level with the first transcript block. */}
+              sidebar's first block sits level with the first transcript block.
+              No marginTop on the FIRST sidebar block: the chat's first-block
+              margin is swallowed by its scrollbox, so a sidebar margin here
+              would land the block one row too low. */}
           <box height={1} flexShrink={0} />
           <Show when={tasks().length > 0}>
-            <Rail color={palette().gutter} marginTop={1}>
+            <Rail color={palette().gutter} marginTop={0}>
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"
@@ -2480,7 +2610,9 @@ export function App(props: { engine: EngineClient }) {
               is sent. The block GROWS to fill the rows under the Tasks panel,
               so the sidebar's bottom lines up with the chat column. */}
           <Show when={working() || thoughtLog().length > 0}>
-            <Rail color={palette().gutter} marginTop={1} grow>
+            {/* First block when there are no tasks (must sit on the chat's
+                first-block row); the usual 1-row inter-block gap otherwise. */}
+            <Rail color={palette().gutter} marginTop={tasks().length > 0 ? 1 : 0} grow>
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"
@@ -2493,7 +2625,11 @@ export function App(props: { engine: EngineClient }) {
               >
                 <box flexDirection="row" flexShrink={0}>
                   <text flexShrink={0} fg={working() ? rainbow(tick()) : palette().gutter}>{"✻ "}</text>
-                  <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"Thinking"}</text>
+                  <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                    {/* "Activity" when the trail is only tool actions (a
+                        non-reasoning model) — honest labelling either way. */}
+                    {trailKind() === "activity" ? "Activity" : "Thinking"}
+                  </text>
                 </box>
                 <scrollbox
                   flexGrow={1}
@@ -2520,6 +2656,12 @@ export function App(props: { engine: EngineClient }) {
               </box>
             </Rail>
           </Show>
+          {/* Reserve the chat column's under-input rows (the status bar's
+              marginTop gap + the status row, +1 when the hints wrap to their
+              own line) so the growing Thinking block's BOTTOM edge lands
+              exactly on the input block's bottom edge — not on the terminal's
+              bottom padding two rows below it. */}
+          <box height={2 + (showHints() && !footerFits() ? 1 : 0)} flexShrink={0} />
         </box>
       </Show>
       {/* Right gutter — mirrors the left, centering the chat column. */}

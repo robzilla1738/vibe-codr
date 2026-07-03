@@ -404,9 +404,30 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   (`flexDirection="column"`, `width={contentWidth()}`, `flexShrink={0}`,
   `padding={1}`), on wide terminals (≥140 cols, `sidebarOn()`) a fixed-width
   **right sidebar** (`SIDEBAR_W`=42: Tasks panel hugging the top, the turn's
-  Thinking log in a `grow` Rail filling the rest so the sidebar spans the SAME
-  height as the chat column; the thought trail persists until the next
-  user-message), and a `flexGrow` **right gutter**. The gutters center the
+  Thinking/Activity trail in a `grow` Rail filling the rest so the sidebar
+  spans the SAME height as the chat column; the trail persists until the next
+  user-message). Sidebar alignment is EXACT and smoke-guarded
+  (`bun run smoke:sidebar`): first block on the viewport's first content row
+  (NO marginTop on the first sidebar block — the chat's first-block margin is
+  swallowed by its scrollbox), bottom edge on the input block's bottom (a
+  `height={2+…}` spacer reserves the under-input status rows). The trail
+  (`trail.ts`) interleaves reasoning with tool-activity lines (`toolLabel`) so
+  a non-reasoning model still shows live work; openai-compat providers get
+  `extractReasoningMiddleware` in @vibe/providers so inline `<think>` streams
+  as real reasoning parts instead of leaking into the reply. Then a `flexGrow`
+  **right gutter**. **PERF INVARIANTS (the freeze fix — keep these):** engine
+  events reduce immediately but PAINT through one batched commit per 24 ms
+  frame (`enqueue` vs `apply` in app.tsx — burst traffic like
+  tool-start/finish/file-changed/notice must use `enqueue`); the transcript
+  renders only the last `WINDOW_TURNS`=40 turns behind a "▸ N earlier turns"
+  fold row (`windowStartIndex` in `trail.ts`, render-only — the reducer keeps
+  full history); reasoning tokens buffer per frame and the trail appends
+  incrementally (never re-split the whole log); hot producers yield a
+  macrotask (`makeYieldGate` — bash pump every ~64 KB, session #consume every
+  50 parts) because engine + UI share ONE thread and an unyielding microtask
+  loop starves stdin (the frozen-keyboard bug); the UI event loop try/catches
+  each event so a throwing handler degrades to an error notice, not a dead
+  half-alive UI. The gutters center the
   column ChatGPT-style; `contentWidth()` = `min(CONTENT_MAX, dims().width - 2 -
   (sidebarOn() ? SIDEBAR_W : 0))`.
   **There is NO top header.** Inside the column, top to bottom:

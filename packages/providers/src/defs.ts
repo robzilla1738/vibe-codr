@@ -1,4 +1,5 @@
 import type { LanguageModel, EmbeddingModel } from "ai";
+import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { ProviderAuthError, VibeError } from "@vibe/shared";
 import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
@@ -331,7 +332,22 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
     async create(modelId, opts): Promise<LanguageModel> {
       const provider = await buildProvider(spec, baseURL, opts);
       // Provider instances are callable: provider(modelId) -> LanguageModel.
-      return provider(modelId) as LanguageModel;
+      const model = provider(modelId) as LanguageModel;
+      // OpenAI-compatible endpoints have no first-class reasoning channel:
+      // hosted open reasoning models (qwen, deepseek-r1 via ollama, …) emit
+      // their chain-of-thought INLINE as <think>…</think>, which would leak
+      // into the visible reply. Extract it into real reasoning stream parts
+      // so it flows to the Thinking panel like any native reasoning model.
+      // A model that never emits the tag passes through untouched, and the
+      // dedicated-SDK providers (anthropic/openai/deepseek) keep their own
+      // native reasoning parts — only the compat family is wrapped.
+      if (spec.factory === "createOpenAICompatible" && typeof model !== "string") {
+        return wrapLanguageModel({
+          model,
+          middleware: extractReasoningMiddleware({ tagName: "think" }),
+        });
+      }
+      return model;
     },
 
     async createEmbedding(modelId, opts): Promise<EmbeddingModel<string>> {

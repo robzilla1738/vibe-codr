@@ -4,6 +4,58 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — the mid-session freeze (structural)
+
+Tool-heavy sessions (a scaffold generator, `ls -R` in a big tree) could wedge
+the whole TUI: scrolling, live updates, and keyboard input all dead, no crash.
+The engine and UI share one thread, and each engine event synchronously
+re-laid-out an unbounded transcript — cost × rate eventually starved stdin.
+Four structural changes, no bandaids:
+
+- **One batched commit per frame.** Tool-start/finish, file-changed, and
+  notice events now reduce immediately (state stays in exact event order) but
+  paint on the shared 24 ms frame timer, wrapped in Solid's `batch` — a burst
+  of hundreds of events costs at most one relayout per frame. User-initiated
+  toggles, permission cards, plan cards, turn end, and errors still paint
+  the same tick.
+- **Transcript render windowing.** The layout tree holds only the newest 40
+  turns; older ones fold behind a tappable "▸ N earlier turns" row that pages
+  them back in scroll-anchored (20 at a time). Windowing is render-only —
+  the reducer keeps full history, so `/export`, expansion, and `--resume`
+  rehydration (which now renders only the window instead of the whole
+  session) lose nothing. Plus `viewportCulling` on the scrollbox so
+  off-screen rows skip paint.
+- **Reasoning coalescing.** Reasoning tokens buffer and land once per frame;
+  the sidebar trail appends incrementally (only new bytes are ever split,
+  never the whole log — the old path re-split up to 64 KB per token).
+- **Cooperative yields on the hot producers.** The bash output pump yields a
+  macrotask every ~64 KB drained and the stream consumer every 50 parts, so
+  stdin and timers get serviced mid-flood; event order is untouched.
+
+Separately hardened: the UI event loop now survives a throwing handler (it
+lands an error notice and keeps consuming) — previously any handler throw
+silently killed all live updates while the keyboard stayed alive.
+
+### Fixed — thinking during planning (and any non-reasoning model)
+
+- **Inline `<think>` reasoning becomes real reasoning.** OpenAI-compatible
+  providers (ollama, lmstudio, and the rest of the compat family) are wrapped
+  with the AI SDK's `extractReasoningMiddleware`, so hosted open reasoning
+  models' `<think>…</think>` streams to the Thinking panel instead of leaking
+  into the visible reply. Dedicated-SDK providers are untouched.
+- **An activity trail when there is no reasoning.** Models that never emit
+  reasoning (gemma and friends) used to leave the sidebar panel empty while
+  tools ran for 15+ seconds. Tool actions (`◈ search …`, `% fetch …`) now
+  join the same trail chronologically, and the panel header reads
+  "Activity" until real reasoning arrives.
+
+### Changed — sidebar alignment is exact
+
+- The sidebar's first block starts on the transcript viewport's first content
+  row, and its bottom edge lands exactly on the input block's bottom edge
+  (it used to run two rows past, level with the status footer). Covered by a
+  new wide-terminal render smoke: `bun run smoke:sidebar`.
+
 ### Changed — sidebar spans the full column height
 
 - **The right sidebar is now the same height as the chat column.** The

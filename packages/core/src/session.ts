@@ -7,6 +7,7 @@ import {
 } from "ai";
 import {
   createId,
+  makeYieldGate,
   type EngineSnapshot,
   type Message,
   type Mode,
@@ -79,6 +80,8 @@ import {
 import type { SessionUsage } from "@vibe/shared";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
+/** Stream parts consumed between cooperative macrotask yields in #consume. */
+const CONSUME_YIELD_PARTS = 50;
 const COMPACT_KEEP_RECENT = 6;
 /** Pre-first-step padding (tokens) for the unseen system prompt + tool schemas,
  * so a resumed/long session compacts before the real prompt blows the window.
@@ -1652,7 +1655,14 @@ export class Session {
       return assistant;
     };
 
+    // Cooperative yield: a fast provider stream (or a replayed/buffered one)
+    // can resolve part after part on the microtask queue, and the engine
+    // shares its thread with the TUI — without an occasional macrotask hop,
+    // stdin and timers starve during a long uninterrupted burst. Yield between
+    // WHOLE parts so event order is untouched.
+    const partGate = makeYieldGate(CONSUME_YIELD_PARTS);
     for await (const raw of result.fullStream) {
+      if (partGate(1)) await new Promise((r) => setTimeout(r, 0));
       const part = raw as Record<string, any>;
       switch (part.type) {
         case "text-delta": {

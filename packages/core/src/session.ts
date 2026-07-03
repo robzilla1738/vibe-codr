@@ -46,6 +46,7 @@ import {
 } from "./microcompaction.ts";
 import { formatRepoFacts } from "./build/profile.ts";
 import type { SessionStore } from "./store.ts";
+import { SESSION_META_VERSION } from "./store.ts";
 import type { MemoryService } from "./memory-service.ts";
 import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 import {
@@ -238,6 +239,11 @@ export class Session {
   #interrupted = false;
   /** Mode captured at run() start (null before the first turn) — see turnMode. */
   #turnMode: Mode | null = null;
+  /** Messages from each COMPLETED step of the current turn (buffered in
+   * onStepFinish). On an abort/error mid-turn `result.response` rejects, so these
+   * matched tool_use/tool_result pairs would otherwise be lost — a resumed
+   * session wouldn't know about a completed edit. Committed on the failure path. */
+  #committedSteps: ModelMessage[] = [];
   /** Per-turn record of which tool calls ended in a handled error (permission
    * deny, plugin veto, or an `isError` execute result). The AI-SDK reports these
    * as ordinary string results, so the stream's `tool-result` part carries no
@@ -754,6 +760,7 @@ export class Session {
     this.#lastError = null;
     this.#interrupted = false;
     this.#toolCallErrors.clear();
+    this.#committedSteps = [];
     // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
     // cancel that arrives mid-turn aborts this turn's signal and the NEXT turn
     // still starts clean — and so a steered prompt isn't run against a stale,
@@ -1116,7 +1123,13 @@ export class Session {
               >,
             }
           : {}),
-        onStepFinish: ({ usage, providerMetadata }) => {
+        onStepFinish: ({ usage, providerMetadata, response }) => {
+          // Buffer this completed step's messages (assistant tool_use + its tool
+          // results — matched pairs, since the step FINISHED). response.messages
+          // is cumulative across the turn, so REPLACE rather than append: the last
+          // onStepFinish before an abort holds every completed step. On success
+          // we use result.response.messages instead and ignore this buffer.
+          if (response?.messages) this.#committedSteps = [...response.messages];
           const stepUsage = normalizeUsage(usage);
           // Cache WRITES are a third disjoint slice on Anthropic — invisible in
           // normalized usage, only in providerMetadata. Without folding them the
@@ -1197,18 +1210,26 @@ export class Session {
         this.#applyDurableOffloads();
         responseOk = true;
       } finally {
-        if (assistant) {
-          if (responseOk) {
-            // Success: the authoritative model messages already landed; record the
-            // UI reply too.
-            this.#history.push(assistant);
-          } else {
-            // Failure: record the partial assistant to BOTH lists or NEITHER, so
-            // they stay consistent for the orphan-rollback below. An EMPTY partial
-            // (an empty text-delta before abort makes `assistant` truthy while its
-            // text is "") must go to neither — otherwise #history keeps it while
-            // #modelMessages doesn't, and the rollback pops the orphan user from
-            // #modelMessages only, so a resume loses the user's prompt.
+        if (responseOk) {
+          // Success: the authoritative model messages already landed; record the
+          // UI reply too.
+          if (assistant) this.#history.push(assistant);
+        } else {
+          // Abort/error mid-turn: result.response rejected, so the COMPLETED
+          // steps' messages (matched tool_use/tool_result pairs) were never
+          // committed. Commit them first — a resumed session must KNOW about work
+          // already done (e.g. a completed edit), not just see partial text. A
+          // step that ends a turn has no next step, so a buffered step always ends
+          // on a tool result, keeping alternation valid before the partial text.
+          if (this.#committedSteps.length) {
+            this.#modelMessages.push(...this.#committedSteps);
+            this.#applyDurableOffloads();
+          }
+          if (assistant) {
+            // Record the partial assistant tail to BOTH lists or NEITHER, so they
+            // stay consistent for the orphan-rollback below. An EMPTY partial (an
+            // empty text-delta before abort makes `assistant` truthy while its
+            // text is "") goes to neither.
             const text = messageText(assistant);
             if (text) {
               this.#history.push(assistant);
@@ -1507,6 +1528,7 @@ export class Session {
     try {
       await store.save(
         {
+          version: SESSION_META_VERSION,
           id: this.id,
           model: this.model,
           mode: this.mode,

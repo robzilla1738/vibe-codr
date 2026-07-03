@@ -783,7 +783,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 7 | Memory | PASS |
 | 8 | Research stack | PASS |
 | 9 | Providers & model catalog | PASS |
-| 10 | Sessions/persistence/resume | REOPENED |
+| 10 | Sessions/persistence/resume | PASS |
 | 11 | TUI + headless parity | REOPENED |
 | 12 | Config, MCP, skills/plugins, onboarding, fresh install | REOPENED |
 
@@ -1264,6 +1264,69 @@ reader + author repro/fix. planModel resolution verified CLEAN (never bricks the
   invalid key to an empty /models with no signal. Both LOW, recorded. v1 accepted-risk (Codex OAuth no
   refresh; zero-keys errors vs keyless-default; keyless reports configured when daemon down) unchanged.
   Model-id/version defaults NOT churned (memory constraint) — none were actual bugs.
+
+
+## v2 §10. Sessions / persistence / resume — PASS
+
+Scope read end-to-end: store.ts, state-dir.ts, checkpoints.ts, session.ts persist/resume/abort paths,
+engine.ts engine-state + resume wiring. One reader + author repro/fix. The recall side of the
+relocation was verified clean in v2 §7; this pass focused on store/checkpoints/engine-state + the
+re-evaluation of v1 deferred items.
+
+### CONFIRMED & FIXED
+- **[MED] V2-42 Interrupted multi-step turn lost completed tool-call/result pairs** (v1's flagged top
+  follow-up — CONFIRMED-still, now FIXED) — on abort/error `result.response` rejects, so only the
+  partial assistant TEXT was committed; a COMPLETED step's tool_use + tool_result (e.g. an edit
+  already applied) never reached #modelMessages, so a resumed session didn't know the work was done.
+  The transcript stayed VALID (no orphan), but diverged from disk reality. Fixed: buffer each
+  completed step's cumulative response.messages in onStepFinish; on the failure path commit those
+  matched pairs before the partial-text tail (a turn-ending step has no successor, so a buffered step
+  always ends on a tool result → alternation stays valid; no duplication since REPLACE, not append).
+  Regression: *"an interrupted turn keeps completed tool steps in the transcript"* (session.test.ts).
+- **[LOW-MED] V2-43 Corrupt GLOBAL meta.json stranded an intact LEGACY copy** — load() returned null
+  on a torn global meta.json instead of falling back to legacy, so it DISAGREED with list() (which
+  surfaces the legacy copy) — /resume listed an id load() then refused. Fixed: `continue` to the
+  legacy root; null only after BOTH fail. Regression: *"a corrupt GLOBAL meta.json falls back to an
+  intact LEGACY copy"* (store.test.ts).
+- **[MED] V2-44 checkpoints.json concurrent-clobber + torn-write** (the v2 §5-recorded risk, now
+  fixed) — the cwd-keyed file was rewritten wholesale with a bare Bun.write, so two sessions in one
+  repo clobbered each other's checkpoint metadata (and interleaved writes could tear it). Fixed:
+  #save re-reads + merges by id (our view wins for shared ids) and writes via a per-write-unique temp
+  + atomic rename (mirrors the session store). Regression: *"two managers on one repo merge
+  checkpoints instead of clobbering"* (checkpoints.test.ts).
+- **[LOW] V2-45 No SessionMeta schema version** — a future format change would misparse silently.
+  Fixed: added `SESSION_META_VERSION = 1`, stamped at save (forward-compat, no migration needed yet).
+  Regression: *"a persisted session stamps the SessionMeta schema version"* (session.test.ts).
+- **[cleanup]** Stale `.vibe/plans` / `.vibe/sessions` path comments corrected to the global state dir.
+
+### REFUTED / verified clean
+- #persistEngineState promise-chain (v2 §1 fix) correct — the inner write swallows errors so the
+  chain never breaks, ordering preserved under rapid toggles, no unhandled rejection. engine.json /
+  plans are per-session-id (no cross-session collision, unlike checkpoints). Resume round-trip
+  complete: model/mode/goal/tasks/usage/cost/recalledContext/sources/lastInputTokens all persist +
+  consume, CLI-override precedence correct, #proactiveRecallDone guards re-derivation. Store legacy
+  merge consistent (global wins) except the corrupt-global edge (V2-43, fixed). v1 torn-transcript
+  fix + subagent-fork null-store + corrupt-line-skip + source-ledger hydrate all intact.
+
+### Re-evaluated v1 accepted-risk (verdicts)
+- Interrupted-turn tool-call loss → **FIXED** (V2-42).
+- **No fsync before rename** → CONFIRMED-still, KEEP accepted-risk: the ordered-rename makes every
+  crash window monotone (degrades to "start fresh," never corruption), the trigger is rare, and Bun
+  has no ergonomic path-level fsync (would need fs.open+fdatasync+dir-fsync). Recorded.
+- **No session pruning (unbounded growth)** → CONFIRMED-still, KEEP accepted-risk: deleting
+  user-resumable sessions is user-hostile (unlike the bounded offload artifacts inside each session
+  dir, capped in v2 §2); a manual/age-based prune is the safe follow-up. Recorded.
+- SessionMeta schema version → **FIXED** (V2-45).
+
+### Accepted-risk (recorded)
+- **V2-S3 [LOW]** VIBE_STATE_DIR changing mid-process splits state (store/checkpoints cache the dir at
+  construction; engine/session recompute per call) — exotic (tests set it before start); recorded.
+- **V2-S4 [LOW]** A symlinked/non-canonical explicit cwd hashes to a different state dir (resolve()
+  canonicalizes relative/trailing-slash but not symlinks); process.cwd() returns the physical path so
+  the common case is safe, and switching to realpath would orphan existing resolve()-hashed state —
+  recorded rather than churn the hash. ensureVibeIgnored no-ops in a git worktree (.git is a file)
+  and doesn't recognize a `!.vibe` negation — both LOW, recorded (post-relocation .vibe/ holds only
+  user-facing config).
 
 ## v2 DECISIONS (this subsystem)
 - **Concurrent index-prune staleness (V2-M2) recommended design:** serialize `SemanticMemory.index()`

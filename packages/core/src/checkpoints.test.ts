@@ -261,3 +261,27 @@ test("diffFrom caps a giant diff with a truncation marker", async () => {
   expect(diff).toContain("diff truncated at 2000 chars");
   expect(diff.length).toBeLessThan(2_100);
 });
+
+test("two managers on one repo merge checkpoints instead of clobbering (and write atomically)", async () => {
+  // checkpoints.json is cwd-keyed → shared by every session in one repo. A bare
+  // overwrite would drop the other manager's entries; the merge-by-id keeps both.
+  const dir = await initRepo();
+  const a = new CheckpointManager(dir);
+  const b = new CheckpointManager(dir);
+  // A snapshots first (writes the file), then B snapshots (must MERGE, not clobber A).
+  const snapA = await a.snapshot("A-checkpoint");
+  const snapB = await b.snapshot("B-checkpoint");
+  expect(snapA).not.toBeNull();
+  expect(snapB).not.toBeNull();
+
+  // A fresh manager reads the persisted file — both checkpoints must be present.
+  const fresh = new CheckpointManager(dir);
+  const ids = (await fresh.list()).map((c) => c.id);
+  expect(ids).toContain(snapA!.id);
+  expect(ids).toContain(snapB!.id);
+  // No temp file left behind (atomic rename cleaned up).
+  const { readdirSync } = await import("node:fs");
+  const { globalStateDir } = await import("./state-dir.ts");
+  const files = readdirSync(globalStateDir(dir));
+  expect(files.some((f) => f.startsWith("checkpoints.json.") && f.endsWith(".tmp"))).toBe(false);
+});

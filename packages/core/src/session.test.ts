@@ -882,3 +882,99 @@ test("model failover: no resolvable fallback keeps the original error", async ()
   await session.run("hello");
   expect(session.lastError).toBeTruthy();
 });
+
+test("an interrupted turn keeps completed tool steps in the transcript (a resume knows the work)", async () => {
+  // Before the fix, an abort mid-turn dropped the COMPLETED step's tool_use +
+  // tool_result (result.response rejects), so a resumed session had no record a
+  // tool already ran — e.g. a file it already edited.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-interrupt-"));
+  const store = new SessionStore(cwd);
+  let sessionRef!: Session;
+  const stopTool: ToolDefinition<Record<string, never>> = {
+    name: "stop_now",
+    description: "aborts the turn",
+    inputSchema: z.object({}),
+    readOnly: true,
+    async execute() {
+      sessionRef.abort(); // interrupt AFTER step 1 completed
+      return { output: "stopping" };
+    },
+  };
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "c1", toolName: "echo", input: JSON.stringify({ text: "remember-this" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "c2", toolName: "stop_now", input: "{}" },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "SHOULD-NOT-REACH" },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const bus = new EventBus();
+  sessionRef = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([echoTool, stopTool]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    store,
+    id: "ses_interrupt",
+  });
+  await collect(bus, () => sessionRef.run("do the thing"));
+
+  const persisted = await store.load("ses_interrupt");
+  const json = JSON.stringify(persisted!.modelMessages);
+  // The completed step-1 tool call AND its result survived the interrupt.
+  expect(json).toContain("remember-this"); // the tool-call input
+  expect(json).toContain("echoed: remember-this"); // the tool RESULT
+  // The user prompt was retained (we made progress → not rolled back as an orphan).
+  expect(persisted!.modelMessages[0]!.role).toBe("user");
+  // Transcript validity: a `tool` message never LEADS (every result follows its call).
+  const roles = persisted!.modelMessages.map((m) => m.role);
+  expect(roles[0]).not.toBe("tool");
+  // Exactly one echo tool-result (no duplication from cumulative step buffering).
+  expect(json.split("echoed: remember-this").length - 1).toBe(1);
+});
+
+test("a persisted session stamps the SessionMeta schema version", async () => {
+  const { SESSION_META_VERSION } = await import("./store.ts");
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-ver-"));
+  const store = new SessionStore(cwd);
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never,
+  });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    store,
+    id: "ses_ver",
+  });
+  await session.run("go");
+  const persisted = await store.load("ses_ver");
+  expect(persisted!.meta.version).toBe(SESSION_META_VERSION);
+});

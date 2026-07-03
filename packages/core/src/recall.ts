@@ -54,7 +54,8 @@ async function loadHistoryCached(cwd: string, store: SessionStore, id: string): 
 
 /**
  * Session memory ("recall"): a lexical, dependency-free search across every
- * persisted session under `.vibe/sessions/`. It lets the agent — and the user,
+ * persisted session (under the project's global state dir, legacy in-project
+ * `.vibe/sessions/` still read). It lets the agent — and the user,
  * via `/recall` — look up what was said or decided in past conversations,
  * turning a pile of session files into searchable long-term memory.
  *
@@ -115,7 +116,7 @@ function snippetFor(text: string, terms: string[]): string {
 
 /**
  * Search every saved session (newest first) for `query`, returning the best
- * matching messages across all of them. Sessions with no `.vibe/sessions` dir
+ * matching messages across all of them. Sessions with no persisted-sessions dir
  * or unreadable history are skipped silently.
  */
 export async function searchSessions(

@@ -5,7 +5,14 @@ import type { Message, Mode, Task } from "@vibe/shared";
 import type { SourceEntry } from "./source-ledger.ts";
 import { ensureStateDir, globalStateDir } from "./state-dir.ts";
 
+/** Current on-disk SessionMeta schema version. Bump when the meta shape changes
+ * incompatibly; a loader can then detect + migrate rather than silently misparse
+ * an older/newer file. Absent on pre-versioning saves (read as version 0). */
+export const SESSION_META_VERSION = 1;
+
 export interface SessionMeta {
+  /** Schema version of this record (see SESSION_META_VERSION); absent = 0. */
+  version?: number;
   id: string;
   model: string;
   mode: Mode;
@@ -151,9 +158,12 @@ export class SessionStore {
       try {
         meta = (await metaFile.json()) as SessionMeta;
       } catch {
-        // A corrupt/partial meta.json means the session is unusable — treat it as
-        // absent so callers fall back to "start fresh" rather than crashing.
-        return null;
+        // A corrupt/partial global meta.json (e.g. a power-loss torn write) must
+        // NOT strand an INTACT legacy copy of the same id — `continue` to the
+        // legacy root instead of returning null, so load() agrees with list()
+        // (which surfaces the legacy copy). Only after BOTH roots fail is the
+        // session truly absent.
+        continue;
       }
       const modelMessages = await this.#readJsonl<ModelMessage>(
         join(dir, "messages.jsonl"),

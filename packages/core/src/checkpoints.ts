@@ -1,8 +1,11 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createId, type GateSummary } from "@vibe/shared";
 import { globalStateDir } from "./state-dir.ts";
+
+/** Monotonic per-process counter for unique checkpoint temp names (with pid). */
+let checkpointWriteSeq = 0;
 
 export interface Checkpoint {
   id: string;
@@ -99,12 +102,38 @@ export class CheckpointManager {
   }
 
   async #save(): Promise<void> {
+    const tmp = `${this.#file}.${process.pid}.${checkpointWriteSeq++}.tmp`;
     try {
       await mkdir(dirname(this.#file), { recursive: true });
-      await Bun.write(this.#file, `${JSON.stringify(this.#list, null, 2)}\n`);
+      // checkpoints.json is cwd-keyed → shared by every session in one repo. A
+      // bare truncate-and-overwrite would (a) clobber a concurrent session's
+      // entries (last-writer-wins) and (b) risk a torn file under interleaved
+      // writes. Re-read the current on-disk list and MERGE by id (our view wins
+      // for shared ids — e.g. a green marker we just added), then write via a
+      // per-write-unique temp + atomic rename (mirrors the session store).
+      const onDisk = await this.#readListFrom(this.#file);
+      const byId = new Map<string, Checkpoint>();
+      for (const c of onDisk) byId.set(c.id, c);
+      for (const c of this.#list) byId.set(c.id, c);
+      const merged = [...byId.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_CHECKPOINTS);
+      this.#list = merged;
+      await Bun.write(tmp, `${JSON.stringify(merged, null, 2)}\n`);
+      await rename(tmp, this.#file);
     } catch {
       // Non-fatal: a missing checkpoint log just means /undo can't span restarts.
+      await rm(tmp, { force: true }).catch(() => {});
     }
+  }
+
+  /** Read a checkpoint list from `path`, or [] if absent/corrupt. */
+  async #readListFrom(path: string): Promise<Checkpoint[]> {
+    try {
+      const file = Bun.file(path);
+      if (await file.exists()) return (await file.json()) as Checkpoint[];
+    } catch {
+      /* absent/corrupt → [] */
+    }
+    return [];
   }
 
   /** Snapshot the working tree. Returns the checkpoint, or null when not a repo.

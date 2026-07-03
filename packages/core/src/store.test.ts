@@ -156,6 +156,28 @@ test("a corrupt meta.json yields null on load and is skipped by list", async () 
   expect(await store.latestId()).toBe("good");
 });
 
+test("a corrupt GLOBAL meta.json falls back to an intact LEGACY copy (load agrees with list)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-legacy-"));
+  const store = new SessionStore(cwd);
+  const a = fixture();
+  const id = "shared-id";
+  // Write an intact copy in the LEGACY in-project location.
+  const legacyDir = join(cwd, ".vibe", "sessions", id);
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(legacyDir, { recursive: true });
+  await Bun.write(join(legacyDir, "meta.json"), JSON.stringify({ ...a.meta, id, goal: "from-legacy" }));
+  await Bun.write(join(legacyDir, "messages.jsonl"), a.model.map((m) => JSON.stringify(m)).join("\n"));
+  await Bun.write(join(legacyDir, "history.jsonl"), a.history.map((m) => JSON.stringify(m)).join("\n"));
+  // Corrupt the GLOBAL meta.json for the same id (power-loss torn write).
+  await Bun.write(join(sessionDir(cwd, id), "meta.json"), "{ truncated");
+
+  // list() surfaces the id (from legacy) — and load() must NOT strand it.
+  expect((await store.list()).some((m) => m.id === id)).toBe(true);
+  const loaded = await store.load(id);
+  expect(loaded).not.toBeNull();
+  expect(loaded!.meta.goal).toBe("from-legacy"); // fell back to the intact legacy copy
+});
+
 test("load tolerates a truncated trailing line in messages.jsonl", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
   const store = new SessionStore(cwd);

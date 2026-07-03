@@ -407,8 +407,9 @@ export class Engine implements EngineClient {
     if (resume?.meta.recalledContext) this.#proactiveRecallDone = true;
 
     // Watch our own (fan-out) event stream to capture a presented plan: persist
-    // it to .vibe/plans and remember it for the plan→execute handoff. A separate
-    // subscriber, so it never steals events from the TUI/headless renderer.
+    // it under the global state dir's plans/ and remember it for the plan→execute
+    // handoff. A separate subscriber, so it never steals events from the
+    // TUI/headless renderer.
     void this.#watchInternalEvents();
   }
 

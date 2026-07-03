@@ -35,6 +35,20 @@ test("extractLinks keeps same-origin doc links, drops assets/offsite/fragments",
   expect(links.some((l) => l.includes(".png"))).toBe(false);
 });
 
+test("extractLinks keeps absolute https links when the page URL is http (upgrade-tolerant)", () => {
+  // A site that force-upgrades http→https serves absolute https nav links; a
+  // strict origin check dropped them (http !== https), collapsing the crawl.
+  const html = page("t", "b", [
+    "https://docs.example.com/guide", // absolute https, same host
+    "/api", // root-relative
+    "http://evil.example.com/x", // genuinely off-host → dropped
+  ]);
+  const links = extractLinks(html, "http://docs.example.com/start"); // http start page
+  expect(links).toContain("https://docs.example.com/guide"); // upgrade tolerated
+  expect(links).toContain("http://docs.example.com/api");
+  expect(links.some((l) => l.includes("evil.example.com"))).toBe(false);
+});
+
 test("crawls breadth-first, ranks by query relevance, quotes excerpts", async () => {
   const site: Record<string, string> = {
     "https://docs.example.com/": page("Home", "welcome to the docs", ["/config", "/about"]),

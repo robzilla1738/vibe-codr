@@ -373,3 +373,17 @@ test("Wayback is NOT consulted for an internal URL even when allowPrivateHosts i
   expect(String(res.output)).toContain("HTTP 404");
   expect(waybackAsked).toBe(false); // the internal URL never reached archive.org
 });
+
+test("readBodyCapped: a null-body response with an oversized content-length is refused, not buffered whole", async () => {
+  const { readBodyCapped } = await import("./webfetch.ts");
+  // A bodyless Response whose declared length exceeds the cap: the streaming OOM
+  // ceiling can't apply, so it must refuse rather than arrayBuffer() the lot.
+  const big = new Response(null, { headers: { "content-length": String(50_000_000) } });
+  const r = await readBodyCapped(big, 4_000_000);
+  expect(r.truncated).toBe(true);
+  expect(r.bytes.length).toBe(0);
+  // A small bodyless response (no/low content-length) still reads normally.
+  const small = new Response(null, { headers: { "content-length": "0" } });
+  const r2 = await readBodyCapped(small, 4_000_000);
+  expect(r2.truncated).toBe(false);
+});

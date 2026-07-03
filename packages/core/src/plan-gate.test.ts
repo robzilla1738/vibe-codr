@@ -97,3 +97,42 @@ test("gate: a new prompt re-arms the rejection budget — one exhausted plan can
   gate.noteRequest("now plan a page for the latest election results");
   expect(gate.evaluate({}).allow).toBe(false);
 });
+
+test("triage: ordinary dev vocabulary does NOT force web/version research (false-positive fixes)", () => {
+  // CURRENT_EVENTS / TIME_SENSITIVE / STACK_NAMES used to fire on these code words.
+  const codeOnly = [
+    "the function matches the pattern",
+    "compute the relevance score",
+    "cut a release build",
+    "launch the app on startup",
+    "add an announcement banner component",
+    "traverse each tree node",
+    "the react component needs a fix",
+    "apply SOLID principles",
+    "add a spring animation",
+    "express the result as JSON",
+  ];
+  for (const req of codeOnly) {
+    const t = triagePlanRequest(req);
+    expect([req, t.needsWeb, t.needsVersions]).toEqual([req, false, false]);
+  }
+});
+
+test("triage: genuine time-sensitive asks are still caught (false-negative fixes)", () => {
+  expect(triagePlanRequest("who won the 2026 super bowl").needsWeb).toBe(true);
+  expect(triagePlanRequest("summarize recent AI developments").needsWeb).toBe(true);
+  expect(triagePlanRequest("current stock price of AAPL").needsWeb).toBe(true);
+  // Greenfield build still forces versions via BUILD_REQUEST even without bare stack words.
+  expect(triagePlanRequest("build a react app").needsVersions).toBe(true);
+});
+
+test("gate: junk/non-URL sources do NOT satisfy the web-evidence requirement", () => {
+  const gate = new PlanGate();
+  gate.noteRequest("plan a page about today's match");
+  gate.recordToolUse("web_search"); // a search happened…
+  // …but the cited "sources" are not real URLs — the gate still demands evidence.
+  expect(gate.evaluate({ sources: [{ url: "appease" }] }).allow).toBe(false);
+  expect(gate.evaluate({ sources: [{ url: "data:text/plain,x" }] }).allow).toBe(false);
+  // A real http(s) URL passes.
+  expect(gate.evaluate({ sources: [{ url: "https://fifa.com/match" }] }).allow).toBe(true);
+});

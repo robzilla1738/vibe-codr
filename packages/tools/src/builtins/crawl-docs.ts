@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
 import type { FetchPolicy, Lookup } from "./net-guard.ts";
-import { guardedFetchText, htmlToText } from "./webfetch.ts";
+import { guardedFetchText, htmlToText, sameSite } from "./webfetch.ts";
 import { canonicalizeUrl, selectPassages } from "./searchcore.ts";
 
 const Input = z.object({
@@ -30,9 +30,12 @@ const OUTPUT_BUDGET = 24_000;
 const SKIP_PATH =
   /\.(png|jpe?g|gif|svg|ico|css|js|woff2?|ttf|zip|tar|gz|mp4|webm)(\?|#|$)|\/(login|signup|signin|cart|pricing\/?$)/i;
 
-/** Extract same-origin links from raw HTML, resolved against the page URL. */
+/** Extract same-site links from raw HTML, resolved against the page URL. Uses
+ * the scheme-tolerant `sameSite` (host+port, http→https upgrade allowed) rather
+ * than strict `.origin` equality: a site that force-upgrades http→https serves
+ * absolute `https://samehost/…` nav links that a strict origin check would drop
+ * (collapsing the crawl to a single page). */
 export function extractLinks(html: string, pageUrl: string): string[] {
-  const origin = new URL(pageUrl).origin;
   const out = new Set<string>();
   for (const m of html.matchAll(/<a[^>]+href=["']([^"']+)["']/gi)) {
     const href = m[1];
@@ -40,7 +43,7 @@ export function extractLinks(html: string, pageUrl: string): string[] {
     if (!href || href.startsWith("#") || /^(mailto:|javascript:|tel:)/i.test(href)) continue;
     try {
       const abs = new URL(href, pageUrl);
-      if (abs.origin !== origin || SKIP_PATH.test(abs.pathname + abs.search)) continue;
+      if (!sameSite(abs.toString(), pageUrl) || SKIP_PATH.test(abs.pathname + abs.search)) continue;
       abs.hash = "";
       out.add(abs.toString());
     } catch {

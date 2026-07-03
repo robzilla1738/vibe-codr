@@ -208,3 +208,68 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
   expect(present?.isError).toBeFalsy();
   expect(events.some((e) => e.type === "plan-presented")).toBe(true);
 });
+
+// A web_search that surfaced NOTHING must not count as grounding — a junk query
+// (zero results) can't satisfy the gate's "you researched" requirement.
+test("plan gate: a zero-result web_search does not satisfy the grounding requirement", async () => {
+  const emptySearch: ToolDefinition<{ query: string }> = {
+    ...fakeSearch,
+    execute: async () => ({ output: 'No results for "zzz qqq".' }),
+  };
+  const steps = [
+    // Step 1: a junk search that finds nothing.
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "s1", toolName: "web_search", input: JSON.stringify({ query: "zzz qqq" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    // Step 2: try to present with a fabricated source — must be REJECTED.
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify({ plan: "Build it.", sources: [{ url: "https://example.com/made-up" }] }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "done" },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: new ProviderRegistry([
+      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    ]),
+    toolset: new Toolset([presentPlanTool, emptySearch]),
+    bus,
+    cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-empty-")),
+    model: "mock/test",
+    mode: "plan",
+  });
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+  await session.run("build a site about today's world cup match");
+  bus.close();
+  await collector;
+
+  const present = events.find(
+    (e): e is Extract<UIEvent, { type: "tool-call-finished" }> =>
+      e.type === "tool-call-finished" && e.toolCallId === "p1",
+  );
+  // The zero-result search didn't count → the gate still demands a real search.
+  expect(present?.isError).toBe(true);
+  expect(String(present?.output)).toContain("web_search");
+});

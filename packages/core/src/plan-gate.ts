@@ -43,17 +43,30 @@ export interface ResearchTelemetry {
 /** Rejections allowed before an ungrounded plan is let through with a warning. */
 const MAX_REJECTIONS = 2;
 
-/** Relative-date / currency words: the request is anchored to the real clock. */
+/** Relative-date / currency words: the request is anchored to the real clock.
+ * Deliberately excludes bare `breaking`/`ongoing` (code words: "breaking change",
+ * "ongoing connection"); keeps `current`/`latest`/`live` (the false positives
+ * they cause — "current directory", "latest commit" — cost only a bounce, while
+ * missing "current price"/"latest version" ships a stale plan). */
 const TIME_SENSITIVE =
-  /\b(today|tonight|tomorrow|yesterday|this (week|weekend|month|morning|evening)|latest|newest|most recent|current(ly)?|up[- ]to[- ]date|breaking|live|ongoing|right now|as of)\b/i;
+  /\b(today|tonight|tomorrow|yesterday|this (week|weekend|month|morning|evening)|latest|newest|(most )?recent|current(ly)?|up[- ]to[- ]date|live|right now|as of)\b/i;
 
-/** Current-events domains where facts move faster than any training set. */
+/** Current-events domains where facts move faster than any training set. Bare
+ * dev-vocabulary words (`match`, `score`, `release`, `launch`, `announce`) were
+ * dropped — they fire constantly on ordinary code and almost never mean a real
+ * current event in a plan; the unambiguous sports/politics/market signals stay,
+ * and "today's world cup match" is still caught by `world cup`. */
 const CURRENT_EVENTS =
-  /\b(news|match(es)?|game s?core|score(s|board)?|standings|tournament|world cup|olympics|playoffs?|election|stock( price)?|price of|weather|forecast|release(d| date)?|announce(d|ment)|launch(ed)?)\b/i;
+  /\b(news|world cup|olympics|playoffs?|super ?bowl|world series|grand prix|nba finals|tournament|standings|scoreboard|election|stock price|price of|weather|forecast)\b/i;
 
-/** Named stacks/registries → versions must come from package_info/docs, not memory. */
+/** Named stacks/registries → versions must come from package_info/docs, not
+ * memory. Excludes bare English/CS-overloaded names (`node`, `react`, `solid`,
+ * `spring`, `express`) — they false-fire on "tree node", "react component",
+ * "SOLID principles", "spring animation", "express the result". A greenfield
+ * BUILD_REQUEST ("build a react app") still triggers needsVersions, so the real
+ * signal is preserved without taxing every mention of a common word. */
 const STACK_NAMES =
-  /\b(next\.?js|react|vue|svelte|solid(js)?|angular|astro|nuxt|remix|vite|tailwind|typescript|node(\.js)?|bun|deno|express|fastify|django|flask|fastapi|rails|laravel|spring|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b/i;
+  /\b(next\.?js|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b/i;
 
 /** Greenfield build verbs + artifact nouns → stack choices are being made. */
 const BUILD_REQUEST =
@@ -173,14 +186,17 @@ export class PlanGate {
   evaluate(plan: { sources?: { url: string }[] }): PlanGateVerdict {
     const missing: string[] = [];
     const t = this.#telemetry;
+    // Only real http(s) URLs count as cited evidence — a junk string like
+    // `{url:"appease"}` or a `data:` URL must not satisfy the sources requirement.
+    const validSources = (plan.sources ?? []).filter((s) => /^https?:\/\/\S+\.\S+/i.test(s?.url ?? ""));
     if (this.#triage.needsWeb) {
       if (t.webSearches === 0) {
         missing.push(
           "run web_search now (use recencyDays for anything time-sensitive) and read the results — this request depends on current real-world facts your training data cannot know",
         );
-      } else if (!plan.sources?.length) {
+      } else if (!validSources.length) {
         missing.push(
-          "pass the web pages your plan's facts rest on in present_plan's `sources` array — a researched plan must show its evidence",
+          "pass the real web page URLs your plan's facts rest on in present_plan's `sources` array (http(s) links) — a researched plan must show its evidence",
         );
       }
     }

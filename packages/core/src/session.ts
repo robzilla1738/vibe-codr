@@ -1661,9 +1661,19 @@ export class Session {
           // adapter's side-channel so the UI doesn't render a denied write as a
           // successful tool call.
           const isError = this.#toolCallErrors.get(part.toolCallId) ?? false;
+          const resultText = isError
+            ? ""
+            : typeof part.output === "string"
+              ? part.output
+              : offloadResultText(part.output as { type?: string; value?: unknown });
           // Count successful research/exploration toward the plan-readiness
           // gate's telemetry — the evidence trail present_plan is judged against.
-          if (!isError) this.#turnGate?.recordToolUse(part.toolName);
+          // A web_search that surfaced NOTHING isn't grounding, so a junk query
+          // (zero results) can't satisfy the gate's "you researched" requirement.
+          if (!isError) {
+            const unproductive = part.toolName === "web_search" && /^No results for /.test(resultText.trim());
+            if (!unproductive) this.#turnGate?.recordToolUse(part.toolName);
+          }
           // Harvest sources: on a SUCCESSFUL research-tool result, extract the
           // URLs it surfaced and record them in the session's source ledger
           // (deduped + stably numbered), so later turns can cite them by [n].
@@ -1676,11 +1686,7 @@ export class Session {
             } else {
               // web_search / crawl_docs OUTPUT is a list of result/page URLs — those
               // ARE the sources surfaced, so harvest them from the rendered text.
-              const text =
-                typeof part.output === "string"
-                  ? part.output
-                  : offloadResultText(part.output as { type?: string; value?: unknown });
-              for (const url of harvestUrls(text)) {
+              for (const url of harvestUrls(resultText)) {
                 this.#sources.record({ url, via: part.toolName });
               }
             }

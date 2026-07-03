@@ -177,11 +177,18 @@ function loadReadable(): Promise<ReadableFn | null> {
 /** Read a response body up to `maxBytes` as raw bytes. Returns the bytes and
  * whether the body was truncated at the cap. Streams via the shared byte reader
  * when a body stream is present; falls back to `arrayBuffer()` when it isn't. */
-async function readBodyCapped(
+export async function readBodyCapped(
   res: Response,
   maxBytes: number,
 ): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   if (res.body) return readCappedBytes(res.body, maxBytes);
+  // No stream to cap: the streaming path's OOM ceiling can't apply here, so honor
+  // a declared content-length that already exceeds the cap rather than buffering
+  // the whole (potentially huge) body just to truncate it.
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    return { bytes: new Uint8Array(0), truncated: true };
+  }
   const buf = new Uint8Array(await res.arrayBuffer());
   return buf.length > maxBytes
     ? { bytes: buf.subarray(0, maxBytes), truncated: true }

@@ -39,7 +39,10 @@ export function expandQueries(query: string, max = 6): string[] {
     out.push(`${core} guide`);
     if (core && terms.length >= 2) out.push(`"${core}"`);
     if (!/\b(19|20)\d{2}\b|year|date|when|time/.test(base.toLowerCase())) {
-      out.push(`${core} 2024 OR 2025`);
+      // Bias toward the CURRENT and prior year (computed, not hardcoded — a fixed
+      // "2024 OR 2025" would silently rot and omit the present year going forward).
+      const y = new Date().getUTCFullYear();
+      out.push(`${core} ${y - 1} OR ${y}`);
     }
   }
   const seen = new Set<string>();
@@ -140,16 +143,23 @@ export function freshnessBoost(date: string | undefined, now = Date.now()): numb
   if (!m) return 0;
   const t = Date.UTC(Number(m[1]), m[2] ? Number(m[2]) - 1 : 6, m[3] ? Number(m[3]) : 15);
   const years = (now - t) / 31_557_600_000;
+  // A future-dated result (a typo year like 2099, or a clock skew) is not
+  // "fresh" — don't award it the max boost; treat it as undated.
+  if (years < 0) return 0;
   if (years < 1) return 3;
   if (years < 2) return 2;
   if (years < 5) return 1;
   return 0;
 }
 
-/** ISO date if present, else a bare year. */
+/** ISO date if present (with a sane month 01-12 / day 01-31 — so `2025-13-45`
+ * isn't silently normalized into a bogus date), else a bare year. */
 export function detectDate(text: string): string | undefined {
-  const iso = /\b(20\d{2}-\d{2}-\d{2})\b/.exec(text);
-  if (iso) return iso[1];
+  for (const m of text.matchAll(/\b20\d{2}-(\d{2})-(\d{2})\b/g)) {
+    const mo = Number(m[1]);
+    const day = Number(m[2]);
+    if (mo >= 1 && mo <= 12 && day >= 1 && day <= 31) return m[0];
+  }
   const year = /\b(20\d{2})\b/.exec(text);
   return year?.[1];
 }
@@ -204,7 +214,9 @@ export interface PageSignal {
 /** Content-quality score for a fetched page (deep-mode re-ranking). */
 export function scorePage(page: PageSignal, terms: string[]): number {
   let score = 0;
-  const domain = page.domain.toLowerCase();
+  // Strip a leading `www.` so the exact-host boosts/penalties below apply to
+  // `www.github.com` / `www.npmjs.com` too (safeHost keeps the www prefix).
+  const domain = page.domain.toLowerCase().replace(/^www\./, "");
   const url = page.url.toLowerCase();
   const title = page.title.toLowerCase();
   const type = classifySource(domain);
@@ -267,9 +279,4 @@ export function mergeCandidates(candidates: Candidate[], maxResults: number): Ca
 /** Best-passage bonus used in deep-mode composite scoring. */
 export function passageBonus(passages: Passage[]): number {
   return passages.length ? passages[0]!.score * 3 : 0;
-}
-
-/** Engine-rank decay bonus used in composite scoring. */
-export function rankBonus(rank: number, ceiling: number): number {
-  return Math.max(0, ceiling - rank) * 0.2;
 }

@@ -781,7 +781,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | 5 | Coding loop | PASS |
 | 6 | Context gathering | PASS |
 | 7 | Memory | PASS |
-| 8 | Research stack | REOPENED |
+| 8 | Research stack | PASS |
 | 9 | Providers & model catalog | REOPENED |
 | 10 | Sessions/persistence/resume | REOPENED |
 | 11 | TUI + headless parity | REOPENED |
@@ -1146,7 +1146,76 @@ relocation (global-then-legacy fallback) verified CLEAN.
 - USER.md pushed at global precedence so a project VIBE/AGENTS note can override a user preference —
   mixed-signal, likely intentional; recorded for design confirmation.
 
-### v2 DECISIONS (this subsystem)
+#
+## v2 §8. Research stack — PASS
+
+Scope read end-to-end: net-guard.ts (SSRF), webfetch.ts, crawl-docs.ts, fetch-cache.ts, web-search.ts,
+search-engines.ts, searchcore.ts, package-info.ts, present-plan.ts, plan-gate.ts (triage/telemetry).
+Two readers (SSRF/fetch/crawl + search/plan-gate) + author repro/fix. **SSRF guard: NO new bypass** —
+every v1 vector re-verified plus 0.0.0.0, IPv6 zone-id, uppercase-hex, IPv4-in-brackets, multi-IP
+pinning, redirect-to-internal, CRLF-in-Location — all blocked; fail-closed on unparseable.
+
+### CONFIRMED & FIXED
+- **[HIGH] V2-29 Plan-gate triage over-fired on ordinary dev vocabulary** — CURRENT_EVENTS
+  (`match`/`score`/`release`/`launch`/`announce`), TIME_SENSITIVE (`breaking`/`ongoing`), and
+  STACK_NAMES (`node`/`react`/`solid`/`spring`/`express`) matched common code words, so ~24/28 benign
+  in-repo plan requests were taxed with a forced present_plan bounce demanding web/version research
+  they didn't need. Fixed: dropped the dev-overloaded words; a greenfield BUILD_REQUEST still triggers
+  needsVersions so the real signal survives. Regression: *"ordinary dev vocabulary does NOT force
+  web/version research"* (plan-gate.test.ts).
+- **[MED] V2-30 Plan-gate false negatives** — genuine time-sensitive asks slipped ungated (`recent`
+  vs only `most recent`; `super bowl`/`world series`/`grand prix`/`nba finals` absent). Fixed: added
+  `(most )?recent` and the missing sports terms. Regression: *"genuine time-sensitive asks are still
+  caught"*.
+- **[MED-HIGH] V2-31 Gate evidence never validated — junk search + fake sources satisfied it** —
+  `Source.url` was `z.string()`, `evaluate` only checked `sources.length`, and a zero-result
+  web_search still counted toward telemetry. Fixed three ways: evaluate counts only real http(s)
+  source URLs; a `No results for` web_search no longer increments the gate's webSearches. Regressions:
+  *"junk/non-URL sources do NOT satisfy the web-evidence requirement"* (plan-gate.test.ts), *"a
+  zero-result web_search does not satisfy the grounding requirement"* (plan-gate-session.test.ts).
+- **[MED] V2-32 `recencyDays` schema overstated enforcement** — it is only a coarse per-engine native
+  filter (Bing applies none for >31 days), never a hard post-filter, but the description said "Only
+  return results from the last N days." Fixed: honest best-effort/coarse description (no silent
+  behavior change — a real date post-filter would drop the many undated results).
+- **[LOW/MED] V2-33 Crawl dropped absolute https links after an http→https upgrade** — extractLinks
+  used strict `.origin` equality, so a site force-upgrading http→https had its absolute nav links
+  judged cross-origin, collapsing the crawl to one page. Fixed: use the scheme-tolerant `sameSite`
+  (host+port, upgrade allowed) — matching the fetch bound. Regression: *"extractLinks keeps absolute
+  https links when the page URL is http"* (crawl-docs.test.ts).
+- **[LOW] V2-34 expandQueries hardcoded stale years `2024 OR 2025`** — biases recall toward stale
+  years from 2026 on. Fixed: computed `${y-1} OR ${y}`. Regression: *"recency variant uses the CURRENT
+  year"* (searchcore.test.ts).
+- **[LOW] V2-35 scorePage host boosts/penalties missed `www.` hosts** — `domain === "github.com"`
+  never matched `www.github.com` (safeHost keeps www). Fixed: strip leading `www.`. Regression:
+  *"scorePage applies host boosts/penalties to www-prefixed hosts too"*.
+- **[LOW] V2-36 detectDate/freshnessBoost accepted impossible + future dates** — `2025-13-45` was
+  silently normalized and a future year (`2099`) got the MAX freshness boost. Fixed: bound month
+  01-12 / day 01-31 in detectDate; a future date scores 0. Regressions: *"detectDate rejects an
+  impossible ISO date"*, *"freshnessBoost does not award a future date the max boost"*.
+- **[LOW] V2-37 null-body fetch fallback buffered the whole body** — readBodyCapped's non-stream path
+  `arrayBuffer()`'d the entire body before truncating (latent — Bun exposes res.body). Fixed: refuse
+  when content-length already exceeds the cap. Regression: *"a null-body response with an oversized
+  content-length is refused"* (webfetch.test.ts).
+- **[cleanup] V2-38** Removed dead exported `rankBonus` (zero references).
+
+### REFUTED / verified clean
+- SSRF guard — no new bypass (see header). fetch-cache no cross-URL collision / no error-poisoning /
+  coalesced inflight / LRU-bounded / stale-on-failure-only-good-copy. Decompression-bomb cap on the
+  decompressed stream. Wayback leak-gate re-checks the input under default-deny; the archive.org fetch
+  targets a constant host and its result is re-fetched guarded. package-info name grammars sound;
+  web_search all-engines-throw→isError, one engine failing never sinks the batch; search-engine
+  parsers reject non-http/bad-base64; classifySource("")→secondary. plan-gate greenfield waiver +
+  MAX_REJECTIONS ungrounded escape intact. `resultQualityScore`'s arxiv/crossref branch is
+  correct-but-unreachable forward-compat (NOT the always-true bug an earlier read suspected).
+
+### Accepted-risk (recorded)
+- Search-engine/registry fetches have no byte cap + bypass the SSRF guard for FIXED trusted hosts only
+  (v1); deep-search fan-out unthrottled (v1); untrusted web content flows into context unsanitized
+  (inherent). crawl stores the page under the pre-redirect URL (same-origin redirects only → minor).
+  With a cache configured, an aborted webfetch that has a prior good entry returns the cached copy
+  rather than the abort message (cosmetic; content still returned). All LOW/INFO.
+
+## v2 DECISIONS (this subsystem)
 - **Concurrent index-prune staleness (V2-M2) recommended design:** serialize `SemanticMemory.index()`
   per MemoryService (a single-flight lock or a corpus-version check before prune) so an older call's
   stale prune can't delete a newer call's upsert. Deferred: the window is narrow, self-heals on the

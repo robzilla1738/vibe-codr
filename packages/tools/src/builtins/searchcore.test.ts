@@ -8,6 +8,8 @@ import {
   queryTerms,
   expandQueries,
   detectDate,
+  freshnessBoost,
+  scorePage,
   type Candidate,
 } from "./searchcore.ts";
 
@@ -92,4 +94,36 @@ test("detectDate prefers ISO dates, falls back to a bare year", () => {
   expect(detectDate("released 2024-03-15 to users")).toBe("2024-03-15");
   expect(detectDate("a 2023 retrospective")).toBe("2023");
   expect(detectDate("no date here")).toBeUndefined();
+});
+
+test("detectDate rejects an impossible ISO date rather than normalizing it", () => {
+  // 2025-13-45 must not be accepted (Date.UTC would silently roll it over).
+  expect(detectDate("build 2025-13-45 failed")).toBe("2025"); // falls back to the bare year
+  expect(detectDate("valid 2025-06-15 and junk 2025-99-99")).toBe("2025-06-15");
+});
+
+test("freshnessBoost does not award a future date the max boost", () => {
+  const now = Date.UTC(2026, 0, 1);
+  expect(freshnessBoost("2099-01-01", now)).toBe(0); // future → not fresh
+  expect(freshnessBoost("2025-06-01", now)).toBe(3); // within a year → +3
+  expect(freshnessBoost(undefined, now)).toBe(0);
+});
+
+test("expandQueries recency variant uses the CURRENT year, not a hardcoded one", () => {
+  const y = new Date().getUTCFullYear();
+  const qs = expandQueries("how do I deploy nextjs");
+  const recency = qs.find((q) => /\d{4} OR \d{4}/.test(q));
+  expect(recency).toBeDefined();
+  expect(recency).toContain(`${y - 1} OR ${y}`);
+  expect(recency).not.toContain("2024 OR 2025"); // the old hardcoded pair (unless it IS this year)
+});
+
+test("scorePage applies host boosts/penalties to www-prefixed hosts too", () => {
+  const base = { url: "https://x/y", title: "t", text: "content here", date: undefined };
+  const gh = scorePage({ ...base, domain: "www.github.com" }, []);
+  const ghBare = scorePage({ ...base, domain: "github.com" }, []);
+  expect(gh).toBe(ghBare); // www. no longer skips the +4 github boost
+  const npm = scorePage({ ...base, domain: "www.npmjs.com" }, []);
+  const other = scorePage({ ...base, domain: "example.com" }, []);
+  expect(npm).toBeLessThan(other); // the −2 npm penalty applies to www.npmjs.com
 });

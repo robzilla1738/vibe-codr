@@ -30,7 +30,11 @@ const Input = z.object({
     .int()
     .positive()
     .optional()
-    .describe("Only return results from the last N days."),
+    .describe(
+      "Prefer results from roughly the last N days (best-effort, coarse — mapped " +
+        "to each engine's native recency filter; not a hard post-filter, and some " +
+        "engines only bucket by day/week/month/year).",
+    ),
   maxResults: z
     .number()
     .int()

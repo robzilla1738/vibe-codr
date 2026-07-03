@@ -392,9 +392,14 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   ROOT is a flex *row* on a **black background** (`backgroundColor={palette().
   background}`): a `flexGrow` **left gutter**, the **chat column**
   (`flexDirection="column"`, `width={contentWidth()}`, `flexShrink={0}`,
-  `padding={1}`), and a `flexGrow` **right gutter**. The two gutters center the
-  column ChatGPT-style; `contentWidth()` = `min(CONTENT_MAX, dims().width - 2)`.
-  **There is NO top header and no sidebar/rail.** Inside the column, top to bottom:
+  `padding={1}`), on wide terminals (≥140 cols, `sidebarOn()`) a fixed-width
+  **right sidebar** (`SIDEBAR_W`=42: Tasks panel hugging the top, the turn's
+  Thinking log in a `grow` Rail filling the rest so the sidebar spans the SAME
+  height as the chat column; the thought trail persists until the next
+  user-message), and a `flexGrow` **right gutter**. The gutters center the
+  column ChatGPT-style; `contentWidth()` = `min(CONTENT_MAX, dims().width - 2 -
+  (sidebarOn() ? SIDEBAR_W : 0))`.
+  **There is NO top header.** Inside the column, top to bottom:
   the **body** (`flexGrow={1}`) — when `showJobs()` it's the **`/jobs` sub-view**
   (background shell jobs + detected localhost servers, a scrollbox replacing the
   transcript; Esc or `/jobs` closes it). Otherwise a `<Show>` renders the scrolling

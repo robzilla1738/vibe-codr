@@ -51,7 +51,9 @@ type Pkg = {
   version?: string;
   license?: string;
   description?: string;
+  keywords?: string[];
   repository?: unknown;
+  funding?: unknown;
   engines?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
@@ -99,8 +101,10 @@ export function generateNpmPackageJson(opts: {
     version,
     description: rootPkg.description ?? "A model-agnostic CLI coding agent for the terminal.",
     license: rootPkg.license ?? "MIT",
+    ...(rootPkg.keywords ? { keywords: rootPkg.keywords } : {}),
     repository: rootPkg.repository ?? { type: "git", url: `git+https://github.com/${REPO_SLUG}.git` },
     homepage: `https://github.com/${REPO_SLUG}`,
+    ...(rootPkg.funding ? { funding: rootPkg.funding } : {}),
     type: "module",
     bin: { vibecodr: "./vibecodr.js", vibe: "./vibecodr.js" },
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },

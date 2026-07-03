@@ -1,6 +1,11 @@
 # vibe-codr
 
-A cutting-edge, **model-agnostic** CLI coding agent for the terminal — in the
+[![CI](https://github.com/robzilla1738/vibe-codr/actions/workflows/ci.yml/badge.svg)](https://github.com/robzilla1738/vibe-codr/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/vibe-codr)](https://www.npmjs.com/package/vibe-codr)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Buy Me a Coffee](https://img.shields.io/badge/☕_buy_me_a_coffee-support-yellow)](https://buymeacoffee.com/robcourson)
+
+A **model-agnostic** CLI coding agent for the terminal — in the
 class of Claude Code / Codex / opencode, but able to drive coding and agentic
 tasks on *any* model: local models via **Ollama** and **LM Studio**, aggregators
 (**OpenRouter, Fireworks, Together, Baseten, Hugging Face**), and first-party
@@ -109,7 +114,7 @@ each, tap to expand) — in panels above the input, and the input itself: a
 input** — cwd · git, then model · changed-files · context · cost, plus key hints
 and the goal. Each user turn sits in a filled card on the accent rail (**tap your
 message to fold the whole exchange** under it), with the calm step rails and the
-input aligned on one left edge; **assistant replies render beautifully** — prose
+input aligned on one left edge; **assistant replies render as real Markdown** — prose
 as Markdown, with **headings in the accent, blockquotes with a rail bar, and code
 blocks + tables as clean native primitives** (aligned columns, accent header
 row); tool calls read as a distinct icon + action (`$` bash, `→` read, `←` edit,
@@ -353,7 +358,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   under it** (cwd · git / model · changed · ctx · cost, plus hints + goal). The
   user rail, the calm step rails, and the input all align on one left edge.
   User turns render in a filled card on the accent rail (**tap your message to fold
-  the whole exchange**); **assistant replies render beautifully** — prose through
+  the whole exchange**); **assistant replies render as real Markdown** — prose through
   OpenTUI's native Markdown (inline bold/italic/code concealed), with **headings in
   the accent, blockquotes with a rail bar, and code blocks + GFM tables as clean
   native primitives** (aligned columns, accent header row); tool calls read as a
@@ -529,7 +534,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `.vibe/agents/*.md` add or override them by name. Planning can fan out too —
   while in plan mode every subagent is coerced read-only, so you get parallel
   codebase exploration before converging on a plan, with no risk of a write.
-  Fan-out is bounded by `subagent.maxParallel` (default 4) and recursion by
+  Fan-out is bounded by `subagent.maxParallel` (default 8) and recursion by
   `subagent.maxDepth` (default 3). A tree-wide **exclusive-ownership** file lock
   hard-rejects a concurrent write to a file another subagent owns (instead of
   silently clobbering it); a shared **blackboard** (`post_note` / `read_notes`)
@@ -571,8 +576,8 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   offline with zero setup; add on-device embeddings
   (`bun add @huggingface/transformers`, `memory.semantic.model: "local"`) or a
   cloud embedder for **semantic** recall on top — it degrades cleanly to lexical
-  when no embedder is present. Opt-in `memory.proactiveRecall` injects relevant
-  past context at session start; `memory.sessionDigest` distills each
+  when no embedder is present. `memory.proactiveRecall` (on by default) injects relevant
+  past context at session start; `memory.sessionDigest` (also on by default) distills each
   interactive session (goal, outcomes, decisions + reasons, user corrections)
   into a recallable note at the end.
 - **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` are
@@ -581,7 +586,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   the git root**, so running from a subdirectory still picks up the repo-root
   notes; a user-global `~/.config/vibe-codr/VIBE.md` and
   `~/.config/vibe-codr/memory/USER.md` (preferences / standing rules — curated
-  by hand or grown by `save_memory` scope `user`) apply everywhere. Precedence is explicit (global < repo-root < closer dirs; closest
+  by hand or grown by `save_memory` scope `user`) apply everywhere (the injected
+  copy is byte-capped at ~32 KB, newest entries kept, and `save_memory` reports
+  when the file needs pruning). Precedence is explicit (global < repo-root < closer dirs; closest
   wins), each block is labelled with its source, files are byte-capped, and
   `/memory` shows exactly what's loaded. Drop-in compatible with repos already
   carrying Codex's `AGENTS.md` or Claude Code's `CLAUDE.md`.
@@ -615,9 +622,9 @@ so it works out of the box without chasing incompatible SDK majors.
 | `huggingface` | `HF_TOKEN` | Inference Providers router (`router.huggingface.co/v1`) — one token, open models auto-routed to live providers |
 | `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | OpenAI-compatible; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
-| `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
+| `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` (or `CODEX_API_KEY`) | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
 | `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
-| `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — model ids are plain (no suffix), e.g. `ollama/gpt-oss:120b`; run `vibecodr models` to list yours. Override the host with `OLLAMA_BASE_URL`. |
+| `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — model ids need no `-cloud` suffix, e.g. `ollama/gpt-oss:120b`; run `vibecodr models` to list yours. Override the host with `OLLAMA_BASE_URL`. |
 
 **Any** provider can authenticate from a credential file or with extra headers —
 useful for subscription/OAuth tokens another CLI obtained:
@@ -719,43 +726,24 @@ bun run build:binary  # standalone binary -> dist/vibecodr (bun --compile)
 `vibecodr sessions` lists saved sessions (resume one with `--resume <id>`).
 `vibecodr setup` re-runs the guided provider/model setup at any time.
 
-## Status
-
-All planned phases are implemented and tested:
-
-0. ✅ Full scaffold (monorepo, contracts, core/TUI boundary)
-1. ✅ Agent spine — `streamText` loop with multi-step tool execution
-2. ✅ Multi-provider + live model catalog (models.dev + `/v1/models`)
-3. ✅ Permission layer + plan/execute gating
-4. ✅ Subagents (isolated, depth-capped, parallel) + named agents
-5. ✅ Slash command files, skills (progressive disclosure), plugins
-6. ✅ `/goal` steering + `/loop` (interval, `--until`, `--max`)
-7. ✅ Session persistence (`--continue`/`--resume`) + context-aware compaction
-8. ✅ Parity & polish — full introspection/settings command surface, project
-   memory (VIBE.md/AGENTS.md/CLAUDE.md), JSON headless output + stdin, themes,
-   `/doctor`, `/export`, Ollama + structured `git_log`/`git_push` for GitHub.
-9. ✅ TUI UX — the plan/execute/yolo mode shown (and color-coded) on the input's
-   top border (Shift+Tab to cycle), an interactive slash-command menu, first-class Ollama Cloud, and a
-   guided `vibecodr setup`; the OpenTUI app is covered by `bun run smoke:tui`.
-10. ✅ opencode-inspired UI — dark graphite, centered single-column chat (no top header:
-    a VIBE CODR wordmark splash, the transcript, tasks/subagents panels above the
-    input, the mode break on the input's top border, and all details under it),
-    tap-your-message-to-fold, a **`/jobs` sub-view** (running shell commands +
-    auto-detected localhost servers), left-gutter message blocks, native Markdown
-    replies (incl. tables), per-tool icons + action labels, condensed tool output that expands on click,
-    edits folded into one diff row (tinted backgrounds), a braille working spinner
-    (Esc to interrupt), a bordered permission card, full-row menu highlight, and
-    the `opencode` theme.
-11. ✅ Hardening audit — every provider runs on AI SDK v5 (OpenAI-compatible
-    routing); parallel tool calls serialized; subagent isolation on `--resume`;
-    memory walks to the git root (byte-capped); atomic, corruption-tolerant
-    session store; loop runs serialized + abortable; alternation-safe compaction;
-    plugin hooks wired (incl. a working `deny` gate) and isolated; MCP auth
-    headers; tool-name/safety-command shadow guards; `/undo` rewinds files +
-    history without touching your git index; non-zero headless exit on error.
-
 To run interactively against real models, install the provider SDKs you use
 (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`), OpenTUI for the rich UI
 (`@opentui/core`, `@opentui/solid`, `solid-js`), and `@modelcontextprotocol/sdk`
 for MCP servers. Each is an optional peer dep — a missing one yields a clear,
 actionable error (and the readline REPL fallback) rather than blocking startup.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the test gate, and what
+reviewers look for. Security issues go through
+[private reporting](SECURITY.md), not the issue tracker. The full
+package-by-package architecture map lives in [AGENTS.md](AGENTS.md).
+
+## Support
+
+vibe-codr is free and MIT-licensed. If it saves you time and you feel like
+saying thanks: [buymeacoffee.com/robcourson](https://buymeacoffee.com/robcourson).
+
+## License
+
+[MIT](LICENSE)

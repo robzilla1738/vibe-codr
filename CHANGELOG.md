@@ -4,6 +4,44 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Changed — sidebar spans the full column height
+
+- **The right sidebar is now the same height as the chat column.** The
+  Thinking block grows to fill every row under the Tasks panel, so the
+  sidebar's top block sits level with the first transcript block and its
+  bottom lands level with the input — one continuous column instead of a
+  short box floating over empty space.
+- **The thought trail reads as paragraphs and keeps the whole turn.** Blank
+  lines between reasoning bursts are preserved (collapsed to one) instead of
+  stripped, and the caps are much deeper (64 KB / 512 lines) now that the log
+  fills a scrollable column. As before, the trail persists after the turn
+  ends and clears only when the next message is sent.
+
+### Fixed — open-source release prep
+
+- **Onboarding: the custom-endpoint flow can no longer save a broken model.**
+  An empty model id used to persist as `custom/` and print "You're all set",
+  then fail to resolve on the next launch. The model-id prompt now re-asks
+  until it gets a name, and skipping the base URL skips the whole branch
+  (nothing half-configured is written).
+- **Onboarding: Codex is badged as detected.** The provider menu now marks
+  any provider that's configured without its env var — a `codex login`
+  session (`~/.codex/auth.json`) or a previously saved config key — and
+  preselects it, instead of only recognizing env-var keys.
+- **A missing provider SDK now says so.** Loading a provider without its
+  `@ai-sdk/*` package used to raise "Provider … is not configured. Set one
+  of: install …" — an auth error wearing a dependency problem. It now names
+  the provider, the package, and the exact `bun add` command.
+- **`listConfiguredModels` resolves credentials once per provider** instead
+  of twice (the old filter + map each re-read token files like
+  `~/.codex/auth.json` from disk).
+- README corrections: `subagent.maxParallel` default is 8 (not 4), proactive
+  recall and session digests are on by default (not opt-in), the Codex row
+  documents `CODEX_API_KEY`, and the USER.md injection byte-cap is stated.
+- Community files for the public repo: CONTRIBUTING, SECURITY,
+  CODE_OF_CONDUCT, FUNDING, npm keywords + `funding` metadata, and README
+  badges. Removed two stray demo HTML files.
+
 ### Added — right sidebar (Tasks + Thinking), Ctrl+T, real-time task fix
 
 - **Right sidebar on wide terminals.** At ≥140 columns, the Tasks panel and a

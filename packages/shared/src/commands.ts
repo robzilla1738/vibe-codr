@@ -1,4 +1,4 @@
-import type { Mode, EngineSnapshot, ModelSummary, ProviderInfo, AgentInfo } from "./types.ts";
+import type { Mode, EngineSnapshot, ModelSummary, ProviderInfo, AgentInfo, SkillInfo } from "./types.ts";
 import type { UIEvent } from "./events.ts";
 
 /**
@@ -70,6 +70,8 @@ export interface EngineClient {
   listProviders?(): ProviderInfo[] | Promise<ProviderInfo[]>;
   /** Named subagents + their model/mode, for the `/agents` menu. Optional. */
   listAgents?(): AgentInfo[] | Promise<AgentInfo[]>;
+  /** Available skills (name + description), for the `/skills` menu. Optional. */
+  listSkills?(): SkillInfo[] | Promise<SkillInfo[]>;
   /** Flush the session digest + tear down (idempotent). A UI should await this
    * before a hard `process.exit` so an in-flight digest completes. Optional so a
    * minimal/mock client can omit it. */

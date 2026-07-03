@@ -457,6 +457,38 @@ const SCENES: SceneDef[] = [
       await waitFor("Tokyo Night");
     },
   },
+  {
+    name: "20-sidebar",
+    width: 170,
+    height: 40,
+    cwd: "~/vibe-codr",
+    engine: { usage: U_CACHED, git: { branch: "main", dirty: 2, ahead: 0, behind: 0, worktree: false } },
+    async setup({ push, waitFor }) {
+      // The WIDE-terminal layout: Tasks, the live Subagents fan-out (each child
+      // with its activity line), and the Thinking trail move to the right
+      // sidebar, leaving the chat column to the conversation.
+      push({ type: "user-message", sessionId: "s", text: "Audit the error handling across the workspace and fix what you find." } as UIEvent);
+      push({
+        type: "tasks-updated",
+        sessionId: "s",
+        tasks: [
+          { id: "t1", title: "Map error-handling patterns", status: "completed" },
+          { id: "t2", title: "Fan out per-package audits", status: "in_progress" },
+          { id: "t3", title: "Apply fixes + tests", status: "pending" },
+        ],
+      } as UIEvent);
+      push({ type: "reasoning-delta", id: "r1", delta: "Three packages swallow errors in catch blocks; fanning out one auditor per package to enumerate the sites before touching anything.\n" } as UIEvent);
+      push({ type: "subagent-started", sessionId: "s", subagentId: "a1", prompt: "audit packages/core error paths" } as UIEvent);
+      push({ type: "subagent-started", sessionId: "s", subagentId: "a2", prompt: "audit packages/tui error paths" } as UIEvent);
+      push({ type: "subagent-started", sessionId: "s", subagentId: "a3", prompt: "audit packages/cli error paths" } as UIEvent);
+      push({ type: "subagent-activity", sessionId: "s", subagentId: "a2", label: "rg \"catch\" src/ — 41 sites" } as UIEvent);
+      push({ type: "subagent-finished", sessionId: "s", subagentId: "a1", result: "3 swallowed errors, list attached" } as UIEvent);
+      push({ type: "tool-call-started", sessionId: "s", toolCallId: "t1", toolName: "grep", input: { pattern: "catch \\{" } } as UIEvent);
+      push({ type: "tool-call-finished", sessionId: "s", toolCallId: "t1", toolName: "grep", output: "112 matches", isError: false } as UIEvent);
+      push({ type: "assistant-text-delta", sessionId: "s", delta: "Mapping done — three auditors are sweeping `core`, `tui`, and `cli` in parallel; I'll fold their findings into one fix list." } as UIEvent);
+      await waitFor("fold their findings");
+    },
+  },
 ];
 
 // ── Rasterize captureSpans() → an HTML terminal ──────────────────────────────

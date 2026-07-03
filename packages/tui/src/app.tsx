@@ -12,13 +12,14 @@
  *
  * Layout: a single, centered, capped-width chat column (ChatGPT-style) on a
  * black background, with a muted TOP-LEFT context line (cwd · git · goal).
- * On a WIDE terminal (≥ SIDEBAR_MIN_TERM) with live work (tasks / a running
- * turn), a fixed-width RIGHT SIDEBAR takes the Tasks panel and the live
+ * On a WIDE terminal (≥ SIDEBAR_MIN_TERM) with live work (tasks / a subagent
+ * fan-out / a running turn), a fixed-width RIGHT SIDEBAR takes the Tasks panel,
+ * the Subagents fan-out (each child with its live activity line), and the live
  * thinking stream out of the chat column, so the transcript keeps its vertical
- * space; on narrow panes both fall back inline exactly as before. The sidebar
- * spans the SAME height as the chat column — Tasks hug the top, the Thinking
- * block grows to fill the rest, and the thought trail persists until the next
- * message is sent.
+ * space; on narrow panes all fall back inline exactly as before. The sidebar
+ * spans the SAME height as the chat column — Tasks then Subagents hug the top,
+ * the Thinking block grows to fill the rest, and the thought trail persists
+ * until the next message is sent.
  *
  * DESIGN LANGUAGE — flat chrome, filled content. Structural chrome (status
  * sections, the input, cards) is drawn FLAT: accent-colored titles + spacing on the
@@ -57,6 +58,7 @@ import type {
   ModelSummary,
   ProviderInfo,
   SessionUsage,
+  SkillInfo,
   Task,
   UIEvent,
 } from "@vibe/shared";
@@ -367,6 +369,8 @@ export function App(props: { engine: EngineClient }) {
   // freshly created/edited agent shows up).
   const [agents, setAgents] = createSignal<AgentInfo[] | null>(null);
   const [agentsLoading, setAgentsLoading] = createSignal(false);
+  const [skillsList, setSkillsList] = createSignal<SkillInfo[] | null>(null);
+  const [skillsLoading, setSkillsLoading] = createSignal(false);
   // Current settings tracked reactively so the value submenus can mark the active
   // choice (theme/accent come back as events; subagent-model + reasoning have no
   // event, so we also update them optimistically when chosen here).
@@ -424,6 +428,11 @@ export function App(props: { engine: EngineClient }) {
     if (/^new(\s|$)/i.test(rest)) return null;
     return rest;
   };
+  // `/skills [filter]` → the searchable skills menu (Enter prefills `/<name> `).
+  const skillsPickerQuery = (): string | null => {
+    const m = /^\/skills?(?:\s+(.*))?$/is.exec(draft());
+    return m ? (m[1] ?? "").trim() : null;
+  };
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -450,15 +459,22 @@ export function App(props: { engine: EngineClient }) {
   // a narrow resize are the only things that remove it.
   const sidebarOn = () =>
     dims().width >= SIDEBAR_MIN_TERM &&
-    (tasks().length > 0 || working() || thoughtLog().length > 0);
+    (tasks().length > 0 || subagents().length > 0 || working() || thoughtLog().length > 0);
   const contentWidth = () =>
     Math.min(CONTENT_MAX, Math.max(1, dims().width - 2 - (sidebarOn() ? SIDEBAR_W : 0)));
   // How many task rows the sidebar shows before windowing kicks in — taller
   // than the inline PANEL_MAX_ROWS (vertical space is what the sidebar is for),
   // budgeted by terminal height with slack for wrapped titles (÷4 ≈ header +
   // 2-line wraps) so a long list can't push the thinking section off-screen.
-  const sideTaskCap = () =>
+  // When BOTH rigid panels are up (Tasks + Subagents) they split that budget,
+  // keeping the growing Thinking block on-screen even on a short pane.
+  const sidePanelBudget = () =>
     Math.max(PANEL_MAX_ROWS, Math.min(16, Math.floor((dims().height - 10) / 4)));
+  const sideTaskCap = () =>
+    subagents().length > 0 ? Math.max(3, Math.floor(sidePanelBudget() / 2)) : sidePanelBudget();
+  // Subagent rows can take TWO lines each (prompt + live activity/result), so
+  // the subagent cap is its half of the budget counted in two-line rows.
+  const sideSubCap = () => Math.max(3, Math.floor(sidePanelBudget() / 2));
   // The thought-log block GROWS to fill every row left under the Tasks block,
   // so the sidebar spans the same height as the chat column — its top block
   // sits level with the first transcript block and its bottom lands level with
@@ -723,6 +739,26 @@ export function App(props: { engine: EngineClient }) {
       rows.push({ label: "＋ new agent…", choose: () => setDraft("/agents new ") });
       return { open: rows.length > 0, loading: false, kind: "agents" as const, title, hint, rows };
     }
+    const skillsQuery = skillsPickerQuery();
+    if (skillsQuery !== null) {
+      const title = "skills";
+      const hint = "Enter → prefill /<name>  ·  the model can also load them itself";
+      const all = skillsList();
+      if (all === null)
+        return { open: true, loading: true, kind: "skills" as const, title, hint, rows: [] as MenuRow[] };
+      const q = skillsQuery.toLowerCase();
+      const rows: MenuRow[] = all
+        .filter((s) => !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
+        .map((s) => ({
+          label: s.name,
+          // Frontmatter descriptions can span lines — the menu row shows ONE
+          // clean line (the renderer ellipsizes at the column edge).
+          desc: s.description.replace(/\s+/g, " ").trim(),
+          // Prefill `/<name> ` (skills take freeform args); Enter then runs it.
+          choose: () => setDraft(`/${s.name} `),
+        }));
+      return { open: rows.length > 0, loading: false, kind: "skills" as const, title, hint, rows };
+    }
     const st = paletteState(draft());
     if (!st.open) return { open: false, loading: false, kind: "command" as const, title: "", hint: "", rows: [] as MenuRow[] };
     if (st.mode === "command") {
@@ -809,6 +845,18 @@ export function App(props: { engine: EngineClient }) {
         .then((list) => setAgents(list ?? []))
         .catch(() => setAgents([]))
         .finally(() => setAgentsLoading(false));
+    }
+  });
+
+  // Lazily fetch the skills list the first time the `/skills` menu opens
+  // (cached for the session — the skill set only changes on engine restart).
+  createEffect(() => {
+    if (skillsPickerQuery() !== null && skillsList() === null && !skillsLoading()) {
+      setSkillsLoading(true);
+      void Promise.resolve(props.engine.listSkills?.() ?? [])
+        .then((list) => setSkillsList(list ?? []))
+        .catch(() => setSkillsList([]))
+        .finally(() => setSkillsLoading(false));
     }
   });
 
@@ -2213,7 +2261,7 @@ export function App(props: { engine: EngineClient }) {
           full prompt + result (bounded), tap again to collapse. Each row carries
           a right-aligned elapsed (live while running, final once done); a done
           row folds its result glimpse into the line. Cleared per turn. */}
-      <Show when={subagents().length > 0}>
+      <Show when={!sidebarOn() && subagents().length > 0}>
         <Panel
           title={(() => {
             const done = subagents().filter((s) => s.status === "done").length;
@@ -2420,8 +2468,11 @@ export function App(props: { engine: EngineClient }) {
               current value with `●`. Only the highlighted row carries a selection tint. */}
           <Show when={menuModel().open}>
             <box flexDirection="column" flexShrink={0}>
+              {/* Section header in the theme's signature hue (violet on the
+                  default) — the one colored line above a monochrome list,
+                  mirroring opencode's dialog headers. */}
               <Show when={menuView()?.title}>
-                <text fg={brand()} attributes={TextAttributes.BOLD}>{menuView()?.title}</text>
+                <text fg={palette().heading} attributes={TextAttributes.BOLD}>{menuView()?.title}</text>
               </Show>
               <Show when={menuView()?.hint}>
                 <text fg={palette().muted}>{menuView()?.hint}</text>
@@ -2449,11 +2500,15 @@ export function App(props: { engine: EngineClient }) {
                       refocusInput();
                     }}
                   >
-                    <text flexShrink={0} fg={row.active ? brand() : palette().muted}>
+                    {/* On the active row everything flips to `selFg` — the band
+                        is a solid accent surface (violet on the default theme),
+                        so text must take the band's own contrast color, not the
+                        chrome tones tuned for the dark backdrop. */}
+                    <text flexShrink={0} fg={row.active ? palette().selFg : palette().muted}>
                       {`${row.active ? "❯" : " "} `}
                     </text>
                     <Show when={menuView()?.marker}>
-                      <text flexShrink={0} fg={row.current ? brand() : palette().muted}>
+                      <text flexShrink={0} fg={row.active ? palette().selFg : row.current ? brand() : palette().muted}>
                         {row.current ? "● " : "  "}
                       </text>
                     </Show>
@@ -2462,7 +2517,7 @@ export function App(props: { engine: EngineClient }) {
                         highlighted; selection still shows via ❯ + the band. */}
                     <text
                       flexShrink={0}
-                      fg={row.fg ?? (row.active ? brand() : palette().assistant)}
+                      fg={row.fg ?? (row.active ? palette().selFg : palette().assistant)}
                       attributes={row.active ? TextAttributes.BOLD : undefined}
                     >
                       {row.label}
@@ -2546,8 +2601,9 @@ export function App(props: { engine: EngineClient }) {
         </box>
       </Show>
       </box>
-      {/* Right sidebar (wide terminals) — Tasks on top, the turn's THOUGHT LOG
-          filling the rest. Each section is the SAME block language as the chat
+      {/* Right sidebar (wide terminals) — Tasks on top, then the live Subagents
+          fan-out, then the turn's THOUGHT LOG filling the rest. Each section is
+          the SAME block language as the chat
           column (filled panel surface + thin left rail + identical padding),
           with the same uniform 1-row gap between blocks — the sidebar reads as
           one more column of the same material, not different chrome. */}
@@ -2602,6 +2658,88 @@ export function App(props: { engine: EngineClient }) {
               </box>
             </Rail>
           </Show>
+          {/* Subagents — the live fan-out, in the same block language as Tasks.
+              One line per child (spinner while running / ✓ done, its prompt's
+              first line, a right-aligned elapsed), plus a second muted line
+              under the row for what it's DOING right now (live activity) or —
+              once finished — its one-line result glimpse. The inline chat-column
+              panel hides while the sidebar hosts this (exactly like Tasks). */}
+          <Show when={subagents().length > 0}>
+            <Rail color={palette().gutter} marginTop={tasks().length > 0 ? 1 : 0}>
+              <box
+                backgroundColor={palette().panel}
+                flexDirection="column"
+                paddingTop={1}
+                paddingBottom={1}
+                paddingLeft={2}
+                paddingRight={2}
+              >
+                <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                  {(() => {
+                    const done = subagents().filter((s) => s.status === "done").length;
+                    return done > 0 && done < subagents().length
+                      ? `Subagents · ${done}/${subagents().length} done`
+                      : `Subagents · ${subagents().length}`;
+                  })()}
+                </text>
+                <For each={subagents().slice(0, sideSubCap())}>
+                  {(s) => {
+                    const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
+                    const fg = () => (s.status === "running" ? palette().assistant : palette().muted);
+                    // Same elapsed shape as the inline panel: live while
+                    // running, frozen total once done, sub-second hidden.
+                    const elapsed = () => {
+                      if (s.status === "running" && s.startedAt) {
+                        void tick();
+                        return `${Math.max(0, Math.round((Date.now() - s.startedAt) / 1000))}s`;
+                      }
+                      if (s.elapsedMs === undefined || s.elapsedMs < 1000) return "";
+                      return `${(s.elapsedMs / 1000).toFixed(s.elapsedMs >= 10_000 ? 0 : 1)}s`;
+                    };
+                    // The under-row detail: live activity while running, the
+                    // result glimpse once done (nothing → row stays one line).
+                    const detail = () =>
+                      s.status === "running" ? (s.activity ?? "") : (s.result ?? "");
+                    return (
+                      <box flexDirection="column">
+                        <box flexDirection="row" gap={1}>
+                          <text flexShrink={0} fg={glyphFg()}>
+                            {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
+                          </text>
+                          <text flexGrow={1} wrapMode="none" fg={fg()}>
+                            {firstLine(s.prompt) ?? s.prompt}
+                          </text>
+                          <Show when={elapsed()}>
+                            <text flexShrink={0} fg={palette().gutter}>{elapsed()}</text>
+                          </Show>
+                        </box>
+                        <Show when={detail()}>
+                          {/* Hang under the glyph column; one truncated line so a
+                              chatty child can't grow the panel row by row. */}
+                          <box flexDirection="row" paddingLeft={2}>
+                            <text flexShrink={0} fg={palette().muted}>
+                              {s.status === "running" ? "· " : `${GLYPH.result} `}
+                            </text>
+                            <text
+                              flexGrow={1}
+                              wrapMode="none"
+                              fg={palette().muted}
+                              attributes={TextAttributes.ITALIC}
+                            >
+                              {truncate(detail(), SIDEBAR_W - 12)}
+                            </text>
+                          </box>
+                        </Show>
+                      </box>
+                    );
+                  }}
+                </For>
+                <Show when={subagents().length > sideSubCap()}>
+                  <text fg={palette().muted}>{`  +${subagents().length - sideSubCap()} more`}</text>
+                </Show>
+              </box>
+            </Rail>
+          </Show>
           {/* The thought log — the whole turn's reasoning as one continuous,
               word-wrapped stream in a bottom-sticky scrollbox (newest thought
               always in view, history scrollable). It does NOT clear when a
@@ -2610,9 +2748,14 @@ export function App(props: { engine: EngineClient }) {
               is sent. The block GROWS to fill the rows under the Tasks panel,
               so the sidebar's bottom lines up with the chat column. */}
           <Show when={working() || thoughtLog().length > 0}>
-            {/* First block when there are no tasks (must sit on the chat's
-                first-block row); the usual 1-row inter-block gap otherwise. */}
-            <Rail color={palette().gutter} marginTop={tasks().length > 0 ? 1 : 0} grow>
+            {/* First block when neither Tasks nor Subagents render above it
+                (must sit on the chat's first-block row); the usual 1-row
+                inter-block gap otherwise. */}
+            <Rail
+              color={palette().gutter}
+              marginTop={tasks().length > 0 || subagents().length > 0 ? 1 : 0}
+              grow
+            >
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"

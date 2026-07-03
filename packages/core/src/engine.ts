@@ -16,6 +16,7 @@ import {
   type Mode,
   type ProviderInfo,
   type AgentInfo,
+  type SkillInfo,
   type QueuedItem,
   type RepoProfile,
   type UIEvent,
@@ -1390,6 +1391,11 @@ export class Engine implements EngineClient {
       model: a.model ?? null,
       mode: a.mode ?? "execute",
     }));
+  }
+
+  /** Available skills (name + description), for the `/skills` menu. */
+  listSkills(): SkillInfo[] {
+    return this.skills.list().map((s) => ({ name: s.name, description: s.description }));
   }
 
   /** Reload `.vibe/agents/*.md` into `#agents` after a write. */

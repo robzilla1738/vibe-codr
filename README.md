@@ -93,10 +93,12 @@ latest) — never hardcoded.
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberate
 color language: a **near-black graphite background** with **filled panel cards**
 and a **thin left rail** on every block (no box-drawing borders — they gap into
-dashes on terminals with line spacing), and a **royal violet (`#8b5cf6`)
-accent** reserved for titles and markers — the **VIBE CODR wordmark** (a calm
-light→deep violet fade), panel titles, the **user-message rail**, the active
-task/step, the selected menu row, and the input caret. The input's **mode
+dashes on terminals with line spacing). The chrome is **white-first** (opencode's
+neutral scale): the **VIBE CODR wordmark**, panel titles, the **user-message
+rail**, the active task/step, and the input caret all read in the body white,
+while a **royal violet (`#8b5cf6`)** is saved for the few emphasis moments —
+the selected menu row's solid band (dark text on it), menu section headers, and
+markdown headings. The input's **mode
 label, rail + caret** (`ASK ❯` in the accent · `PLAN ❯` green · `YOLO ❯` red)
 make switching mode unmistakable without repainting the screen. Swap the accent
 in one word — **`/accent blue`**, or `purple`, `orange`, `ember`, `amber`,
@@ -115,7 +117,7 @@ input** — cwd · git, then model · changed-files · context · cost, plus key
 and the goal. Each user turn sits in a filled card on the accent rail (**tap your
 message to fold the whole exchange** under it), with the calm step rails and the
 input aligned on one left edge; **assistant replies render as real Markdown** — prose
-as Markdown, with **headings in the accent, blockquotes with a rail bar, and code
+as Markdown, with **headings in the signature violet, blockquotes with a rail bar, and code
 blocks + tables as clean native primitives** (aligned columns, accent header
 row); tool calls read as a distinct icon + action (`$` bash, `→` read, `←` edit,
 `✱` glob/grep, `◈` websearch, `±` git…) and **condense to one line you click to
@@ -140,6 +142,10 @@ and drills into rich submenus (a searchable model picker, clickable toggles).
 | `/accent orange` — one word recolors the chrome | The `/accent` swatch submenu |
 |---|---|
 | ![orange accent](docs/screenshots/18-orange.png) | ![accent swatches](docs/screenshots/17-accent.png) |
+
+| Wide terminal — Tasks, the live Subagents fan-out, and the Thinking trail move to a right sidebar |
+|---|
+| ![sidebar](docs/screenshots/20-sidebar.png) |
 
 | Ported classic themes (`/theme tokyonight`, catppuccin, gruvbox, …) |
 |---|
@@ -337,8 +343,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
   deliberate color language: a **near-black graphite background** with **filled
   panel cards** and a **thin left rail** on every block (no box-drawing chrome
-  borders), and a **royal violet (`#8b5cf6`) accent** reserved for titles and
-  markers — the **VIBE CODR wordmark** (a calm light→deep violet fade), panel titles,
+  borders), **white-first chrome** (opencode's neutral scale), and a **royal
+  violet (`#8b5cf6`)** saved for emphasis — the selected menu row's solid band,
+  menu section headers, and markdown headings — around the wordmark, panel titles,
   the **user-message rail**, the active task/step, the selected menu row, and the
   caret; the input's **mode label, rail + caret**
   (`ASK ❯` in the accent / `PLAN ❯` green / `YOLO ❯` red) carry the mode;
@@ -370,7 +377,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   the meta column, edits fold into a single diff row with the hunk beneath it and
   **search steps expand to clean source cards**.
   Streamed text is coalesced so long replies stay smooth. A **rainbow braille
-  spinner** (hue-cycling, starting on the brand violet) with elapsed time shows
+  spinner** (hue-cycling) with elapsed time shows
   live work (**Esc** interrupts the turn), with a
   **live `✻ thinking` stack** while the model reasons — its last few lines stream
   under the spinner, newest brightest — and each finished
@@ -378,14 +385,17 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   (click it, or **Ctrl+T** to expand/collapse every thought at once), so
   the thinking that led to each step stays reviewable instead of evaporating.
   On a **wide terminal (≥140 cols)** the live work moves into a **right
-  sidebar**: the **Tasks panel** and a persistent **Thinking block** — the whole
-  turn's reasoning as one scrolling stream (it survives past turn end instead of
-  vanishing as each action starts), with **tool actions interleaved** so a
-  model that doesn't emit reasoning still shows a live **Activity** trail while
-  it searches and fetches. Both are drawn as the same filled panel blocks as
-  the chat column, spanning exactly its height (top block level with the
-  transcript, bottom edge level with the input); on narrow panes everything
-  falls back inline. The transcript itself **stays fast at any length** — only
+  sidebar**: the **Tasks panel**, the **Subagents fan-out** — one row per child
+  (spinner while it runs, ✓ when done, a right-aligned elapsed) with a live
+  **activity line** under a running child ("· rg \"catch\" src/") that folds
+  into its **result glimpse** ("↳ 3 swallowed errors") once it finishes — and a
+  persistent **Thinking block**: the whole turn's reasoning as one scrolling
+  stream (it survives past turn end instead of vanishing as each action
+  starts), with **tool actions interleaved** so a model that doesn't emit
+  reasoning still shows a live **Activity** trail while it searches and
+  fetches. All are drawn as the same filled panel blocks as the chat column,
+  spanning exactly its height (top block level with the transcript, bottom
+  edge level with the input); on narrow panes everything falls back inline. The transcript itself **stays fast at any length** — only
   the newest turns are laid out, older ones fold behind a tappable
   **`▸ N earlier turns`** row (full history is always kept for `/export` and
   `--resume`), and heavy event bursts paint at most once per frame, so a
@@ -411,7 +421,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `n`/Esc (deny), **or type a reason**: any other text denies AND travels to the
   model as the deny reason (`denied by user — use staging instead`), so a denial
   steers the next attempt instead of leaving the model guessing. Fifteen themes
-  ship — `default` (royal violet on graphite), `light`, `contrast`, `opencode`
+  ship — `default` (white chrome + violet emphasis on graphite), `light`, `contrast`, `opencode`
   (the classic graphite + peach look), and ported classics:
   `tokyonight`, `catppuccin`, `gruvbox`, `nord`, `one-dark`, `dracula`,
   `rosepine`, `kanagawa`, `everforest`, `flexoki` (burnt orange), `vesper` (peach).
@@ -447,7 +457,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   plan can never silently inherit a lingering YOLO — YOLO is always an explicit
   choice, and entering it via `/yolo` leaves a warn notice in the transcript.
   The mode chip on the
-  input's top border is color-coded (ASK purple / PLAN green / YOLO red) so the
+  input's top border is color-coded (ASK white / PLAN green / YOLO red) so the
   active mode is unmistakable, while the rest of the chrome stays neutral.
 - **Resilience & git/process tools** — provider calls retry transient failures
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a

@@ -403,10 +403,16 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   background}`): a `flexGrow` **left gutter**, the **chat column**
   (`flexDirection="column"`, `width={contentWidth()}`, `flexShrink={0}`,
   `padding={1}`), on wide terminals (≥140 cols, `sidebarOn()`) a fixed-width
-  **right sidebar** (`SIDEBAR_W`=42: Tasks panel hugging the top, the turn's
-  Thinking/Activity trail in a `grow` Rail filling the rest so the sidebar
-  spans the SAME height as the chat column; the trail persists until the next
-  user-message). Sidebar alignment is EXACT and smoke-guarded
+  **right sidebar** (`SIDEBAR_W`=42: Tasks panel hugging the top, then the
+  live **Subagents fan-out** — one row per child with a spinner/✓ glyph, a
+  right-aligned elapsed, and a second muted line for its live activity while
+  running / result glimpse once done — then the turn's Thinking/Activity
+  trail in a `grow` Rail filling the rest so the sidebar spans the SAME
+  height as the chat column; the trail persists until the next user-message.
+  The inline chat-column Tasks/Subagents panels render ONLY when the sidebar
+  is off (`!sidebarOn()`) — never both. The rigid panels split a height
+  budget (`sidePanelBudget`/`sideTaskCap`/`sideSubCap`) so a long list can't
+  push the Thinking block off-screen). Sidebar alignment is EXACT and smoke-guarded
   (`bun run smoke:sidebar`): first block on the viewport's first content row
   (NO marginTop on the first sidebar block — the chat's first-block margin is
   swallowed by its scrollbox), bottom edge on the input block's bottom (a

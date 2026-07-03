@@ -5,6 +5,9 @@
  *    "Activity"), flipping to "Thinking" once reasoning arrives;
  *  • the sidebar's first block starts on the transcript viewport's first
  *    content row and its bottom lands on the input block's bottom row;
+ *  • the sidebar hosts the SUBAGENTS fan-out (prompt + live activity line,
+ *    result glimpse on finish), the inline panel stays hidden, and the
+ *    bottom alignment still holds with three sidebar blocks stacked;
  *  • transcript render windowing: old turns leave the tree behind a
  *    "▸ N earlier turns" fold row that reveals on tap (scroll-anchored).
  * Run via `bun run smoke:sidebar` (a LOCAL gate, like smoke:tui).
@@ -136,6 +139,50 @@ await settle();
 const frame2 = t.captureCharFrame();
 check("header flips to Thinking once reasoning exists", frame2.includes("Thinking") && !frame2.includes("✻ Activity"));
 check("reasoning interleaves after activity", frame2.includes("weighing the layout options"));
+
+// ── Scene 2b: a subagent fan-out — the sidebar hosts the Subagents panel
+// (child + live activity line), the inline chat-column panel stays hidden,
+// and the bottom alignment still holds with three sidebar blocks stacked.
+push({
+  type: "subagent-started",
+  sessionId: "vf",
+  subagentId: "sub1",
+  prompt: "research the venue capacity",
+} as UIEvent);
+push({
+  type: "subagent-activity",
+  sessionId: "vf",
+  subagentId: "sub1",
+  label: "$ rg capacity docs/",
+} as UIEvent);
+await settle();
+const frameSub = t.captureCharFrame();
+const rowsSub = frameSub.split("\n");
+const sideSlice = rowsSub.map((r) => r.slice(W - 44)).join("\n");
+const chatSlice = rowsSub.map((r) => r.slice(0, W - 46)).join("\n");
+check("sidebar shows the Subagents panel", sideSlice.includes("Subagents"));
+check("subagent row shows its prompt", sideSlice.includes("research the venue"));
+check("subagent row shows its LIVE activity line", sideSlice.includes("rg capacity"));
+check("inline Subagents panel stays hidden while the sidebar hosts it", !chatSlice.includes("Subagents"));
+const railRowsSub = (lo: number, hi: number): number[] =>
+  rowsSub.flatMap((r, i) => (r.slice(lo, hi).includes("▎") ? [i] : []));
+const chatSub = railRowsSub(0, 60);
+const sideSub = railRowsSub(W - 48, W);
+check(
+  "sidebar bottom still lands on the input's bottom row with Subagents up",
+  chatSub[chatSub.length - 1] === sideSub[sideSub.length - 1],
+  `chat bottom=${chatSub[chatSub.length - 1]} side bottom=${sideSub[sideSub.length - 1]}`,
+);
+push({
+  type: "subagent-finished",
+  sessionId: "vf",
+  subagentId: "sub1",
+  result: "holds 81,365 — checked two sources",
+} as UIEvent);
+await settle();
+const frameSubDone = t.captureCharFrame();
+const sideDone = frameSubDone.split("\n").map((r) => r.slice(W - 44)).join("\n");
+check("finished subagent folds in its result glimpse", sideDone.includes("81,365"));
 
 // ── Scene 3: windowing — 45 turns → fold row with the right count.
 push({ type: "turn-finished", sessionId: "vf" } as UIEvent);

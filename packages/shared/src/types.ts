@@ -75,6 +75,12 @@ export interface AgentInfo {
   mode: Mode;
 }
 
+/** A skill the UI can browse/invoke in the `/skills` menu. */
+export interface SkillInfo {
+  name: string;
+  description: string;
+}
+
 /** A prompt or command waiting in (or running at the head of) the engine queue. */
 export interface QueuedItem {
   id: string;

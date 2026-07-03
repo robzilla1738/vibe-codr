@@ -214,3 +214,26 @@ test("the kept window never begins with an orphaned tool result", async () => {
     expectNoOrphanToolResult(result.messages);
   }
 });
+
+test("compaction with a non-iterable user content prepends a summary turn instead of throwing", async () => {
+  // A malformed/legacy persisted user message whose content is neither string
+  // nor array must not crash the fold (which #maybeCompact would misreport as a
+  // summarizer failure and skip compaction on an oversized turn).
+  const messages: ModelMessage[] = [
+    { role: "user", content: "first" },
+    { role: "assistant", content: "reply one padded out with tokens here" },
+    { role: "user", content: undefined as unknown as string }, // recent[0], malformed
+    { role: "assistant", content: "reply two padded out with tokens here" },
+  ];
+  const result = await compactMessages(messages, {
+    contextWindow: 10,
+    threshold: 0,
+    keep: 2,
+    force: true,
+    summarize: async () => "RECAP",
+  });
+  expect(result).not.toBeNull();
+  expect(result!.messages[0]!.role).toBe("user");
+  expect(result!.messages[0]!.content).toBe("[Summary of earlier conversation]\nRECAP");
+  expect(result!.messages.length).toBe(3); // note + the 2 kept
+});

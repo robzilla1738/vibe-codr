@@ -190,6 +190,58 @@ test("persists after a turn and can be resumed with prior context", async () => 
   expect(resumed.messageCount).toBeGreaterThanOrEqual(4);
 });
 
+test("resume seeds the real prior prompt size so the first turn's compaction check isn't overhead-blind", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-resume-ctx-"));
+  const store = new SessionStore(cwd);
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        // A big REAL input count — the true context fill the estimate can't see.
+        { type: "finish", finishReason: "stop", usage: { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 } },
+      ]),
+  });
+  const first = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    store,
+    id: "ses_ctx",
+  });
+  await first.run("go");
+  expect(first.contextTokens).toBe(90_000);
+
+  const persisted = await store.load("ses_ctx");
+  // The real prior prompt size round-trips through persistence…
+  expect(persisted!.meta.lastInputTokens).toBe(90_000);
+
+  // …and a resumed session reports it BEFORE its first step, instead of the
+  // small messages-only estimate (which omits ~40k of system/tool overhead and
+  // would let an over-window prompt sail past the compaction trigger).
+  const resumed = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd,
+    model: persisted!.meta.model,
+    mode: persisted!.meta.mode,
+    store,
+    id: persisted!.meta.id,
+    initialModelMessages: persisted!.modelMessages,
+    initialHistory: persisted!.history,
+    initialLastInputTokens: persisted!.meta.lastInputTokens,
+  });
+  expect(resumed.contextTokens).toBe(90_000);
+});
+
 test("accumulates per-step usage and prices it (no double-counting)", async () => {
   // Two steps, each reporting USAGE (10 in / 5 out). onStepFinish usage is
   // per-step, so the turn total must be the SUM, not a cumulative re-count.

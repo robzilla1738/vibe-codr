@@ -352,6 +352,9 @@ export class Engine implements EngineClient {
                     : {}),
                 }
               : {}),
+            ...(resume.meta.lastInputTokens
+              ? { initialLastInputTokens: resume.meta.lastInputTokens }
+              : {}),
           }
         : {}),
     });

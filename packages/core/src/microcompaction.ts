@@ -1,10 +1,13 @@
+import { readdirSync, statSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { ModelMessage } from "ai";
 
 /**
  * Mid-turn context management (Claude-Code-style microcompaction): when a long
  * agentic turn fills the window with bulky tool results, the oldest/superseded
- * results are OFFLOADED — full text written to a session artifact on disk,
- * replaced in the prompt by a short preview plus the path to `read` the rest.
+ * results are OFFLOADED — full text written to a session artifact on disk (an
+ * ABSOLUTE path under the project's global state dir), replaced in the prompt by
+ * a short preview plus that path to `read` the rest.
  * Lossless-ish and retrievable, unlike summarization; it runs FIRST (at a lower
  * threshold), with the LLM summarizer remaining the between-turn last resort.
  *
@@ -21,7 +24,8 @@ import type { ModelMessage } from "ai";
 export const OFFLOAD_SENTINEL = "[vibecodr:offloaded ";
 
 export interface OffloadRecord {
-  /** cwd-relative artifact path holding the full result text. */
+  /** ABSOLUTE artifact path holding the full result text (under the project's
+   * global state dir), so the `read`-back pointer resolves independent of cwd. */
   path: string;
   toolName: string;
   fullChars: number;
@@ -133,6 +137,11 @@ export interface PlanOptions {
    * matches across absolute/relative spellings of the same file. Identity when
    * omitted (keeps planOffloads pure/testable without a filesystem). */
   canonicalize?: (p: string) => string;
+  /** Chars each offloaded result KEEPS inline (the preview). Subtracted from a
+   * victim's credited free, since offloading a result doesn't remove it whole —
+   * a preview stays. Without this the planner over-credits every pick and stops
+   * early, freeing less than `targetChars`. Defaults to 0 (whole-result credit). */
+  previewChars?: number;
 }
 
 /**
@@ -167,12 +176,16 @@ export function planOffloads(messages: ModelMessage[], opts: PlanOptions): ToolR
     ...eligible.filter(isSuperseded),
     ...eligible.filter((r) => !isSuperseded(r)),
   ];
+  // Offloading a result leaves a preview (+ a short note) inline, so the actual
+  // reduction is the result MINUS what stays — credit that, not the whole result,
+  // or the planner stops early and the step can remain over threshold.
+  const preview = Math.max(0, opts.previewChars ?? 0);
   const picked: ToolResultRef[] = [];
   let freed = 0;
   for (const r of ordered) {
     if (freed >= opts.targetChars) break;
     picked.push(r);
-    freed += r.chars;
+    freed += Math.max(0, r.chars - preview);
   }
   return picked;
 }
@@ -207,10 +220,47 @@ export function applyOffloads(
       if (full.length <= previewChars || full.startsWith(OFFLOAD_SENTINEL)) return p;
       const note =
         `${OFFLOAD_SENTINEL}${rec.toolName} result: full ${rec.fullChars} chars saved to ${rec.path} — ` +
-        `use the read tool on that path if you need the rest. Preview:]\n${surrogateSafeSlice(full, previewChars)}`;
+        `read that path if you need the rest (it may exceed one read; use offset/limit to page). Preview:]\n${surrogateSafeSlice(full, previewChars)}`;
       return { ...p, output: { type: "text", value: note } };
     });
     return { ...m, content: rebuilt } as ModelMessage;
   });
   return changed ? next : messages;
+}
+
+/**
+ * Enforce a per-session byte budget over an offload artifact directory: when the
+ * total exceeds `capBytes`, evict oldest-first the files whose absolute path is
+ * NOT in `livePaths` (the working set the current process still points at).
+ * Evicted artifacts' previews remain in the transcript — only the re-readable
+ * full text is reclaimed. Returns the number of files removed. Pure w.r.t. the
+ * caller: all fs errors are swallowed (best-effort reclamation).
+ */
+export function pruneArtifacts(dir: string, capBytes: number, livePaths: ReadonlySet<string>): number {
+  if (!capBytes || capBytes <= 0) return 0;
+  let entries: { path: string; size: number; mtimeMs: number }[];
+  try {
+    entries = readdirSync(dir).map((name) => {
+      const p = join(dir, name);
+      const st = statSync(p);
+      return { path: p, size: st.size, mtimeMs: st.mtimeMs };
+    });
+  } catch {
+    return 0;
+  }
+  let total = entries.reduce((n, e) => n + e.size, 0);
+  if (total <= capBytes) return 0;
+  const evictable = entries.filter((e) => !livePaths.has(e.path)).sort((a, b) => a.mtimeMs - b.mtimeMs);
+  let removed = 0;
+  for (const e of evictable) {
+    if (total <= capBytes) break;
+    try {
+      rmSync(e.path, { force: true });
+      total -= e.size;
+      removed++;
+    } catch {
+      /* a file we can't remove just stays — best-effort */
+    }
+  }
+  return removed;
 }

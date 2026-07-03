@@ -775,7 +775,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 | # | Subsystem | Status |
 |---|-----------|--------|
 | 1 | Modes & approvals | PASS |
-| 2 | Compaction & microcompaction | REOPENED |
+| 2 | Compaction & microcompaction | PASS |
 | 3 | Prompt-cache economy | REOPENED |
 | 4 | Subagent orchestration | REOPENED |
 | 5 | Coding loop | REOPENED |
@@ -852,7 +852,91 @@ shared/commands.ts (77). Two independent end-to-end readers + author verificatio
   PLAN; the setting is dropped by the next Shift+Tab). Read-only mode makes it safety-neutral —
   recorded for subsystem 11's pass.
 
-### v2 DECISIONS (this subsystem)
+#
+## v2 §2. Compaction & microcompaction — PASS
+
+Scope read end-to-end: compaction.ts (125), compaction.test.ts, microcompaction.ts (+ test),
+model-tuning.ts, config compaction block, session.ts regions (#maybeCompact, prepareStep offload,
+#writeOffload, #applyDurableOffloads, #persist, constructor). Two independent readers (core
+algorithm + offload lifecycle) + author repro/fix.
+
+### CONFIRMED & FIXED
+- **[MED] V2-7 Resume under-triggered compaction → possible provider 400** — `#lastInputTokens`
+  (the real prior prompt size) was never persisted or seeded, so a resumed session's FIRST turn fell
+  to the overhead-blind pre-first-step estimate (`estimate + min(12k, window·0.1)`), which omits the
+  ~40k system+tool overhead. A large resumed transcript could ship an over-window prompt straight
+  into a 400 before compaction ever fired. Fixed: persist `lastInputTokens` in meta, seed it on
+  resume (`initialLastInputTokens`). Regression: *"resume seeds the real prior prompt size…"*
+  (session.test.ts).
+- **[MED] V2-8 Offload planner over-credited freed bytes → under-offloading** — `planOffloads`
+  credited each victim its FULL `chars`, but offloading leaves a `previewBytes` preview inline, so it
+  stopped early and a step could stay over threshold. Fixed: credit the NET reduction
+  (`chars − previewChars`); wired `previewChars: offload.previewBytes` at the call site. Regression:
+  *"planOffloads credits only the NET reduction"* (microcompaction.test.ts).
+- **[MED] V2-9 Unbounded offload-artifact growth + orphans from aborted turns** — nothing ever
+  pruned `tool-results/`; every offloaded result accumulated forever, and a mid-turn abort left the
+  written `.txt` orphaned (durable fold never ran). Fixed: a per-session byte budget
+  (`offload.maxArtifactBytes`, default 64 MiB) evicts oldest-first the artifacts NOT in the live
+  working set after each write — bounding growth and reclaiming orphans; previews stay in context so
+  eviction is graceful. Extracted to a pure `pruneArtifacts` helper. Regression: *"pruneArtifacts
+  evicts oldest-first over the cap, never the live working set"* (microcompaction.test.ts).
+- **[LOW] V2-10 Config allowed inverted thresholds** — `offload.threshold ≥ threshold` silently
+  summarized (lossy) before offloading (lossless), defeating the layering. Fixed: a `.refine`
+  rejects it. Regression: *"compaction rejects offload.threshold >= threshold"* (config.test.ts).
+- **[LOW] V2-11 Non-iterable user content threw inside the compaction fold** — a malformed/legacy
+  persisted user message (content neither string nor array) made the array-spread throw, which
+  #maybeCompact mislabeled as a summarizer failure and skipped compaction on an oversized turn.
+  Fixed: guard the shape; prepend the summary as its own leading user turn. Regression:
+  *"compaction with a non-iterable user content prepends a summary turn instead of throwing"*.
+
+### REFUTED / verified clean
+- Cut-boundary tool-result orphan (parallel tool calls, assistant-only-tool-call, keep-sweep):
+  walk-back provably keeps recent[0] non-tool AND older never ends on an assistant whose result was
+  pulled into recent — re-verified by both readers + the existing sweep test.
+- Empty-summary abort, summarizer-failure-proceeds vs abort-propagates, token double-count
+  (Anthropic disjoint cache slices folded then peeled), post-compaction `#lastInputTokens=0` reset,
+  load-bearing state (goal/tasks/sources/planGate) surviving compaction (lives outside `messages`
+  or in the keep window): all re-verified sound.
+- Resume rebuild of `#offloaded` (deliberately empty; previews already folded into the transcript),
+  per-session artifact dir isolation by session id, creation-failure degradation, tool-boundary
+  identity preservation, surrogate-safe preview slice: clean.
+- Offload path-traversal via a poisoned transcript pointer: no escalation — `read` already resolves
+  any absolute path in-process and the sandbox read-allows the whole FS; the write side sanitizes
+  filenames. Non-issue.
+
+### Accepted-risk (recorded)
+- **V2-O1 [LOW-MED] Baked absolute artifact path is stale across a state-root change** (VIBE_STATE_DIR
+  toggled, different machine/$HOME, or the SAME repo checked out at a different absolute path → a
+  different cwd-hash). Degradation is graceful: `read` returns not-found, the 2 KB preview survives,
+  and the model can re-run the tool. This is already an IMPROVEMENT over v1's cwd-relative paths (the
+  common same-cwd resume now works). Recorded, not fixed — see DECISIONS.
+- **V2-F2 [LOW-MED] Nested re-summarization** — a prior `[Summary…]` block landing in `older` is
+  re-summarized (summary-of-summary, compounding loss over many compactions). Inherent to
+  summarization; recorded with a recommended design in DECISIONS.
+- **V2-O5/O6 [LOW]** re-read of a >100 KB artifact is capped by the read tool's MAX_OUTPUT (note now
+  tells the model to page with offset/limit); the offload sentinel is content-sniffed, so a result
+  literally beginning with the sentinel evades offload (distinctive-by-design). Both low, recorded.
+- Few-but-huge messages (≤keep giant messages) still can't compact (count guard) — pre-existing v1
+  accepted-risk, unchanged.
+
+Stale docs fixed: `OffloadRecord.path` "cwd-relative" → ABSOLUTE; module header notes the absolute
+global-state path.
+
+## v2 DECISIONS
+
+- **Offload artifacts keyed by absolute path under the cwd-hashed global state dir (V2-O1):** kept.
+  The alternative — a resolver that, on a not-found offload pointer, remaps the state-root prefix to
+  the current `globalStateDir(cwd)` — helps only the VIBE_STATE_DIR-toggle case (not cross-machine or
+  cross-checkout-path, which change the cwd-hash itself). Given graceful degradation (preview + a
+  re-runnable tool) and that transcript portability across machines was never a guarantee, the
+  resolver's coupling of the generic `read` tool to offload internals isn't worth it. Revisit only if
+  a concrete same-machine resume-loss is reported.
+- **Nested re-summarization (V2-F2) recommended design:** tag the summary note with a structural
+  marker (e.g. a dedicated metadata field, not just the "[Summary…]" text prefix) and have
+  `#summarize` pass prior-summary blocks through VERBATIM instead of re-summarizing them. Deferred:
+  it needs a summary-provenance channel through persistence and careful prompt changes; the current
+  loss is gradual and only bites very long single sessions.
+ (this subsystem)
 - **Plan-approval approvals invariant (revised deliberately 2026-07-02):** v1's "every mode
   transition re-gates to ask" still holds for RAW transitions; plan approval now COMPOSES with it —
   #approvePlan captures wantAuto (explicit ^Y or the user already in auto) BEFORE #setModeGated,

@@ -404,6 +404,13 @@ export const ConfigSchema = z.object({
           previewBytes: z.number().int().positive().default(2_048),
           /** Never offload the most recent N tool results (the live working set). */
           keepLiveResults: z.number().int().min(0).default(2),
+          /** Cap on total on-disk offload artifacts PER SESSION (bytes). When a
+           * write pushes the session's tool-results dir over this, the oldest
+           * artifacts NOT in the live working set are evicted (their previews
+           * remain in context; only the re-readable full text is reclaimed).
+           * Bounds within-session artifact growth and reclaims orphans left by a
+           * mid-turn abort. Default 64 MiB. */
+          maxArtifactBytes: z.number().int().positive().default(64 * 1024 * 1024),
         })
         .default({
           enabled: true,
@@ -411,11 +418,26 @@ export const ConfigSchema = z.object({
           maxResultBytes: 16_384,
           previewBytes: 2_048,
           keepLiveResults: 2,
+          maxArtifactBytes: 64 * 1024 * 1024,
         }),
+    })
+    .refine((c) => c.offload.threshold < c.threshold, {
+      // The layering only works if the lossless offload fires BELOW the lossy
+      // summary threshold. Inverting them (offload.threshold ≥ threshold) would
+      // silently summarize before ever offloading — defeating the design.
+      message: "compaction.offload.threshold must be below compaction.threshold",
+      path: ["offload", "threshold"],
     })
     .default({
       threshold: 0.75,
-      offload: { enabled: true, threshold: 0.6, maxResultBytes: 16_384, previewBytes: 2_048, keepLiveResults: 2 },
+      offload: {
+        enabled: true,
+        threshold: 0.6,
+        maxResultBytes: 16_384,
+        previewBytes: 2_048,
+        keepLiveResults: 2,
+        maxArtifactBytes: 64 * 1024 * 1024,
+      },
     }),
   /**
    * Long-term memory: semantic (embedding) recall on top of the lexical BM25

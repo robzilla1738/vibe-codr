@@ -108,13 +108,15 @@ export async function compactMessages(
   // message, fold the summary into it; otherwise prepend it as its own user turn.
   const first = recent[0];
   let next: ModelMessage[];
-  if (first && first.role === "user") {
-    const folded: ModelMessage =
-      typeof first.content === "string"
-        ? { role: "user", content: `${note}\n\n${first.content}` }
-        : { role: "user", content: [{ type: "text", text: note }, ...first.content] };
-    next = [folded, ...recent.slice(1)];
+  if (first && first.role === "user" && typeof first.content === "string") {
+    next = [{ role: "user", content: `${note}\n\n${first.content}` }, ...recent.slice(1)];
+  } else if (first && first.role === "user" && Array.isArray(first.content)) {
+    next = [{ role: "user", content: [{ type: "text", text: note }, ...first.content] }, ...recent.slice(1)];
   } else {
+    // recent[0] is an assistant/tool turn, or a user turn with malformed/legacy
+    // content (neither string nor array — spreading it would throw, and
+    // #maybeCompact would misreport that as a summarizer failure). Prepend the
+    // summary as its own leading user turn.
     next = [{ role: "user", content: note }, ...recent];
   }
   // Report freed space as the drop in the (messages-only) estimate, so it

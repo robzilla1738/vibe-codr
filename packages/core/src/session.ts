@@ -40,6 +40,7 @@ import { globalStateDir } from "./state-dir.ts";
 import {
   applyOffloads,
   planOffloads,
+  pruneArtifacts,
   resultText as offloadResultText,
   type OffloadRecord,
 } from "./microcompaction.ts";
@@ -172,6 +173,11 @@ export interface SessionDeps {
   initialTasks?: Task[];
   /** Seed cumulative token usage when resuming a persisted session. */
   initialUsage?: TokenTotals;
+  /** Seed the last turn's REAL provider input-token count when resuming, so the
+   * first resumed turn's compaction trigger uses the true prior prompt size
+   * instead of the system/tool-overhead-blind estimate (which can under-fire
+   * and ship an over-window prompt straight into a provider 400). */
+  initialLastInputTokens?: number;
   /** Seed accrued cost (USD) when resuming a persisted session. */
   initialCostUSD?: number;
   /** Seed the recalled-context block when resuming a persisted session. */
@@ -293,6 +299,7 @@ export class Session {
         : {}),
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
+    this.#lastInputTokens = deps.initialLastInputTokens ?? 0;
     this.#recalledContext = deps.initialRecalledContext;
     if (deps.initialSources?.length) this.#sources.hydrate(deps.initialSources);
     this.#createdAt = deps.createdAt ?? Date.now();
@@ -1069,6 +1076,8 @@ export class Session {
                   existing: new Set(this.#offloaded.keys()),
                   // Match superseded reads across abs/relative spellings of a file.
                   canonicalize: (p) => resolve(this.#deps.cwd, p),
+                  // A preview stays inline, so credit only the net reduction.
+                  previewChars: offload.previewBytes,
                 });
                 for (const ref of plan) await this.#writeOffload(ref, stepMessages);
               }
@@ -1334,9 +1343,22 @@ export class Session {
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, full, "utf8");
       this.#offloaded.set(ref.callId, { path: abs, toolName: ref.toolName, fullChars: full.length });
+      this.#pruneOffloadArtifacts(dirname(abs));
     } catch {
       /* offloading is an enhancement — a failed write must never fail the turn */
     }
+  }
+
+  /** Enforce the per-session artifact byte budget: when the tool-results dir
+   * exceeds `offload.maxArtifactBytes`, evict oldest-first the artifacts whose
+   * full text is NOT part of the live working set (i.e. not currently mapped in
+   * #offloaded). Their previews stay in context; only the re-readable full text
+   * is reclaimed — the same graceful degradation a moved/aged artifact already
+   * has. Bounds within-session growth and reclaims orphans from aborted turns. */
+  #pruneOffloadArtifacts(dir: string): void {
+    const cap = this.#deps.config.compaction.offload.maxArtifactBytes;
+    const live = new Set([...this.#offloaded.values()].map((r) => r.path));
+    pruneArtifacts(dir, cap, live);
   }
 
   /** Fold the ephemeral prepareStep offloads into the DURABLE message history
@@ -1488,6 +1510,7 @@ export class Session {
           goal: this.goal,
           tasks: this.#tasks,
           usage: { ...this.#usage, costUSD: this.#costUSD },
+          ...(this.#lastInputTokens > 0 ? { lastInputTokens: this.#lastInputTokens } : {}),
           ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
           ...(this.#sources.size ? { sources: [...this.#sources.list()] } : {}),
           createdAt: this.#createdAt,

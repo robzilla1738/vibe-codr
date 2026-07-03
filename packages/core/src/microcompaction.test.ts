@@ -1,9 +1,13 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import {
   classifyToolResults,
   planOffloads,
   applyOffloads,
+  pruneArtifacts,
   resultText,
   type OffloadRecord,
 } from "./microcompaction.ts";
@@ -148,4 +152,62 @@ test("applyOffloads preview never splits a surrogate pair at the cut", () => {
       expect(prev >= 0xd800 && prev <= 0xdbff).toBe(true);
     }
   }
+});
+
+test("planOffloads credits only the NET reduction (result minus retained preview)", () => {
+  // Two 20k-char victims; target 30k. Whole-result credit stops after one (20k
+  // >= 30k is false, so it'd pick two anyway) — pick a target where the preview
+  // subtraction changes the count: target 19k, preview 5k.
+  const messages: ModelMessage[] = [
+    call("a", "read", { path: "a.ts" }),
+    result("a", "read", "x".repeat(20_000)),
+    call("b", "grep", { pattern: "y" }),
+    result("b", "grep", "y".repeat(20_000)),
+  ];
+  // With preview subtracted: net per victim = 20k - 5k = 15k < 19k target, so it
+  // must pick BOTH. Whole-result credit (20k >= 19k) would stop after ONE.
+  const withPreview = planOffloads(messages, {
+    maxResultBytes: 1_000,
+    keepLiveResults: 0,
+    targetChars: 19_000,
+    existing: new Set(),
+    previewChars: 5_000,
+  });
+  expect(withPreview).toHaveLength(2);
+  // Whole-result credit (no preview subtraction) stops after one.
+  const wholeCredit = planOffloads(messages, {
+    maxResultBytes: 1_000,
+    keepLiveResults: 0,
+    targetChars: 19_000,
+    existing: new Set(),
+  });
+  expect(wholeCredit).toHaveLength(1);
+});
+
+test("pruneArtifacts evicts oldest-first over the cap, never the live working set", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-artifacts-"));
+  const write = (name: string, bytes: number, ageSecAgo: number) => {
+    const p = join(dir, name);
+    writeFileSync(p, "x".repeat(bytes));
+    const t = Date.now() / 1000 - ageSecAgo;
+    utimesSync(p, t, t);
+    return p;
+  };
+  const oldLive = write("a.txt", 1000, 300); // oldest, but LIVE → must survive
+  const oldDead = write("b.txt", 1000, 200); // old + dead → first to go
+  const midDead = write("c.txt", 1000, 100); // dead → next
+  const newDead = write("d.txt", 1000, 10); // newest dead → kept if possible
+
+  // Cap 2500: total 4000 → must evict 1500+ worth of DEAD files, oldest first.
+  const removed = pruneArtifacts(dir, 2500, new Set([oldLive]));
+  expect(removed).toBe(2); // b then c
+  expect(existsSync(oldLive)).toBe(true); // live never evicted
+  expect(existsSync(oldDead)).toBe(false);
+  expect(existsSync(midDead)).toBe(false);
+  expect(existsSync(newDead)).toBe(true); // newest dead kept, under cap now
+
+  // Under cap → no-op.
+  expect(pruneArtifacts(dir, 10_000, new Set())).toBe(0);
+  // Disabled (cap 0) → no-op.
+  expect(pruneArtifacts(dir, 0, new Set())).toBe(0);
 });

@@ -221,3 +221,18 @@ test("concurrent writeGlobalConfig calls don't clobber each other (serialized RM
     else process.env.XDG_CONFIG_HOME = prevXdg;
   }
 });
+
+test("compaction rejects offload.threshold >= threshold (the layering must hold)", () => {
+  // offload (lossless) must fire BELOW the summary (lossy) threshold; inverting
+  // them silently summarizes before ever offloading.
+  const bad = ConfigSchema.safeParse({
+    compaction: { threshold: 0.75, offload: { threshold: 0.9 } },
+  });
+  expect(bad.success).toBe(false);
+
+  const ok = ConfigSchema.safeParse({
+    compaction: { threshold: 0.75, offload: { threshold: 0.6 } },
+  });
+  expect(ok.success).toBe(true);
+  if (ok.success) expect(ok.data.compaction.offload.maxArtifactBytes).toBe(64 * 1024 * 1024);
+});

@@ -16,6 +16,10 @@ export interface SessionMeta {
    * cache-read total is persisted too, so `--resume` keeps a truthful running
    * usage/cost instead of silently zeroing the cached slice. */
   usage?: { inputTokens: number; outputTokens: number; costUSD?: number; cachedInputTokens?: number };
+  /** The last turn's REAL provider input-token count (context fill), so a resumed
+   * session's first compaction check uses the true prior prompt size instead of
+   * the overhead-blind estimate. */
+  lastInputTokens?: number;
   /** The proactively-recalled context block, so a resumed session keeps the
    * same injected memory instead of silently dropping (or re-deriving) it. */
   recalledContext?: string;

@@ -309,6 +309,16 @@ export class CatalogService {
  * absent. Returns undefined when the model prices a big prompt flat, so untiered
  * models keep a `tiers`-free cost object.
  */
+/** Coerce a models.dev price field to a FINITE number, or undefined. A malformed
+ * upstream (a string, `null`, `NaN`, or `Infinity` price) must never reach the cost
+ * math in `computeCost` — a `NaN` cost accumulates into the running spend and makes
+ * every `costUSD > limitUSD` comparison false, silently disabling the budget `stop`
+ * cap and rendering `NaN` in the UI. Normalize at the parse boundary so downstream
+ * price consumers only ever see a real number or `undefined` (= "unpriced"). */
+function finiteNum(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
 function parseTiers(cost: any): PricingTier[] | undefined {
   const raw = cost?.tiers;
   if (Array.isArray(raw)) {
@@ -318,10 +328,10 @@ function parseTiers(cost: any): PricingTier[] | undefined {
       if (typeof size !== "number") continue;
       tiers.push({
         threshold: size,
-        input: t?.input,
-        output: t?.output,
-        cacheRead: t?.cache_read,
-        cacheWrite: t?.cache_write,
+        input: finiteNum(t?.input),
+        output: finiteNum(t?.output),
+        cacheRead: finiteNum(t?.cache_read),
+        cacheWrite: finiteNum(t?.cache_write),
       });
     }
     // Ascending by threshold so tier selection can walk it as a step function.
@@ -332,10 +342,10 @@ function parseTiers(cost: any): PricingTier[] | undefined {
     return [
       {
         threshold: 200_000,
-        input: over.input,
-        output: over.output,
-        cacheRead: over.cache_read,
-        cacheWrite: over.cache_write,
+        input: finiteNum(over.input),
+        output: finiteNum(over.output),
+        cacheRead: finiteNum(over.cache_read),
+        cacheWrite: finiteNum(over.cache_write),
       },
     ];
   }
@@ -359,10 +369,10 @@ export function parseModelsDev(raw: unknown): Map<string, Partial<ModelInfo>> {
         contextWindow: m?.limit?.context,
         maxOutput: m?.limit?.output,
         cost: {
-          input: m?.cost?.input,
-          output: m?.cost?.output,
-          cacheRead: m?.cost?.cache_read,
-          cacheWrite: m?.cost?.cache_write,
+          input: finiteNum(m?.cost?.input),
+          output: finiteNum(m?.cost?.output),
+          cacheRead: finiteNum(m?.cost?.cache_read),
+          cacheWrite: finiteNum(m?.cost?.cache_write),
           tiers: parseTiers(m?.cost),
         },
         capabilities: {

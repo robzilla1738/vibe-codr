@@ -1717,3 +1717,41 @@ needed while only v1 exists); the multi-terminal cross-file meta/messages race i
 (meta carries no length field, so it can't truncate a resume).
 
 Clean-pass counter after Pass 4: 1. ONE more consecutive CLEAN pass required.
+
+
+### Pass 5 — 3 CONFIRMED (all NEW, all LOW/LOW-MED, all FIXED + regression-tested)
+Two skeptics (modes+coding-loop / providers+research+config), executed repros. The pass found three
+genuine new defects (none previously recorded), so the clean-pass counter RESETS — Pass 4's clean pass
+does not survive a subsequent pass that finds defects. All three fixed; the rest REFUTED with disproofs.
+- **[LOW] P5-1 stub scan missed ESM/CJS extensions** — `scannablePath`'s `\.(tsx?|jsx?|…)` allow-list
+  didn't cover `.mjs`/`.cjs`/`.mts`/`.cts`, so an obvious stub (`throw new Error("not implemented")`)
+  added to a module-extension file was invisible to the deterministic backstop (the LLM diff-reviewer
+  still saw it, so a gap not a blind spot). Fixed: allow-list + test-exclusion now include `[mc][tj]s`.
+  Regression: *"scans ESM/CJS module extensions"* (stubscan.test.ts).
+- **[LOW-MED] P5-W1 malformed TinyFish 200 sank the whole web_search** — `tinyFishSearch`'s
+  `data.results ?? []` guarded only null/undefined; an error-envelope 200 (`{"results":{…}}` or
+  `{"results":"…"}`) is a truthy non-array that reached `collect()`'s `.entries()` and THREW, converting
+  a successful keyless DDG+Bing fan-out into a hard tool error. Fixed: `Array.isArray(data.results) ? … : []`
+  (mirroring the sibling `listOpenAICompatibleModels` guard). Regression: *"a malformed TinyFish 200
+  … doesn't sink the batch"* (web-search.test.ts).
+- **[LOW] P5-W2 non-numeric catalog price → NaN cost silently defeated the budget cap** — `parseModelsDev`
+  copied `cost.input/output/…` through with no numeric coercion, so a malformed models.dev upstream (a
+  string/NaN/Infinity price) produced a `NaN` cost that accumulates into the running spend and makes every
+  `costUSD > limitUSD` comparison false — the `onExceed:"stop"` cap silently disabled, `NaN` in the UI.
+  (Config-sourced prices can't trigger it — `ModelPriceSchema` rejects non-numbers.) Fixed: a `finiteNum`
+  coercion at the parse boundary (model cost + tiers + context_over_200k) so downstream only ever sees a
+  real number or undefined. Regression: *"coerces a non-numeric/NaN/Infinity price to undefined"* (catalog.test.ts).
+
+REFUTED with executed disproofs: edit multi-edit atomicity (a failing 2nd edit leaves the file byte-for-byte
+unchanged), edit non-unique `old_string` refusal, stub-scanner ReDoS-safety (50k adversarial input ~2ms, no
+throw), modes/approvals composition (`wantAuto` reflects a runtime Shift+Tab-to-yolo via `handleApprovals`
+mutating `config.approvalMode`; no silent-yolo inheritance; a non-approving `set-mode` re-gates to ask; a
+spent plan can't re-run), `#afterTurn`/`#runGate` outcome routing (`aborted` takes no verdict path),
+checkpoints/undo footgun guards. Providers/research: 11 SSRF vectors (`0.0.0.0`, `[::]`, IPv4-mapped,
+credentials-in-URL, decimal/hex/octal int, DNS-rebind shape, NAT64, punycode-pinned) all blocked;
+redirect-to-internal re-checked every hop; unknown-model pricing → cost 0 not crash; catalog refresh race
+atomic; keyless flows error cleanly; JSONC/MCP/`configUnknownKeys` all clean. Edit/write path-scoping is the
+accepted sandbox-boundary DECISION (the `PermissionChecker`, not the primitive, confines writes) — not a new
+defect. The multi-session dangling-ref-on-prune is cosmetic, within the accepted multi-session-race DECISION.
+
+Clean-pass counter after Pass 5: 0 (3 confirmed → all fixed). TWO consecutive CLEAN passes still required.

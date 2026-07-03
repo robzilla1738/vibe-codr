@@ -116,6 +116,21 @@ test("a failed engine doesn't sink the batch (TinyFish 401 → keyless results w
   expect(String(res.output)).toContain("https://bun.sh/docs");
 });
 
+test("a malformed TinyFish 200 (non-array results) doesn't sink the batch (adversarial P5-W1)", async () => {
+  // An error-envelope 200 like `{"results":{"error":"quota exceeded"}}` used to
+  // reach `collect()`'s `s.results.entries()` and THROW, converting a successful
+  // keyless fan-out into a hard `web_search` error. A truthy non-array must be
+  // treated as "no results from this engine", not a crash.
+  for (const body of ['{"results":{"error":"quota exceeded"}}', '{"results":"rate limited"}', "{}"]) {
+    process.env.TINYFISH_API_KEY = "set";
+    const { fetch } = routingFetch({ tinyfish: { body }, ddg: { body: DDG_HTML }, bing: { body: "" } });
+    const res = await webSearchTool({ apiKey: "set", fetchImpl: fetch }).execute({ query: "bun docs" }, ctx());
+    expect([body, res.isError]).toEqual([body, undefined]);
+    expect(String(res.output)).toContain("https://bun.sh/docs"); // DDG results still win
+  }
+  delete process.env.TINYFISH_API_KEY;
+});
+
 test("maxResults trims the merged, ranked list", async () => {
   delete process.env.TINYFISH_API_KEY;
   const { fetch } = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });

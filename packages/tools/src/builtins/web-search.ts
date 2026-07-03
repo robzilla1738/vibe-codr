@@ -297,8 +297,12 @@ async function tinyFishSearch(
     const detail = res.status === 401 || res.status === 403 ? " (check your TinyFish API key)" : "";
     throw new Error(`HTTP ${res.status}${detail}`);
   }
-  const data = JSON.parse(await res.text()) as { results?: EngineResult[] };
-  return data.results ?? [];
+  const data = JSON.parse(await res.text()) as { results?: unknown };
+  // Guard a truthy NON-array `results` (an error-envelope 200 like
+  // `{"results":{"error":"quota exceeded"}}` or `{"results":"rate limited"}`).
+  // `?? []` only catches null/undefined; a non-array would reach `collect()`'s
+  // `.entries()` and throw, discarding the keyless engines' successful results.
+  return Array.isArray(data.results) ? (data.results as EngineResult[]) : [];
 }
 
 /** Render results as a markdown numbered list (title / URL / snippet) — clean for

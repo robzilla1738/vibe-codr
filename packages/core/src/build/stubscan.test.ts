@@ -70,6 +70,18 @@ test("tests, markdown, and vendored paths are not scanned; removed lines ignored
   expect(scanStubs(noise)).toEqual([]);
 });
 
+test("scans ESM/CJS module extensions (.mjs/.cjs/.mts/.cts) — adversarial P5-1", () => {
+  // The allow-list's `tsx?`/`jsx?` covered only .ts/.tsx/.js/.jsx; a stub added to
+  // a .mjs/.cjs/.mts/.cts file slipped past the deterministic backstop entirely.
+  for (const ext of ["mjs", "cjs", "mts", "cts"]) {
+    const d = diff(`src/thing.${ext}`, ['throw new Error("not implemented");']);
+    expect([ext, scanStubs(d).length]).toEqual([ext, 1]);
+  }
+  // …but a TEST file in a module extension is still excluded from scanning.
+  expect(scanStubs(diff("src/thing.test.mts", ["// TODO later"]))).toEqual([]);
+  expect(scanStubs(diff("src/thing.spec.cjs", ["// TODO later"]))).toEqual([]);
+});
+
 test("line numbers track hunk headers and context lines", () => {
   const d = [
     "diff --git a/src/app/page.tsx b/src/app/page.tsx",

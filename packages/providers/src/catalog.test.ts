@@ -52,6 +52,34 @@ test("parseModelsDev flattens provider/model metadata", () => {
   expect(m?.capabilities?.toolCall).toBe(true);
 });
 
+test("parseModelsDev coerces a non-numeric/NaN/Infinity price to undefined (adversarial P5-W2)", () => {
+  // A malformed models.dev upstream (a string / NaN / Infinity price) must NOT flow
+  // into cost math: a NaN cost accumulates into the running spend and makes every
+  // `costUSD > limitUSD` comparison false, silently disabling the budget `stop` cap.
+  const map = parseModelsDev({
+    bad: {
+      models: {
+        m: {
+          cost: {
+            input: "high", // string
+            output: null, // null
+            cache_read: Number.POSITIVE_INFINITY, // non-finite
+            cache_write: 0.3, // the one real number survives
+            tiers: [{ input: "nope", output: 40, tier: { type: "context", size: 200000 } }],
+          },
+        },
+      },
+    },
+  });
+  const cost = map.get("bad/m")?.cost;
+  expect(cost?.input).toBeUndefined();
+  expect(cost?.output).toBeUndefined();
+  expect(cost?.cacheRead).toBeUndefined();
+  expect(cost?.cacheWrite).toBe(0.3);
+  // Tier prices are coerced too: the bad `input` drops, the real `output` stays.
+  expect(cost?.tiers).toEqual([{ threshold: 200000, input: undefined, output: 40, cacheRead: undefined, cacheWrite: undefined }]);
+});
+
 test("parseModelsDev captures long-context pricing tiers from cost.tiers", () => {
   // Faithful wire shape: tiers carry their REAL threshold via tier.size (272k for
   // GPT-5.x, not the lossy 200k of the context_over_200k sibling).

@@ -380,9 +380,16 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   On a **wide terminal (≥140 cols)** the live work moves into a **right
   sidebar**: the **Tasks panel** and a persistent **Thinking block** — the whole
   turn's reasoning as one scrolling stream (it survives past turn end instead of
-  vanishing as each action starts) — both drawn as the same filled panel blocks
-  as the chat column, freeing the transcript's vertical space; on narrow panes
-  everything falls back inline.
+  vanishing as each action starts), with **tool actions interleaved** so a
+  model that doesn't emit reasoning still shows a live **Activity** trail while
+  it searches and fetches. Both are drawn as the same filled panel blocks as
+  the chat column, spanning exactly its height (top block level with the
+  transcript, bottom edge level with the input); on narrow panes everything
+  falls back inline. The transcript itself **stays fast at any length** — only
+  the newest turns are laid out, older ones fold behind a tappable
+  **`▸ N earlier turns`** row (full history is always kept for `/export` and
+  `--resume`), and heavy event bursts paint at most once per frame, so a
+  scaffold generator spewing hundreds of tool steps can't freeze typing.
   Verify results,
   `/loop` iterations, and `/undo` reverts land as transcript notices (info muted,
   warnings amber, errors red). **Ctrl+C
@@ -611,7 +618,11 @@ All providers run on **AI SDK v5**. anthropic/openai/deepseek use their dedicate
 v5 SDKs; every other provider (google, zai, moonshot, alibaba, xai, groq, mistral,
 cerebras, together, fireworks, baseten, huggingface, openrouter, perplexity,
 minimax, ollama, lmstudio, custom) is driven through `@ai-sdk/openai-compatible`
-so it works out of the box without chasing incompatible SDK majors.
+so it works out of the box without chasing incompatible SDK majors. Open
+reasoning models served this way (a `deepseek-r1` or `qwen` on Ollama, say)
+emit their chain-of-thought inline as `<think>…</think>` — vibe-codr extracts
+it into real reasoning, so it streams to the Thinking panel instead of leaking
+into the visible reply.
 
 | Provider | Auth | Notes |
 |---|---|---|

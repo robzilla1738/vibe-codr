@@ -69,8 +69,14 @@ const CURRENT_EVENTS =
  * `spring boot`, `react 19`) ARE kept — only the bare English-overloaded forms
  * (`node`, `react`, `spring`, `express`, `solid` alone) were dropped. The
  * `react <digit>` version clause requires TWO digits (`\d{2}\b`): real React
- * majors are all ≥15, so "React 18/19" match while the verb sense ("make it
- * react 2 seconds", "react 3 times", "react 500 ms") no longer false-fires. */
+ * majors are all ≥15, so "React 18/19" match while the SINGLE-digit verb sense
+ * ("make it react 2 seconds", "react 3 times", "react 500 ms") no longer
+ * false-fires. Two-digit English after "react" ("react 24 hours", "react 99
+ * problems") can still trigger — accepted: it costs only one bounce (this
+ * module's cheap direction), it isn't cleanly separable from a real "react 24"
+ * that a future major will be, and MISSING a named React version ships a
+ * stale-version plan (the expensive failure). See the P4-2 DECISION in the
+ * audit ledger. */
 const STACK_NAMES =
   /\b(next\.?js|node\.?js|nodejs|vue|svelte|angular|astro|nuxt|remix|vite|tailwind|typescript|bun|deno|fastify|spring ?boot|django|flask|fastapi|rails|laravel|npm|pypi|pip|cargo|crates?\.io|framer[- ]motion|prisma|drizzle|postgres|supabase|firebase)\b|\breact\s+v?\d{2}\b/i;
 

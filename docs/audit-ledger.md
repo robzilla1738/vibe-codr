@@ -1529,6 +1529,15 @@ No code change required — a clean re-verification.
   plan-mode stay (leaving plan mode resets telemetry). Recommended design if this ever bites: give
   `present_plan` a lightweight "grounded-since" cursor so each present must show evidence gathered
   after the latest triage requirement arrived — deferred as over-engineering for an advisory gate.
+- **Plan-gate `react\s+v?\d{2}` catches two-digit English (P4-2, adversarial pass 4):** "react 24
+  hours", "react 10 times", "react 99 problems" still trigger `needsVersions`. Kept — consistent with
+  this module's documented doctrine (a false `needsVersions` costs only one bounce, the CHEAP
+  direction; a false self-contained silently ships a stale-version plan, the expensive one). The
+  clause uniquely recovers version-pinned mentions with no build verb ("migrate to react 19"), which
+  BUILD_REQUEST misses; a real "react 24" WILL be a valid major, so the two-digit English overlap
+  isn't cleanly separable by regex without a brittle time-unit blocklist that rots. The pass-3 commit
+  message over-claimed ("the verb sense no longer false-fires") — corrected here and in the source
+  comment: only the SINGLE-digit verb sense is killed. Recorded, not further tightened.
 - **Plan-gate `validSources` regex low bar (P3-W4b):** `/^https?:\/\/\S+\.\S+/i` accepts `http://a.b`
   and bare IPs and rejects dotless `localhost`. Kept: rejecting localhost is correct for a *web-
   research citation* gate (localhost isn't a citable external source), and a stricter TLD allow-list
@@ -1675,3 +1684,36 @@ assigned synchronously in the Engine constructor before any async `snapshot()`, 
 unreachable; the fix holds.
 
 Clean-pass counter after Pass 3: 0 (4 confirmed → all fixed). TWO consecutive CLEAN passes still required.
+
+
+### Pass 4 — CLEAN (clean-pass #1). 0 new code defects; 1 adjudicated design tradeoff
+Two skeptics (pass-3-fixes / orchestration-persistence-memory re-sweep), executed repros against real
+git, the real regex, the real Zod schema, and `MockLanguageModelV2` sessions.
+- **P4-1 gitops `-z`/`parseNameStatusZ` rewrite — REFUTED (holds).** Verified against rename+modify
+  (`R087`), multiple renames in one tree (token-walker never desyncs), type-change (`T`), copy (`C`,
+  dead in default output but parsed correctly if `-C` ever emits it), unmerged (`U`), and filenames
+  with newline/tab/space/non-ASCII — `-z` preserves all raw. Truncated `-z` degrades safely.
+- **P4-3 compaction offload clamp — REFUTED (holds).** All 56 `threshold × offload` combinations
+  through the real schema: offload.threshold always `>0`, always `<threshold`, never NaN. Floor
+  removal is safe (schema bounds `threshold ≥ 0.1` ⇒ `threshold − 0.05 ≥ 0.05`).
+- **P4-W1/W2 orchestration revert under rename/same-file collision — REFUTED (holds).** `git merge
+  --squash` ABORTS on a sibling's already-staged overlapping file (git's own overwrite protection), so
+  the overlap case never reaches the delta subtraction; the delta only operates on disjoint paths. The
+  rename revert + disjoint-sibling preservation verified end-to-end. The whole critical section is
+  serialized by the tree-global `#mergeLock`, so "concurrent tasks" can't race — merges are sequential,
+  `preStaged` captured inside the lock. (Independent cross-validation of the pass-3 gitops fix.)
+- **Limiter/runDag, store torn-write, `/undo` across compaction, checkpoint session-scoping, memory RRF
+  fusion on a poisoned/empty index — all REFUTED** with executed disproofs (40/40 orchestrator+store+
+  checkpoint+limiter tests; 40/40 memory tests). `/undo`-after-compaction is a safe guarded no-op
+  (`rewindConversation` only slices when `mark < currentLength`); memory RRF is rank-based so
+  incomparable BM25/cosine scales never divide and an empty index yields `[]`, never NaN.
+
+The ONE confirmed item, **P4-2** (plan-gate `react\s+v?\d{2}` still catches two-digit English), is NOT
+a correctness bug (the skeptic's own words) — it's the module's documented cheap-over-trigger tradeoff,
+recorded as a DECISION above and made self-honest in the source comment (no code-behavior change; the
+clause is kept deliberately). Observational latents, already recorded / intentional, not defects:
+`SESSION_META_VERSION` is written but not yet read (inert forward-compat, no migration path exists or is
+needed while only v1 exists); the multi-terminal cross-file meta/messages race is prior accepted-risk
+(meta carries no length field, so it can't truncate a resume).
+
+Clean-pass counter after Pass 4: 1. ONE more consecutive CLEAN pass required.

@@ -4,6 +4,34 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — right sidebar (Tasks + Thinking), Ctrl+T, real-time task fix
+
+- **Right sidebar on wide terminals.** At ≥140 columns, the Tasks panel and a
+  new **Thinking** block move into a fixed-width right sidebar, freeing the chat
+  column's vertical space. Both are drawn in the same block language as the
+  transcript (filled panel surface, thin left rail, identical padding, uniform
+  1-row gaps) and align level with the first transcript block. The sidebar
+  persists once work exists — completed task lists and the finished turn's
+  thinking stay up instead of vanishing (and reflowing the layout) the moment
+  everything is done. Narrow panes keep the old inline layout untouched.
+- **The Thinking block shows the whole thought process.** It streams the turn's
+  reasoning as one continuous, word-wrapped log in a bottom-sticky scrollbox
+  (newest always in view, history scrollable). Unlike the inline 3-line
+  preview, it does **not** clear each time a burst lands as a `✻ thought` row —
+  it accumulates for the turn and lingers until the next one starts.
+- **Ctrl+T expands/collapses every `✻ thought` row at once** — the keyboard
+  companion to click-per-row (and to Ctrl+O's whole-turn fold): expands all if
+  any is collapsed, otherwise folds them all back.
+
+### Fixed
+
+- **The Tasks panel updates in real time again.** The id-addressed
+  `update_tasks` path patched task objects in place and re-emitted the *same*
+  array reference on the in-process bus, so the TUI's reference-equality signal
+  saw "no change" and the counter froze at 0/N until a full-list replace.
+  `tasks-updated` (and the engine snapshot) now carry fresh copies; a
+  regression test pins the emission identity.
+
 ### Changed — royal violet theme, rainbow spinner, wider column, real input wrapping, grounded planning
 
 - **The default theme is now royal violet** — `#8b5cf6` accent on the same

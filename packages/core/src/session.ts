@@ -364,7 +364,8 @@ export class Session {
       mode: this.mode,
       goal: this.goal,
       history: this.#history,
-      tasks: this.#tasks,
+      // Copies, matching #emitTasks — a snapshot must not alias the live list.
+      tasks: this.#tasks.map((t) => ({ ...t })),
       usage: this.#usageSnapshot(),
       busy: this.busy,
       theme: this.#deps.config.theme,
@@ -708,12 +709,20 @@ export class Session {
       title: t.title,
       status: t.status,
     }));
+    this.#emitTasks();
+    return this.#tasks;
+  }
+
+  /** Emit the task list as a FRESH array of copies. The bus is in-process, so
+   * emitting `this.#tasks` itself hands every subscriber the same mutable
+   * references — the TUI's signal then sees an identical array on the next
+   * patch and never re-renders (the "Tasks stuck at 0/N" bug). */
+  #emitTasks(): void {
     this.#deps.bus.emit({
       type: "tasks-updated",
       sessionId: this.id,
-      tasks: this.#tasks,
+      tasks: this.#tasks.map((t) => ({ ...t })),
     });
-    return this.#tasks;
   }
 
   /**
@@ -733,7 +742,9 @@ export class Session {
     for (const u of updates) {
       const task = this.#tasks[u.index - 1];
       if (task) {
-        task.status = u.status;
+        // Replace, don't mutate: an in-place status write leaves list consumers
+        // holding the same object, which defeats identity-based change detection.
+        this.#tasks[u.index - 1] = { ...task, status: u.status };
         applied++;
       } else {
         ignored.push(u.index);
@@ -743,7 +754,7 @@ export class Session {
       const trimmed = title.trim();
       if (trimmed) this.#tasks.push({ id: createId("task"), title: trimmed, status: "pending" });
     }
-    this.#deps.bus.emit({ type: "tasks-updated", sessionId: this.id, tasks: this.#tasks });
+    this.#emitTasks();
     return { tasks: this.#tasks, applied, ignored };
   }
 

@@ -369,9 +369,16 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   live work (**Esc** interrupts the turn), with a
   **live `✻ thinking` stack** while the model reasons — its last few lines stream
   under the spinner, newest brightest — and each finished
-  reasoning burst lands as a quiet **`✻ thought` row you can expand later**, so
-  the thinking that led to each step stays reviewable instead of evaporating;
-  verify results,
+  reasoning burst lands as a quiet **`✻ thought` row you can expand later**
+  (click it, or **Ctrl+T** to expand/collapse every thought at once), so
+  the thinking that led to each step stays reviewable instead of evaporating.
+  On a **wide terminal (≥140 cols)** the live work moves into a **right
+  sidebar**: the **Tasks panel** and a persistent **Thinking block** — the whole
+  turn's reasoning as one scrolling stream (it survives past turn end instead of
+  vanishing as each action starts) — both drawn as the same filled panel blocks
+  as the chat column, freeing the transcript's vertical space; on narrow panes
+  everything falls back inline.
+  Verify results,
   `/loop` iterations, and `/undo` reverts land as transcript notices (info muted,
   warnings amber, errors red). **Ctrl+C
   exits cleanly** (runs the session digest + teardown like `/exit`; a second press

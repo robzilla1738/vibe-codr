@@ -10,8 +10,12 @@
  * cell grid (`packages/tui/scripts/screenshot.ts`), so there is no parallel render
  * to keep in sync — just re-run that script after a visible change.
  *
- * Layout: a single, centered, capped-width chat column (ChatGPT-style, no sidebar)
- * on a black background, with a muted TOP-LEFT context line (cwd · git · goal).
+ * Layout: a single, centered, capped-width chat column (ChatGPT-style) on a
+ * black background, with a muted TOP-LEFT context line (cwd · git · goal).
+ * On a WIDE terminal (≥ SIDEBAR_MIN_TERM) with live work (tasks / a running
+ * turn), a fixed-width RIGHT SIDEBAR takes the Tasks panel and the live
+ * thinking stream out of the chat column, so the transcript keeps its vertical
+ * space; on narrow panes both fall back inline exactly as before.
  *
  * DESIGN LANGUAGE — flat chrome, filled content. Structural chrome (status
  * sections, the input, cards) is drawn FLAT: accent-colored titles + spacing on the
@@ -107,6 +111,11 @@ import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
 const CONTENT_MAX = 130;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
+/** The right sidebar's fixed column width (Tasks + live thinking on wide panes). */
+const SIDEBAR_W = 42;
+/** Min terminal width for the sidebar: below this the chat column would be
+ * squeezed under ~96 cols, so Tasks/thinking stay inline instead. */
+const SIDEBAR_MIN_TERM = 140;
 /** Max visible rows the input box grows to before it scrolls internally. */
 const INPUT_MAX_ROWS = 10;
 /** Prompt-field keybinding overrides (merged over the textarea defaults):
@@ -202,6 +211,16 @@ export function App(props: { engine: EngineClient }) {
   // transcript row (the moment the model acts) and at turn end. Headless
   // parity: `-p` prints reasoning with --show-reasoning.
   const [reasoningLines, setReasoningLines] = createSignal<string[]>([]);
+  // The sidebar's THOUGHT LOG: the whole turn's reasoning as one continuous,
+  // persistent stream. Unlike `reasoningLines` (the transient inline preview,
+  // cleared every time a burst lands as its `✻ thought` row), this accumulates
+  // across bursts and survives past turn end — so the sidebar shows the thought
+  // process, not a line that vanishes as each action starts. Reset only when
+  // the NEXT turn begins.
+  const [thoughtLog, setThoughtLog] = createSignal<string[]>([]);
+  // Its backing buffer — component scope (not the event-loop closure) so the
+  // /clear reset path can wipe it along with the signal.
+  let turnThoughtsBuf = "";
   let turnStartedAt = 0;
   let model = snap.model;
   let mode = snap.mode;
@@ -364,7 +383,41 @@ export function App(props: { engine: EngineClient }) {
   // narrow terminal and gets quiet side gutters on a wide one. Reads the live
   // terminal width so the column reflows on resize.
   const dims = useTerminalDimensions();
-  const contentWidth = () => Math.min(CONTENT_MAX, Math.max(1, dims().width - 2));
+  // The Tasks panel is worth showing while any task is unfinished (a fully
+  // completed list hides so it doesn't linger) — shared by the inline panel
+  // and the sidebar so exactly one of them ever renders it.
+  const tasksVisible = () => tasks().length > 0 && tasks().some((t) => t.status !== "completed");
+  // The right sidebar mounts on a wide terminal whenever there is work to host:
+  // ANY task list (completed ones included — it must not vanish, reflowing the
+  // whole transcript, the moment the last task finishes), a running turn, or a
+  // lingering thought log from the turn that just ended. In practice that means
+  // it appears when a turn starts and stays for the session; the next /clear or
+  // a narrow resize are the only things that remove it.
+  const sidebarOn = () =>
+    dims().width >= SIDEBAR_MIN_TERM &&
+    (tasks().length > 0 || working() || thoughtLog().length > 0);
+  const contentWidth = () =>
+    Math.min(CONTENT_MAX, Math.max(1, dims().width - 2 - (sidebarOn() ? SIDEBAR_W : 0)));
+  // How many task rows the sidebar shows before windowing kicks in — taller
+  // than the inline PANEL_MAX_ROWS (vertical space is what the sidebar is for),
+  // budgeted by terminal height with slack for wrapped titles (÷4 ≈ header +
+  // 2-line wraps) so a long list can't push the thinking section off-screen.
+  const sideTaskCap = () =>
+    Math.max(PANEL_MAX_ROWS, Math.min(16, Math.floor((dims().height - 10) / 4)));
+  // The thought-log scrollbox is sized to its WRAPPED content (hug), capped to
+  // the rows left under the Tasks block — a scrollbox given only max/flex
+  // bounds claims them all, painting a mostly-empty panel down to the bottom
+  // of the screen. Same estimate-then-cap approach as the plan card. 7 =
+  // sidebar padding (2) + rail column (1) + block padding L(2)+R(2).
+  const sideInnerW = SIDEBAR_W - 7;
+  // −5 wrap slack: word-wrap breaks early at word boundaries, so a bare
+  // width÷columns estimate undercounts and sticky-bottom then scrolls the
+  // head of the log out of a box that "exactly" fits. Overestimating slightly
+  // costs at most a blank row or two; undercounting hides content.
+  const thoughtRows = () =>
+    thoughtLog().reduce((n, l) => n + Math.max(1, Math.ceil(displayWidth(l) / (sideInnerW - 5))), 0);
+  const thoughtBoxRows = () =>
+    Math.min(Math.max(6, dims().height - 16), Math.max(1, thoughtRows()));
 
   // The live "Working… Ns" elapsed label. It reads `tick()` so Solid re-renders it
   // on every spinner frame — without a signal dependency the clock would render
@@ -915,6 +968,13 @@ export function App(props: { engine: EngineClient }) {
       toggleAllTurns();
       return;
     }
+    // Ctrl+T expands every `✻ thought` row at once (collapses them again if all
+    // are open) — the keyboard route to the reasoning, beside click-per-row.
+    if (key.ctrl && key.name === "t") {
+      key.preventDefault?.();
+      apply({ type: "toggle-thinking-all" });
+      return;
+    }
     // Esc closes the /jobs sub-view first (before it interrupts a turn).
     if (key.name === "escape" && showJobs()) {
       key.preventDefault?.();
@@ -1045,18 +1105,28 @@ export function App(props: { engine: EngineClient }) {
       let thinkingStartedAt = 0;
       const pushReasoning = (delta: string) => {
         if (!reasoningBuf) thinkingStartedAt = Date.now();
+        turnThoughtsBuf = (turnThoughtsBuf + delta).slice(-16_000);
+        setThoughtLog(
+          turnThoughtsBuf
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(-160),
+        );
         // Bounded: keep the HEAD of a huge think (the framing) rather than an
         // arbitrary mid-sentence tail; the live stack tracks the newest lines
         // via its own small rolling window (a delta alone can be a partial line).
         if (reasoningBuf.length < 20_000) reasoningBuf += delta;
-        reasoningTailBuf = (reasoningTailBuf + delta).slice(-4000);
+        reasoningTailBuf = (reasoningTailBuf + delta).slice(-8000);
+        // Stored UNTRUNCATED: the inline stack shows the last 3 lines clipped
+        // to the column, while the sidebar wraps a much deeper tail — each view
+        // trims at render time instead of baking one width in here.
         setReasoningLines(
           reasoningTailBuf
             .split("\n")
             .map((l) => l.trim())
             .filter(Boolean)
-            .slice(-3)
-            .map((l) => truncate(l, Math.max(24, contentWidth() - 10))),
+            .slice(-24),
         );
       };
       // Land the accumulated burst as a transcript row and clear the preview.
@@ -1093,6 +1163,11 @@ export function App(props: { engine: EngineClient }) {
             // too: a new turn means it was acted on or abandoned.
             setSubagents([]);
             setPlan(null);
+            // The sidebar's thought log spans ONE turn — the previous turn's
+            // stream clears here (not at turn end, so it stays readable while
+            // you review the finished work).
+            turnThoughtsBuf = "";
+            if (thoughtLog().length > 0) setThoughtLog([]);
             apply({ type: "user", text: event.text });
             // A new turn begins: start the working clock/spinner.
             turnStartedAt = Date.now();
@@ -1367,6 +1442,11 @@ export function App(props: { engine: EngineClient }) {
       pendingDelta = "";
       pendingProgress.clear();
       resetTranscript();
+      // The sidebar's thought log outlives its turn by design, so the reset
+      // must wipe it explicitly — otherwise a stale Thinking block keeps the
+      // sidebar mounted over the freshly cleared screen.
+      turnThoughtsBuf = "";
+      setThoughtLog([]);
       setPlan(null);
       setSubagents([]);
       setCollapsedTurns(new Set());
@@ -1861,19 +1941,21 @@ export function App(props: { engine: EngineClient }) {
               under the spinner while it thinks (older lines recede to the
               dimmer gutter tone, the newest reads in muted). The stack clears
               when the burst lands as its `✻ thought` transcript row. */}
-          <Show when={reasoningLines().length > 0}>
+          <Show when={!sidebarOn() && reasoningLines().length > 0}>
             <box flexDirection="column" flexShrink={0}>
-              <Index each={reasoningLines()}>
+              {/* Inline view: just the last 3 lines, clipped to the column (the
+                  deeper untruncated tail feeds the sidebar on wide panes). */}
+              <Index each={reasoningLines().slice(-3)}>
                 {(line, i) => (
                   <box flexDirection="row" flexShrink={0}>
                     <text flexShrink={0} fg={i === 0 ? rainbow(tick()) : palette().gutter}>{i === 0 ? "  ✻ " : "    "}</text>
                     <text
                       flexShrink={1}
                       wrapMode="none"
-                      fg={i === reasoningLines().length - 1 ? palette().muted : palette().gutter}
+                      fg={i === Math.min(3, reasoningLines().length) - 1 ? palette().muted : palette().gutter}
                       attributes={TextAttributes.ITALIC}
                     >
-                      {line()}
+                      {truncate(line(), Math.max(24, contentWidth() - 10))}
                     </text>
                   </box>
                 )}
@@ -1963,8 +2045,9 @@ export function App(props: { engine: EngineClient }) {
       {/* Tasks — the live to-do list, just above the input; hides once everything
           is done so a finished list doesn't linger. The window centers on the
           ACTIVE work: overflowing completed tasks collapse into one leading
-          "✔ N done" line, so the in-progress task is never scrolled out. */}
-      <Show when={tasks().length > 0 && tasks().some((t) => t.status !== "completed")}>
+          "✔ N done" line, so the in-progress task is never scrolled out.
+          On wide terminals the list moves to the right sidebar instead. */}
+      <Show when={!sidebarOn() && tasksVisible()}>
         <Panel
           title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
           titleColor={brand()}
@@ -2336,6 +2419,106 @@ export function App(props: { engine: EngineClient }) {
         </box>
       </Show>
       </box>
+      {/* Right sidebar (wide terminals) — Tasks on top, the turn's THOUGHT LOG
+          filling the rest. Each section is the SAME block language as the chat
+          column (filled panel surface + thin left rail + identical padding),
+          with the same uniform 1-row gap between blocks — the sidebar reads as
+          one more column of the same material, not different chrome. */}
+      <Show when={sidebarOn()}>
+        <box flexDirection="column" width={SIDEBAR_W} flexShrink={0} padding={1}>
+          {/* One reserved row mirrors the chat column's context line, so the
+              sidebar's first block sits level with the first transcript block. */}
+          <box height={1} flexShrink={0} />
+          <Show when={tasks().length > 0}>
+            <Rail color={palette().gutter} marginTop={1}>
+              <box
+                backgroundColor={palette().panel}
+                flexDirection="column"
+                paddingTop={1}
+                paddingBottom={1}
+                paddingLeft={2}
+                paddingRight={2}
+              >
+                <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                  {`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
+                </text>
+                <Show when={windowTasks(tasks(), sideTaskCap()).lead > 0}>
+                  <box flexDirection="row" gap={1}>
+                    <text flexShrink={0} fg={palette().muted}>{TASK_GLYPH.completed}</text>
+                    <text flexShrink={0} fg={palette().muted}>
+                      {`${windowTasks(tasks(), sideTaskCap()).lead} done`}
+                    </text>
+                  </box>
+                </Show>
+                <For each={windowTasks(tasks(), sideTaskCap()).visible}>
+                  {(task) => {
+                    const c = () =>
+                      task.status === "completed"
+                        ? palette().muted
+                        : task.status === "in_progress"
+                          ? brand()
+                          : palette().assistant;
+                    return (
+                      <box flexDirection="row" gap={1}>
+                        <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
+                        <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
+                      </box>
+                    );
+                  }}
+                </For>
+                <Show when={windowTasks(tasks(), sideTaskCap()).trailing > 0}>
+                  <text fg={palette().muted}>{`  +${windowTasks(tasks(), sideTaskCap()).trailing} more`}</text>
+                </Show>
+              </box>
+            </Rail>
+          </Show>
+          {/* The thought log — the whole turn's reasoning as one continuous,
+              word-wrapped stream in a bottom-sticky scrollbox (newest thought
+              always in view, history scrollable). It does NOT clear when a
+              burst lands as a transcript row, and it lingers after the turn
+              ends — the thought process stays readable until the next turn. */}
+          <Show when={working() || thoughtLog().length > 0}>
+            <Rail color={palette().gutter} marginTop={1} shrink>
+              <box
+                backgroundColor={palette().panel}
+                flexDirection="column"
+                flexShrink={1}
+                paddingTop={1}
+                paddingBottom={1}
+                paddingLeft={2}
+                paddingRight={2}
+              >
+                <box flexDirection="row" flexShrink={0}>
+                  <text flexShrink={0} fg={working() ? rainbow(tick()) : palette().gutter}>{"✻ "}</text>
+                  <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"Thinking"}</text>
+                </box>
+                <scrollbox
+                  flexShrink={1}
+                  height={thoughtBoxRows()}
+                  stickyScroll
+                  stickyStart="bottom"
+                  scrollY
+                  contentOptions={{ flexDirection: "column" }}
+                  scrollbarOptions={{ visible: false }}
+                >
+                  <Index each={thoughtLog()}>
+                    {(line) => (
+                      <text
+                        flexShrink={0}
+                        wrapMode="word"
+                        fg={palette().muted}
+                        attributes={TextAttributes.ITALIC}
+                      >
+                        {line() || " "}
+                      </text>
+                    )}
+                  </Index>
+                </scrollbox>
+              </box>
+            </Rail>
+          </Show>
+        </box>
+      </Show>
       {/* Right gutter — mirrors the left, centering the chat column. */}
       <box flexGrow={1} flexShrink={1} />
     </box>
@@ -2365,6 +2548,10 @@ function Rail(props: {
   color: string;
   marginTop?: number;
   height?: number;
+  /** Hug content but SHRINK when the parent runs out of rows (the sidebar's
+   * thinking block: natural height while short, bounded + scrolling when the
+   * log outgrows the space under the Tasks block). Default stays rigid. */
+  shrink?: boolean;
   onMouseDown?: () => void;
   children: unknown;
 }) {
@@ -2372,7 +2559,7 @@ function Rail(props: {
     <box
       position="relative"
       flexDirection="row"
-      flexShrink={0}
+      flexShrink={props.shrink ? 1 : 0}
       marginTop={props.marginTop ?? 0}
       height={props.height}
       onMouseDown={props.onMouseDown}

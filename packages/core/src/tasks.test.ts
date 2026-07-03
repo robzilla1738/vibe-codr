@@ -189,6 +189,42 @@ test("patchTasks applies positional updates, appends, and reports out-of-range r
   ]);
 });
 
+test("task events carry fresh snapshots — a patch never aliases a prior emission", async () => {
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: new ProviderRegistry(),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  const events = await collect(bus, async () => {
+    session.setTasks([
+      { title: "one", status: "pending" },
+      { title: "two", status: "pending" },
+    ]);
+    session.patchTasks([{ index: 1, status: "completed" }]);
+  });
+
+  const emitted = events.filter((e) => e.type === "tasks-updated");
+  expect(emitted.length).toBe(2);
+  const [first, second] = emitted as Extract<UIEvent, { type: "tasks-updated" }>[];
+  // Identity-based change detection (the TUI's signal) must see a NEW array of
+  // NEW objects each time — an in-place patch on shared references reads as
+  // "nothing changed" and the task panel freezes at 0/N.
+  expect(second!.tasks).not.toBe(first!.tasks);
+  expect(second!.tasks[0]).not.toBe(first!.tasks[0]);
+  // The earlier emission is a stable snapshot, not retroactively mutated.
+  expect(first!.tasks[0]!.status).toBe("pending");
+  expect(second!.tasks[0]!.status).toBe("completed");
+  // The engine snapshot doesn't alias the live list either.
+  const snap = session.snapshot();
+  expect(snap.tasks[0]).not.toBe(session.tasks[0]);
+});
+
 test("setTasks reuses ids for tasks whose title is unchanged", () => {
   const bus = new EventBus();
   const session = new Session({

@@ -209,6 +209,26 @@ test("a thinking burst lands as a collapsed row; toggle expands it; empty is dro
   expect(run([{ type: "thinking", text: "   \n  " }]).blocks).toHaveLength(0);
 });
 
+test("toggle-thinking-all expands every thinking row, then folds them all back", () => {
+  const collapsed = (b: unknown) => (b as { collapsed: boolean }).collapsed;
+  let s = run([
+    { type: "thinking", text: "first burst", seconds: 2 },
+    { type: "tool-start", toolCallId: "c1", toolName: "read", input: {} },
+    { type: "thinking", text: "second burst", seconds: 3 },
+  ]);
+  // Mixed state (one row manually opened) still means "expand the rest".
+  s = reduceTranscript(s, { type: "toggle", id: s.blocks[0]!.id });
+  s = reduceTranscript(s, { type: "toggle-thinking-all" });
+  expect(s.blocks.filter((b) => b.kind === "thinking").every((b) => !collapsed(b))).toBe(true);
+  // All open → collapse all.
+  s = reduceTranscript(s, { type: "toggle-thinking-all" });
+  expect(s.blocks.filter((b) => b.kind === "thinking").every((b) => collapsed(b))).toBe(true);
+  // Tool rows are untouched, and a transcript with no thinking is a no-op.
+  expect(s.blocks[1]!.kind).toBe("tool");
+  const none = run([{ type: "user", text: "hi" }]);
+  expect(reduceTranscript(none, { type: "toggle-thinking-all" })).toBe(none);
+});
+
 test("clear-turn settles still-running rows so an aborted call doesn't spin forever", () => {
   let s = run([
     { type: "tool-start", toolCallId: "c1", toolName: "bash", input: {} },

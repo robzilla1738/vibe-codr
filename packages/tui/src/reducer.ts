@@ -146,6 +146,9 @@ export type TranscriptAction =
     }
   | { type: "notice"; text: string; level?: "info" | "warn" | "error" }
   | { type: "toggle"; id: number }
+  /** Expand every thinking row if any is collapsed, else collapse them all
+   * (the Ctrl+T companion to Ctrl+O's whole-turn fold). */
+  | { type: "toggle-thinking-all" }
   /** Turn boundary: finalize the reply and drop per-turn call maps. */
   | { type: "clear-turn" };
 
@@ -341,6 +344,18 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
             : b,
         ),
       };
+    case "toggle-thinking-all": {
+      if (!s.blocks.some((b) => b.kind === "thinking")) return s;
+      // Any collapsed → open everything (the "show me the thinking" gesture);
+      // all open → fold them all back down.
+      const expand = s.blocks.some((b) => b.kind === "thinking" && b.collapsed);
+      return {
+        ...s,
+        blocks: s.blocks.map((b) =>
+          b.kind === "thinking" ? { ...b, collapsed: !expand } : b,
+        ),
+      };
+    }
     case "clear-turn": {
       const f = finalizeActive(s);
       // The turn is over (finished or aborted): settle any still-live tool rows

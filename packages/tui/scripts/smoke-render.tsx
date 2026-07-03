@@ -176,17 +176,15 @@ check("streamed assistant reply renders", frame.includes("42"));
 check("assistant bold markers are concealed (no raw **)", !frame.includes("**"));
 // A turn is in flight (no turn-finished yet) → the working spinner shows.
 check("working indicator renders while a turn runs", frame.includes("Working"));
-// The spinner glyph is the flat brand accent — assert the braille glyph span
-// carries a SATURATED, warm red-dominant fg (not the muted/white default, and not the
-// old rainbow). Same per-<text fg> mechanism the wordmark uses.
+// The spinner glyph hue-cycles (the rainbow thinking signature) — assert the
+// braille glyph span carries a SATURATED fg (not the muted/white default). The
+// exact hue depends on the animation tick, so only saturation is pinned.
 const saturated = (fg: { r: number; g: number; b: number }) =>
   Math.max(fg.r, fg.g, fg.b) - Math.min(fg.r, fg.g, fg.b) > 0.2;
-const spinnerWarm = t
+const spinnerColored = t
   .captureSpans()
-  .lines.some((l) =>
-    l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg) && s.fg.r >= s.fg.g && s.fg.r >= s.fg.b),
-  );
-check("working spinner glyph is brand-peach", spinnerWarm);
+  .lines.some((l) => l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg)));
+check("working spinner glyph is rainbow-saturated", spinnerColored);
 
 // 4) A tool call renders with its icon + summary, and its output is condensed.
 push({ type: "tool-call-started", toolCallId: "t1", toolName: "read", input: { path: "x" } } as UIEvent);
@@ -664,6 +662,24 @@ if (capRow >= 0) {
   check("selecting text flashes the copy toast", frame.includes("Copied to clipboard"));
 }
 
+// 13b) A SINGLE-datum chart renders as a stat line (bold value + muted label),
+// not a meaningless always-100% bar — assert the value shows and its row has no
+// background-painted bar band.
+push({ type: "user-message", text: "btc price" });
+push({
+  type: "assistant-text-delta",
+  id: "rv1",
+  delta: "Live spot:\n\n```chart\n# BTC price (USD)\nCurrent: $61,715.53\n```",
+} as UIEvent);
+push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+await settle();
+frame = await waitForText("61,715");
+const statRowBarFree = t
+  .captureSpans()
+  .lines.filter((l) => l.spans.some((s) => s.text.includes("61,715")))
+  .every((l) => l.spans.every((s) => Math.max(s.bg.r, s.bg.g, s.bg.b) - Math.min(s.bg.r, s.bg.g, s.bg.b) < 0.2));
+check("rich view: single-datum chart renders a stat line, not a bar", frame.includes("Current") && statRowBarFree);
+
 // 14) A wide subagent fan-out must NOT push the input/status off-screen. The
 // status panels are flexShrink={0}, so an uncapped list would overflow the bottom;
 // the panel caps its rows at PANEL_MAX_ROWS and collapses the rest to "+N more",
@@ -723,7 +739,7 @@ await t.mockInput.typeText("/accent ");
 await settle();
 frame = t.captureCharFrame();
 check("accent submenu lists the presets", frame.includes("orange") && frame.includes("violet"));
-check("accent submenu offers the hex path", frame.includes("#fab283"));
+check("accent submenu offers the hex path", frame.includes("#8b5cf6"));
 const orangeSwatch = t
   .captureSpans()
   .lines.flatMap((l) => l.spans)

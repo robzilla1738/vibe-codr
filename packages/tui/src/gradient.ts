@@ -53,10 +53,12 @@ export function hsvToHex(h: number, s: number, v: number): string {
 /**
  * Hue-cycling color for the live thinking spinner: one full wheel every 40
  * ticks (~3.6s at the 90ms animation interval). Saturation/value tuned so
- * every hue in the cycle stays readable on the graphite background.
+ * every hue in the cycle stays readable on the graphite background. The cycle
+ * starts at the royal-violet brand hue (258°) so a fresh turn's first frames
+ * blend with the theme before sweeping the wheel.
  */
 export function rainbow(tick: number): string {
-  return hsvToHex((tick * 9) % 360, 0.6, 0.95);
+  return hsvToHex((258 + tick * 9) % 360, 0.6, 0.95);
 }
 
 /** `#rgb` / `#rrggbb` → HSV (h in degrees 0..360, s/v in 0..1). */

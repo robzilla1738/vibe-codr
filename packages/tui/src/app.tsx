@@ -616,7 +616,7 @@ export function App(props: { engine: EngineClient }) {
         if (run) runText(line);
       },
     }));
-    const hint = st.command.name === "accent" ? "or type a hex — /accent #fab283" : "";
+    const hint = st.command.name === "accent" ? "or type a hex — /accent #8b5cf6" : "";
     return { open: true, loading: false, kind: "value" as const, title: `/${st.command.name}`, hint, rows };
   });
 
@@ -2053,7 +2053,7 @@ export function App(props: { engine: EngineClient }) {
                           wrapMode="none"
                           fg={preview()!.diff ? diffColor(line, palette()) : palette().muted}
                         >
-                          {`  ${truncate(line, Math.max(20, contentWidth() - 9)) || " "}`}
+                          {`  ${truncate(preview()!.diff ? diffPad(line) : line, Math.max(20, contentWidth() - 9)) || " "}`}
                         </text>
                       )}
                     </For>
@@ -2625,7 +2625,9 @@ function clampWidth(s: string, n: number): string {
 }
 
 /** A horizontal bar chart: `label ▇▇▇▇  value`, each bar in a distinct series hue,
- * value labels right-aligned into a column. A quiet title sits above. */
+ * value labels right-aligned into a column. A quiet title sits above. A chart
+ * with a SINGLE datum renders as a stat line (label + bold accent value) — one
+ * bar always fills 100% of the track, so it carries no information. */
 function BarChart(props: { body: string; palette: Palette; width: number }) {
   const p = props.palette;
   const model = () => parseChart(props.body);
@@ -2662,20 +2664,29 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
       <Show when={model().data.length === 0}>
         <CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />
       </Show>
-      <For each={rows()}>
-        {(r) => (
-          <box flexDirection="row" flexShrink={0}>
-            <text flexShrink={0} fg={p.muted}>{`${r.label}  `}</text>
-            <Show when={r.full > 0}>
-              <text flexShrink={0} bg={r.color}>{" ".repeat(r.full)}</text>
-            </Show>
-            <Show when={r.tailGlyph}>
-              <text flexShrink={0} fg={r.color}>{r.tailGlyph}</text>
-            </Show>
-            <text flexShrink={0} fg={p.assistant}>{r.tail}</text>
-          </box>
-        )}
-      </For>
+      <Show when={model().data.length === 1}>
+        <box flexDirection="row" flexShrink={0}>
+          <text flexShrink={0} fg={p.series[0]!}>{"▍ "}</text>
+          <text flexShrink={0} fg={p.assistant} attributes={TextAttributes.BOLD}>{model().data[0]!.display}</text>
+          <text flexShrink={0} fg={p.muted}>{`  ${model().data[0]!.label}`}</text>
+        </box>
+      </Show>
+      <Show when={model().data.length > 1}>
+        <For each={rows()}>
+          {(r) => (
+            <box flexDirection="row" flexShrink={0}>
+              <text flexShrink={0} fg={p.muted}>{`${r.label}  `}</text>
+              <Show when={r.full > 0}>
+                <text flexShrink={0} bg={r.color}>{" ".repeat(r.full)}</text>
+              </Show>
+              <Show when={r.tailGlyph}>
+                <text flexShrink={0} fg={r.color}>{r.tailGlyph}</text>
+              </Show>
+              <text flexShrink={0} fg={p.assistant}>{r.tail}</text>
+            </box>
+          )}
+        </For>
+      </Show>
     </box>
   );
 }
@@ -3073,7 +3084,7 @@ function ToolBlockView(props: {
                     // Fg-only diff: green additions, red deletions, dim context — no
                     // background band (flat stays uniform on any terminal).
                     <text fg={diffColor(line, p)} wrapMode="none">
-                      {`  ${truncate(line, Math.max(20, (props.width ?? 80) - 2)) || " "}`}
+                      {`  ${truncate(diffPad(line), Math.max(20, (props.width ?? 80) - 2)) || " "}`}
                     </text>
                   ) : (
                     <text fg={p.muted} wrapMode="none">
@@ -3180,6 +3191,17 @@ function diffColor(line: string, p: Palette): string {
   if (line.startsWith("+")) return p.add;
   if (line.startsWith("-")) return p.del;
   return p.muted;
+}
+
+/** Open the diff's sign column out to `± content`: one space after the +/-/context
+ * marker, so code starts at the same column on every line. Raw unified diff glues
+ * the sign to unindented content (`-console.log(…)`) while indented lines read
+ * `-  return …` — mixed hunks look ragged without the normalization. Hunk headers
+ * and file markers (@@ / +++ / ---) pass through untouched. */
+function diffPad(line: string): string {
+  if (/^(@@|\+\+\+|---)/.test(line)) return line;
+  if (/^[+\- ]/.test(line)) return `${line[0]} ${line.slice(1)}`;
+  return line;
 }
 
 /** The dim footer metrics: context fill, token usage/cost, and queue depth. */

@@ -776,7 +776,7 @@ tui 170 (13 files), providers 53 (7 files), cli 24 (5 files), config 11 (1 file)
 |---|-----------|--------|
 | 1 | Modes & approvals | PASS |
 | 2 | Compaction & microcompaction | PASS |
-| 3 | Prompt-cache economy | REOPENED |
+| 3 | Prompt-cache economy | PASS |
 | 4 | Subagent orchestration | PASS |
 | 5 | Coding loop | PASS |
 | 6 | Context gathering | PASS |
@@ -1436,6 +1436,44 @@ plugins (plugin/skills/commands/hooks), onboarding, /doctor. One reader + author
   the 0.1 schema min, so both fire together at the pathological minimum) — degenerate edge, recorded.
 - fresh-install zero-keys errors rather than keyless-default; keyless providers report configured when
   daemon down (v1 accepted-risk, unchanged).
+
+
+## v2 §3. Prompt-cache economy — PASS
+
+Scope read end-to-end: system-prompt.ts (composeSystemPrompt/formatWorkspaceState/formatToday),
+model-tuning.ts (breakpoint placement), session.ts cache wiring (1021-1195, markConversationTail),
+usage.ts (computeCost). One reader + author independent verification. **ZERO defects** — the
+highest-value class (volatile bytes leaked into the cached prefix) was hunted hardest and is clean.
+
+### REFUTED / verified clean (the new-since-v1 risks, all safe)
+- **Task list does NOT leak into the cached system prefix** — formatWorkspaceState renders the
+  id-addressed `t<N> [x] title` rows + sources into `stateReminder`, folded into the NEWEST USER
+  message via #pushUser; composeSystemPrompt never receives tasks/sources. A task flip mutates only
+  the freshly-appended last message — the byte-stable system prefix + all frozen prior messages are
+  untouched. (Independently confirmed against session.ts:804-809 vs 861.)
+- **System prefix byte-stable** — the only per-invocation input is `today: formatToday()`, which is
+  DATE-ONLY (weekday/month/day + ISO, no time) → one bust/day at midnight (the v1-accepted tradeoff).
+  No Date.now/token-counts/dir-listings interpolate. PLAN_MODE/EXECUTE_MODE are fully static template
+  literals — the overhaul added prose only, zero volatile bytes.
+- **Exactly 3 Anthropic breakpoints (≤ 4 cap)** — system + tools-tail + conversation-tail; no path
+  adds a 4th (so none is ever silently dropped). Budget headroom of 1 stated at model-tuning.ts:129.
+- **planModel switch stays truthful** — buildModelTuning/cacheTokensDisjointFromInput/getPricing are
+  re-resolved per turn off this.model after setModel, so switching to a non-Anthropic plan model
+  turns caching off and prices against the plan model — no phantom Anthropic cache reads billed to the
+  wrong model.
+- **Cache-read accounting never double-counts** across fold/switch/compaction — Anthropic disjoint
+  slices folded to the superset then peeled by computeCost (cached ≤ input clamp, uncached floored);
+  per-step this.#price so a mid-session switch never reprices earlier tokens.
+- **Compaction summary** replaces #modelMessages (which excludes the freshly-prepended system) → a
+  leading CONVERSATION message; system prefix stays cached, conversation prefix busts exactly once
+  (expected). Subagent cache isolation holds (own model/tuning/price).
+
+### Note (cosmetic, not fixed — no functional impact)
+- session.ts:1028-1039 narrative-order comment calls the conversation marker the "SECOND" and the
+  tool block the "Third" though tools are physically marked first; purely descriptive, the count (3)
+  is correct at model-tuning.ts:129.
+
+No code change required — a clean re-verification.
 
 ## v2 DECISIONS (this subsystem)
 - **Concurrent index-prune staleness (V2-M2) recommended design:** serialize `SemanticMemory.index()`

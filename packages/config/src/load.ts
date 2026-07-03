@@ -200,6 +200,19 @@ export function writeGlobalConfig(
   patch: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const run = async (): Promise<Record<string, unknown>> => {
+    // Test-run backstop: under `bun test` (NODE_ENV=test) the suite MUST be
+    // pointed at a throwaway XDG_CONFIG_HOME (the root test-preload does this).
+    // Bun only reads bunfig.toml from the cwd, so `cd packages/x && bun test`
+    // silently skips the preload — and tests that persist settings then write
+    // the DEVELOPER'S REAL ~/.config/vibe-codr/config.json (this happened:
+    // fixture keys and accent colors accreted into a real config). Refusing
+    // here turns that silent corruption into a loud failure.
+    if (process.env.NODE_ENV === "test" && !process.env.XDG_CONFIG_HOME) {
+      throw new ConfigError(
+        "refusing to write the real global config from a test run — set XDG_CONFIG_HOME " +
+          "to a temp dir (the root test-preload does this; run `bun test` from the repo root)",
+      );
+    }
     const path = globalConfigPath();
     const existing = (await readConfigFile(path)) ?? {};
     const merged = mergeForWrite(existing, patch);

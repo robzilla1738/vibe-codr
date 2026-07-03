@@ -1,0 +1,6 @@
+# Mirrors the root bunfig.toml [test] preload. Bun reads bunfig.toml from the
+# cwd only, so `cd packages/config && bun test` would otherwise skip the preload
+# that isolates XDG/state dirs — and settings-persisting tests would write the
+# developer's real ~/.config/vibe-codr/config.json.
+[test]
+preload = ["../../test-preload.ts"]

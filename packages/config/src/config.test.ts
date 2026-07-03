@@ -134,6 +134,22 @@ test("comment-stripping preserves // and /* */ inside string values", async () =
   expect(cfg.model).toBe("openai/gpt-x");
 });
 
+test("writeGlobalConfig refuses to touch the real config in an unisolated test run", async () => {
+  // The root test-preload sets XDG_CONFIG_HOME; if a test runs WITHOUT it
+  // (e.g. `cd packages/x && bun test` skips the root bunfig preload), the
+  // write must fail loudly instead of silently corrupting the developer's
+  // real ~/.config/vibe-codr/config.json with fixture data.
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  delete process.env.XDG_CONFIG_HOME;
+  try {
+    expect(writeGlobalConfig({ model: "ollama/should-never-land" })).rejects.toThrow(
+      /refusing to write the real global config/,
+    );
+  } finally {
+    if (prevXdg !== undefined) process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+});
+
 test("writeGlobalConfig deep-merges, and a null value clears a persisted key", async () => {
   // Point the global config at a throwaway dir so we never touch the real one.
   // Must use XDG_CONFIG_HOME, not HOME — Bun's os.homedir() caches at startup and

@@ -48,6 +48,16 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
 
 ## Conventions
 
+- **NEVER touch the developer's real `~/.config/vibe-codr/config.json`.** Run
+  `bun test` from the REPO ROOT (per-package bunfig.toml mirrors the preload as
+  a backstop, and `writeGlobalConfig` hard-fails under NODE_ENV=test without an
+  `XDG_CONFIG_HOME` override). When testing the CLI **manually** (a real
+  `vibecodr` run, trying `/model`, `/theme`, `/accent`, onboarding), point it at
+  throwaway dirs first:
+  `XDG_CONFIG_HOME=$(mktemp -d) VIBE_STATE_DIR=$(mktemp -d) bun packages/cli/bin/vibecodr.ts`
+  — settings changed in a real session persist globally, and fixture models /
+  light themes / grey accents leaking into the developer's config is a bug we
+  have already shipped once. Keep their config on its defaults.
 - Keep the **core/TUI boundary** intact: core must not import from `@vibe/tui`;
   UIs communicate only through `UIEvent` / `EngineCommand`.
 - Provider SDKs, OpenTUI, `@modelcontextprotocol/sdk`, and

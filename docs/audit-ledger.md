@@ -1918,3 +1918,28 @@ timeout, skipped not fatal); headless JSON shape (plan text + sources + gate cap
 cosmetic/garbage-input only, not defects.
 
 Clean-pass counter after Pass 10: 0 (1 confirmed → fixed). TWO consecutive CLEAN passes still required.
+
+
+### Pass 11 — CLEAN (clean-pass #1). 0 new defects; both skeptics REFUTED everything with executed disproofs
+Two skeptics (pass-10-`httpUrl`-edges + recent-fix re-attack / coding-loop-edit-apply + TUI-rendering).
+- **`httpUrl()` tightening — REFUTED (correct both directions).** No over-tightening: `http://localhost:1234/v1`,
+  `http://127.0.0.1:11434/v1` (Ollama), `https://user:pass@host/v1` (basic auth), `http://[::1]:8080/v1`
+  (IPv6), `https://host.example.com.` (trailing dot), path+query, IDN, a 5000-char URL all PASS. No
+  under-tightening: the `z.union` remote-MCP discrimination still works (`{url,transport}` and
+  `{command,args}` both parse; a scheme-less MCP/hook url is rejected, no silent fallback). Onboarding
+  re-prompt loop terminates; `isHttpUrl` matches the schema; `writeGlobalConfig` round-trips a valid
+  baseURL and rejects an invalid one pre-persist. (Note: a `NaN` tier `size` is unreachable — JSON has no
+  NaN, and a non-number `size` already hits the existing `continue`.)
+- **Coding loop / edit-apply / diff / reducer / LSP / green-gate — REFUTED (10 vectors).** CRLF preserved
+  byte-for-byte; sequential multi-hunk edits (overlapping/out-of-order) apply against the running buffer
+  with correct counts; `replaceAll` is single-pass (no replacement re-match); EOF-without-newline adds no
+  spurious NL; non-UTF-8 refused (fatal TextDecoder); no-op edit short-circuits + reducer drops a phantom
+  empty diff; green-gate bounds each stream at 400KB and kills the whole PROCESS TREE on timeout, exit code
+  is the source of truth (noisy/binary stdout can't flip green→red); LSP out-of-range range renders as a
+  number (no crash) and every failure path degrades to `undefined` (advisory, never a false clean); reducer
+  drops post-`done`/duplicate/late events and settles live rows on `clear-turn`.
+- Non-defects noted (documented tradeoffs, not reported): compact `charWidth` counts non-BMP combining
+  marks (Arabic/Devanagari) as width 1 (deliberate dependency-free wcwidth); `displayWidth` doesn't strip
+  ANSI, but the width-measured surfaces are fed markdown/labels, not raw bash ANSI (no confirmed repro).
+
+Clean-pass counter after Pass 11: 1. ONE more consecutive CLEAN pass required.

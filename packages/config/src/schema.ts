@@ -226,7 +226,7 @@ export const ConfigSchema = z.object({
   /** UI theme name. */
   theme: z.string().default("default"),
   /** Accent hue (hex) for UI chrome that OVERRIDES the active theme's `primary`.
-   * Empty by default so the theme's own brand (`#ff3503` on the default theme)
+   * Empty by default so the theme's own brand (`#8b5cf6` on the default theme)
    * shows through; set a hex via config or `/accent <hex>` to override. */
   accentColor: z.string().default(""),
   /** Plugin module specifiers (npm names or local paths). */

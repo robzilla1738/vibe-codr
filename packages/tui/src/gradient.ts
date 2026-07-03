@@ -8,9 +8,10 @@
  * derived from whatever accent is active, so a `/accent <hex>` override recolors
  * the wordmark coherently rather than fighting a hardcoded blue.
  *
- * It backs one thing: the static wordmark gradient (color by COLUMN, `brandSpans`).
- * The spinner and per-step/subagent gutters are now flat palette tones (no sweep).
- * Color stays on ACCENTS only (the wordmark) — never body text.
+ * It backs the static wordmark gradient (color by COLUMN, `brandSpans`) plus
+ * one deliberate exception to the single-hue rule: `rainbow`, the hue-cycling
+ * color of the live thinking spinner. Per-step/subagent gutters stay flat
+ * palette tones. Color stays on ACCENTS only — never body text.
  */
 
 /** Blue 300 — the default accent hue the ramp sweeps around. */
@@ -47,6 +48,15 @@ export function hsvToHex(h: number, s: number, v: number): string {
       .toString(16)
       .padStart(2, "0");
   return `#${to(r)}${to(g)}${to(b)}`;
+}
+
+/**
+ * Hue-cycling color for the live thinking spinner: one full wheel every 40
+ * ticks (~3.6s at the 90ms animation interval). Saturation/value tuned so
+ * every hue in the cycle stays readable on the graphite background.
+ */
+export function rainbow(tick: number): string {
+  return hsvToHex((tick * 9) % 360, 0.6, 0.95);
 }
 
 /** `#rgb` / `#rrggbb` → HSV (h in degrees 0..360, s/v in 0..1). */

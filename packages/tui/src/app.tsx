@@ -76,7 +76,7 @@ import {
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH, windowTasks } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
-import { brandSpans } from "./gradient.ts";
+import { brandSpans, rainbow } from "./gradient.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
@@ -100,11 +100,11 @@ import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
 
 /** The chat column's maximum width. At or below this the column fills the
  * terminal; above it the column stays centered with quiet side gutters
- * (ChatGPT-style — a readable, bounded conversation measure). 100 (up from 84)
- * trades a little line-length purity for information density — code, diffs,
- * tables and tool output show meaningfully more per row on a normal terminal
- * while narrow panes still just fill the window. */
-const CONTENT_MAX = 100;
+ * (ChatGPT-style — a readable, bounded conversation measure). 130 (up from
+ * 100, originally 84) trades line-length purity for information density —
+ * code, diffs, tables and tool output show meaningfully more per row on a
+ * full-screen terminal while narrow panes still just fill the window. */
+const CONTENT_MAX = 130;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
 /** Max visible rows the input box grows to before it scrolls internally. */
@@ -1765,13 +1765,14 @@ export function App(props: { engine: EngineClient }) {
       </box>
 
       {/* Live working indicator — the braille spinner glyph animates via `tick`
-          (which only advances while a turn runs) in the flat brand accent; the
-          elapsed/interrupt label stays muted for readability. Hidden while a
-          permission card is up (the card is the active affordance then). */}
+          (which only advances while a turn runs) in a hue-cycling rainbow so
+          "the model is thinking" has its own signature; the elapsed/interrupt
+          label stays muted for readability. Hidden while a permission card is
+          up (the card is the active affordance then). */}
       <Show when={working() && perms().length === 0 && !plan()}>
         <box flexDirection="column" flexShrink={0} marginTop={1}>
           <box flexDirection="row" flexShrink={0}>
-            <text fg={brand()}>
+            <text fg={rainbow(tick())}>
               {spinnerFrame(tick())}
             </text>
             <text fg={palette().muted}>
@@ -1787,7 +1788,7 @@ export function App(props: { engine: EngineClient }) {
               <Index each={reasoningLines()}>
                 {(line, i) => (
                   <box flexDirection="row" flexShrink={0}>
-                    <text flexShrink={0} fg={palette().gutter}>{i === 0 ? "  ✻ " : "    "}</text>
+                    <text flexShrink={0} fg={i === 0 ? rainbow(tick()) : palette().gutter}>{i === 0 ? "  ✻ " : "    "}</text>
                     <text
                       flexShrink={1}
                       wrapMode="none"

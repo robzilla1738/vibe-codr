@@ -59,18 +59,18 @@ export interface Palette {
   series: string[];
 }
 
-/** Warm graphite + peach dark palette (the default) — the opencode look. */
-// Near-black graphite background + neutral grey CHROME BORDERS, with opencode's
-// signature peach (#fab283) ACCENT reserved for titles + markers: panel titles,
-// the `❯` user marker + gutter, the active task/step, the selected menu row, the
-// input caret, and the mode chip (ASK peach / PLAN green / YOLO red). The
-// wordmark sweeps a light→deep shade of that same peach; tool/subagent threads
-// share one calm muted `gutter` tone (no rainbow rotation). Neutral charcoal
-// surfaces (panel/elevated) are raised on the graphite; green/red stay
-// functional on diffs, amber on warnings. This is deliberately the same DARK
-// look as the `opencode` theme — the default must never drift light; `light`
-// exists only as an explicit `/theme light` opt-in. Override the accent with
-// any hue via `accentColor` / `/accent <hex>` — the wordmark sweep follows it.
+/** Graphite + royal violet dark palette (the default). */
+// Near-black graphite background + neutral grey CHROME BORDERS, with a royal
+// violet (#8b5cf6) ACCENT reserved for titles + markers: panel titles, the `❯`
+// user marker + gutter, the active task/step, the selected menu row, the input
+// caret, and the mode chip (ASK violet / PLAN green / YOLO red). The wordmark
+// sweeps a light→deep shade of that same violet; tool/subagent threads share
+// one calm muted `gutter` tone. Neutral charcoal surfaces (panel/elevated) are
+// raised on the graphite; green/red stay functional on diffs, amber on
+// warnings. Same DARK structure as the `opencode` theme but violet where that
+// one is peach — the default must never drift light; `light` exists only as an
+// explicit `/theme light` opt-in. Override the accent with any hue via
+// `accentColor` / `/accent <hex>` — the wordmark sweep follows it.
 const DEFAULT: Palette = {
   user: "#5c9cf5",
   assistant: "#eeeeee",
@@ -84,11 +84,11 @@ const DEFAULT: Palette = {
   taskDone: "#808080",
   taskActive: "#56b6c2",
   taskPending: "#eeeeee",
-  accent: "#fab283",
-  // Peach chrome accent: panel titles, the `❯` user marker + gutter, active
-  // task/step, the selected menu row, and the caret. Borders stay neutral grey.
-  // Override with a single hue via accentColor / `/accent <hex>`.
-  primary: "#fab283",
+  accent: "#8b5cf6",
+  // Royal violet chrome accent: panel titles, the `❯` user marker + gutter,
+  // active task/step, the selected menu row, and the caret. Borders stay
+  // neutral grey. Override with a single hue via accentColor / `/accent <hex>`.
+  primary: "#8b5cf6",
   border: "#3c3c3c",
   muted: "#808080",
   background: "#0a0a0a",
@@ -98,13 +98,13 @@ const DEFAULT: Palette = {
   selFg: "#eeeeee",
   addBg: "#20303b",
   delBg: "#37222c",
-  gutter: "#544c44",
-  heading: "#fab283",
+  gutter: "#4c4458",
+  heading: "#8b5cf6",
   code: "#56b6c2",
-  // A calm, distinct 6-hue ramp for charts/pies/sources on graphite: peach,
-  // green, violet, blue, red, teal — spaced around the wheel so adjacent series
+  // A calm, distinct 6-hue ramp for charts/pies/sources on graphite: violet,
+  // green, blue, amber, red, teal — spaced around the wheel so adjacent series
   // never read as the same color, all bright enough to pop on the dark backdrop.
-  series: ["#fab283", "#7fd88f", "#9d7cd8", "#5c9cf5", "#c53b53", "#4fd6be"],
+  series: ["#8b5cf6", "#7fd88f", "#5c9cf5", "#f5a742", "#c53b53", "#4fd6be"],
 };
 
 /** Light palette for bright terminals. */

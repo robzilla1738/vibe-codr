@@ -42,14 +42,16 @@ export const THEME_NAMES: string[] = [
 
 /**
  * Named accent presets for `/accent <name>` — a curated swatch row so switching
- * the chrome hue is one word, not a hex hunt. `blue` is the default Blue 300;
- * `orange` is opencode's signature peach; the rest round out a calm, terminal-
- * proven set. Any 6-digit hex still works via `/accent #rrggbb`. The engine
- * resolves a name here to its hex before emitting `accent-changed`, so the UIs
- * always receive a concrete hex and need no map of their own.
+ * the chrome hue is one word, not a hex hunt. `purple` is the default theme's
+ * royal-violet brand; `blue` is the historical Blue 300; `orange` is opencode's
+ * signature peach; the rest round out a calm, terminal-proven set. Any 6-digit
+ * hex still works via `/accent #rrggbb`. The engine resolves a name here to its
+ * hex before emitting `accent-changed`, so the UIs always receive a concrete
+ * hex and need no map of their own.
  */
 export const ACCENT_PRESETS: Record<string, string> = {
   blue: "#70cbf4",
+  purple: "#8b5cf6",
   orange: "#fab283",
   ember: "#ff966c",
   amber: "#e0af68",

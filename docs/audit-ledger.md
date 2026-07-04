@@ -2560,3 +2560,24 @@ This closes the last vector of the class. The gate took FOUR verify passes to co
 found a real gap in the same "execute-code / redirect-or-disclose-credentials on an untrusted
 clone" family; the surface is genuinely wide (hooks, plugins, security, approvalMode, providers,
 mcp stdio+remote, lsp command+args, verify, broad permissions, sandbox, webfetch SSRF).
+
+## Convergence pass 5 — CLEAN. CONVERGED.
+Final confirmation traced the whole-providers drop (no caller mutation, notice="providers",
+trusted-path honors verbatim, no stale test) and enumerated ALL 33 top-level ConfigSchema keys:
+every process-exec / local-file-read-and-exfil / credential-redirect / spawn-arg-injection
+vector reachable at load / bootstrap / first-edit / first-turn is gated; the rest (model
+strings, search hardcoded-endpoint, branchPrefix argv-not-shell, and pure bool/enum/number
+blocks) are safe. `McpOAuth.tokenStore` and `Hook.url`/`command` are transitively gated inside
+the wholesale-dropped mcp/hooks blocks. The gate took 5 passes to converge (4 found real gaps
+of the same wide "untrusted-clone can execute code or disclose/redirect credentials" class).
+
+# SESSION CLOSE — /goal excellence pass, 2026-07-04
+Three waves, each converged under adversarial verification:
+1. /goal driver hardening + visibility (commits 29098ff, 2866e15) — 2 verify passes, converged.
+2. Whole-project sweep across 6 subsystems (a657780) — security, abort-safety, checkpoints,
+   loop/MCP/catalog/tui; 1 verify pass → the trust-gate follow-ups below.
+3. Untrusted-project-config trust gate (81f0d0f, 1893907, e1d8816, fc4b0d5) — 5 verify passes,
+   CONVERGED CLEAN. security.trustProjectConfig closes RCE/exfil-on-clone across the full config
+   surface.
+Every wave: typecheck 8/8, lint clean, 15/15 test tasks, both smokes green. Deferred backlog (in
+the WHOLE-PROJECT SWEEP section) is the next sweep's work — not bugs.

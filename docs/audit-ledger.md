@@ -2377,3 +2377,12 @@ smoke:sidebar OK.
   persistence write-chain, new-test soundness.
 - Close: engine-goal.test.ts 24 tests (2 added for the confirmed pair), goal suite 6× clean
   post-fix (12× pre-fix), typecheck 8/8, lint clean, 15/15 test tasks, both smokes OK.
+- **Pass 2 (fresh eyes on the fix wave itself): CLEAN** — 8 mechanism attestations (pause-
+  before-rethrow single-notice, 5 epoch sites with steer correctly NOT bumping, task-chain/
+  epoch non-interaction, history-display round-trip through store/undo/compaction with model
+  context untouched, Promise<unknown> widening consumers, #runFixTurn deny semantics with no
+  verify miscount, resume plan-phase clear ordering, all 3 new tests non-vacuous). One wording
+  nit fixed (throw-pause reason no longer claims the turn never ran); one cross-wave
+  observation (idle-continue hook can drive a paused run's leftover tasks via the NON-goal
+  plan-chain branch — doubly bounded, needs two user-configured hooks, predates the wave)
+  recorded as accepted. CONVERGED.

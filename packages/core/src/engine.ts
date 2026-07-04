@@ -2361,6 +2361,17 @@ export class Engine implements EngineClient {
     this.#notice("Goal run requires execute mode — switched.");
   }
 
+  /** Run an engine-internal fix turn (gate-fix / review-fix / verify-fix). A
+   * hook-denied fix turn never reaches #afterTurn — during a goal run that
+   * would strand the run armed with nothing queued, so the deny pauses it
+   * (a no-op outside a run). */
+  async #runFixTurn(text: string): Promise<void> {
+    const result = await this.#handlePrompt(text);
+    if (result === "denied") {
+      this.#pauseGoalRun("a prompt hook blocked the fix turn", { level: "warn" });
+    }
+  }
+
   /** Run one goal-run turn with the full stop-invariant guard: a turn VETOED
    * by a user.prompt.submit hook (no turn ran, no #afterTurn — the run would
    * sit armed with nothing queued) or a turn that THREW (the drain only logs
@@ -2371,7 +2382,9 @@ export class Engine implements EngineClient {
     try {
       result = await this.#handlePrompt(text, { display });
     } catch (err) {
-      this.#pauseGoalRun("the turn failed before it could run", { level: "warn" });
+      // The throw can come from anywhere in the turn pipeline (pre-run prep OR
+      // #afterTurn — e.g. a gate crash), so the reason stays non-committal.
+      this.#pauseGoalRun("the turn failed", { level: "warn" });
       throw err;
     }
     if (result === "denied") {
@@ -2865,7 +2878,7 @@ export class Engine implements EngineClient {
       this.#gateRounds += 1;
       this.#notice(formatGateOutcome(summary), "warn");
       this.#enqueue("gate-fix", () =>
-        this.#handlePrompt(formatGateFailure(summary, gate.maxRounds)),
+        this.#runFixTurn(formatGateFailure(summary, gate.maxRounds)),
       );
       return summary.outcome;
     }
@@ -3083,7 +3096,7 @@ export class Engine implements EngineClient {
       "warn",
     );
     this.#enqueue("review-fix", () =>
-      this.#handlePrompt(buildReviewFixPrompt(reviewFlagged, visualFindings)),
+      this.#runFixTurn(buildReviewFixPrompt(reviewFlagged, visualFindings)),
     );
   }
 
@@ -3113,7 +3126,7 @@ export class Engine implements EngineClient {
     }
     this.#verifyAttempts += 1;
     this.#enqueue("verify-fix", () =>
-      this.#handlePrompt(
+      this.#runFixTurn(
         `The verification command \`${command}\` failed:\n\n${result.output}\n\n` +
           `Fix the cause and keep changes minimal.`,
       ),

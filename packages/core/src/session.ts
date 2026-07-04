@@ -451,6 +451,16 @@ export class Session {
     return this.#interrupted;
   }
 
+  /** Acknowledge the last turn's terminal state (user interrupt or swallowed
+   * error) without running a turn. An EXPLICIT resume (`/goal resume`) consumes
+   * the Esc's stop intent / the errored turn's pause — without this, the goal
+   * loop's interrupted/lastError guards would instantly re-pause the re-armed
+   * run before its first turn. Both flags also self-reset at the next run(). */
+  acknowledgeStop(): void {
+    this.#interrupted = false;
+    this.#lastError = null;
+  }
+
   /** The current working task list (live reference; treat as read-only). */
   get tasks(): Task[] {
     return this.#tasks;
@@ -1670,7 +1680,11 @@ export class Session {
         ]
       : modelText;
     this.#modelMessages.push({ role: "user", content });
-    const parts: Part[] = [{ type: "text", text: input }];
+    // History (the UI-facing transcript, re-inflated on --resume) keeps the
+    // COMPACT display when one was given — a resumed session must not re-inflate
+    // N goal rounds as N full multi-line directives when the live view showed
+    // one line each. The model context above always carries the full text.
+    const parts: Part[] = [{ type: "text", text: display ?? input }];
     for (const img of images) parts.push({ type: "text", text: `[image: ${img.path}]` });
     this.#history.push({
       id: createId("msg"),

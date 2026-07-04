@@ -11,6 +11,7 @@ export type {
   SessionUsage,
   EngineSnapshot,
   GitInfo,
+  GoalRunInfo,
   JobInfo,
   ModelSummary,
   ProviderInfo,

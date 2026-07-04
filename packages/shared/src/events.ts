@@ -1,4 +1,4 @@
-import type { GitInfo, JobInfo, Mode, QueuedItem, SessionUsage, Task, Usage } from "./types.ts";
+import type { GitInfo, GoalRunInfo, JobInfo, Mode, QueuedItem, SessionUsage, Task, Usage } from "./types.ts";
 
 /**
  * Events emitted by the engine and consumed by any UI (TUI, headless printer).
@@ -56,6 +56,9 @@ export type UIEvent =
   | { type: "mode-changed"; sessionId: string; mode: Mode }
   | { type: "model-changed"; sessionId: string; model: string }
   | { type: "goal-changed"; sessionId: string; goal: string | null }
+  // The /goal autonomous run's live state (armed / phase / round / paused / met)
+  // — drives the ★ header suffix and bare `/goal`. Always a fresh copy.
+  | { type: "goal-run"; sessionId: string; run: GoalRunInfo }
   | { type: "theme-changed"; theme: string }
   | { type: "accent-changed"; accent: string }
   | { type: "git-updated"; sessionId: string; git: GitInfo }

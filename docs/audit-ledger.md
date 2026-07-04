@@ -2289,3 +2289,91 @@ until it's accomplished. Shipped in two waves the same day (driver v1, pipeline 
 task-driven layering, unified budget single-warn, gate-red override unit, live-state resume,
 plan-mode entry non-hijack, steer re-arm), run 8× consecutively clean (one persist-race flake
 found and fixed in the resume test). Typecheck 8/8, turbo tests 15/15 (core 812+), smoke:tui OK.
+
+# /GOAL HARDENING + EXCELLENCE PASS — 2026-07-04 (post-driver adversarial review)
+
+Trigger: /goal "go through every aspect… ideal, industry leading, powerful, intuitive".
+Method: green-gate baseline → three parallel fresh-eyes reviewers (engine adversarial on the
+f1c4536..HEAD diff, TUI/UX, docs accuracy) → verify → one fix wave → re-verified gate.
+
+## Docs accuracy fixes (6 confirmed discrepancies)
+- CHANGELOG: the /goal driver (the newest shipped feature) had NO entry; v0.4.1 (session card
+  v2) was listed as Unreleased with no version heading — both restructured.
+- README: sessions documented at the pre-relocation `.vibe/sessions/` path → now the global
+  state dir (with the legacy read fallback noted).
+- AGENTS.md color discipline: a whole era stale (claimed Blue 300 #70cbf4 accent, #000 bg,
+  "rainbow retired", flat-brand spinner) → rewritten to the shipped white-chrome/violet
+  palette, #0a0a0a graphite, and the rainbow spinner as the documented single exception;
+  stale gutter hex + "blue" heading fixed.
+- `/accent` (no arg) reported "theme default (Blue 300 #70cbf4)" — a wrong hex from the same
+  era → "theme default".
+- `/models` was engine-real + README-documented but missing from the TUI palette → added.
+- engine-goal.test.ts comma-operator lint warning (ledger promised lint-clean) → rewritten.
+
+## /goal engine fixes (8 CONFIRMED findings from the adversarial reviewer)
+1. **Red-gate exhaust wedged the run**: STILL-RED (fix budget spent) enqueued no fix turn and
+   #afterTurn skips continuation on red → run armed-but-idle forever; kill+resume resurrected
+   it against `Gate: unverified`. Now: #pauseGoalRun with the reason.
+2. **Esc during the assessment await** still launched one more autonomous turn (the disarm
+   happened mid-await; the verdict was acted on anyway). Now: re-checked after the await.
+3. **Stale pre-run tasks hijacked the spine**: any non-empty list read as "the plan turn
+   seeded it" — the execute contract drove an abandoned earlier plan. Now: the run clears the
+   task list at arm (noticed), and seeds its own.
+4. **/clear left the run armed**, firing continuations into the wiped conversation against
+   wiped tasks. Now: /clear pauses the run (swept queue, notice); resume re-plans (execute
+   phase with no tasks demotes to plan).
+5. **Bootstrap-resume's plan enqueue lacked the thrown-turn guard** → permanent plan-phase
+   wedge (armed, nothing queued, unreachable by any prompt). Now: shared #enqueueGoalPlanTurn.
+6. **/goal <new> mid-run didn't sweep** the old run's queued continuation → two interleaved
+   drivers charging one budget. Now: sweep at #startGoalRun.
+7. **Steer re-grant never persisted** → kill mid-steer resumed with pre-steer counts (possibly
+   instant disarm). Now: persisted (+ the !goal disarm branch persists and sweeps).
+8. **Label-prefix matching**: a typed prompt starting `goal: ` was swept/suppressed as a run
+   turn. Now: queue items carry `origin: "goal"` — provenance, not text.
+   (+ PLAUSIBLE #10: `- [x]` checked boxes seeded as pending tasks — parser now unchecked-only.
+   PLAUSIBLE #8 — cross-round gate-red memory — judged shadowed by fix 1; accepted.)
+
+## /goal UX wave (3 IMPORTANT + 7 polish from the UX reviewer)
+- **Run state is visible**: new `goal-run` event (+ EngineSnapshot.goalRun; always a fresh
+  copy per the bus-copies rule) drives a live ★ suffix — `· planning` / `· 7/25` / `· paused`
+  / `· met` — in the header and sidebar card; bare /goal prints the real state (active
+  round/phase · paused-why · met · no-run) via exported goalStatusText.
+- **Every pause is announced** (Esc was silent while the start notice promised "typing steers
+  it") and every pause notice names **`/goal resume`** — new verb that re-arms the stored goal
+  at the paused phase with a fresh budget. session.acknowledgeStop() consumes the stale
+  interrupted/lastError flags so the resume isn't instantly re-paused (found while writing the
+  resume test — the guards would have wedged every post-Esc resume).
+- **Compact goal bubbles**: engine-driven rounds pass `display` ("★ goal — round 7/25: …") so
+  the transcript shows one line, not the full directive ×25; steers notice the budget refresh;
+  verdict reasons are period-normalized; dequeuing the run's queued turn pauses with a notice;
+  "Loop stopped —" separator aligned.
+
+## Verification at close
+engine-goal.test.ts 13 → 22 tests (Esc-pause+resume, replace-sweeps, /clear-pause+re-plan,
+checked-box seeding, assessment-abort race, steer-persist-on-disk, stale-task spine, red-gate
+pause, dequeue pause) + goalStatusText units; a pre-existing persist-race flake in the resume
+test fixed (poll for the execute-phase write, not the first active write); goal suite 12×
+clean. Gate: typecheck 8/8, lint clean, turbo tests 15/15 (core 800+), smoke:tui +
+smoke:sidebar OK.
+
+## Convergence pass (fresh-eyes verify of the wave itself)
+- **CONFIRMED 2 → fixed:** `/queue clear` was the one remaining armed-but-idle bypass (it
+  dropped the run's queued turn with no pause — the exact hole the dequeue fix closed) → now
+  pauses like dequeue. A `user.prompt.submit` hook DENY on a goal turn returned before
+  #afterTurn (armed-but-idle again), and a denied PLAN turn still marched into execute on a
+  fabricated spine → #handlePrompt now returns "denied"; ALL goal turns route through a new
+  #runGoalTurn guard (deny → pause; throw → pause + rethrow — extending the plan turn's
+  thrown-turn guard to every goal closure, which also settles PLAUSIBLE #3), and a denied plan
+  turn skips #beginGoalExecution.
+- **PLAUSIBLE 4-7 → fixed:** resume-into-plan clears a stale partial task seed (symmetry with
+  #startGoalRun); the steer-persist test anchors on the round-1 write first (vacuous-pass
+  window closed); history keeps the compact `★ goal` display so --resume doesn't re-inflate N
+  full directives; a #goalRunEpoch stamps the assessment await so a pause+direct-send-re-arm
+  landing inside the window can't act on a pre-pause verdict.
+- **Verifier's clean attestations:** abort ordering (no goal item carries onCancel), origin
+  conversion complete (zero label-prefix matches), acknowledgeStop blast radius (both other
+  readers re-derive next run), resume edges, display/headless composition, /clear pipeline,
+  seed parser in the plan-approval path, TUI truncation math (maxRounds schema-capped at 100),
+  persistence write-chain, new-test soundness.
+- Close: engine-goal.test.ts 24 tests (2 added for the confirmed pair), goal suite 6× clean
+  post-fix (12× pre-fix), typecheck 8/8, lint clean, 15/15 test tasks, both smokes OK.

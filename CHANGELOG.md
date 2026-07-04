@@ -4,18 +4,55 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
-### Changed — the session card earns its place
+### Added — `/goal` is now an autonomous plan → execute → verify driver
 
-- **The card's wordmark is now the real brand mark, scaled down** — the `tiny`
-  half-block ascii face (same family as the splash's block wordmark, 2 rows)
-  in the chrome accent, replacing the plain `◆ vibe codr` text line.
-- **No more label words** — `dir` / `model` / `usage` are gone; the values are
-  self-evident and now read as clean bare lines (dir and model bright, git /
-  usage / goal muted).
-- **No more double-printing** — while the card is up it OWNS the session
-  facts: the chat column's top-left context line goes blank (the row stays,
-  height-pinned, so nothing reflows) and the under-input status keeps only
-  the changed-files delta. Each fact renders in exactly one place.
+- **`/goal <text>` starts a run, not just a header.** The engine plans first
+  (a read-only investigation turn that seeds a task checklist — engine-verified,
+  with parse and single-task fallbacks so the run always has a task spine), then
+  executes the tasks, then self-assesses after every turn (structured
+  `{met, gaps, reason}` verdict on the task list, a capped diff, and the live
+  gate result). The first "met" buys an **adversarial verify turn**; the run
+  ends only after **2 consecutive clean passes**.
+- **Honest verdicts.** Unfinished tasks are a deterministic "not met" (no model
+  call spent), and a red gate hard-overrides a "met" verdict — the model can't
+  talk its way past failing checks.
+- **Bounded and steerable.** `goal.maxRounds` (default 25) caps the run on a
+  unified budget shared with task continuations; typing mid-run steers it (the
+  round budget re-grants); Esc pauses it (the ★ goal stays); `/goal clear`
+  stops it and sweeps queued goal turns; a provider error pauses the run
+  instead of burning the remaining rounds.
+- **Survives restarts.** A live run persists its phase and round; `--resume`
+  re-enters it where it left off. `goal.planFirst: false` keeps the legacy
+  single blended turn.
+- **One parser.** Bare `/goal` now *shows* the goal (it used to silently
+  clear); `clear`/`none`/`off`/`stop`/`reset` clear it; `/goal` from plan mode
+  auto-switches to execute with approvals preserved.
+- **The run is visible and resumable.** The ★ header carries a live suffix
+  (`· planning` / `· 7/25` / `· paused` / `· met`, via the new `goal-run`
+  event + snapshot field), engine-driven rounds render as one compact
+  `★ goal — …` bubble instead of repeating the full directive every round,
+  and bare `/goal` reports the run's actual state. Every non-terminal stop is
+  now an announced **pause** with the reason — Esc, an errored turn, a gate
+  that stays red after its fix budget (previously that path silently wedged
+  the run armed-but-idle), an exhausted round budget, `/clear`, or removing
+  the run's queued turn from the queue — and the new **`/goal resume`**
+  re-arms the stored goal at the paused phase with a fresh budget.
+- **Run-integrity fixes.** The run owns its task spine (a leftover task list
+  from an earlier plan is cleared at arm instead of hijacking the execute
+  contract); replacing the goal mid-run sweeps the old run's queued turns;
+  goal turns are matched by provenance, not label text (a typed prompt
+  starting with `goal: ` is never swept); an Esc landing during the
+  self-assessment can no longer launch one more turn; a steer's round-budget
+  re-grant is persisted (a kill mid-steer resumes with the refreshed budget);
+  every goal turn (not just the plan turn) carries a stop-invariant guard — a
+  turn that throws, or is vetoed by a `user.prompt.submit` hook, pauses the
+  run instead of leaving it armed with nothing queued (and a denied plan turn
+  no longer marches into execute on a fabricated task spine); `/queue clear`
+  pauses the run when it drops the run's queued turn (same contract as ✕ on
+  the row); resuming into the plan phase clears a stale partial task seed;
+  compact `★ goal` bubbles survive `--resume` (history stores the display
+  line, the model context keeps the full directive); and `- [x]` checked
+  boxes in a narrated plan no longer seed phantom pending tasks.
 
 ### Added — hooks get real feedback channels (Claude Code Stop/PostToolUse parity)
 
@@ -121,6 +158,21 @@ All notable changes to vibe-codr are documented here.
 
 - **Every skill load now discloses the skill's directory**, so `SKILL.md`-
   referenced bundled files (helpers, catalogs) are resolvable by the model.
+
+## v0.4.1 — 2026-07-04
+
+### Changed — the session card earns its place
+
+- **The card's wordmark is now the real brand mark, scaled down** — the `tiny`
+  half-block ascii face (same family as the splash's block wordmark, 2 rows)
+  in the chrome accent, replacing the plain `◆ vibe codr` text line.
+- **No more label words** — `dir` / `model` / `usage` are gone; the values are
+  self-evident and now read as clean bare lines (dir and model bright, git /
+  usage / goal muted).
+- **No more double-printing** — while the card is up it OWNS the session
+  facts: the chat column's top-left context line goes blank (the row stays,
+  height-pinned, so nothing reflows) and the under-input status keeps only
+  the changed-files delta. Each fact renders in exactly one place.
 
 ## v0.4.0 — 2026-07-04
 

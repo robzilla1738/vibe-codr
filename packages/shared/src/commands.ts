@@ -22,6 +22,9 @@ export type EngineCommand =
   // Scaffold a new named subagent file (`.vibe/agents/<name>.md`) to edit.
   | { type: "create-agent"; name: string }
   | { type: "set-goal"; goal: string | null }
+  // Re-arm a paused goal run with the stored goal (fresh round budget), at the
+  // phase it paused in — unlike `set-goal`, which restarts the pipeline.
+  | { type: "resume-goal" }
   | { type: "abort" }
   // Drop one queued (waiting) prompt without running it.
   | { type: "dequeue"; id: string }

@@ -12,6 +12,7 @@ import {
   type EngineSnapshot,
   type GateSummary,
   type GitInfo,
+  type GoalRunInfo,
   type Logger,
   type Mode,
   type ProviderInfo,
@@ -242,8 +243,16 @@ export class Engine implements EngineClient {
    * running (abort / dequeue / `/queue clear` / `/loop stop`) — a queued loop
    * iteration holds a promise the LoopController awaits, and dropping the item
    * without settling it would leave the loop permanently hung yet "active". */
-  #pending: { id: string; label: string; run: () => Promise<void>; onCancel?: (reason: string) => void }[] =
-    [];
+  #pending: {
+    id: string;
+    label: string;
+    run: () => Promise<unknown>;
+    onCancel?: (reason: string) => void;
+    /** Which machinery queued this item. Goal-run turns carry "goal" so the
+     * sweep/stack-guard match on provenance, not on the label text — a USER
+     * prompt that happens to start with "goal: " must never be swept. */
+    origin?: "goal";
+  }[] = [];
   #active: QueuedItem | null = null;
   #draining = false;
   #idleResolvers: (() => void)[] = [];
@@ -323,6 +332,18 @@ export class Engine implements EngineClient {
   /** Consecutive clean self-assessments since the model first claimed the goal
    * met; any gap found resets convergence to zero. */
   #goalCleanPasses = 0;
+  /** Why an inactive run stopped (short, human) when it can be re-armed with
+   * `/goal resume` — Esc, an errored turn, a stuck-red gate, budget exhaust.
+   * Cleared on arm/resume/clear; surfaced in the ★ header and bare `/goal`. */
+  #goalPauseReason: string | undefined;
+  /** True once a run finished verified-met (the ★ goal stays until cleared). */
+  #goalMet = false;
+  /** Bumped on every arm/resume/pause/stop. The assessment await in
+   * #maybeContinueGoal spans seconds — a pause AND re-arm both landing inside
+   * it would otherwise let a pre-pause verdict drive the resumed run's first
+   * continuation (reachable only by an embedder calling send() directly; the
+   * TUI's /goal resume is serialized behind the drain). */
+  #goalRunEpoch = 0;
   /** Manifest fingerprint at the last no-runnable-checks gate refresh. A repo
    * that legitimately has no checks would otherwise re-run full recon on EVERY
    * mutating turn; we only re-scan when a build manifest actually changed (which
@@ -533,6 +554,8 @@ export class Engine implements EngineClient {
             goalPhase: this.#goalPhase ?? null,
             goalContinueRounds: this.#goalContinueRounds,
             goalCleanPasses: this.#goalCleanPasses,
+            goalPauseReason: this.#goalPauseReason ?? null,
+            goalMet: this.#goalMet,
           }),
         );
       } catch {
@@ -552,11 +575,18 @@ export class Engine implements EngineClient {
         goalPhase?: "plan" | "execute" | null;
         goalContinueRounds?: number;
         goalCleanPasses?: number;
+        goalPauseReason?: string | null;
+        goalMet?: boolean;
       };
       if (state.pendingHandoff) this.#pendingHandoff = true;
+      // Phase / pause / met are restored even when the run is NOT active: a
+      // PAUSED run re-armed with `/goal resume` re-enters at this phase, and
+      // the ★ header keeps showing paused/met across a restart.
+      this.#goalPhase = state.goalPhase ?? undefined;
+      this.#goalPauseReason = state.goalPauseReason ?? undefined;
+      this.#goalMet = state.goalMet ?? false;
       if (state.goalRunActive) {
         this.#goalRunActive = true;
-        this.#goalPhase = state.goalPhase ?? undefined;
         this.#goalContinueRounds = state.goalContinueRounds ?? 0;
         this.#goalCleanPasses = state.goalCleanPasses ?? 0;
       }
@@ -781,11 +811,14 @@ export class Engine implements EngineClient {
 
   /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps.
    * The indent is bounded ({0,3} spaces) so deeply nested sub-bullets don't
-   * register as top-level steps and evict real ones when the list is capped. */
+   * register as top-level steps and evict real ones when the list is capped.
+   * Only UNCHECKED boxes seed: a `- [x]` in the parsed text is narration of
+   * work already done (investigation summaries are full of them), and seeding
+   * it as `pending` would drive continuation rounds toward phantom work. */
   #seedTasksFromPlan(plan: string): void {
     const lines = plan.split("\n");
     let items = lines
-      .map((l) => /^[ \t]{0,3}[-*]\s+\[[ xX]?\]\s+(.+)$/.exec(l)?.[1])
+      .map((l) => /^[ \t]{0,3}[-*]\s+\[ ?\]\s+(.+)$/.exec(l)?.[1])
       .filter((t): t is string => !!t);
     if (!items.length) {
       items = lines
@@ -910,19 +943,23 @@ export class Engine implements EngineClient {
         this.#goalPhase = undefined;
         void this.#persistEngineState();
       } else {
-        this.#notice(
-          `Resuming goal run (round ${this.#goalContinueRounds}/${this.#config.goal.maxRounds}): ${goal}`,
-        );
+        const phaseLabel =
+          this.#goalPhase === "plan"
+            ? "planning"
+            : `round ${this.#goalContinueRounds}/${this.#config.goal.maxRounds}`;
+        this.#notice(`Resuming goal run (${phaseLabel}): ${goal}`);
+        this.#emitGoalRun();
         if (this.#goalPhase === "plan") {
-          this.#enqueue(`goal: plan ${queueLabel(goal)}`, async () => {
-            await this.#handlePrompt(this.#goalPlanPrompt(goal));
-            this.#beginGoalExecution(goal);
-          });
+          // The SHARED guarded enqueue — a resumed plan turn that throws must
+          // pause the run exactly like a fresh one (an unguarded enqueue here
+          // once wedged the run permanently: armed, phase "plan", nothing
+          // queued, and #maybeContinueGoal early-returns on the plan phase).
+          this.#enqueueGoalPlanTurn(goal);
         } else {
           // Queue the re-entry (not a bare call): whenIdle then covers the
-          // assessment + whatever it enqueues, and the `goal: ` label keeps it
+          // assessment + whatever it enqueues, and the goal origin keeps it
           // sweepable by /goal clear like every other run turn.
-          this.#enqueue("goal: resume", () => this.#maybeContinueGoal());
+          this.#enqueue("goal: resume", () => this.#maybeContinueGoal(), { origin: "goal" });
         }
       }
     }
@@ -974,6 +1011,7 @@ export class Engine implements EngineClient {
   snapshot(): EngineSnapshot {
     return {
       ...this.#session.snapshot(),
+      ...(this.#session.goal ? { goalRun: this.#goalRunInfo() } : {}),
       commandNames: this.#commandNames(),
       subagentModel: this.#config.subagent.model,
       reasoning: this.#config.reasoning.effort,
@@ -1076,9 +1114,17 @@ export class Engine implements EngineClient {
         // stays armed (deliberately not part of #resetPromptBudgets — goal
         // continuation turns call that reset themselves for fresh gate budgets,
         // and must never zero their own round counter), but the counters restart
-        // so the steered run gets fresh runway and must re-converge.
-        this.#goalContinueRounds = 0;
-        this.#goalCleanPasses = 0;
+        // so the steered run gets fresh runway and must re-converge. Persist the
+        // re-grant (a kill during the steer turn would otherwise resume with the
+        // PRE-steer counts from engine.json — possibly disarming instantly) and
+        // say what happened: the round notices visibly jump back to 1/N.
+        if (this.#goalRunActive) {
+          this.#goalContinueRounds = 0;
+          this.#goalCleanPasses = 0;
+          void this.#persistEngineState();
+          this.#emitGoalRun();
+          this.#notice("Steer folded into the goal run — round budget refreshed.", "info");
+        }
         // …and starts a fresh coordination context: the blackboard is per-fan-out
         // scratch (claims, transient decisions), NOT durable state — the task list
         // and long-term memory carry that. Clearing here (not on loop iterations,
@@ -1165,18 +1211,34 @@ export class Engine implements EngineClient {
         if (command.goal) this.#startGoalRun(command.goal);
         else this.#stopGoalRun("cleared by user");
         break;
+      case "resume-goal": {
+        // Re-arm a PAUSED run with the stored goal (fresh round budget), at the
+        // phase it paused in — a restart-from-scratch is `set-goal` (`/goal
+        // <text>`), not this.
+        const storedGoal = this.#session.goal;
+        if (!storedGoal) {
+          this.#notice("No goal set — /goal <text> sets one and starts a run.");
+        } else if (this.#goalRunActive) {
+          this.#notice(
+            `Goal run already active (round ${this.#goalContinueRounds}/${this.#config.goal.maxRounds}).`,
+          );
+        } else {
+          this.#resumeGoalRun(storedGoal);
+        }
+        break;
+      }
       case "abort":
         // An abort also pauses a live goal run: the interrupted guard already
         // blocks the NEXT continuation, but the flag must drop too so a later
         // unrelated prompt can't resurrect the run. The ★ goal itself stays
         // set (the user paused the work, they didn't clear the north star).
-        // Persist the disarm — without it a kill-then---resume would resurrect
-        // an Esc'd run from engine.json.
-        if (this.#goalRunActive) {
-          this.#goalRunActive = false;
-          this.#goalPhase = undefined;
-          void this.#persistEngineState();
-        }
+        // #pauseGoalRun persists the disarm (a kill-then---resume must not
+        // resurrect an Esc'd run) and SAYS SO — the start notice promised
+        // "typing steers it", so a silent state flip here would leave the
+        // user steering a run that no longer exists.
+        this.#pauseGoalRun("interrupted (Esc)", {
+          notice: "Goal run paused by the interrupt — the ★ goal stays set. /goal resume re-arms it; /goal clear drops it.",
+        });
         // Drop everything still waiting, then cancel the in-flight turn — which
         // may be a loop iteration running on an ephemeral session (`#loopSession`
         // is set only for the duration of that iteration), not the main session.
@@ -1202,6 +1264,12 @@ export class Engine implements EngineClient {
           this.#pending = this.#pending.filter((p) => p.id !== command.id);
           for (const p of removed) p.onCancel?.("dequeued");
           this.#emitQueue();
+          // Dequeuing a goal-run turn would otherwise leave the run armed with
+          // nothing queued — dead until an unrelated prompt's #afterTurn
+          // unexpectedly revived it. Removing the run's next turn means pause.
+          if (removed.some((p) => p.origin === "goal")) {
+            this.#pauseGoalRun("its queued turn was removed");
+          }
         }
         break;
       }
@@ -1392,6 +1460,12 @@ export class Engine implements EngineClient {
       this.#notice(
         dropped.length ? `Cleared ${dropped.length} queued item(s).` : "Queue is already empty.",
       );
+      // Same shape as the dequeue handler: dropping the goal run's queued turn
+      // means pause — otherwise the run sits armed with nothing queued until an
+      // unrelated prompt's #afterTurn unexpectedly revives it.
+      if (dropped.some((p) => p.origin === "goal")) {
+        this.#pauseGoalRun("the queue was cleared");
+      }
       return;
     }
     const { active, pending } = this.queueState();
@@ -1508,7 +1582,7 @@ export class Engine implements EngineClient {
         // LoopController awaits run() forever and the loop dies silently while
         // still reporting active. The rejection surfaces as a loop-stopped
         // event with this reason.
-        (reason) => reject(new LoopCancelledError(reason)),
+        { onCancel: (reason) => reject(new LoopCancelledError(reason)) },
       );
     });
   }
@@ -1745,7 +1819,9 @@ export class Engine implements EngineClient {
       send: (command) => engine.send(command),
       clearAlwaysAllow: () => engine.#alwaysAllow.clear(),
       persistConfig: (patch) => engine.#persistConfig(patch),
-      handlePrompt: (text, opts) => engine.#handlePrompt(text, opts),
+      handlePrompt: async (text, opts) => {
+        await engine.#handlePrompt(text, opts);
+      },
       resetTurnBudgets: () => engine.#resetPromptBudgets(),
       runVerifyCommand: (command) => engine.#runVerifyCommand(command),
       refreshProjectMemory: () => engine.#refreshProjectMemory(),
@@ -1758,6 +1834,9 @@ export class Engine implements EngineClient {
       lspStatus: () => engine.#diagnostics.status?.() ?? [],
       jobsStatus: () => engine.#jobs.snapshot(),
       git: (args) => engine.#git(args),
+      goalRun: () => engine.#goalRunInfo(),
+      pauseGoalRun: (reason, notice) =>
+        engine.#pauseGoalRun(reason, notice ? { notice } : {}),
     };
   }
 
@@ -1831,8 +1910,18 @@ export class Engine implements EngineClient {
    * Work runs strictly one at a time (FIFO) so history stays consistent; extra
    * prompts submitted while busy become a visible, cancelable backlog.
    */
-  #enqueue(label: string, run: () => Promise<void>, onCancel?: (reason: string) => void): void {
-    this.#pending.push({ id: createId("q"), label, run, ...(onCancel ? { onCancel } : {}) });
+  #enqueue(
+    label: string,
+    run: () => Promise<unknown>,
+    opts: { onCancel?: (reason: string) => void; origin?: "goal" } = {},
+  ): void {
+    this.#pending.push({
+      id: createId("q"),
+      label,
+      run,
+      ...(opts.onCancel ? { onCancel: opts.onCancel } : {}),
+      ...(opts.origin ? { origin: opts.origin } : {}),
+    });
     // Only surface the queue when something is actually waiting behind active
     // work; a lone item drains immediately and would otherwise just flicker.
     if (this.#draining) this.#emitQueue();
@@ -1925,7 +2014,14 @@ export class Engine implements EngineClient {
     return true;
   }
 
-  async #handlePrompt(text: string, opts: { handoff?: boolean } = {}): Promise<void> {
+  /** `opts.display` replaces the user-bubble text for engine-authored turns
+   * (goal-run rounds show a compact `★ goal — …` line instead of repeating a
+   * near-identical multi-line directive up to maxRounds times); the full text
+   * still reaches the model untouched. */
+  async #handlePrompt(
+    text: string,
+    opts: { handoff?: boolean; display?: string } = {},
+  ): Promise<"denied" | undefined> {
     // A prompt hook can veto the turn outright — run it FIRST, on the raw incoming
     // text, BEFORE any handoff rewrite / plan-state mutation and BEFORE the
     // checkpoint snapshot. A deny must leave EVERYTHING untouched: a denied handoff
@@ -1936,7 +2032,10 @@ export class Engine implements EngineClient {
     const hooked = await this.hooks.run("user.prompt.submit", { text });
     if (hooked.deny) {
       this.#notice("Prompt blocked by a user.prompt.submit hook.", "warn");
-      return;
+      // Callers that must know no turn ran (the goal run's closures — a vetoed
+      // turn would otherwise leave the run armed with nothing queued and skip
+      // no state) read this; the void-returning paths ignore it.
+      return "denied";
     }
     text = hooked.text;
     // Plan→execute handoff: prepend an explicit approval directive so the model
@@ -2000,7 +2099,11 @@ export class Engine implements EngineClient {
         );
       }
     }
-    await this.#session.run(expanded.text, expanded.images, isHandoff ? { display: null } : {});
+    await this.#session.run(
+      expanded.text,
+      expanded.images,
+      isHandoff ? { display: null } : opts.display !== undefined ? { display: opts.display } : {},
+    );
     await this.#afterTurn();
     // The turn may have touched the working tree — refresh the header's git state.
     void this.#emitGit();
@@ -2144,6 +2247,7 @@ export class Engine implements EngineClient {
     if (inGoalRun) {
       this.#goalContinueRounds += 1;
       void this.#persistEngineState();
+      this.#emitGoalRun();
       this.#notice(
         `Goal round ${this.#goalContinueRounds}/${max} — unfinished tasks: ` +
           `${unfinished.map((t) => t.ref).join(", ")}.`,
@@ -2152,23 +2256,31 @@ export class Engine implements EngineClient {
       this.#taskContinueRounds += 1;
     }
     const list = unfinished.map((t) => `${t.ref} (${t.status}): ${t.title}`).join("\n");
-    this.#enqueue(inGoalRun ? "goal: continue tasks" : "continue plan tasks", () => {
-      // A goal-run task round is a fresh prompt-sized unit of work (same as
-      // goal continuations): fresh gate/review budgets, then re-arm the chain
-      // the reset just disarmed. Non-goal plan chains keep the legacy shared
-      // budget (bounded by gate.maxRounds inside one user prompt).
-      if (inGoalRun) {
-        this.#resetPromptBudgets();
-        this.#planExecutionActive = true;
-      }
-      return this.#handlePrompt(
-        `The approved plan is not finished — these tasks remain:\n${list}\n` +
-          "For each: if it is already fully done, mark it completed now " +
-          '(update_tasks({updates:[{id:"t<N>",status:"completed"}]})); otherwise finish it, ' +
-          "marking it in_progress when you start and completed the moment you verify it. " +
-          "Do not stop until every task is completed and the project's checks pass.",
-      );
-    });
+    const display = inGoalRun
+      ? `★ goal — round ${this.#goalContinueRounds}/${max}: unfinished tasks ${unfinished.map((t) => t.ref).join(", ")}`
+      : undefined;
+    const continuePrompt =
+      `The approved plan is not finished — these tasks remain:\n${list}\n` +
+      "For each: if it is already fully done, mark it completed now " +
+      '(update_tasks({updates:[{id:"t<N>",status:"completed"}]})); otherwise finish it, ' +
+      "marking it in_progress when you start and completed the moment you verify it. " +
+      "Do not stop until every task is completed and the project's checks pass.";
+    this.#enqueue(
+      inGoalRun ? "goal: continue tasks" : "continue plan tasks",
+      () => {
+        // A goal-run task round is a fresh prompt-sized unit of work (same as
+        // goal continuations): fresh gate/review budgets, then re-arm the chain
+        // the reset just disarmed. Non-goal plan chains keep the legacy shared
+        // budget (bounded by gate.maxRounds inside one user prompt).
+        if (inGoalRun) {
+          this.#resetPromptBudgets();
+          this.#planExecutionActive = true;
+          return this.#runGoalTurn(continuePrompt, display ?? "★ goal — continuing tasks");
+        }
+        return this.#handlePrompt(continuePrompt);
+      },
+      inGoalRun ? { origin: "goal" } : {},
+    );
   }
 
   /** The seeded-task update contract, shared verbatim by the plan→execute
@@ -2195,24 +2307,30 @@ export class Engine implements EngineClient {
    * task-contract EXECUTE turn. planFirst:false keeps the legacy single blended
    * drive turn. */
   #startGoalRun(goal: string): void {
-    // A goal run must run in EXECUTE mode — plan-mode turns are read-only and
-    // could never accomplish a mutating goal. Flip directly via #setModeGated
-    // (NOT send({type:"set-mode"}): its approvingPlan branch would silently
-    // approve a lingering presented plan). Preserve YOLO the same way
-    // #approvePlan does: capture before the gate reset, restore after.
-    if (this.#session.mode === "plan") {
-      const wantAuto = this.#config.approvalMode === "auto";
-      this.#setModeGated("execute");
-      if (wantAuto) handleApprovals(this.#getCommandHandle(), "auto", true);
-      this.#notice("Goal run requires execute mode — switched.");
+    // Replacing a live run: nothing queued for the OLD goal may survive — a
+    // stale continuation would run a full turn steering toward the replaced
+    // goal (its prompt bakes the old text in) and interleave two drivers.
+    this.#sweepQueuedGoalTurns("goal replaced");
+    this.#ensureExecuteModeForGoal();
+    // The run owns the task spine. A leftover list (an earlier plan's tasks)
+    // would otherwise read as "the plan turn seeded these" in
+    // #beginGoalExecution and hijack the contract — and its unfinished rows
+    // would drive deterministic not-met rounds toward abandoned work.
+    if (this.#session.tasks.length) {
+      this.#session.setTasks([]);
+      this.#notice("Cleared the pre-existing task list — the goal run seeds and owns its own.", "info");
     }
     this.#goalRunActive = true;
+    this.#goalRunEpoch += 1;
+    this.#goalMet = false;
+    this.#goalPauseReason = undefined;
     this.#goalContinueRounds = 0;
     this.#goalCleanPasses = 0;
     const planFirst = this.#config.goal.planFirst;
     this.#goalPhase = planFirst ? "plan" : undefined;
     this.#resetPromptBudgets();
     void this.#persistEngineState();
+    this.#emitGoalRun();
     this.#notice(
       `Goal set: ${goal}\nStarting an autonomous run — ` +
         (planFirst ? "plan first, then execute the plan task by task, " : "the agent works, ") +
@@ -2220,23 +2338,135 @@ export class Engine implements EngineClient {
         "/goal clear (or Esc) stops it; typing steers it.",
     );
     if (planFirst) {
-      this.#enqueue(`goal: plan ${queueLabel(goal)}`, async () => {
-        try {
-          await this.#handlePrompt(this.#goalPlanPrompt(goal));
-        } catch (err) {
-          // A THROWN plan turn (drain would log it) must not leave the run
-          // armed with nothing queued — pause it like the lastError branch.
-          this.#goalRunActive = false;
-          this.#goalPhase = undefined;
-          void this.#persistEngineState();
-          this.#notice("Goal run paused — the planning turn failed. /goal <text> re-arms it.", "warn");
-          throw err;
-        }
-        this.#beginGoalExecution(goal);
-      });
+      this.#enqueueGoalPlanTurn(goal);
     } else {
-      this.#enqueue(`goal: ${queueLabel(goal)}`, () => this.#handlePrompt(this.#goalDrivePrompt(goal)));
+      this.#enqueue(
+        `goal: ${queueLabel(goal)}`,
+        () => this.#runGoalTurn(this.#goalDrivePrompt(goal), `★ goal — working: ${goal}`),
+        { origin: "goal" },
+      );
     }
+  }
+
+  /** A goal run must run in EXECUTE mode — plan-mode turns are read-only and
+   * could never accomplish a mutating goal. Flip directly via #setModeGated
+   * (NOT send({type:"set-mode"}): its approvingPlan branch would silently
+   * approve a lingering presented plan). Preserve YOLO the same way
+   * #approvePlan does: capture before the gate reset, restore after. */
+  #ensureExecuteModeForGoal(): void {
+    if (this.#session.mode !== "plan") return;
+    const wantAuto = this.#config.approvalMode === "auto";
+    this.#setModeGated("execute");
+    if (wantAuto) handleApprovals(this.#getCommandHandle(), "auto", true);
+    this.#notice("Goal run requires execute mode — switched.");
+  }
+
+  /** Run one goal-run turn with the full stop-invariant guard: a turn VETOED
+   * by a user.prompt.submit hook (no turn ran, no #afterTurn — the run would
+   * sit armed with nothing queued) or a turn that THREW (the drain only logs
+   * it) both pause the run instead of wedging it. Every goal closure that
+   * sends a prompt routes through here. */
+  async #runGoalTurn(text: string, display: string): Promise<"denied" | undefined> {
+    let result: "denied" | undefined;
+    try {
+      result = await this.#handlePrompt(text, { display });
+    } catch (err) {
+      this.#pauseGoalRun("the turn failed before it could run", { level: "warn" });
+      throw err;
+    }
+    if (result === "denied") {
+      this.#pauseGoalRun("a prompt hook blocked the turn", { level: "warn" });
+    }
+    return result;
+  }
+
+  /** Enqueue the read-only PLAN turn. #runGoalTurn carries the stop-invariant
+   * guard (thrown or hook-denied turns pause the run instead of leaving it
+   * armed with nothing queued — a denied plan turn must ALSO not march into
+   * the execute phase on a fabricated task spine). Shared by #startGoalRun,
+   * the bootstrap resume, and `/goal resume`, so no entry path can wedge the
+   * run permanently in the plan phase. */
+  #enqueueGoalPlanTurn(goal: string): void {
+    this.#enqueue(
+      `goal: plan ${queueLabel(goal)}`,
+      async () => {
+        const result = await this.#runGoalTurn(this.#goalPlanPrompt(goal), `★ goal — planning: ${goal}`);
+        if (result !== "denied") this.#beginGoalExecution(goal);
+      },
+      { origin: "goal" },
+    );
+  }
+
+  /** Re-arm a paused run with the stored goal: fresh round budget, re-entering
+   * at the phase it paused in (a lost task spine demotes execute back to plan
+   * — e.g. after /clear wiped the list, re-planning is the only honest entry). */
+  #resumeGoalRun(goal: string): void {
+    this.#ensureExecuteModeForGoal();
+    // Consume the stale stop signals a pause left behind — the interrupted /
+    // lastError guards in #maybeContinueGoal would otherwise re-pause the
+    // re-armed run before its first turn (the Esc/error already DID its job:
+    // it paused the run the user is now explicitly resuming).
+    this.#session.acknowledgeStop();
+    this.#goalRunActive = true;
+    this.#goalRunEpoch += 1;
+    this.#goalMet = false;
+    this.#goalPauseReason = undefined;
+    this.#goalContinueRounds = 0;
+    this.#goalCleanPasses = 0;
+    if (this.#config.goal.planFirst) {
+      if (this.#goalPhase === undefined) this.#goalPhase = this.#session.tasks.length ? "execute" : "plan";
+      else if (this.#goalPhase === "execute" && !this.#session.tasks.length) this.#goalPhase = "plan";
+    }
+    // Re-entering PLAN with a leftover partial seed (an Esc landed mid-plan-turn
+    // after some update_tasks calls): clear it — #beginGoalExecution reads any
+    // non-empty list as "the re-plan seeded this" and would skip the fallback,
+    // executing the interrupted plan's fragment as the spine.
+    if (this.#goalPhase === "plan" && this.#session.tasks.length) this.#session.setTasks([]);
+    this.#resetPromptBudgets();
+    void this.#persistEngineState();
+    this.#emitGoalRun();
+    this.#notice(
+      `Goal run resumed (${this.#goalPhase === "plan" ? "re-planning" : "continuing"}, fresh round budget): ${goal}`,
+    );
+    if (this.#goalPhase === "plan") this.#enqueueGoalPlanTurn(goal);
+    else this.#enqueue("goal: resume", () => this.#maybeContinueGoal(), { origin: "goal" });
+  }
+
+  /** The live goal-run state, as a FRESH copy per call (bus subscribers and the
+   * snapshot must never share a mutable reference). */
+  #goalRunInfo(): GoalRunInfo {
+    return {
+      active: this.#goalRunActive,
+      phase: this.#goalPhase ?? null,
+      round: this.#goalContinueRounds,
+      max: this.#config.goal.maxRounds,
+      pausedReason: this.#goalPauseReason ?? null,
+      met: this.#goalMet,
+    };
+  }
+
+  #emitGoalRun(): void {
+    this.#bus.emit({ type: "goal-run", sessionId: this.#session.id, run: this.#goalRunInfo() });
+  }
+
+  /** Pause a live run (the ★ goal stays set; `/goal resume` re-arms it): disarm
+   * + persist the disarm (a kill-then---resume must not resurrect it), sweep
+   * queued run turns, record why, and tell the user. Every non-terminal way a
+   * run stops flows through here so no path can leave the run armed-but-idle
+   * or disarmed-but-silent. */
+  #pauseGoalRun(reason: string, opts: { notice?: string; level?: "info" | "warn" } = {}): void {
+    if (!this.#goalRunActive) return;
+    this.#goalRunActive = false;
+    this.#goalRunEpoch += 1;
+    this.#goalPauseReason = reason;
+    void this.#persistEngineState();
+    this.#sweepQueuedGoalTurns(`goal run paused — ${reason}`);
+    this.#emitGoalRun();
+    this.#notice(
+      opts.notice ??
+        `Goal run paused — ${reason}. The ★ goal stays set: /goal resume re-arms it, /goal clear drops it.`,
+      opts.level ?? "info",
+    );
   }
 
   /** PLAN→EXECUTE seam: verify the plan turn actually seeded tasks (fall back
@@ -2261,15 +2491,23 @@ export class Engine implements EngineClient {
     }
     this.#goalPhase = "execute";
     void this.#persistEngineState();
-    this.#enqueue(`goal: execute ${queueLabel(goal)}`, () => {
-      this.#resetPromptBudgets();
-      // Arm task-driven continuation for THIS chain (reset just cleared it).
-      // Deliberately NOT opts.handoff — that path consumes #lastPlan and
-      // deletes the persisted plan file, which would destroy a user's real
-      // pending plan.
-      this.#planExecutionActive = true;
-      return this.#handlePrompt(this.#goalExecutePrompt(goal));
-    });
+    this.#emitGoalRun();
+    this.#enqueue(
+      `goal: execute ${queueLabel(goal)}`,
+      () => {
+        this.#resetPromptBudgets();
+        // Arm task-driven continuation for THIS chain (reset just cleared it).
+        // Deliberately NOT opts.handoff — that path consumes #lastPlan and
+        // deletes the persisted plan file, which would destroy a user's real
+        // pending plan.
+        this.#planExecutionActive = true;
+        return this.#runGoalTurn(
+          this.#goalExecutePrompt(goal),
+          `★ goal — executing the plan (${this.#session.tasks.length} tasks)`,
+        );
+      },
+      { origin: "goal" },
+    );
   }
 
   /** Sweep queued `goal:` continuation turns so nothing runs after a stop
@@ -2277,20 +2515,25 @@ export class Engine implements EngineClient {
    * one full model turn). A steer can leave a continuation queued behind it, so
    * every path that ends a run must sweep, not just /goal clear. */
   #sweepQueuedGoalTurns(reason: string): void {
-    const queued = this.#pending.filter((p) => p.label.startsWith("goal: "));
+    const queued = this.#pending.filter((p) => p.origin === "goal");
     if (!queued.length) return;
-    this.#pending = this.#pending.filter((p) => !p.label.startsWith("goal: "));
+    this.#pending = this.#pending.filter((p) => p.origin !== "goal");
     for (const p of queued) p.onCancel?.(reason);
     this.#emitQueue();
   }
 
-  /** Stop a goal run: disarm the flag and sweep queued continuations. */
+  /** Stop a goal run for good (the goal itself is being dropped): disarm and
+   * forget phase/pause/met state, and sweep queued continuations. */
   #stopGoalRun(reason: string): void {
     const was = this.#goalRunActive;
     this.#goalRunActive = false;
+    this.#goalRunEpoch += 1;
     this.#goalPhase = undefined;
-    if (was) void this.#persistEngineState();
+    this.#goalPauseReason = undefined;
+    this.#goalMet = false;
+    void this.#persistEngineState();
     this.#sweepQueuedGoalTurns(reason);
+    this.#emitGoalRun();
     if (reason === "cleared by user") this.#notice(was ? "Goal cleared — run stopped." : "Goal cleared.");
     else if (was) this.#notice(`Goal run stopped — ${reason}.`);
   }
@@ -2354,15 +2597,12 @@ export class Engine implements EngineClient {
     // burn the round budget on doomed retries — session.run swallows the error
     // into lastError and returns normally, so #afterTurn still lands here.
     if (this.#session.lastError) {
-      this.#goalRunActive = false;
-      this.#goalPhase = undefined;
-      void this.#persistEngineState();
-      this.#sweepQueuedGoalTurns("goal run paused after an errored turn");
-      this.#notice(
-        "Goal run paused — the last turn errored. The ★ goal stays set; fix the provider, then " +
-          "/goal <text> to re-arm it.",
-        "warn",
-      );
+      this.#pauseGoalRun("the last turn errored", {
+        notice:
+          "Goal run paused — the last turn errored. The ★ goal stays set; fix the provider, then " +
+          "/goal resume to re-arm it.",
+        level: "warn",
+      });
       return;
     }
     // The PLAN turn's own #afterTurn must not assess — #beginGoalExecution runs
@@ -2371,25 +2611,29 @@ export class Engine implements EngineClient {
     if (this.#goalPhase === "plan") return;
     const goal = this.#session.goal;
     if (!goal) {
+      // The goal vanished under a live run (nothing routes here today — clears
+      // go through #stopGoalRun — but a future setGoal(null) caller must not
+      // leave the run armed): full disarm, persisted and swept like any stop.
       this.#goalRunActive = false;
+      this.#goalRunEpoch += 1;
       this.#goalPhase = undefined;
+      void this.#persistEngineState();
+      this.#sweepQueuedGoalTurns("goal cleared");
+      this.#emitGoalRun();
       return;
     }
     // A goal turn is already waiting (a steered prompt ran between an earlier
     // continuation's enqueue and its drain) — don't stack another; the queued
     // turn re-enters this check when it finishes.
-    if (this.#pending.some((p) => p.label.startsWith("goal: "))) return;
+    if (this.#pending.some((p) => p.origin === "goal")) return;
     const max = this.#config.goal.maxRounds;
     if (this.#goalContinueRounds >= max) {
-      this.#goalRunActive = false;
-      this.#goalPhase = undefined;
-      void this.#persistEngineState();
-      this.#sweepQueuedGoalTurns("goal round budget exhausted");
-      this.#notice(
-        `Goal not confirmed met after ${max} continuation round${max === 1 ? "" : "s"} — needs your ` +
-          "attention. The ★ goal stays set: /goal <text> re-arms the run, /goal clear drops it.",
-        "warn",
-      );
+      this.#pauseGoalRun("round budget exhausted", {
+        notice:
+          `Goal not confirmed met after ${max} continuation round${max === 1 ? "" : "s"} — needs your ` +
+          "attention. The ★ goal stays set: /goal resume re-arms the run, /goal clear drops it.",
+        level: "warn",
+      });
       return;
     }
     // Unfinished seeded tasks are a deterministic "not met" — no model call.
@@ -2398,6 +2642,7 @@ export class Engine implements EngineClient {
     const unfinished = this.#session.tasks
       .map((t, i) => ({ ref: `t${i + 1}`, title: t.title, status: t.status }))
       .filter((t) => t.status !== "completed");
+    const epoch = this.#goalRunEpoch;
     const verdict = unfinished.length
       ? {
           met: false,
@@ -2405,60 +2650,86 @@ export class Engine implements EngineClient {
           reason: "seeded tasks unfinished",
         }
       : applyGateToVerdict(await this.#assessGoal(goal), this.#lastGateOutcome);
+    // The assessment await is a window (up to its 90s deadline): an Esc, a
+    // /goal clear, or any pause landing inside it disarms the run — acting on
+    // the verdict would launch one more autonomous turn the user just stopped.
+    // The epoch check also kills a pause-AND-re-arm landing inside the window
+    // (a direct-send resume): the resumed run must never inherit a pre-pause
+    // verdict as its first continuation.
+    if (!this.#goalRunActive || this.#session.interrupted || epoch !== this.#goalRunEpoch) return;
+    // Model-supplied reasons arrive with their own punctuation — normalize so
+    // the round notice's period doesn't double up.
+    const reason = verdict.reason.trim().replace(/\.+$/, "");
     if (verdict.met) {
       this.#goalCleanPasses += 1;
       if (this.#goalCleanPasses >= MAX_GOAL_CLEAN_PASSES) {
         this.#goalRunActive = false;
         this.#goalPhase = undefined;
+        this.#goalMet = true;
+        this.#goalPauseReason = undefined;
         void this.#persistEngineState();
+        this.#emitGoalRun();
         const tasks = this.#session.tasks;
         const taskSummary = tasks.length ? `, ${tasks.length}/${tasks.length} tasks completed` : "";
         const gateSummary = this.#lastGateOutcome ? `, gate ${this.#lastGateOutcome}` : "";
         this.#notice(
           `Goal met after ${this.#goalContinueRounds} round${this.#goalContinueRounds === 1 ? "" : "s"}` +
             `${taskSummary}${gateSummary} — verified across ${MAX_GOAL_CLEAN_PASSES} consecutive clean passes.` +
-            (verdict.reason ? ` ${verdict.reason}` : ""),
+            (reason ? ` ${reason}.` : ""),
         );
         return;
       }
       // First clean pass buys an adversarial verify turn, not the finish line.
       this.#goalContinueRounds += 1;
       void this.#persistEngineState();
+      this.#emitGoalRun();
       this.#notice(`Goal round ${this.#goalContinueRounds}/${max} — verifying the claimed completion.`);
-      this.#enqueue(`goal: verify ${queueLabel(goal)}`, () => {
-        // Each goal round is a fresh prompt-sized unit of work: it gets its own
-        // gate/review/verify budgets (this is why the goal counters live OUTSIDE
-        // #resetPromptBudgets — the reset must not zero the run's own bounds).
-        this.#resetPromptBudgets();
-        if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
-        return this.#handlePrompt(
-          `You reported the north-star goal met: "${goal}". Now verify it is TRULY met, adversarially — ` +
-            "re-read the goal, re-check every part of the work against it, run or inspect the project's " +
-            "checks, and hunt for gaps, regressions, and unhandled edge cases. Any task still in_progress " +
-            "or pending is NOT done — finish it, or mark it completed only if verified. If ANY gap exists, " +
-            "fix it now. Only stop when nothing remains.",
-        );
-      });
+      this.#enqueue(
+        `goal: verify ${queueLabel(goal)}`,
+        () => {
+          // Each goal round is a fresh prompt-sized unit of work: it gets its own
+          // gate/review/verify budgets (this is why the goal counters live OUTSIDE
+          // #resetPromptBudgets — the reset must not zero the run's own bounds).
+          this.#resetPromptBudgets();
+          if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
+          return this.#runGoalTurn(
+            `You reported the north-star goal met: "${goal}". Now verify it is TRULY met, adversarially — ` +
+              "re-read the goal, re-check every part of the work against it, run or inspect the project's " +
+              "checks, and hunt for gaps, regressions, and unhandled edge cases. Any task still in_progress " +
+              "or pending is NOT done — finish it, or mark it completed only if verified. If ANY gap exists, " +
+              "fix it now. Only stop when nothing remains.",
+            `★ goal — adversarial verify (round ${this.#goalContinueRounds}/${max})`,
+          );
+        },
+        { origin: "goal" },
+      );
       return;
     }
     this.#goalCleanPasses = 0; // any gap resets convergence
     this.#goalContinueRounds += 1;
     void this.#persistEngineState();
-    this.#notice(`Goal round ${this.#goalContinueRounds}/${max} — ${verdict.reason}.`);
+    this.#emitGoalRun();
+    this.#notice(`Goal round ${this.#goalContinueRounds}/${max} — ${reason || "continuing"}.`);
     const gaps = verdict.gaps.length
       ? `\nRemaining gaps:\n${verdict.gaps.map((g) => `- ${g}`).join("\n")}`
       : "";
-    this.#enqueue(`goal: ${queueLabel(goal)}`, () => {
-      this.#resetPromptBudgets();
-      // Re-arm task-driven continuation when the list still has work (a steer's
-      // submit-prompt reset disarms it; this is how the chain resumes after).
-      if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
-      return this.#handlePrompt(
-        `The north-star goal is not yet met: "${goal}".${gaps}\n` +
-          "Continue the work — address the gaps, keep the task list current, and do not stop while " +
-          "any part of the goal is unmet or the project's checks fail.",
-      );
-    });
+    const roundLabel = `★ goal — round ${this.#goalContinueRounds}/${max}: ${reason || "continuing"}`;
+    this.#enqueue(
+      `goal: ${queueLabel(goal)}`,
+      () => {
+        this.#resetPromptBudgets();
+        // Re-arm task-driven continuation when the list still has work (a steer's
+        // submit-prompt reset disarms it; this is how the chain resumes after).
+        if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
+        return this.#runGoalTurn(
+          `The north-star goal is not yet met: "${goal}".${gaps}\n` +
+            "Continue the work — address the gaps, keep the task list current, and do not stop while " +
+            "any part of the goal is unmet or the project's checks fail.",
+          roundLabel,
+        );
+      },
+      { origin: "goal" },
+    );
   }
 
   /** Self-assess whether the goal is met, from the last assistant text, the
@@ -2579,6 +2850,16 @@ export class Engine implements EngineClient {
             "(raise build.gate.maxRounds to give it more rounds).",
           "warn",
         );
+        // No fix turn was enqueued, so #afterTurn's red-skips-continuation
+        // shortcut has no follow-up turn to re-enter #maybeContinueGoal — a
+        // live goal run would sit armed-but-idle forever (and a kill+resume
+        // would resurrect it against an unverified gate). Pause it honestly.
+        this.#pauseGoalRun(`the gate stayed red after ${gate.maxRounds} fix round(s)`, {
+          notice:
+            "Goal run paused — the gate is still red and its fix budget is spent. Fix the failures " +
+            "(or raise build.gate.maxRounds), then /goal resume to re-arm the run.",
+          level: "warn",
+        });
         return summary.outcome;
       }
       this.#gateRounds += 1;

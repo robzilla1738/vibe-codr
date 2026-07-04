@@ -54,6 +54,7 @@ import type {
   EngineClient,
   AgentInfo,
   GitInfo,
+  GoalRunInfo,
   JobInfo,
   ModelSummary,
   ProviderInfo,
@@ -355,6 +356,17 @@ export function App(props: { engine: EngineClient }) {
   const [metrics, setMetrics] = createSignal(metricsLine(0, usage, ctx));
   // The goal (★) shown in the header's second row; updated via /goal.
   const [goalInfo, setGoalInfo] = createSignal<string | null>(goal);
+  // Live goal-run state (phase/round/paused/met) — the ★ line's suffix, so an
+  // autonomous run is visibly progressing (or visibly paused) at a glance.
+  const [goalRunState, setGoalRunState] = createSignal<GoalRunInfo | null>(snap.goalRun ?? null);
+  const goalSuffix = () => {
+    const r = goalRunState();
+    if (!r || !goalInfo()) return "";
+    if (r.active) return r.phase === "plan" ? " · planning" : ` · ${r.round}/${r.max}`;
+    if (r.met) return " · met";
+    if (r.pausedReason) return " · paused";
+    return "";
+  };
   const cwd = shortCwd();
   // The chrome accent: opencode peach by default (the DEFAULT palette's primary),
   // overridable to any hue via `/accent <hex>`. Reserved for titles + markers —
@@ -1620,6 +1632,9 @@ export function App(props: { engine: EngineClient }) {
             goal = event.goal;
             refreshStatus();
             break;
+          case "goal-run":
+            setGoalRunState(event.run);
+            break;
           case "approvals-changed":
             approvals = event.mode;
             refreshStatus();
@@ -1656,7 +1671,7 @@ export function App(props: { engine: EngineClient }) {
             });
             break;
           case "loop-stopped":
-            enqueue({ type: "notice", text: `Loop stopped · ${event.reason}`, level: "info" });
+            enqueue({ type: "notice", text: `Loop stopped — ${event.reason}`, level: "info" });
             break;
           case "loop-tick":
             // Mark each `/loop` iteration in the transcript (headless parity) so
@@ -1828,7 +1843,7 @@ export function App(props: { engine: EngineClient }) {
     sidebarOn()
       ? ""
       : fitParts(
-          [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}` : ""],
+          [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}${goalSuffix()}` : ""],
           contentWidth() - 2,
         );
   // Live status shown under the input: model · changed · ctx · cost. The metrics
@@ -1865,7 +1880,12 @@ export function App(props: { engine: EngineClient }) {
     const m = metrics().replaceAll("  ·  ", " · ");
     if (m) rows.push({ value: truncate(m, valW), dim: true });
     const goal = goalInfo();
-    if (goal) rows.push({ value: truncate(`★ ${goal}`, valW), dim: true });
+    // The run suffix survives truncation — on a long goal it's the suffix
+    // (planning / 7/25 / paused / met) that carries the information.
+    if (goal) {
+      const suffix = goalSuffix();
+      rows.push({ value: `${truncate(`★ ${goal}`, valW - suffix.length)}${suffix}`, dim: true });
+    }
     return rows;
   };
   // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in

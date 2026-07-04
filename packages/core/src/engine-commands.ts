@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import type { EngineCommand, JobInfo, UIEvent } from "@vibe/shared";
+import type { EngineCommand, GoalRunInfo, JobInfo, UIEvent } from "@vibe/shared";
 import { ACCENT_PRESETS, THEME_NAMES } from "@vibe/shared";
 import type { Config, ModelPrice } from "@vibe/config";
 import { configUnknownKeys } from "@vibe/config";
@@ -120,6 +120,28 @@ export interface EngineHandle {
   jobsStatus(): JobInfo[];
   /** Run a git command in the workspace. */
   git(args: string[]): Promise<GitRunResult>;
+  /** Live /goal autonomous-run state (fresh copy), for bare `/goal`. */
+  goalRun(): GoalRunInfo;
+  /** Pause a live goal run (no-op when none) — the ★ goal stays set and
+   * `/goal resume` re-arms it. `notice` overrides the default pause message. */
+  pauseGoalRun(reason: string, notice?: string): void;
+}
+
+/** Bare `/goal` output: the goal plus WHERE ITS RUN STANDS — active (phase /
+ * round), paused (why + how to re-arm), met, or never-started — so the ★
+ * header's static text never leaves the user guessing what's happening. */
+export function goalStatusText(goal: string | null, run: GoalRunInfo): string {
+  if (!goal) return "No goal set. /goal <text> sets a north-star goal and starts an autonomous run.";
+  const head = `Goal: ${goal}`;
+  if (run.active) {
+    const where = run.phase === "plan" ? "planning" : `round ${run.round}/${run.max}`;
+    return `${head}\nRun active (${where}) — typing steers it · Esc pauses it · /goal clear stops it.`;
+  }
+  if (run.met) return `${head}\nRun finished — verified met. /goal <text> starts a new run · /goal clear drops the ★.`;
+  if (run.pausedReason) {
+    return `${head}\nRun paused — ${run.pausedReason}. /goal resume re-arms it · /goal clear drops it.`;
+  }
+  return `${head}\nNo run attached. /goal resume starts one for this goal · /goal clear drops it.`;
 }
 
 /** A trailing hint when a model's provider has no usable credentials yet. */
@@ -344,19 +366,20 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       h.notice("YOLO — approvals off; tools run without prompting. /execute re-gates.", "warn");
       break;
     case "goal": {
-      // Single authority for /goal verbs; the state change (and the autonomous
-      // goal run it starts/stops) lives in the engine's `set-goal` handler.
+      // Single authority for /goal verbs; the state changes (and the autonomous
+      // run they start/stop/re-arm) live in the engine's `set-goal` /
+      // `resume-goal` handlers.
       const goalArg = args.trim();
       if (!goalArg) {
-        h.notice(
-          h.session.goal
-            ? `Goal: ${h.session.goal}\n/goal clear stops it · /goal <text> replaces it.`
-            : "No goal set. /goal <text> sets a north-star goal and starts an autonomous run.",
-        );
+        h.notice(goalStatusText(h.session.goal, h.goalRun()));
         break;
       }
       if (/^(clear|none|off|stop|reset)$/i.test(goalArg)) {
         h.send({ type: "set-goal", goal: null });
+        break;
+      }
+      if (/^resume$/i.test(goalArg)) {
+        h.send({ type: "resume-goal" });
         break;
       }
       h.send({ type: "set-goal", goal: goalArg });
@@ -364,6 +387,12 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     }
     case "clear":
     case "new":
+      // A live goal run would keep firing continuations into the wiped
+      // conversation (its task spine is being wiped too) — pause it FIRST so
+      // its queued turns are swept before the slate is declared clean. The ★
+      // goal survives (/clear empties the conversation, not the north star);
+      // /goal resume re-plans from the clean slate.
+      h.pauseGoalRun("conversation cleared");
       // `session.clear()` already emits the "Conversation cleared." notice —
       // don't emit a second one here (that showed the message twice).
       h.session.clear();
@@ -737,7 +766,7 @@ function handleAccent(h: EngineHandle, args: string): void {
   const next = args.trim();
   const names = Object.keys(ACCENT_PRESETS).join(", ");
   if (!next) {
-    const cur = h.config.accentColor || "theme default (Blue 300 #70cbf4)";
+    const cur = h.config.accentColor || "theme default";
     h.notice(`Accent: ${cur}. Use /accent <name|hex> — ${names}, or e.g. /accent #fab283.`);
     return;
   }

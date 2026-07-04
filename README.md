@@ -341,8 +341,8 @@ Highlights:
   Press **Shift+Tab** to cycle the mode (the colored `MODE ❯` label + rail on
   the input): **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>` (sets the north star **and starts an
-  autonomous plan→execute→verify run** toward it; bare `/goal` shows it,
-  `/goal clear` stops it),
+  autonomous plan→execute→verify run** toward it; bare `/goal` shows the run's
+  live state, `/goal resume` re-arms a paused run, `/goal clear` stops it),
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
   `/queue` (`/queue clear`).
 - **Code & safety** — `/diff`, `/review`, `/verify`, `/undo [index|id]`
@@ -642,14 +642,23 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   after the model claims done **and** survives a dedicated adversarial verify
   turn (2 consecutive clean passes). One unified budget bounds everything
   (`goal.maxRounds`, default 25; `goal.planFirst: false` restores the single
-  blended turn). Typing mid-run steers the run, Esc pauses it (★ stays),
-  `/goal clear` stops it, and a live run **survives `--resume`** — it picks up
-  at the same round and phase. `/goal` from plan mode auto-switches to execute
-  (approvals preserved). **`/loop`** reruns a prompt on an interval until a
-  `--until` condition (checked with a structured model call) or `--max` is
-  reached.
-- **Persistence & compaction** — every turn is saved to
-  `.vibe/sessions/<id>/`; long conversations auto-compact against the active
+  blended turn). The run is **legible while it works**: the ★ header carries a
+  live suffix (`· planning`, `· 7/25`, `· paused`, `· met`), each engine-driven
+  round renders as one compact `★ goal — …` line instead of a wall of repeated
+  directive text, and bare `/goal` reports exactly where the run stands.
+  Typing mid-run steers the run (the round budget refreshes — and says so);
+  Esc, an errored turn, a stuck-red gate, or exhausting the budget **pauses**
+  it with the reason (★ stays) and **`/goal resume`** re-arms it at the same
+  phase with fresh runway; `/goal clear` stops it; `/clear` pauses it and a
+  later resume re-plans on the clean slate; replacing the goal mid-run sweeps
+  the old run's queued turns first. A live run **survives `--resume`** — it
+  picks up at the same round and phase. `/goal` from plan mode auto-switches
+  to execute (approvals preserved). **`/loop`** reruns a prompt on an interval
+  until a `--until` condition (checked with a structured model call) or
+  `--max` is reached.
+- **Persistence & compaction** — every turn is saved under the project's
+  global state dir (`~/.vibe/state/<cwd-hash>/sessions/<id>/`; a legacy
+  in-project `.vibe/sessions/` is still read); long conversations auto-compact against the active
   model's context window (from the catalog), preserving the system prompt, goal,
   and most recent turns. The status bar shows live context fill (`ctx 45%`) and
   `/context` reports the window plus the compaction threshold so you always know

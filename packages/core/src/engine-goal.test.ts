@@ -498,7 +498,11 @@ test("pipeline: task continuations charge the UNIFIED goal budget and exhaust wi
   const steps = [textStep("- [ ] impossible thing")];
   let call = 0;
   const model = new MockLanguageModelV2({
-    doStream: async () => (steps[call] ? (steps[call++] as never) : (call++, textStep("still working") as never)),
+    doStream: async () => {
+      const step = steps[call];
+      call++;
+      return (step ?? textStep("still working")) as never;
+    },
     doGenerate: assess.doGenerate,
   });
   const engine = new Engine({
@@ -581,10 +585,13 @@ test("pipeline: a live run persists to engine.json and --resume re-enters it", a
   const sessionId = engineA.snapshot().sessionId;
   const statePath = join(globalStateDir(cwd), "sessions", sessionId, "engine.json");
   let liveState: Record<string, unknown> = {};
-  for (let tries = 0; tries < 50; tries++) {
+  for (let tries = 0; tries < 100; tries++) {
     try {
       liveState = (await Bun.file(statePath).json()) as Record<string, unknown>;
-      if (liveState.goalRunActive) break;
+      // Wait for the EXECUTE-phase write specifically: the persists are
+      // fire-and-forget, so the first active read can still be the arm-time
+      // write (phase "plan") with the phase-flip write in flight behind it.
+      if (liveState.goalRunActive && liveState.goalPhase === "execute") break;
     } catch {
       /* not written yet */
     }
@@ -767,4 +774,624 @@ test("pipeline: a steer folds in and the task chain re-arms after it", async () 
   expect(assess.calls()).toBe(2);
   expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
   expect(engine.snapshot().goal).toBe("finish the task");
+});
+
+test("pipeline: Esc pause is ANNOUNCED and /goal resume re-arms at the paused phase", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-escresume-"));
+  const assess = assessments([{ met: true, gaps: [], reason: "done" }]);
+  let sawExecuteTurn!: () => void;
+  const executeTurnStarted = new Promise<void>((r) => (sawExecuteTurn = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const steps = [
+    textStep("- [ ] the work"), // plan
+    textStep("started"), // execute (held; Esc lands mid-turn)
+    // post-resume continuation: completes t1
+    toolCall("c1", "update_tasks", { updates: [{ id: "t1", status: "completed" }] }),
+    textStep("t1 finished"),
+    textStep("verified"), // adversarial verify
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const idx = call++;
+      if (idx === 1) {
+        sawExecuteTurn();
+        await gate;
+      }
+      return (steps[idx] ?? textStep("noop")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "finish the work" });
+  await executeTurnStarted;
+  engine.send({ type: "abort" }); // Esc mid-execute
+  release();
+  await engine.whenIdle();
+
+  // The pause is ANNOUNCED (the start notice promised "typing steers it" —
+  // a silent state flip would leave the user steering a dead run)…
+  expect(
+    events.some((e) => e.type === "notice" && /Goal run paused by the interrupt/.test(e.message)),
+  ).toBe(true);
+  // …and broadcast as goal-run state for the ★ header.
+  expect(
+    events.some((e) => e.type === "goal-run" && !e.run.active && e.run.pausedReason === "interrupted (Esc)"),
+  ).toBe(true);
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+
+  // /goal resume re-arms at the EXECUTE phase (tasks survived the pause) and
+  // converges — the stale interrupted flag must not re-pause the fresh run.
+  engine.send({ type: "run-slash", name: "goal", args: "resume" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  expect(events.some((e) => e.type === "notice" && /Goal run resumed \(continuing/.test(e.message))).toBe(true);
+  expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
+  expect(engine.snapshot().goalRun?.met).toBe(true);
+});
+
+test("pipeline: /goal <new text> mid-run SWEEPS the old run's queued continuation", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-replace-"));
+  const prompts: string[] = [];
+  const assess = assessments([{ met: true, gaps: [], reason: "done" }]);
+  let sawExecuteTurn!: () => void;
+  const executeTurnStarted = new Promise<void>((r) => (sawExecuteTurn = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const steps = [
+    textStep("- [ ] task A"), // plan for goal A
+    textStep("A started but unfinished"), // execute A (held; /goal B queues behind)
+    textStep("- [ ] task B"), // plan for goal B
+    toolCall("c1", "update_tasks", { updates: [{ id: "t1", status: "completed" }] }), // execute B
+    textStep("B finished"),
+    textStep("verified"), // adversarial verify for B
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const idx = call++;
+      prompts.push(JSON.stringify(options.prompt));
+      if (idx === 1) {
+        sawExecuteTurn();
+        await gate;
+      }
+      return (steps[idx] ?? textStep("noop")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "ship goal A" });
+  await executeTurnStarted;
+  engine.send({ type: "run-slash", name: "goal", args: "ship goal B" }); // replace mid-run
+  release();
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  // Goal A's queued task-continuation was swept — no turn ever drove A's stale
+  // task list after the replacement (the continuation prompt never ran).
+  expect(prompts.some((p) => p.includes("approved plan is not finished"))).toBe(false);
+  // A's unfinished task list was cleared at B's arm (the run owns the spine)…
+  expect(events.some((e) => e.type === "notice" && /Cleared the pre-existing task list/.test(e.message))).toBe(true);
+  // …and B ran its own clean pipeline to convergence.
+  expect(engine.snapshot().goal).toBe("ship goal B");
+  expect(engine.snapshot().tasks.map((t) => t.title)).toEqual(["task B"]);
+  expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
+});
+
+test("pipeline: /clear pauses the run (swept queue) and /goal resume RE-PLANS on the clean slate", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-clear-"));
+  const assess = assessments([{ met: true, gaps: [], reason: "done" }]);
+  let sawExecuteTurn!: () => void;
+  const executeTurnStarted = new Promise<void>((r) => (sawExecuteTurn = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const steps = [
+    textStep("- [ ] the work"), // plan
+    textStep("started but unfinished"), // execute (held; /clear queues behind)
+    textStep("- [ ] the work again"), // re-plan after resume
+    toolCall("c1", "update_tasks", { updates: [{ id: "t1", status: "completed" }] }),
+    textStep("done for real"),
+    textStep("verified"),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const idx = call++;
+      if (idx === 1) {
+        sawExecuteTurn();
+        await gate;
+      }
+      return (steps[idx] ?? textStep("noop")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "finish the work" });
+  await executeTurnStarted;
+  engine.send({ type: "run-slash", name: "clear", args: "" }); // queued behind the held turn
+  release();
+  await engine.whenIdle();
+
+  // The run paused (its queued continuation swept) instead of firing turns
+  // into the wiped conversation; the ★ goal survives the clear.
+  expect(events.some((e) => e.type === "notice" && /Goal run paused — conversation cleared/.test(e.message))).toBe(true);
+  expect(engine.snapshot().goal).toBe("finish the work");
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+  expect(engine.snapshot().tasks).toHaveLength(0);
+  expect(assess.calls()).toBe(0); // nothing assessed a wiped slate
+
+  // Resume re-enters at PLAN (the execute-phase task spine was wiped) and the
+  // fresh pipeline converges.
+  engine.send({ type: "run-slash", name: "goal", args: "resume" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  expect(events.some((e) => e.type === "notice" && /Goal run resumed \(re-planning/.test(e.message))).toBe(true);
+  expect(engine.snapshot().tasks.map((t) => t.title)).toEqual(["the work again"]);
+  expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
+});
+
+test("pipeline: checked checkboxes in the plan text are narration, not seeded tasks", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-checked-"));
+  const assess = assessments([{ met: true, gaps: [], reason: "done" }]);
+  const steps = [
+    // The model narrates its investigation with checked boxes and forgets
+    // update_tasks — only the UNCHECKED step is real pending work.
+    textStep("- [x] read the existing code\n- [X] confirmed the bug\n- [ ] write the fix"),
+    toolCall("c1", "update_tasks", { updates: [{ id: "t1", status: "completed" }] }),
+    textStep("fix written"),
+    textStep("verified"),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const idx = call++;
+      return (steps[idx] ?? textStep("noop")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "fix the bug" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  expect(engine.snapshot().tasks.map((t) => t.title)).toEqual(["write the fix"]);
+  expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
+});
+
+test("an Esc landing DURING the self-assessment does not launch one more turn", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-assessrace-"));
+  let sawAssess!: () => void;
+  const assessStarted = new Promise<void>((r) => (sawAssess = r));
+  let releaseAssess!: () => void;
+  const assessGate = new Promise<void>((r) => (releaseAssess = r));
+  let streamCalls = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      streamCalls++;
+      return textStep("worked on it") as never;
+    },
+    // A NOT-met verdict resolving AFTER the abort — acting on it would enqueue
+    // a continuation the user just stopped.
+    doGenerate: async () => {
+      sawAssess();
+      await assessGate;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ met: false, gaps: ["more"], reason: "keep going" }) }],
+        finishReason: "stop" as const,
+        usage: USAGE,
+        warnings: [],
+      };
+    },
+  });
+  const engine = new Engine({
+    config: {
+      ...defaultConfig(),
+      model: "mock/test",
+      checkpoints: { enabled: false },
+      goal: { maxRounds: 25, planFirst: false },
+    },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "do the thing" });
+  await assessStarted;
+  engine.send({ type: "abort" }); // Esc while the assessment call is in flight
+  releaseAssess();
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  expect(streamCalls).toBe(1); // the drive turn only — no post-abort continuation
+  expect(events.some((e) => e.type === "notice" && /Goal round 1/.test(e.message))).toBe(false);
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+});
+
+test("a steer's round-budget re-grant is PERSISTED (a kill mid-steer resumes with fresh runway)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-steerpersist-"));
+  const assess = assessments([
+    { met: false, gaps: ["more work"], reason: "not there yet" }, // round 1
+    { met: true, gaps: [], reason: "done" },
+  ]);
+  let sawContinuation!: () => void;
+  const continuationStarted = new Promise<void>((r) => (sawContinuation = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const idx = call++;
+      if (idx === 1) {
+        sawContinuation();
+        await gate; // hold round 1's continuation so the steer queues behind it
+      }
+      return textStep(`turn ${idx} done`) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: {
+      ...defaultConfig(),
+      model: "mock/test",
+      checkpoints: { enabled: false },
+      goal: { maxRounds: 25, planFirst: false },
+    },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "do the thing" });
+  await continuationStarted;
+  // Anchor on the ROUND-1 write first: the arm-time write is also 0, so
+  // breaking on the first 0 could pass vacuously if the round-1 write were
+  // still queued when the steer zeroed the in-memory counter.
+  const statePath = join(globalStateDir(cwd), "sessions", engine.snapshot().sessionId, "engine.json");
+  let persisted: { goalContinueRounds?: number } | null = null;
+  for (let tries = 0; tries < 100; tries++) {
+    persisted = (await Bun.file(statePath)
+      .json()
+      .catch(() => null)) as { goalContinueRounds?: number } | null;
+    if (persisted?.goalContinueRounds === 1) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(persisted?.goalContinueRounds).toBe(1);
+  engine.send({ type: "submit-prompt", text: "steer: focus on the docs" });
+
+  // The re-grant lands on disk BEFORE the steer turn runs — a kill right here
+  // must resume with the refreshed budget, not the pre-steer round count.
+  for (let tries = 0; tries < 100; tries++) {
+    persisted = (await Bun.file(statePath)
+      .json()
+      .catch(() => null)) as { goalContinueRounds?: number } | null;
+    if (persisted && persisted.goalContinueRounds === 0) break;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(persisted?.goalContinueRounds).toBe(0);
+  expect(events.some((e) => e.type === "notice" && /Steer folded into the goal run/.test(e.message))).toBe(true);
+
+  release();
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+  expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
+});
+
+test("pipeline: tasks left over from BEFORE the run never hijack its spine", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-staletasks-"));
+  const prompts: string[] = [];
+  const assess = assessments([{ met: true, gaps: [], reason: "done" }]);
+  const steps = [
+    textStep("- [ ] new goal work"), // plan (narrated only — fallback parser seeds)
+    toolCall("c1", "update_tasks", { updates: [{ id: "t1", status: "completed" }] }),
+    textStep("finished"),
+    textStep("verified"),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const idx = call++;
+      prompts.push(JSON.stringify(options.prompt));
+      return (steps[idx] ?? textStep("noop")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+    // An abandoned earlier plan left unfinished tasks in the restored session.
+    resume: {
+      meta: {
+        id: "sess-stale",
+        createdAt: 0,
+        updatedAt: 0,
+        model: "mock/test",
+        mode: "execute",
+        goal: null,
+        tasks: [
+          { id: "task-1", title: "old abandoned plan step", status: "pending" },
+          { id: "task-2", title: "another old step", status: "in_progress" },
+        ],
+      },
+      modelMessages: [],
+      history: [],
+    },
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "the new goal" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  // The stale list was cleared at arm — the execute contract names ONLY the
+  // fresh plan's work, and no round ever chased the abandoned steps.
+  expect(events.some((e) => e.type === "notice" && /Cleared the pre-existing task list/.test(e.message))).toBe(true);
+  expect(prompts.some((p) => p.includes("old abandoned plan step"))).toBe(false);
+  expect(engine.snapshot().tasks.map((t) => t.title)).toEqual(["new goal work"]);
+  expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
+});
+
+test("a gate that exhausts its fix budget STILL RED pauses the run instead of wedging it", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-redgate-"));
+  // A real (fast) failing check: recon detects `bun run test`, which exits 1.
+  await Bun.write(
+    join(cwd, "package.json"),
+    JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '1 failed'; exit 1" } }),
+  );
+  await Bun.write(join(cwd, "bun.lock"), "");
+  const assess = assessments([{ met: true, gaps: [], reason: "unreachable" }]);
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      // Every turn mutates (write) then finishes — so the gate always runs.
+      const idx = call++;
+      return (idx % 2 === 0
+        ? toolCall(`w${idx}`, "write", { path: "out.txt", content: `gen ${idx}\n` })
+        : textStep("done")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const config = defaultConfig();
+  config.model = "mock/test";
+  config.checkpoints = { ...config.checkpoints, enabled: false };
+  config.goal = { maxRounds: 25, planFirst: false };
+  config.build.gate.maxRounds = 0; // no fix rounds: first red is terminal
+  const engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: false });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "make it green" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  // The run PAUSED honestly (it used to stay armed-but-idle forever, and a
+  // kill+resume would resurrect it against an unverified gate).
+  expect(
+    events.some(
+      (e) => e.type === "notice" && e.level === "warn" && /Goal run paused — the gate is still red/.test(e.message),
+    ),
+  ).toBe(true);
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+  expect(engine.snapshot().goalRun?.pausedReason).toMatch(/gate stayed red/);
+  expect(assess.calls()).toBe(0); // no assessment spent on a known-red tree
+});
+
+test("dequeuing the run's queued turn pauses the run instead of leaving it armed-but-stalled", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-dequeue-"));
+  const assess = assessments([{ met: true, gaps: [], reason: "unreachable" }]);
+  let sawExecuteTurn!: () => void;
+  const executeTurnStarted = new Promise<void>((r) => (sawExecuteTurn = r));
+  let releaseExecute!: () => void;
+  const executeGate = new Promise<void>((r) => (releaseExecute = r));
+  let sawSteerTurn!: () => void;
+  const steerTurnStarted = new Promise<void>((r) => (sawSteerTurn = r));
+  let releaseSteer!: () => void;
+  const steerGate = new Promise<void>((r) => (releaseSteer = r));
+  const steps = [
+    textStep("- [ ] the work"), // plan
+    textStep("started but unfinished"), // execute (held → steer queues behind)
+    textStep("steer noted"), // steer turn (held → continuation sits queued)
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const idx = call++;
+      if (idx === 1) {
+        sawExecuteTurn();
+        await executeGate;
+      }
+      if (idx === 2) {
+        sawSteerTurn();
+        await steerGate;
+      }
+      return (steps[idx] ?? textStep("noop")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "finish the work" });
+  await executeTurnStarted;
+  engine.send({ type: "submit-prompt", text: "steer: check the docs too" });
+  releaseExecute();
+  await steerTurnStarted;
+  // The goal continuation is now QUEUED behind the held steer turn — find it
+  // in the LATEST queue snapshot (earlier snapshots hold already-run goal
+  // items whose ids are stale) and remove it, like a ✕ tap on its row.
+  let queued: { id: string; label: string } | undefined;
+  for (let tries = 0; tries < 100 && !queued; tries++) {
+    const latest = [...events]
+      .reverse()
+      .find((e): e is Extract<UIEvent, { type: "queue-changed" }> => e.type === "queue-changed");
+    queued = latest?.pending.find((p) => p.label.startsWith("goal: "));
+    if (!queued) await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(queued).toBeDefined();
+  engine.send({ type: "dequeue", id: queued!.id });
+  releaseSteer();
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  // The run paused with a notice — not silently armed with nothing queued.
+  expect(events.some((e) => e.type === "notice" && /its queued turn was removed/.test(e.message))).toBe(true);
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+  expect(assess.calls()).toBe(0);
+});
+
+test("/queue clear pauses the run when it drops the run's queued turn", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-queueclear-"));
+  const assess = assessments([{ met: true, gaps: [], reason: "unreachable" }]);
+  let sawExecuteTurn!: () => void;
+  const executeTurnStarted = new Promise<void>((r) => (sawExecuteTurn = r));
+  let releaseExecute!: () => void;
+  const executeGate = new Promise<void>((r) => (releaseExecute = r));
+  let sawSteerTurn!: () => void;
+  const steerTurnStarted = new Promise<void>((r) => (sawSteerTurn = r));
+  let releaseSteer!: () => void;
+  const steerGate = new Promise<void>((r) => (releaseSteer = r));
+  const steps = [
+    textStep("- [ ] the work"), // plan
+    textStep("started but unfinished"), // execute (held → steer queues behind)
+    textStep("steer noted"), // steer turn (held → continuation sits queued)
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const idx = call++;
+      if (idx === 1) {
+        sawExecuteTurn();
+        await executeGate;
+      }
+      if (idx === 2) {
+        sawSteerTurn();
+        await steerGate;
+      }
+      return (steps[idx] ?? textStep("noop")) as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "finish the work" });
+  await executeTurnStarted;
+  engine.send({ type: "submit-prompt", text: "steer: also check the docs" });
+  releaseExecute();
+  await steerTurnStarted; // the goal continuation is queued behind the held steer
+  engine.send({ type: "run-slash", name: "queue", args: "clear" }); // runs immediately
+  releaseSteer();
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  // /queue clear dropped the run's next turn → announced pause, not a silent
+  // armed-but-idle wedge that an unrelated later prompt would revive.
+  expect(events.some((e) => e.type === "notice" && /Goal run paused — the queue was cleared/.test(e.message))).toBe(
+    true,
+  );
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+  expect(assess.calls()).toBe(0);
+});
+
+test("a hook-denied goal turn pauses the run; a denied PLAN turn never fabricates an execute spine", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-hookdeny-"));
+  const assess = assessments([{ met: true, gaps: [], reason: "unreachable" }]);
+  let streamCalls = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      streamCalls++;
+      return textStep("should never run") as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+  // Deny every goal-run directive (they all carry the north-star phrasing).
+  engine.hooks.on("user.prompt.submit", (p) =>
+    /north-star/.test(p.text) ? { ...p, deny: true } : p,
+  );
+
+  engine.send({ type: "run-slash", name: "goal", args: "do the blocked thing" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  // No model turn ever ran, the run paused with the hook named as the reason,
+  // and the denied plan turn did NOT march into execute on a fabricated task.
+  expect(streamCalls).toBe(0);
+  expect(
+    events.some((e) => e.type === "notice" && /Goal run paused — a prompt hook blocked the turn/.test(e.message)),
+  ).toBe(true);
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+  expect(engine.snapshot().tasks).toHaveLength(0);
+  expect(events.some((e) => e.type === "notice" && /single task/.test(e.message))).toBe(false);
 });

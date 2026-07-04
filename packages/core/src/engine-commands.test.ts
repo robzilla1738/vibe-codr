@@ -8,7 +8,7 @@ import { defaultConfig } from "@vibe/config";
 import type { Skill } from "@vibe/plugins";
 import { Engine } from "./engine.ts";
 import { CheckpointManager } from "./checkpoints.ts";
-import { buildSkillPrompt, handleSlash } from "./engine-commands.ts";
+import { buildSkillPrompt, goalStatusText, handleSlash } from "./engine-commands.ts";
 
 async function git(cwd: string, args: string[]): Promise<void> {
   await Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).exited;
@@ -321,6 +321,8 @@ function redoHarness(dir: string, session: ReturnType<typeof fakeConversation>) 
     commands: { get: () => undefined },
     notice: (message: string, level?: string) => messages.push({ message, level }),
     emit: () => {},
+    // /clear pauses a live goal run before wiping; the harness has none.
+    pauseGoalRun: () => {},
   } as unknown as Parameters<typeof handleSlash>[0];
   return { checkpoints, h, messages };
 }
@@ -374,4 +376,22 @@ test("/undo then immediate /redo still round-trips the conversation tail", async
   await handleSlash(h, "redo", "");
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
   expect(session.messageCount).toBe(3); // tail re-appended at the matching mark
+});
+
+test("goalStatusText names the run's actual state (active / paused / met / detached / none)", () => {
+  const base = { phase: null, round: 0, max: 25, pausedReason: null, met: false } as const;
+  expect(goalStatusText(null, { ...base, active: false })).toContain("No goal set");
+  // Active: phase while planning, round counter while executing.
+  expect(goalStatusText("ship it", { ...base, active: true, phase: "plan" })).toContain("Run active (planning)");
+  expect(goalStatusText("ship it", { ...base, active: true, phase: "execute", round: 7 })).toContain(
+    "Run active (round 7/25)",
+  );
+  // Paused: says WHY and how to re-arm.
+  const paused = goalStatusText("ship it", { ...base, active: false, pausedReason: "interrupted (Esc)" });
+  expect(paused).toContain("Run paused — interrupted (Esc)");
+  expect(paused).toContain("/goal resume");
+  // Met: no false "stops it" implication of a live run.
+  expect(goalStatusText("ship it", { ...base, active: false, met: true })).toContain("verified met");
+  // Goal set but never ran (legacy sessions): resume still offered.
+  expect(goalStatusText("ship it", { ...base, active: false })).toContain("No run attached");
 });

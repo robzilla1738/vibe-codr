@@ -149,12 +149,31 @@ export interface JobInfo {
   outputTail: string;
 }
 
+/** Live state of the `/goal` autonomous run, for the ★ header and bare
+ * `/goal`. `active` with `phase` says where the pipeline is; an inactive run
+ * with a `pausedReason` can be re-armed with `/goal resume`; `met` marks a
+ * run that finished verified-met (the ★ goal stays until cleared). */
+export interface GoalRunInfo {
+  active: boolean;
+  /** Pipeline phase while relevant (plan → execute); null on the legacy
+   * blended path (`goal.planFirst: false`). */
+  phase: "plan" | "execute" | null;
+  /** Continuation rounds spent so far, against the `max` budget. */
+  round: number;
+  max: number;
+  /** Why an inactive run stopped (short, human), or null. */
+  pausedReason: string | null;
+  met: boolean;
+}
+
 /** Static, read-only snapshot of engine state for the UI to render. */
 export interface EngineSnapshot {
   sessionId: string;
   model: string;
   mode: Mode;
   goal: string | null;
+  /** Live goal-run state (present whenever a goal is set). */
+  goalRun?: GoalRunInfo;
   history: Message[];
   /** The agent's current working task list (may be empty). */
   tasks: Task[];

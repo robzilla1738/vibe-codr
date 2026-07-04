@@ -560,32 +560,39 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   `marginTop={1}` — one blank row between every area; the second status line (hints
   / goal) hugs the details line with no margin so the two read as one block. Keep
   that rhythm; don't special-case a region to 2.
-- **Color discipline (black bg + neutral grey borders + a single Blue 300 accent):**
-  the app paints a **black background** (`backgroundColor={palette().background}`,
-  `#000` on the default theme), neutral **charcoal** surfaces (`panel`/`elevated`/
-  `selBg`), **neutral grey borders** (`palette().border`, `#34343a`), and mostly
-  **white/grey** text. The chrome accent `brand()` = `accentColor() || palette().primary`
-  is **Blue 300** by default (`#70cbf4`; the old white `#e6e6e6` and rainbow both
-  retired). Override it to any hue with `/accent <hex>` — the wordmark fade follows
-  it. **The accent is reserved for titles + markers only** (`gradient.ts` +
-  `modes.ts` + palette tokens):
-  1. **Wordmark** — a single-hue blue fade (`BrandLine`/`brandSpans`), a lightness
+- **Color discipline (graphite bg + neutral grey borders + white chrome, one violet
+  stroke):** the app paints a **graphite background** (`backgroundColor=
+  {palette().background}`, `#0a0a0a` on the default theme), neutral **charcoal**
+  surfaces (`panel`/`elevated`), **neutral grey borders** (`palette().border`,
+  `#3c3c3c`), and mostly **white/grey** text. The chrome accent `brand()` =
+  `accentColor() || palette().primary` is **white** by default (`#eeeeee`,
+  opencode-style — titles and markers render in the body white, bold where
+  emphasis is needed). **Violet `#8b5cf6` appears in exactly two places**: the
+  selected menu row (`selBg`, a solid violet band with dark text — the one
+  saturated signature stroke) and markdown headings / table header rows
+  (`palette().heading`). Override the chrome accent with `/accent <name|hex>` —
+  the wordmark fade follows it. **The accent is reserved for titles + markers
+  only** (`gradient.ts` + `modes.ts` + palette tokens):
+  1. **Wordmark** — a single-hue fade (`BrandLine`/`brandSpans`), a lightness
      ramp around `brand()`.
   2. **Markers** — panel titles, the `❯` user marker + heavy left gutter, the active
-     task/step, the selected menu row, and the input caret (all `brand()`).
+     task/step, and the input caret (all `brand()`); the selected menu row uses the
+     violet `selBg` band.
   3. **Mode chip** — the input's mode label + rail. ASK (execute) FOLLOWS the live
      brand accent (`accent()` in app.tsx returns `brand()` for execute — so
      `/accent orange` recolors the whole input control coherently instead of
-     clashing with a fixed blue); PLAN green `#9ece6a` · YOLO red `#f7768e` stay
+     clashing with a fixed hue); PLAN green `#9ece6a` · YOLO red `#f7768e` stay
      fixed alert hues (`modes.ts`).
-  4. **Working spinner** — the braille glyph in flat `brand()`, animated only while a
-     turn runs (rides the existing `working()`-gated tick; no new idle timer).
+  4. **Working spinner** — the one deliberate exception to the single-hue rule:
+     the `✻` glyph cycles through `rainbow(tick)` (gradient.ts) while a turn runs,
+     and recedes to the gutter tone when idle (rides the existing
+     `working()`-gated tick; no new idle timer).
   **Borders stay neutral grey** — the input frame and every panel box use
   `palette().border`, NOT `brand()`. Tool-step gutters and subagent markers use one
-  **calm muted tone** (`palette().gutter`, `#3f5766`) — no per-item rotation; a
+  **calm muted tone** (`palette().gutter`, `#484848`) — no per-item rotation; a
   running subagent's glyph is `brand()` (alive), a finished one recedes to the
   gutter tone. Text-output tokens: markdown **headings** and the **table header row**
-  use `palette().heading` (blue, bold); **code** text uses `palette().code`; diffs
+  use `palette().heading` (violet, bold); **code** text uses `palette().code`; diffs
   use `add`/`del`, warnings `notice` (amber). **Accent/mode color is for ACCENTS
   only — never body text or tool output.** A `title` needs a top edge, so the input
   uses a full `border` (all sides); the docked slash menu (below) drops its *bottom*

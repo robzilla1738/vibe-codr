@@ -324,35 +324,35 @@ export async function configUnknownKeys(cwd: string): Promise<{ path: string; ke
  * merely by running `vibe` in the directory. Dropped from the PROJECT layer
  * unless `security.trustProjectConfig` is set in the trusted (global/CLI)
  * layer. `approvalMode` is dropped only when it RELAXES to `auto`. */
-function sanitizeUntrustedProjectConfig(
-  project: Record<string, unknown>,
-  globalProviderIds: Set<string>,
-): {
+function sanitizeUntrustedProjectConfig(project: Record<string, unknown>): {
   clean: Record<string, unknown>;
   dropped: string[];
 } {
   const clean = { ...project };
   const dropped: string[] = [];
-  for (const key of ["hooks", "plugins"] as const) {
+  // `hooks` (shell exec on lifecycle events), `plugins` (module import), and the
+  // project's own `security` block (must never influence the merged trust state)
+  // are removed outright.
+  for (const key of ["hooks", "plugins", "security"] as const) {
     if (key in clean) {
       delete clean[key];
-      dropped.push(key);
+      if (key !== "security") dropped.push(key);
     }
   }
   if (clean.approvalMode === "auto") {
     delete clean.approvalMode;
     dropped.push("approvalMode:auto");
   }
-  // A project may declare its OWN custom provider (a local LLM, an org proxy) —
-  // that's a legitimate, supported pattern. The attack is REDIRECTING a
-  // provider the user configured globally (where their real credentials live)
-  // to an attacker host, so strip `baseURL` only when the project overrides a
-  // globally-declared provider id. A brand-new provider id keeps its baseURL.
+  // Drop EVERY provider `baseURL` — not just ids declared in the global config.
+  // The dominant credential source is an env var (ANTHROPIC_API_KEY), so a
+  // provider the user never declared in a file still has a real key attached;
+  // redirecting its baseURL would exfiltrate that key. A user who genuinely
+  // wants a project-local provider endpoint trusts the project.
   if (isPlainObject(clean.providers)) {
     const providers: Record<string, unknown> = {};
     let redirected = false;
     for (const [id, entry] of Object.entries(clean.providers as Record<string, unknown>)) {
-      if (globalProviderIds.has(id) && isPlainObject(entry) && "baseURL" in entry) {
+      if (isPlainObject(entry) && "baseURL" in entry) {
         const { baseURL: _drop, ...rest } = entry as Record<string, unknown>;
         providers[id] = rest;
         redirected = true;
@@ -363,6 +363,24 @@ function sanitizeUntrustedProjectConfig(
     if (redirected) {
       clean.providers = providers;
       dropped.push("providers.*.baseURL");
+    }
+  }
+  // Drop STDIO MCP servers (those with a `command`) — connecting runs an
+  // arbitrary local command at bootstrap, the same RCE class as hooks. Remote
+  // (url) MCP servers stay: they run no local code and their tools are gated by
+  // the network-permission layer and only fire when the model calls them.
+  if (isPlainObject(clean.mcp) && isPlainObject((clean.mcp as Record<string, unknown>).servers)) {
+    const mcp = { ...(clean.mcp as Record<string, unknown>) };
+    const servers: Record<string, unknown> = {};
+    let droppedStdio = false;
+    for (const [name, entry] of Object.entries(mcp.servers as Record<string, unknown>)) {
+      if (isPlainObject(entry) && "command" in entry) droppedStdio = true;
+      else servers[name] = entry;
+    }
+    if (droppedStdio) {
+      mcp.servers = servers;
+      clean.mcp = mcp;
+      dropped.push("mcp.servers (stdio command)");
     }
   }
   return { clean, dropped };
@@ -390,9 +408,6 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
     isPlainObject(layer.security) &&
     (layer.security as Record<string, unknown>).trustProjectConfig === true;
   const trustProject = trustFrom(overridesRaw) || trustFrom(globalRaw);
-  const globalProviderIds = new Set(
-    isPlainObject(globalRaw.providers) ? Object.keys(globalRaw.providers as Record<string, unknown>) : [],
-  );
   const droppedProjectFields: string[] = [];
   const projectPath = projectConfigPath(cwd);
 
@@ -415,7 +430,7 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
       // the union merge already can't let a project strip a global deny).
       collectPermissions(fileConfig);
       if (path === projectPath && !trustProject) {
-        const { clean, dropped } = sanitizeUntrustedProjectConfig(fileConfig, globalProviderIds);
+        const { clean, dropped } = sanitizeUntrustedProjectConfig(fileConfig);
         fileConfig = clean;
         droppedProjectFields.push(...dropped);
       }

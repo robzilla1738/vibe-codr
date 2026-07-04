@@ -2470,3 +2470,25 @@ next sweep's backlog.
 Typecheck 8/8, lint clean, 15/15 test tasks (core 830+, +tests for config trust gate, checkpoint
 subdir/restart, toolset abort, slash multi-command, MCP ${VAR} url), smoke:tui + smoke:sidebar OK,
 goal + loop suites green.
+
+## Convergence pass (verify of the sweep diff) — 2 CONFIRMED security gaps in the gate itself → fixed
+- **baseURL exfil missed env-var-credentialed providers:** scoping the drop to file-declared
+  global providers left the COMMON case open — a credential in `ANTHROPIC_API_KEY` with no
+  config entry, redirected by a cloned repo's `providers.anthropic.baseURL` → key exfil. Fix:
+  drop EVERY project-layer provider `baseURL` unconditionally (a user who wants a project-local
+  endpoint trusts the project). Simpler and complete; removed the globalProviderIds scoping.
+- **`mcp.servers` stdio `command` was un-sanitized RCE-on-clone:** a stdio MCP server spawns an
+  arbitrary local command at bootstrap — the same class as hooks/plugins, left open. Fix: drop
+  stdio (command-bearing) MCP servers from the untrusted project layer (remote url servers stay
+  — no local exec, network-gated, model-invoked).
+- **Latent:** the project's own `security` block now stripped from the project layer (trust was
+  already decided from global/CLI only, but the merged `config.security` shouldn't carry
+  attacker-supplied state for any future reader).
+- Verifier CLEAN attestations on everything else: bunExec killTree covers the root (processTree
+  seeds with rootPid, killed last + SIGKILL); checkpoint #ensureRoot ordering + tombstone
+  safety (green markers are in #list); toolset AbortError matches the existing contract; sandbox
+  rides forks; /loop stop synchronous filter is atomic; mcp stdio path unaffected;
+  lineToCommands set-mode-before-submit ordering deterministic.
+- Test updated: the untrusted-config test now asserts all six vectors (hooks/plugins/
+  approvalMode/baseURL/stdio-mcp/security) + an env-var-credentialed-provider case + a
+  remote-MCP-kept case. Gate: typecheck 8/8, lint clean, 15/15 tests, smokes OK.

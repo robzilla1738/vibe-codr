@@ -61,6 +61,9 @@ test("parsePermissionDecision grants only on EXACT tokens", () => {
   expect(parsePermissionDecision("n")).toEqual({ decision: "deny" });
   expect(parsePermissionDecision("no")).toEqual({ decision: "deny" });
   expect(parsePermissionDecision("")).toEqual({ decision: "deny" });
+  // `p`/`project` persists the grant into the project config.
+  expect(parsePermissionDecision("p")).toEqual({ decision: "always-project" });
+  expect(parsePermissionDecision("Project")).toEqual({ decision: "always-project" });
 });
 
 test("a typed sentence DENIES with the text as feedback — never first-letter grants", () => {

@@ -32,7 +32,11 @@ export type EngineCommand =
   | {
       type: "resolve-permission";
       id: string;
-      decision: "once" | "always" | "deny";
+      // `always` grants for the rest of THIS session (in-memory); `always-project`
+      // ALSO persists a scoped allow rule into the project config so the grant
+      // survives across sessions. Both are interactive-only (headless never
+      // sends them). `once`/`deny` are single-call.
+      decision: "once" | "always" | "always-project" | "deny";
       /** Free-text the user typed instead of y/a/n — forwarded to the model as
        * the deny reason ("denied by user — use staging instead"), so a denial
        * can steer the next attempt rather than leave the model guessing. */

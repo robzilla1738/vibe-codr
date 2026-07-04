@@ -59,12 +59,14 @@ export function lineToCommand(line: string): EngineCommand {
  * why steers the next attempt instead of being thrown away.
  */
 export function parsePermissionDecision(input: string): {
-  decision: "once" | "always" | "deny";
+  decision: "once" | "always" | "always-project" | "deny";
   feedback?: string;
 } {
   const t = input.trim().toLowerCase();
   if (t === "y" || t === "yes" || t === "allow" || t === "once") return { decision: "once" };
   if (t === "a" || t === "always") return { decision: "always" };
+  // `p`/`project` persists the grant into the project config (interactive-only).
+  if (t === "p" || t === "project") return { decision: "always-project" };
   if (!t || t === "n" || t === "no" || t === "deny") return { decision: "deny" };
   return { decision: "deny", feedback: input.trim() };
 }

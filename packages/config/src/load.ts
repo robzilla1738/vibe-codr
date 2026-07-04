@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ConfigError } from "@vibe/shared";
-import { ConfigSchema, type Config } from "./schema.ts";
+import { ConfigSchema, type Config, type PermissionRule } from "./schema.ts";
 
 /** Deep-merge plain objects (arrays are replaced, not concatenated). */
 function deepMerge<T extends Record<string, unknown>>(
@@ -152,9 +152,14 @@ export function globalConfigPath(): string {
   return join(base, "vibe-codr", "config.json");
 }
 
+/** The project-local config path (`<cwd>/.vibe/config.json`). */
+export function projectConfigPath(cwd: string): string {
+  return join(cwd, ".vibe", "config.json");
+}
+
 /** Locations searched, lowest precedence first. */
 export function configLocations(cwd: string): string[] {
-  return [globalConfigPath(), join(cwd, ".vibe", "config.json")];
+  return [globalConfigPath(), projectConfigPath(cwd)];
 }
 
 /**
@@ -235,6 +240,54 @@ export function writeGlobalConfig(
   const result = writeChain.then(run, run);
   // Advance the chain past this write's settlement, swallowing errors so one
   // failed write doesn't wedge every subsequent persist.
+  writeChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+/**
+ * Append a permission `rule` to the PROJECT config's `permissions` array
+ * (`<cwd>/.vibe/config.json`, creating the file and the array if absent) and
+ * write it back. Used by the interactive "always (remember for this project)"
+ * permission decision to persist a scoped grant so a daily-driven command isn't
+ * re-approved every session.
+ *
+ * Mirrors {@link writeGlobalConfig}'s discipline: it serializes through the same
+ * write chain (so a concurrent `/model` persist can't clobber it) and VALIDATES
+ * the merged result against `ConfigSchema` BEFORE writing — a rule that would
+ * brick the config (invalid `action`, non-string `tool`) is REJECTED, leaving
+ * the on-disk file untouched. An exact-duplicate rule is a no-op (never
+ * accumulates copies). Unlike the global write there is no XDG test backstop:
+ * the path is cwd-scoped, so a test's temp cwd already isolates it from any real
+ * project.
+ */
+export function appendProjectPermission(
+  cwd: string,
+  rule: PermissionRule,
+): Promise<Record<string, unknown>> {
+  const run = async (): Promise<Record<string, unknown>> => {
+    const path = projectConfigPath(cwd);
+    const existing = (await readConfigFile(path)) ?? {};
+    const current = Array.isArray(existing.permissions) ? existing.permissions : [];
+    const key = JSON.stringify(rule);
+    const permissions = current.some((r) => JSON.stringify(r) === key)
+      ? current
+      : [...current, rule];
+    const merged = { ...existing, permissions };
+    const check = ConfigSchema.safeParse(merged);
+    if (!check.success) {
+      throw new ConfigError(
+        `Refusing to write invalid permission rule: ${check.error.issues
+          .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+      );
+    }
+    await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
+    return merged;
+  };
+  const result = writeChain.then(run, run);
   writeChain = result.then(
     () => undefined,
     () => undefined,

@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
@@ -63,14 +63,15 @@ function makeEngine(
   const registry = new ProviderRegistry([
     { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
   ]);
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-perm-")); // isolated, non-git
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test", permissions },
     registry,
     toolset: new Toolset([danger]),
     interactive,
-    cwd: mkdtempSync(join(tmpdir(), "vibe-perm-")), // isolated, non-git
+    cwd,
   });
-  return { engine, runs: () => runs };
+  return { engine, runs: () => runs, cwd };
 }
 
 /** A `danger` tool call carrying a `command` scope (for scoped-rule tests). */
@@ -89,7 +90,7 @@ function toolCallCmd(id: string, command: string) {
 }
 
 /** Auto-answer every permission-request with `decision`; collect events. */
-function drive(engine: Engine, decision: "once" | "always" | "deny") {
+function drive(engine: Engine, decision: "once" | "always" | "always-project" | "deny") {
   const events: UIEvent[] = [];
   void (async () => {
     for await (const e of engine.events()) {
@@ -293,14 +294,15 @@ function makePathEngine(steps: unknown[]) {
   const registry = new ProviderRegistry([
     { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
   ]);
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-perm-path-"));
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test" },
     registry,
     toolset: new Toolset([writer]),
     interactive: true,
-    cwd: mkdtempSync(join(tmpdir(), "vibe-perm-path-")),
+    cwd,
   });
-  return { engine, runs: () => runs };
+  return { engine, runs: () => runs, cwd };
 }
 
 /** A `writer` tool call carrying a `path` scope. */
@@ -357,6 +359,51 @@ test("interactive: 'always' for a path does NOT cover a DIFFERENT file", async (
   await engine.whenIdle();
   expect(prompts.length).toBe(2); // both distinct files prompted
   expect(runs()).toBe(2);
+});
+
+async function readProjectRules(cwd: string): Promise<unknown[]> {
+  const f = Bun.file(join(cwd, ".vibe", "config.json"));
+  if (!(await f.exists())) return [];
+  return (JSON.parse(await f.text()).permissions ?? []) as unknown[];
+}
+
+test("always-project: persists a validated command-scoped rule mirroring the in-memory grant", async () => {
+  // Approving a command call with 'always-project' both suppresses the next
+  // prompt (in-memory) AND writes a scoped {tool, match:<command>, action:"allow"}
+  // rule into the project config — the match mirrors the in-memory command scope.
+  const { engine, runs, cwd } = makeEngine(
+    [toolCallCmd("c1", "git status"), toolCallCmd("c2", "git status"), finalText()],
+    true,
+  );
+  const events = drive(engine, "always-project");
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+  expect(events.filter((e) => e.type === "permission-request").length).toBe(1); // remembered
+  expect(runs()).toBe(2);
+  expect(await readProjectRules(cwd)).toEqual([
+    { tool: "danger", match: "git status", action: "allow" },
+  ]);
+});
+
+test("always-project: a path grant persists the CANONICAL absolute path (mirrors the key scope)", async () => {
+  const { engine, cwd } = makePathEngine([writerCall("c1", "src/x.ts"), finalText()]);
+  drive(engine, "always-project");
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+  // The persisted match is the same canonical absolute form #alwaysAllowKey uses.
+  expect(await readProjectRules(cwd)).toEqual([
+    { tool: "writer", match: resolve(cwd, "src/x.ts"), action: "allow" },
+  ]);
+});
+
+test("always-project: the persisted rule is honored on a fresh load of the project config", async () => {
+  const { engine, cwd } = makeEngine([toolCallCmd("c1", "ls"), finalText()], true);
+  drive(engine, "always-project");
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+  const { loadConfig } = await import("@vibe/config");
+  const cfg = await loadConfig({ cwd });
+  expect(cfg.permissions).toContainEqual({ tool: "danger", match: "ls", action: "allow" });
 });
 
 test("interactive: a command grant stays EXACT-string keyed (a path-looking command isn't canonicalized)", async () => {

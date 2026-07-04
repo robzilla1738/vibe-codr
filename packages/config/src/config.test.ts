@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ConfigSchema, defaultConfig, loadConfig, configUnknownKeys, writeGlobalConfig, globalConfigPath } from "./index.ts";
+import { ConfigSchema, defaultConfig, loadConfig, configUnknownKeys, writeGlobalConfig, appendProjectPermission, projectConfigPath, globalConfigPath } from "./index.ts";
 
 test("defaultConfig is valid and carries the documented defaults", () => {
   const c = defaultConfig();
@@ -343,6 +343,51 @@ test("a project permissions array UNIONS with global rules — a repo file can't
     if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = prevXdg;
   }
+});
+
+test("appendProjectPermission creates the permissions array, appends, and dedups", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-append-"));
+  // First grant: creates <cwd>/.vibe/config.json with a permissions array.
+  await appendProjectPermission(cwd, { tool: "bash", match: "git status", action: "allow" });
+  const p = projectConfigPath(cwd);
+  let saved = JSON.parse(await Bun.file(p).text());
+  expect(saved.permissions).toEqual([{ tool: "bash", match: "git status", action: "allow" }]);
+  // Second, distinct grant: appended.
+  await appendProjectPermission(cwd, { tool: "writer", match: "/abs/x.ts", action: "allow" });
+  saved = JSON.parse(await Bun.file(p).text());
+  expect(saved.permissions).toHaveLength(2);
+  // Exact duplicate of the first: no-op (no accumulation).
+  await appendProjectPermission(cwd, { tool: "bash", match: "git status", action: "allow" });
+  saved = JSON.parse(await Bun.file(p).text());
+  expect(saved.permissions).toHaveLength(2);
+  // The persisted rule is honored on the next load (unioned into permissions).
+  const cfg = await loadConfig({ cwd });
+  expect(cfg.permissions).toContainEqual({ tool: "bash", match: "git status", action: "allow" });
+});
+
+test("appendProjectPermission preserves other project config keys", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-append-keep-"));
+  await mkdir(join(cwd, ".vibe"), { recursive: true });
+  await writeFile(join(cwd, ".vibe", "config.json"), JSON.stringify({ model: "x/y", maxSteps: 5 }));
+  await appendProjectPermission(cwd, { tool: "webfetch", action: "allow" });
+  const saved = JSON.parse(await Bun.file(projectConfigPath(cwd)).text());
+  expect(saved.model).toBe("x/y");
+  expect(saved.maxSteps).toBe(5);
+  expect(saved.permissions).toEqual([{ tool: "webfetch", action: "allow" }]);
+});
+
+test("appendProjectPermission REJECTS a malformed merge instead of bricking the config", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-append-bad-"));
+  await mkdir(join(cwd, ".vibe"), { recursive: true });
+  const original = JSON.stringify({ permissions: [{ tool: "bash", match: "ls", action: "allow" }] });
+  await writeFile(join(cwd, ".vibe", "config.json"), original);
+  // An invalid action fails schema validation → the write is refused.
+  await expect(
+    appendProjectPermission(cwd, { tool: "bash", action: "banana" as never }),
+  ).rejects.toThrow(/invalid permission/i);
+  // The on-disk file is untouched (still the original single valid rule).
+  const saved = await Bun.file(projectConfigPath(cwd)).text();
+  expect(JSON.parse(saved)).toEqual(JSON.parse(original));
 });
 
 test("configUnknownKeys reports misspelled top-level keys per file", async () => {

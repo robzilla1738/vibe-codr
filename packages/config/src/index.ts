@@ -29,6 +29,8 @@ export {
   configLocations,
   configUnknownKeys,
   writeGlobalConfig,
+  appendProjectPermission,
   globalConfigPath,
+  projectConfigPath,
   type LoadOptions,
 } from "./load.ts";

@@ -21,8 +21,8 @@ import {
   type RepoProfile,
   type UIEvent,
 } from "@vibe/shared";
-import type { Config } from "@vibe/config";
-import { writeGlobalConfig } from "@vibe/config";
+import type { Config, PermissionRule } from "@vibe/config";
+import { appendProjectPermission, writeGlobalConfig } from "@vibe/config";
 import {
   ProviderRegistry,
   CatalogService,
@@ -246,7 +246,7 @@ export class Engine implements EngineClient {
   #alwaysAllow = new Set<string>();
   #pendingPermissions = new Map<
     string,
-    (d: "once" | "always" | "deny", feedback?: string) => void
+    (d: "once" | "always" | "always-project" | "deny", feedback?: string) => void
   >();
   #store: SessionStore;
   #checkpoints: CheckpointManager;
@@ -1156,19 +1156,28 @@ export class Engine implements EngineClient {
     const key = this.#alwaysAllowKey(req.toolName, req.input);
     if (this.#alwaysAllow.has(key)) return true;
     const id = createId("perm");
-    const reply = await new Promise<{ decision: "once" | "always" | "deny"; feedback?: string }>(
-      (resolve) => {
-        this.#pendingPermissions.set(id, (decision, feedback) => resolve({ decision, feedback }));
-        this.#bus.emit({
-          type: "permission-request",
-          sessionId: this.#session.id,
-          id,
-          toolName: req.toolName,
-          input: req.input,
-        });
-      },
-    );
-    if (reply.decision === "always") this.#alwaysAllow.add(key);
+    const reply = await new Promise<{
+      decision: "once" | "always" | "always-project" | "deny";
+      feedback?: string;
+    }>((resolve) => {
+      this.#pendingPermissions.set(id, (decision, feedback) => resolve({ decision, feedback }));
+      this.#bus.emit({
+        type: "permission-request",
+        sessionId: this.#session.id,
+        id,
+        toolName: req.toolName,
+        input: req.input,
+      });
+    });
+    // Both `always` and `always-project` grant for the rest of THIS session
+    // (in-memory). `always-project` ADDITIONALLY persists a scoped allow rule
+    // into the project config so the grant survives future sessions.
+    if (reply.decision === "always" || reply.decision === "always-project") {
+      this.#alwaysAllow.add(key);
+    }
+    if (reply.decision === "always-project") {
+      await this.#persistProjectGrant(req.toolName, req.input);
+    }
     if (reply.decision !== "deny") return true;
     // A denial with typed feedback travels to the model as the deny reason —
     // "denied by user — use staging instead" steers; a bare denial just blocks.
@@ -1189,6 +1198,33 @@ export class Engine implements EngineClient {
   #alwaysAllowKey(toolName: string, input: unknown): string {
     const scope = canonicalPathScope(toolName, input, this.#cwd) ?? scopeString(toolName, input);
     return scope === undefined ? toolName : `${toolName}\x00${scope}`;
+  }
+
+  /** Persist an "always (this project)" grant as a scoped `{tool, match?,
+   * action:"allow"}` rule in the project config. The `match` scope is derived
+   * from the SAME key derivation `#alwaysAllowKey` uses — canonical absolute path
+   * for path tools, the command/URL/synthetic string for command-bearing tools,
+   * and no `match` (bare tool name) for a tool with no natural scope — so the
+   * persisted rule mirrors the in-memory grant EXACTLY. `appendProjectPermission`
+   * validates the merged config before writing, so a malformed merge is rejected
+   * without bricking the config; any failure degrades to a warn notice (the
+   * in-memory grant already applies, so the session isn't blocked). */
+  async #persistProjectGrant(toolName: string, input: unknown): Promise<void> {
+    const scope = canonicalPathScope(toolName, input, this.#cwd) ?? scopeString(toolName, input);
+    const rule: PermissionRule =
+      scope === undefined
+        ? { tool: toolName, action: "allow" }
+        : { tool: toolName, match: scope, action: "allow" };
+    try {
+      await appendProjectPermission(this.#cwd, rule);
+    } catch (err) {
+      // The in-memory grant already applies (added before this call), so a failed
+      // persist never blocks the session — just warn that it won't survive resume.
+      this.#notice(
+        `Couldn't persist the project grant for ${toolName} (kept for this session): ${(err as Error).message}`,
+        "warn",
+      );
+    }
   }
 
   /** Auto-resolve every pending permission prompt as `deny` (no human answered)

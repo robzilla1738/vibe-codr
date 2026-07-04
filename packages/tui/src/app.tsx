@@ -85,6 +85,8 @@ import {
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH, windowTasks } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
+import { readClipboardImage } from "./clipboard-image.ts";
+import { composeInEditor, type EditorSpawn } from "./editor-compose.ts";
 import { brandSpans, rainbow } from "./gradient.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
@@ -284,7 +286,12 @@ export function App(props: { engine: EngineClient }) {
   let inputEl:
     | {
         focus: () => void;
-        editBuffer: { getText: () => string; setText: (t: string) => void; setCursorByOffset: (o: number) => void };
+        editBuffer: {
+          getText: () => string;
+          setText: (t: string) => void;
+          setCursorByOffset: (o: number) => void;
+          insertText: (t: string) => void;
+        };
       }
     | undefined;
   // Defer past the renderer's own post-click focus handling (which would
@@ -1096,7 +1103,10 @@ export function App(props: { engine: EngineClient }) {
   // grant, and an invisible one is how an accidental keystroke becomes silent
   // policy. Denials already surface via the engine's "Blocked …" warn notice
   // (which carries any typed feedback), so no local echo for those.
-  const answerPerm = (decision: "once" | "always" | "deny", feedback?: string) => {
+  const answerPerm = (
+    decision: "once" | "always" | "always-project" | "deny",
+    feedback?: string,
+  ) => {
     const head = perms()[0];
     if (!head) return;
     props.engine.send({
@@ -1106,9 +1116,15 @@ export function App(props: { engine: EngineClient }) {
       ...(feedback ? { feedback } : {}),
     });
     if (decision !== "deny") {
+      const scope =
+        decision === "always-project"
+          ? "always allowed (remembered for this project)"
+          : decision === "always"
+            ? "always allowed (this session)"
+            : "allowed once";
       apply({
         type: "notice",
-        text: `${decision === "always" ? "always allowed (this session)" : "allowed once"} — ${toolLabel(head.toolName, head.input)}`,
+        text: `${scope} — ${toolLabel(head.toolName, head.input)}`,
         level: "info",
       });
     }
@@ -1156,6 +1172,80 @@ export function App(props: { engine: EngineClient }) {
       }
     })();
   };
+  // Ctrl+V: paste an IMAGE off the OS clipboard. We only intercept when an image
+  // is actually present — a text paste is delivered by the terminal as bracketed
+  // paste straight into the textarea, untouched here. The decoded bytes land in a
+  // session temp file and an `@<path>` mention is inserted at the cursor so the
+  // existing mention pipeline (byte caps, media typing) handles the rest.
+  let pastingImage = false;
+  const pasteClipboardImage = async () => {
+    if (pastingImage) return; // a slow probe can't stack presses
+    pastingImage = true;
+    try {
+      const res = await readClipboardImage();
+      if (res.kind === "unavailable") {
+        apply({
+          type: "notice",
+          text: "No clipboard image tool found (install pngpaste on macOS, wl-clipboard/xclip on Linux).",
+          level: "warn",
+        });
+        return;
+      }
+      if (res.kind === "none") return; // text/empty clipboard — nothing to paste as an image
+      const mention = `@${res.path} `;
+      const el = inputEl;
+      if (el) {
+        el.editBuffer.insertText(mention);
+        setDraft(el.editBuffer.getText());
+      } else {
+        setDraft(`${draft()}${mention}`);
+      }
+    } catch (err) {
+      apply({ type: "notice", text: `Clipboard paste failed: ${(err as Error).message}`, level: "warn" });
+    } finally {
+      pastingImage = false;
+    }
+  };
+  // Ctrl+G: compose the draft in $VISUAL/$EDITOR. Suspend the renderer (releases
+  // raw mode + stdin) so the editor owns the terminal, run it with stdio
+  // inherited, then resume and adopt the edited text. Empty file → keep the prior
+  // draft.
+  const editorSpawn: EditorSpawn = (command, args) =>
+    new Promise((resolve, reject) => {
+      try {
+        const proc = Bun.spawn([command, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+        proc.exited.then(() => resolve()).catch(reject);
+      } catch (err) {
+        reject(err as Error);
+      }
+    });
+  let composing = false;
+  const composeDraftInEditor = async () => {
+    if (composing) return;
+    composing = true;
+    const editor = process.env.VISUAL || process.env.EDITOR;
+    if (!editor) {
+      apply({ type: "notice", text: "Set $VISUAL or $EDITOR to compose in an external editor.", level: "warn" });
+      composing = false;
+      return;
+    }
+    renderer.suspend();
+    let result: Awaited<ReturnType<typeof composeInEditor>>;
+    try {
+      result = await composeInEditor({ editor, draft: draft(), spawn: editorSpawn });
+    } finally {
+      renderer.resume();
+    }
+    if (result.kind === "replaced") {
+      setDraft(result.draft);
+      refocusInput();
+    } else if (result.kind === "kept") {
+      apply({ type: "notice", text: "Editor draft was empty — kept your prior text.", level: "info" });
+    } else if (result.kind === "failed") {
+      apply({ type: "notice", text: `Editor failed: ${result.reason}`, level: "warn" });
+    }
+    composing = false;
+  };
   // Apply the highlighted menu row; `run` also submits a complete one.
   const choosePalette = (run: boolean) => chooseAt(selIdx(), run);
   useKeyboard(
@@ -1191,6 +1281,20 @@ export function App(props: { engine: EngineClient }) {
       apply({ type: "toggle-thinking-all" });
       return;
     }
+    // Ctrl+V: paste a clipboard IMAGE as an `@<tmpfile>` mention. Only fires when
+    // an image is present; a text paste is bracketed-paste'd into the textarea and
+    // never reaches here. preventDefault stops the textarea inserting a literal.
+    if (key.ctrl && key.name === "v") {
+      key.preventDefault?.();
+      void pasteClipboardImage();
+      return;
+    }
+    // Ctrl+G: open the draft in $VISUAL/$EDITOR (suspends the TUI for the editor).
+    if (key.ctrl && key.name === "g") {
+      key.preventDefault?.();
+      void composeDraftInEditor();
+      return;
+    }
     // Esc closes the /jobs sub-view first (before it interrupts a turn).
     if (key.name === "escape" && showJobs()) {
       key.preventDefault?.();
@@ -1201,9 +1305,18 @@ export function App(props: { engine: EngineClient }) {
     // Permission shortcuts: while a request is pending and you're not mid-typing,
     // y/a/n answers it directly and Esc rejects it.
     if (perms().length > 0 && !m.open && !draft().trim()) {
-      if (key.name === "y" || key.name === "a" || key.name === "n") {
+      // y once · a always (session) · p always (remember for this project) · n deny.
+      if (key.name === "y" || key.name === "a" || key.name === "p" || key.name === "n") {
         key.preventDefault?.();
-        answerPerm(key.name === "y" ? "once" : key.name === "a" ? "always" : "deny");
+        answerPerm(
+          key.name === "y"
+            ? "once"
+            : key.name === "a"
+              ? "always"
+              : key.name === "p"
+                ? "always-project"
+                : "deny",
+        );
         return;
       }
       if (key.name === "escape") {
@@ -2488,7 +2601,10 @@ export function App(props: { engine: EngineClient }) {
                       { t: " allow once", fg: palette().muted },
                       { t: "  ·  ", fg: palette().muted },
                       { t: "a", fg: palette().assistant },
-                      { t: " always", fg: palette().muted },
+                      { t: " always (session)", fg: palette().muted },
+                      { t: "  ·  ", fg: palette().muted },
+                      { t: "p", fg: palette().assistant },
+                      { t: " always (project)", fg: palette().muted },
                       { t: "  ·  ", fg: palette().muted },
                       { t: "n", fg: palette().assistant },
                       { t: "/", fg: palette().muted },

@@ -63,7 +63,9 @@ async function startRepl(engine: EngineClient): Promise<void> {
         process.stdout.write(
           `\n${ansi.yellow(`${GLYPH.warn} permission`)} ${ansi.bold(toolLabel(event.toolName, event.input))}\n` +
             previewText +
-            ansi.dim("  Allow? y once · a always · n deny — or type why to deny with feedback\n"),
+            ansi.dim(
+              "  Allow? y once · a always (session) · p always (project) · n deny — or type why to deny with feedback\n",
+            ),
         );
       }
     }

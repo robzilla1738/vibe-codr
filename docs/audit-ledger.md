@@ -2151,3 +2151,85 @@ regression-tested where unit-testable.** Gate green after fixes: typecheck 8/8, 
   progressive disclosure, lives in the cacheable prefix; revisit if 100+-skill installs appear.
 - Bare `/<Name>` invocation is case-sensitive (palette/menus always prefill correct case).
 - Skill discovery is one directory deep by design (flat namespace).
+
+---
+
+# EXCELLENCE AUDIT — 2026-07-04 (full-surface: research, coding, planning, skills, MCP, plugins)
+
+A 10-lens review fleet (post-v2 delta, planning, research, coding loop, skills, MCP,
+plugins/hooks, subagents, tech-debt sweep, industry-gap analysis) with per-finding adversarial
+verification produced 24 confirmed findings (7 rejected); all fixed or built across three waves,
+then convergence-audited. Gate green after every wave; convergence = two consecutive clean
+adversarial passes (3 & 4, with mandatory named attestations so a hollow pass can't count).
+
+## Wave 1 — 16 confirmed defects fixed (c490b10)
+- plan-gate: needsWeb accepts webfetch/crawl_docs grounding (webFetches counter was dead in
+  evaluate()); sources remain the evidence gate.
+- engine: >12-step plans seed a catch-all tail task + notice (was: silent drop, completion
+  contract under-tracked); checklist regex indent-bounded; blackboard survives submit-prompt
+  while a detached batch runs (the "never mid-fan-out" invariant now holds with background agents).
+- mcp: read_mcp_resource/get_mcp_prompt were readOnly-without-network → permission gate never
+  consulted (deny rules silently inert) — now network:true; resources/prompts list_changed
+  notifications refresh live (was: connect-time snapshot until reconnect); ${VAR}/${VAR:-default}
+  expansion over command/args/env/url/headers (unresolved-var warning, template never mutated,
+  re-expanded from the original on reconnect); stale "prompts as slash command" comment fixed.
+- config-hooks: user.prompt.submit hooks can rewrite ({text}/{input}) and deny; command-less
+  hooks warn instead of vanishing; stale onError JSDoc removed; schema states which events
+  consume a response.
+- orchestrator: outputSchema enforced on worktree + ensemble paths (was: silently dropped —
+  validated JSON or honest failure before any merge); continue_subagent plan coercion reversible
+  (registry-remembered mode, cleared on evict).
+- tools: grep fallback fileType matches rg -t multi-extension sets (fileType:"ts" was skipping
+  .tsx when rg absent); read offset now 1-based matching displayed line numbers; detectDate
+  bare-year fallback requires a date cue or dateline head (was: first year anywhere in text).
+- skills: every load discloses the skill directory (bundled helpers/CATALOG files were
+  unreachable — second-level progressive disclosure now works).
+- tests: vacuous expect(true) assertions in loop/plugin tests replaced with real invariants.
+
+## Wave 2 — capability parity features (16d582e, b89927c)
+- Hook feedback channels: session.idle {continue,reason} forces bounded follow-up turns (Stop
+  parity; MAX_IDLE_CONTINUES=3 per real prompt; engine-idle terminal invariant preserved;
+  children never run the continue loop); tool.after.execute {additionalContext,deny} (PostToolUse
+  parity; deny = override-the-result, documented); declarative config hooks map the same fields.
+- Checkpoint rewind: restoreTo(id) multi-step rewind + redo stack; /undo [n|id]; /redo;
+  /checkpoints numbered; conversation tail travels with the redo step.
+- Persistent always-allow: 4th interactive decision persists a scoped project rule (validated
+  merge, dedup, degrade-to-session on write failure).
+- TUI: Ctrl+V clipboard image paste (pngpaste/osascript/wl-paste/xclip, PNG-validated,
+  per-session temp dir cleaned on exit); Ctrl+G $EDITOR compose (renderer suspend/resume).
+- Windows: bun-windows-x64 release target + SHA256SUMS + asset; advisory (continue-on-error)
+  windows-latest CI job; README documents experimental-native/WSL2-recommended + the
+  no-OS-sandbox caveat.
+
+## Convergence passes
+- **Pass 1 (9 confirmed → fixed, 0bc3880):** a session.idle continue hook could resurrect an
+  Esc-aborted/budget-stopped turn (interrupted guard added); prompt-submit deny ran AFTER the
+  handoff plan-discard + checkpoint snapshot (a denied handoff deleted the approved plan — deny
+  hoisted above all mutation); persisted always-project command grants glob-compiled (`rm build/*`
+  would auto-allow `rm build/../secret.env` next session) — new **matchExact** rule form (literal,
+  no glob semantics; same precedence tier as scoped match); /redo desynced conversation from files
+  (truncate-only rewind — now stashes/re-appends the sliced tail); restoreTo lost the newest edits
+  (pre-rewind tree captured as a phantom redo step); bare `p` permission shortcut fired on the
+  first keystroke of a typed deny AND wrote a durable allow (moved to Ctrl+P); clipboard temp
+  leak; permission-card 80-col overflow (flexWrap).
+- **Pass 2 (1 confirmed → fixed, f1c4536):** /redo blindly re-appended a stale conversation tail
+  after /clear or an intervening non-execute turn — the stash now carries the post-rewind mark and
+  re-appends only while the conversation still sits at it; /clear drops stashed payloads
+  (dropRedoPayloads) so the mark-{0,0} edge can't resurrect cleared context.
+- **Pass 3: CLEAN.** Pass 4 (fresh eyes, tools/mcp + tui re-covered after a hollow pass-3
+  attestation, whole-diff read): **CLEAN** — 36 named mechanism attestations. CONVERGED.
+
+## Rejected findings (verified non-issues or deliberate; do not re-fix)
+- robots.txt/politeness in crawl_docs + Retry-After cooldown — judged not materially blocking for
+  a docs-crawler with same-site bounds + caps; revisit only with real-world abuse evidence.
+- Skills `allowed-tools` frontmatter scoping — use_skill is a context injection, not a subagent
+  boundary; per-skill toolsets need a session-level mechanism (roadmap, not a bug).
+- Detached-subagent semaphore starvation (maxDetached == maxParallel) — real mechanism, but
+  bounded by the detached cap + AIMD; recorded as tuning follow-up, not a defect.
+- Social/forum down-ranking in deep search; hosted session sharing; full IDE extensions —
+  roadmap items, not defects. The cheap IDE pieces (Ctrl+G $EDITOR compose) shipped instead.
+
+## Verification at close
+Gate green after every wave and at close: typecheck 8/8, lint clean, 15/15 turbo test tasks
+(core 800+, all packages 0 fail), smoke:tui OK. Session total: 5 commits, ~60 files,
++3400/−330, every behavior change regression-tested.

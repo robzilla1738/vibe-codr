@@ -340,7 +340,9 @@ Highlights:
   vesper), `/accent <name|hex>` (a live swatch submenu — orange, blue, ember, …).
   Press **Shift+Tab** to cycle the mode (the colored `MODE ❯` label + rail on
   the input): **plan → execute → yolo → plan**.
-- **Steering** — `/goal <text>`,
+- **Steering** — `/goal <text>` (sets the north star **and starts an
+  autonomous plan→execute→verify run** toward it; bare `/goal` shows it,
+  `/goal clear` stops it),
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
   `/queue` (`/queue clear`).
 - **Code & safety** — `/diff`, `/review`, `/verify`, `/undo [index|id]`
@@ -627,9 +629,25 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   worktrees (squash-merged on success), and `hard:true` can fan into a
   best-of-N ensemble (`build.ensemble.n`, off by default). Task events are
   journaled, so a re-submitted plan re-runs only unfinished tasks.
-- **`/goal`** injects a north-star into every system prompt; **`/loop`** reruns a
-  prompt on an interval until a `--until` condition (checked with a structured
-  model call) or `--max` is reached.
+- **`/goal <text>`** sets a north-star (injected into every system prompt) and
+  **drives an autonomous plan→execute→verify pipeline** toward it. PLAN: a
+  dedicated read-only turn investigates the repo, produces a step-by-step
+  checklist, and seeds it as the task list (the engine parses the plan text
+  itself if the model forgets — the run always has a task spine). EXECUTE: the
+  task list is driven to completion turn by turn under the same contract the
+  plan→execute handoff uses; unfinished tasks are a deterministic "not done"
+  (no model judgment spent). VERIFY: once the list is complete, the engine
+  self-assesses the goal with a structured model call (fed the task list, the
+  diff, and the gate outcome — a red gate can never pass), and only finishes
+  after the model claims done **and** survives a dedicated adversarial verify
+  turn (2 consecutive clean passes). One unified budget bounds everything
+  (`goal.maxRounds`, default 25; `goal.planFirst: false` restores the single
+  blended turn). Typing mid-run steers the run, Esc pauses it (★ stays),
+  `/goal clear` stops it, and a live run **survives `--resume`** — it picks up
+  at the same round and phase. `/goal` from plan mode auto-switches to execute
+  (approvals preserved). **`/loop`** reruns a prompt on an interval until a
+  `--until` condition (checked with a structured model call) or `--max` is
+  reached.
 - **Persistence & compaction** — every turn is saved to
   `.vibe/sessions/<id>/`; long conversations auto-compact against the active
   model's context window (from the catalog), preserving the system prompt, goal,

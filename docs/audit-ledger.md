@@ -2233,3 +2233,59 @@ adversarial passes (3 & 4, with mandatory named attestations so a hollow pass ca
 Gate green after every wave and at close: typecheck 8/8, lint clean, 15/15 turbo test tasks
 (core 800+, all packages 0 fail), smoke:tui OK. Session total: 5 commits, ~60 files,
 +3400/−330, every behavior change regression-tested.
+
+# /GOAL AUTONOMOUS DRIVER — 2026-07-04 (plan → execute → verify pipeline)
+
+Trigger: `/goal <text>` from the splash only painted the ★ header — `set-goal` stored metadata,
+enqueued nothing, emitted nothing, so the view never left the home screen and no work started.
+Robert's directive: make /goal industry leading — take a goal, plan, execute, and go through
+until it's accomplished. Shipped in two waves the same day (driver v1, pipeline v2).
+
+## v1 — /goal becomes a driver
+- Routing collapsed: the TUI's `set-goal` special-case removed; `/goal` routes via run-slash to
+  ONE verb parser (engine-commands) — bare `/goal` SHOWS (it used to silently clear), `clear|
+  none|off|stop|reset` clears + stops, `<text>` sets + drives. Dead duplicate handler deleted.
+- `set-goal` with text arms `#goalRunActive` and enqueues a drive turn through #handlePrompt —
+  the run gets the user-message view-flip, checkpoints, green-gate, and diff review for free.
+- After each turn, #maybeContinueGoal self-assesses (generateObject {met, gaps, reason}, same
+  retry/limiter/deadline rails as the /loop --until evaluator) and re-enqueues continuations
+  naming the gaps. Convergence: first "met" buys an adversarial verify turn; the run ends only
+  after 2 consecutive clean passes (MAX_GOAL_CLEAN_PASSES, the audit-convergence discipline).
+- Bounds + lifecycle: config `goal.maxRounds` (default 25); Esc pauses keeping the ★; /goal
+  clear sweeps queued `goal: `-labelled turns (label-prefix disjoint from `loop: ` — /loop
+  untouched); an errored turn (session.run swallows provider errors into lastError) pauses the
+  run instead of burning 25 doomed rounds; a steer folds in (flag survives submit-prompt, the
+  counters re-grant); continuations stack-guarded (one queued goal turn at a time).
+
+## v2 — explicit PLAN → EXECUTE → VERIFY
+- PLAN: a dedicated read-only-by-prompt turn (investigate → `- [ ]` checklist → update_tasks).
+  Real plan mode was REJECTED deliberately: #setModeGated resets approvals (stalls YOLO runs),
+  plan-presented renders a human-approval card, the PlanGate can reject mid-run, planModel adds
+  a swap round-trip. Seeding is engine-verified (#beginGoalExecution): model forgot update_tasks
+  → parse its text with the #seedTasksFromPlan parser → still nothing → one goal-titled task.
+  The run ALWAYS has a task spine.
+- EXECUTE: the shared task contract (extracted #taskContractText — the handoff and the goal
+  execute turn can't drift) + `#planExecutionActive`; #maybeContinueTasks drives the list. NOT
+  opts.handoff (it consumes #lastPlan + deletes the plan file — would destroy a user's real
+  pending plan). During a goal run task continuations charge the UNIFIED `#goalContinueRounds`
+  budget (not gate.maxRounds — stacked budgets balloon 25 rounds to ~150 turns), carry the
+  `goal: continue tasks` label (sweepable), and take fresh per-round gate budgets.
+- VERIFY: unfinished tasks are a deterministic not-met (no model call spent); the assessment
+  evidence carries the task list, capped diff, and `Gate:` line; exported applyGateToVerdict
+  hard-overrides met=true on a red gate. The adversarial verify prompt treats in_progress/
+  pending tasks as not done.
+- Resume: engine.json now persists {goalRunActive, goalPhase, goalContinueRounds,
+  goalCleanPasses}; bootstrap re-enters a live run ("Resuming goal run (round N/M)") via a
+  queued `goal: resume` item (whenIdle-covered, sweepable) — plan phase re-runs the plan turn,
+  execute phase re-enters assessment-driven. Esc/clear/exhaust/error-pause persist the disarm
+  so a killed session can't resurrect a stopped run.
+- Mode safety: /goal from plan mode flips to execute via #setModeGated + wantAuto capture/
+  restore (the #approvePlan pattern) — NEVER send(set-mode), whose approvingPlan branch would
+  silently approve a lingering presented plan.
+- Kill-switch: `goal.planFirst: false` = legacy single blended turn, kept regression-tested.
+
+## Verification at close
+13 tests in engine-goal.test.ts (5 legacy-path + 8 pipeline: happy path, seeding fallback,
+task-driven layering, unified budget single-warn, gate-red override unit, live-state resume,
+plan-mode entry non-hijack, steer re-arm), run 8× consecutively clean (one persist-race flake
+found and fixed in the resume test). Typecheck 8/8, turbo tests 15/15 (core 812+), smoke:tui OK.

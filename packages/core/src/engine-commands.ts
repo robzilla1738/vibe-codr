@@ -524,7 +524,10 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       h.handleLoop(args);
       break;
     case "undo":
-      await handleUndo(h);
+      await handleUndo(h, args);
+      break;
+    case "redo":
+      await handleRedo(h);
       break;
     case "checkpoints":
       await handleCheckpoints(h);
@@ -1004,32 +1007,105 @@ async function handleVerify(h: EngineHandle): Promise<void> {
   h.notice(result.ok ? "Verification passed." : "Verification failed.");
 }
 
-/** `/undo` — restore the most recent checkpoint. */
-async function handleUndo(h: EngineHandle): Promise<void> {
+/** `/undo [n|id]` — bare restores the most recent checkpoint (single-step);
+ * with an index (as shown by `/checkpoints`, newest = 1) or a checkpoint id it
+ * rewinds multiple steps at once, stacking the skipped ones for `/redo`. */
+async function handleUndo(h: EngineHandle, args: string): Promise<void> {
   if (!(await h.checkpoints.isGitRepo())) {
     h.notice("Checkpoints need a git repository; nothing to undo.", "warn");
     return;
   }
-  const cp = await h.checkpoints.undo();
+  const arg = args.trim();
+  if (arg) {
+    const list = await h.checkpoints.list();
+    const target = resolveCheckpointArg(list, arg);
+    if (!target) {
+      h.notice(`No checkpoint "${arg}". Run /checkpoints to see the list.`, "warn");
+      return;
+    }
+    const cp = await h.checkpoints.restoreTo(target.id);
+    if (!cp) {
+      h.notice("Could not restore that checkpoint (its snapshot is gone).", "warn");
+      return;
+    }
+    finishRestore(h, cp);
+    return;
+  }
+  const cp = await h.checkpoints.undo(h.session.conversationMark());
   if (!cp) {
     h.notice("No checkpoint to undo.");
     return;
   }
-  // Roll the conversation back to match the restored files so the model no
-  // longer believes the undone edits exist.
+  finishRestore(h, cp);
+}
+
+/** `/redo` — re-apply the most recently undone checkpoint. */
+async function handleRedo(h: EngineHandle): Promise<void> {
+  if (!(await h.checkpoints.isGitRepo())) {
+    h.notice("Checkpoints need a git repository; nothing to redo.", "warn");
+    return;
+  }
+  const cp = await h.checkpoints.redo();
+  if (!cp) {
+    h.notice("Nothing to redo.");
+    return;
+  }
+  if (cp.conversation) h.session.rewindConversation(cp.conversation);
+  h.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
+  h.notice(`Redid: ${cp.label}`);
+}
+
+/** Shared tail for /undo: roll the conversation back to match the restored files
+ * (so the model no longer believes the undone edits exist), notify, confirm. */
+function finishRestore(h: EngineHandle, cp: { id: string; label: string; conversation?: { messages: number; history: number } }): void {
   if (cp.conversation) h.session.rewindConversation(cp.conversation);
   h.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
   h.notice(`Reverted to checkpoint: ${cp.label}`);
 }
 
-/** `/checkpoints` — list saved checkpoints. */
+/** Map a `/undo` argument to a checkpoint: a 1-based index into the displayed
+ * (newest-first) list, or an exact/suffix id match. Null when out of range. */
+function resolveCheckpointArg<T extends { id: string }>(list: T[], arg: string): T | undefined {
+  if (/^\d+$/.test(arg)) {
+    const n = Number(arg);
+    // `/checkpoints` prints newest first as #1; index from the tail of the
+    // newest-last `list`.
+    return n >= 1 && n <= list.length ? list[list.length - n] : undefined;
+  }
+  return list.find((c) => c.id === arg) ?? list.find((c) => c.id.endsWith(arg));
+}
+
+/** `/checkpoints` — list saved checkpoints, numbered newest-first with age. */
 async function handleCheckpoints(h: EngineHandle): Promise<void> {
   const list = await h.checkpoints.list();
-  h.notice(
-    list.length
-      ? `Checkpoints (newest last):\n${list.map((c) => `  ${c.label}`).join("\n")}`
-      : "No checkpoints yet. One is taken before each edit turn (git repos).",
-  );
+  if (!list.length) {
+    h.notice("No checkpoints yet. One is taken before each edit turn (git repos).");
+    return;
+  }
+  const now = Date.now();
+  const lines = [...list]
+    .reverse()
+    .map((c, i) => `  ${i + 1}. ${c.label} (${relativeAge(now - c.createdAt)})`);
+  const redoDepth = h.checkpoints.redoDepth();
+  const footer = [
+    "Use /undo <n> to rewind to an entry, /redo to step forward.",
+    redoDepth ? `${redoDepth} step${redoDepth === 1 ? "" : "s"} available to /redo.` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  h.notice(`Checkpoints (newest first):\n${lines.join("\n")}\n${footer}`);
+}
+
+/** Compact "3m ago"-style age from a millisecond delta. */
+function relativeAge(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const hrs = Math.round(m / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
 }
 
 /** Selectable UI theme names — the single source of truth is `@vibe/shared`'s
@@ -1039,8 +1115,10 @@ async function handleCheckpoints(h: EngineHandle): Promise<void> {
 const KNOWN_THEMES = new Set(THEME_NAMES);
 
 /** Safety-critical built-in slash commands a custom command must not shadow.
- * Only names with a real built-in handler belong here — listing a phantom (there
- * is no `/redo`) would block a user's own `/redo` while offering no replacement.
+ * `/redo` DOES have a built-in handler now (multi-step rewind's forward step),
+ * but is deliberately LEFT OUT: a user's own `/redo` should still win (guarded by
+ * a regression test), and unlike `/undo` a stray custom `/redo` can't destroy work
+ * a real `/redo` would have restored — it just forgoes the built-in convenience.
  * `skill` is reserved because it exists precisely to be the UNshadowable way to
  * reach a skill whose bare name collides with a built-in or custom command —
  * a custom `/skill` would take that escape hatch away. */

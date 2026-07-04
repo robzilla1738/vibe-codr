@@ -49,6 +49,76 @@ test("a user.prompt.submit DENY marks the payload so the engine cancels the turn
   expect(out.text).toBe("secret"); // deny short-circuits the rewrite
 });
 
+test("parseHookOutput reads additionalContext and continue", () => {
+  expect(parseHookOutput('{"additionalContext":"note"}')).toEqual({ additionalContext: "note" });
+  expect(parseHookOutput('{"continue":true,"reason":"more"}')).toEqual({ continue: true, reason: "more" });
+  expect(parseHookOutput('{"continue":false}')).toEqual({}); // false is not a continue
+});
+
+test("declarative tool.after.execute hook maps additionalContext onto the payload", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "tool.after.execute", command: "annotate.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({ additionalContext: "linted OK" }),
+  });
+  const out = await bus.run("tool.after.execute", { toolName: "write", output: "wrote file" }) as {
+    additionalContext?: string;
+  };
+  expect(out.additionalContext).toBe("linted OK");
+});
+
+test("declarative tool.after.execute hook maps deny/reason onto the payload (override the result)", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "tool.after.execute", command: "guard.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({ deny: true, reason: "secret leaked" }),
+  });
+  const out = await bus.run("tool.after.execute", { toolName: "read", output: "AKIA…" }) as {
+    deny?: boolean;
+    reason?: string;
+  };
+  expect(out.deny).toBe(true);
+  expect(out.reason).toBe("secret leaked");
+});
+
+test("declarative tool.after.execute hook honors the matcher", async () => {
+  const bus = new HookBus();
+  let ran = 0;
+  registerConfigHooks([hook({ event: "tool.after.execute", command: "x", matcher: "write" })], bus, {
+    exec: async (): Promise<HookRunResult> => {
+      ran++;
+      return { additionalContext: "n" };
+    },
+  });
+  await bus.run("tool.after.execute", { toolName: "read", output: "x" }); // no match
+  expect(ran).toBe(0);
+  const out = await bus.run("tool.after.execute", { toolName: "write", output: "x" }) as {
+    additionalContext?: string;
+  };
+  expect(ran).toBe(1);
+  expect(out.additionalContext).toBe("n");
+});
+
+test("declarative session.idle hook maps continue/reason onto the payload", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "session.idle", command: "stop-check.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({ continue: true, reason: "tests still failing" }),
+  });
+  const out = await bus.run("session.idle", { sessionId: "s" }) as {
+    continue?: boolean;
+    reason?: string;
+  };
+  expect(out.continue).toBe(true);
+  expect(out.reason).toBe("tests still failing");
+});
+
+test("declarative session.idle hook without continue leaves the payload settling idle", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "session.idle", command: "stop-check.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({}), // hook satisfied, no continue
+  });
+  const out = await bus.run("session.idle", { sessionId: "s" }) as { continue?: boolean };
+  expect(out.continue).toBeUndefined();
+});
+
 test("a non-vetoable event (assistant.message) stays observe-only", async () => {
   const bus = new HookBus();
   registerConfigHooks([hook({ event: "assistant.message", command: "notify.sh" })], bus, {

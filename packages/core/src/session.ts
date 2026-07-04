@@ -955,8 +955,14 @@ export class Session {
                 // the tool with it; `deny`/`reason` block it.
                 return { deny: r.deny, reason: r.reason, input: r.input };
               },
-              afterTool: (toolName: string, output: unknown) =>
-                void hooks.run("tool.after.execute", { toolName, output }),
+              afterTool: async (toolName: string, output: unknown) => {
+                // Consume the PostToolUse-style result: a handler may append
+                // `additionalContext` to the tool output the model sees next
+                // step, or `deny` (+reason) to hide/override it. The tool has
+                // already executed — deny only rewrites what the model is told.
+                const r = await hooks.run("tool.after.execute", { toolName, output });
+                return { additionalContext: r.additionalContext, deny: r.deny, reason: r.reason };
+              },
             }
           : {}),
       };
@@ -1149,7 +1155,7 @@ export class Session {
               >,
             }
           : {}),
-        onStepFinish: ({ usage, providerMetadata, response }) => {
+        onStepFinish: async ({ usage, providerMetadata, response }) => {
           // Buffer this completed step's messages (assistant tool_use + its tool
           // results — matched pairs, since the step FINISHED). response.messages
           // is cumulative across the turn, so REPLACE rather than append: the last
@@ -1179,8 +1185,10 @@ export class Session {
             usage: stepUsage,
           });
           // Fire the plugin step boundary hook (was declared but never dispatched,
-          // so registered handlers silently never ran). Best-effort, errors isolated.
-          void this.#deps.hooks?.run("step.finish", { sessionId: this.id });
+          // so registered handlers silently never ran). Awaited for symmetry with
+          // the other lifecycle dispatches; response fields are unused for now.
+          // Best-effort, errors isolated by the HookBus.
+          await this.#deps.hooks?.run("step.finish", { sessionId: this.id });
           addUsage(this.#usage, stepUsage);
           // Track the provider's real prompt size (the true context fill) and
           // surface it live — the JSON estimate omitted the system prompt + tool

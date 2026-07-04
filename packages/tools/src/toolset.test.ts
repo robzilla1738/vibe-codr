@@ -143,6 +143,58 @@ test("beforeTool hook can veto a tool call; afterTool observes output", async ()
   expect(seen).toEqual(["did it"]);
 });
 
+/** Build a single-tool exec harness returning the AI-SDK execute result. */
+function afterToolHarness(
+  toolOutput: string,
+  afterTool: NonNullable<Parameters<Toolset["aiTools"]>[1]["afterTool"]>,
+  recorded?: Array<{ id: string; isError: boolean }>,
+) {
+  const tool: ToolDefinition = {
+    name: "annotate",
+    description: "t",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    async execute() {
+      return { output: toolOutput };
+    },
+  };
+  const ts = new Toolset([tool]);
+  const tools = ts.aiTools("execute", {
+    cwd: ".",
+    sessionId: "s",
+    emit: () => {},
+    afterTool,
+    ...(recorded ? { recordToolResult: (id: string, isError: boolean) => recorded.push({ id, isError }) } : {}),
+  });
+  return (tools.annotate as unknown as {
+    execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
+  }).execute({}, { toolCallId: "1" });
+}
+
+test("afterTool additionalContext is appended (delimited) to the tool result output", async () => {
+  const out = await afterToolHarness("wrote 3 lines", () => ({ additionalContext: "prettier reformatted it" }));
+  expect(out).toBe("wrote 3 lines\n\n[hook: tool.after.execute] prettier reformatted it");
+});
+
+test("afterTool deny yields an isError result carrying the reason (result already produced)", async () => {
+  const recorded: Array<{ id: string; isError: boolean }> = [];
+  const out = await afterToolHarness("the secret is AKIA…", () => ({ deny: true, reason: "leaked a credential" }), recorded);
+  expect(String(out)).toBe("ERROR: leaked a credential");
+  expect(recorded).toEqual([{ id: "1", isError: true }]); // recorded as an error
+});
+
+test("afterTool deny without a reason still overrides with a generic isError", async () => {
+  const out = await afterToolHarness("output", () => ({ deny: true }));
+  expect(String(out)).toContain("ERROR:");
+  expect(String(out)).toContain("denied by a tool.after.execute hook");
+});
+
+test("afterTool returning nothing leaves the tool output untouched", async () => {
+  const out = await afterToolHarness("plain", () => undefined);
+  expect(out).toBe("plain");
+});
+
 test("aiTools serializes mutating tools but lets read-only tools overlap", async () => {
   const order: string[] = [];
   const makeTool = (name: string, concurrencySafe: boolean, ms: number): ToolDefinition => ({

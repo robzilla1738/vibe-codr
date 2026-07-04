@@ -312,6 +312,110 @@ test("/undo restores THIS session's checkpoint, never a concurrent session's (no
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("A-original\n");
 });
 
+test("restoreTo lands the tree on the chosen checkpoint and stacks the newer ones as redos", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  const c0 = await cp.snapshot("v0");
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  await cp.snapshot("v1");
+  await Bun.write(join(dir, "a.txt"), "v2\n");
+  await cp.snapshot("v2");
+  await Bun.write(join(dir, "a.txt"), "v3\n");
+  await cp.snapshot("v3");
+
+  // Rewind three steps at once, straight back to c0.
+  const target = await cp.restoreTo(c0!.id);
+  expect(target?.label).toBe("v0");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v0\n");
+  // Three newer checkpoints are now on the redo stack.
+  expect(cp.redoDepth()).toBe(3);
+
+  // Redo walks forward one step at a time (closest-to-target first).
+  expect((await cp.redo())?.label).toBe("v1");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
+  expect((await cp.redo())?.label).toBe("v2");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v2\n");
+  expect((await cp.redo())?.label).toBe("v3");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v3\n");
+  // Stack drained → nothing to redo.
+  expect(cp.redoDepth()).toBe(0);
+  expect(await cp.redo()).toBeNull();
+});
+
+test("restoreTo removes files created after the target (like undo)", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "base\n");
+  const base = await cp.snapshot("base");
+  // A later turn adds a file and takes another checkpoint.
+  await Bun.write(join(dir, "added-later.txt"), "later\n");
+  await cp.snapshot("later");
+
+  await cp.restoreTo(base!.id);
+  // The file created after the target is gone; a.txt is back to the target tree.
+  expect(await Bun.file(join(dir, "added-later.txt")).exists()).toBe(false);
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("base\n");
+});
+
+test("redo after one undo restores the pre-undo tree byte-for-byte", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+
+  // Real turn shape: a pre-edit snapshot, the model edits, a green result marker.
+  await cp.snapshot("edit"); // a.txt == "original\n"
+  await Bun.write(join(dir, "a.txt"), "EDITED\n");
+  await Bun.write(join(dir, "extra.bin"), "\u0000byte\u00ff\n"); // a newly-created file too
+  await cp.snapshot("green: edit", undefined, { green: true });
+
+  const undone = await cp.undo();
+  expect(undone?.label).toBe("edit");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("original\n");
+  expect(await Bun.file(join(dir, "extra.bin")).exists()).toBe(false);
+
+  // Redo must restore the exact pre-undo working tree — content AND the new file.
+  const re = await cp.redo();
+  expect(re).not.toBeNull();
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("EDITED\n");
+  expect(await Bun.file(join(dir, "extra.bin")).text()).toBe("\u0000byte\u00ff\n");
+});
+
+test("a new edit-checkpoint clears the redo stack", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  await cp.snapshot("t1");
+  await Bun.write(join(dir, "a.txt"), "edited\n");
+  await cp.snapshot("green: t1", undefined, { green: true });
+
+  await cp.undo();
+  expect(cp.redoDepth()).toBe(1); // one step available
+
+  // A fresh edit-checkpoint invalidates the redo line.
+  await Bun.write(join(dir, "a.txt"), "brand new work\n");
+  await cp.snapshot("t2");
+  expect(cp.redoDepth()).toBe(0);
+  expect(await cp.redo()).toBeNull();
+});
+
+test("restoreTo holds the dead-commit guard: a gone snapshot is a no-op, not a wipe", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  await Bun.write(join(dir, "precious.txt"), "irreplaceable\n"); // untracked user work
+  const snap = await cp.snapshot("before");
+
+  // Garbage-collect the snapshot commit so read-tree/ls-tree fail with empty output.
+  await git(dir, ["update-ref", "-d", `refs/vibecodr/${snap!.id}`]);
+  await git(dir, ["reflog", "expire", "--expire=now", "--all"]);
+  await git(dir, ["gc", "--prune=now"]);
+
+  const restored = await cp.restoreTo(snap!.id);
+  expect(restored).toBeNull(); // refused, not a partial restore
+  expect(cp.redoDepth()).toBe(0); // nothing moved onto the redo stack
+  expect(await Bun.file(join(dir, "precious.txt")).exists()).toBe(true); // untracked file survives
+  // `git gc --prune=now` can exceed the 5s default under full-suite load.
+}, 30_000);
+
 test("a resumed manager's /undo is scoped to ITS session, not others in the shared file", async () => {
   // The cwd-keyed checkpoints.json accumulates every session's entries. A fresh
   // (resumed) manager for session A must load only A's checkpoints, so /undo

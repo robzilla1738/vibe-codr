@@ -49,7 +49,8 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "diff", description: "Show the working-tree diff" },
   { name: "review", description: "Review the working-tree changes" },
   { name: "verify", description: "Run the configured verify command" },
-  { name: "undo", description: "Revert to the last checkpoint" },
+  { name: "undo", description: "Revert to the last checkpoint (or /undo <n> to jump)" },
+  { name: "redo", description: "Re-apply the most recently undone checkpoint" },
   { name: "checkpoints", description: "List workspace checkpoints" },
   // Extensions & config
   { name: "config", description: "Show the effective config" },

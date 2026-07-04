@@ -8,10 +8,22 @@ export interface HookPayloads {
     deny?: boolean;
     reason?: string;
   };
-  "tool.after.execute": { toolName: string; output: unknown };
+  // PostToolUse-equivalent: the tool ALREADY ran. A handler may append
+  // `additionalContext` (delimited onto the result the model reads next step) or
+  // set `deny:true` (+`reason`) to hide/override the result with an isError.
+  "tool.after.execute": {
+    toolName: string;
+    output: unknown;
+    additionalContext?: string;
+    deny?: boolean;
+    reason?: string;
+  };
   "step.finish": { sessionId: string };
   "assistant.message": { sessionId: string; text: string };
-  "session.idle": { sessionId: string };
+  // Stop-equivalent: fired when the engine queue fully drains. A handler may set
+  // `continue:true` (+`reason`) to inject one more turn instead of settling idle
+  // (the engine hard-bounds the number of continuations per user prompt).
+  "session.idle": { sessionId: string; continue?: boolean; reason?: string };
   "session.end": { sessionId: string };
 }
 

@@ -1,10 +1,29 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { UIEvent } from "@vibe/shared";
 import { ACCENT_PRESETS, THEME_NAMES } from "@vibe/shared";
 import { defaultConfig } from "@vibe/config";
 import type { Skill } from "@vibe/plugins";
 import { Engine } from "./engine.ts";
+import { CheckpointManager } from "./checkpoints.ts";
 import { buildSkillPrompt } from "./engine-commands.ts";
+
+async function git(cwd: string, args: string[]): Promise<void> {
+  await Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).exited;
+}
+
+async function gitRepo(): Promise<string> {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-cmd-cp-"));
+  await git(dir, ["init", "-q"]);
+  await git(dir, ["config", "user.email", "t@t.dev"]);
+  await git(dir, ["config", "user.name", "t"]);
+  await Bun.write(join(dir, "a.txt"), "original\n");
+  await git(dir, ["add", "-A"]);
+  await git(dir, ["commit", "-qm", "init"]);
+  return dir;
+}
 
 function skill(dir: string): Skill {
   return { name: "helper", description: "d", dir, load: async () => "body" };
@@ -185,4 +204,49 @@ test("/skill-as-prompt injection omits the directory line when a skill has no di
   const prompt = buildSkillPrompt(skill(""), "read helpers.py first", "");
   expect(prompt).toContain("read helpers.py first");
   expect(prompt).not.toContain("Skill directory:");
+});
+
+test("/undo <index> routes through restoreTo to the chosen checkpoint", async () => {
+  const dir = await gitRepo();
+  // Seed checkpoints with a session-agnostic manager; the untagged entries are
+  // visible to the Engine's own (session-scoped) manager on the same cwd.
+  const seed = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await seed.snapshot("v0");
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  await seed.snapshot("v1");
+
+  const engine = new Engine({ config: defaultConfig(), cwd: dir });
+  const events = collect(engine);
+  // Newest = index 1 (v1); index 2 is the older v0.
+  engine.send({ type: "run-slash", name: "undo", args: "2" });
+  await engine.whenIdle();
+
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v0\n");
+  expect(notices(events).some((n) => n.message === "Reverted to checkpoint: v0")).toBe(true);
+});
+
+test("/undo with an out-of-range index reports honestly instead of restoring", async () => {
+  const dir = await gitRepo();
+  const seed = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await seed.snapshot("v0");
+
+  const engine = new Engine({ config: defaultConfig(), cwd: dir });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "undo", args: "9" });
+  await engine.whenIdle();
+
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v0\n"); // unchanged
+  expect(notices(events).at(-1)!.message).toContain('No checkpoint "9"');
+  expect(notices(events).at(-1)!.level).toBe("warn");
+});
+
+test("/redo with an empty stack reports honestly", async () => {
+  const dir = await gitRepo();
+  const engine = new Engine({ config: defaultConfig(), cwd: dir });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "redo", args: "" });
+  await engine.whenIdle();
+  expect(notices(events).at(-1)!.message).toBe("Nothing to redo.");
 });

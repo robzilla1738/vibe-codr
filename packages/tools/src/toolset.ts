@@ -42,8 +42,17 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
     toolName: string,
     input: unknown,
   ) => Promise<{ deny?: boolean; reason?: string; input?: unknown }>;
-  /** Plugin hook fired after a tool produces output. */
-  afterTool?: (toolName: string, output: unknown) => void | Promise<void>;
+  /** Plugin hook fired after a tool produces output (PostToolUse-equivalent).
+   * The tool has ALREADY run; the returned directive influences what the model
+   * sees: `additionalContext` is appended (delimited) to the result, and `deny`
+   * hides/overrides the result with an isError carrying `reason`. */
+  afterTool?: (
+    toolName: string,
+    output: unknown,
+  ) =>
+    | void
+    | { additionalContext?: string; deny?: boolean; reason?: string }
+    | Promise<void | { additionalContext?: string; deny?: boolean; reason?: string }>;
   /** Per-file write lock shared across the whole session tree (see ToolContext). */
   lockFile?: <T>(absPath: string, fn: () => Promise<T>) => Promise<T>;
   /** Compiler diagnostics for a just-mutated file (see ToolContext.diagnose). */
@@ -366,7 +375,15 @@ export function toAISDKTool(
       base.recordToolResult?.(options.toolCallId, true);
       return `ERROR: ${def.name} threw: ${(err as Error)?.message ?? String(err)}`;
     }
-    await base.afterTool?.(def.name, result.output);
+    const after = await base.afterTool?.(def.name, result.output);
+    // PostToolUse deny: the tool DID run, but the hook wants its result hidden
+    // and the model told why — surface it through the same isError contract as a
+    // returned error (record the side-channel, prefix ERROR:). This overrides an
+    // otherwise-successful result on purpose.
+    if (after?.deny) {
+      base.recordToolResult?.(options.toolCallId, true);
+      return `ERROR: ${after.reason ?? `tool "${def.name}" result was denied by a tool.after.execute hook`}`;
+    }
     base.recordToolResult?.(options.toolCallId, result.isError === true);
     if (result.isError) {
       const text =
@@ -374,6 +391,15 @@ export function toAISDKTool(
           ? result.output
           : JSON.stringify(result.output);
       return `ERROR: ${text}`;
+    }
+    // PostToolUse additionalContext: append the hook's note to the result, clearly
+    // delimited so the model reads it as annotation (not tool output) next step.
+    if (after?.additionalContext) {
+      const text =
+        typeof result.output === "string"
+          ? result.output
+          : JSON.stringify(result.output);
+      return `${text}\n\n[hook: tool.after.execute] ${after.additionalContext}`;
     }
     return result.output;
   };

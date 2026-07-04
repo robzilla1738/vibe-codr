@@ -68,8 +68,18 @@ export const WebfetchConfigSchema = z.object({
 });
 
 /** A declarative lifecycle hook: run a shell command or POST to a URL on an
- * event, with the payload as JSON. Only `tool.before.execute` and
- * `user.prompt.submit` consume a response; all other events are observe-only. */
+ * event, with the payload as JSON. Four events consume the hook's response
+ * (the rest are observe-only). Per-event response contract:
+ *   - tool.before.execute — `{deny,reason}` blocks the tool; `{input}` rewrites its arguments.
+ *   - tool.after.execute  — `{additionalContext}` is appended (delimited) to the result the
+ *                           model reads next step; `{deny,reason}` hides/overrides the result
+ *                           with an isError. NOTE: the tool ALREADY ran — deny here does not
+ *                           un-execute it, it only changes what the model is told.
+ *   - user.prompt.submit  — `{deny}` cancels the turn; `{text}` (or a string `{input}`) rewrites the prompt.
+ *   - session.idle        — `{continue:true}` (+optional `{reason}`) injects one more turn built from
+ *                           `reason` instead of settling idle (Stop-equivalent). Bounded per user
+ *                           prompt by the engine, so a runaway hook cannot loop forever.
+ *   - session.start / step.finish / assistant.message / session.end — observe-only (response ignored). */
 export const HookSchema = z.object({
   /** Lifecycle event to hook (matches @vibe/plugins HookName). */
   event: z.enum([
@@ -85,10 +95,9 @@ export const HookSchema = z.object({
   /** Glob matched against the tool name for tool.* events (omit = all). */
   matcher: z.string().optional(),
   /** Shell command; receives the payload as JSON on stdin. Its stdout JSON is
-   * honored per event: on `tool.before.execute`, `{deny,reason}` blocks the tool
-   * and `{input}` rewrites its arguments; on `user.prompt.submit`, `{deny}` cancels
-   * the turn and `{text}` (or a string `{input}`) rewrites the prompt. Other events
-   * ignore the response. */
+   * honored per the per-event contract above: `tool.before.execute` → `{deny,reason,input}`;
+   * `tool.after.execute` → `{additionalContext,deny,reason}`; `user.prompt.submit` →
+   * `{deny,text}`; `session.idle` → `{continue,reason}`. Other events ignore the response. */
   command: z.string().optional(),
   /** URL to POST the payload to (JSON in, JSON out, same protocol as `command`). */
   url: httpUrl().optional(),

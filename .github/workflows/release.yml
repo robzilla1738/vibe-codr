@@ -10,9 +10,11 @@ permissions:
 
 jobs:
   # Cross-compile the standalone binaries. Bun compiles every target from Linux,
-  # so one runner produces all four. Flags mirror the `build:binary` script
+  # so one runner produces them all. Flags mirror the `build:binary` script
   # (bun build --compile … --outfile) plus the cross-compilation --target; no
   # --external, so the PROVIDER_MODULES literal imports stay bundle-visible.
+  # `ext` is the output suffix (`.exe` for Windows; empty/absent elsewhere — an
+  # unset matrix key expands to ""). Windows is EXPERIMENTAL/hand-unverified.
   binaries:
     runs-on: ubuntu-latest
     strategy:
@@ -22,6 +24,7 @@ jobs:
           - { target: bun-darwin-x64, os: darwin, arch: x64 }
           - { target: bun-linux-x64, os: linux, arch: x64 }
           - { target: bun-linux-arm64, os: linux, arch: arm64 }
+          - { target: bun-windows-x64, os: windows, arch: x64, ext: .exe }
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -35,15 +38,15 @@ jobs:
         run: |
           bun build --compile --target=${{ matrix.target }} \
             packages/cli/bin/vibecodr.ts \
-            --outfile vibecodr-${{ matrix.os }}-${{ matrix.arch }}
+            --outfile vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
       - name: Per-file checksum
-        run: sha256sum vibecodr-${{ matrix.os }}-${{ matrix.arch }} > vibecodr-${{ matrix.os }}-${{ matrix.arch }}.sha256
+        run: sha256sum vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.os }}-${{ matrix.arch }}
           path: |
-            vibecodr-${{ matrix.os }}-${{ matrix.arch }}
-            vibecodr-${{ matrix.os }}-${{ matrix.arch }}.sha256
+            vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+            vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
 
   # Build + publish the npm/bun package. A tag containing `-rc` publishes NOTHING
   # (dry-run only), so a release candidate can exercise the whole path safely.
@@ -95,7 +98,8 @@ jobs:
         working-directory: artifacts
         run: |
           sha256sum vibecodr-darwin-arm64 vibecodr-darwin-x64 \
-                    vibecodr-linux-x64 vibecodr-linux-arm64 > SHA256SUMS
+                    vibecodr-linux-x64 vibecodr-linux-arm64 \
+                    vibecodr-windows-x64.exe > SHA256SUMS
           cat SHA256SUMS
       - name: Extract release notes
         env:
@@ -116,4 +120,5 @@ jobs:
             artifacts/vibecodr-darwin-x64 \
             artifacts/vibecodr-linux-x64 \
             artifacts/vibecodr-linux-arm64 \
+            artifacts/vibecodr-windows-x64.exe \
             artifacts/SHA256SUMS

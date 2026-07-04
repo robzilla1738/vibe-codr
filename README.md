@@ -210,6 +210,19 @@ Provider SDKs, the rich TUI (OpenTUI), MCP, and on-device embeddings are declare
 as **optional dependencies**, so the install pulls what it can and the CLI
 degrades gracefully when one is missing.
 
+**Windows** — native Windows support is **experimental and currently untested**
+(no maintainer runs Windows yet; the CI Windows job is advisory, not a merge
+gate). A native `vibecodr-windows-x64.exe` is published on the
+[releases page](https://github.com/robzilla1738/vibe-codr/releases/latest), but
+the **recommended path is WSL2**: inside your WSL distro use the `linux-x64`
+binary or `bun add -g vibe-codr` and run it as an ordinary Linux install.
+One caveat to know before running the native `.exe`: the **OS sandbox is
+unavailable on native Windows**. There is no Seatbelt/bubblewrap backstop there —
+`resolveSandboxPolicy` reports `available:false` and commands run *unsandboxed*,
+so the glob-based **permission layer is the only enforcement layer** on native
+Windows. WSL2 restores the Linux bubblewrap sandbox (when `bwrap` is installed
+and unprivileged user namespaces are enabled).
+
 **Upgrade** — `vibe upgrade` prints the right steps for how you installed (a
 `bun add -g` line for the package channel, the Releases URL for the binary):
 

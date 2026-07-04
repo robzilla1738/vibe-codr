@@ -8,14 +8,18 @@ import type { HookBus, HookName, HookHandler } from "@vibe/plugins";
  * HookBus, unlocking the Claude-Code-style extensibility ecosystem with no engine
  * surgery: each config hook becomes a HookBus handler that serializes the payload
  * to JSON, runs the command / POSTs the URL, and maps the response back onto the
- * payload. Two events consume a response: `tool.before.execute` honors `{deny,reason}`
- * to block a tool and `{input}` to rewrite its arguments; `user.prompt.submit` honors
- * `{deny}` to cancel the turn and `{text}` (or a string `{input}`) to rewrite the
- * prompt. exec/post are injectable so the wiring is unit-testable without spawning.
+ * payload. Four events consume a response:
+ *   - `tool.before.execute` — `{deny,reason}` blocks the tool, `{input}` rewrites its arguments.
+ *   - `tool.after.execute`  — `{additionalContext}` is appended to the (already-produced) result,
+ *                             `{deny,reason}` hides/overrides it with an isError (the tool DID run).
+ *   - `user.prompt.submit`  — `{deny}` cancels the turn, `{text}` (or a string `{input}`) rewrites the prompt.
+ *   - `session.idle`        — `{continue}` (+`{reason}`) injects one more turn instead of settling idle.
+ * exec/post are injectable so the wiring is unit-testable without spawning.
  */
 
 export interface HookRunResult {
-  /** Block the tool (tool.before.execute) or cancel the turn (user.prompt.submit). */
+  /** Block/override: block the tool (tool.before.execute), hide+override the
+   * result (tool.after.execute), or cancel the turn (user.prompt.submit). */
   deny?: boolean;
   reason?: string;
   /** Rewrite the tool input (tool.before.execute), or the prompt text when a string
@@ -23,6 +27,11 @@ export interface HookRunResult {
   input?: unknown;
   /** Rewrite the submitted prompt text (only honored on user.prompt.submit). */
   text?: string;
+  /** Append to the tool result the model sees next step (tool.after.execute). */
+  additionalContext?: string;
+  /** Request one more turn at session.idle instead of settling idle (bounded by
+   * the engine). Paired with `reason` to build the synthetic follow-up prompt. */
+  continue?: boolean;
 }
 
 export interface ConfigHookRunners {
@@ -102,6 +111,8 @@ export function parseHookOutput(text: string): HookRunResult {
     if (typeof parsed.reason === "string") result.reason = parsed.reason;
     if ("input" in parsed) result.input = parsed.input;
     if (typeof parsed.text === "string") result.text = parsed.text;
+    if (typeof parsed.additionalContext === "string") result.additionalContext = parsed.additionalContext;
+    if (parsed.continue === true) result.continue = true;
     return result;
   } catch {
     return {}; // non-JSON output (e.g. a log line) is not a directive
@@ -159,6 +170,27 @@ export function registerConfigHooks(
           if (result.reason) p.reason = result.reason;
         }
         if ("input" in result) p.input = result.input;
+        return p;
+      }
+      // PostToolUse: the tool already ran. `additionalContext` is appended to the
+      // result the model sees; `deny` (+reason) hides/overrides it with an error.
+      if (hook.event === "tool.after.execute") {
+        const p = payload as { deny?: boolean; reason?: string; additionalContext?: string };
+        if (result.deny) {
+          p.deny = true;
+          if (result.reason) p.reason = result.reason;
+        }
+        if (typeof result.additionalContext === "string") p.additionalContext = result.additionalContext;
+        return p;
+      }
+      // Stop-equivalent: `continue` (+reason) injects one more turn instead of
+      // settling idle; the engine hard-bounds how many times this can fire.
+      if (hook.event === "session.idle") {
+        const p = payload as { continue?: boolean; reason?: string };
+        if (result.continue) {
+          p.continue = true;
+          if (result.reason) p.reason = result.reason;
+        }
         return p;
       }
       // A prompt hook can cancel the turn (deny) or rewrite the submitted text.

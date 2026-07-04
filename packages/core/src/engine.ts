@@ -97,6 +97,12 @@ import {
   type EngineHandle,
 } from "./engine-commands.ts";
 
+/** Hard ceiling on session.idle (Stop-equivalent) continuations per user prompt.
+ * A hook that always asks to continue caps here, then the engine warns and
+ * settles idle — the headless terminal signal (engine-idle) must never be held
+ * open indefinitely by a buggy hook. */
+const MAX_IDLE_CONTINUES = 3;
+
 /** Build manifests whose appearance/change signals the project's check set may
  * have shifted (a scaffolder ran) — used by the gate's no-checks refresh guard. */
 const GATE_MANIFEST_FILES = [
@@ -263,6 +269,11 @@ export class Engine implements EngineClient {
   /** Bounded plan-task continuation turns per user prompt (shares the gate's
    * maxRounds budget shape; reset with the other prompt budgets). */
   #taskContinueRounds = 0;
+  /** Bounded session.idle (Stop-equivalent) continuations per user prompt: a
+   * hook returning {continue:true} injects a follow-up turn, but only this many
+   * before the engine warns and settles idle regardless (a buggy always-continue
+   * hook can never loop forever). Reset on each real user prompt. */
+  #idleContinueRounds = 0;
   /** True while a plan-execution chain is live: armed when the plan→execute
    * handoff turn starts, cleared by the next REAL user prompt (or when the
    * seeded list finishes/caps out). Scopes the completion check to plan runs. */
@@ -1666,41 +1677,80 @@ export class Engine implements EngineClient {
   async #drain(): Promise<void> {
     if (this.#draining) return;
     this.#draining = true;
+    // Outer loop: after the queue drains, the Stop-equivalent session.idle hook
+    // may inject one more turn (bounded). When it enqueues work, re-drain; when
+    // it declines (or the budget caps), fall through to the terminal signal so
+    // engine-idle ALWAYS fires eventually on every path.
     do {
-      while (this.#pending.length) {
-        const item = this.#pending.shift()!;
-        this.#active = { id: item.id, label: item.label };
-        this.#emitQueue();
-        try {
-          await item.run();
-        } catch (err) {
-          this.#log.error("turn failed", err);
-          this.#bus.emit({
-            type: "engine-error",
-            sessionId: this.#session.id,
-            message: (err as Error).message,
-          });
+      do {
+        while (this.#pending.length) {
+          const item = this.#pending.shift()!;
+          this.#active = { id: item.id, label: item.label };
+          this.#emitQueue();
+          try {
+            await item.run();
+          } catch (err) {
+            this.#log.error("turn failed", err);
+            this.#bus.emit({
+              type: "engine-error",
+              sessionId: this.#session.id,
+              message: (err as Error).message,
+            });
+          }
         }
-      }
-      this.#active = null;
-      this.#emitQueue();
-      // Yield a macrotask so subscribers flush their buffered events before we
-      // report idle — callers awaiting whenIdle() then see a delivered stream.
-      // (New work may also have been queued during this gap; the loop re-checks.)
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    } while (this.#pending.length);
+        this.#active = null;
+        this.#emitQueue();
+        // Yield a macrotask so subscribers flush their buffered events before we
+        // report idle — callers awaiting whenIdle() then see a delivered stream.
+        // (New work may also have been queued during this gap; the loop re-checks.)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      } while (this.#pending.length);
+    } while (await this.#maybeContinueOnIdle());
     this.#draining = false;
     // The queue is fully drained — the prompt AND every follow-up turn it spawned
-    // (gate-fix / review-fix / verify-fix) are done. Signal the true terminal
-    // point so a headless one-shot stops HERE, not on the first per-turn
-    // `session-idle` (which would cut off follow-up output and race finalize()).
+    // (gate-fix / review-fix / verify-fix / idle-continue) are done. Signal the
+    // true terminal point so a headless one-shot stops HERE, not on the first
+    // per-turn `session-idle` (which would cut off follow-up output and race
+    // finalize()).
     this.#bus.emit({
       type: "engine-idle",
       sessionId: this.#session.id,
       ...(this.#lastGateOutcome ? { gate: this.#lastGateOutcome } : {}),
     });
-    void this.hooks.run("session.idle", { sessionId: this.#session.id });
     for (const resolve of this.#idleResolvers.splice(0)) resolve();
+  }
+
+  /**
+   * Stop-equivalent idle consultation. Awaits the `session.idle` hook (fired on
+   * every queue-drain, same as before — now it can also steer). A handler that
+   * returns `{continue:true, reason?}` injects ONE synthetic follow-up turn built
+   * from `reason`, routed through the SAME queue as a normal prompt so /loop,
+   * abort, and persistence semantics hold; the drainer then re-drains. Returns
+   * true to keep going, false to settle idle.
+   *
+   * HARD-BOUNDED by #idleContinueRounds (reset per real user prompt): once the
+   * budget is spent, warn and settle regardless — a buggy always-continue hook
+   * can never wedge the terminal engine-idle signal. A throwing hook is isolated
+   * by the HookBus (no continue field) → returns false → idle settles.
+   */
+  async #maybeContinueOnIdle(): Promise<boolean> {
+    const result = await this.hooks.run("session.idle", { sessionId: this.#session.id });
+    if (!result.continue) return false;
+    if (this.#idleContinueRounds >= MAX_IDLE_CONTINUES) {
+      this.#notice(
+        `A session.idle hook keeps asking to continue, but the ${MAX_IDLE_CONTINUES}-turn ` +
+          "budget for this prompt is exhausted — settling idle.",
+        "warn",
+      );
+      return false;
+    }
+    this.#idleContinueRounds += 1;
+    const reason = result.reason?.trim();
+    const prompt = reason
+      ? reason
+      : "A session.idle hook requested another turn — continue the work you were doing.";
+    this.#enqueue("session.idle continue", () => this.#handlePrompt(prompt));
+    return true;
   }
 
   async #handlePrompt(text: string, opts: { handoff?: boolean } = {}): Promise<void> {
@@ -1927,6 +1977,7 @@ export class Engine implements EngineClient {
     this.#gateRounds = 0;
     this.#reviewRounds = 0;
     this.#taskContinueRounds = 0;
+    this.#idleContinueRounds = 0;
     this.#planExecutionActive = false;
     this.#lastGateOutcome = undefined;
     this.#promptBaselineId = undefined;

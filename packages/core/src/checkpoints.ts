@@ -40,6 +40,27 @@ interface GitResult {
   stderr: string;
 }
 
+/** One undone step on the redo stack. In-memory only (does NOT persist across
+ * restarts — a fresh session starts with an empty redo line). `commit` is the
+ * full-tree snapshot `redo` restores to; `reAdd` are the checkpoints that become
+ * live in the visible list again when this step is applied; `ownedRefs` are the
+ * hidden refs this entry is responsible for — deleted when it's dropped unapplied
+ * (a new edit invalidates the redo line), or, on apply, only for those NOT re-added. */
+interface RedoEntry {
+  commit: string;
+  label: string;
+  conversation?: { messages: number; history: number };
+  reAdd: Checkpoint[];
+  ownedRefs: string[];
+}
+
+/** What `redo` reports back to the caller (mirrors the fields `/undo` uses). */
+export interface RedoResult {
+  id: string;
+  label: string;
+  conversation?: { messages: number; history: number };
+}
+
 /** Keep at most this many checkpoints; older refs are pruned. */
 const MAX_CHECKPOINTS = 50;
 
@@ -59,6 +80,8 @@ export class CheckpointManager {
   #file: string;
   #legacyFile: string;
   #list: Checkpoint[] = [];
+  /** LIFO of undone steps (see RedoEntry). Session-scoped, never persisted. */
+  #redo: RedoEntry[] = [];
   #isGit: boolean | null = null;
   #loaded = false;
   /** Lazy getter for the owning session id (evaluated at snapshot time — the
@@ -177,20 +200,17 @@ export class CheckpointManager {
     return [];
   }
 
-  /** Snapshot the working tree. Returns the checkpoint, or null when not a repo.
-   * `opts` marks a commit-on-green checkpoint (persisted in meta, back-compat). */
-  async snapshot(
-    label: string,
-    conversation?: { messages: number; history: number },
-    opts?: { green?: boolean; gate?: GateSummary },
-  ): Promise<Checkpoint | null> {
-    if (!(await this.isGitRepo())) return null;
-    await this.#ensureLoaded();
+  /** Delete a hidden checkpoint ref (best-effort — a missing ref is fine). */
+  async #deleteRef(id: string): Promise<void> {
+    await this.#git(["update-ref", "-d", `refs/vibecodr/${id}`]).catch(() => undefined);
+  }
 
+  /** Commit the CURRENT working tree to a hidden, GC-safe ref and return its id +
+   * commit. Staged against a THROWAWAY index (never the user's staging area) —
+   * correct even in a repo with no commits yet. Null on any git failure. Shared by
+   * `snapshot` (which wraps it in a Checkpoint) and `undo` (pre-undo capture). */
+  async #commitTree(label: string): Promise<{ id: string; commit: string } | null> {
     const id = createId("cp");
-    // Stage and write the tree against a throwaway index file, so the user's
-    // real staging area is never touched — correct even in a repo with no
-    // commits yet (where `git reset` has no HEAD to restore the index to).
     const indexFile = join(tmpdir(), `vibecodr-index-${id}`);
     const env = { GIT_INDEX_FILE: indexFile };
     let commit = "";
@@ -198,7 +218,6 @@ export class CheckpointManager {
       await this.#git(["add", "-A"], env);
       const tree = (await this.#git(["write-tree"], env)).stdout;
       if (!tree) return null;
-
       const head = await this.#git(["rev-parse", "HEAD"]);
       const parent = head.ok ? ["-p", head.stdout] : [];
       commit = (
@@ -208,8 +227,88 @@ export class CheckpointManager {
       await rm(indexFile, { force: true }).catch(() => undefined);
     }
     if (!commit) return null;
-
     await this.#git(["update-ref", `refs/vibecodr/${id}`, commit]);
+    return { id, commit };
+  }
+
+  /** Restore the working tree to `commit` (read-tree into a throwaway index →
+   * checkout-index), then remove files created since the snapshot. Returns false
+   * WITHOUT touching the tree when the commit object is gone (empty read-tree) —
+   * the dead-commit guard that keeps a GC'd snapshot from nuking the user's
+   * untracked files. Shared by undo/restoreTo/redo. */
+  async #tryRestore(commit: string): Promise<boolean> {
+    const indexFile = join(tmpdir(), `vibecodr-restore-${createId("r")}`);
+    const env = { GIT_INDEX_FILE: indexFile };
+    let restored = false;
+    try {
+      // A dead commit (GC'd, or a silently-failed commit-tree) fails read-tree with
+      // EMPTY stdout — indistinguishable from an empty snapshot. Bailing here stops
+      // the cleanup below from treating "not in the snapshot tree" as "created
+      // since" and deleting every untracked file.
+      const read = await this.#git(["read-tree", commit], env);
+      if (read.ok) {
+        await this.#git(["checkout-index", "-a", "-f"], env);
+        restored = true;
+      }
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => undefined);
+    }
+    if (!restored) return false;
+
+    // Remove only files created since the snapshot — untracked now and absent from
+    // the snapshot tree. Guard a FAILED ls-tree (empty stdout) so it can't read as
+    // "the snapshot had no files" and delete everything untracked.
+    const untracked = (await this.#git(["ls-files", "--others", "--exclude-standard"])).stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (untracked.length) {
+      const snapshotList = await this.#git(["ls-tree", "-r", "--name-only", commit]);
+      if (snapshotList.ok) {
+        const inSnapshot = new Set(
+          snapshotList.stdout
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        );
+        for (const file of untracked) {
+          if (!inSnapshot.has(file)) {
+            await rm(join(this.#cwd, file), { force: true }).catch(() => undefined);
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  /** Drop the whole redo line (a new checkpoint invalidates it), releasing the
+   * hidden refs it owned so they don't leak. */
+  async #clearRedo(): Promise<void> {
+    const stale = this.#redo;
+    this.#redo = [];
+    for (const e of stale) for (const id of e.ownedRefs) await this.#deleteRef(id);
+  }
+
+  /** How many redo steps are available (for `/checkpoints` + `/redo`). */
+  redoDepth(): number {
+    return this.#redo.length;
+  }
+
+  /** Snapshot the working tree. Returns the checkpoint, or null when not a repo.
+   * `opts` marks a commit-on-green checkpoint (persisted in meta, back-compat). */
+  async snapshot(
+    label: string,
+    conversation?: { messages: number; history: number },
+    opts?: { green?: boolean; gate?: GateSummary },
+  ): Promise<Checkpoint | null> {
+    if (!(await this.isGitRepo())) return null;
+    await this.#ensureLoaded();
+    // A fresh checkpoint (a new edit) invalidates any pending redo line.
+    await this.#clearRedo();
+
+    const made = await this.#commitTree(label);
+    if (!made) return null;
+    const { id, commit } = made;
 
     const owner = this.#sessionId?.();
     const cp: Checkpoint = {
@@ -226,94 +325,128 @@ export class CheckpointManager {
     // Prune the oldest checkpoints so refs don't grow without bound.
     while (this.#list.length > MAX_CHECKPOINTS) {
       const old = this.#list.shift();
-      if (old) await this.#git(["update-ref", "-d", `refs/vibecodr/${old.id}`]);
+      if (old) await this.#deleteRef(old.id);
     }
     await this.#save();
     return cp;
   }
 
-  /** Restore the most recent checkpoint (popping it). Null when none/not a repo. */
-  async undo(): Promise<Checkpoint | null> {
+  /** Restore the most recent checkpoint (single-step LIFO). Null when none/not a
+   * repo. `currentConversation` (the mark at undo time) is stored on the redo step
+   * so a later `redo` can move history forward again, byte-for-byte. */
+  async undo(
+    currentConversation?: { messages: number; history: number },
+  ): Promise<Checkpoint | null> {
     if (!(await this.isGitRepo())) return null;
     await this.#ensureLoaded();
 
-    // Pop checkpoints newest-first, skipping any whose snapshot commit is gone,
-    // until we restore one or the list empties. This advances past a stale
-    // checkpoint (e.g. GC'd object) to the next VALID one instead of giving up.
+    // Capture the CURRENT (pre-undo) tree first, so `redo` can restore it exactly
+    // — whether or not a green result-marker happens to sit on top.
+    const preUndo = await this.#commitTree("redo point");
+
+    // Pop newest-first, skipping GREEN result markers (their tree == the post-edit
+    // state, so landing on one is a visible no-op — one `/undo` should revert the
+    // turn) and advancing past any dead checkpoint, until a valid pre-edit snapshot
+    // restores or the list empties.
     let cp = this.#list.pop();
     while (cp) {
-      // A GREEN checkpoint is a "this turn succeeded" RESULT marker whose tree
-      // equals the post-edit working tree — restoring it is a visible no-op, so
-      // `/undo` used to need TWO presses (one to pop the green marker, one to
-      // actually revert). Discard the green marker (drop its dangling ref) and
-      // undo to the pre-edit checkpoint beneath it, so ONE `/undo` reverts the turn.
       if (cp.green) {
-        await this.#git(["update-ref", "-d", `refs/vibecodr/${cp.id}`]).catch(() => undefined);
+        // Green markers are ephemeral; the preUndo capture already holds this tree.
+        await this.#deleteRef(cp.id);
         cp = this.#list.pop();
         continue;
       }
-      const indexFile = join(tmpdir(), `vibecodr-undo-${cp.id}`);
-      const env = { GIT_INDEX_FILE: indexFile };
-      let restored = false;
-      try {
-        // If the snapshot commit object is gone (GC'd, or a `commit-tree` that
-        // silently failed), read-tree fails with EMPTY stdout — indistinguishable
-        // from a legitimately empty snapshot. Proceeding would make the cleanup
-        // below (which treats "not in the snapshot tree" as "created since") delete
-        // EVERY current untracked file. Skip this dead checkpoint (drop its dangling
-        // ref) and try the next-older one rather than nuking the user's files.
-        const read = await this.#git(["read-tree", cp.commit], env);
-        if (read.ok) {
-          await this.#git(["checkout-index", "-a", "-f"], env);
-          restored = true;
-        }
-      } finally {
-        await rm(indexFile, { force: true }).catch(() => undefined);
-      }
-      if (!restored) {
-        await this.#git(["update-ref", "-d", `refs/vibecodr/${cp.id}`]).catch(() => undefined);
-        cp = this.#list.pop();
-        continue;
-      }
-      break;
+      if (await this.#tryRestore(cp.commit)) break;
+      // Dead checkpoint: drop its dangling ref and try the next-older one.
+      await this.#deleteRef(cp.id);
+      cp = this.#list.pop();
     }
     if (!cp) {
-      await this.#save(); // persist the dropped dead checkpoints
+      // Nothing restorable — discard the pre-undo capture; persist dropped refs.
+      if (preUndo) await this.#deleteRef(preUndo.id);
+      await this.#save();
       return null;
     }
 
-    // Remove only files created since the snapshot — untracked now and absent
-    // from the snapshot tree. The snapshot `add -A`'d everything, so any file the
-    // user already had is in the tree and is preserved; this never deletes the
-    // user's pre-existing untracked files (the old `clean -fdq` did).
-    const untracked = (await this.#git(["ls-files", "--others", "--exclude-standard"])).stdout
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (untracked.length) {
-      // Guard the snapshot listing too: a FAILED ls-tree (empty stdout) must not
-      // read as "the snapshot had no files" and delete everything untracked. Only
-      // prune when we could actually enumerate the snapshot tree.
-      const snapshotList = await this.#git(["ls-tree", "-r", "--name-only", cp.commit]);
-      if (snapshotList.ok) {
-        const inSnapshot = new Set(
-          snapshotList.stdout
-            .split("\n")
-            .map((s) => s.trim())
-            .filter(Boolean),
-        );
-        for (const file of untracked) {
-          if (!inSnapshot.has(file)) {
-            await rm(join(this.#cwd, file), { force: true }).catch(() => undefined);
-          }
-        }
-      }
+    // Landed on `cp` (removed from #list). Keep its ref alive on the redo step so a
+    // later redo/undo can reach it again; the redo step restores the pre-undo tree.
+    if (preUndo) {
+      this.#redo.push({
+        commit: preUndo.commit,
+        label: cp.label,
+        conversation: currentConversation ?? cp.conversation,
+        reAdd: [cp],
+        ownedRefs: [preUndo.id, cp.id],
+      });
+    } else {
+      // No pre-undo capture possible → no redo target; drop the restored ref as the
+      // old single-step behavior did.
+      await this.#deleteRef(cp.id);
     }
-
-    await this.#git(["update-ref", "-d", `refs/vibecodr/${cp.id}`]);
 
     await this.#save();
     return cp;
+  }
+
+  /** Restore the working tree to a CHOSEN checkpoint (multi-step rewind). Every
+   * checkpoint newer than the target is moved onto the redo stack (refs kept) — it
+   * behaves like undoing everything newer, with the most-recently-undone (closest
+   * to the target) on top so `redo` walks forward one step at a time. Returns the
+   * target, or null when the id is unknown, the snapshot is dead, or not a repo. */
+  async restoreTo(id: string): Promise<Checkpoint | null> {
+    if (!(await this.isGitRepo())) return null;
+    await this.#ensureLoaded();
+    const idx = this.#list.findIndex((c) => c.id === id);
+    if (idx < 0) return null;
+    const target = this.#list[idx]!;
+    // Dead-commit guard: refuse without mutating anything if the target is gone.
+    if (!(await this.#tryRestore(target.commit))) return null;
+
+    // Move everything strictly newer than the target onto the redo stack. Pushing
+    // the newest first leaves the closest-to-target on top → redo re-applies it
+    // first, stepping the tree forward toward the newest state.
+    const newer = this.#list.splice(idx + 1);
+    for (let i = newer.length - 1; i >= 0; i--) {
+      const c = newer[i]!;
+      this.#redo.push({
+        commit: c.commit,
+        label: c.label,
+        conversation: c.conversation,
+        reAdd: [c],
+        ownedRefs: [c.id],
+      });
+    }
+    await this.#save();
+    return target;
+  }
+
+  /** Re-apply the most recently undone step: restore the tree state that existed
+   * BEFORE that undo and re-add its checkpoint(s) to the visible list. Advances
+   * past a dead redo target rather than giving up. Null when the stack is empty
+   * (nothing to redo) or not a repo. */
+  async redo(): Promise<RedoResult | null> {
+    if (!(await this.isGitRepo())) return null;
+    await this.#ensureLoaded();
+    let entry = this.#redo.pop();
+    while (entry) {
+      if (await this.#tryRestore(entry.commit)) {
+        const live = new Set(entry.reAdd.map((c) => c.id));
+        for (const c of entry.reAdd) this.#list.push(c);
+        // Release only the refs this step owned that aren't now live in the list
+        // (e.g. a throwaway pre-undo capture); re-added checkpoints keep theirs.
+        for (const refId of entry.ownedRefs) if (!live.has(refId)) await this.#deleteRef(refId);
+        await this.#save();
+        return {
+          id: entry.reAdd[0]?.id ?? entry.commit,
+          label: entry.label,
+          ...(entry.conversation ? { conversation: entry.conversation } : {}),
+        };
+      }
+      // Dead redo target — release its refs and try the next-most-recent step.
+      for (const refId of entry.ownedRefs) await this.#deleteRef(refId);
+      entry = this.#redo.pop();
+    }
+    return null;
   }
 
   /**

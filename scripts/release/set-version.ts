@@ -50,10 +50,14 @@ export function promoteChangelog(content: string, version: string, date: string)
 }
 
 /** Extract the body of the changelog section for a version (everything under
- * `## <version> …` up to the next `## ` heading), for the GitHub Release notes. */
+ * `## <version> …` up to the next `## ` heading), for the GitHub Release notes.
+ * Tolerates an optional leading `v` on the heading (`## 0.2.0` and `## v0.2.0`
+ * both match) — the v0.2.0 notes shipped as the "See CHANGELOG.md." fallback
+ * because a hand-written `## v…` heading missed the bare-version regex. */
 export function extractChangelogSection(content: string, version: string): string {
+  const bare = version.replace(/^v/, "");
   const lines = content.split("\n");
-  const start = lines.findIndex((l) => new RegExp(`^## ${escapeRe(version)}(\\s|$|\\b)`).test(l));
+  const start = lines.findIndex((l) => new RegExp(`^## v?${escapeRe(bare)}(\\s|$|\\b)`).test(l));
   if (start === -1) return "";
   const body: string[] = [];
   for (let i = start + 1; i < lines.length; i++) {

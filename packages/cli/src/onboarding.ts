@@ -57,14 +57,26 @@ export function buildOnboardingPatch(
 
 const useColor = Boolean(stdout.isTTY) && !process.env.NO_COLOR;
 type RGB = [number, number, number];
-const BRAND_A: RGB = [138, 92, 246]; // violet
-const BRAND_B: RGB = [34, 211, 238]; // cyan
-const ACCENT: RGB = [124, 161, 255];
+// Mirror the TUI's default graphite palette (packages/tui/src/themes.ts): white
+// #eeeeee is the chrome accent (pointer, caret, labels), violet #8b5cf6 is the
+// one signature hue — the selected row's solid band and the wordmark sweep.
+// Onboarding is screen one; the TUI is screen two — same color language.
+const VIOLET: RGB = [139, 92, 246]; // themes.ts selBg/heading
+const CHROME: RGB = [238, 238, 238]; // themes.ts accent/primary (white chrome)
+const INK: RGB = [10, 10, 10]; // themes.ts selFg — dark text on the violet band
 const OK: RGB = [52, 211, 153];
 const WARN: RGB = [251, 191, 36]; // amber — a saved-but-incomplete setup
 
 function fg(text: string, [r, g, b]: RGB): string {
   return useColor ? `\x1b[38;2;${r};${g};${b}m${text}\x1b[39m` : text;
+}
+/** Solid selected-row band: violet background, dark text — the TUI's selBg/selFg. */
+function band(text: string): string {
+  const [br, bg2, bb] = VIOLET;
+  const [fr, fgr, fb] = INK;
+  return useColor
+    ? `\x1b[48;2;${br};${bg2};${bb}m\x1b[38;2;${fr};${fgr};${fb}m${text}\x1b[39m\x1b[49m`
+    : text;
 }
 function bold(text: string): string {
   return useColor ? `\x1b[1m${text}\x1b[22m` : text;
@@ -103,8 +115,8 @@ const cursor = {
 };
 
 function banner(): string {
-  const rule = gradient("─".repeat(52), BRAND_A, BRAND_B);
-  const wordmark = bold(gradient("◆ vibe-codr", BRAND_A, BRAND_B));
+  const rule = gradient("─".repeat(52), CHROME, VIOLET);
+  const wordmark = bold(gradient("◆ vibe-codr", CHROME, VIOLET));
   return [
     "",
     `  ${wordmark}`,
@@ -213,10 +225,10 @@ function select<T>(
     );
     const rows = items.slice(start, start + WINDOW).map((it, i) => {
       const active = start + i === idx;
-      const pointer = active ? fg("❯", ACCENT) : " ";
-      const label = active ? bold(fg(it.label, ACCENT)) : it.label;
-      const badge = it.badge ? ` ${it.badge}` : "";
-      const head = `${pointer} ${label}${badge}`;
+      // The active row is the TUI's violet selection band (solid bg, dark text).
+      const head = active
+        ? `${band(` ❯ ${it.label} `)}${it.badge ? ` ${it.badge}` : ""}`
+        : `   ${it.label}${it.badge ? ` ${it.badge}` : ""}`;
       const hint = it.hint ? `\n    ${dim(it.hint)}` : "";
       return `${head}${hint}`;
     });
@@ -277,9 +289,7 @@ function selectFiltered(
       const real = start + i;
       const active = real === idx;
       const star = m === recommended ? fg(" ★", OK) : "";
-      return active
-        ? `${fg("❯", ACCENT)} ${bold(fg(m, ACCENT))}${star}`
-        : `  ${m}${star}`;
+      return active ? `${band(` ❯ ${m} `)}${star}` : `   ${m}${star}`;
     });
     const more =
       list.length > WINDOW
@@ -340,7 +350,7 @@ function input(label: string, opts: InputOptions = {}): Promise<string> {
     else if (opts.def) field = dim(`[${opts.def}]`);
     else field = dim(opts.placeholder ?? "");
     const hint = opts.hint ? `\n${dim(opts.hint)}` : "";
-    return `${bold(label)}${hint}\n${fg("❯", ACCENT)} ${field}\n`;
+    return `${bold(label)}${hint}\n${fg("❯", CHROME)} ${field}\n`;
   };
   return keyLoop<string>(draw, (k, done) => {
     if (k.name === "return" || k.name === "enter") done(val.trim() || opts.def || "");
@@ -357,7 +367,7 @@ async function withSpinner<T>(label: string, work: Promise<T>): Promise<T> {
   cursor.hide();
   const timer = setInterval(() => {
     const frame = frames[i++ % frames.length] ?? "";
-    stdout.write(`\r${fg(frame, ACCENT)} ${dim(label)}   `);
+    stdout.write(`\r${fg(frame, CHROME)} ${dim(label)}   `);
   }, 80);
   try {
     return await work;
@@ -536,10 +546,22 @@ export async function runOnboarding(
 
   // Other / advanced: the user supplies the whole model string; derive the provider.
   if (choice.registryId === "" || choice.key === "custom") {
-    const model = await input("Model string", {
-      placeholder: "provider/model-id",
-      hint: "e.g. anthropic/claude-opus-4-8 or zai/glm-5.2",
-    });
+    // Re-prompt until non-empty: persisting `model: ""` would neither run nor
+    // re-trigger onboarding (needsOnboarding can't derive a provider from ""),
+    // soft-bricking plain `vibecodr` until the user finds `vibe setup`.
+    let model = "";
+    for (;;) {
+      model = (
+        await input("Model string", {
+          placeholder: "provider/model-id",
+          hint: "e.g. anthropic/claude-opus-4-8 or zai/glm-5.2",
+        })
+      ).trim();
+      if (model) break;
+      stdout.write(
+        `${fg("✗", WARN)} ${dim("A model string is required — provider/model-id, e.g. anthropic/claude-opus-4-8")}\n`,
+      );
+    }
     const providerId = model.split("/")[0] ?? "";
     const def = registry.get(providerId);
     let apiKey: string | undefined;
@@ -619,12 +641,12 @@ async function persist(answers: OnboardingAnswers, opts: { configured?: boolean 
       [
         `${fg("!", WARN)} ${bold("Almost there — no API key set")}`,
         "",
-        `${dim("model")}   ${fg(answers.model, ACCENT)}`,
+        `${dim("model")}   ${fg(answers.model, VIOLET)}`,
         `${dim("config")}  ${globalConfigPath()}`,
         "",
         `${dim("next")}    run ${bold("vibe setup")} again and paste a key, or set the provider's API-key env var`,
       ],
-      BRAND_A,
+      VIOLET,
     );
     stdout.write(`\n${summary}\n\n`);
     return true;
@@ -633,12 +655,12 @@ async function persist(answers: OnboardingAnswers, opts: { configured?: boolean 
     [
       `${fg("✓", OK)} ${bold("You're all set")}`,
       "",
-      `${dim("model")}   ${fg(answers.model, ACCENT)}`,
+      `${dim("model")}   ${fg(answers.model, VIOLET)}`,
       `${dim("config")}  ${globalConfigPath()}`,
       "",
       `${dim("try")}     vibe ${dim("·")} vibe -p ${dim('"summarize this repo"')}`,
     ],
-    BRAND_A,
+    VIOLET,
   );
   stdout.write(`\n${summary}\n\n`);
   return true;

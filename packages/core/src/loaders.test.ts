@@ -60,3 +60,23 @@ test("loaders tolerate missing directories", async () => {
   expect(await loadCommandFiles(dir)).toEqual([]);
   expect(await loadSkills(dir)).toEqual([]);
 });
+
+test("an explicitly EMPTY name:/description: falls back like an absent field", async () => {
+  // A bare `name:` line parses to "" — with a `??` fallback the skill would
+  // register under the empty string: unreachable via /skill and a blank
+  // `- : …` line polluting the system prompt's skills block.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-skill-blank-"));
+  await Bun.write(
+    join(dir, ".vibe", "skills", "deploy", "SKILL.md"),
+    `---\nname:\ndescription:\n---\nBody.`,
+  );
+  const skills = await loadSkills(dir);
+  expect(skills).toHaveLength(1);
+  expect(skills[0]!.name).toBe("deploy"); // directory-name fallback
+  expect(skills[0]!.description).toBe("deploy"); // name fallback
+
+  await Bun.write(join(dir, ".vibe", "commands", "ship.md"), `---\nname:\n---\nShip it.`);
+  const cmds = await loadCommandFiles(dir);
+  expect(cmds).toHaveLength(1);
+  expect(cmds[0]!.name).toBe("ship"); // file-name fallback
+});

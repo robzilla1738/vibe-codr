@@ -26,6 +26,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "compact", description: "Compact the conversation to free context" },
   { name: "resume", description: "List saved sessions to resume" },
   { name: "recall", description: "Search past sessions", arg: "<text>" },
+  { name: "sources", description: "Web sources gathered this session (citations)" },
   { name: "export", description: "Export the conversation to Markdown", arg: "[path]" },
   { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
   // Model & mode
@@ -42,7 +43,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "accent", description: "Set the accent color (or /accent <hex>)", values: ACCENT_NAMES },
   // Steering
   { name: "goal", description: "Set or clear the north-star goal", arg: "<text>" },
-  { name: "loop", description: "Run a prompt on a loop", arg: "<interval> <prompt>" },
+  { name: "loop", description: "Run a prompt on a loop (/loop stop ends it)", arg: "[interval] <prompt> [--until <cond>] [--max N]" },
   { name: "queue", description: "Show the prompt queue" },
   // Code & safety
   { name: "diff", description: "Show the working-tree diff" },

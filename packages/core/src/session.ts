@@ -489,6 +489,10 @@ export class Session {
   setGoal(goal: string | null): void {
     this.goal = goal;
     this.#deps.bus.emit({ type: "goal-changed", sessionId: this.id, goal });
+    // Persist eagerly: meta is otherwise only written after a completed turn,
+    // so "/goal <text>" followed by quitting (before any prompt) would lose the
+    // goal — --resume restored null. Best-effort, like every #persist call.
+    void this.#persist();
   }
 
   /** Replace the injected project-memory block (e.g. after `/init` scaffolds

@@ -9,11 +9,18 @@ export interface ParsedLoop {
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
-/** Parse a duration token like "30s", "5m", "2h" into milliseconds. */
+/** A queued loop iteration was removed from the work queue before it ran
+ * (abort / dequeue / queue clear). Distinguished from a real iteration failure
+ * so the stop reason reads as a cancellation, not an error. */
+export class LoopCancelledError extends Error {}
+
+/** Parse a duration token like "30s", "5m", "2h" into milliseconds. Zero is
+ * rejected ("0s" would re-tick back-to-back with no pacing — never intended). */
 export function parseDuration(token: string): number | null {
   const m = token.match(/^(\d+)(s|m|h)$/);
   if (!m) return null;
   const n = Number(m[1]);
+  if (n <= 0) return null;
   const unit = m[2];
   return unit === "s" ? n * 1000 : unit === "m" ? n * 60_000 : n * 3_600_000;
 }
@@ -29,7 +36,11 @@ export function parseLoopArgs(args: string): ParsedLoop | null {
   let max: number | undefined;
   const maxMatch = rest.match(/--max\s+(\d+)/);
   if (maxMatch) {
+    // `--max 0` is rejected (returns null → usage message) rather than being
+    // silently dropped, which would turn "run at most zero times" into an
+    // UNBOUNDED loop.
     max = Number(maxMatch[1]);
+    if (max < 1) return null;
     rest = rest.replace(maxMatch[0], "").trim();
   }
 
@@ -51,7 +62,12 @@ export function parseLoopArgs(args: string): ParsedLoop | null {
   }
 
   if (!rest) return null;
-  return { intervalMs, prompt: rest, ...(until ? { until } : {}), ...(max ? { max } : {}) };
+  return {
+    intervalMs,
+    prompt: rest,
+    ...(until ? { until } : {}),
+    ...(max !== undefined ? { max } : {}),
+  };
 }
 
 export interface LoopOptions extends ParsedLoop {
@@ -121,7 +137,11 @@ export class LoopController {
     try {
       result = await this.#opts.run(this.#opts.prompt);
     } catch (err) {
-      this.stop(`iteration failed: ${(err as Error).message}`);
+      this.stop(
+        err instanceof LoopCancelledError
+          ? `iteration cancelled (${err.message})`
+          : `iteration failed: ${(err as Error).message}`,
+      );
       return;
     }
     if (this.#stopped) return;

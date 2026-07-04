@@ -2084,3 +2084,70 @@ of an evicted-but-genuinely-harvested URL could false-bounce until the bounded u
 (core 730 tests, tui 185), sidebar smoke ALL PASS. Two review rounds: 8 findings → fixes → verifier
 found 1 defect in the fixes → fixed + re-verified green. Total this pass: **10 confirmed defects
 fixed, all regression-tested.**
+
+---
+
+## FEATURE-SURFACE PASS — 2026-07-03 (modes · skills · goal/loop/queue · palette · onboarding)
+
+Five parallel independent reviews over the user-facing feature surface, each briefed on this
+ledger's accepted-risk items (none re-reported). **16 confirmed findings, all fixed +
+regression-tested where unit-testable.** Gate green after fixes: typecheck 8/8, lint clean,
+1314 tests (two consecutive clean full runs), TUI + sidebar smokes, compiled binary boots.
+
+### P1 — fixed
+- **Plan card survived a mode switch and hijacked the armed handoff** (REGRESSION of the item
+  recorded closed above at "Closed 2026-07-02, modes-flow pass" — the dismissal had been
+  deliberately reverted in app.tsx with a comment defending survival). Shift+Tab plan→execute
+  arms the deferred approval and notices "your next message starts implementation", but the
+  surviving card captured that next message as answerPlan("edit") → re-entered plan and revoked
+  the handoff; Enter was a spent no-op and Ctrl+Y's yolo intent hit the double-accept guard.
+  Fixed: `mode-changed` away from plan dismisses the card (app.tsx); engine hardening: the
+  `keep-planning` branch re-enters plan mode if a scripted resolve-plan lands out of plan mode.
+- **`/model refresh` persisted the literal id "refresh" as the main model** — the TUI /model
+  picker advertises the singular spelling but only `/models refresh` had the verb, so it fell
+  through to `setMainModel("refresh")` and wrote the global config. Fixed: `refresh` verb on
+  `/model` (mirrors `/models`); regression test asserts the model never changes.
+- **A queued /loop iteration dropped from the queue orphaned the LoopController** — abort /
+  dequeue / `/queue clear` removed the pending item without settling the promise `#tick`
+  awaits; the loop hung forever while reporting active. Fixed: pending items carry `onCancel`,
+  every removal path fires it, the loop iteration rejects `LoopCancelledError` → clean
+  `loop-stopped` with a "cancelled", not "failed", reason (regression-tested).
+
+### P2 — fixed
+- `/loop stop` let an already-queued iteration run one more full turn — stop now sweeps queued
+  `loop:` items before stopping the controller.
+- `--max 0` was silently discarded (truthiness spread) → unbounded loop; now a usage error, and
+  `max` is presence-checked. `0s`/`0m`/`0h` intervals rejected (unpaced hot loop).
+- `/goal` was only persisted after a completed turn — set-then-quit lost it; `setGoal` now
+  persists eagerly (same best-effort discipline as every `#persist`).
+- `/providers` had no engine handler (palette-advertised; headless/REPL got "Unknown command")
+  — added, with `[filter]`, matching the menu's info.
+- `/jobs` invisible to /help + the command-name set — added to COMMAND_GROUPS and given an
+  engine handler (headless parity; the TUI still intercepts for the sub-view).
+- `/sources` undiscoverable from the palette — added. `/quit` added to BUILTIN_COMMANDS.
+- `/skills <filter>` ignored its advertised arg engine-side — now filters name+description.
+- `isExactCommand` was dead code whose docstring claimed a shipped cue — WIRED for real: the
+  input's draft renders in the heading hue when the command word is a registered invocable
+  (snapshot.commandNames, refreshed with status), typos stay body-colored.
+- Skills picker rendered NOTHING on zero matches (looked broken; Enter submitted the literal)
+  — placeholder row explains the empty state.
+- Empty-string frontmatter `name:`/`description:` registered a ""-named skill (unreachable,
+  blank system-prompt line) — `||`-with-trim fallback in both loaders (regression-tested).
+- Onboarding palette didn't match the shipped TUI theme (periwinkle/cyan vs white-chrome +
+  violet) — screen one now uses the graphite language: white chrome accent, violet selection
+  band (selBg/selFg), white→violet wordmark sweep.
+- Onboarding "Other / advanced" persisted an empty model string on bare Enter → soft-bricked
+  relaunch (needsOnboarding can't derive a provider from "") — re-prompt loop, mirroring the
+  custom-endpoint path.
+
+### P3 — fixed
+- `/init` CONFIG_TEMPLATE + `formatModelList` pointed at `.env.example` (doesn't exist in user
+  projects) — now point at `vibe setup` / `/model key`.
+- `/loop` help + palette hint now show the full grammar (`[interval]`, `--until`, `--max`,
+  `/loop stop`).
+
+### Recorded (not fixed, deliberate)
+- AVAILABLE SKILLS block is unbounded in skill COUNT (per-line cap only) — intrinsic to
+  progressive disclosure, lives in the cacheable prefix; revisit if 100+-skill installs appear.
+- Bare `/<Name>` invocation is case-sensitive (palette/menus always prefill correct case).
+- Skill discovery is one directory deep by design (flat namespace).

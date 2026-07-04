@@ -1,12 +1,26 @@
 import { test, expect } from "bun:test";
 import type { UIEvent } from "@vibe/shared";
-import { LoopController, parseLoopArgs, parseDuration } from "./loop.ts";
+import { LoopCancelledError, LoopController, parseLoopArgs, parseDuration } from "./loop.ts";
 
 test("parseDuration handles s/m/h", () => {
   expect(parseDuration("30s")).toBe(30_000);
   expect(parseDuration("5m")).toBe(300_000);
   expect(parseDuration("2h")).toBe(7_200_000);
   expect(parseDuration("nope")).toBeNull();
+});
+
+test("parseDuration rejects a zero interval (an unpaced hot loop)", () => {
+  expect(parseDuration("0s")).toBeNull();
+  expect(parseDuration("0m")).toBeNull();
+  expect(parseDuration("0h")).toBeNull();
+});
+
+test("parseLoopArgs rejects --max 0 instead of silently unbounding the loop", () => {
+  // `max: 0` used to be discarded by a truthiness spread, turning "run at most
+  // zero times" into an INFINITE loop. It must be a usage error (null).
+  expect(parseLoopArgs("5m deploy --max 0")).toBeNull();
+  // A positive max still parses.
+  expect(parseLoopArgs("5m deploy --max 1")!.max).toBe(1);
 });
 
 test("parseLoopArgs extracts interval, prompt, --until, --max", () => {
@@ -90,4 +104,46 @@ test("LoopController can be stopped externally", async () => {
   loop.stop("stopped by user");
   await loop.whenDone();
   expect(true).toBe(true);
+});
+
+test("a cancelled queued iteration stops the loop with a 'cancelled' reason, not a failure", async () => {
+  // The engine settles a dropped-from-queue iteration by rejecting with
+  // LoopCancelledError (abort / dequeue / queue clear). The loop must END —
+  // previously the promise never settled and the loop hung forever while
+  // still reporting active — and the reason must read as a cancellation.
+  const events: UIEvent[] = [];
+  const loop = new LoopController({
+    id: "L4",
+    intervalMs: 1,
+    prompt: "x",
+    run: async () => {
+      throw new LoopCancelledError("queue cleared");
+    },
+    emit: (e) => events.push(e),
+  });
+  loop.start();
+  await loop.whenDone();
+  const stopped = events.find((e) => e.type === "loop-stopped");
+  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toBe(
+    "iteration cancelled (queue cleared)",
+  );
+});
+
+test("a genuinely failing iteration still stops with an 'iteration failed' reason", async () => {
+  const events: UIEvent[] = [];
+  const loop = new LoopController({
+    id: "L5",
+    intervalMs: 1,
+    prompt: "x",
+    run: async () => {
+      throw new Error("provider exploded");
+    },
+    emit: (e) => events.push(e),
+  });
+  loop.start();
+  await loop.whenDone();
+  const stopped = events.find((e) => e.type === "loop-stopped");
+  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toBe(
+    "iteration failed: provider exploded",
+  );
 });

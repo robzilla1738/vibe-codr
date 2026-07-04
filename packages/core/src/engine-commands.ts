@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import type { EngineCommand, UIEvent } from "@vibe/shared";
+import type { EngineCommand, JobInfo, UIEvent } from "@vibe/shared";
 import { ACCENT_PRESETS, THEME_NAMES } from "@vibe/shared";
 import type { Config, ModelPrice } from "@vibe/config";
 import { configUnknownKeys } from "@vibe/config";
@@ -116,6 +116,8 @@ export interface EngineHandle {
   mcpStatus(): McpServerStatus[];
   /** Per-language LSP server status (empty on the TS-only path). */
   lspStatus(): LspStatus[];
+  /** Background shell jobs + detected localhost servers. */
+  jobsStatus(): JobInfo[];
   /** Run a git command in the workspace. */
   git(args: string[]): Promise<GitRunResult>;
 }
@@ -174,6 +176,17 @@ export async function handleModelCommand(h: EngineHandle, args: string): Promise
   }
   const parts = raw.split(/\s+/);
   const verb = (parts[0] ?? "").toLowerCase();
+
+  // `/model refresh` — same catalog force-pull as `/models refresh`. The TUI
+  // advertises this spelling (the /model picker's refresh row); without this
+  // verb it would fall through to setMainModel and PERSIST the literal id
+  // "refresh" as the main model, bricking every later turn until fixed by hand.
+  if (verb === "refresh") {
+    h.notice("Refreshing model catalog…");
+    const count = await h.catalog.refresh();
+    h.notice(`Model catalog refreshed (${count} models known).`);
+    return;
+  }
 
   if (verb === "sub" || verb === "subagent") {
     const target = parts.slice(1).join(" ").trim();
@@ -267,6 +280,38 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       h.notice(formatModelList(await h.listModels()));
       break;
     }
+    case "providers": {
+      // Text summary of every provider + key status. The TUI normally opens an
+      // interactive menu at draft time instead, but this handler is what a
+      // submitted `/providers` (headless REPL, or a menu that failed to load)
+      // lands on — without it, a palette-advertised command errored "Unknown".
+      const filter = args.trim().toLowerCase();
+      const rows = h.registry
+        .list()
+        .map((d) => ({
+          id: d.id,
+          configured: h.registry.isConfigured(d.id, h.config),
+          keyless: d.auth.keyless ?? false,
+          env: d.auth.env,
+        }))
+        .filter((p) => !filter || p.id.toLowerCase().includes(filter))
+        .sort((a, b) => Number(b.configured) - Number(a.configured) || a.id.localeCompare(b.id));
+      h.notice(
+        rows.length
+          ? `Providers (✓ = usable now):\n${rows
+              .map((p) => {
+                const status = p.configured
+                  ? p.keyless
+                    ? "✓ local · no key"
+                    : "✓ configured"
+                  : `needs a key${p.env ? ` (${p.env} or /model key ${p.id} <key>)` : ""}`;
+                return `  ${p.id.padEnd(12)} ${status}`;
+              })
+              .join("\n")}`
+          : `No provider matches "${args.trim()}".`,
+      );
+      break;
+    }
     case "plan":
     case "execute":
       // Route through the engine's ONE canonical `set-mode` transition, which
@@ -300,6 +345,29 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "status":
       h.notice(await statusText(h));
       break;
+    case "jobs": {
+      // Text summary of background jobs. The TUI intercepts `/jobs` before it
+      // reaches the engine (it toggles the sub-view instead); this handler is
+      // the readline-REPL/headless equivalent so the command works everywhere.
+      const jobs = h.jobsStatus();
+      h.notice(
+        jobs.length
+          ? `Background jobs:\n${jobs
+              .map((j) => {
+                const state =
+                  j.status === "running"
+                    ? "running"
+                    : j.status === "killed"
+                      ? "killed"
+                      : `exited (${j.exitCode ?? "?"})`;
+                const servers = j.servers.length ? `  →  ${j.servers.join(" ")}` : "";
+                return `  [${j.id}] ${state}  ${j.command}${servers}`;
+              })
+              .join("\n")}`
+          : "No background jobs. Run a command with run_in_background to start one.",
+      );
+      break;
+    }
     case "context": {
       const window = await h.resolveContextWindow(h.session.model);
       const used = h.session.contextTokens;
@@ -330,15 +398,28 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "tools":
       h.notice(formatTools(h.toolset.forMode(h.session.mode), h.session.mode));
       break;
-    case "skills":
+    case "skills": {
+      // The palette advertises `/skills [filter]`; honor it here too so the
+      // readline REPL and headless get the same narrowing as the TUI picker.
+      const filter = args.trim().toLowerCase();
+      const all = h.skills.list().map((s) => ({ name: s.name, description: s.description }));
+      const shown = filter
+        ? all.filter(
+            (s) =>
+              s.name.toLowerCase().includes(filter) || s.description.toLowerCase().includes(filter),
+          )
+        : all;
       h.notice(
         formatNamedList(
           "Skills (call /<name> or /skill <name>, or the model uses use_skill):",
-          h.skills.list().map((s) => ({ name: s.name, description: s.description })),
-          "No skills. Add .vibe/skills/<name>/SKILL.md to define one.",
+          shown,
+          filter
+            ? `No skill matches "${args.trim()}". Run /skills for the full list.`
+            : "No skills. Add .vibe/skills/<name>/SKILL.md to define one.",
         ),
       );
       break;
+    }
     case "skill": {
       // Explicit skill invocation: `/skill <name> [task]`. Unlike the bare
       // `/<name>` spelling (which built-ins and custom commands shadow — a

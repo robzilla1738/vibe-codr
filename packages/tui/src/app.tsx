@@ -64,7 +64,7 @@ import type {
 } from "@vibe/shared";
 import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
-import { applyPalette, paletteState, skillsPickerFilter } from "./commands-catalog.ts";
+import { applyPalette, isExactCommand, paletteState, skillsPickerFilter } from "./commands-catalog.ts";
 import { displayWidth, renderTable, splitMarkdown, tableFits, type MdBlock } from "./markdown-blocks.ts";
 import {
   barGlyphs,
@@ -159,6 +159,14 @@ export function App(props: { engine: EngineClient }) {
   const snap = props.engine.snapshot();
   const [blocks, setBlocks] = createSignal<Block[]>([]);
   const [draft, setDraft] = createSignal("");
+  // Every invocable slash name (built-ins + custom commands + skills),
+  // lowercased — drives the input's "registered command" cue: a slash draft
+  // whose command word is real renders in the heading hue. Refreshed alongside
+  // the other status projections in refreshStatus().
+  const [cmdNames, setCmdNames] = createSignal<ReadonlySet<string>>(
+    new Set((snap.commandNames ?? []).map((s) => s.toLowerCase())),
+  );
+  const draftIsCommand = createMemo(() => isExactCommand(draft(), cmdNames()));
   const [tasks, setTasks] = createSignal<Task[]>(snap.tasks);
   const [subagents, setSubagents] = createSignal<Subagent[]>([]);
   // Working-tree git state for the header's git context (undefined outside a repo).
@@ -757,7 +765,20 @@ export function App(props: { engine: EngineClient }) {
           // called `review` or `init` would silently run the wrong thing).
           choose: () => setDraft(`/skill ${s.name} `),
         }));
-      return { open: rows.length > 0, loading: false, kind: "skills" as const, title, hint, rows };
+      // Zero rows must still render a menu: a silent blank looks broken, and a
+      // stray Enter would submit the literal `/skills xyz` line instead. The
+      // placeholder row explains the empty state; choosing it is a no-op.
+      if (rows.length === 0) {
+        rows.push({
+          label: all.length === 0 ? "No skills defined" : "No matching skills",
+          desc:
+            all.length === 0
+              ? "add .vibe/skills/<name>/SKILL.md to define one"
+              : "backspace to widen the filter",
+          choose: () => {},
+        });
+      }
+      return { open: true, loading: false, kind: "skills" as const, title, hint, rows };
     }
     const st = paletteState(draft());
     if (!st.open) return { open: false, loading: false, kind: "command" as const, title: "", hint: "", rows: [] as MenuRow[] };
@@ -1065,6 +1086,7 @@ export function App(props: { engine: EngineClient }) {
     setHeadModel(model);
     setMetrics(metricsLine(queued(), usage, ctx));
     setGoalInfo(goal);
+    setCmdNames(new Set((props.engine.snapshot().commandNames ?? []).map((s) => s.toLowerCase())));
   };
   // Resolve the oldest pending permission and drop it from the queue. Grants
   // leave a transcript notice — a single `a` keypress is a durable session-wide
@@ -1456,12 +1478,16 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "mode-changed":
             mode = event.mode;
-            // The plan card SURVIVES a mode switch while unresolved: switching
-            // to execute/yolo arms a deferred approval engine-side, and the card
-            // stays so the user can still Enter (run now, superseding the
-            // deferred handoff), Ctrl+Y (run in yolo), Esc (revoke), or type to
-            // revise — instead of the card vanishing and the approval silently
-            // deferring. The engine guards double-accepts.
+            // Leaving plan mode DISMISSES the plan card. Switching to
+            // execute/yolo already approved the plan engine-side (deferred
+            // handoff armed + "your next message starts implementation"
+            // notice); if the card survived, the next typed message would be
+            // captured as a plan REVISION (answerPlan "edit"), silently
+            // revoking the armed handoff and re-planning — the opposite of
+            // what the notice just promised. Its other affordances are stale
+            // too: Enter is a no-op (#lastPlan already spent) and Ctrl+Y's
+            // yolo intent is dropped by the double-accept guard.
+            if (event.mode !== "plan") setPlan(null);
             refreshStatus();
             break;
           case "model-changed":
@@ -2573,8 +2599,11 @@ export function App(props: { engine: EngineClient }) {
               placeholder="Send a message or type / to start"
               backgroundColor="transparent"
               focusedBackgroundColor="transparent"
-              textColor={palette().assistant}
-              focusedTextColor={palette().assistant}
+              // The "registered command" cue: a slash draft whose command word
+              // is a real invocable (built-in, custom command, or skill) reads
+              // in the heading hue — typo'd commands stay body-colored.
+              textColor={draftIsCommand() ? palette().heading : palette().assistant}
+              focusedTextColor={draftIsCommand() ? palette().heading : palette().assistant}
               placeholderColor={palette().muted}
               cursorColor={accent()}
             />

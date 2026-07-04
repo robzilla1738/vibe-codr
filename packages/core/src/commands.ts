@@ -24,6 +24,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "cost", description: "Show token usage and estimated cost" },
       { name: "context", description: "Show context-window usage and compaction threshold" },
       { name: "clear", description: "Clear the conversation history (alias /new)" },
+      { name: "jobs", description: "Show background shell jobs + detected localhost servers" },
       { name: "compact", description: "Compact the conversation to free context" },
       { name: "resume", description: "List saved sessions to resume" },
       { name: "recall", description: "Search past sessions' memory (/recall <text>)" },
@@ -41,6 +42,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
           "Switch model + manage providers (persisted): /model <id> · /model sub <id> · /model key <provider> <key>",
       },
       { name: "models", description: "List available models (/models refresh to force-pull the latest)" },
+      { name: "providers", description: "List providers + key status (/providers [filter])" },
       { name: "plan", description: "Switch to read-only plan mode" },
       { name: "execute", description: "Switch to gated execute — every action asks (the ASK chip)" },
       { name: "yolo", description: "Execute with approvals off — tools run without prompting" },
@@ -54,7 +56,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     title: "Steering",
     commands: [
       { name: "goal", description: "Set or clear the north-star goal (/goal <text>)" },
-      { name: "loop", description: "Run a prompt on a loop (/loop <interval> <prompt>)" },
+      { name: "loop", description: "Run a prompt on a loop (/loop [interval] <prompt> [--until <cond>] [--max N] · /loop stop)" },
       { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
     ],
   },
@@ -90,6 +92,7 @@ export const BUILTIN_COMMANDS: BuiltinCommandMeta[] = [
   ...COMMAND_GROUPS.flatMap((g) => g.commands),
   { name: "new", description: "Start a fresh conversation (alias of /clear)" },
   { name: "exit", description: "Exit vibe-codr (alias /quit)" },
+  { name: "quit", description: "Exit vibe-codr (alias of /exit)" },
 ];
 
 /** Render the /help text, including any plugin/file commands. */
@@ -116,7 +119,7 @@ export function helpText(extra: SlashCommand[] = []): string {
 /** Render a model list grouped by provider, with context window when known. */
 export function formatModelList(models: ModelInfo[]): string {
   if (models.length === 0) {
-    return "No models available. Set a provider API key (see .env.example) or start LM Studio.";
+    return "No models available. Add a provider key (run `vibe setup` or /model key <provider> <key>) or start Ollama/LM Studio.";
   }
   const byProvider = new Map<string, ModelInfo[]>();
   for (const m of models) {
@@ -136,7 +139,8 @@ export function formatModelList(models: ModelInfo[]): string {
 }
 
 const CONFIG_TEMPLATE = `{
-  // vibe-codr project config. See .env.example for provider keys.
+  // vibe-codr project config — overrides the user-global config for this repo.
+  // Provider keys live in the global config (run \`vibe setup\` or /model key).
   "model": "anthropic/claude-opus-4-8",
   "mode": "execute"
 }

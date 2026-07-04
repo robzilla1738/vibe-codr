@@ -75,7 +75,7 @@ import {
   globalCommandsDir,
   globalSkillsDir,
 } from "./loaders.ts";
-import { LoopController, parseLoopArgs } from "./loop.ts";
+import { LoopCancelledError, LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { MemoryService } from "./memory-service.ts";
 import { createLimiter, type Limiter } from "./limiter.ts";
@@ -208,7 +208,12 @@ export class Engine implements EngineClient {
   #projectMemory: string | undefined;
   #session: Session;
   #log: Logger;
-  #pending: { id: string; label: string; run: () => Promise<void> }[] = [];
+  /** FIFO work backlog. `onCancel` fires when the item is REMOVED without
+   * running (abort / dequeue / `/queue clear` / `/loop stop`) — a queued loop
+   * iteration holds a promise the LoopController awaits, and dropping the item
+   * without settling it would leave the loop permanently hung yet "active". */
+  #pending: { id: string; label: string; run: () => Promise<void>; onCancel?: (reason: string) => void }[] =
+    [];
   #active: QueuedItem | null = null;
   #draining = false;
   #idleResolvers: (() => void)[] = [];
@@ -552,10 +557,11 @@ export class Engine implements EngineClient {
     if (decision === "edit") {
       const feedback = edit?.trim();
       if (!feedback) return;
-      // Revision feedback means RE-PLAN. The card can outlive a mode switch
-      // (it persists until resolved), so re-enter plan mode first — otherwise
-      // the feedback would run as an execute turn (and, with a deferred
-      // approval armed, kick off implementation of the plan being revised).
+      // Revision feedback means RE-PLAN. The TUI dismisses the card on a mode
+      // switch away from plan, but a scripted/plugin resolve-plan can still
+      // arrive out of plan mode — re-enter plan mode first, otherwise the
+      // feedback would run as an execute turn (and, with a deferred approval
+      // armed, kick off implementation of the plan being revised).
       if (this.#session.mode !== "plan") {
         if (this.#pendingHandoff) {
           this.#pendingHandoff = false;
@@ -573,6 +579,11 @@ export class Engine implements EngineClient {
         this.#pendingHandoff = false;
         void this.#persistEngineState();
       }
+      // And make the words true: if a mode switch left the session in
+      // execute/yolo, return to plan mode — "kept planning" while the next
+      // message would run an execute turn is a lie (the TUI dismisses the card
+      // on mode change, but a scripted resolve-plan can still land here).
+      if (this.#session.mode !== "plan") this.#setModeGated("plan");
       this.#bus.emit({ type: "notice", level: "info", message: "Kept planning — the plan wasn't started." });
       return;
     }
@@ -1009,7 +1020,9 @@ export class Engine implements EngineClient {
         // may be a loop iteration running on an ephemeral session (`#loopSession`
         // is set only for the duration of that iteration), not the main session.
         if (this.#pending.length) {
+          const dropped = this.#pending;
           this.#pending = [];
+          for (const p of dropped) p.onCancel?.("aborted");
           this.#emitQueue();
         }
         // Resolve any on-screen permission prompt as `deny` so the cancelled
@@ -1023,9 +1036,12 @@ export class Engine implements EngineClient {
         break;
       case "dequeue": {
         // Remove one waiting prompt without running it (cancel a queued item).
-        const before = this.#pending.length;
-        this.#pending = this.#pending.filter((p) => p.id !== command.id);
-        if (this.#pending.length !== before) this.#emitQueue();
+        const removed = this.#pending.filter((p) => p.id === command.id);
+        if (removed.length) {
+          this.#pending = this.#pending.filter((p) => p.id !== command.id);
+          for (const p of removed) p.onCancel?.("dequeued");
+          this.#emitQueue();
+        }
         break;
       }
       case "steer": {
@@ -1159,13 +1175,14 @@ export class Engine implements EngineClient {
   /** `/queue` (show pending) and `/queue clear` (drop everything waiting). */
   #handleQueueCommand(args: string): void {
     if (args.trim() === "clear") {
-      const dropped = this.#pending.length;
-      if (dropped) {
+      const dropped = this.#pending;
+      if (dropped.length) {
         this.#pending = [];
+        for (const p of dropped) p.onCancel?.("queue cleared");
         this.#emitQueue();
       }
       this.#notice(
-        dropped ? `Cleared ${dropped} queued item(s).` : "Queue is already empty.",
+        dropped.length ? `Cleared ${dropped.length} queued item(s).` : "Queue is already empty.",
       );
       return;
     }
@@ -1262,20 +1279,29 @@ export class Engine implements EngineClient {
     // file writes and interleave output). `#loopSession` is exposed so `/loop
     // stop` / shutdown can abort the turn that's actually in flight.
     return new Promise<string>((resolve, reject) => {
-      this.#enqueue(`loop: ${queueLabel(text)}`, async () => {
-        const session = this.#buildSession();
-        this.#loopSession = session;
-        try {
-          await session.run(text);
-          resolve(session.lastAssistantText());
-        } catch (err) {
-          // Without this reject, a job that throws before resolve() would leave
-          // the LoopController awaiting forever — a silent, permanent hang.
-          reject(err as Error);
-        } finally {
-          this.#loopSession = undefined;
-        }
-      });
+      this.#enqueue(
+        `loop: ${queueLabel(text)}`,
+        async () => {
+          const session = this.#buildSession();
+          this.#loopSession = session;
+          try {
+            await session.run(text);
+            resolve(session.lastAssistantText());
+          } catch (err) {
+            // Without this reject, a job that throws before resolve() would leave
+            // the LoopController awaiting forever — a silent, permanent hang.
+            reject(err as Error);
+          } finally {
+            this.#loopSession = undefined;
+          }
+        },
+        // The iteration was dropped from the queue without running (Esc-abort,
+        // dequeue, /queue clear). Settle the promise — otherwise the
+        // LoopController awaits run() forever and the loop dies silently while
+        // still reporting active. The rejection surfaces as a loop-stopped
+        // event with this reason.
+        (reason) => reject(new LoopCancelledError(reason)),
+      );
     });
   }
 
@@ -1522,6 +1548,7 @@ export class Engine implements EngineClient {
       resolvePricing: (model) => engine.#resolvePricing(model),
       mcpStatus: () => engine.#mcp.status(),
       lspStatus: () => engine.#diagnostics.status?.() ?? [],
+      jobsStatus: () => engine.#jobs.snapshot(),
       git: (args) => engine.#git(args),
     };
   }
@@ -1539,6 +1566,16 @@ export class Engine implements EngineClient {
   #handleLoop(args: string): void {
     if (args.trim() === "stop") {
       if (this.#loop) {
+        // Sweep a tick that's already queued behind an active turn FIRST: the
+        // controller's own stop() only aborts the in-flight `#loopSession`, so
+        // without this the queued iteration would still run one full model
+        // turn (side effects included) after the user said stop.
+        const queued = this.#pending.filter((p) => p.label.startsWith("loop: "));
+        if (queued.length) {
+          this.#pending = this.#pending.filter((p) => !p.label.startsWith("loop: "));
+          for (const p of queued) p.onCancel?.("loop stopped");
+          this.#emitQueue();
+        }
         this.#loop.stop();
         this.#loop = undefined;
       } else {
@@ -1586,8 +1623,8 @@ export class Engine implements EngineClient {
    * Work runs strictly one at a time (FIFO) so history stays consistent; extra
    * prompts submitted while busy become a visible, cancelable backlog.
    */
-  #enqueue(label: string, run: () => Promise<void>): void {
-    this.#pending.push({ id: createId("q"), label, run });
+  #enqueue(label: string, run: () => Promise<void>, onCancel?: (reason: string) => void): void {
+    this.#pending.push({ id: createId("q"), label, run, ...(onCancel ? { onCancel } : {}) });
     // Only surface the queue when something is actually waiting behind active
     // work; a lone item drains immediately and would otherwise just flicker.
     if (this.#draining) this.#emitQueue();

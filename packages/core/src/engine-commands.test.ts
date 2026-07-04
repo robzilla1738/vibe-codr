@@ -90,3 +90,80 @@ test("/accent resolves each shared preset NAME to its hex on accent-changed", as
     expect(changed.at(-1)?.accent).toBe(hex);
   }
 });
+
+// `/model refresh` must be a catalog refresh, NOT a model switch: the TUI's
+// /model picker advertises this spelling, and before the explicit verb it fell
+// through to setMainModel — persisting the literal id "refresh" to the global
+// config and bricking every later turn.
+test("/model refresh refreshes the catalog and never sets the model to 'refresh'", async () => {
+  const config = defaultConfig();
+  const before = config.model;
+  const engine = new Engine({ config });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "model", args: "refresh" });
+  await engine.whenIdle();
+  expect(config.model).toBe(before);
+  expect(engine.snapshot().model).toBe(before);
+  const msgs = notices(events).map((n) => n.message);
+  expect(msgs.some((m) => m.includes("catalog refreshed"))).toBe(true);
+  expect(msgs.some((m) => m.includes("Model → refresh"))).toBe(false);
+});
+
+// `/providers` is advertised in the TUI palette; a SUBMITTED line (headless
+// REPL, or a draft-time menu that failed to load) must print the provider/key
+// summary instead of "Unknown command".
+test("/providers lists every provider with key status (and honors a filter)", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "providers", args: "" });
+  await engine.whenIdle();
+  const all = notices(events).at(-1)!.message;
+  expect(all).toContain("Providers");
+  expect(all).toContain("anthropic");
+  expect(all).toContain("openai");
+
+  engine.send({ type: "run-slash", name: "providers", args: "anthro" });
+  await engine.whenIdle();
+  const filtered = notices(events).at(-1)!.message;
+  expect(filtered).toContain("anthropic");
+  expect(filtered).not.toContain("openai");
+});
+
+// `/jobs` works in the TUI as a local sub-view toggle; the engine handler is
+// the headless/REPL parity path.
+test("/jobs reports the empty state when no background jobs exist", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "jobs", args: "" });
+  await engine.whenIdle();
+  expect(notices(events).at(-1)!.message).toContain("No background jobs");
+});
+
+// `/skills <filter>` narrows the list (the palette advertises `[filter]`; the
+// engine used to ignore it and always dump everything).
+test("/skills honors its filter argument", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "vibe-skillfilter-"));
+  await Bun.write(
+    join(dir, ".vibe", "skills", "deploy", "SKILL.md"),
+    "---\ndescription: Ship to production\n---\nBody.",
+  );
+  await Bun.write(
+    join(dir, ".vibe", "skills", "review", "SKILL.md"),
+    "---\ndescription: Review a diff\n---\nBody.",
+  );
+  const engine = new Engine({ config: defaultConfig(), cwd: dir });
+  await engine.bootstrap();
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "skills", args: "deploy" });
+  await engine.whenIdle();
+  const msg = notices(events).at(-1)!.message;
+  expect(msg).toContain("deploy");
+  expect(msg).not.toContain("review");
+
+  engine.send({ type: "run-slash", name: "skills", args: "zzz-no-match" });
+  await engine.whenIdle();
+  expect(notices(events).at(-1)!.message).toContain('No skill matches "zzz-no-match"');
+});

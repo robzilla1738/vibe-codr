@@ -40,10 +40,13 @@ export async function loadCommandsFrom(dir: string): Promise<SlashCommand[]> {
       try {
         const raw = await Bun.file(file).text();
         const { frontmatter, body } = parseSkillMarkdown(raw);
-        const name = frontmatter.name ?? basename(file, ".md");
+        // `||`, not `??`: a bare `name:`/`description:` line parses to "" and
+        // must fall back the same as an absent field (a ""-named command is
+        // uninvocable).
+        const name = frontmatter.name?.trim() || basename(file, ".md");
         commands.push({
           name,
-          description: frontmatter.description ?? `Custom command /${name}`,
+          description: frontmatter.description?.trim() || `Custom command /${name}`,
           source: "file",
           run: (args) => ({ kind: "prompt", text: applyArgs(body, args) }),
         });
@@ -79,10 +82,13 @@ export async function loadSkillsFrom(root: string): Promise<Skill[]> {
         const raw = await Bun.file(file).text();
         const { frontmatter, body } = parseSkillMarkdown(raw);
         const dir = dirname(file);
-        const name = frontmatter.name ?? basename(dir);
+        // `||`, not `??`: a bare `name:` frontmatter line parses to "" — the
+        // skill would register unreachable (no `/skill ""`) and inject a blank
+        // `- : …` line into the system prompt's skills block.
+        const name = frontmatter.name?.trim() || basename(dir);
         skills.push({
           name,
-          description: frontmatter.description ?? name,
+          description: frontmatter.description?.trim() || name,
           ...(frontmatter.when_to_use
             ? { whenToUse: frontmatter.when_to_use }
             : {}),

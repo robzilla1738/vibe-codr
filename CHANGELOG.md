@@ -2,6 +2,90 @@
 
 All notable changes to vibe-codr are documented here.
 
+## Unreleased
+
+### Fixed — approving a plan with Shift+Tab now actually starts implementation
+
+- **The plan card is dismissed when you switch modes away from plan.** Approving
+  a plan via Shift+Tab (or `/execute`, `/yolo`) arms the deferred handoff and
+  promises "your next message starts implementation" — but the card used to
+  survive the switch and capture that next message as a plan *revision*,
+  silently revoking the approval and re-planning instead. Its leftover
+  affordances were stale too (Enter was a spent no-op; Ctrl+Y's run-in-yolo
+  intent was dropped). Engine hardening to match: a `keep-planning` answer now
+  returns the session to plan mode if a scripted resolve-plan arrives from
+  execute, so "Kept planning" is never a lie.
+
+### Fixed — `/model refresh` no longer sets your model to the literal id "refresh"
+
+- The `/model` picker advertises `refresh` to re-pull the model catalog, but
+  only `/models refresh` implemented it — the singular spelling fell through to
+  the model-switch path and **persisted `model: "refresh"` to the global
+  config**, failing every later turn until fixed by hand. `/model refresh` now
+  refreshes the catalog, with a regression test pinning the model unchanged.
+
+### Fixed — /loop lifecycle
+
+- **A queued loop iteration that got dropped no longer kills the loop
+  silently.** If a tick landed in the queue behind an active turn and was then
+  removed (Esc-abort, dequeue, `/queue clear`), the loop hung forever while
+  still reporting active. Cancellation now settles the iteration and the loop
+  stops with a visible "iteration cancelled (…)" reason.
+- **`/loop stop` sweeps an already-queued iteration** instead of letting it run
+  one more full model turn after you said stop.
+- `--max 0` is a usage error instead of silently unbounding the loop; `0s`
+  intervals are rejected (they re-ticked back-to-back with no pacing).
+- `/help` and the palette now show the full grammar:
+  `/loop [interval] <prompt> [--until <cond>] [--max N]` · `/loop stop`.
+
+### Fixed — `/goal` survives quitting before the next turn
+
+- The goal was only persisted after a completed turn, so `/goal <text>`
+  followed by exiting lost it (`--resume` restored none). It now persists
+  eagerly on set/clear.
+
+### Added — the input shows when a command is real
+
+- A slash draft whose command word is a registered invocable (built-in, custom
+  command, or skill) now renders in the heading hue; typos stay body-colored.
+  This wires the long-documented "registered command" cue to the engine's
+  `commandNames` snapshot for real.
+
+### Added — command-surface parity (TUI palette ⇄ engine ⇄ /help)
+
+- `/providers [filter]` has a real engine handler (headless/REPL used to get
+  "Unknown command" for a palette-advertised command) and is listed in `/help`.
+- `/jobs` gained an engine handler (headless parity with the TUI sub-view) and
+  a `/help` entry; `/quit` joined the recognized-name set.
+- `/sources` is discoverable from the `/` palette.
+- `/skills <filter>` honors its advertised filter argument engine-side, and the
+  TUI skills picker shows an explanatory empty-state row instead of rendering
+  nothing on zero matches.
+
+### Fixed — skills authoring edge
+
+- A SKILL.md with a bare `name:`/`description:` frontmatter line registered a
+  ""-named skill (unreachable via `/skill`, blank line in the system prompt's
+  skills block). Empty fields now fall back exactly like absent ones (directory
+  / file name).
+
+### Onboarding — first screen matches the product
+
+- The setup wizard now speaks the TUI's default design language: white chrome
+  accent, the violet selection band (same `selBg`/`selFg`), and a white→violet
+  wordmark sweep — no more periwinkle/cyan that vanished after setup.
+- The "Other / advanced" path re-prompts until a model string is entered —
+  pressing Enter on the empty field used to persist `model: ""`, which neither
+  ran nor re-triggered onboarding on the next launch.
+- `/init`'s config template and the empty `/models` message no longer point at
+  a `.env.example` that doesn't exist in user projects.
+
+### Release tooling
+
+- GitHub release notes extraction tolerates `## v0.2.0`-style changelog
+  headings (the v0.2.0 release body shipped as the "See CHANGELOG.md."
+  fallback because of the strict bare-version match).
+
 ## v0.2.0 — 2026-07-03
 
 ### Security — a repo can no longer strip your global permission rules

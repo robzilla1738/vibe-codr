@@ -4,6 +4,21 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Changed — the session card earns its place
+
+- **The card's wordmark is now the real brand mark, scaled down** — the `tiny`
+  half-block ascii face (same family as the splash's block wordmark, 2 rows)
+  in the chrome accent, replacing the plain `◆ vibe codr` text line.
+- **No more label words** — `dir` / `model` / `usage` are gone; the values are
+  self-evident and now read as clean bare lines (dir and model bright, git /
+  usage / goal muted).
+- **No more double-printing** — while the card is up it OWNS the session
+  facts: the chat column's top-left context line goes blank (the row stays,
+  height-pinned, so nothing reflows) and the under-input status keeps only
+  the changed-files delta. Each fact renders in exactly one place.
+
+## v0.4.0 — 2026-07-04
+
 ### Added — the sidebar gets a session card, and subagents get room to breathe
 
 - **Session card at the top of the right sidebar**: the small `◆ vibe codr`
@@ -19,6 +34,8 @@ All notable changes to vibe-codr are documented here.
   windowing budget accounts for the taller rows.
 - Uniform 1-row gaps between all sidebar blocks; the Thinking/Activity block
   still grows to keep the sidebar's bottom level with the input.
+
+## v0.3.0 — 2026-07-04
 
 ### Fixed — approving a plan with Shift+Tab now actually starts implementation
 

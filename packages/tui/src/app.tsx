@@ -1701,44 +1701,52 @@ export function App(props: { engine: EngineClient }) {
     return truncate(keep.join("  ·  "), Math.max(8, width));
   };
   // The persistent "where am I" context — location · git · goal — sits at the
-  // TOP-LEFT of the column (out of the way), not under the input.
+  // TOP-LEFT of the column (out of the way), not under the input. While the
+  // sidebar's session card is up it OWNS these facts — the line goes blank
+  // (the row itself stays, pinned to height 1, so nothing reflows) instead of
+  // double-printing the same dir/git/goal a few columns from the card.
   const topLeftLine = () =>
-    fitParts(
-      [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}` : ""],
-      contentWidth() - 2,
-    );
+    sidebarOn()
+      ? ""
+      : fitParts(
+          [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}` : ""],
+          contentWidth() - 2,
+        );
   // Live status shown under the input: model · changed · ctx · cost. The metrics
   // string re-splits on the same separator so fitting can drop its least-important
   // tail pieces individually (queued/cost/tokens) instead of the whole group.
+  // With the session card up, model + usage live THERE — the footer keeps only
+  // what the card doesn't show (the changed-files delta).
   const detailsRight = () =>
     fitParts(
-      [headModel(), changedSummary(), ...metrics().split(/\s+·\s+/)],
+      sidebarOn()
+        ? [changedSummary()]
+        : [headModel(), changedSummary(), ...metrics().split(/\s+·\s+/)],
       contentWidth() - 2,
     );
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
-  // The sidebar session card's label→value rows. One line per row: the value
-  // is pre-truncated to the card's inner width (a `wrapMode:none` overflow
-  // would hard-clip mid-glyph instead). The dir keeps its TAIL — in a deep
-  // path the trailing segments are the ones that identify where you are.
-  const sessionRows = (): { label: string; value: string }[] => {
-    // 42 (sidebar) − 2 (column padding) − 4 (panel padding) − 6 (label + gap),
-    // minus 2 more so the `…` lands INSIDE the box — the render clips at the
-    // edge before truncate's ellipsis otherwise (seen as "1.1k cac").
-    const valW = SIDEBAR_W - 14;
+  // The sidebar session card's value lines (no label words — the values are
+  // self-evident). One line per row, pre-truncated to the card's inner width
+  // (a `wrapMode:none` overflow would hard-clip mid-glyph, eating the `…`).
+  // The dir keeps its TAIL — in a deep path the trailing segments are the
+  // ones that identify where you are. `dim` mutes the secondary rows.
+  const sessionRows = (): { value: string; dim?: boolean }[] => {
+    // 42 (sidebar) − 2 (column padding) − 4 (panel padding), minus 2 more so
+    // the `…` lands INSIDE the box (the render clips at the edge otherwise).
+    const valW = SIDEBAR_W - 8;
     const tail = (s: string) => (s.length > valW ? `…${s.slice(-(valW - 1))}` : s);
-    const rows: { label: string; value: string }[] = [
-      { label: "dir", value: tail(cwd) },
-      { label: "model", value: tail(headModel()) },
+    const rows: { value: string; dim?: boolean }[] = [
+      { value: tail(cwd) },
+      { value: tail(headModel()) },
     ];
-    const g = gitSummary().replace(/^on /, "");
-    if (g) rows.push({ label: "git", value: truncate(g, valW) });
+    const g = gitSummary();
+    if (g) rows.push({ value: truncate(g, valW), dim: true });
     // metricsLine's separator is wide ("  ·  "); tighten it for the narrow
-    // card. Its parts self-label (ctx % / tokens / cost / queued), so the row
-    // label stays the generic "usage".
+    // card. Its parts self-label (ctx % / tokens / cost / queued).
     const m = metrics().replaceAll("  ·  ", " · ");
-    if (m) rows.push({ label: "usage", value: truncate(m, valW) });
+    if (m) rows.push({ value: truncate(m, valW), dim: true });
     const goal = goalInfo();
-    if (goal) rows.push({ label: "goal", value: truncate(`★ ${goal}`, valW) });
+    if (goal) rows.push({ value: truncate(`★ ${goal}`, valW), dim: true });
     return rows;
   };
   // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in
@@ -1838,8 +1846,10 @@ export function App(props: { engine: EngineClient }) {
         padding={1}
       >
       {/* Top-left context line: location · git · goal — the persistent "where am
-          I", tucked in the corner so it's out of the conversation's way. */}
-      <box flexDirection="row" flexShrink={0}>
+          I", tucked in the corner so it's out of the conversation's way. Pinned
+          to height 1: it goes BLANK (not away) while the sidebar session card
+          shows the same facts, so the transcript top never reflows. */}
+      <box flexDirection="row" flexShrink={0} height={1}>
         <text flexShrink={1} fg={palette().muted} wrapMode="none">{topLeftLine()}</text>
         <box flexGrow={1} />
       </box>
@@ -2643,7 +2653,10 @@ export function App(props: { engine: EngineClient }) {
           top-left context line), and the key hints hug the RIGHT edge. Hints show
           only on the splash / while a job runs; if they don't fit beside the status
           they drop to their own left row below (never centered, never colliding). */}
-      <box flexDirection="row" flexShrink={0} marginTop={1}>
+      {/* Pinned to height 1: with the session card up the status may be empty
+          (model/usage live in the card), and a collapsed row would pull the
+          sidebar's bottom-alignment reserve off by one. */}
+      <box flexDirection="row" flexShrink={0} height={1} marginTop={1}>
         <text flexShrink={0} fg={palette().muted} wrapMode="none">{detailsRight()}</text>
         <box flexGrow={1} />
         <Show when={showHints() && footerFits()}>
@@ -2673,11 +2686,16 @@ export function App(props: { engine: EngineClient }) {
               margin is swallowed by its scrollbox, so a sidebar margin here
               would land the block one row too low. */}
           <box height={1} flexShrink={0} />
-          {/* Session card — the sidebar's masthead. The small wordmark in the
-              chrome accent (white on the default theme; follows /accent), then
-              muted label rows for the session's vitals. Values are one line
-              each, pre-truncated (the DIR keeps its TAIL — the deep segments
-              are the informative ones). Rows with nothing to say don't render. */}
+          {/* Session card — the sidebar's masthead. The SAME brand treatment as
+              the main splash, scaled down: the ascii-font wordmark (the `tiny`
+              half-block face, 31×2) in the chrome accent, then the session's
+              vitals as bare value lines — no `dir`/`model` label words, the
+              values are self-evident. Bright lines carry the two facts you
+              glance for (where am I, which model); git/usage/goal stay muted.
+              One line each, pre-truncated (the DIR keeps its TAIL — the deep
+              segments are the informative ones). Empty rows don't render, and
+              the chat column's top context line + footer drop their copies
+              while this card is up (the sidebar owns them; no double-print). */}
           <Rail color={palette().gutter} marginTop={0}>
             <box
               backgroundColor={palette().panel}
@@ -2687,15 +2705,22 @@ export function App(props: { engine: EngineClient }) {
               paddingLeft={2}
               paddingRight={2}
             >
-              <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                {"◆ vibe codr"}
-              </text>
+              <ascii_font
+                text="VIBE CODR"
+                font="tiny"
+                color={brand()}
+                backgroundColor={palette().panel}
+              />
+              <box height={1} flexShrink={0} />
               <For each={sessionRows()}>
                 {(row) => (
-                  <box flexDirection="row" gap={1}>
-                    <text flexShrink={0} fg={palette().muted}>{row.label.padEnd(5)}</text>
-                    <text flexGrow={1} wrapMode="none" fg={palette().assistant}>{row.value}</text>
-                  </box>
+                  <text
+                    flexShrink={0}
+                    wrapMode="none"
+                    fg={row.dim ? palette().muted : palette().assistant}
+                  >
+                    {row.value}
+                  </text>
                 )}
               </For>
             </box>

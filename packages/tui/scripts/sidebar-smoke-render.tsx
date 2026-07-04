@@ -112,11 +112,18 @@ const sidebarText = rows1.map((r) => r.slice(W - 44)).join("\n");
 check("activity trail lists the search", sidebarText.includes("search"), "sidebar shows tool actions");
 check("activity trail lists the fetch", sidebarText.includes("fetch"));
 
-// Session card — the sidebar masthead: small wordmark + dir/model/git rows.
-check("session card shows the wordmark", sidebarText.includes("◆ vibe codr"));
-check("session card shows the working dir", sidebarText.includes("dir"), "label row");
+// Session card — the sidebar masthead: the tiny half-block wordmark (same
+// brand family as the splash, scaled down) + bare dir/model/git value lines.
+check("session card shows the tiny block wordmark", sidebarText.includes("█▄▄ █▀▀"));
+check("session card shows the working dir", sidebarText.includes("~/"));
 check("session card shows the model", sidebarText.includes("ollama/gemma4:31b"));
-check("session card shows the git branch", sidebarText.includes("main"));
+check("session card shows the git branch", sidebarText.includes("on main"));
+// The card OWNS these facts while it's up — the chat column must not
+// double-print them (top-left context line blank, footer keeps only the
+// changed-files delta).
+const chatText1 = rows1.map((r) => r.slice(0, W - 46)).join("\n");
+check("chat top-left context line is blank while the card is up", !chatText1.includes("~/"));
+check("chat footer drops the model while the card is up", !chatText1.includes("ollama/gemma4:31b"));
 
 // Alignment. TOP: the sidebar's first block must start on the transcript
 // viewport's first content row (the row right under the context line) — that
@@ -127,11 +134,14 @@ const railRows = (lo: number, hi: number): number[] =>
   rows1.flatMap((r, i) => (r.slice(lo, hi).includes("▎") ? [i] : []));
 const chat = railRows(0, 60);
 const side = railRows(W - 48, W);
-const contextRow = rows1.findIndex((r) => r.includes("~/"));
+// Row 0 = column padding, row 1 = the (now blank, height-pinned) context
+// line, row 2 = the viewport's first content row — where the sidebar's first
+// block must start. (The context line's text is blank while the session card
+// is up, so the row is located by construction, not by finding "~/".)
 check(
   "sidebar first block starts on the viewport's first content row",
-  side[0] === contextRow + 1,
-  `context row=${contextRow} side top=${side[0]}`,
+  side[0] === 2,
+  `side top=${side[0]}`,
 );
 check(
   "sidebar bottom lands on the input block's bottom row",

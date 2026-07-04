@@ -143,7 +143,7 @@ and drills into rich submenus (a searchable model picker, clickable toggles).
 |---|---|
 | ![orange accent](docs/screenshots/18-orange.png) | ![accent swatches](docs/screenshots/17-accent.png) |
 
-| Wide terminal — a session card (wordmark · dir · model · git · usage), Tasks, the live Subagents fan-out, and the Thinking trail move to a right sidebar |
+| Wide terminal — a session card (the block wordmark over dir · model · git · usage), Tasks, the live Subagents fan-out, and the Thinking trail move to a right sidebar |
 |---|
 | ![sidebar](docs/screenshots/20-sidebar.png) |
 
@@ -388,9 +388,12 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   (click it, or **Ctrl+T** to expand/collapse every thought at once), so
   the thinking that led to each step stays reviewable instead of evaporating.
   On a **wide terminal (≥140 cols)** the live work moves into a **right
-  sidebar**, headed by a **session card** — the small `◆ vibe codr` wordmark
-  over the session's vitals (working dir, model, git branch + dirty count,
-  live tokens/cost) — then the **Tasks panel**, the **Subagents fan-out** —
+  sidebar**, headed by a **session card** — the block wordmark scaled down
+  (the tiny half-block face, same brand family as the splash) over bare,
+  label-free lines for the session's vitals: working dir, model, git branch +
+  dirty count, live tokens/cost. While the card is up it **owns** those facts
+  — the chat column's top context line and under-input status stop
+  double-printing them — then the **Tasks panel**, the **Subagents fan-out** —
   one row per child
   (spinner while it runs, ✓ when done, a right-aligned elapsed) with a live
   **activity line** under a running child ("· rg \"catch\" src/") that folds

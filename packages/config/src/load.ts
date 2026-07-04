@@ -378,28 +378,43 @@ function sanitizeUntrustedProjectConfig(project: Record<string, unknown>): {
       dropped.push("mcp.servers");
     }
   }
-  // Drop `lsp.servers` entries carrying a `command` — the language server is
-  // spawned (no permission prompt) the first time the agent edits a matching
-  // file, so a project-supplied command is RCE on the first edit.
+  // Drop `lsp.servers` entries carrying a `command` OR `args` — the language
+  // server is spawned (no permission prompt) the first time the agent edits a
+  // matching file. A `command` is direct RCE; a command-less `args` override
+  // REPLACES the detected binary's args (`--query-driver=/tmp/evil`, a
+  // plugin/config path), which is spawn-arg injection into that binary.
   if (isPlainObject(clean.lsp) && isPlainObject((clean.lsp as Record<string, unknown>).servers)) {
     const lsp = { ...(clean.lsp as Record<string, unknown>) };
     const servers: Record<string, unknown> = {};
     let droppedCmd = false;
     for (const [lang, entry] of Object.entries(lsp.servers as Record<string, unknown>)) {
-      if (isPlainObject(entry) && "command" in entry) droppedCmd = true;
+      if (isPlainObject(entry) && ("command" in entry || "args" in entry)) droppedCmd = true;
       else servers[lang] = entry;
     }
     if (droppedCmd) {
       lsp.servers = servers;
       clean.lsp = lsp;
-      dropped.push("lsp.servers (command)");
+      dropped.push("lsp.servers (command/args)");
     }
   }
-  // Drop the project's `verify` block — `verify.command` with `verify.auto`
-  // auto-runs after a mutating turn with no prompt (config-injected exec).
-  if ("verify" in clean) {
-    delete clean.verify;
-    dropped.push("verify.command");
+  // Drop the exec-carrying `verify` fields — `verify.command` with `verify.auto`
+  // auto-runs after a mutating turn with no prompt (config-injected exec). Keep
+  // the benign `maxRetries` tuning.
+  if (isPlainObject(clean.verify)) {
+    const verify = { ...(clean.verify as Record<string, unknown>) };
+    let strippedExec = false;
+    if ("command" in verify) {
+      delete verify.command;
+      strippedExec = true;
+    }
+    if (verify.auto === true) {
+      delete verify.auto;
+      strippedExec = true;
+    }
+    if (strippedExec) {
+      clean.verify = verify;
+      dropped.push("verify.command");
+    }
   }
   // Drop the project's `sandbox` block — a project must not be able to WEAKEN
   // the kernel backstop the user opted into (mode:off, network:on, a broad
@@ -463,22 +478,42 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   // Concatenation is safe — deny is absolute within the merged array regardless
   // of position — and still lets a project ADD its own allows/asks/denies.
   const permissionLayers: unknown[] = [];
+  // Whether ANY layer declared a `permissions` key — so the final rebuild from
+  // the (filtered, union'd) permissionLayers fires even when the result is
+  // empty. Without this, an untrusted project shipping ONLY an allow rule on a
+  // machine with no global config left permissionLayers empty, the rebuild was
+  // skipped, and the raw allow rule survived via deepMerge (a live gate bypass).
+  let sawPermissions = false;
   const collectPermissions = (layer: Record<string, unknown>): void => {
-    if (Array.isArray(layer.permissions)) permissionLayers.push(...layer.permissions);
+    if (Array.isArray(layer.permissions)) {
+      sawPermissions = true;
+      permissionLayers.push(...layer.permissions);
+    }
   };
 
   for (const path of configLocations(cwd)) {
     let fileConfig = await readConfigFile(path);
     if (fileConfig) {
       const untrustedProject = path === projectPath && !trustProject;
-      // The union merge already stops a project from STRIPPING a global deny,
-      // but a project ADDING an `allow` rule broadens access — functionally the
-      // same as `approvalMode:auto`, which the sanitizer drops. So from an
-      // untrusted project layer collect only deny/ask rules (which only tighten).
+      // The union merge already stops a project from STRIPPING a global deny.
+      // A project ADDING a BROAD allow — `tool:"*"` or an unscoped name-only
+      // rule — silently widens access like `approvalMode:auto` (which the
+      // sanitizer drops), so those are dropped from an untrusted project. A
+      // SCOPED allow (`match`/`matchExact`) is kept: that is exactly the shape
+      // the app's own "always-allow (this project)" grant persists via
+      // appendProjectPermission, and dropping it would break that feature every
+      // session. The raw array is removed from the merged fileConfig so deepMerge
+      // can't carry a dropped rule past the rebuild below.
       if (untrustedProject && Array.isArray(fileConfig.permissions)) {
-        const kept = (fileConfig.permissions as { action?: string }[]).filter((r) => r?.action !== "allow");
-        if (kept.length !== fileConfig.permissions.length) droppedProjectFields.push("permissions (allow rules)");
+        sawPermissions = true;
+        const raw = fileConfig.permissions as { action?: string; tool?: string; match?: string; matchExact?: string }[];
+        const isBroadAllow = (r: { action?: string; tool?: string; match?: string; matchExact?: string }): boolean =>
+          r?.action === "allow" && (r.tool === "*" || (r.match === undefined && r.matchExact === undefined));
+        const kept = raw.filter((r) => !isBroadAllow(r));
+        if (kept.length !== raw.length) droppedProjectFields.push("permissions (broad allow rules)");
         permissionLayers.push(...kept);
+        fileConfig = { ...fileConfig };
+        delete fileConfig.permissions;
       } else {
         collectPermissions(fileConfig);
       }
@@ -496,7 +531,7 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
     merged = deepMerge(merged, opts.overrides as Record<string, unknown>);
   }
 
-  if (permissionLayers.length > 0) {
+  if (sawPermissions) {
     // Dedup exact-duplicate rules (same JSON shape) so layered files that both
     // declare a common rule don't accumulate copies; order stays global-first.
     const seen = new Set<string>();

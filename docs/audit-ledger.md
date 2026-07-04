@@ -2517,3 +2517,30 @@ to a coding agent, not this config gate). Sanitizer internally correct (no calle
 rebuilt sub-objects, fail-safe on both-command-and-url). Test asserts all 11 vectors + a
 dedicated sandbox-weakening (global workspace-write vs project off) + env-var-provider +
 remote-MCP-dropped case. Gate: typecheck 8/8, lint clean, 15/15 tests, smokes OK. CONVERGED.
+
+## Convergence pass 3 — 2 CONFIRMED (a live bypass I introduced + an lsp-args gap) → fixed
+- **Live allow-rule bypass (high, fresh-install-common):** the allow-filter ran in loadConfig
+  but the raw project `permissions` still flowed through deepMerge; the filtered rebuild only
+  fired when `permissionLayers` was non-empty. An untrusted project shipping ONLY an allow rule
+  with no global config left the array empty → the raw allow survived, with a FALSE "dropped"
+  notice. Fix: a `sawPermissions` flag rebuilds `merged.permissions` from the filtered union
+  whenever ANY layer declared permissions (even to `[]`), and the raw array is deleted from the
+  untrusted fileConfig before deepMerge.
+- **Feature-vs-security tension surfaced:** dropping ALL project allow rules broke the shipped
+  "always-allow (this project)" grant (Ctrl+P → appendProjectPermission writes SCOPED allow
+  rules to .vibe/config.json). Resolution: drop only BROAD allows (`tool:"*"` or unscoped
+  name-only) from an untrusted project; a SCOPED allow (`match`/`matchExact` — the persisted-
+  grant shape) is kept. A cloned repo can still ship a scoped allow for one exact command, but
+  that's narrow and indistinguishable from a real grant without folder-trust; the broad blanket
+  grant (the disproportionate one) is closed.
+- **lsp.servers[].args injection:** a command-LESS `args` override replaces the detected
+  binary's args (`--query-driver=/tmp/evil`), spawn-arg injection on first edit. Now entries
+  with `command` OR `args` are dropped.
+- **verify over-strip fixed:** drop only `command`/`auto:true`, keep benign `maxRetries`.
+- Reviewer CLEARED (re-confirmed) every other schema key — model strings, provider
+  apiKey/tokenFile/headers (real-provider destination), build.* DETECTED-script execution
+  (inherent coding-agent trust), search/theme/numerics. Sub-object drops don't mutate the
+  caller and preserve sibling keys; trusted path honors everything verbatim.
+- Tests: fresh-install lone-allow-dropped, scoped-allow-survives (persisted grant), lsp
+  command+args, verify.maxRetries-kept, sandbox-weakening. Gate: typecheck 8/8, lint clean,
+  15/15 tests, smokes OK.

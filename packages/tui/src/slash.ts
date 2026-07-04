@@ -2,7 +2,7 @@ import type { EngineCommand } from "@vibe/shared";
 
 /**
  * Map a typed line to an engine command. Slash lines that have a dedicated
- * command (mode/model/goal/compact) map to it; every other `/name args` line
+ * command (mode/model/compact) map to it; every other `/name args` line
  * becomes a `run-slash`; plain text becomes a prompt submission. Shared by the
  * OpenTUI app and the readline REPL so both route input identically.
  */
@@ -39,8 +39,6 @@ export function lineToCommand(line: string): EngineCommand {
       // Always route through the engine's /model router so subcommands
       // (`sub …`, `key …`) and persistence are handled in one place.
       return { type: "run-slash", name, args };
-    case "goal":
-      return { type: "set-goal", goal: args || null };
     case "compact":
       return { type: "compact" };
     default:

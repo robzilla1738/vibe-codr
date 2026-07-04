@@ -342,6 +342,20 @@ export const ConfigSchema = z.object({
    * schedules (parallel where possible, verify→retry, structured handoffs);
    * the inline `spawn_subagent` path is unchanged. Disable to hide the tool. */
   orchestration: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
+  /** The `/goal` autonomous run: after each turn the engine self-assesses the
+   * north-star goal and keeps enqueuing continuation turns until it verifies
+   * the goal met (two consecutive clean passes) or hits this round bound —
+   * larger than the gate's maxRounds because a goal run is meant to be
+   * exhaustive, but hard-capped so an unsatisfiable goal can't run forever. */
+  goal: z
+    .object({
+      maxRounds: z.number().int().min(1).max(100).default(25),
+      /** Run a dedicated read-only PLAN turn (investigate → checklist → seed
+       * tasks) before execution starts. Off = the legacy single blended turn —
+       * the kill-switch and the fast path for trivial goals. */
+      planFirst: z.boolean().default(true),
+    })
+    .default({ maxRounds: 25, planFirst: true }),
   /**
    * Engine-owned build intelligence (all default-on, per-feature kill-switches):
    * deterministic repo recon injected into every agent's prompt, the `run_check`

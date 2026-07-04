@@ -343,10 +343,25 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       handleApprovals(h, "auto", true);
       h.notice("YOLO — approvals off; tools run without prompting. /execute re-gates.", "warn");
       break;
-    case "goal":
-      h.session.setGoal(args || null);
-      h.notice(args ? `Goal set: ${args}` : "Goal cleared.");
+    case "goal": {
+      // Single authority for /goal verbs; the state change (and the autonomous
+      // goal run it starts/stops) lives in the engine's `set-goal` handler.
+      const goalArg = args.trim();
+      if (!goalArg) {
+        h.notice(
+          h.session.goal
+            ? `Goal: ${h.session.goal}\n/goal clear stops it · /goal <text> replaces it.`
+            : "No goal set. /goal <text> sets a north-star goal and starts an autonomous run.",
+        );
+        break;
+      }
+      if (/^(clear|none|off|stop|reset)$/i.test(goalArg)) {
+        h.send({ type: "set-goal", goal: null });
+        break;
+      }
+      h.send({ type: "set-goal", goal: goalArg });
       break;
+    }
     case "clear":
     case "new":
       // `session.clear()` already emits the "Conversation cleared." notice —

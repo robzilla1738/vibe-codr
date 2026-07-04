@@ -201,15 +201,28 @@ test("/yolo switches to execute with approvals auto, loudly", async () => {
   ).toBe(true);
 });
 
-test("/goal sets and clears the goal", async () => {
+test("/goal sets + starts a run, bare /goal shows, /goal clear clears", async () => {
   const engine = makeEngine();
-  collect(engine);
+  const { events, stop } = collect(engine);
   engine.send({ type: "run-slash", name: "goal", args: "ship it" });
   await engine.whenIdle();
   expect(engine.snapshot().goal).toBe("ship it");
+  // Setting a goal is no longer passive: it announces and enqueues a working
+  // turn (which errors here — no provider — and pauses the run via lastError).
+  expect(events.some((e) => e.type === "notice" && /Goal set/.test(e.message))).toBe(true);
+  expect(events.some((e) => e.type === "user-message")).toBe(true);
+
+  // Bare /goal SHOWS the goal (it used to silently clear it).
   engine.send({ type: "run-slash", name: "goal", args: "" });
   await engine.whenIdle();
+  expect(engine.snapshot().goal).toBe("ship it");
+  expect(events.some((e) => e.type === "notice" && /^Goal: ship it/.test(e.message))).toBe(true);
+
+  engine.send({ type: "run-slash", name: "goal", args: "clear" });
+  await engine.whenIdle();
+  stop();
   expect(engine.snapshot().goal).toBeNull();
+  expect(events.some((e) => e.type === "notice" && /Goal cleared/.test(e.message))).toBe(true);
 });
 
 test("/status, /context, /memory, /recall run and emit notices", async () => {

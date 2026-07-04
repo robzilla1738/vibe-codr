@@ -103,6 +103,15 @@ import {
  * open indefinitely by a buggy hook. */
 const MAX_IDLE_CONTINUES = 3;
 
+/** Consecutive clean self-assessments a /goal run needs before it may finish.
+ * The first "met" verdict buys a dedicated adversarial verify turn, not the
+ * finish line — only a clean assessment AFTER that verify turn ends the run
+ * (the same converge-on-N-clean-passes discipline the audit ledger uses). */
+const MAX_GOAL_CLEAN_PASSES = 2;
+
+/** Evidence cap for the goal self-assessment prompt (diff portion). */
+const GOAL_ASSESS_DIFF_CAP = 8_000;
+
 /** Build manifests whose appearance/change signals the project's check set may
  * have shifted (a scaffolder ran) — used by the gate's no-checks refresh guard. */
 const GATE_MANIFEST_FILES = [
@@ -134,6 +143,21 @@ const GATE_MANIFEST_FILES = [
  * turn — the guard block is only reached when there are no runnable checks yet.
  * Pure + injectable for testing.
  */
+/** Deterministic override on the goal self-assessment: a model verdict of
+ * "met" can never stand on a RED gate — failing checks are a hard gap, not a
+ * judgment call. Pure + exported for unit testing. */
+export function applyGateToVerdict(
+  verdict: { met: boolean; gaps: string[]; reason: string },
+  gate: "green" | "red" | "unverified" | "aborted" | undefined,
+): { met: boolean; gaps: string[]; reason: string } {
+  if (!verdict.met || gate !== "red") return verdict;
+  return {
+    met: false,
+    gaps: [...verdict.gaps, "project checks failing (gate red)"],
+    reason: "the gate is red — checks must pass before the goal can be met",
+  };
+}
+
 export function manifestSignature(cwd: string): string {
   const parts: string[] = [];
   for (const m of GATE_MANIFEST_FILES) {
@@ -278,6 +302,27 @@ export class Engine implements EngineClient {
    * handoff turn starts, cleared by the next REAL user prompt (or when the
    * seeded list finishes/caps out). Scopes the completion check to plan runs. */
   #planExecutionActive = false;
+  /** True while a `/goal` autonomous run is live: armed by `set-goal` with
+   * text, cleared on verified-met, round-exhaust, `/goal clear`, or abort.
+   * Unlike #planExecutionActive it deliberately survives a mid-run typed
+   * prompt — a north-star goal outlives any single prompt, so a steer folds
+   * into the run instead of killing it (submit-prompt re-grants the round
+   * counters below so the steered run gets fresh runway). */
+  #goalRunActive = false;
+  /** Which pipeline phase the goal run is in: "plan" (the read-only planning
+   * turn is queued/running — assessment is suppressed, #beginGoalExecution runs
+   * next), "execute" (task-driven execution + outer assessment), or undefined
+   * (no run, or the legacy planFirst:false blended path). Persisted so --resume
+   * re-enters the right phase. */
+  #goalPhase: "plan" | "execute" | undefined;
+  /** Bounded goal-continuation turns for the current run (config goal.maxRounds);
+   * zeroed when a run is (re)armed and on each genuine user prompt. The SAME
+   * counter also charges goal-run task continuations (#maybeContinueTasks) —
+   * one unified budget, so plan-chain rounds can't multiply the ceiling. */
+  #goalContinueRounds = 0;
+  /** Consecutive clean self-assessments since the model first claimed the goal
+   * met; any gap found resets convergence to zero. */
+  #goalCleanPasses = 0;
   /** Manifest fingerprint at the last no-runnable-checks gate refresh. A repo
    * that legitimately has no checks would otherwise re-run full recon on EVERY
    * mutating turn; we only re-scan when a build manifest actually changed (which
@@ -462,8 +507,9 @@ export class Engine implements EngineClient {
   }
 
   /** Engine-side per-session state that must survive --resume but belongs to
-   * the ENGINE, not the conversation: today just the armed plan handoff. Lives
-   * in the project's GLOBAL state dir (machine state never dirties the cwd). */
+   * the ENGINE, not the conversation: the armed plan handoff and the live goal
+   * run (flag, phase, counters). Lives in the project's GLOBAL state dir
+   * (machine state never dirties the cwd). */
   #engineStatePath(): string {
     return join(globalStateDir(this.#cwd), "sessions", this.#session.id, "engine.json");
   }
@@ -477,9 +523,18 @@ export class Engine implements EngineClient {
     const write = async () => {
       try {
         await mkdir(dirname(this.#engineStatePath()), { recursive: true });
-        // #pendingHandoff is read at write time, so the LAST queued write always
+        // Fields are read at write time, so the LAST queued write always
         // persists the newest state.
-        await Bun.write(this.#engineStatePath(), JSON.stringify({ pendingHandoff: this.#pendingHandoff }));
+        await Bun.write(
+          this.#engineStatePath(),
+          JSON.stringify({
+            pendingHandoff: this.#pendingHandoff,
+            goalRunActive: this.#goalRunActive,
+            goalPhase: this.#goalPhase ?? null,
+            goalContinueRounds: this.#goalContinueRounds,
+            goalCleanPasses: this.#goalCleanPasses,
+          }),
+        );
       } catch {
         /* best-effort — losing this on a crash only loses one convenience flag */
       }
@@ -491,8 +546,20 @@ export class Engine implements EngineClient {
   /** Restore engine-side state + the last presented plan on --resume. */
   async #restoreEngineState(): Promise<void> {
     try {
-      const state = (await Bun.file(this.#engineStatePath()).json()) as { pendingHandoff?: boolean };
+      const state = (await Bun.file(this.#engineStatePath()).json()) as {
+        pendingHandoff?: boolean;
+        goalRunActive?: boolean;
+        goalPhase?: "plan" | "execute" | null;
+        goalContinueRounds?: number;
+        goalCleanPasses?: number;
+      };
       if (state.pendingHandoff) this.#pendingHandoff = true;
+      if (state.goalRunActive) {
+        this.#goalRunActive = true;
+        this.#goalPhase = state.goalPhase ?? undefined;
+        this.#goalContinueRounds = state.goalContinueRounds ?? 0;
+        this.#goalCleanPasses = state.goalCleanPasses ?? 0;
+      }
     } catch {
       /* absent/corrupt → nothing to restore */
     }
@@ -828,8 +895,37 @@ export class Engine implements EngineClient {
     await this.#mcp.start(this.#config.mcp.servers);
 
     // Restore engine-side per-session state (armed plan handoff + the last
-    // presented plan) so a --resume picks up exactly where approval left off.
+    // presented plan + a live goal run) so a --resume picks up exactly where
+    // things left off.
     await this.#restoreEngineState();
+
+    // A goal run that was live at shutdown resumes here: the goal text and
+    // conversation context came back with the session, so re-enter the loop —
+    // an assessment-driven continuation (or the plan turn, if shutdown landed
+    // mid-planning), never a fresh drive turn.
+    if (this.#goalRunActive) {
+      const goal = this.#session.goal;
+      if (!goal) {
+        this.#goalRunActive = false;
+        this.#goalPhase = undefined;
+        void this.#persistEngineState();
+      } else {
+        this.#notice(
+          `Resuming goal run (round ${this.#goalContinueRounds}/${this.#config.goal.maxRounds}): ${goal}`,
+        );
+        if (this.#goalPhase === "plan") {
+          this.#enqueue(`goal: plan ${queueLabel(goal)}`, async () => {
+            await this.#handlePrompt(this.#goalPlanPrompt(goal));
+            this.#beginGoalExecution(goal);
+          });
+        } else {
+          // Queue the re-entry (not a bare call): whenIdle then covers the
+          // assessment + whatever it enqueues, and the `goal: ` label keeps it
+          // sweepable by /goal clear like every other run turn.
+          this.#enqueue("goal: resume", () => this.#maybeContinueGoal());
+        }
+      }
+    }
 
     // Seed the header's git context (branch/dirty/ahead-behind/worktree) so it's
     // in the first snapshot; cheap, and only at startup.
@@ -976,6 +1072,13 @@ export class Engine implements EngineClient {
         // plus the diff-review baseline — same reset a slash-command-initiated
         // prompt gets via the handle's resetTurnBudgets().
         this.#resetPromptBudgets();
+        // A typed prompt during a goal run is a STEER, not a stop: #goalRunActive
+        // stays armed (deliberately not part of #resetPromptBudgets — goal
+        // continuation turns call that reset themselves for fresh gate budgets,
+        // and must never zero their own round counter), but the counters restart
+        // so the steered run gets fresh runway and must re-converge.
+        this.#goalContinueRounds = 0;
+        this.#goalCleanPasses = 0;
         // …and starts a fresh coordination context: the blackboard is per-fan-out
         // scratch (claims, transient decisions), NOT durable state — the task list
         // and long-term memory carry that. Clearing here (not on loop iterations,
@@ -1055,9 +1158,25 @@ export class Engine implements EngineClient {
         void this.#createAgent(command.name);
         break;
       case "set-goal":
+        // Setting a goal is not passive metadata: it arms an autonomous run
+        // that plans, works, self-assesses, and keeps continuing (bounded)
+        // until the goal is verified met. Clearing stops that run.
         this.#session.setGoal(command.goal);
+        if (command.goal) this.#startGoalRun(command.goal);
+        else this.#stopGoalRun("cleared by user");
         break;
       case "abort":
+        // An abort also pauses a live goal run: the interrupted guard already
+        // blocks the NEXT continuation, but the flag must drop too so a later
+        // unrelated prompt can't resurrect the run. The ★ goal itself stays
+        // set (the user paused the work, they didn't clear the north star).
+        // Persist the disarm — without it a kill-then---resume would resurrect
+        // an Esc'd run from engine.json.
+        if (this.#goalRunActive) {
+          this.#goalRunActive = false;
+          this.#goalPhase = undefined;
+          void this.#persistEngineState();
+        }
         // Drop everything still waiting, then cancel the in-flight turn — which
         // may be a loop iteration running on an ephemeral session (`#loopSession`
         // is set only for the duration of that iteration), not the main session.
@@ -1839,13 +1958,7 @@ export class Engine implements EngineClient {
       // already-executed plan and re-fire its handoff (the plan file otherwise
       // repopulates #lastPlan on restore, re-arming a spent approval).
       void this.#discardPersistedPlan();
-      const tasks = this.#session.tasks;
-      const taskContract = tasks.length
-        ? `\nIt was seeded as this task list:\n${tasks.map((t, i) => `t${i + 1} ${t.title}`).join("\n")}\n` +
-          'Before starting each task call update_tasks({updates:[{id:"t<N>",status:"in_progress"}]}), and mark it ' +
-          "completed the moment you verify it — exactly one task in_progress at a time. Do not stop until every " +
-          "task is completed and the project's checks pass."
-        : "";
+      const taskContract = this.#taskContractText();
       text =
         "The plan you presented was approved by the user — proceed with implementing it " +
         `now (your earlier "stop here" no longer applies).${taskContract}${text.trim() ? `\n\n${text}` : ""}`;
@@ -1911,6 +2024,7 @@ export class Engine implements EngineClient {
       // An active plan chain must still advance when the gate is off — otherwise
       // it stalls silently with tasks pending (no green signal → green=false).
       if (!this.#session.interrupted) this.#maybeContinueTasks(false);
+      await this.#maybeContinueGoal();
       return;
     }
     // The gate runs on the same terms the legacy verify did: only after a
@@ -1923,6 +2037,7 @@ export class Engine implements EngineClient {
       // unfinished tasks. Skip when the user interrupted (Esc means stop), and
       // #maybeContinueTasks no-ops outside an active plan chain.
       if (!this.#session.interrupted) this.#maybeContinueTasks(false);
+      await this.#maybeContinueGoal();
       return;
     }
 
@@ -1973,9 +2088,11 @@ export class Engine implements EngineClient {
       this.#lastGateOutcome = outcome;
     }
     // A RED gate already enqueued its own fix turn (which re-enters #afterTurn),
-    // and an aborted gate means the user interrupted — both skip the task check.
+    // and an aborted gate means the user interrupted — both skip the task check
+    // AND the goal check (the fix turn's own #afterTurn re-runs both).
     if (outcome !== "red" && outcome !== "aborted") {
       this.#maybeContinueTasks(outcome === "green");
+      await this.#maybeContinueGoal();
     }
   }
 
@@ -2003,27 +2120,394 @@ export class Engine implements EngineClient {
       this.#planExecutionActive = false;
       return;
     }
-    const max = this.#config.build.gate.maxRounds;
-    if (this.#taskContinueRounds >= max) {
+    // During a goal run, task continuations charge the run's UNIFIED budget
+    // (#goalContinueRounds vs goal.maxRounds) — two stacked budgets would let a
+    // 25-round ceiling balloon to ~25×gate.maxRounds turns. The `goal: ` label
+    // keeps them coverable by the goal sweep and the queued-goal-turn guard.
+    const inGoalRun = this.#goalRunActive;
+    const max = inGoalRun ? this.#config.goal.maxRounds : this.#config.build.gate.maxRounds;
+    const rounds = inGoalRun ? this.#goalContinueRounds : this.#taskContinueRounds;
+    if (rounds >= max) {
       this.#planExecutionActive = false;
-      this.#notice(
-        `Plan tasks still unfinished after ${max} continuation round${max === 1 ? "" : "s"} — ` +
-          `needs your attention: ${unfinished.map((t) => t.ref).join(", ")}.`,
-        "warn",
-      );
+      // In a goal run the warn is the goal loop's job: #maybeContinueGoal runs
+      // next in the same #afterTurn, sees the same exhausted counter, and emits
+      // its round-exhaust warn — a second one here would double-report.
+      if (!inGoalRun) {
+        this.#notice(
+          `Plan tasks still unfinished after ${max} continuation round${max === 1 ? "" : "s"} — ` +
+            `needs your attention: ${unfinished.map((t) => t.ref).join(", ")}.`,
+          "warn",
+        );
+      }
       return;
     }
-    this.#taskContinueRounds += 1;
+    if (inGoalRun) {
+      this.#goalContinueRounds += 1;
+      void this.#persistEngineState();
+      this.#notice(
+        `Goal round ${this.#goalContinueRounds}/${max} — unfinished tasks: ` +
+          `${unfinished.map((t) => t.ref).join(", ")}.`,
+      );
+    } else {
+      this.#taskContinueRounds += 1;
+    }
     const list = unfinished.map((t) => `${t.ref} (${t.status}): ${t.title}`).join("\n");
-    this.#enqueue("continue plan tasks", () =>
-      this.#handlePrompt(
+    this.#enqueue(inGoalRun ? "goal: continue tasks" : "continue plan tasks", () => {
+      // A goal-run task round is a fresh prompt-sized unit of work (same as
+      // goal continuations): fresh gate/review budgets, then re-arm the chain
+      // the reset just disarmed. Non-goal plan chains keep the legacy shared
+      // budget (bounded by gate.maxRounds inside one user prompt).
+      if (inGoalRun) {
+        this.#resetPromptBudgets();
+        this.#planExecutionActive = true;
+      }
+      return this.#handlePrompt(
         `The approved plan is not finished — these tasks remain:\n${list}\n` +
           "For each: if it is already fully done, mark it completed now " +
           '(update_tasks({updates:[{id:"t<N>",status:"completed"}]})); otherwise finish it, ' +
           "marking it in_progress when you start and completed the moment you verify it. " +
           "Do not stop until every task is completed and the project's checks pass.",
-      ),
+      );
+    });
+  }
+
+  /** The seeded-task update contract, shared verbatim by the plan→execute
+   * handoff and the goal run's execute turn so the two can't drift. Empty when
+   * no tasks are seeded. */
+  #taskContractText(): string {
+    const tasks = this.#session.tasks;
+    return tasks.length
+      ? `\nIt was seeded as this task list:\n${tasks.map((t, i) => `t${i + 1} ${t.title}`).join("\n")}\n` +
+          'Before starting each task call update_tasks({updates:[{id:"t<N>",status:"in_progress"}]}), and mark it ' +
+          "completed the moment you verify it — exactly one task in_progress at a time. Do not stop until every " +
+          "task is completed and the project's checks pass."
+      : "";
+  }
+
+  /** Arm a `/goal` autonomous run and enqueue its first turn. Routing through
+   * #handlePrompt (not a bespoke runner) buys everything a typed prompt gets
+   * for free: the `user-message` event that flips the TUI to the working view,
+   * checkpoints, the green-gate, diff review, and #afterTurn — where
+   * #maybeContinueGoal keeps the run going.
+   *
+   * Default pipeline (goal.planFirst): a dedicated read-only PLAN turn that
+   * investigates and seeds the task list, then #beginGoalExecution launches the
+   * task-contract EXECUTE turn. planFirst:false keeps the legacy single blended
+   * drive turn. */
+  #startGoalRun(goal: string): void {
+    // A goal run must run in EXECUTE mode — plan-mode turns are read-only and
+    // could never accomplish a mutating goal. Flip directly via #setModeGated
+    // (NOT send({type:"set-mode"}): its approvingPlan branch would silently
+    // approve a lingering presented plan). Preserve YOLO the same way
+    // #approvePlan does: capture before the gate reset, restore after.
+    if (this.#session.mode === "plan") {
+      const wantAuto = this.#config.approvalMode === "auto";
+      this.#setModeGated("execute");
+      if (wantAuto) handleApprovals(this.#getCommandHandle(), "auto", true);
+      this.#notice("Goal run requires execute mode — switched.");
+    }
+    this.#goalRunActive = true;
+    this.#goalContinueRounds = 0;
+    this.#goalCleanPasses = 0;
+    const planFirst = this.#config.goal.planFirst;
+    this.#goalPhase = planFirst ? "plan" : undefined;
+    this.#resetPromptBudgets();
+    void this.#persistEngineState();
+    this.#notice(
+      `Goal set: ${goal}\nStarting an autonomous run — ` +
+        (planFirst ? "plan first, then execute the plan task by task, " : "the agent works, ") +
+        "self-assessing and continuing until the goal is verified met. " +
+        "/goal clear (or Esc) stops it; typing steers it.",
     );
+    if (planFirst) {
+      this.#enqueue(`goal: plan ${queueLabel(goal)}`, async () => {
+        try {
+          await this.#handlePrompt(this.#goalPlanPrompt(goal));
+        } catch (err) {
+          // A THROWN plan turn (drain would log it) must not leave the run
+          // armed with nothing queued — pause it like the lastError branch.
+          this.#goalRunActive = false;
+          this.#goalPhase = undefined;
+          void this.#persistEngineState();
+          this.#notice("Goal run paused — the planning turn failed. /goal <text> re-arms it.", "warn");
+          throw err;
+        }
+        this.#beginGoalExecution(goal);
+      });
+    } else {
+      this.#enqueue(`goal: ${queueLabel(goal)}`, () => this.#handlePrompt(this.#goalDrivePrompt(goal)));
+    }
+  }
+
+  /** PLAN→EXECUTE seam: verify the plan turn actually seeded tasks (fall back
+   * to parsing its text, then to a single goal-titled task), then launch the
+   * execute turn under the shared task contract with plan-execution
+   * continuation armed — #maybeContinueTasks drives the list to completion and
+   * #maybeContinueGoal stays the outer verifier. */
+  #beginGoalExecution(goal: string): void {
+    // Esc mid-plan (abort case) or an errored plan turn (lastError branch in
+    // #maybeContinueGoal, which ran inside the plan turn's #afterTurn) already
+    // disarmed the run — nothing to launch.
+    if (!this.#goalRunActive) return;
+    if (!this.#session.tasks.length) {
+      // The model narrated a plan without calling update_tasks — seed from its
+      // text (same checklist/numbered parser as plan approval), or track the
+      // whole goal as one task so the execute loop always has a spine.
+      this.#seedTasksFromPlan(this.#session.lastAssistantText());
+      if (!this.#session.tasks.length) {
+        this.#session.setTasks([{ title: goal, status: "pending" }]);
+        this.#notice("Plan turn produced no checklist — tracking the goal as a single task.", "info");
+      }
+    }
+    this.#goalPhase = "execute";
+    void this.#persistEngineState();
+    this.#enqueue(`goal: execute ${queueLabel(goal)}`, () => {
+      this.#resetPromptBudgets();
+      // Arm task-driven continuation for THIS chain (reset just cleared it).
+      // Deliberately NOT opts.handoff — that path consumes #lastPlan and
+      // deletes the persisted plan file, which would destroy a user's real
+      // pending plan.
+      this.#planExecutionActive = true;
+      return this.#handlePrompt(this.#goalExecutePrompt(goal));
+    });
+  }
+
+  /** Sweep queued `goal:` continuation turns so nothing runs after a stop
+   * (mirrors the /loop-stop sweep — a queued item would otherwise still execute
+   * one full model turn). A steer can leave a continuation queued behind it, so
+   * every path that ends a run must sweep, not just /goal clear. */
+  #sweepQueuedGoalTurns(reason: string): void {
+    const queued = this.#pending.filter((p) => p.label.startsWith("goal: "));
+    if (!queued.length) return;
+    this.#pending = this.#pending.filter((p) => !p.label.startsWith("goal: "));
+    for (const p of queued) p.onCancel?.(reason);
+    this.#emitQueue();
+  }
+
+  /** Stop a goal run: disarm the flag and sweep queued continuations. */
+  #stopGoalRun(reason: string): void {
+    const was = this.#goalRunActive;
+    this.#goalRunActive = false;
+    this.#goalPhase = undefined;
+    if (was) void this.#persistEngineState();
+    this.#sweepQueuedGoalTurns(reason);
+    if (reason === "cleared by user") this.#notice(was ? "Goal cleared — run stopped." : "Goal cleared.");
+    else if (was) this.#notice(`Goal run stopped — ${reason}.`);
+  }
+
+  /** The PLAN turn directive: investigate, produce a checklist, seed tasks —
+   * and explicitly do not implement. A turn that stays read-only never trips
+   * `session.didMutate`, so it skips the gate exactly like a plan-mode turn
+   * would — read-only discipline by prompt, without plan mode's approval
+   * card / gate-rejection / approvals-reset seams (hostile to autonomy). The
+   * `- [ ]` format is mandated so #seedTasksFromPlan can parse the text as a
+   * fallback when the model narrates instead of calling update_tasks. */
+  #goalPlanPrompt(goal: string): string {
+    return (
+      `Your north-star goal is: ${goal}\n\n` +
+      "This turn is PLANNING ONLY. Investigate the repository first — read the relevant files, " +
+      "search for existing patterns, and ground every step in what the code actually does; never guess. " +
+      "Then produce a complete step-by-step plan as a markdown checklist (`- [ ] step`) covering the " +
+      "goal end to end, including verification steps, and seed it as the task list via update_tasks. " +
+      "Do NOT modify any files or start implementing in this turn."
+    );
+  }
+
+  /** The EXECUTE turn directive: drive the seeded task list to completion
+   * under the same contract the plan→execute handoff uses. */
+  #goalExecutePrompt(goal: string): string {
+    return (
+      `The plan for your north-star goal ("${goal}") is seeded as the task list — execute it now, ` +
+      `end to end.${this.#taskContractText()}\n` +
+      "Be exhaustive: cover edge cases, keep the project's checks green, and do not stop while any " +
+      "part of the goal is unmet."
+    );
+  }
+
+  /** The legacy single-turn directive (goal.planFirst: false): plan and execute
+   * in one blended turn, task list as the visible spine. */
+  #goalDrivePrompt(goal: string): string {
+    return (
+      `Your north-star goal is: ${goal}\n\n` +
+      "Treat this as a complete engagement, not a single answer. Plan the work first, seed it as a " +
+      "task list (update_tasks) so progress is visible, then execute end to end — mark each task " +
+      "in_progress when you start it and completed the moment you verify it. Be exhaustive: cover " +
+      "edge cases, keep the project's checks green, and do not stop while any part of the goal is unmet."
+    );
+  }
+
+  /**
+   * Goal-run completion check, called from every #afterTurn exit that isn't a
+   * red-gate fix cycle. Self-assesses the goal with a cheap structured call and
+   * either re-enqueues a bounded continuation naming the gaps, or — once the
+   * model claims "met" — spends one dedicated adversarial verify turn and only
+   * finishes after MAX_GOAL_CLEAN_PASSES consecutive clean assessments. Skipped
+   * while a plan-execution chain is mid-flight (one continuation driver at a
+   * time; the chain's own #afterTurn re-runs this when it settles) and after an
+   * interrupt (Esc means stop — never resurrect).
+   */
+  async #maybeContinueGoal(): Promise<void> {
+    if (!this.#goalRunActive) return;
+    if (this.#planExecutionActive) return;
+    if (this.#session.interrupted) return;
+    // A turn that ERRORED (provider down, missing key) must pause the run, not
+    // burn the round budget on doomed retries — session.run swallows the error
+    // into lastError and returns normally, so #afterTurn still lands here.
+    if (this.#session.lastError) {
+      this.#goalRunActive = false;
+      this.#goalPhase = undefined;
+      void this.#persistEngineState();
+      this.#sweepQueuedGoalTurns("goal run paused after an errored turn");
+      this.#notice(
+        "Goal run paused — the last turn errored. The ★ goal stays set; fix the provider, then " +
+          "/goal <text> to re-arm it.",
+        "warn",
+      );
+      return;
+    }
+    // The PLAN turn's own #afterTurn must not assess — #beginGoalExecution runs
+    // right after it and launches the execute phase. (An ERRORED plan turn is
+    // caught by the lastError branch just above — one pause path for both.)
+    if (this.#goalPhase === "plan") return;
+    const goal = this.#session.goal;
+    if (!goal) {
+      this.#goalRunActive = false;
+      this.#goalPhase = undefined;
+      return;
+    }
+    // A goal turn is already waiting (a steered prompt ran between an earlier
+    // continuation's enqueue and its drain) — don't stack another; the queued
+    // turn re-enters this check when it finishes.
+    if (this.#pending.some((p) => p.label.startsWith("goal: "))) return;
+    const max = this.#config.goal.maxRounds;
+    if (this.#goalContinueRounds >= max) {
+      this.#goalRunActive = false;
+      this.#goalPhase = undefined;
+      void this.#persistEngineState();
+      this.#sweepQueuedGoalTurns("goal round budget exhausted");
+      this.#notice(
+        `Goal not confirmed met after ${max} continuation round${max === 1 ? "" : "s"} — needs your ` +
+          "attention. The ★ goal stays set: /goal <text> re-arms the run, /goal clear drops it.",
+        "warn",
+      );
+      return;
+    }
+    // Unfinished seeded tasks are a deterministic "not met" — no model call.
+    // This keeps pressure on the task list (the plan's visible spine) and saves
+    // an assessment per round while the work is obviously incomplete.
+    const unfinished = this.#session.tasks
+      .map((t, i) => ({ ref: `t${i + 1}`, title: t.title, status: t.status }))
+      .filter((t) => t.status !== "completed");
+    const verdict = unfinished.length
+      ? {
+          met: false,
+          gaps: unfinished.map((t) => `${t.ref} (${t.status}): ${t.title}`),
+          reason: "seeded tasks unfinished",
+        }
+      : applyGateToVerdict(await this.#assessGoal(goal), this.#lastGateOutcome);
+    if (verdict.met) {
+      this.#goalCleanPasses += 1;
+      if (this.#goalCleanPasses >= MAX_GOAL_CLEAN_PASSES) {
+        this.#goalRunActive = false;
+        this.#goalPhase = undefined;
+        void this.#persistEngineState();
+        const tasks = this.#session.tasks;
+        const taskSummary = tasks.length ? `, ${tasks.length}/${tasks.length} tasks completed` : "";
+        const gateSummary = this.#lastGateOutcome ? `, gate ${this.#lastGateOutcome}` : "";
+        this.#notice(
+          `Goal met after ${this.#goalContinueRounds} round${this.#goalContinueRounds === 1 ? "" : "s"}` +
+            `${taskSummary}${gateSummary} — verified across ${MAX_GOAL_CLEAN_PASSES} consecutive clean passes.` +
+            (verdict.reason ? ` ${verdict.reason}` : ""),
+        );
+        return;
+      }
+      // First clean pass buys an adversarial verify turn, not the finish line.
+      this.#goalContinueRounds += 1;
+      void this.#persistEngineState();
+      this.#notice(`Goal round ${this.#goalContinueRounds}/${max} — verifying the claimed completion.`);
+      this.#enqueue(`goal: verify ${queueLabel(goal)}`, () => {
+        // Each goal round is a fresh prompt-sized unit of work: it gets its own
+        // gate/review/verify budgets (this is why the goal counters live OUTSIDE
+        // #resetPromptBudgets — the reset must not zero the run's own bounds).
+        this.#resetPromptBudgets();
+        if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
+        return this.#handlePrompt(
+          `You reported the north-star goal met: "${goal}". Now verify it is TRULY met, adversarially — ` +
+            "re-read the goal, re-check every part of the work against it, run or inspect the project's " +
+            "checks, and hunt for gaps, regressions, and unhandled edge cases. Any task still in_progress " +
+            "or pending is NOT done — finish it, or mark it completed only if verified. If ANY gap exists, " +
+            "fix it now. Only stop when nothing remains.",
+        );
+      });
+      return;
+    }
+    this.#goalCleanPasses = 0; // any gap resets convergence
+    this.#goalContinueRounds += 1;
+    void this.#persistEngineState();
+    this.#notice(`Goal round ${this.#goalContinueRounds}/${max} — ${verdict.reason}.`);
+    const gaps = verdict.gaps.length
+      ? `\nRemaining gaps:\n${verdict.gaps.map((g) => `- ${g}`).join("\n")}`
+      : "";
+    this.#enqueue(`goal: ${queueLabel(goal)}`, () => {
+      this.#resetPromptBudgets();
+      // Re-arm task-driven continuation when the list still has work (a steer's
+      // submit-prompt reset disarms it; this is how the chain resumes after).
+      if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
+      return this.#handlePrompt(
+        `The north-star goal is not yet met: "${goal}".${gaps}\n` +
+          "Continue the work — address the gaps, keep the task list current, and do not stop while " +
+          "any part of the goal is unmet or the project's checks fail.",
+      );
+    });
+  }
+
+  /** Self-assess whether the goal is met, from the last assistant text, the
+   * task list, and a capped working-tree diff. Same resilience rails as the
+   * /loop --until evaluator (retry, tree-global limiter, hard deadline); an
+   * assessment failure reads as "not met, no new gaps" so the run continues
+   * bounded rather than dying on a provider blip (same treat-failure-as-not-yet
+   * shape as LoopController's condition check). */
+  async #assessGoal(goal: string): Promise<{ met: boolean; gaps: string[]; reason: string }> {
+    try {
+      const tasks = this.#session.tasks;
+      const taskBlock = tasks.length
+        ? `\nTask list:\n${tasks.map((t, i) => `t${i + 1} [${t.status}] ${t.title}`).join("\n")}`
+        : "";
+      let diff = "";
+      try {
+        diff = await this.#fallbackReviewDiff();
+      } catch {
+        // Not a repo / git unavailable — assess from the transcript alone.
+      }
+      if (diff.length > GOAL_ASSESS_DIFF_CAP) {
+        diff = `${diff.slice(0, GOAL_ASSESS_DIFF_CAP)}\n…(diff truncated)`;
+      }
+      const model = await withRetry(
+        () => this.registry.resolveModel(this.#session.model, this.#config),
+        { maxAttempts: this.#config.retry.maxAttempts, baseDelayMs: this.#config.retry.baseDelayMs },
+      );
+      const { object } = await this.#limiter.run(
+        () =>
+          generateObject({
+            model,
+            schema: z.object({ met: z.boolean(), gaps: z.array(z.string()), reason: z.string() }),
+            abortSignal: AbortSignal.timeout(60_000),
+            maxRetries: this.#config.retry.maxAttempts,
+            prompt:
+              `You are strictly auditing whether a working goal has been FULLY achieved.\n` +
+              `Goal: ${goal}\n\nAgent's latest report:\n${this.#session.lastAssistantText()}\n` +
+              `${taskBlock}\nGate: ${this.#lastGateOutcome ?? "unverified"}\n` +
+              `${diff ? `\nWorking-tree diff (may be truncated):\n${diff}\n` : ""}\n` +
+              "Return met=true ONLY if every part of the goal is clearly, verifiably done. " +
+              "Never return met=true if the gate is red. " +
+              "List each concrete remaining gap in `gaps` (empty if none) and a one-sentence `reason`.",
+          }),
+        AbortSignal.timeout(90_000),
+      );
+      return object;
+    } catch {
+      return { met: false, gaps: [], reason: "assessment unavailable — continuing" };
+    }
   }
 
   /** Reset every per-user-prompt budget + the diff-review baseline. Called once

@@ -55,7 +55,11 @@ export const COMMAND_GROUPS: CommandGroup[] = [
   {
     title: "Steering",
     commands: [
-      { name: "goal", description: "Set or clear the north-star goal (/goal <text>)" },
+      {
+        name: "goal",
+        description:
+          "Set a north-star goal and start an autonomous run toward it (/goal <text> · /goal clear · /goal to show)",
+      },
       { name: "loop", description: "Run a prompt on a loop (/loop [interval] <prompt> [--until <cond>] [--max N] · /loop stop)" },
       { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
     ],

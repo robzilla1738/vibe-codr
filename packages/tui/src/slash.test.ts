@@ -44,12 +44,16 @@ test("a typed /approvals ask|auto is the VERBOSE immediate command (confirm noti
   expect(lineToCommand("/approvals ask")).toEqual({ type: "set-approvals", mode: "ask" });
 });
 
-test("/goal sets and clears", () => {
+test("/goal routes to the engine slash handler — one authority for its verbs", () => {
+  // Like /model: set/show/clear are parsed engine-side (engine-commands.ts), so
+  // the TUI and REPL can't drift; bare /goal SHOWS (it used to silently clear).
   expect(lineToCommand("/goal ship it")).toEqual({
-    type: "set-goal",
-    goal: "ship it",
+    type: "run-slash",
+    name: "goal",
+    args: "ship it",
   });
-  expect(lineToCommand("/goal")).toEqual({ type: "set-goal", goal: null });
+  expect(lineToCommand("/goal")).toEqual({ type: "run-slash", name: "goal", args: "" });
+  expect(lineToCommand("/goal clear")).toEqual({ type: "run-slash", name: "goal", args: "clear" });
 });
 
 test("parsePermissionDecision grants only on EXACT tokens", () => {

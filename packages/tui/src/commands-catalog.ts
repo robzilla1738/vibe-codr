@@ -42,7 +42,7 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "theme", description: "Set the UI theme", values: THEME_NAMES.filter((n) => n !== "dark") },
   { name: "accent", description: "Set the accent color (or /accent <hex>)", values: ACCENT_NAMES },
   // Steering
-  { name: "goal", description: "Set or clear the north-star goal", arg: "<text>" },
+  { name: "goal", description: "Set a north-star goal + start an autonomous run (/goal clear stops)", arg: "<text>" },
   { name: "loop", description: "Run a prompt on a loop (/loop stop ends it)", arg: "[interval] <prompt> [--until <cond>] [--max N]" },
   { name: "queue", description: "Show the prompt queue" },
   // Code & safety

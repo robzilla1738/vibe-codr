@@ -23,8 +23,25 @@ test("returns line-numbered content with optional offset/limit", async () => {
   const full = await readTool.execute({ path: "f.txt" }, ctx(cwd));
   expect(full.output).toBe("1\ta\n2\tb\n3\tc\n4\td");
 
-  const page = await readTool.execute({ path: "f.txt", offset: 1, limit: 2 }, ctx(cwd));
+  // offset is 1-based: offset:2 begins at the line rendered "2".
+  const page = await readTool.execute({ path: "f.txt", offset: 2, limit: 2 }, ctx(cwd));
   expect(page.output).toBe("2\tb\n3\tc");
+});
+
+test("offset is 1-based: offset:1 equals omitting offset", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-read-1based-"));
+  await Bun.write(join(cwd, "f.txt"), "a\nb\nc\nd");
+  const full = await readTool.execute({ path: "f.txt" }, ctx(cwd));
+  const fromOne = await readTool.execute({ path: "f.txt", offset: 1 }, ctx(cwd));
+  expect(fromOne.output).toBe(full.output);
+  expect(fromOne.output).toBe("1\ta\n2\tb\n3\tc\n4\td");
+});
+
+test("offset:2 begins at the displayed line 2", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-read-off2-"));
+  await Bun.write(join(cwd, "f.txt"), "a\nb\nc\nd");
+  const r = await readTool.execute({ path: "f.txt", offset: 2 }, ctx(cwd));
+  expect(r.output).toBe("2\tb\n3\tc\n4\td");
 });
 
 test("reports a missing file as an error", async () => {
@@ -79,7 +96,7 @@ test("offset/limit read only the requested window of a large file (no full slurp
   const cwd = mkdtempSync(join(tmpdir(), "vibe-read-window-"));
   const tail = "Z".repeat(40_000_000); // 40MB on line 4 — must not be loaded
   await Bun.write(join(cwd, "big.log"), `L1\nL2\nL3\n${tail}`);
-  const r = await readTool.execute({ path: "big.log", offset: 0, limit: 3 }, ctx(cwd));
+  const r = await readTool.execute({ path: "big.log", offset: 1, limit: 3 }, ctx(cwd));
   expect(r.isError).toBeUndefined();
   expect(r.output).toBe("1\tL1\n2\tL2\n3\tL3");
   expect(String(r.output)).not.toContain("Z");
@@ -91,4 +108,6 @@ test("flags an offset past the end of a non-empty file", async () => {
   const r = await readTool.execute({ path: "f.txt", offset: 99 }, ctx(cwd));
   expect(r.isError).toBe(true);
   expect(r.output).toContain("past the end");
+  // The error reports the 1-based offset the model supplied, not a 0-based index.
+  expect(r.output).toContain("offset 99 is past the end");
 });

@@ -1,12 +1,15 @@
-import { test, expect } from "bun:test";
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: the expandServerConfig tests assert literal ${VAR} syntax
+import { expect, test } from "bun:test";
+import type { McpServer } from "@vibe/config";
 import type { ToolDefinition } from "@vibe/shared";
 import {
-  McpHub,
-  toToolDefinition,
-  mcpToolName,
-  renderContent,
+  expandServerConfig,
   MCP_MAX_OUTPUT,
   type McpClient,
+  McpHub,
+  mcpToolName,
+  renderContent,
+  toToolDefinition,
 } from "./mcp.ts";
 
 /** A fake MCP server exposing one echo tool. */
@@ -35,7 +38,13 @@ function fakeClient(calls: { name: string; args: unknown }[]): McpClient {
 
 /** A minimal ToolContext for driving a tool's execute() directly. */
 function ctx(signal: AbortSignal = new AbortController().signal) {
-  return { cwd: "/", sessionId: "s", toolCallId: "t", emit: () => {}, abortSignal: signal } as never;
+  return {
+    cwd: "/",
+    sessionId: "s",
+    toolCallId: "t",
+    emit: () => {},
+    abortSignal: signal,
+  } as never;
 }
 
 test("hub registers MCP tools as gated mcp__<server>__<tool> definitions", async () => {
@@ -66,8 +75,7 @@ test("mcpToolName sanitizes disallowed chars and caps length for hosted provider
   expect(long).toMatch(NAME);
   const longB = mcpToolName("server", `${"a".repeat(119)}b`);
   expect(longB).not.toBe(long); // different source → different hash suffix
-  for (const n of [mcpToolName("gh", "github.search"), long])
-    expect(n).toMatch(NAME);
+  for (const n of [mcpToolName("gh", "github.search"), long]) expect(n).toMatch(NAME);
 });
 
 test("two real tool names that sanitize to the same exposed name both stay callable", async () => {
@@ -129,7 +137,12 @@ test("a server that fails to connect is skipped, not fatal", async () => {
 });
 
 test("renderContent flattens text parts and falls back to JSON", () => {
-  expect(renderContent([{ type: "text", text: "a" }, { type: "text", text: "b" }])).toBe("a\nb");
+  expect(
+    renderContent([
+      { type: "text", text: "a" },
+      { type: "text", text: "b" },
+    ]),
+  ).toBe("a\nb");
   expect(renderContent("plain")).toBe("plain");
   expect(renderContent([{ type: "image", data: "x" }])).toContain("image");
 });
@@ -141,12 +154,12 @@ test("renderContent omits base64 image/blob payloads (no transcript flooding)", 
   expect(out).toContain("image/png");
   expect(out).toMatch(/omitted/);
   // Embedded resource blobs are summarized; resource text is passed through.
-  expect(
-    renderContent([{ type: "resource", resource: { uri: "x://y", blob: "QUJD" } }]),
-  ).toMatch(/omitted/);
-  expect(
-    renderContent([{ type: "resource", resource: { uri: "x://y", text: "hello" } }]),
-  ).toBe("hello");
+  expect(renderContent([{ type: "resource", resource: { uri: "x://y", blob: "QUJD" } }])).toMatch(
+    /omitted/,
+  );
+  expect(renderContent([{ type: "resource", resource: { uri: "x://y", text: "hello" } }])).toBe(
+    "hello",
+  );
 });
 
 test("readOnlyHint maps to a read-only (un-gated) tool", async () => {
@@ -196,11 +209,20 @@ test("registers read_mcp_resource + get_mcp_prompt and they list/read/render", a
     listTools: async () => [{ name: "echo" }],
     callTool: async () => ({ content: "ok" }),
     listResources: async () => [
-      { uri: "file:///readme.md", name: "Readme", description: "project readme", mimeType: "text/markdown" },
+      {
+        uri: "file:///readme.md",
+        name: "Readme",
+        description: "project readme",
+        mimeType: "text/markdown",
+      },
     ],
     readResource: async (uri) => ({ content: [{ type: "text", text: `contents of ${uri}` }] }),
     listPrompts: async () => [
-      { name: "summarize", description: "summarize a file", arguments: [{ name: "path", required: true }] },
+      {
+        name: "summarize",
+        description: "summarize a file",
+        arguments: [{ name: "path", required: true }],
+      },
     ],
     getPrompt: async (name, args) => ({
       content: [{ type: "text", text: `prompt ${name} for ${JSON.stringify(args)}` }],
@@ -223,7 +245,14 @@ test("registers read_mcp_resource + get_mcp_prompt and they list/read/render", a
   const promptTool = registered.find((t) => t.name === "get_mcp_prompt")!;
   expect(String((await promptTool.execute({}, {} as never)).output)).toContain("summarize");
   expect(
-    String((await promptTool.execute({ server: "demo", name: "summarize", args: { path: "a.ts" } }, {} as never)).output),
+    String(
+      (
+        await promptTool.execute(
+          { server: "demo", name: "summarize", args: { path: "a.ts" } },
+          {} as never,
+        )
+      ).output,
+    ),
   ).toContain("prompt summarize");
 
   expect(hub.resources()).toHaveLength(1);
@@ -450,9 +479,9 @@ test("status reflects a transport that dropped after connecting", async () => {
 test("renderContent renders resources/read contents (no `type` field) — text and blob", () => {
   // The real transport's resources/read returns bare `{uri, mimeType, text|blob}`
   // items with NO `type` discriminator (unlike tool-call content parts).
-  expect(
-    renderContent([{ uri: "file:///a.md", mimeType: "text/markdown", text: "# hello" }]),
-  ).toBe("# hello");
+  expect(renderContent([{ uri: "file:///a.md", mimeType: "text/markdown", text: "# hello" }])).toBe(
+    "# hello",
+  );
   const bigB64 = "A".repeat(80_000);
   const blobOut = renderContent([{ uri: "file:///img.png", mimeType: "image/png", blob: bigB64 }]);
   expect(blobOut).not.toContain(bigB64); // raw base64 is NOT dumped into the prompt
@@ -498,12 +527,133 @@ test("MCP tool-call output is capped like a built-in (no unbounded blob into con
 test("every MCP tool is flagged network:true so the permission gate governs egress", async () => {
   // A server-declared readOnlyHint must NOT short-circuit the gate — the tool
   // still reaches an external server (egress). network:true keeps the gate live.
-  const ro = toToolDefinition("s", { name: "fetch", annotations: { readOnlyHint: true } }, {} as McpClient);
+  const ro = toToolDefinition(
+    "s",
+    { name: "fetch", annotations: { readOnlyHint: true } },
+    {} as McpClient,
+  );
   expect(ro.readOnly).toBe(true);
   expect(ro.network).toBe(true);
   const rw = toToolDefinition("s", { name: "write" }, {} as McpClient);
   expect(rw.readOnly).toBe(false);
   expect(rw.network).toBe(true);
+});
+
+test("the aggregate read_mcp_resource / get_mcp_prompt tools are network:true so the gate governs them", async () => {
+  // Both reach an external server (egress). readOnly:true alone would let the
+  // toolset gate `(!def.readOnly || def.network)` short-circuit — a deny/ask rule
+  // on read_mcp_resource / get_mcp_prompt could never fire. network:true keeps the
+  // gate live while preserving the read-only, plan-mode-friendly default.
+  const registered: ToolDefinition[] = [];
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    listResources: async () => [{ uri: "file:///r" }],
+    readResource: async () => ({ content: "hi" }),
+    listPrompts: async () => [{ name: "p" }],
+    getPrompt: async () => ({ content: "rendered" }),
+    close: async () => {},
+  };
+  const hub = new McpHub({ registerTool: (d) => registered.push(d), connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  const readTool = registered.find((t) => t.name === "read_mcp_resource")!;
+  const promptTool = registered.find((t) => t.name === "get_mcp_prompt")!;
+  expect(readTool.readOnly).toBe(true);
+  expect(readTool.network).toBe(true);
+  expect(promptTool.readOnly).toBe(true);
+  expect(promptTool.network).toBe(true);
+});
+
+test("resources/list_changed refreshes the aggregate resource list without a reconnect", async () => {
+  let resources: { uri: string }[] = [];
+  let fire: (() => void) | undefined;
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    listResources: async () => resources,
+    readResource: async () => ({ content: "hi" }),
+    onResourcesChanged: (cb) => {
+      fire = cb;
+    },
+    close: async () => {},
+  };
+  const reg = registry();
+  const hub = new McpHub({ ...reg, connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  // No resources at boot → aggregate tool not registered, hub sees none.
+  expect(reg.names()).not.toContain("read_mcp_resource");
+  expect(hub.resources()).toEqual([]);
+
+  // Server advertises a resource and fires the notification (no reconnect).
+  resources = [{ uri: "file:///readme" }];
+  fire!();
+  await tick();
+  expect(hub.resources().map((r) => r.uri)).toEqual(["file:///readme"]);
+  expect(reg.names()).toContain("read_mcp_resource"); // aggregate tool now live
+  await hub.close();
+});
+
+test("prompts/list_changed refreshes the aggregate prompt list without a reconnect", async () => {
+  let prompts: { name: string }[] = [];
+  let fire: (() => void) | undefined;
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    callTool: async () => ({ content: "ok" }),
+    listPrompts: async () => prompts,
+    getPrompt: async () => ({ content: "rendered" }),
+    onPromptsChanged: (cb) => {
+      fire = cb;
+    },
+    close: async () => {},
+  };
+  const reg = registry();
+  const hub = new McpHub({ ...reg, connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  expect(reg.names()).not.toContain("get_mcp_prompt");
+  expect(hub.prompts()).toEqual([]);
+
+  prompts = [{ name: "summarize" }];
+  fire!();
+  await tick();
+  expect(hub.prompts().map((p) => p.name)).toEqual(["summarize"]);
+  expect(reg.names()).toContain("get_mcp_prompt");
+  await hub.close();
+});
+
+test("expandServerConfig resolves ${VAR}, ${VAR:-default}, warns on unresolved, leaves bare $ alone", () => {
+  process.env.MCP_TEST_TOKEN = "sekret";
+  delete process.env.MCP_TEST_MISSING;
+  // Remote server: url + headers expand from the env; a :-default fills an absent var.
+  const unresolved = new Set<string>();
+  const remote = expandServerConfig(
+    {
+      url: "https://${MCP_TEST_HOST:-api.example.com}/mcp",
+      headers: { Authorization: "Bearer ${MCP_TEST_TOKEN}", "X-Env": "${MCP_TEST_ENV:-prod}" },
+    } as McpServer,
+    unresolved,
+  ) as { url: string; headers: Record<string, string> };
+  expect(remote.url).toBe("https://api.example.com/mcp"); // :-default applied
+  expect(remote.headers.Authorization).toBe("Bearer sekret"); // env resolved
+  expect(remote.headers["X-Env"]).toBe("prod");
+  expect(unresolved.size).toBe(0);
+
+  // stdio server: command/args/env expand; an unresolved (no-default) var is left
+  // LITERAL (not emptied) and its name collected so the hub can warn.
+  const unresolved2 = new Set<string>();
+  const stdio = expandServerConfig(
+    {
+      command: "${MCP_TEST_BIN:-node}",
+      args: ["--token", "${MCP_TEST_TOKEN}", "--x", "$HOME/lit"],
+      env: { KEY: "${MCP_TEST_MISSING}", RAW: "no-braces-$here" },
+    } as McpServer,
+    unresolved2,
+  ) as { command: string; args: string[]; env: Record<string, string> };
+  expect(stdio.command).toBe("node");
+  expect(stdio.args).toEqual(["--token", "sekret", "--x", "$HOME/lit"]); // bare $ untouched
+  expect(stdio.env.KEY).toBe("${MCP_TEST_MISSING}"); // unresolved → left literal, NOT empty
+  expect(stdio.env.RAW).toBe("no-braces-$here"); // bare $ untouched
+  expect([...unresolved2]).toEqual(["MCP_TEST_MISSING"]);
+  delete process.env.MCP_TEST_TOKEN;
 });
 
 test("read_mcp_resource / get_mcp_prompt thread the abort signal and per-call deadline", async () => {
@@ -581,9 +731,16 @@ test("MCP tool calls thread the turn's abort signal and a per-call deadline", as
   };
   const def = toToolDefinition("srv", { name: "slow_tool" }, client);
   const controller = new AbortController();
-  await def.execute({}, {
-    cwd: "/", sessionId: "s", toolCallId: "t", emit: () => {}, abortSignal: controller.signal,
-  });
+  await def.execute(
+    {},
+    {
+      cwd: "/",
+      sessionId: "s",
+      toolCallId: "t",
+      emit: () => {},
+      abortSignal: controller.signal,
+    },
+  );
   expect(seenOpts?.signal).toBe(controller.signal);
   expect(seenOpts?.timeoutMs).toBeGreaterThan(0);
 });

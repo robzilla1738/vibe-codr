@@ -4,8 +4,8 @@ import { buildUseSkillTool, type SessionToolsHandle } from "./session-tools.ts";
 
 // A minimal handle exposing one skill whose body we control. Only `deps.skills`
 // is exercised by use_skill, so the rest is cast away.
-function handleWithSkill(body: string): SessionToolsHandle {
-  const skill = { name: "big", description: "d", dir: "/tmp/skills/big", load: async () => body };
+function handleWithSkill(body: string, dir = "/tmp/skills/big"): SessionToolsHandle {
+  const skill = { name: "big", description: "d", dir, load: async () => body };
   return {
     id: "s",
     depth: 0,
@@ -32,4 +32,19 @@ test("use_skill returns a small body verbatim (no truncation marker)", async () 
   const out = String(res.output);
   expect(out).toContain("short body");
   expect(out).not.toContain("truncated");
+});
+
+test("use_skill discloses the skill directory on every load", async () => {
+  // A skill body referencing bundled files is useless without the directory, so
+  // the locator line must appear even when the body is small (not truncated).
+  const res = await buildUseSkillTool(handleWithSkill("short body")).execute({ name: "big" }, ctx);
+  const out = String(res.output);
+  expect(out).toContain("Skill directory: /tmp/skills/big");
+});
+
+test("use_skill omits the directory line when a skill has no dir", async () => {
+  const res = await buildUseSkillTool(handleWithSkill("short body", "")).execute({ name: "big" }, ctx);
+  const out = String(res.output);
+  expect(out).toContain("short body");
+  expect(out).not.toContain("Skill directory:");
 });

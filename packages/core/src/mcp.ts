@@ -1,3 +1,4 @@
+import type { McpServer } from "@vibe/config";
 import {
   capText,
   createLogger,
@@ -6,7 +7,6 @@ import {
   omittedMarker,
   type ToolDefinition,
 } from "@vibe/shared";
-import type { McpServer } from "@vibe/config";
 import { createMcpOAuthProvider } from "./mcp-oauth.ts";
 
 /** One MCP tool as reported by the server (incl. the read-only annotation). */
@@ -27,7 +27,7 @@ export interface McpResource {
   mimeType?: string;
 }
 
-/** An MCP prompt a server exposes (surfaced as a slash command). */
+/** An MCP prompt a server exposes (reachable via the `get_mcp_prompt` tool). */
 export interface McpPrompt {
   name: string;
   description?: string;
@@ -81,6 +81,13 @@ export interface McpClient {
   /** Subscribe to the server's `notifications/tools/list_changed` (optional). The
    * hub re-lists + re-registers this server's tools when it fires. */
   onListChanged?(cb: () => void): void;
+  /** Subscribe to `notifications/resources/list_changed` (optional). The hub
+   * re-lists this server's resources so the aggregate tool stays current without
+   * waiting for a reconnect. */
+  onResourcesChanged?(cb: () => void): void;
+  /** Subscribe to `notifications/prompts/list_changed` (optional). The hub
+   * re-lists this server's prompts (same rationale as resources). */
+  onPromptsChanged?(cb: () => void): void;
   /** Subscribe to transport close (optional). The hub reconnects with backoff. */
   onClose?(cb: () => void): void;
   close(): Promise<void>;
@@ -110,10 +117,7 @@ export interface McpHubDeps {
 /** Reject if `p` doesn't settle within `ms` (so a hung connect is bounded). */
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`timed out after ${ms}ms ${what}`)),
-      ms,
-    );
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms ${what}`)), ms);
     p.then(
       (v) => {
         clearTimeout(timer);
@@ -276,7 +280,8 @@ export class McpHub {
     const names: string[] = [];
     for (const spec of tools) {
       let name = mcpToolName(entry.name, spec.name);
-      if (this.#usedNames.has(name)) name = withHashSuffix(name, djb2(`${entry.name}\u0000${spec.name}`));
+      if (this.#usedNames.has(name))
+        name = withHashSuffix(name, djb2(`${entry.name}\u0000${spec.name}`));
       this.#usedNames.add(name);
       names.push(name);
       this.#deps.registerTool(toToolDefinition(entry.name, spec, client, name));
@@ -301,6 +306,8 @@ export class McpHub {
    * reconnect on transport close. No-ops for fakes/transports lacking the hooks. */
   #wire(entry: McpEntry, client: McpClient): void {
     client.onListChanged?.(() => void this.#refreshTools(entry.name));
+    client.onResourcesChanged?.(() => void this.#refreshResources(entry.name));
+    client.onPromptsChanged?.(() => void this.#refreshPrompts(entry.name));
     client.onClose?.(() => void this.#scheduleReconnect(entry.name));
   }
 
@@ -322,6 +329,44 @@ export class McpHub {
     }
   }
 
+  /** Re-list a server's resources (resources/list_changed) so the aggregate
+   * read_mcp_resource tool reflects them without waiting for a reconnect. */
+  async #refreshResources(name: string): Promise<void> {
+    const entry = this.#entries.find((e) => e.name === name);
+    if (!entry?.client?.listResources || this.#closed) return;
+    try {
+      const resources = await withTimeout(
+        entry.client.listResources(),
+        entry.config.timeoutMs ?? this.#connectTimeoutMs,
+        `re-listing resources for MCP server "${name}"`,
+      );
+      entry.resources = resources;
+      // A server that first advertises resources here still needs the aggregate tool.
+      this.#ensureAggregateTools();
+      this.#log.info(`MCP server "${name}" resource list changed → ${resources.length} resources`);
+    } catch (err) {
+      this.#log.error(`MCP resource re-list for "${name}" failed: ${(err as Error).message}`);
+    }
+  }
+
+  /** Re-list a server's prompts (prompts/list_changed); same rationale as resources. */
+  async #refreshPrompts(name: string): Promise<void> {
+    const entry = this.#entries.find((e) => e.name === name);
+    if (!entry?.client?.listPrompts || this.#closed) return;
+    try {
+      const prompts = await withTimeout(
+        entry.client.listPrompts(),
+        entry.config.timeoutMs ?? this.#connectTimeoutMs,
+        `re-listing prompts for MCP server "${name}"`,
+      );
+      entry.prompts = prompts;
+      this.#ensureAggregateTools();
+      this.#log.info(`MCP server "${name}" prompt list changed → ${prompts.length} prompts`);
+    } catch (err) {
+      this.#log.error(`MCP prompt re-list for "${name}" failed: ${(err as Error).message}`);
+    }
+  }
+
   /** Re-dial a dropped server with exponential backoff, re-registering on success. */
   async #scheduleReconnect(name: string): Promise<void> {
     const entry = this.#entries.find((e) => e.name === name);
@@ -336,7 +381,10 @@ export class McpHub {
       await new Promise((r) => setTimeout(r, Math.min(baseDelayMs * 2 ** attempt, maxDelayMs)));
       if (this.#closed) break;
       try {
-        const { client, tools, resources, prompts } = await this.#connectAndList(name, entry.config);
+        const { client, tools, resources, prompts } = await this.#connectAndList(
+          name,
+          entry.config,
+        );
         // close() may have run while we were awaiting the (re)connect. If so, the
         // freshly-spawned transport (stdio child / HTTP connection) would leak —
         // #entries is already cleared and nothing will ever close it. Tear it down.
@@ -377,11 +425,23 @@ export class McpHub {
     prompts: McpPrompt[];
   }> {
     const deadline = config.timeoutMs ?? this.#connectTimeoutMs;
+    // Expand ${VAR}/${VAR:-default} across the server's connect-time strings before
+    // dialing (a migrated Claude Code entry like `Authorization: "Bearer ${TOKEN}"`
+    // must read the env var, not ship the literal / force inlined plaintext secrets).
+    // Unresolved names are left LITERAL and surfaced on the MCP warning channel.
+    const unresolved = new Set<string>();
+    const resolved = expandServerConfig(config, unresolved);
+    if (unresolved.size) {
+      this.#log.warn(
+        `MCP server "${name}": unresolved ${[...unresolved].map((v) => `\${${v}}`).join(", ")} ` +
+          `— set the env var(s) or add a \${VAR:-default}; left literal.`,
+      );
+    }
     // Keep a handle on the raw connect promise: `withTimeout` only RACES it, so on
     // a connect-timeout the underlying attempt keeps running and may still resolve
     // later with a LIVE transport (a spawned stdio child / HTTP client). Without
     // closing that late arrival it orphans a process for the whole session.
-    const connectP = this.#connect(name, config);
+    const connectP = this.#connect(name, resolved);
     const client = await withTimeout(
       connectP,
       deadline,
@@ -440,7 +500,9 @@ export class McpHub {
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<string> {
     const entry = this.#entries.find(
-      (e) => e.client?.readResource && (server ? e.name === server : e.resources.some((r) => r.uri === uri)),
+      (e) =>
+        e.client?.readResource &&
+        (server ? e.name === server : e.resources.some((r) => r.uri === uri)),
     );
     if (!entry?.client?.readResource) {
       throw new Error(`no MCP server provides resource "${uri}"`);
@@ -457,7 +519,8 @@ export class McpHub {
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<string> {
     const entry = this.#entries.find((e) => e.name === server);
-    if (!entry?.client?.getPrompt) throw new Error(`MCP server "${server}" has no prompt "${name}"`);
+    if (!entry?.client?.getPrompt)
+      throw new Error(`MCP server "${server}" has no prompt "${name}"`);
     const res = await entry.client.getPrompt(name, args, opts);
     return capMcpOutput(renderContent(res.content));
   }
@@ -476,13 +539,19 @@ export class McpHub {
         },
       },
       readOnly: true,
+      // Reaches an external MCP server — that IS egress. Flag it so the gate
+      // consults the rules (readOnly alone would short-circuit the gate on
+      // `(!def.readOnly || def.network)`; a deny/ask rule on `read_mcp_resource`
+      // must still fire). Mirrors the per-tool `network:true` in toToolDefinition.
+      network: true,
       execute: async (args, ctx) => {
         const { uri, server } = (args ?? {}) as { uri?: string; server?: string };
         if (!uri) {
           const list = this.resources();
           if (!list.length) return { output: "No MCP resources available." };
           const lines = list.map(
-            (r) => `- ${r.uri}${r.name ? ` (${r.name})` : ""} — ${r.description ?? r.mimeType ?? "resource"} [${r.server}]`,
+            (r) =>
+              `- ${r.uri}${r.name ? ` (${r.name})` : ""} — ${r.description ?? r.mimeType ?? "resource"} [${r.server}]`,
           );
           return { output: `MCP resources:\n${lines.join("\n")}` };
         }
@@ -517,6 +586,9 @@ export class McpHub {
         },
       },
       readOnly: true,
+      // Reaches an external MCP server — egress. Flag it so a deny/ask rule on
+      // `get_mcp_prompt` fires (see read_mcp_resource / toToolDefinition).
+      network: true,
       execute: async (input, ctx) => {
         const { server, name, args } = (input ?? {}) as {
           server?: string;
@@ -566,11 +638,55 @@ export class McpHub {
    * (fired during shutdown) can't kick off a reconnect loop. */
   async close(): Promise<void> {
     this.#closed = true;
-    await Promise.all(
-      this.#entries.map((e) => e.client?.close().catch(() => undefined)),
-    );
+    await Promise.all(this.#entries.map((e) => e.client?.close().catch(() => undefined)));
     this.#entries = [];
   }
+}
+
+/** Expand `${VAR}` and `${VAR:-default}` in one string against `env`. A resolved
+ * var wins; an absent var falls back to its `:-default`; an absent var with NO
+ * default is LEFT LITERAL (and its name recorded in `unresolved`) — expanding to
+ * empty would silently ship a broken value (e.g. `Bearer `). A bare `$` without
+ * braces is untouched (the regex only matches `${…}`). */
+function expandVars(
+  input: string,
+  env: Record<string, string | undefined>,
+  unresolved: Set<string>,
+): string {
+  return input.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}/g,
+    (whole, name: string, def?: string) => {
+      const val = env[name];
+      if (val !== undefined) return val;
+      if (def !== undefined) return def;
+      unresolved.add(name);
+      return whole;
+    },
+  );
+}
+
+/** Return a copy of a server config with `${VAR}`/`${VAR:-default}` expanded over
+ * every user-supplied connect-time string — command, each arg, each env value,
+ * url, each header value. Unresolved (no-default) var names collect in
+ * `unresolved` so the hub can warn once per server. */
+export function expandServerConfig(config: McpServer, unresolved: Set<string>): McpServer {
+  const env = process.env;
+  const ex = (s: string) => expandVars(s, env, unresolved);
+  const mapVals = (rec: Record<string, string>): Record<string, string> =>
+    Object.fromEntries(Object.entries(rec).map(([k, v]) => [k, ex(v)]));
+  if ("command" in config) {
+    return {
+      ...config,
+      command: ex(config.command),
+      ...(config.args ? { args: config.args.map(ex) } : {}),
+      ...(config.env ? { env: mapVals(config.env) } : {}),
+    };
+  }
+  return {
+    ...config,
+    url: ex(config.url),
+    ...(config.headers ? { headers: mapVals(config.headers) } : {}),
+  };
 }
 
 /**
@@ -733,7 +849,8 @@ const defaultConnect: McpConnect = async (name, config) => {
     } else {
       // Transport options: static headers (Authorization / API keys) and/or an
       // OAuth 2.1 provider so authenticated remote MCP servers can connect.
-      const options: { requestInit?: { headers: Record<string, string> }; authProvider?: unknown } = {};
+      const options: { requestInit?: { headers: Record<string, string> }; authProvider?: unknown } =
+        {};
       if (config.headers) options.requestInit = { headers: config.headers };
       if (config.oauth) options.authProvider = createMcpOAuthProvider(name, config.oauth);
       const url = new URL(config.url);
@@ -765,6 +882,8 @@ const defaultConnect: McpConnect = async (name, config) => {
   // (so tools/list_changed triggers a re-list).
   let connected = true;
   const listChangedCbs: (() => void)[] = [];
+  const resourcesChangedCbs: (() => void)[] = [];
+  const promptsChangedCbs: (() => void)[] = [];
   const closeCbs: (() => void)[] = [];
   const lifecycle = client as McpSdkClient & {
     onclose?: () => void;
@@ -783,6 +902,10 @@ const defaultConnect: McpConnect = async (name, config) => {
   lifecycle.onerror = () => {};
   lifecycle.fallbackNotificationHandler = async (n) => {
     if (n?.method === "notifications/tools/list_changed") for (const cb of listChangedCbs) cb();
+    else if (n?.method === "notifications/resources/list_changed")
+      for (const cb of resourcesChangedCbs) cb();
+    else if (n?.method === "notifications/prompts/list_changed")
+      for (const cb of promptsChangedCbs) cb();
   };
   await client.connect(await makeTransport());
   return {
@@ -841,6 +964,12 @@ const defaultConnect: McpConnect = async (name, config) => {
     isConnected: () => connected,
     onListChanged(cb) {
       listChangedCbs.push(cb);
+    },
+    onResourcesChanged(cb) {
+      resourcesChangedCbs.push(cb);
+    },
+    onPromptsChanged(cb) {
+      promptsChangedCbs.push(cb);
     },
     onClose(cb) {
       closeCbs.push(cb);

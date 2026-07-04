@@ -1,3 +1,4 @@
+import type { Mode } from "@vibe/shared";
 import type { Session } from "../session.ts";
 
 /**
@@ -42,6 +43,11 @@ export class ChildRegistry {
   readonly #sharedCwd: string | undefined;
   /** Insertion-ordered LRU: least-recently-used is the first key. */
   readonly #retained = new Map<string, Session>();
+  /** Pre-coercion modes of retained children that continue_subagent forced to
+   * plan while the parent was planning — restored (and cleared) on a later
+   * continuation once the parent is executing again. Typed and keyed by child
+   * id, never stashed as an untyped property on the Session. */
+  readonly #coercedMode = new Map<string, Mode>();
   readonly #detached = new Map<string, DetachedRecord>();
   /** Background completions not yet surfaced into a root turn's workspace state. */
   #pendingFinished: string[] = [];
@@ -76,6 +82,23 @@ export class ChildRegistry {
    * directory gone (a worktree it descended from was cleaned up). */
   evict(id: string): void {
     this.#retained.delete(id);
+    this.#coercedMode.delete(id);
+  }
+
+  /** Remember a child's mode before continue_subagent coerces it to plan (while
+   * the parent is planning). No-op if one is already remembered: a child is only
+   * coerced FROM a non-plan mode, so the first record is the true pre-coercion
+   * mode and a re-coercion must not overwrite it. */
+  rememberCoercedMode(id: string, mode: Mode): void {
+    if (!this.#coercedMode.has(id)) this.#coercedMode.set(id, mode);
+  }
+
+  /** Return and clear a child's remembered pre-coercion mode — undefined if it
+   * was never coerced (a plan-native child is never auto-promoted). */
+  takeCoercedMode(id: string): Mode | undefined {
+    const mode = this.#coercedMode.get(id);
+    if (mode !== undefined) this.#coercedMode.delete(id);
+    return mode;
   }
 
   /** Look up a retained child by id, marking it most-recently-used. */

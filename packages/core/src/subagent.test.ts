@@ -941,6 +941,74 @@ test("continue_subagent honestly refuses a child whose working directory was rem
   expect(call).toBe(5); // spawn, child, wrap, continue(error), wrap
 });
 
+test("an execute child continued during plan is coerced read-only, then restored to execute when continued during execute", async () => {
+  // Regression: continue_subagent coerced an execute-native retained child to
+  // plan while the parent planned but NEVER restored it — so after the parent
+  // returned to execute the continued child stayed read-only forever. The
+  // pre-coercion mode is remembered and restored on the next execute-time
+  // continuation. Observed via the child's system prompt: plan mode carries the
+  // "do NOT modify" marker, execute mode does not.
+  let call = 0;
+  let childId = "";
+  const systems: Record<number, string> = {};
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const i = call++;
+      systems[i] = JSON.stringify(options.prompt);
+      // Parent continuation turns (3 = during plan, 6 = during execute).
+      if (i === 3 || i === 6) {
+        return toolStep("continue_subagent", { id: childId, message: "keep going" }) as never;
+      }
+      // 0 parent spawn; 1 child first run; 2 parent wrap; 4 continued child
+      // (plan); 5 parent wrap; 7 continued child (execute); 8 parent wrap.
+      if (i === 0) return toolStep("spawn_subagent", { prompt: "scout the tree" }) as never;
+      return textStep("ok") as never;
+    },
+  });
+
+  const bus = new EventBus();
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) {
+      events.push(e);
+      if (e.type === "subagent-started" && !childId) childId = e.subagentId;
+    }
+  })();
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  // Turn 1 (execute): spawn an execute-native child.
+  await session.run("spawn an execute child");
+  await new Promise((r) => setTimeout(r, 10));
+  expect(childId).not.toBe("");
+
+  // Turn 2 (plan): continue it — the child is coerced to plan (read-only).
+  session.setMode("plan");
+  await session.run("continue it while planning");
+
+  // Turn 3 (execute): continue it again — the child is restored to execute.
+  session.setMode("execute");
+  await session.run("continue it while executing");
+  bus.close();
+  await collector;
+
+  // The child's FIRST run (call 1) was execute — no read-only marker.
+  expect(systems[1]).not.toContain("do NOT modify");
+  // Continued DURING PLAN (call 4): coerced read-only.
+  expect(systems[4]).toContain("do NOT modify");
+  // Continued DURING EXECUTE (call 7): restored to execute — marker gone.
+  expect(systems[7]).not.toContain("do NOT modify");
+});
+
 test("continue_subagent on an unknown id returns an error (no child runs)", async () => {
   const ordered = [
     toolStep("continue_subagent", { id: "sub_nonexistent", message: "keep going" }), // 0 parent

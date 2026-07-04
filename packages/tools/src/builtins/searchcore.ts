@@ -152,16 +152,33 @@ export function freshnessBoost(date: string | undefined, now = Date.now()): numb
   return 0;
 }
 
+// A cue word immediately before a bare year signals it's a publish/update
+// date, not an in-body reference ("unchanged since 2016"). `©` handled apart
+// since it isn't a word char. `on`/`date` are word-bounded so "comparison"
+// doesn't leak an "on".
+const DATE_CUE = /(?:\b(?:published|updated|posted|revised|on|dated?|date)\b|©)/i;
+// How far back to look for that cue, and how far into the text a bare year may
+// sit and still read as a dateline (must stay under the position of a mid-text
+// distractor year so those don't earn a freshness boost).
+const CUE_LOOKBEHIND = 24;
+const DATELINE_HEAD = 12;
+
 /** ISO date if present (with a sane month 01-12 / day 01-31 — so `2025-13-45`
- * isn't silently normalized into a bogus date), else a bare year. */
+ * isn't silently normalized into a bogus date), else a bare year — but only a
+ * year that sits at the head of the text or right after a date cue, so an
+ * in-body mention ("unchanged since 2016") doesn't masquerade as the date. */
 export function detectDate(text: string): string | undefined {
   for (const m of text.matchAll(/\b20\d{2}-(\d{2})-(\d{2})\b/g)) {
     const mo = Number(m[1]);
     const day = Number(m[2]);
     if (mo >= 1 && mo <= 12 && day >= 1 && day <= 31) return m[0];
   }
-  const year = /\b(20\d{2})\b/.exec(text);
-  return year?.[1];
+  for (const m of text.matchAll(/\b(20\d{2})\b/g)) {
+    const idx = m.index!;
+    if (idx <= DATELINE_HEAD) return m[1];
+    if (DATE_CUE.test(text.slice(Math.max(0, idx - CUE_LOOKBEHIND), idx))) return m[1];
+  }
+  return undefined;
 }
 
 const WINDOW_WORDS = 60;

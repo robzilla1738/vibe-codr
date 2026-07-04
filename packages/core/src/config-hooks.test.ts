@@ -16,6 +16,61 @@ test("parseHookOutput reads deny/reason/input, ignores non-JSON", () => {
   expect(parseHookOutput('{"input":{"path":"x"}}')).toEqual({ input: { path: "x" } });
 });
 
+test("parseHookOutput reads a prompt-rewrite {text}", () => {
+  expect(parseHookOutput('{"text":"rewritten"}')).toEqual({ text: "rewritten" });
+});
+
+test("a user.prompt.submit hook rewrites the prompt text via {text}", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "user.prompt.submit", command: "rewrite.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({ text: "cleaned prompt" }),
+  });
+  const out = await bus.run("user.prompt.submit", { text: "raw prompt" });
+  expect(out.text).toBe("cleaned prompt");
+  expect(out.deny).toBeUndefined();
+});
+
+test("a user.prompt.submit hook rewrites the prompt text via a string {input}", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "user.prompt.submit", command: "rewrite.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({ input: "from input" }),
+  });
+  const out = await bus.run("user.prompt.submit", { text: "raw prompt" });
+  expect(out.text).toBe("from input");
+});
+
+test("a user.prompt.submit DENY marks the payload so the engine cancels the turn", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "user.prompt.submit", command: "guard.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({ deny: true, text: "ignored" }),
+  });
+  const out = await bus.run("user.prompt.submit", { text: "secret" }) as { text: string; deny?: boolean };
+  expect(out.deny).toBe(true);
+  expect(out.text).toBe("secret"); // deny short-circuits the rewrite
+});
+
+test("a non-vetoable event (assistant.message) stays observe-only", async () => {
+  const bus = new HookBus();
+  registerConfigHooks([hook({ event: "assistant.message", command: "notify.sh" })], bus, {
+    exec: async (): Promise<HookRunResult> => ({ deny: true, text: "tampered" }),
+  });
+  const out = await bus.run("assistant.message", { sessionId: "s", text: "hello" });
+  expect(out).toEqual({ sessionId: "s", text: "hello" }); // untouched
+});
+
+test("a command-less hook warns and registers nothing", async () => {
+  const bus = new HookBus();
+  const warnings: string[] = [];
+  registerConfigHooks([hook({})], bus, {
+    exec: async () => ({ deny: true }),
+    onWarn: (m) => warnings.push(m),
+  });
+  const out = await bus.run("tool.before.execute", { toolName: "bash", input: {} });
+  expect(out.deny).toBeUndefined(); // nothing registered
+  expect(warnings.length).toBe(1);
+  expect(warnings[0]).toContain("neither a command nor a url");
+});
+
 test("a tool.before.execute hook can DENY a tool", async () => {
   const bus = new HookBus();
   registerConfigHooks([hook({ command: "policy.sh", matcher: "bash" })], bus, {

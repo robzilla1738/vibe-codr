@@ -102,6 +102,19 @@ test("detectDate rejects an impossible ISO date rather than normalizing it", () 
   expect(detectDate("valid 2025-06-15 and junk 2025-99-99")).toBe("2025-06-15");
 });
 
+test("detectDate ignores a mid-text distractor year with no date cue", () => {
+  // "unchanged since 2016" on a 2024 article must not tag the date 2016.
+  expect(detectDate("Guide to the new API, unchanged since 2016 in spirit")).toBeUndefined();
+  // A distractor year appearing first, still mid-text and cue-free.
+  expect(detectDate("a comparison of the 2019 and 2024 APIs")).toBeUndefined();
+});
+
+test("detectDate accepts a bare year at the head or after a date cue", () => {
+  expect(detectDate("Published 2024 by the team")).toBe("2024");
+  expect(detectDate("Last updated on 2023 with fresh benchmarks")).toBe("2023");
+  expect(detectDate("2025-06-01 launch notes")).toBe("2025-06-01"); // leading ISO still wins
+});
+
 test("freshnessBoost does not award a future date the max boost", () => {
   const now = Date.UTC(2026, 0, 1);
   expect(freshnessBoost("2099-01-01", now)).toBe(0); // future → not fresh

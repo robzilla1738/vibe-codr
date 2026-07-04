@@ -31,6 +31,20 @@ const LIMIT = 500;
  * blob) would otherwise hang synchronously and ignore the abort signal. */
 const MAX_LINE_LEN = 50_000;
 
+/** Multi-extension `fileType` sets mirroring ripgrep's `--type` definitions, so
+ * the fallback's `fileType:"ts"` matches .ts/.tsx/.mts/.cts (not just literal
+ * .ts) — matching the rg path's `-t ts`. Without this, `fileType:"ts"` with rg
+ * unavailable silently skips every .tsx file → "(no matches)" → the model wrongly
+ * concludes the symbol is absent. An unmapped type keeps single-extension matching. */
+const FILE_TYPE_EXTS: Record<string, readonly string[]> = {
+  ts: ["ts", "tsx", "mts", "cts"],
+  typescript: ["ts", "tsx", "mts", "cts"],
+  js: ["js", "jsx", "mjs", "cjs", "vue"],
+  javascript: ["js", "jsx", "mjs", "cjs", "vue"],
+  py: ["py", "pyi"],
+  python: ["py", "pyi"],
+};
+
 /** Extensions we never scan in the built-in fallback (binary / non-text). */
 const BINARY_EXT =
   /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tar|bz2|7z|exe|dll|so|dylib|wasm|sqlite|db|bin|o|a|class|jar|mp[34]|mov|woff2?|ttf|eot|lock)$/i;
@@ -298,11 +312,14 @@ async function walkFiles(cwd: string, root: string): Promise<string[]> {
  * whether it came from `git ls-files` or the filesystem walk. */
 function filterFiles(files: string[], glob: string | undefined, fileType: string | undefined): string[] {
   const matchGlob = glob ? makeGlobMatcher(glob) : null;
+  // A mapped fileType (ts/js/py/…) matches any of its ripgrep extensions; an
+  // unmapped one keeps the literal `.<type>` behavior.
+  const typeExts = fileType ? (FILE_TYPE_EXTS[fileType] ?? [fileType]) : null;
   const out: string[] = [];
   for (const f of files) {
     if (f.includes("node_modules/") || f === ".git" || f.startsWith(".git/")) continue;
     if (BINARY_EXT.test(f)) continue;
-    if (fileType && !f.endsWith(`.${fileType}`)) continue;
+    if (typeExts && !typeExts.some((ext) => f.endsWith(`.${ext}`))) continue;
     if (matchGlob && !matchGlob(f)) continue;
     out.push(f);
   }

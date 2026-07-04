@@ -5,7 +5,12 @@ import { recordSeen } from "./freshness.ts";
 
 const Input = z.object({
   path: z.string().describe("File path, absolute or relative to the cwd."),
-  offset: z.number().int().min(0).optional().describe("0-based start line."),
+  offset: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("1-based start line (matches the line numbers in the output)."),
   limit: z.number().int().positive().optional().describe("Max lines to read."),
 });
 
@@ -48,7 +53,9 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
     // at most ~MAX_OUTPUT chars, stop reading once the window/cap is satisfied,
     // and preserve `split("\n")` line semantics exactly (a trailing segment — even
     // an empty one after a final newline — is its own 1-based line).
-    const start = offset ?? 0;
+    // offset is 1-based (matches the rendered line numbers); normalize to a
+    // 0-based index for the window math below.
+    const start = (offset ?? 1) - 1;
     const endLine = limit !== undefined ? start + limit : Number.POSITIVE_INFINITY;
 
     const reader = file.stream().getReader();
@@ -133,7 +140,7 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
     // flagging, not a silent "(empty file)".
     if (start > 0 && start >= totalLines) {
       return {
-        output: `offset ${start} is past the end of ${path} (${totalLines} lines).`,
+        output: `offset ${start + 1} is past the end of ${path} (${totalLines} lines).`,
         isError: true,
       };
     }

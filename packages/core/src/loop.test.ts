@@ -92,18 +92,32 @@ test("LoopController stops when the --until condition is met", async () => {
   expect(runs).toBe(2);
 });
 
-test("LoopController can be stopped externally", async () => {
+test("an external stop reports 'stopped by user' and fires no iteration after the stop", async () => {
+  const events: UIEvent[] = [];
+  let runs = 0;
   const loop = new LoopController({
     id: "L3",
     intervalMs: 10_000,
     prompt: "x",
-    run: async () => "x",
-    emit: () => {},
+    run: async () => {
+      runs += 1;
+      return "x";
+    },
+    emit: (e) => events.push(e),
   });
   loop.start();
+  const runsAtStop = runs; // one iteration is in-flight from the immediate first tick
   loop.stop("stopped by user");
   await loop.whenDone();
-  expect(true).toBe(true);
+  // The stop is reported with the caller's reason, not silently swallowed.
+  const stopped = events.find((e) => e.type === "loop-stopped");
+  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toBe(
+    "stopped by user",
+  );
+  // No iteration runs after the stop: the in-flight tick's re-schedule is
+  // suppressed and the interval timer is cleared, so exactly one tick fired.
+  expect(runs).toBe(runsAtStop);
+  expect(events.filter((e) => e.type === "loop-tick").length).toBe(1);
 });
 
 test("a cancelled queued iteration stops the loop with a 'cancelled' reason, not a failure", async () => {

@@ -701,20 +701,42 @@ export class Engine implements EngineClient {
   }
 
 
-  /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps. */
+  /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps.
+   * The indent is bounded ({0,3} spaces) so deeply nested sub-bullets don't
+   * register as top-level steps and evict real ones when the list is capped. */
   #seedTasksFromPlan(plan: string): void {
     const lines = plan.split("\n");
     let items = lines
-      .map((l) => /^\s*[-*]\s+\[[ xX]?\]\s+(.+)$/.exec(l)?.[1])
+      .map((l) => /^[ \t]{0,3}[-*]\s+\[[ xX]?\]\s+(.+)$/.exec(l)?.[1])
       .filter((t): t is string => !!t);
     if (!items.length) {
-      items = lines.map((l) => /^\s*\d+\.\s+(.+)$/.exec(l)?.[1]).filter((t): t is string => !!t);
+      items = lines
+        .map((l) => /^[ \t]{0,3}\d+\.\s+(.+)$/.exec(l)?.[1])
+        .filter((t): t is string => !!t);
     }
     const titles = items
       .map((t) => t.replace(/\*\*/g, "").replace(/`/g, "").trim())
-      .filter(Boolean)
-      .slice(0, 12);
-    if (titles.length) this.#session.setTasks(titles.map((title) => ({ title, status: "pending" as const })));
+      .filter(Boolean);
+    if (!titles.length) return;
+    // Cap the seeded list, but never silently drop the tail: once #maybeContinueTasks
+    // sees the seeded tasks complete it declares the plan done, so any untracked
+    // step past the cap would be quietly abandoned. Seed the first 11 plus a
+    // catch-all that forces the model back to the full plan for the remainder.
+    const CAP = 12;
+    let seeded = titles;
+    if (titles.length > CAP) {
+      const remaining = titles.length - (CAP - 1);
+      seeded = [
+        ...titles.slice(0, CAP - 1),
+        `Complete the remaining ${remaining} plan steps (see the full plan)`,
+      ];
+      this.#notice(
+        `Plan has ${titles.length} steps — task list capped at ${CAP}; ` +
+          `the last task tracks the remaining ${remaining}.`,
+        "info",
+      );
+    }
+    this.#session.setTasks(seeded.map((title) => ({ title, status: "pending" as const })));
   }
 
   /**
@@ -769,7 +791,9 @@ export class Engine implements EngineClient {
 
     // Declarative config hooks (shell/HTTP) layered onto the in-process HookBus.
     if (this.#config.hooks.length) {
-      registerConfigHooks(this.#config.hooks, this.hooks);
+      registerConfigHooks(this.#config.hooks, this.hooks, {
+        onWarn: (m) => this.#notice(m, "warn"),
+      });
     }
 
     // Long-term memory: resolve the (optional) embedder and attach the service
@@ -947,7 +971,14 @@ export class Engine implements EngineClient {
         // verify-fix turns, or the plan handoff, which don't route through
         // submit-prompt) stops a stale note like "taking auth.ts" from turn 1
         // leaking into an unrelated fan-out many turns later.
-        this.#blackboard.clear();
+        // Invariant: a DETACHED spawn_tasks batch outlives the turn that spawned
+        // it and its children keep posting claims/decisions across turn
+        // boundaries — clearing mid-run would yank the board out from under a
+        // live fan-out. Skip the clear while any detached child is still running
+        // (the stale-note guard resumes the moment the last one settles).
+        if (!this.#session.childRegistry?.runningDetachedCount()) {
+          this.#blackboard.clear();
+        }
         // Capture any armed plan handoff NOW and bind it to THIS prompt's job, so
         // it can't be stolen by an unrelated prompt that was queued ahead of it
         // (the flag used to be read at turn-run time — see #handlePrompt).
@@ -1724,6 +1755,12 @@ export class Engine implements EngineClient {
       }
     }
     const hooked = await this.hooks.run("user.prompt.submit", { text });
+    // A prompt hook can veto the turn outright: emit a notice and stop before any
+    // recall/mention/model work runs (the turn is cancelled, not sent empty).
+    if (hooked.deny) {
+      this.#notice("Prompt blocked by a user.prompt.submit hook.", "warn");
+      return;
+    }
     // Proactive recall (default-on, opt-out): once per session, seed a "relevant past context"
     // block from long-term memory using the first prompt + goal, injected into
     // the system prompt. Best-effort — a failure must not block the turn.

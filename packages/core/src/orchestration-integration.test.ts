@@ -429,3 +429,164 @@ test("engine finalize aborts an outstanding detached subagent", async () => {
   const finished = events.find((e) => e.type === "subagent-finished");
   expect(finished && finished.type === "subagent-finished" && /interrupt/i.test(finished.result)).toBe(true);
 }, 15_000);
+
+// A stream that opens then blocks until aborted — used to pin a detached child
+// in the "running" state across a turn boundary.
+function hangStream(signal: AbortSignal | undefined) {
+  return {
+    stream: new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: "stream-start", warnings: [] });
+        signal?.addEventListener(
+          "abort",
+          () => {
+            try {
+              controller.error(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            } catch {
+              /* already closed */
+            }
+          },
+          { once: true },
+        );
+      },
+    }),
+  };
+}
+
+// The read_notes RESULT — the only clean observable of the board's live state.
+// (Its whole-prompt text is contaminated: the note string also appears in the
+// post_note tool-call kept in conversation history, cleared or not.)
+function readNotesOutput(events: UIEvent[]): string {
+  const e = events.find((ev) => ev.type === "tool-call-finished" && ev.toolName === "read_notes");
+  return e && e.type === "tool-call-finished" ? String(e.output) : "";
+}
+
+test("submit-prompt does NOT clear the blackboard while a detached child is still running", async () => {
+  // Invariant: a DETACHED batch outlives the turn that spawned it and keeps
+  // posting claims/decisions across turn boundaries — clearing the shared board
+  // on the next submit-prompt would yank posted state out from under the live
+  // fan-out. The lead posts a decision + spawns a hanging detached child in turn
+  // 1; on turn 2's submit-prompt the note MUST survive (read_notes still sees it).
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const p = JSON.stringify(options.prompt ?? "");
+      // The hanging background child (its own prompt has HANGWORK but not the
+      // parent-only detach marker).
+      if (p.includes("HANGWORK") && !p.includes("in the background")) {
+        return hangStream(options.abortSignal) as never;
+      }
+      if (p.includes("MARKER2_AGAIN")) {
+        // Turn 2 step 2: the read_notes tool-result is now in context (matched on
+        // the JSON tool key, which — unlike the note text — can't leak from history).
+        if (p.includes('"toolName":"read_notes"')) return textStep("turn2 done") as never;
+        // Turn 2 step 1: read the board.
+        return stream([
+          { type: "stream-start", warnings: [] },
+          { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: "{}" },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ]) as never;
+      }
+      // Turn 1 step 2: post + spawn already ran (detach result in context).
+      if (p.includes("in the background")) return textStep("turn1 done") as never;
+      // Turn 1 step 1: post a decision, then spawn a hanging detached child.
+      return stream([
+        { type: "stream-start", warnings: [] },
+        {
+          type: "tool-call",
+          toolCallId: "n1",
+          toolName: "post_note",
+          input: JSON.stringify({ note: "BOARD_DECISION_XYZ", kind: "decision" }),
+        },
+        {
+          type: "tool-call",
+          toolCallId: "s1",
+          toolName: "spawn_subagent",
+          input: JSON.stringify({ prompt: "do HANGWORK now", detach: true }),
+        },
+        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      ]) as never;
+    },
+  });
+
+  const cwd = tmpCwd();
+  const config = orchestrationConfig();
+  config.model = "mock/test";
+  config.build = { ...config.build, enabled: false };
+  config.memory = { ...config.memory, proactiveRecall: false, sessionDigest: false };
+  config.subagent = { ...config.subagent, timeoutMs: 0 };
+  const engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: true });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  engine.send({ type: "submit-prompt", text: "MARKER1 post then spawn" });
+  await engine.whenIdle(); // turn 1 done; the detached child still hangs (running)
+  engine.send({ type: "submit-prompt", text: "MARKER2_AGAIN read the board" });
+  await engine.whenIdle();
+
+  // read_notes still returned the note → the board was NOT cleared while the
+  // detached child was running.
+  expect(readNotesOutput(events)).toContain("BOARD_DECISION_XYZ");
+
+  await engine.finalize();
+  await collector;
+}, 15_000);
+
+test("submit-prompt clears the blackboard when no detached child is running", async () => {
+  // The other half of the invariant: with nothing detached in flight the clear
+  // still fires, so a stale note from an earlier turn can't leak into a later,
+  // unrelated fan-out.
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const p = JSON.stringify(options.prompt ?? "");
+      if (p.includes("MARKER2_AGAIN")) {
+        if (p.includes('"toolName":"read_notes"')) return textStep("turn2 done") as never;
+        return stream([
+          { type: "stream-start", warnings: [] },
+          { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: "{}" },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ]) as never;
+      }
+      // Turn 1 step 2: the post result is in context.
+      if (p.includes("Posted to the shared board")) return textStep("turn1 done") as never;
+      // Turn 1 step 1: post a decision (no spawn — nothing detached).
+      return stream([
+        { type: "stream-start", warnings: [] },
+        {
+          type: "tool-call",
+          toolCallId: "n1",
+          toolName: "post_note",
+          input: JSON.stringify({ note: "BOARD_DECISION_XYZ", kind: "decision" }),
+        },
+        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      ]) as never;
+    },
+  });
+
+  const cwd = tmpCwd();
+  const config = orchestrationConfig();
+  config.model = "mock/test";
+  config.build = { ...config.build, enabled: false };
+  config.memory = { ...config.memory, proactiveRecall: false, sessionDigest: false };
+  const engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: true });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  engine.send({ type: "submit-prompt", text: "MARKER1 post a note" });
+  await engine.whenIdle();
+  engine.send({ type: "submit-prompt", text: "MARKER2_AGAIN read the board" });
+  await engine.whenIdle();
+
+  // read_notes came back empty → the board WAS cleared on the second submit-prompt.
+  const out = readNotesOutput(events);
+  expect(out).toContain("No shared notes yet");
+  expect(out).not.toContain("BOARD_DECISION_XYZ");
+
+  await engine.finalize();
+  await collector;
+}, 15_000);

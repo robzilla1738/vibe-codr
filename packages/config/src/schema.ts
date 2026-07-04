@@ -68,7 +68,8 @@ export const WebfetchConfigSchema = z.object({
 });
 
 /** A declarative lifecycle hook: run a shell command or POST to a URL on an
- * event, with the payload as JSON; the response can deny or rewrite it. */
+ * event, with the payload as JSON. Only `tool.before.execute` and
+ * `user.prompt.submit` consume a response; all other events are observe-only. */
 export const HookSchema = z.object({
   /** Lifecycle event to hook (matches @vibe/plugins HookName). */
   event: z.enum([
@@ -83,8 +84,11 @@ export const HookSchema = z.object({
   ]),
   /** Glob matched against the tool name for tool.* events (omit = all). */
   matcher: z.string().optional(),
-  /** Shell command; receives the payload as JSON on stdin. stdout JSON may carry
-   * `{deny,reason}` (block a tool) or `{input}` (rewrite the tool input). */
+  /** Shell command; receives the payload as JSON on stdin. Its stdout JSON is
+   * honored per event: on `tool.before.execute`, `{deny,reason}` blocks the tool
+   * and `{input}` rewrites its arguments; on `user.prompt.submit`, `{deny}` cancels
+   * the turn and `{text}` (or a string `{input}`) rewrites the prompt. Other events
+   * ignore the response. */
   command: z.string().optional(),
   /** URL to POST the payload to (JSON in, JSON out, same protocol as `command`). */
   url: httpUrl().optional(),
@@ -146,11 +150,18 @@ export const McpOAuthSchema = z.object({
   tokenStore: z.string().optional(),
 });
 
-/** An MCP server: a local stdio process or a remote URL (Streamable HTTP or SSE). */
+/** An MCP server: a local stdio process or a remote URL (Streamable HTTP or SSE).
+ * Connect-time strings (command, args, env, url, headers) support `${VAR}` and
+ * `${VAR:-default}` expansion against the process environment, so a migrated
+ * Claude Code entry can reference secrets by env var instead of inlining them. An
+ * unresolved `${VAR}` with no default is left literal and warned about (never
+ * silently expanded to empty); a bare `$` without braces is untouched. */
 export const McpServerSchema = z.union([
   z.object({
     command: z.string(),
+    /** Process args; each element supports `${VAR}` / `${VAR:-default}` expansion. */
     args: z.array(z.string()).optional(),
+    /** Environment for the spawned server; each VALUE supports `${VAR}` expansion. */
     env: z.record(z.string(), z.string()).optional(),
     /** Working directory for the spawned server process. */
     cwd: z.string().optional(),
@@ -164,7 +175,8 @@ export const McpServerSchema = z.union([
     /** Remote transport: "http" (Streamable HTTP, the modern default) or "sse"
      * (legacy). Defaults to "http". */
     transport: z.enum(["http", "sse"]).optional(),
-    /** Static auth/identity headers (e.g. `Authorization: Bearer …`). */
+    /** Static auth/identity headers (e.g. `Authorization: Bearer …`). Each VALUE
+     * supports `${VAR}` / `${VAR:-default}` expansion (keep secrets in the env). */
     headers: z.record(z.string(), z.string()).optional(),
     /** OAuth 2.1 (authorization-code + PKCE). Mutually complementary to `headers`. */
     oauth: McpOAuthSchema.optional(),
@@ -350,7 +362,12 @@ export const ConfigSchema = z.object({
           /** Per-check wall clock (seconds). */
           timeoutSec: z.number().int().positive().default(600),
         })
-        .default({ enabled: true, maxRounds: 5, checks: ["typecheck", "test", "build"], timeoutSec: 600 }),
+        .default({
+          enabled: true,
+          maxRounds: 5,
+          checks: ["typecheck", "test", "build"],
+          timeoutSec: 600,
+        }),
       commit: z
         .object({
           /** "checkpoint" (default): a passing gate writes a hidden-ref GREEN
@@ -378,15 +395,18 @@ export const ConfigSchema = z.object({
       ensemble: z.object({ n: z.number().int().min(0).max(5).default(0) }).default({ n: 0 }),
       /** Model tiers for task routing (TaskSpec.tier). Unset tiers fall back to
        * subagent.model → the parent's model. Must reference configured providers. */
-      models: z
-        .object({ cheap: z.string().optional(), strong: z.string().optional() })
-        .default({}),
+      models: z.object({ cheap: z.string().optional(), strong: z.string().optional() }).default({}),
     })
     .default({
       enabled: true,
       visualVerify: true,
       recon: { enabled: true, ledger: true },
-      gate: { enabled: true, maxRounds: 5, checks: ["typecheck", "test", "build"], timeoutSec: 600 },
+      gate: {
+        enabled: true,
+        maxRounds: 5,
+        checks: ["typecheck", "test", "build"],
+        timeoutSec: 600,
+      },
       commit: { mode: "checkpoint", branchPrefix: "vibe/" },
       review: { enabled: true, maxRounds: 1, stubScan: true },
       worktrees: { enabled: true },
@@ -434,7 +454,11 @@ export const ConfigSchema = z.object({
            * remain in context; only the re-readable full text is reclaimed).
            * Bounds within-session artifact growth and reclaims orphans left by a
            * mid-turn abort. Default 64 MiB. */
-          maxArtifactBytes: z.number().int().positive().default(64 * 1024 * 1024),
+          maxArtifactBytes: z
+            .number()
+            .int()
+            .positive()
+            .default(64 * 1024 * 1024),
         })
         .default({
           enabled: true,
@@ -495,9 +519,7 @@ export const ConfigSchema = z.object({
     maxBytes: 4_000_000,
   }),
   /** Workspace checkpoints before each edit turn (git repos only). */
-  checkpoints: z
-    .object({ enabled: z.boolean().default(true) })
-    .default({ enabled: true }),
+  checkpoints: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
   /** MCP servers to connect; their tools register as `mcp__<server>__<tool>`. */
   mcp: z
     .object({ servers: z.record(z.string(), McpServerSchema).default({}) })

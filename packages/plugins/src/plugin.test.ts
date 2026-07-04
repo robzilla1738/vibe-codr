@@ -45,19 +45,36 @@ test("PluginHost loads a plugin that registers a command and a hook", async () =
   expect(result.text).toBe("hi [seen]");
 });
 
-test("PluginHost survives a broken plugin", async () => {
+test("a broken plugin leaks no partial registrations and does not poison a later good plugin", async () => {
   const hooks = new HookBus();
+  const commands = new CommandRegistry();
   const host = new PluginHost({
     hooks,
-    commands: new CommandRegistry(),
+    commands,
     skills: new SkillRegistry(),
     registerTool: () => {},
     registerProvider: () => {},
     addSkillDir: () => {},
   });
-  // Should not throw even though the module does not exist.
+  // A missing module must not throw AND must not leave partial state behind:
+  // no command registered, no hook handler leaked into the bus.
   await host.load(["/nonexistent/does-not-exist.ts"]);
-  expect(true).toBe(true);
+  expect(commands.list()).toEqual([]);
+  const passthrough = await hooks.run("user.prompt.submit", { text: "hi" });
+  expect(passthrough.text).toBe("hi"); // untouched — nothing from the failed load ran
+
+  // One bad plugin doesn't poison the host: a well-behaved plugin loaded
+  // afterward still registers into the same registries.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-"));
+  const okPath = join(dir, "ok.ts");
+  await Bun.write(
+    okPath,
+    `export function register(api) {
+       api.registerCommand({ name: "after", description: "x", source: "plugin", run: () => ({ kind: "notice", message: "ok" }) });
+     }`,
+  );
+  await host.load([okPath]);
+  expect(commands.get("after")).toBeDefined();
 });
 
 test("PluginHost does not hang on a plugin whose register() never resolves", async () => {

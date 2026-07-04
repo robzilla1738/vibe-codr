@@ -54,7 +54,13 @@ export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ 
         body.length > MAX_SKILL_BODY
           ? `${body.slice(0, MAX_SKILL_BODY)}\n\n…(skill body truncated at ${MAX_SKILL_BODY} chars — read the full file at ${skill.dir}/SKILL.md for the rest)`
           : body;
-      return { output: `# Skill: ${skill.name}\n\n${capped}` };
+      // A skill body may reference bundled files ("read helpers.py first"); without
+      // the skill's directory the model can't resolve those paths. Disclose it on
+      // every load, not only in the truncation branch.
+      const locator = skill.dir
+        ? `Skill directory: ${skill.dir} — resolve any files the skill references relative to this path.\n\n`
+        : "";
+      return { output: `# Skill: ${skill.name}\n\n${locator}${capped}` };
     },
   };
 }

@@ -168,6 +168,24 @@ test("fileType restricts to the given extension on both paths", async () => {
   expect(fb.output).not.toContain("b.py");
 });
 
+test("fallback fileType:'ts' matches .tsx (rg -t ts parity, not just literal .ts)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-grep-tsx-"));
+  await Bun.write(join(dir, "a.tsx"), "needle in tsx\n");
+  await Bun.write(join(dir, "b.py"), "needle in py\n");
+  // Force the dependency-free path so we exercise the fallback extension map even
+  // where rg is installed. `-t ts` matches .ts/.tsx/.mts/.cts; the fallback must too.
+  const prev = process.env.VIBE_GREP_NO_RIPGREP;
+  process.env.VIBE_GREP_NO_RIPGREP = "1";
+  try {
+    const r = await grepTool.execute({ pattern: "needle", fileType: "ts" }, ctx(dir));
+    expect(r.output).toContain("a.tsx:1:needle in tsx");
+    expect(r.output).not.toContain("b.py");
+  } finally {
+    if (prev === undefined) delete process.env.VIBE_GREP_NO_RIPGREP;
+    else process.env.VIBE_GREP_NO_RIPGREP = prev;
+  }
+});
+
 test("fileType with an rg-unknown extension still filters via a glob fallback", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-grep-ftx-"));
   await Bun.write(join(dir, "a.xyzzy"), "needle\n");

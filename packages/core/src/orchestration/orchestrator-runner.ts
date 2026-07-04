@@ -331,8 +331,19 @@ export class OrchestratorRunner {
           };
         }
         // Re-gate mode like #forkChild: coerce the child to plan while the parent
-        // is planning (read-only), never the other way.
-        if (this.#parentPlanning() && child.mode !== "plan") child.setMode("plan");
+        // is planning (read-only). The coercion is REVERSIBLE — remember the
+        // child's pre-coercion mode so a later continuation, once the parent is
+        // executing again, can restore it. Never auto-PROMOTE a plan-native child:
+        // only a mode we ourselves coerced away is ever restored.
+        if (this.#parentPlanning()) {
+          if (child.mode !== "plan") {
+            this.#childRegistry.rememberCoercedMode(id, child.mode);
+            child.setMode("plan");
+          }
+        } else {
+          const restored = this.#childRegistry.takeCoercedMode(id);
+          if (restored) child.setMode(restored);
+        }
         // The child's isolated bus was closed when its last run settled; give it a
         // fresh one and re-tap so live activity surfaces during the continuation.
         const childBus = new EventBusImpl();
@@ -709,6 +720,26 @@ export class OrchestratorRunner {
       }
       const handoff = parseHandoff(outcome.text) ?? undefined;
 
+      // Structured output: the FINAL message must be exactly one JSON object
+      // matching spec.outputSchema. The worktree path has no verify→retry loop
+      // (the tree squash-merges and tears down once the child settles), so
+      // enforce ONCE — a mismatch fails the task with the validator's honest
+      // errors + raw text rather than merging unvalidated prose as the report.
+      let reportText = outcome.text;
+      if (spec.outputSchema) {
+        const res = enforceSchema(outcome.text, spec.outputSchema);
+        if (!res.ok) {
+          return settle({
+            id: spec.id,
+            objective: spec.objective,
+            outcome: "failed",
+            output: `Structured output invalid:\n${res.errors.map((e) => `- ${e}`).join("\n")}\n\nRaw final message:\n${res.raw}`,
+            attempts: 1,
+          });
+        }
+        reportText = res.json;
+      }
+
       // Commit → squash-merge → gate → CAPTURE DIFF, all inside ONE critical
       // section on the shared tree: the gate builds+tests the whole MAIN tree, so a
       // sibling worktree task's merge landing between this task's merge and its own
@@ -760,12 +791,12 @@ export class OrchestratorRunner {
       }
       // Review OUTSIDE the lock (see above) on the diff captured inside it.
       if (spec.verify) {
-        const review = await this.#reviewCapturedDiff(spec, outcome.text, verdict.diff ?? "", parentSignal, suspendParentSlot);
+        const review = await this.#reviewCapturedDiff(spec, reportText, verdict.diff ?? "", parentSignal, suspendParentSlot);
         if (!review.clean) {
           return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: `Post-merge review found issues:\n${review.feedback}`, attempts: 1, ...(handoff ? { handoff } : {}) });
         }
       }
-      return settle({ id: spec.id, objective: spec.objective, outcome: "completed", output: outcome.text, attempts: 1, ...(handoff ? { handoff } : {}) });
+      return settle({ id: spec.id, objective: spec.objective, outcome: "completed", output: reportText, attempts: 1, ...(handoff ? { handoff } : {}) });
     } catch (err) {
       return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: `Worktree task threw: ${(err as Error)?.message ?? String(err)}`, attempts: 1 });
     } finally {
@@ -862,6 +893,25 @@ export class OrchestratorRunner {
           attempts: n,
         });
       }
+      // Structured output: the winning attempt's FINAL message must match
+      // spec.outputSchema. An ensemble has no verify→retry loop, so validate the
+      // winner BEFORE merging — a winner that won on gate score but violates the
+      // schema fails the task with honest errors + raw text rather than merging
+      // unvalidated prose as the report.
+      let winnerReport = winner.text;
+      if (spec.outputSchema) {
+        const res = enforceSchema(winner.text, spec.outputSchema);
+        if (!res.ok) {
+          return settle({
+            id: spec.id,
+            objective: spec.objective,
+            outcome: "failed",
+            output: `Ensemble winner's structured output invalid:\n${res.errors.map((e) => `- ${e}`).join("\n")}\n\nRaw final message:\n${res.raw}`,
+            attempts: n,
+          });
+        }
+        winnerReport = res.json;
+      }
       // Merge AND re-gate the MERGED main tree inside one lock hold — mirroring
       // #runWorktreeTask. The winner's green was produced in ISOLATION off a
       // baseRef captured at ensemble start; by merge time sibling tasks may have
@@ -915,7 +965,7 @@ export class OrchestratorRunner {
         id: spec.id,
         objective: spec.objective,
         outcome: "completed",
-        output: winner.text,
+        output: winnerReport,
         attempts: n,
         ...(winner.handoff ? { handoff: winner.handoff } : {}),
       });

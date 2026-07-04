@@ -226,18 +226,29 @@ export async function handleModelCommand(h: EngineHandle, args: string): Promise
   await setMainModel(h, raw);
 }
 
-/** Run a skill as a user prompt — the user-initiated analogue of `use_skill`. */
-async function runSkillAsPrompt(h: EngineHandle, skill: Skill, task: string): Promise<void> {
-  const raw = await skill.load();
+/** Build the `/skill`-as-prompt injection text from a skill's raw body. Pure so the
+ * body-cap and directory-disclosure invariants are testable without a live model. */
+export function buildSkillPrompt(skill: Skill, rawBody: string, task: string): string {
   // Cap the injected body (same discipline as the use_skill tool) so a huge
   // SKILL.md can't blow up the prompt; the model reads the file for the rest.
   const body =
-    raw.length > MAX_SKILL_BODY
-      ? `${raw.slice(0, MAX_SKILL_BODY)}\n\n…(skill body truncated at ${MAX_SKILL_BODY} chars — read ${skill.dir}/SKILL.md for the rest)`
-      : raw;
+    rawBody.length > MAX_SKILL_BODY
+      ? `${rawBody.slice(0, MAX_SKILL_BODY)}\n\n…(skill body truncated at ${MAX_SKILL_BODY} chars — read ${skill.dir}/SKILL.md for the rest)`
+      : rawBody;
+  // A skill body may reference bundled files relative to its folder; disclose the
+  // directory so the model can resolve them (same as the use_skill tool).
+  const locator = skill.dir
+    ? `Skill directory: ${skill.dir} — resolve any files the skill references relative to this path.\n\n`
+    : "";
   const suffix = task ? `\n\nTask: ${task}` : "";
+  return `Use the "${skill.name}" skill.${suffix}\n\n# Skill: ${skill.name}\n\n${locator}${body}`;
+}
+
+/** Run a skill as a user prompt — the user-initiated analogue of `use_skill`. */
+async function runSkillAsPrompt(h: EngineHandle, skill: Skill, task: string): Promise<void> {
+  const prompt = buildSkillPrompt(skill, await skill.load(), task);
   h.resetTurnBudgets();
-  await h.handlePrompt(`Use the "${skill.name}" skill.${suffix}\n\n# Skill: ${skill.name}\n\n${body}`);
+  await h.handlePrompt(prompt);
 }
 
 /** Handle a built-in or plugin/file slash command. */

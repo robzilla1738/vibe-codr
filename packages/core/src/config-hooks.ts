@@ -8,16 +8,21 @@ import type { HookBus, HookName, HookHandler } from "@vibe/plugins";
  * HookBus, unlocking the Claude-Code-style extensibility ecosystem with no engine
  * surgery: each config hook becomes a HookBus handler that serializes the payload
  * to JSON, runs the command / POSTs the URL, and maps the response back onto the
- * payload — `{deny,reason}` to block a tool, `{input}` to rewrite its arguments.
- * exec/post are injectable so the wiring is unit-testable without spawning.
+ * payload. Two events consume a response: `tool.before.execute` honors `{deny,reason}`
+ * to block a tool and `{input}` to rewrite its arguments; `user.prompt.submit` honors
+ * `{deny}` to cancel the turn and `{text}` (or a string `{input}`) to rewrite the
+ * prompt. exec/post are injectable so the wiring is unit-testable without spawning.
  */
 
 export interface HookRunResult {
-  /** Block the tool (only honored on tool.before.execute). */
+  /** Block the tool (tool.before.execute) or cancel the turn (user.prompt.submit). */
   deny?: boolean;
   reason?: string;
-  /** Rewrite the tool input (only honored on tool.before.execute). */
+  /** Rewrite the tool input (tool.before.execute), or the prompt text when a string
+   * (user.prompt.submit) — `{text}` takes precedence for a prompt rewrite. */
   input?: unknown;
+  /** Rewrite the submitted prompt text (only honored on user.prompt.submit). */
+  text?: string;
 }
 
 export interface ConfigHookRunners {
@@ -27,6 +32,9 @@ export interface ConfigHookRunners {
   post?: (url: string, payload: unknown) => Promise<HookRunResult>;
   /** Per-hook wall-clock timeout (ms). */
   timeoutMs?: number;
+  /** Surface a misconfiguration (a hook with neither command nor url). Defaults
+   * to `console.warn`; the engine wires it to its notice channel. */
+  onWarn?: (message: string) => void;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -93,6 +101,7 @@ export function parseHookOutput(text: string): HookRunResult {
     if (parsed.deny === true) result.deny = true;
     if (typeof parsed.reason === "string") result.reason = parsed.reason;
     if ("input" in parsed) result.input = parsed.input;
+    if (typeof parsed.text === "string") result.text = parsed.text;
     return result;
   } catch {
     return {}; // non-JSON output (e.g. a log line) is not a directive
@@ -108,8 +117,7 @@ function matches(matcher: string | undefined, toolName: unknown): boolean {
 
 /**
  * Register every config hook as a HookBus handler. Returns nothing; handler
- * errors are isolated by the HookBus. `onError` (optional) is notified of a
- * misconfigured hook (no command/url).
+ * errors are isolated by the HookBus.
  */
 export function registerConfigHooks(
   hooks: HookConfig[],
@@ -119,9 +127,15 @@ export function registerConfigHooks(
   const timeoutMs = runners.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const exec = runners.exec ?? ((cmd, json) => defaultExec(cmd, json, timeoutMs));
   const post = runners.post ?? ((url, payload) => defaultPost(url, payload, timeoutMs));
+  const onWarn = runners.onWarn ?? ((m: string) => console.warn(m));
 
   for (const hook of hooks) {
-    if (!hook.command && !hook.url) continue; // nothing to run
+    if (!hook.command && !hook.url) {
+      // A hook that names no command AND no url can never run — surface it
+      // instead of dropping it silently, so a typo doesn't fail closed unseen.
+      onWarn(`Ignoring "${hook.event}" hook: it has neither a command nor a url.`);
+      continue;
+    }
     const handler = (async (payload: unknown) => {
       // Tool events: only fire when the matcher matches the tool name.
       const isToolEvent = hook.event === "tool.before.execute" || hook.event === "tool.after.execute";
@@ -137,7 +151,7 @@ export function registerConfigHooks(
         return undefined;
       }
       const result = await run;
-      // deny/reason/input only apply to the vetoable tool.before.execute payload.
+      // deny/reason/input veto or rewrite the tool.before.execute payload.
       if (hook.event === "tool.before.execute") {
         const p = payload as { deny?: boolean; reason?: string; input?: unknown };
         if (result.deny) {
@@ -145,6 +159,19 @@ export function registerConfigHooks(
           if (result.reason) p.reason = result.reason;
         }
         if ("input" in result) p.input = result.input;
+        return p;
+      }
+      // A prompt hook can cancel the turn (deny) or rewrite the submitted text.
+      // The engine threads `text` into recall/mentions/turn and honors `deny`.
+      if (hook.event === "user.prompt.submit") {
+        const p = payload as { text: string; deny?: boolean };
+        if (result.deny) {
+          p.deny = true;
+          return p;
+        }
+        // Prefer an explicit `{text}`; fall back to a string `{input}`.
+        if (typeof result.text === "string") p.text = result.text;
+        else if (typeof result.input === "string") p.text = result.input;
         return p;
       }
       return undefined;

@@ -658,6 +658,130 @@ test("a running child's tool calls surface as subagent-activity on the PARENT bu
   expect(lastActivityIdx).toBeLessThan(finishedIdx);
 });
 
+// ── structured output on the worktree + ensemble paths ──────────────────────
+//
+// Regression: outputSchema was enforced ONLY on the shared-tree path — a worktree
+// or ensemble task silently dropped the contract and settled `completed` with
+// unvalidated prose. Both paths now validate the child's final message.
+
+const STATUS_SCHEMA = {
+  type: "object",
+  required: ["status"],
+  properties: { status: { type: "string", enum: ["done"] } },
+};
+
+test("a worktree task with outputSchema settles completed with the VALIDATED json report", async () => {
+  const cwd = await gitRepo();
+  const model = routedModel((p) => {
+    if (p.includes("WT-SCHEMA-OK")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "t", objective: "task-wtok: write then report json", worktree: true, outputSchema: STATUS_SCHEMA }]);
+    }
+    // After the write lands, the FINAL message is exactly the required JSON.
+    if (p.includes("APPLIED")) return textStep(JSON.stringify({ status: "done" }));
+    return toolCallStep("apply", { path: "out.txt", content: "x" });
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config: orchConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([applyTool]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("WT-SCHEMA-OK");
+  bus.close();
+  await done;
+
+  const out = spawnTasksOutput(events);
+  expect(out).toContain("1 completed");
+  // The report is the canonical validated JSON, not the raw prose.
+  expect(out).toContain('{"status":"done"}');
+  // The write still merged into the main tree.
+  expect(readFileSync(join(cwd, "out.txt"), "utf8").trim()).toBe("x");
+});
+
+test("a worktree task whose final message violates outputSchema fails (not silently completed)", async () => {
+  const cwd = await gitRepo();
+  const model = routedModel((p) => {
+    if (p.includes("WT-SCHEMA-BAD")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "t", objective: "task-wtbad: write then report prose", worktree: true, outputSchema: STATUS_SCHEMA }]);
+    }
+    // FINAL message is prose, not JSON — the schema contract is violated.
+    if (p.includes("APPLIED")) return textStep("I could not produce the JSON you asked for.");
+    return toolCallStep("apply", { path: "out.txt", content: "x" });
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config: orchConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([applyTool]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("WT-SCHEMA-BAD");
+  bus.close();
+  await done;
+
+  const out = spawnTasksOutput(events);
+  expect(out).toContain("0 completed");
+  expect(out).toContain("Structured output invalid");
+  // Validation runs BEFORE the merge, so the unvalidated work was NOT landed.
+  expect(existsSync(join(cwd, "out.txt"))).toBe(false);
+});
+
+test("an ensemble winner whose final message violates outputSchema fails; unvalidated prose is not merged", async () => {
+  const cwd = await gitRepo();
+  const config = orchConfig();
+  config.build.ensemble = { n: 2 };
+  const model = routedModel((p) => {
+    if (p.includes("ENS-SCHEMA-BAD")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([{ id: "hard", objective: "solve the hard task", hard: true, outputSchema: STATUS_SCHEMA }]);
+    }
+    // The gate greps for GOOD → the MINIMAL-DIFF attempt wins on score, but its
+    // FINAL message is prose, so the winner fails schema enforcement.
+    if (p.includes("APPLIED")) return textStep("prose, not the required JSON");
+    return toolCallStep("apply", { path: "result.txt", content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD" });
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([applyTool]),
+    bus,
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    repoProfile: fakeProfile({ typecheck: "grep -q GOOD result.txt" }),
+  });
+  await session.run("ENS-SCHEMA-BAD");
+  bus.close();
+  await done;
+
+  const out = spawnTasksOutput(events);
+  expect(out).toContain("0 completed");
+  expect(out).toContain("Ensemble winner's structured output invalid");
+  // The winner's gate-passing code was NOT merged — the schema gate fails first.
+  expect(existsSync(join(cwd, "result.txt"))).toBe(false);
+  // Every attempt's worktree + branch was still cleaned up.
+  expect(await worktreeBranches(cwd)).toEqual([]);
+});
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function spawnTasksOutput(events: UIEvent[]): string {

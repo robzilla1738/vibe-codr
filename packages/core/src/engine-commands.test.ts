@@ -2,7 +2,13 @@ import { test, expect } from "bun:test";
 import type { UIEvent } from "@vibe/shared";
 import { ACCENT_PRESETS, THEME_NAMES } from "@vibe/shared";
 import { defaultConfig } from "@vibe/config";
+import type { Skill } from "@vibe/plugins";
 import { Engine } from "./engine.ts";
+import { buildSkillPrompt } from "./engine-commands.ts";
+
+function skill(dir: string): Skill {
+  return { name: "helper", description: "d", dir, load: async () => "body" };
+}
 
 function collect(engine: Engine): UIEvent[] {
   const events: UIEvent[] = [];
@@ -166,4 +172,17 @@ test("/skills honors its filter argument", async () => {
   engine.send({ type: "run-slash", name: "skills", args: "zzz-no-match" });
   await engine.whenIdle();
   expect(notices(events).at(-1)!.message).toContain('No skill matches "zzz-no-match"');
+});
+
+// A /skill-as-prompt injection must disclose the skill's directory so a body that
+// references bundled files ("read helpers.py first") can resolve them.
+test("/skill-as-prompt injection discloses the skill directory", () => {
+  const prompt = buildSkillPrompt(skill("/tmp/skills/helper"), "read helpers.py first", "");
+  expect(prompt).toContain("Skill directory: /tmp/skills/helper");
+});
+
+test("/skill-as-prompt injection omits the directory line when a skill has no dir", () => {
+  const prompt = buildSkillPrompt(skill(""), "read helpers.py first", "");
+  expect(prompt).toContain("read helpers.py first");
+  expect(prompt).not.toContain("Skill directory:");
 });

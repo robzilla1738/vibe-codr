@@ -211,9 +211,14 @@ export class PlanGate {
       ? shapedSources.filter((s) => opts.isHarvested!(s.url))
       : shapedSources;
     if (this.#triage.needsWeb) {
-      if (t.webSearches === 0) {
+      // A direct webfetch of an authoritative page harvests a citable source
+      // into the ledger just as a web_search does — either satisfies the "did
+      // any web research happen" gate; `validSources` below is the real
+      // evidence check. Gating on webSearches alone bounced webfetch-grounded
+      // plans until MAX_REJECTIONS mislabeled them ungrounded.
+      if (t.webSearches === 0 && t.webFetches === 0) {
         missing.push(
-          "run web_search now (use recencyDays for anything time-sensitive) and read the results — this request depends on current real-world facts your training data cannot know",
+          "run web_search or webfetch now (use recencyDays for anything time-sensitive) and read the results — this request depends on current real-world facts your training data cannot know",
         );
       } else if (!validSources.length) {
         missing.push(

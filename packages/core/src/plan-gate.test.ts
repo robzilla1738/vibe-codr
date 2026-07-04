@@ -58,6 +58,28 @@ test("gate: research telemetry + sources satisfy the requirements", () => {
   expect(grounded.ungrounded).toBeUndefined();
 });
 
+test("gate: a webfetch-grounded plan with a cited source satisfies needsWeb — a bare webfetch with no source does not", () => {
+  const harvested = new Set(["https://fifa.com/match"]);
+  const isHarvested = (url: string) => harvested.has(url);
+
+  // A direct webfetch (no web_search) that harvested a citable source grounds the plan.
+  const grounded = new PlanGate();
+  grounded.noteRequest("plan a page about today's world cup match");
+  grounded.recordToolUse("webfetch");
+  const verdict = grounded.evaluate({ sources: [{ url: "https://fifa.com/match" }] }, { isHarvested });
+  expect(verdict.allow).toBe(true);
+  expect(verdict.ungrounded).toBeUndefined();
+
+  // A bare webfetch with no cited source is still bounced on the evidence gate,
+  // not the "did any web research happen" gate.
+  const bare = new PlanGate();
+  bare.noteRequest("plan a page about today's world cup match");
+  bare.recordToolUse("webfetch");
+  const bounced = bare.evaluate({}, { isHarvested });
+  expect(bounced.allow).toBe(false);
+  expect(bounced.reason).toContain("sources");
+});
+
 test("gate: a fabricated citation is refused when the ledger can verify — only harvested URLs ground a plan", () => {
   const gate = new PlanGate();
   gate.noteRequest("build a site about today's world cup match"); // web-bound

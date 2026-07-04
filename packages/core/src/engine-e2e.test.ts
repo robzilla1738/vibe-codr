@@ -269,6 +269,87 @@ test("Engine planning: resolve-plan accept switches to execute, seeds tasks, run
   await collector;
 });
 
+// Seed the task list from a plan and return the resulting titles + whether a
+// truncation notice fired — the shared harness for the two #seedTasksFromPlan
+// regressions below.
+async function seedPlanTasks(plan: string): Promise<{ titles: string[]; truncated: boolean }> {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-seed-"));
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "a" },
+      { type: "text-delta", id: "a", delta: "Plan presented." },
+      { type: "text-end", id: "a" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "b" },
+      { type: "text-delta", id: "b", delta: "Implementing." },
+      { type: "text-end", id: "b" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+  engine.send({ type: "submit-prompt", text: "plan it" });
+  await engine.whenIdle();
+  engine.send({ type: "resolve-plan", decision: "accept" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+  const tasks = events.filter((e) => e.type === "tasks-updated").at(-1);
+  const titles = tasks && "tasks" in tasks ? tasks.tasks.map((t) => t.title) : [];
+  const truncated = events.some(
+    (e) => e.type === "notice" && "message" in e && e.message.includes("task list capped"),
+  );
+  return { titles, truncated };
+}
+
+test("Engine planning: a plan longer than the cap seeds a catch-all as the last task", async () => {
+  // A 15-step plan can't fit the 12-task cap; dropping the tail would let
+  // #maybeContinueTasks declare the plan done once the seeded steps complete.
+  // Instead: first 11 real steps + one catch-all tracking the remainder.
+  const plan = `## Steps\n${Array.from({ length: 15 }, (_, i) => `- [ ] Step ${i + 1}`).join("\n")}`;
+  const { titles, truncated } = await seedPlanTasks(plan);
+  expect(titles.length).toBe(12);
+  expect(titles.slice(0, 11)).toEqual(Array.from({ length: 11 }, (_, i) => `Step ${i + 1}`));
+  expect(titles.at(-1)).toBe("Complete the remaining 4 plan steps (see the full plan)");
+  expect(truncated).toBe(true);
+});
+
+test("Engine planning: nested sub-bullets don't displace top-level plan steps", async () => {
+  // Deeply-indented sub-bullets are detail, not top-level steps; an unbounded
+  // indent used to fold them into the list and (under the cap) evict real steps.
+  const plan = [
+    "## Steps",
+    "- [ ] Top A",
+    "        - [ ] nested a1",
+    "        - [ ] nested a2",
+    "- [ ] Top B",
+    "        - [ ] nested b1",
+    "- [ ] Top C",
+  ].join("\n");
+  const { titles } = await seedPlanTasks(plan);
+  expect(titles).toEqual(["Top A", "Top B", "Top C"]);
+});
+
 test("Engine planning: accept with approvals:'auto' (the plan card's ^Y) launches yolo execution", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-plan-yolo-"));
   const steps = [

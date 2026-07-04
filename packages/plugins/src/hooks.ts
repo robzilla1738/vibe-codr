@@ -1,7 +1,7 @@
 /** Typed payloads for each lifecycle hook. Handlers may mutate and return them. */
 export interface HookPayloads {
   "session.start": { sessionId: string };
-  "user.prompt.submit": { text: string };
+  "user.prompt.submit": { text: string; deny?: boolean };
   "tool.before.execute": {
     toolName: string;
     input: unknown;

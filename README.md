@@ -573,10 +573,11 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   (**allow once / always (session) / always (project) / deny**) under
   `approvalMode: "ask"` (the default). `always` is remembered for the session;
   **always (project)** (`Ctrl+P`, or type `p`/`project` + Enter) persists a
-  scoped allow **rule into the project config** so it survives restarts. Command
-  and URL scopes persist as a `matchExact` rule (literal match — an approved
-  command containing `*` is never broadened into a glob); path scopes persist as
-  `match`. Headless runs auto-allow. `auto` mode or explicit allow/deny rules
+  scoped allow **rule into the project config** so it survives restarts. Command,
+  URL, **and path** scopes all persist as a `matchExact` rule (literal match — an
+  approved command or filename containing `*` is never broadened into a glob);
+  path grants are stored symlink-resolved, so a grant under `/tmp`/`/var` on
+  macOS still matches next session. Headless runs auto-allow. `auto` mode or explicit allow/deny rules
   skip the prompt.
 - **Checkpoints, undo & redo** — in a git repo, the workspace is snapshotted before
   each edit turn (a hidden `refs/vibecodr/*` ref — your branch/history untouched);

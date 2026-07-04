@@ -2581,3 +2581,93 @@ Three waves, each converged under adversarial verification:
    surface.
 Every wave: typecheck 8/8, lint clean, 15/15 test tasks, both smokes green. Deferred backlog (in
 the WHOLE-PROJECT SWEEP section) is the next sweep's work — not bugs.
+
+# DEFERRED-BACKLOG BURN-DOWN — 2026-07-04 (production-readiness pass)
+
+Trigger: "make sure everything is excellent and ready for production — no tech debt or holes."
+The gate was green at start (typecheck 8/8, lint clean, 826 core tests / 15 tasks, both smokes).
+All 10 items of the WHOLE-PROJECT SWEEP deferred backlog were investigated by 5 parallel fixers;
+**every item CONFIRMED real** (none refuted) and fixed with regression tests, then the whole diff
+was adversarially verified by 2 fresh-eyes reviewers + 1 delta verifier.
+
+## Backlog fixes (all 10 items)
+- **Persisted path-grant realpath + matchExact** (permissions.ts, engine.ts): grants under a
+  symlinked-ancestor cwd (every macOS /tmp,/var project) silently re-prompted each session — the
+  lexical `match` form never re-matched the checker's realpath allow side; and a filename with a
+  literal glob char broadened the grant to siblings. New exported `grantPathScope()` (realpath-
+  canonical absolute, longest-existing-ancestor deref) is the single source for grant keying AND
+  persistence; path grants persist as `matchExact`. Verified fail-safe: a dir later swapped to an
+  out-of-tree symlink diverges the realpath and the grant does NOT follow.
+- **/undo <n> no-edit-newest tail orphan** (checkpoints.ts restoreTo): the same-tree phantom skip
+  fired with NO newer stacked checkpoint (compare hit the target itself) → zero redo entries →
+  stashRedoPayload no-op'd → the sliced conversation tail was lost forever. Phantom now skipped
+  only when a newer stacked step exists to carry the tail. Position-aware stash design untouched.
+- **Branch-mode commit-before-review** (engine.ts #runGate GREEN): with checkpoints disabled the
+  fallback review diff is `git diff HEAD`; gitCommitGreen ran FIRST → blank diff → review silently
+  skipped after the unreviewed commit. Order is now visualVerify+review inside try / commit in
+  finally (review stays advisory + bounded; a review failure still commits the green tree).
+- **/loop parse warnings** (loop.ts): unknown interval unit in interval position (`5x`) and an
+  unapplied `--max`/`--until` surviving into the prompt now warn (never reject — false positives
+  on legit `--` prose stay silent).
+- **Command/skill body cap + lazy reads** (loaders.ts): bodies now read lazily at invocation
+  (edits picked up live; vanished file → honest notice) with a 32KB head-cap + marker
+  (MAX_BODY_CHARS); startup parses frontmatter only.
+- **jobs detectServers O(n²) rescan** (jobs.ts): per-job scanCarry — each chunk scans carry+chunk
+  with a 256-char overlap; boundary-spanning URLs still detected; no re-announce; bounded memory.
+- **OAuth token-store path collision** (mcp-oauth.ts): path is now `<slug>-<fnv1a8(raw)>.json`
+  (sanitize-equal servers like `gh/api` vs `gh_api` no longer share a grant file); legacy files
+  migrate atomically on first read (rename; current-path-wins; clear() unlinks both). Two-process
+  migration race verified benign.
+- **Same-session journal plan-identity** (journal.ts, orchestrator-runner.ts): every journal event
+  now carries `planIdentity(specs)` (FNV-1a over id/objective/deps/files/verify/check/tier in
+  submission order); seeding honors only same-plan events. A later plan reusing an id with the
+  IDENTICAL objective no longer inherits a stale result; crash-resume of the identical plan still
+  seeds (deterministic hash). Unstamped pre-upgrade events re-run once (safe direction).
+- **Blackboard clear timing** (engine.ts): the clear+detached-count guard moved from enqueue time
+  to turn START (FIFO-safe) — a submit racing a not-yet-registered detached spawn no longer wipes
+  the board (repro test proven fails-pre-fix/passes-post-fix).
+- **TUI narrow-terminal + display-cell math** (markdown-blocks/rich-blocks/app/reducer/headless):
+  shared `truncateWidth`/`tailWidth` (cell-measured, surrogate-safe, grapheme-aware for VS16/ZWJ/
+  flag clusters, linear) replace code-unit slices at all user-visible call sites; pure chart
+  layout budgets (barChartLayout/sparkLayout/pieLayout/resamplePoints) clamp bars/sparklines/pies
+  to available columns (brute-forced 12–140 cols × CJK/emoji labels, zero violations); sparklines
+  resample instead of painting one glyph per point.
+
+## Verification (2 fresh-eyes reviewers + 1 delta pass)
+- Core reviewer: NO high/medium introduced; all mechanisms attacked held (grant fail-safe, phantom
+  LIFO stash order, gate reorder abort/degrade paths, blackboard FIFO registration, plan-stamp
+  determinism, oauth migration race, loaders/jobs edges). 2 LOW confirmed → FIXED: a loop tick
+  whose command file vanished sent the raw slash line to the model + swallowed the notice (now
+  warns + skips the tick; loaders-level behavior regression-tested, engine branch trace-verified —
+  no engine-level loop-tick harness exists and one wasn't worth building for a 5-line UX branch);
+  #maybeVisualVerify hoisted inside the try so the finally-commit covers a (currently unreachable)
+  throw. INFO accepted: legacy-token first-reader-wins for previously-conflated names (data was
+  already merged); repeated no-edit rewinds stack cosmetic no-op phantoms.
+- TUI reviewer: layout budgets + surrogate/CJK math held under attack (incl. linearity probes,
+  1.5M-char ~40ms). 1 MODERATE confirmed → FIXED: VS16 narrow-base emoji (❤️☀️⚠️) undercounted by
+  the code-point fast path → cell-budget overflow (the exact class the wave targets) — cluster
+  strings now walk graphemes (CLUSTER_RE gate, linear); + tailWidth leading-joiner strip and
+  n<=0 guards. planIdentity widened to hash files/verify/check/tier (a re-plan flipping verify
+  no longer inherits completions produced under weaker rules).
+- Delta pass over the fix-of-fixes: 1 CONFIRMED → FIXED — the widened planIdentity hash was DEAD
+  at its only production call site (orchestrator-runner mapped specs down to id/objective/deps
+  before hashing, so verify/check/files/tier never reached the hash; the unit tests called
+  planIdentity directly with full specs and passed while the integration path stayed broken).
+  Call site now passes the full fields; a new INTEGRATION test (orchestration-integration.test.ts)
+  binds the call-site shape: the journaled stamp seeds under the full-field hash and NOT under the
+  stripped hash. Attested clean: truncateWidth/tailWidth fuzz (23 adversarial strings × budgets
+  1–12, `displayWidth(result) <= n` held everywhere, linear at 1M+ chars; CLUSTER_RE byte-identical
+  to displayWidth's slow-path trigger so measure/truncate can't disagree); loop notice early-return
+  (no unenqueued-job await, no hot-spin, --until strictly better than before); GREEN-gate hoist
+  (finally-commit runs on every path; review-fix turn still runs against the committed tree).
+  Cosmetic residue recorded, not fixed: tailWidth's fast-path leading strip omits FE00-FE0E/20E3
+  (zero/one-width, budget invariant unaffected); checkpoint-mode green snapshot lands after the
+  visual-verify app boot (non-gitignored dev artifacts could enter it — marginal).
+
+## Also fixed
+- CHANGELOG trust-gate entry was stale (described the superseded pass-1 per-provider baseURL
+  scoping; the shipped gate drops the whole providers block + all 11 vectors).
+
+## Verification at close
+Typecheck 8/8, lint clean, 15/15 turbo test tasks (core 848+, up from 826 — every fix carries
+regressions), smoke:tui + smoke:sidebar OK.

@@ -4,17 +4,54 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — deferred-backlog burn-down (production-readiness pass)
+
+- **Project "always allow" path grants survive symlinked paths.** On macOS,
+  grants for files under `/tmp`/`/var` (symlinks to `/private/...`) silently
+  re-prompted every session; path grants are now persisted realpath-canonical
+  as `matchExact`, and a filename containing a literal glob char no longer
+  broadens the grant to sibling files.
+- **`/undo <n>` no longer loses the conversation tail** when the newest
+  checkpoint's turn made no file edits.
+- **Branch mode reviews before it commits.** With checkpoints disabled, the
+  green commit used to blank the adversarial review's diff — the review now
+  sees the turn's changes first (still advisory and bounded; the green tree
+  commits either way).
+- **`/loop` warns on a mistyped interval or an unapplied `--max`/`--until`**
+  instead of silently folding them into the prompt.
+- **Custom command/skill bodies are read at invocation** (edits picked up
+  live, vanished files reported honestly) and capped at 32KB with a marker.
+- **Long-running background jobs no longer rescan their whole output buffer**
+  on every chunk when detecting server URLs (linear scan with a boundary
+  overlap).
+- **MCP OAuth tokens for similarly-named servers no longer share a file**
+  (`gh/api` vs `gh_api`); existing token files migrate automatically.
+- **A re-submitted orchestration plan can't inherit stale task results** from
+  an earlier plan in the same session that reused a task id — journal entries
+  are stamped with a plan identity; crash-resume of the identical plan still
+  seeds.
+- **A prompt submitted at the wrong moment no longer wipes the orchestration
+  blackboard** out from under a detached agent batch that was about to start.
+- **The TUI stays inside narrow terminals**: charts, sparklines, and pies clamp
+  to available columns (sparklines resample instead of overflowing), and all
+  user-visible truncation measures display cells — CJK, emoji (including VS16/
+  ZWJ sequences and flags), and surrogate pairs no longer misalign boxes or get
+  split mid-character.
+
 ### Security & hardening — whole-project excellence sweep
 
-- **Untrusted project config can no longer execute code.** A cloned repo's
-  `.vibe/config.json` used to be able to set `hooks` (shell exec on
-  `session.start`), `plugins` (module import), `approvalMode: auto`, and
+- **Untrusted project config can no longer execute code or touch credentials.**
+  A cloned repo's `.vibe/config.json` used to be able to set `hooks` (shell exec
+  on `session.start`), `plugins` (module import), `approvalMode: auto`, and
   redirect `providers.*.baseURL` — arbitrary code execution or credential
-  exfiltration just by running `vibe` in the directory. Those fields are now
-  **dropped from the project layer** (with a startup warning) unless
-  `security.trustProjectConfig` is set in your **user-global** config; a
-  project's own custom provider keeps its `baseURL` (only a redirect of a
-  globally-configured provider is stripped).
+  exfiltration just by running `vibe` in the directory. The untrusted project
+  layer now drops (with a startup warning) every vector of that class: `hooks`,
+  `plugins`, `approvalMode: auto`, the whole `providers` block, all
+  `mcp.servers`, command-bearing `lsp` servers, `verify.command`/`verify.auto`,
+  broad permission `allow` rules (scoped grants survive), `sandbox` weakening,
+  webfetch SSRF loosening, and the project's own `security` block. Set
+  `security.trustProjectConfig` in your **user-global** config to honor a repo's
+  config verbatim.
 - **The build gate can't wedge on Esc.** Aborting a gate used to orphan the
   test/build subprocess tree (grandchildren held the output pipe), hanging the
   queue forever; the abort now kills the whole process tree.

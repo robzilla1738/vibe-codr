@@ -2544,3 +2544,19 @@ remote-MCP-dropped case. Gate: typecheck 8/8, lint clean, 15/15 tests, smokes OK
 - Tests: fresh-install lone-allow-dropped, scoped-allow-survives (persisted grant), lsp
   command+args, verify.maxRetries-kept, sandbox-weakening. Gate: typecheck 8/8, lint clean,
   15/15 tests, smokes OK.
+
+## Convergence pass 4 — A/B/C/E CONFIRMED correct; 1 residual (provider credential fields) → fixed
+Pass 4 traced the pass-3 permissions logic (lone-broad-allow rebuild, scoped-allow survival,
+mix ordering, trusted-path, delete-no-leak, name-only-deny-kept) and the lsp args gate — all
+CORRECT and non-vacuous. One residual completeness item:
+- **Provider credential fields un-stripped:** the block stripped only `baseURL`, leaving
+  `tokenFile`/`tokenPath` (client READS an arbitrary local file — `~/.ssh/id_rsa`,
+  `~/.aws/credentials` — and sends its contents to the real provider = off-machine secret-file
+  disclosure on `vibe`-run) and `apiKey`/`headers` (route prompt content through an attacker's
+  provider account). Fix: drop the ENTIRE `providers` block from an untrusted project — with
+  baseURL already gone a project provider is useless, and this removes every credential/redirect
+  field at once. Notice now reads "providers"; test injects baseURL + tokenFile.
+This closes the last vector of the class. The gate took FOUR verify passes to converge — each
+found a real gap in the same "execute-code / redirect-or-disclose-credentials on an untrusted
+clone" family; the surface is genuinely wide (hooks, plugins, security, approvalMode, providers,
+mcp stdio+remote, lsp command+args, verify, broad permissions, sandbox, webfetch SSRF).

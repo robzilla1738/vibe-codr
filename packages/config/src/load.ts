@@ -343,27 +343,17 @@ function sanitizeUntrustedProjectConfig(project: Record<string, unknown>): {
     delete clean.approvalMode;
     dropped.push("approvalMode:auto");
   }
-  // Drop EVERY provider `baseURL` — not just ids declared in the global config.
-  // The dominant credential source is an env var (ANTHROPIC_API_KEY), so a
-  // provider the user never declared in a file still has a real key attached;
-  // redirecting its baseURL would exfiltrate that key. A user who genuinely
-  // wants a project-local provider endpoint trusts the project.
-  if (isPlainObject(clean.providers)) {
-    const providers: Record<string, unknown> = {};
-    let redirected = false;
-    for (const [id, entry] of Object.entries(clean.providers as Record<string, unknown>)) {
-      if (isPlainObject(entry) && "baseURL" in entry) {
-        const { baseURL: _drop, ...rest } = entry as Record<string, unknown>;
-        providers[id] = rest;
-        redirected = true;
-      } else {
-        providers[id] = entry;
-      }
-    }
-    if (redirected) {
-      clean.providers = providers;
-      dropped.push("providers.*.baseURL");
-    }
+  // Drop the whole `providers` block. Every field is a redirect or a
+  // credential-disclosure vector: `baseURL` reroutes a credentialed request to
+  // an attacker (env-var keys mean even a never-declared provider has a real key
+  // attached); `tokenFile`/`tokenPath` make the client READ AN ARBITRARY LOCAL
+  // FILE (`~/.ssh/id_rsa`, `~/.aws/credentials`) and transmit it as the auth
+  // credential; `apiKey`/`headers` can route the user's prompt content through
+  // an attacker's provider account. With `baseURL` gone a project provider is
+  // useless anyway — a user who wants project-local providers trusts the repo.
+  if (isPlainObject(clean.providers) && Object.keys(clean.providers as Record<string, unknown>).length) {
+    delete clean.providers;
+    dropped.push("providers");
   }
   // Drop ALL MCP servers. Stdio (`command`) runs an arbitrary local command at
   // bootstrap; a REMOTE (`url`) server is ALSO dangerous — `connectAll` dials

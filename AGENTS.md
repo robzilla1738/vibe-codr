@@ -17,7 +17,7 @@ vibe-codr itself, Codex (`AGENTS.md`), and Claude Code (`CLAUDE.md`).
 | `@vibe/config` | Zod config schema, file discovery + deep-merge, auth resolution |
 | `@vibe/providers` | `ProviderRegistry`, `resolveModel`, `CatalogService` (models.dev + `/v1/models`) |
 | `@vibe/tools` | Built-in tools (`read`/`edit`/`bash`/`grep`/`repo_map`/`git_*`/…) + the AI-SDK `tool()` adapter; the file-write lock is an **exclusive-ownership claim registry** (`createFileLock`) so parallel subagents can't clobber one file. Web search is **keyless** and **fans out across DuckDuckGo + Bing** (`search-engines.ts`), then dedupes by canonical URL + quality-ranks the merge (`searchcore.ts`); TinyFish is an optional booster. `webfetch` extracts PDFs (`pdftext.ts`, zero-dep) + optional Readability, backed by a cache-through store (`fetch-cache.ts`). **OS sandbox** (`sandbox.ts`, opt-in): a pure Seatbelt(macOS)/bwrap(Linux) policy every command spawn (`bash`, jobs, and core's `exec`/`verify`) routes through — the permission engine stays the policy brain, the sandbox is the kernel backstop |
-| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD limiter (`limiter.ts`), the default-ON task-DAG scheduler (`orchestrator.ts` + `orchestration/orchestrator-runner.ts`: structured handoffs, `read_report`, model tiers, executable verify, worktree isolation, ensemble, journal resume), continuation + background spawns (`continue_subagent`/`check_task` over a bounded-LRU `orchestration/child-registry.ts`; `detach:true`), schema-validated child output (`orchestration/structured-output.ts` — a real JSON-Schema validator, since ai@5's `jsonSchema()` doesn't validate), and a typed coordination blackboard (`blackboard.ts`); (2b) **build intelligence** (`build/` — deterministic recon → `RepoProfile`, `run_check` parsing, the green-gate, green checkpoints, stub scan, gitops/worktrees, browser verify); (2c) **diagnostics** — the `diagnose()` seam behind a composite of the in-process TS fast path and a multi-language `lsp/` client (stdio JSON-RPC, lazy per-language spawn, deadline-bounded, advisory-only); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`), OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/list_changed` re-registration; (4) **production** — crash handlers + redacted crash log (`crash.ts`), a keyless update check (`update-check.ts`) |
+| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD limiter (`limiter.ts`), the default-ON task-DAG scheduler (`orchestrator.ts` + `orchestration/orchestrator-runner.ts`: structured handoffs, `read_report`, model tiers, executable verify, worktree isolation, ensemble, journal resume), continuation + background spawns (`continue_subagent`/`check_task` over a bounded-LRU `orchestration/child-registry.ts`; `detach:true`), schema-validated child output (`orchestration/structured-output.ts` — a real JSON-Schema validator, since ai@5's `jsonSchema()` doesn't validate — `outputSchema` enforced on the inline, worktree, AND ensemble/`hard` paths: validated JSON or an honest failure, never silently dropped; a `continue_subagent` that coerced a child to plan mode restores its registry-remembered original mode when continued in execute), and a typed coordination blackboard (`blackboard.ts`); (2b) **build intelligence** (`build/` — deterministic recon → `RepoProfile`, `run_check` parsing, the green-gate, green checkpoints, stub scan, gitops/worktrees, browser verify); (2c) **diagnostics** — the `diagnose()` seam behind a composite of the in-process TS fast path and a multi-language `lsp/` client (stdio JSON-RPC, lazy per-language spawn, deadline-bounded, advisory-only); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`) — both network-flagged so permission rules govern them — `${VAR}`/`${VAR:-default}` expansion over connect-time config, OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/`/`resources/`/`prompts/list_changed` live re-registration; (4) **production** — crash handlers + redacted crash log (`crash.ts`), a keyless update check (`update-check.ts`) |
 | `@vibe/plugins` | `HookBus`, slash-command + skill runtimes, `PluginHost`; declarative shell/HTTP hooks are layered on via `core/config-hooks.ts` from the config `hooks` block |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers, themes, tool icons, spinner |
 | `@vibe/cli` | `bin/vibecodr` entrypoint (argv, config, headless `-p` vs TUI); the `VERSION` sentinel (`version.ts`, stamped at release) and `vibe upgrade` channel detection (`upgrade.ts`). Release tooling (binary + npm-bundle builds, version stamping) lives in `scripts/release/` |
@@ -224,12 +224,31 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
     a snapshot whose commit object is gone (GC'd) is SKIPPED (its dangling ref
     dropped) and `undo` advances to the next valid checkpoint — a failed git call
     must never be read as an empty snapshot, which would delete every untracked file.
+    `/undo <index|id>` (`restoreTo`) rewinds multiple steps at once, capturing the
+    pre-rewind working tree as a phantom redo step so `/redo` recovers the newest
+    edits byte-for-byte. `undo`/`restoreTo` stash the **sliced-off conversation
+    tail** on the redo step; `/redo` re-appends it **only while the context still
+    sits at the rewound mark** — a `/clear` or any intervening turn skips the
+    append (files still restore, with an honest notice), and `/clear` also drops
+    stashed redo payloads so a mark-0 edge can't resurrect a cleared conversation.
+    Any new snapshot clears the redo stack.
   - The plugin `HookBus` isolates each handler (one throw doesn't break the turn)
     and the lifecycle hooks are actually wired: `session.start/idle/end` (engine),
     `tool.before.execute` (with a working `deny` gate) / `tool.after.execute` /
-    `assistant.message` (session). Safety builtins (`RESERVED_SLASH`) can't be
-    shadowed by `.vibe/commands/*.md`, and `Toolset.register` refuses to let an
-    extension tool shadow a built-in.
+    `assistant.message` (session). Four events carry a **response contract**
+    (Claude Code parity), mirrored by the declarative config-hook layer and
+    documented once in `packages/config/src/schema.ts`: `tool.before.execute`
+    `{deny,reason}`/`{input}`; `tool.after.execute` `{additionalContext}` (appended
+    to the result) or `{deny,reason}` (overrides the already-run result with an
+    error — the tool still ran); `user.prompt.submit` `{deny}` (turn cancelled
+    **before** any state mutation, the handoff plan-discard, or the checkpoint
+    snapshot) or `{text}`/string `{input}` (rewrite); `session.idle`
+    `{continue:true,reason}` injects one bounded follow-up turn — capped at 3 per
+    user prompt via `#idleContinueRounds`, and refused when the turn was Esc-aborted
+    or budget-stopped (`#maybeContinueOnIdle` reads `session.interrupted` first) so
+    the engine-idle terminal invariant holds. Safety builtins (`RESERVED_SLASH`)
+    can't be shadowed by `.vibe/commands/*.md`, and `Toolset.register` refuses to
+    let an extension tool shadow a built-in.
   - **Cost/context are real for any model.** `Engine.#resolveContextWindow` tries
     `config.contextWindow[model]` → an Ollama `/api/show` probe (local + cloud) →
     the models.dev catalog → the 128k default. `#resolvePricing` tries a full

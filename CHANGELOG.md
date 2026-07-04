@@ -17,6 +17,111 @@ All notable changes to vibe-codr are documented here.
   height-pinned, so nothing reflows) and the under-input status keeps only
   the changed-files delta. Each fact renders in exactly one place.
 
+### Added — hooks get real feedback channels (Claude Code Stop/PostToolUse parity)
+
+- **`session.idle` handlers can force a follow-up turn.** Returning
+  `{continue:true, reason}` injects one more turn built from `reason` instead of
+  settling idle (Stop-equivalent) — **bounded to 3 per user prompt**, then the
+  engine warns and settles regardless so a runaway hook can't loop forever. A turn
+  that was Esc-aborted or budget-stopped is **never** resurrected this way (the
+  guard reads `session.interrupted` before the injected turn is enqueued), so the
+  engine-idle terminal invariant a headless one-shot relies on still holds.
+- **`tool.after.execute` handlers can shape the result** (PostToolUse parity):
+  `{additionalContext}` is appended (delimited) to the result the model reads
+  next step; `{deny:true, reason}` overrides the already-run result with an error.
+  The tool still ran — deny here changes only what the model is told.
+- **`user.prompt.submit` handlers can rewrite or veto.** `{text}` (or a string
+  `{input}`) rewrites the prompt; `{deny:true}` cancels the turn **before** any
+  state mutation — before the handoff plan-discard and before the checkpoint
+  snapshot, so a denied handoff keeps the approved plan and a denied prompt seeds
+  no checkpoint. Declarative config hooks map the same fields; the full per-event
+  response contract is documented once in `packages/config/src/schema.ts`.
+
+### Added — checkpoint rewind & redo
+
+- **`/undo` takes an optional index or id** (as shown by `/checkpoints`, newest =
+  1) to rewind multiple steps at once, stacking the skipped ones for redo.
+- **`/redo` re-applies the most recent undo** — files *and* conversation. The
+  pre-rewind working tree is captured as a phantom redo step so redo-to-exhaustion
+  recovers the newest edits byte-for-byte. The conversation tail is **position-
+  aware**: it is re-appended only while the context still sits at the rewound mark;
+  a `/clear` or any intervening turn skips the append (files still restore, with an
+  honest notice), and `/clear` drops stashed redo payloads so a cleared
+  conversation can't be resurrected.
+- **`/checkpoints` lists numbered entries with relative age.** Any new snapshot
+  clears the redo stack. `/redo` joined the help catalog and TUI autocomplete.
+
+### Added — persistent per-project permission grants
+
+- **The interactive permission card gained "always (project)"** — `Ctrl+P`, or
+  type `p`/`project` + Enter — which persists a scoped allow rule into the project
+  config (validated merge, dedup, degrade-to-session-grant on write failure).
+  The chord is deliberate: moved off the bare `p` key so the first keystroke of a
+  typed deny can't invert into a durable allow.
+- **Command and URL scopes persist as the new `matchExact` rule field** — a
+  literal string match with no glob semantics, so approving `rm build/*` persists a
+  rule that allows exactly `rm build/*` and never a glob-broadened
+  `rm build/../secret.env`. Path scopes persist as `match`. `matchExact` shares
+  the same scope forms and deny>ask>allow precedence as an equivalently-scoped
+  `match` rule.
+
+### Added — clipboard image paste & external-editor compose
+
+- **`Ctrl+V` pastes a clipboard image** (macOS `pngpaste`/`osascript`, Linux
+  `wl-paste`/`xclip`), landing as an `@`-mention of a validated temp PNG that flows
+  through the existing image pipeline and is cleaned up on exit. No image is a
+  silent no-op; text paste (bracketed) is untouched.
+- **`Ctrl+G` opens the draft in `$VISUAL`/`$EDITOR`** (renderer suspend/resume) and
+  reads it back on save; an empty save keeps the prior draft.
+
+### Changed — MCP env expansion, live catalog refresh, governed resources/prompts
+
+- **`${VAR}` and `${VAR:-default}` expansion** over server `command`/`args`/`env`/
+  `url`/`headers`, so a migrated Claude Code entry can reference secrets by env var
+  instead of inlining them. An unresolved `${VAR}` with no default is left literal
+  and warned about — never silently blanked; a bare `$` is untouched.
+- **`resources`/`prompts` `list_changed` notifications refresh their catalogs
+  live**, matching the existing `tools/list_changed` behavior.
+- **`read_mcp_resource` and `get_mcp_prompt` are now network-flagged**, so deny/ask
+  permission rules govern them like any other egress.
+
+### Changed — planning grounding & long plans
+
+- **The plan grounding gate accepts `webfetch` and `crawl_docs` as web grounding**,
+  not only `web_search` (the fetch counter was previously dead).
+- **A plan longer than 12 steps seeds a catch-all tail task** for the remainder
+  instead of silently dropping steps beyond the cap.
+
+### Changed — orchestrator output & subagent mode fidelity
+
+- **`outputSchema` on `spawn_tasks` is now enforced on worktree and ensemble
+  (`hard`) tasks too** — validated JSON or an honest failure, never silently
+  dropped, matching the inline path.
+- **A subagent continued during plan mode is restored to its original mode** when
+  continued during execute (the registry remembers the pre-coercion mode).
+
+### Fixed — tool correctness
+
+- **`read`'s `offset` is now 1-based**, matching the line numbers shown in its
+  output.
+- **`grep`'s no-ripgrep fallback matches ripgrep's multi-extension types** — a
+  `fileType:"ts"` search now covers `.tsx`/`.mts`/`.cts`, not just literal `.ts`,
+  so the fallback no longer silently misses `.tsx` files.
+- **Web-search date detection no longer misdates a page** from an incidental year
+  in the body — a bare year only reads as a date when it heads the text or follows
+  a date cue.
+
+### Added — experimental native Windows
+
+- An experimental **`bun-windows-x64`** release binary with checksum, an advisory
+  (continue-on-error) Windows CI job, and a README note recommending WSL2 and
+  documenting that the OS sandbox is unavailable on native Windows.
+
+### Fixed — skill file resolution
+
+- **Every skill load now discloses the skill's directory**, so `SKILL.md`-
+  referenced bundled files (helpers, catalogs) are resolvable by the model.
+
 ## v0.4.0 — 2026-07-04
 
 ### Added — the sidebar gets a session card, and subagents get room to breathe

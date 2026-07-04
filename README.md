@@ -343,7 +343,10 @@ Highlights:
 - **Steering** — `/goal <text>`,
   `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
   `/queue` (`/queue clear`).
-- **Code & safety** — `/diff`, `/review`, `/verify`, `/undo`, `/checkpoints`.
+- **Code & safety** — `/diff`, `/review`, `/verify`, `/undo [index|id]`
+  (rewind one step, or multiple by the index/id shown in `/checkpoints`),
+  `/redo` (re-apply the last undo), `/checkpoints` (numbered, newest = 1, with
+  relative age).
 - **Extensions & config** — `/config` (effective settings, secrets masked),
   `/memory` (loaded project/global notes), `/permissions`, `/tools`, `/agents`,
   `/skills` (searchable menu), `/skill <name> [task]` (run a skill by name —
@@ -463,19 +466,26 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   the engine **rejects an ungrounded `present_plan`** (with concrete "run
   web_search / read these files" instructions, up to twice, then presents it
   stamped *⚠ ungrounded*) — so even a weak local model is bounced back into
-  research instead of shipping a 20-second hallucinated plan. Cited sources are
+  research instead of shipping a 20-second hallucinated plan. Web grounding
+  counts `webfetch` and `crawl_docs`, not just `web_search`. Cited sources are
   **verified against the session's source ledger**: a URL the research never
   actually surfaced (a hallucinated citation) cannot ground a plan.
   When the model calls `present_plan` you get an **interactive approval card** —
   **Enter** accepts & executes (seeding an **id-addressed task list** from the
-  plan's checklist), **Ctrl+Y** accepts and runs in **yolo** (unattended), **typing**
+  plan's checklist — a plan longer than 12 steps seeds a catch-all tail task for
+  the remainder rather than silently dropping steps), **Ctrl+Y** accepts and runs
+  in **yolo** (unattended), **typing**
   revises the plan, **Esc** keeps planning. Approving by mode-switch
   (`/execute` or Shift+Tab) arms the same handoff — the transcript says so, and
   your next message starts implementation. **Execute** allows
   edits/commands, each gated by a glob-based allow/deny/ask **permission layer**
   that can also scope by CONTENT — `{"tool":"bash","match":"git push*",
   "action":"deny"}` — with deny-beats-allow semantics; network tools honor
-  rules too, so egress is governable.
+  rules too, so egress is governable. A rule can match content **literally** with
+  `matchExact` instead of `match` (no glob semantics — a `*` is an asterisk, not a
+  wildcard); this is what a persisted **always (project)** grant writes for a
+  command/URL, so approving `rm build/*` allows exactly that string and never a
+  glob-broadened `rm build/../secret.env`.
   **Yolo** runs side-effecting tools without prompting. Every real mode
   transition re-gates approvals to `ask` **in the engine itself**, so leaving
   plan can never silently inherit a lingering YOLO — YOLO is always an explicit
@@ -497,7 +507,12 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `mcp.servers` (see the MCP example below).
 - **`@file` mentions & images** — reference files inline (`summarize @src/app.ts`)
   and their contents are injected as context; image mentions (`@shot.png`) are
-  attached for vision models (with a notice when the model lacks vision). The
+  attached for vision models (with a notice when the model lacks vision).
+  **Ctrl+V** pastes a **clipboard image** (macOS `pngpaste`/`osascript`, Linux
+  `wl-paste`/`xclip`) — it lands as an `@`-mention of a temp PNG that flows
+  through the usual image pipeline and is cleaned up on exit (text paste is
+  untouched). **Ctrl+G** opens the current draft in `$VISUAL`/`$EDITOR` and reads
+  it back on save (an empty save keeps the draft). The
   REPL supports multi-line input (end a line with `\`) and **Ctrl-C aborts the
   current turn** instead of killing the process. Assistant text renders Markdown
   (headings, bold/italic, code, lists) in the interactive UI.
@@ -539,19 +554,37 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   "http" | "sse"` for a URL). Server **tools** register as `mcp__<server>__<tool>`
   (honoring `readOnlyHint`), **resources** are reachable via `read_mcp_resource`,
   and **prompts** via `get_mcp_prompt`; `/mcp` shows live per-server status.
+  `read_mcp_resource` and `get_mcp_prompt` are **network-flagged**, so
+  deny/ask permission rules govern them like any other egress. Connect-time
+  strings (`command`, `args`, `env`, `url`, `headers`) support **`${VAR}` and
+  `${VAR:-default}` env expansion** — a migrated Claude Code entry can reference
+  secrets by env var instead of inlining them; an unresolved `${VAR}` with no
+  default is left literal and warned about (never silently blanked).
   Remote servers support **OAuth 2.1** (authorization-code + PKCE, tokens persisted
   and auto-refreshed) and static `headers`; a dropped connection **auto-reconnects
-  with backoff**, and `tools/list_changed` re-registers the server's tools live.
+  with backoff**, and `tools/list_changed` re-registers the server's tools live —
+  `resources`/`prompts` `list_changed` notifications refresh their catalogs live too.
   Servers connect in parallel with a timeout so one slow server can't block
   startup, and support per-server `enabled` / `timeoutMs` / `cwd`. Requires the
   optional `@modelcontextprotocol/sdk` peer dep; failures are skipped, not fatal.
 - **Interactive permissions** — side-effecting tools prompt for approval
-  (**allow once / always / deny**) under `approvalMode: "ask"` (the default);
-  `always` is remembered for the session. Headless runs auto-allow. `auto` mode
-  or explicit allow/deny rules skip the prompt.
-- **Checkpoints & undo** — in a git repo, the workspace is snapshotted before
+  (**allow once / always (session) / always (project) / deny**) under
+  `approvalMode: "ask"` (the default). `always` is remembered for the session;
+  **always (project)** (`Ctrl+P`, or type `p`/`project` + Enter) persists a
+  scoped allow **rule into the project config** so it survives restarts. Command
+  and URL scopes persist as a `matchExact` rule (literal match — an approved
+  command containing `*` is never broadened into a glob); path scopes persist as
+  `match`. Headless runs auto-allow. `auto` mode or explicit allow/deny rules
+  skip the prompt.
+- **Checkpoints, undo & redo** — in a git repo, the workspace is snapshotted before
   each edit turn (a hidden `refs/vibecodr/*` ref — your branch/history untouched);
-  `/undo` rolls back, `/checkpoints` lists them.
+  `/checkpoints` lists them numbered (newest = 1) with relative age. `/undo` rolls
+  back the latest — or pass an **index or id** to rewind multiple steps at once —
+  and stashes the skipped work on a redo stack. `/redo` re-applies the most recent
+  undo, restoring **both the files and the conversation** — position-aware: the
+  conversation tail is re-appended only if no `/clear` or intervening turn moved
+  the context (files still restore, with an honest notice, otherwise). Any new
+  snapshot clears the redo stack.
 - **Self-verify** — set `verify.command` (e.g. `"bun run typecheck && bun test"`)
   and run it with `/verify`; with `verify.auto`, failures after an edit turn are
   fed back so the agent self-corrects (capped by `verify.maxRetries`).
@@ -637,9 +670,22 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   load from the project's `.vibe/{skills,commands}`, user-global
   `~/.config/vibe-codr/{skills,commands}`, and plugins, most-local-wins:
   a project file overrides both a plugin's and a global one. Declarative
-  `hooks` in config run a shell command or POST a URL on lifecycle events and can
-  **deny a tool** or **rewrite its input** (a `{deny,reason}` / `{input}` JSON
-  protocol), layered onto the in-process plugin hook bus.
+  `hooks` in config run a shell command (JSON payload on stdin) or POST a URL on
+  lifecycle events and get a real feedback channel per event (JSON out), layered
+  onto the in-process plugin hook bus:
+  - **`tool.before.execute`** — `{deny,reason}` blocks the tool; `{input}` rewrites its arguments.
+  - **`tool.after.execute`** — `{additionalContext}` is appended to the result the
+    model reads next; `{deny,reason}` overrides the already-run result with an error
+    (the tool still ran — this only changes what the model is told).
+  - **`user.prompt.submit`** — `{deny}` cancels the turn before any state mutation;
+    `{text}` (or a string `{input}`) rewrites the prompt.
+  - **`session.idle`** — `{continue:true, reason}` forces one more turn built from
+    `reason` (Claude Code Stop parity), bounded to **3 per user prompt** and never
+    after an abort or budget-stop, so a runaway hook can't loop forever.
+
+  The remaining events (`session.start`, `step.finish`, `assistant.message`,
+  `session.end`) are observe-only. The full per-event contract lives in the config
+  schema.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `zai/glm-...`, `moonshot/kimi-...`,

@@ -767,11 +767,22 @@ error rather than blocking startup.
 ### Config
 
 Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/config.json`
-→ `.vibe/config.json` → env → CLI flags. The one exception is `permissions`:
-rules **union across layers** instead of replacing, so a repo-local
-`.vibe/config.json` (which travels with a cloned repo) can add its own rules but
-can never strip or relax your global deny/ask kill-switches. Beyond `model`,
-`mode`, `maxSteps`, `permissions`, and `plugins`:
+→ `.vibe/config.json` → env → CLI flags.
+
+**Project config is untrusted by default.** A `.vibe/config.json` travels with a
+cloned repo, so its **project layer is sanitized** unless you opt in — merely
+running `vibe` in a clone can't execute code or leak credentials. Dropped from an
+untrusted project (with a startup warning): `hooks`, `plugins`, a relaxation of
+`approvalMode` to `auto`, the whole `providers` block (baseURL redirects + a
+`tokenFile` that would read and exfiltrate a local secret), all `mcp.servers`,
+`lsp.servers` with a `command`/`args`, `verify.command`, broad `permissions`
+allow-rules, the `sandbox` block, and `webfetch` SSRF-loosening keys. Two things
+are *never* weakened by a project: `permissions` rules **union across layers**
+(a project can add deny/ask and scoped allows but never strip your global
+kill-switches), and a scoped `always-allow (this project)` grant persists as
+normal. Set `security.trustProjectConfig: true` in your **user-global** config to
+honor a project's file verbatim. Beyond `model`, `mode`, `maxSteps`,
+`permissions`, and `plugins`:
 
 ```jsonc
 {
@@ -803,6 +814,7 @@ can never strip or relax your global deny/ask kill-switches. Beyond `model`,
     "anthropic/claude-opus-4-8": { "input": 5, "output": 25, "cacheRead": 0.5 }
   },
   "approvalMode": "ask",                                // ask | auto
+  "security": { "trustProjectConfig": false },          // honor a repo's .vibe/config.json verbatim (global-only)
   "theme": "default",                                   // default | light | contrast | opencode | tokyonight | …
   "accentColor": "#8b5cf6",                             // chrome accent (or /accent purple in-app)
   "caching": { "enabled": true },                       // Anthropic prompt caching

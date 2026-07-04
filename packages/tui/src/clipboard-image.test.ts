@@ -1,6 +1,11 @@
 import { test, expect } from "bun:test";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  cleanupClipboardTempDir,
   clipboardImageProbes,
+  clipboardTempDir,
   decodeProbe,
   probeClipboardImage,
   readClipboardImage,
@@ -87,6 +92,47 @@ test("readClipboardImage writes the decoded bytes to a temp file and returns its
   });
   expect(res).toEqual({ kind: "image", path: "/tmp/vibe-clip-test.png" });
   expect(written).toEqual([{ path: "/tmp/vibe-clip-test.png", bytes: PNG }]);
+});
+
+test("clipboardTempDir is a per-session (pid-namespaced) subdir under tmpdir", () => {
+  const dir = clipboardTempDir();
+  expect(dir).toBe(join(tmpdir(), `vibe-clips-${process.pid}`));
+});
+
+test("readClipboardImage writes a default paste INTO the per-session clips dir", async () => {
+  // No injected outPath/writeFile → the real writer places the file in the session
+  // dir (and creates it). Then cleanup removes the whole dir.
+  await cleanupClipboardTempDir(); // start clean
+  const res = await readClipboardImage({
+    platform: "darwin",
+    exec: async (cmd) => (cmd[0] === "pngpaste" ? ok(PNG) : ranNoImage),
+  });
+  expect(res.kind).toBe("image");
+  if (res.kind === "image") {
+    expect(res.path.startsWith(clipboardTempDir())).toBe(true);
+    // The file was actually written into the (auto-created) session dir.
+    expect((await stat(res.path)).isFile()).toBe(true);
+  }
+  await cleanupClipboardTempDir();
+});
+
+test("cleanupClipboardTempDir removes the session clips dir (and swallows a re-run)", async () => {
+  const dir = clipboardTempDir();
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "vibe-clip-x.png"), PNG);
+  await cleanupClipboardTempDir();
+  await expect(stat(dir)).rejects.toThrow(); // gone
+  // A second cleanup on an already-absent dir must NOT throw (best-effort teardown).
+  await expect(cleanupClipboardTempDir()).resolves.toBeUndefined();
+});
+
+test("cleanupClipboardTempDir swallows a failure (never throws on teardown)", async () => {
+  // Point cleanup at a path whose PARENT is a regular file, so rm can't treat it as
+  // a dir — the error must be swallowed, not propagated into the exit path.
+  const parent = join(tmpdir(), `vibe-clip-block-${process.pid}-${Date.now()}`);
+  await writeFile(parent, PNG);
+  await expect(cleanupClipboardTempDir(join(parent, "sub", "dir"))).resolves.toBeUndefined();
+  await rm(parent, { force: true });
 });
 
 test("readClipboardImage returns none/unavailable without writing a file", async () => {

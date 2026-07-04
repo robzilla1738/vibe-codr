@@ -153,7 +153,14 @@ function realpathScope(toolName: string, input: unknown, cwd: string): string | 
  * For `ask`, a resolver is consulted; non-interactive runs auto-allow upstream.
  */
 export class PermissionChecker {
-  #rules: { tool: RegExp; match?: RegExp; action: PermissionRule["action"] }[];
+  #rules: {
+    tool: RegExp;
+    match?: RegExp;
+    /** Literal-equality scope (no glob). Mutually exclusive with `match` in
+     * practice; compared with `===` against the same scope forms `match` tests. */
+    matchExact?: string;
+    action: PermissionRule["action"];
+  }[];
   #resolve: PermissionResolver;
   #defaultAction: PermissionRule["action"];
   #cwd: string;
@@ -177,6 +184,9 @@ export class PermissionChecker {
       // name-only `deny` on `mcp__*` should catch `MCP__x` too).
       tool: globToRegExp(r.tool, r.action),
       ...(r.match ? { match: globToRegExp(r.match, r.action) } : {}),
+      // Exact rules carry the literal string (no glob compile) — the check
+      // compares it with `===` against the same scope forms `match` tests.
+      ...(r.matchExact !== undefined ? { matchExact: r.matchExact } : {}),
       action: r.action,
     }));
     this.#resolve = resolver ?? (() => true);
@@ -234,6 +244,13 @@ export class PermissionChecker {
         const s = r.action === "allow" ? allowScopes : protectScopes;
         return s.some((x) => r.match!.test(x));
       }
+      // An exact rule mirrors `match` but compares literally (`===`) against the
+      // SAME action-appropriate scope forms — no glob broadening, so an approved
+      // `rm build/*` matches ONLY the literal `rm build/*`, not `rm build/../x`.
+      if (r.matchExact !== undefined) {
+        const s = r.action === "allow" ? allowScopes : protectScopes;
+        return s.some((x) => x === r.matchExact);
+      }
       return true;
     });
     // DENY is an absolute kill-switch: any matching deny — scoped OR name-only —
@@ -252,10 +269,14 @@ export class PermissionChecker {
         : rules.some((r) => r.action === "allow")
           ? "allow"
           : undefined;
+    // A `matchExact` rule is content-scoped exactly like `match`, so it shares the
+    // scoped tier (and its specificity edge over a name-only rule).
+    const isScoped = (r: (typeof applicable)[number]): boolean =>
+      !!r.match || r.matchExact !== undefined;
     const action = explicitDeny
       ? "deny"
-      : (decideAllowAsk(applicable.filter((r) => r.match)) ??
-        decideAllowAsk(applicable.filter((r) => !r.match)) ??
+      : (decideAllowAsk(applicable.filter(isScoped)) ??
+        decideAllowAsk(applicable.filter((r) => !isScoped(r))) ??
         opts.fallback ??
         this.#defaultAction);
     // Whether the ask came from an EXPLICIT rule (a human-authored gate) vs the
@@ -285,7 +306,12 @@ export class PermissionChecker {
     // rule from a blanket allow that merely happens to span the prefixed scope.
     const sentinelAuthorized =
       typeof bareCommand === "string" &&
-      applicable.some((r) => r.action === "allow" && !!r.match && !r.match.test(bareCommand));
+      applicable.some(
+        (r) =>
+          r.action === "allow" &&
+          ((!!r.match && !r.match.test(bareCommand)) ||
+            (r.matchExact !== undefined && r.matchExact !== bareCommand)),
+      );
     if (flagged && finalAction !== "deny" && !sentinelAuthorized) {
       finalAction = "ask";
       explicitAsk = true;

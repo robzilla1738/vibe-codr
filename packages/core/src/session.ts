@@ -92,6 +92,14 @@ const COMPACT_OVERHEAD_MARGIN = 12_000;
  * make the summarize call itself risk the window. */
 const SUMMARY_INPUT_CAP = 24_000;
 
+/** The conversation segments a `rewindConversation` sliced off. `/undo` stashes
+ * this on its redo step (as an opaque payload, so the checkpoint module stays free
+ * of session types) and `/redo` re-appends it via `restoreConversation`. */
+export interface ConversationTail {
+  modelMessages: ModelMessage[];
+  history: Message[];
+}
+
 export interface SessionDeps {
   config: Config;
   registry: ProviderRegistry;
@@ -659,15 +667,36 @@ export class Session {
 
   /**
    * Roll the conversation back to a previous mark (after `/undo` reverts files),
-   * so the model context no longer claims edits that were just undone.
+   * so the model context no longer claims edits that were just undone. Returns the
+   * sliced-off tail (the messages beyond the mark) so a later `/redo` can re-append
+   * it and move the context forward in lockstep with the restored files — undefined
+   * when the mark is already at/after the current length (nothing to discard).
    */
-  rewindConversation(mark: { messages: number; history: number }): void {
+  rewindConversation(mark: { messages: number; history: number }): ConversationTail | undefined {
+    let tail: ConversationTail | undefined;
+    if (mark.messages < this.#modelMessages.length || mark.history < this.#history.length) {
+      tail = {
+        modelMessages: this.#modelMessages.slice(mark.messages),
+        history: this.#history.slice(mark.history),
+      };
+    }
     if (mark.messages < this.#modelMessages.length) {
       this.#modelMessages = this.#modelMessages.slice(0, mark.messages);
     }
     if (mark.history < this.#history.length) {
       this.#history = this.#history.slice(0, mark.history);
     }
+    return tail;
+  }
+
+  /**
+   * Re-append a conversation tail captured by a prior `rewindConversation` (used by
+   * `/redo` to bring the model context back to the pre-undo state, matching the
+   * files it just restored byte-for-byte).
+   */
+  restoreConversation(tail: ConversationTail): void {
+    this.#modelMessages.push(...tail.modelMessages);
+    this.#history.push(...tail.history);
   }
 
   /** Reset conversation history (model context and UI history). */

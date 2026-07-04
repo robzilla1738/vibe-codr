@@ -365,6 +365,26 @@ test("appendProjectPermission creates the permissions array, appends, and dedups
   expect(cfg.permissions).toContainEqual({ tool: "bash", match: "git status", action: "allow" });
 });
 
+test("appendProjectPermission round-trips a matchExact rule and dedups it distinctly by value", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-exact-"));
+  // A command grant now persists as matchExact (no glob broadening across sessions).
+  await appendProjectPermission(cwd, { tool: "bash", matchExact: "rm build/*", action: "allow" });
+  const p = projectConfigPath(cwd);
+  let saved = JSON.parse(await Bun.file(p).text());
+  expect(saved.permissions).toEqual([{ tool: "bash", matchExact: "rm build/*", action: "allow" }]);
+  // A matchExact rule is distinct-by-value from an otherwise-identical match rule.
+  await appendProjectPermission(cwd, { tool: "bash", match: "rm build/*", action: "allow" });
+  saved = JSON.parse(await Bun.file(p).text());
+  expect(saved.permissions).toHaveLength(2);
+  // Re-appending the same matchExact rule is a no-op (dedup by value).
+  await appendProjectPermission(cwd, { tool: "bash", matchExact: "rm build/*", action: "allow" });
+  saved = JSON.parse(await Bun.file(p).text());
+  expect(saved.permissions).toHaveLength(2);
+  // The exact rule survives a load unchanged (schema round-trips matchExact).
+  const cfg = await loadConfig({ cwd });
+  expect(cfg.permissions).toContainEqual({ tool: "bash", matchExact: "rm build/*", action: "allow" });
+});
+
 test("appendProjectPermission preserves other project config keys", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-append-keep-"));
   await mkdir(join(cwd, ".vibe"), { recursive: true });

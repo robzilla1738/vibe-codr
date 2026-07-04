@@ -369,8 +369,12 @@ async function readProjectRules(cwd: string): Promise<unknown[]> {
 
 test("always-project: persists a validated command-scoped rule mirroring the in-memory grant", async () => {
   // Approving a command call with 'always-project' both suppresses the next
-  // prompt (in-memory) AND writes a scoped {tool, match:<command>, action:"allow"}
-  // rule into the project config — the match mirrors the in-memory command scope.
+  // prompt (in-memory) AND writes a scoped {tool, matchExact:<command>,
+  // action:"allow"} rule into the project config. A COMMAND scope persists as
+  // matchExact (literal equality) — NOT match — so a `*` in the approved command
+  // can't glob-broaden across sessions (approving `rm build/*` must not next
+  // session auto-allow `rm build/../secret.env`). It mirrors the EXACT-string
+  // in-memory command grant.
   const { engine, runs, cwd } = makeEngine(
     [toolCallCmd("c1", "git status"), toolCallCmd("c2", "git status"), finalText()],
     true,
@@ -381,8 +385,30 @@ test("always-project: persists a validated command-scoped rule mirroring the in-
   expect(events.filter((e) => e.type === "permission-request").length).toBe(1); // remembered
   expect(runs()).toBe(2);
   expect(await readProjectRules(cwd)).toEqual([
-    { tool: "danger", match: "git status", action: "allow" },
+    { tool: "danger", matchExact: "git status", action: "allow" },
   ]);
+});
+
+test("always-project: a command grant with a glob char persists as matchExact, NOT a broadened match", async () => {
+  // The core FIX-3 invariant end-to-end: approving `rm build/*` persists a
+  // matchExact rule so a FRESH PermissionChecker load allows ONLY the literal
+  // `rm build/*` and NOT the glob-broadened `rm build/../secret.env` that a
+  // `match:"rm build/*"` rule (globToRegExp `*`→`.*`) would have auto-allowed.
+  const { engine, cwd } = makeEngine([toolCallCmd("c1", "rm build/*"), finalText()], true);
+  drive(engine, "always-project");
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+  expect(await readProjectRules(cwd)).toEqual([
+    { tool: "danger", matchExact: "rm build/*", action: "allow" },
+  ]);
+  // A fresh load + checker: the persisted rule allows the exact command…
+  const { loadConfig } = await import("@vibe/config");
+  const { PermissionChecker } = await import("./permissions.ts");
+  const cfg = await loadConfig({ cwd });
+  const checker = new PermissionChecker(cfg.permissions, () => false, "ask", cwd);
+  expect((await checker.check("danger", { command: "rm build/*" })).allowed).toBe(true);
+  // …but NOT a glob-broadened traversal a `match` rule would have wrongly allowed.
+  expect((await checker.check("danger", { command: "rm build/../secret.env" })).allowed).toBe(false);
 });
 
 test("always-project: a path grant persists the CANONICAL absolute path (mirrors the key scope)", async () => {
@@ -403,7 +429,7 @@ test("always-project: the persisted rule is honored on a fresh load of the proje
   await engine.whenIdle();
   const { loadConfig } = await import("@vibe/config");
   const cfg = await loadConfig({ cwd });
-  expect(cfg.permissions).toContainEqual({ tool: "danger", match: "ls", action: "allow" });
+  expect(cfg.permissions).toContainEqual({ tool: "danger", matchExact: "ls", action: "allow" });
 });
 
 test("interactive: a command grant stays EXACT-string keyed (a path-looking command isn't canonicalized)", async () => {

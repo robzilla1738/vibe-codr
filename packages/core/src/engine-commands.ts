@@ -6,7 +6,7 @@ import { configUnknownKeys } from "@vibe/config";
 import type { CatalogService, ProviderRegistry, ModelInfo } from "@vibe/providers";
 import type { SandboxPolicy, Toolset } from "@vibe/tools";
 import type { CommandRegistry, Skill, SkillRegistry } from "@vibe/plugins";
-import type { Session } from "./session.ts";
+import type { Session, ConversationTail } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
 import {
   formatStatus,
@@ -1031,7 +1031,7 @@ async function handleUndo(h: EngineHandle, args: string): Promise<void> {
     finishRestore(h, cp);
     return;
   }
-  const cp = await h.checkpoints.undo(h.session.conversationMark());
+  const cp = await h.checkpoints.undo();
   if (!cp) {
     h.notice("No checkpoint to undo.");
     return;
@@ -1050,15 +1050,22 @@ async function handleRedo(h: EngineHandle): Promise<void> {
     h.notice("Nothing to redo.");
     return;
   }
-  if (cp.conversation) h.session.rewindConversation(cp.conversation);
+  // Re-append the conversation tail stashed at undo time so the model context moves
+  // forward in lockstep with the restored files. A step with no stashed tail (e.g. a
+  // pre-conversation-mark checkpoint) still restores the files and reports success.
+  if (cp.payload) h.session.restoreConversation(cp.payload as ConversationTail);
   h.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
   h.notice(`Redid: ${cp.label}`);
 }
 
 /** Shared tail for /undo: roll the conversation back to match the restored files
- * (so the model no longer believes the undone edits exist), notify, confirm. */
+ * (so the model no longer believes the undone edits exist), stash the discarded
+ * tail on the redo step for a later /redo, notify, confirm. */
 function finishRestore(h: EngineHandle, cp: { id: string; label: string; conversation?: { messages: number; history: number } }): void {
-  if (cp.conversation) h.session.rewindConversation(cp.conversation);
+  if (cp.conversation) {
+    const tail = h.session.rewindConversation(cp.conversation);
+    if (tail) h.checkpoints.stashRedoPayload(tail);
+  }
   h.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
   h.notice(`Reverted to checkpoint: ${cp.label}`);
 }

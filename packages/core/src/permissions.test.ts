@@ -445,3 +445,68 @@ test("a matching deny still wins over the escape hatch (deny is absolute)", asyn
   expect(res.allowed).toBe(false);
   expect(res.allowed === false && res.reason).toBe("denied by policy");
 });
+
+// -------------------------------------------------------------- matchExact rules
+
+test("a matchExact allow matches ONLY the literal command, never a glob-broadened variant", async () => {
+  // Regression: the "always (project)" grant persisted the raw command as a `match`
+  // glob, so approving `rm build/*` compiled `*`→`.*` and auto-allowed
+  // `rm build/../secret.env` in a fresh session. matchExact compares literally.
+  const checker = new PermissionChecker(
+    [{ tool: "bash", matchExact: "rm build/*", action: "allow" }],
+    () => false, // resolver denies — proves the exact rule did NOT match
+    "ask",
+  );
+  // The exact approved command is allowed (no prompt).
+  expect((await checker.check("bash", { command: "rm build/*" })).allowed).toBe(true);
+  // The glob-broadened traversal the old `match` rule would have allowed is NOT
+  // covered by the exact rule → falls through to the default ask → denied.
+  expect((await checker.check("bash", { command: "rm build/../secret.env" })).allowed).toBe(false);
+  expect((await checker.check("bash", { command: "rm buildX" })).allowed).toBe(false);
+});
+
+test("a matchExact rule participates in deny > ask > allow precedence like a scoped rule", async () => {
+  // A matchExact deny is a scoped kill-switch; a matchExact allow beats a name-only
+  // ask (specificity), mirroring an equivalently-scoped `match` rule.
+  const deny = new PermissionChecker(
+    [
+      { tool: "bash", action: "allow" },
+      { tool: "bash", matchExact: "rm -rf /", action: "deny" },
+    ],
+    undefined,
+    "allow",
+  );
+  expect((await deny.check("bash", { command: "rm -rf /" })).allowed).toBe(false);
+  expect((await deny.check("bash", { command: "ls" })).allowed).toBe(true);
+
+  // Scoped allow (matchExact) beats a name-only ask → no prompt for the exact cmd.
+  const allowOverAsk = new PermissionChecker(
+    [
+      { tool: "bash", action: "ask" },
+      { tool: "bash", matchExact: "git status", action: "allow" },
+    ],
+    () => false, // resolver denies — proves ask was NOT consulted for the exact cmd
+  );
+  expect((await allowOverAsk.check("bash", { command: "git status" })).allowed).toBe(true);
+  expect((await allowOverAsk.check("bash", { command: "git push" })).allowed).toBe(false);
+});
+
+test("a matchExact path rule compares each normalized spelling of the target", async () => {
+  // Path scopes are matched by their canonical/relative forms, so a matchExact
+  // path rule (should the grant ever emit one) still catches `./` and absolute
+  // spellings of the SAME file — mirroring the `match` path-scope forms. Uses a
+  // real realpath'd cwd so an allow (which confines to the real target) matches.
+  const proj = realpathSync(mkdtempSync(join(tmpdir(), "vibe-perm-exact-")));
+  mkdirSync(join(proj, "src"));
+  const checker = new PermissionChecker(
+    [{ tool: "edit", matchExact: join(proj, "src/app.ts"), action: "allow" }],
+    () => false,
+    "ask",
+    proj,
+  );
+  for (const path of ["src/app.ts", "./src/app.ts", join(proj, "src/app.ts")]) {
+    expect((await checker.check("edit", { path })).allowed).toBe(true);
+  }
+  // A different file is not covered → default ask → denied.
+  expect((await checker.check("edit", { path: "src/other.ts" })).allowed).toBe(false);
+});

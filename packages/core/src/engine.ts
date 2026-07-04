@@ -1210,11 +1210,22 @@ export class Engine implements EngineClient {
    * without bricking the config; any failure degrades to a warn notice (the
    * in-memory grant already applies, so the session isn't blocked). */
   async #persistProjectGrant(toolName: string, input: unknown): Promise<void> {
-    const scope = canonicalPathScope(toolName, input, this.#cwd) ?? scopeString(toolName, input);
+    // A PATH scope is a canonical absolute path — persisted as `match` (a rule
+    // like `<cwd>/src/*` still needs its `*` to glob normally). A command/URL/
+    // synthetic scope (canonicalPathScope undefined) is persisted as `matchExact`
+    // so it can't glob-broaden across sessions: the in-memory grant is EXACT
+    // string equality, and a `match` would compile a literal `*` in the approved
+    // command into `.*` — approving `rm build/*` would then auto-allow
+    // `rm build/../secret.env`. `matchExact` keeps the persisted rule as tight as
+    // the in-memory grant.
+    const canonicalPath = canonicalPathScope(toolName, input, this.#cwd);
+    const scope = canonicalPath ?? scopeString(toolName, input);
     const rule: PermissionRule =
       scope === undefined
         ? { tool: toolName, action: "allow" }
-        : { tool: toolName, match: scope, action: "allow" };
+        : canonicalPath !== undefined
+          ? { tool: toolName, match: scope, action: "allow" }
+          : { tool: toolName, matchExact: scope, action: "allow" };
     try {
       await appendProjectPermission(this.#cwd, rule);
     } catch (err) {
@@ -1770,6 +1781,12 @@ export class Engine implements EngineClient {
    * by the HookBus (no continue field) → returns false → idle settles.
    */
   async #maybeContinueOnIdle(): Promise<boolean> {
+    // A user-aborted turn (Esc) or a cost-budget STOP must settle idle, never be
+    // resurrected by a `session.idle {continue:true}` hook — mirrors the
+    // !interrupted guards guarding the task-continuation path in #afterTurn.
+    // (session.run resets #interrupted on the injected turn, so this guard must
+    // read it BEFORE that turn is enqueued.)
+    if (this.#session.interrupted) return false;
     const result = await this.hooks.run("session.idle", { sessionId: this.#session.id });
     if (!result.continue) return false;
     if (this.#idleContinueRounds >= MAX_IDLE_CONTINUES) {
@@ -1790,6 +1807,19 @@ export class Engine implements EngineClient {
   }
 
   async #handlePrompt(text: string, opts: { handoff?: boolean } = {}): Promise<void> {
+    // A prompt hook can veto the turn outright — run it FIRST, on the raw incoming
+    // text, BEFORE any handoff rewrite / plan-state mutation and BEFORE the
+    // checkpoint snapshot. A deny must leave EVERYTHING untouched: a denied handoff
+    // keeps the approved plan (#lastPlan + the persisted plan file) intact so a
+    // later /execute still works, and a denied normal prompt seeds NO no-op
+    // checkpoint. The hook rewrites the raw text; the handoff directive below is
+    // then built around the (possibly rewritten) text exactly as before.
+    const hooked = await this.hooks.run("user.prompt.submit", { text });
+    if (hooked.deny) {
+      this.#notice("Prompt blocked by a user.prompt.submit hook.", "warn");
+      return;
+    }
+    text = hooked.text;
     // Plan→execute handoff: prepend an explicit approval directive so the model
     // doesn't read its own present_plan "stop here" as an instruction to halt. This
     // directive is internal — the model needs it, but it must NOT render as a user
@@ -1840,20 +1870,13 @@ export class Engine implements EngineClient {
         this.#bus.emit({ type: "checkpoint-created", id: cp.id, label: cp.label });
       }
     }
-    const hooked = await this.hooks.run("user.prompt.submit", { text });
-    // A prompt hook can veto the turn outright: emit a notice and stop before any
-    // recall/mention/model work runs (the turn is cancelled, not sent empty).
-    if (hooked.deny) {
-      this.#notice("Prompt blocked by a user.prompt.submit hook.", "warn");
-      return;
-    }
     // Proactive recall (default-on, opt-out): once per session, seed a "relevant past context"
     // block from long-term memory using the first prompt + goal, injected into
     // the system prompt. Best-effort — a failure must not block the turn.
-    await this.#maybeProactiveRecall(hooked.text);
+    await this.#maybeProactiveRecall(text);
     // Expand `@file` mentions: text files become context blocks, images become
     // attachments for vision models. Unresolvable mentions pass through.
-    const expanded = await expandMentions(hooked.text, this.#cwd);
+    const expanded = await expandMentions(text, this.#cwd);
     for (const note of expanded.notices) this.#notice(note, "info");
     if (expanded.images.length) {
       const ok = await this.#supportsImages(this.#session.model);

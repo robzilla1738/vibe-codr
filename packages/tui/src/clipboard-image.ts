@@ -18,8 +18,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /** PNG's 8-byte magic signature — the fingerprint every probe's bytes must carry
  * so a tool that printed an error string (not an image) is never mistaken for one. */
@@ -116,6 +117,30 @@ export async function probeClipboardImage(
   return { kind: anyLaunched ? "none" : "unavailable" };
 }
 
+/**
+ * The per-session directory that pasted clipboard PNGs are written into,
+ * namespaced by pid so two concurrent TUIs never collide. Pastes can't be
+ * deleted per-file at paste time — `expandMentions` reads the file at SUBMIT
+ * time, so a paste-time unlink would race the read — so every clip lands here
+ * and the whole dir is removed once on app teardown (see `cleanupClipboardTempDir`).
+ */
+export function clipboardTempDir(): string {
+  return join(tmpdir(), `vibe-clips-${process.pid}`);
+}
+
+/**
+ * Best-effort teardown: remove the per-session clips dir (and everything in it).
+ * NEVER throws — a cleanup failure (dir already gone, permissions) is swallowed
+ * so a doomed unlink can't trap the exit path that calls this.
+ */
+export async function cleanupClipboardTempDir(dir: string = clipboardTempDir()): Promise<void> {
+  try {
+    await rm(dir, { recursive: true, force: true });
+  } catch {
+    // swallow — teardown must not throw
+  }
+}
+
 export interface ReadClipboardImageDeps {
   exec?: ClipboardExec;
   platform?: string;
@@ -150,8 +175,15 @@ export async function readClipboardImage(
   const platform = deps.platform ?? process.platform;
   const probe = await probeClipboardImage(exec, platform);
   if ("kind" in probe) return probe;
-  const path = deps.outPath ?? join(tmpdir(), `vibe-clip-${randomUUID()}.png`);
-  const write = deps.writeFile ?? ((p, b) => Bun.write(p, b).then(() => undefined));
+  const path = deps.outPath ?? join(clipboardTempDir(), `vibe-clip-${randomUUID()}.png`);
+  // Default writer ensures the (per-session) parent dir exists first; an injected
+  // writeFile owns its own placement and skips this.
+  const write =
+    deps.writeFile ??
+    (async (p: string, b: Uint8Array) => {
+      await mkdir(dirname(p), { recursive: true });
+      await Bun.write(p, b);
+    });
   await write(path, probe.bytes);
   return { kind: "image", path };
 }

@@ -49,16 +49,22 @@ interface GitResult {
 interface RedoEntry {
   commit: string;
   label: string;
-  conversation?: { messages: number; history: number };
   reAdd: Checkpoint[];
   ownedRefs: string[];
+  /** An opaque caller payload (e.g. the sliced-off conversation tail) handed back
+   * by `redo` when this step is applied. The manager never inspects it — that keeps
+   * this module free of session types while still round-tripping the model context.
+   * Sits on the step that restores the pre-undo tree so /redo hands it back exactly
+   * when the forward walk reaches that state. */
+  payload?: unknown;
 }
 
 /** What `redo` reports back to the caller (mirrors the fields `/undo` uses). */
 export interface RedoResult {
   id: string;
   label: string;
-  conversation?: { messages: number; history: number };
+  /** Opaque payload the matching undo stashed (see RedoEntry.payload). */
+  payload?: unknown;
 }
 
 /** Keep at most this many checkpoints; older refs are pruned. */
@@ -82,6 +88,9 @@ export class CheckpointManager {
   #list: Checkpoint[] = [];
   /** LIFO of undone steps (see RedoEntry). Session-scoped, never persisted. */
   #redo: RedoEntry[] = [];
+  /** The redo step from the most recent undo/restoreTo that restores the working
+   * tree as it was BEFORE the rewind — where a conversation tail belongs. */
+  #lastRedoPointEntry: RedoEntry | undefined;
   #isGit: boolean | null = null;
   #loaded = false;
   /** Lazy getter for the owning session id (evaluated at snapshot time — the
@@ -332,13 +341,14 @@ export class CheckpointManager {
   }
 
   /** Restore the most recent checkpoint (single-step LIFO). Null when none/not a
-   * repo. `currentConversation` (the mark at undo time) is stored on the redo step
-   * so a later `redo` can move history forward again, byte-for-byte. */
-  async undo(
-    currentConversation?: { messages: number; history: number },
-  ): Promise<Checkpoint | null> {
+   * repo. Captures the pre-undo tree on the redo step so `redo` restores the FILES
+   * byte-for-byte. The conversation is NOT reconstructed by this module: the caller
+   * slices off the discarded tail and hands it to `stashRedoPayload`, which pins it
+   * to this same step so `redo` returns it in lockstep with the files. */
+  async undo(): Promise<Checkpoint | null> {
     if (!(await this.isGitRepo())) return null;
     await this.#ensureLoaded();
+    this.#lastRedoPointEntry = undefined;
 
     // Capture the CURRENT (pre-undo) tree first, so `redo` can restore it exactly
     // — whether or not a green result-marker happens to sit on top.
@@ -371,13 +381,15 @@ export class CheckpointManager {
     // Landed on `cp` (removed from #list). Keep its ref alive on the redo step so a
     // later redo/undo can reach it again; the redo step restores the pre-undo tree.
     if (preUndo) {
-      this.#redo.push({
+      const entry: RedoEntry = {
         commit: preUndo.commit,
         label: cp.label,
-        conversation: currentConversation ?? cp.conversation,
         reAdd: [cp],
         ownedRefs: [preUndo.id, cp.id],
-      });
+      };
+      this.#redo.push(entry);
+      // This lone step restores the pre-undo tree → it carries any conversation tail.
+      this.#lastRedoPointEntry = entry;
     } else {
       // No pre-undo capture possible → no redo target; drop the restored ref as the
       // old single-step behavior did.
@@ -396,28 +408,86 @@ export class CheckpointManager {
   async restoreTo(id: string): Promise<Checkpoint | null> {
     if (!(await this.isGitRepo())) return null;
     await this.#ensureLoaded();
+    this.#lastRedoPointEntry = undefined;
     const idx = this.#list.findIndex((c) => c.id === id);
     if (idx < 0) return null;
     const target = this.#list[idx]!;
-    // Dead-commit guard: refuse without mutating anything if the target is gone.
-    if (!(await this.#tryRestore(target.commit))) return null;
 
-    // Move everything strictly newer than the target onto the redo stack. Pushing
-    // the newest first leaves the closest-to-target on top → redo re-applies it
-    // first, stepping the tree forward toward the newest state.
+    // Capture the CURRENT working tree BEFORE mutating it — the newest edits may sit
+    // ABOVE the newest checkpoint and would otherwise be unrecoverable once the tree
+    // is rewound (the bug the phantom step below fixes). #commitTree stages into a
+    // throwaway index, so this leaves the working tree and the user's index untouched.
+    const preTree = await this.#commitTree("redo point");
+
+    // Dead-commit guard: refuse (and release the capture) without mutating anything
+    // if the target snapshot is gone.
+    if (!(await this.#tryRestore(target.commit))) {
+      if (preTree) await this.#deleteRef(preTree.id);
+      return null;
+    }
+
+    // Everything strictly newer than the target becomes a forward (redo) step.
     const newer = this.#list.splice(idx + 1);
+
+    // A phantom step for the pre-rewind working tree, so the forward walk terminates
+    // at the ORIGINAL tree rather than one state short. Skip it when that tree is
+    // identical to the newest checkpoint (redoing that checkpoint already lands
+    // there — and adding it would double the last step, as when the tree is clean).
+    // Pushed FIRST → bottom of the batch → restored LAST by the forward walk, so it
+    // also carries the conversation tail for the whole multi-step rewind.
+    if (preTree) {
+      const above = newer.at(-1) ?? target;
+      if (!(await this.#sameTree(preTree.commit, above.commit))) {
+        const phantom: RedoEntry = {
+          commit: preTree.commit,
+          label: newer.at(-1)?.label ?? target.label,
+          reAdd: [],
+          ownedRefs: [preTree.id],
+        };
+        this.#redo.push(phantom);
+        this.#lastRedoPointEntry = phantom;
+      } else {
+        await this.#deleteRef(preTree.id);
+      }
+    }
+
+    // Own-tree steps for each stacked checkpoint, newest-first so the
+    // closest-to-target ends up on top → redo re-applies it first, stepping the tree
+    // forward one checkpoint at a time (each redo of "vN" restores vN's own tree).
     for (let i = newer.length - 1; i >= 0; i--) {
       const c = newer[i]!;
-      this.#redo.push({
+      const entry: RedoEntry = {
         commit: c.commit,
         label: c.label,
-        conversation: c.conversation,
         reAdd: [c],
         ownedRefs: [c.id],
-      });
+      };
+      this.#redo.push(entry);
+      // With no phantom, the pre-rewind tree == the newest checkpoint; its step
+      // (restored last of these) carries the conversation tail instead.
+      if (i === newer.length - 1 && !this.#lastRedoPointEntry) this.#lastRedoPointEntry = entry;
     }
     await this.#save();
     return target;
+  }
+
+  /** Whether two commits capture the identical tree (same content), ignoring commit
+   * metadata — lets `restoreTo` skip a phantom redo step that would just re-restore
+   * the newest checkpoint's tree. */
+  async #sameTree(a: string, b: string): Promise<boolean> {
+    const [ta, tb] = await Promise.all([
+      this.#git(["rev-parse", `${a}^{tree}`]),
+      this.#git(["rev-parse", `${b}^{tree}`]),
+    ]);
+    return ta.ok && tb.ok && ta.stdout === tb.stdout;
+  }
+
+  /** Pin an opaque caller payload (e.g. the sliced-off conversation tail) to the
+   * redo step that restores the pre-rewind working tree, so `redo` hands it back
+   * when — and only when — the forward walk reaches that state. No-op when the last
+   * undo/restoreTo produced no redo target (e.g. nothing was restorable). */
+  stashRedoPayload(payload: unknown): void {
+    if (this.#lastRedoPointEntry) this.#lastRedoPointEntry.payload = payload;
   }
 
   /** Re-apply the most recently undone step: restore the tree state that existed
@@ -439,7 +509,7 @@ export class CheckpointManager {
         return {
           id: entry.reAdd[0]?.id ?? entry.commit,
           label: entry.label,
-          ...(entry.conversation ? { conversation: entry.conversation } : {}),
+          ...(entry.payload !== undefined ? { payload: entry.payload } : {}),
         };
       }
       // Dead redo target — release its refs and try the next-most-recent step.

@@ -482,6 +482,47 @@ check(
   sent.some((c) => c.type === "resolve-permission" && c.decision === "once"),
 );
 
+// 8a) REGRESSION (no-stray-p-grant): the bare `p` shortcut is gone — typing a deny
+// message that STARTS with `p` ("please deny …") must land in the draft and NOT
+// answer the card. Pre-fix, that first `p` fired an always-project ALLOW (durable
+// project rule), inverting the user's deny. Only the Ctrl+P chord grants project.
+// Type a char at a time (settling between) so the draft signal tracks each key —
+// exactly how a human types, and how the bare-letter shortcuts see a non-empty
+// draft after the first key.
+const typeSlowly = async (s: string) => {
+  for (const ch of s) {
+    await t.mockInput.typeText(ch);
+    await settle();
+  }
+};
+sent.length = 0;
+push({
+  type: "permission-request",
+  id: "perm2",
+  toolName: "bash",
+  input: { command: "rm -rf /" },
+} as UIEvent);
+await settle();
+await typeSlowly("please deny this");
+check(
+  "typing a deny message starting with p does NOT answer the card",
+  !sent.some((c) => c.type === "resolve-permission"),
+);
+check("the typed deny message lands in the input draft", t.captureCharFrame().includes("please deny this"));
+t.mockInput.pressEscape(); // clear the draft (does not answer — draft was non-empty)
+await settle();
+check(
+  "Esc on a typed deny clears the draft without answering the card",
+  !sent.some((c) => c.type === "resolve-permission") && !t.captureCharFrame().includes("please deny this"),
+);
+// Now the Ctrl+P chord grants always-for-this-project (mirrors the ^Y precedent).
+t.mockInput.pressKey("p", { ctrl: true });
+await settle();
+check(
+  "Ctrl+P answers the permission as always-project",
+  sent.some((c) => c.type === "resolve-permission" && c.decision === "always-project"),
+);
+
 // 8b) A presented plan renders an interactive approval card; typing revises it.
 sent.length = 0;
 push({
@@ -793,6 +834,28 @@ check(
 t.mockInput.pressEscape();
 await settle();
 check("Esc clears the long draft", !t.captureCharFrame().includes("casual fan"));
+
+// 20) REGRESSION (narrow-perm-card-no-clip): at 80 cols the permission card's
+// option row used to overflow (nowrap + flexShrink=0), hard-clipping the tail —
+// the whole "type why → deny with feedback" affordance vanished. It now flow-wraps
+// so every answer + the deny-with-feedback hint stay visible at a narrow width.
+t.resize(80, 40);
+await settle();
+sent.length = 0;
+push({
+  type: "permission-request",
+  id: "perm3",
+  toolName: "bash",
+  input: { command: "rm -rf node_modules" },
+} as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("narrow permission card still renders its answers", frame.includes("allow once"));
+check("narrow permission card shows the Ctrl+P project chord", frame.includes("^P"));
+check(
+  "narrow permission card keeps the deny-with-feedback hint (wrapped, not clipped)",
+  frame.includes("deny with feedback"),
+);
 
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);

@@ -10,6 +10,23 @@ async function git(cwd: string, args: string[]): Promise<void> {
   await proc.exited;
 }
 
+/** git invocation that returns trimmed stdout (for asserting on ref state). */
+async function gitOut(cwd: string, args: string[]): Promise<string> {
+  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "ignore" });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  return out.trim();
+}
+
+/** The ids of the live hidden checkpoint refs (`refs/vibecodr/<id>`). */
+async function vibeRefIds(dir: string): Promise<string[]> {
+  const out = await gitOut(dir, ["for-each-ref", "--format=%(refname)", "refs/vibecodr/"]);
+  return out
+    .split("\n")
+    .map((r) => r.trim().replace("refs/vibecodr/", ""))
+    .filter(Boolean);
+}
+
 async function initRepo(): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), "vibe-cp-"));
   await git(dir, ["init", "-q"]);
@@ -381,6 +398,51 @@ test("redo after one undo restores the pre-undo tree byte-for-byte", async () =>
   expect(await Bun.file(join(dir, "extra.bin")).text()).toBe("\u0000byte\u00ff\n");
 });
 
+test("undo stashes an opaque payload that redo hands back when it restores the pre-undo state", async () => {
+  // FIX 1: /undo captures the sliced-off conversation tail and pins it to the redo
+  // step; /redo must return it so the caller can move the model context forward in
+  // lockstep with the files. The manager treats the payload as opaque.
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  await cp.snapshot("edit"); // pre-edit safety snapshot
+  await Bun.write(join(dir, "a.txt"), "edited\n");
+  await cp.snapshot("green: edit", undefined, { green: true });
+
+  const undone = await cp.undo();
+  expect(undone?.label).toBe("edit");
+  const tail = { marker: "conversation-tail" };
+  cp.stashRedoPayload(tail);
+
+  const re = await cp.redo();
+  expect(re?.payload).toBe(tail); // returned byte-for-byte, same reference
+});
+
+test("restoreTo pins the conversation payload to the topmost step so only the FULL forward walk restores it", async () => {
+  // FIX 1+2 coordination: the multi-step rewind stashes the tail on the phantom
+  // (pre-rewind) step, so intermediate redos leave it alone and only the final step
+  // — landing back on the original working tree — hands it back.
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  const c1 = await cp.snapshot("v1");
+  await Bun.write(join(dir, "a.txt"), "v2\n");
+  await cp.snapshot("v2");
+  await Bun.write(join(dir, "a.txt"), "S\n"); // uncommitted edits above the newest cp
+
+  await cp.restoreTo(c1!.id);
+  const tail = { marker: "multi-step-tail" };
+  cp.stashRedoPayload(tail);
+
+  const step1 = await cp.redo(); // → v2 (mid-walk, no payload yet)
+  expect(step1?.label).toBe("v2");
+  expect(step1?.payload).toBeUndefined();
+
+  const step2 = await cp.redo(); // → S (the pre-rewind tree) — payload handed back
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("S\n");
+  expect(step2?.payload).toBe(tail);
+  expect(cp.redoDepth()).toBe(0);
+});
+
 test("a new edit-checkpoint clears the redo stack", async () => {
   const dir = await initRepo();
   const cp = new CheckpointManager(dir);
@@ -415,6 +477,62 @@ test("restoreTo holds the dead-commit guard: a gone snapshot is a no-op, not a w
   expect(await Bun.file(join(dir, "precious.txt")).exists()).toBe(true); // untracked file survives
   // `git gc --prune=now` can exceed the 5s default under full-suite load.
 }, 30_000);
+
+test("restoreTo + redo-to-exhaustion lands byte-for-byte on the pre-rewind working tree (newest edits above the top checkpoint are recoverable)", async () => {
+  // Regression: restoreTo did not capture the CURRENT working tree, so after a
+  // multi-step rewind, redoing forward topped out one state short — the newest
+  // edits (which sit ABOVE the newest checkpoint) were unrecoverable.
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  const c1 = await cp.snapshot("v1");
+  await Bun.write(join(dir, "a.txt"), "v2\n");
+  await cp.snapshot("v2");
+  await Bun.write(join(dir, "a.txt"), "v3\n");
+  await cp.snapshot("v3");
+  // Edits made AFTER the newest checkpoint — the working tree (S3) sits above v3.
+  await Bun.write(join(dir, "a.txt"), "S3\n");
+  await Bun.write(join(dir, "fresh.txt"), "newest\n");
+
+  const target = await cp.restoreTo(c1!.id);
+  expect(target?.label).toBe("v1");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
+  expect(await Bun.file(join(dir, "fresh.txt")).exists()).toBe(false);
+  // v2, v3, and the phantom step back to S3 → three forward steps, not two.
+  expect(cp.redoDepth()).toBe(3);
+
+  while (cp.redoDepth() > 0) await cp.redo();
+
+  // Byte-for-byte back at S3: the newest uncommitted edits are NOT lost.
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("S3\n");
+  expect(await Bun.file(join(dir, "fresh.txt")).text()).toBe("newest\n");
+});
+
+test("restoreTo releases its owned refs when a new snapshot clears the redo stack (no ref leak)", async () => {
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  const c1 = await cp.snapshot("v1");
+  await Bun.write(join(dir, "a.txt"), "v2\n");
+  const c2 = await cp.snapshot("v2");
+  await Bun.write(join(dir, "a.txt"), "S\n"); // uncommitted edits above v2
+
+  await cp.restoreTo(c1!.id);
+  expect(cp.redoDepth()).toBe(2); // v2 + the phantom capture of S
+
+  // A fresh edit-checkpoint invalidates the redo line; every ref it owned — the
+  // stacked v2 checkpoint AND the throwaway phantom capture — must be deleted.
+  await Bun.write(join(dir, "a.txt"), "brand new\n");
+  const c3 = await cp.snapshot("v3");
+  expect(cp.redoDepth()).toBe(0);
+  expect(await cp.redo()).toBeNull();
+
+  // Only the live checkpoints remain (v1, v3); v2 and the phantom ref are gone.
+  const refs = await vibeRefIds(dir);
+  expect(refs.sort()).toEqual([c1!.id, c3!.id].sort());
+  expect(refs).not.toContain(c2!.id);
+});
 
 test("a resumed manager's /undo is scoped to ITS session, not others in the shared file", async () => {
   // The cwd-keyed checkpoints.json accumulates every session's entries. A fresh

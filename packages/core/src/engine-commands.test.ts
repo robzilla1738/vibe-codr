@@ -242,6 +242,29 @@ test("/undo with an out-of-range index reports honestly instead of restoring", a
   expect(notices(events).at(-1)!.level).toBe("warn");
 });
 
+test("/redo with no stashed conversation tail still restores the files forward and reports success", async () => {
+  // FIX 1 back-compat: a checkpoint with no recorded conversation mark leaves the
+  // redo step without a payload; /redo must still move the working tree forward and
+  // confirm, not silently do nothing.
+  const dir = await gitRepo();
+  const seed = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await seed.snapshot("v0"); // no conversation mark recorded
+  await Bun.write(join(dir, "a.txt"), "v1\n"); // later, uncommitted edits
+
+  const engine = new Engine({ config: defaultConfig(), cwd: dir });
+  const events = collect(engine);
+
+  engine.send({ type: "run-slash", name: "undo", args: "" });
+  await engine.whenIdle();
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v0\n");
+
+  engine.send({ type: "run-slash", name: "redo", args: "" });
+  await engine.whenIdle();
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n"); // files moved forward
+  expect(notices(events).some((n) => n.message === "Redid: v0")).toBe(true);
+});
+
 test("/redo with an empty stack reports honestly", async () => {
   const dir = await gitRepo();
   const engine = new Engine({ config: defaultConfig(), cwd: dir });

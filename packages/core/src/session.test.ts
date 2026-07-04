@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
-import type { UIEvent, ToolDefinition } from "@vibe/shared";
+import type { UIEvent, ToolDefinition, Message } from "@vibe/shared";
+import type { ModelMessage } from "ai";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
@@ -977,4 +978,57 @@ test("a persisted session stamps the SessionMeta schema version", async () => {
   await session.run("go");
   const persisted = await store.load("ses_ver");
   expect(persisted!.meta.version).toBe(SESSION_META_VERSION);
+});
+
+test("rewindConversation returns the sliced-off tail and restoreConversation re-appends it (round-trip)", () => {
+  // FIX 1 primitive: /undo truncates the model context to a mark and must hand back
+  // the discarded tail so /redo can move it forward again in lockstep with files.
+  const msg = (id: string, role: "user" | "assistant", text: string): Message => ({
+    id,
+    role,
+    parts: [{ type: "text", text }],
+    createdAt: 0,
+  });
+  const modelMessages: ModelMessage[] = [
+    { role: "user", content: "one" },
+    { role: "assistant", content: "1" },
+    { role: "user", content: "two" },
+    { role: "assistant", content: "2" },
+  ];
+  const history: Message[] = [
+    msg("h1", "user", "one"),
+    msg("h2", "assistant", "1"),
+    msg("h3", "user", "two"),
+    msg("h4", "assistant", "2"),
+  ];
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(new MockLanguageModelV2({ doStream: async () => stream([]) as never })),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    initialModelMessages: modelMessages,
+    initialHistory: history,
+  });
+
+  expect(session.messageCount).toBe(4);
+  expect(session.snapshot().history.length).toBe(4);
+
+  // Rewind to the /undo mark (before the last exchange) — captures the tail.
+  const tail = session.rewindConversation({ messages: 2, history: 2 });
+  expect(tail).toBeDefined();
+  expect(tail!.modelMessages.length).toBe(2);
+  expect(tail!.history.length).toBe(2);
+  expect(session.messageCount).toBe(2);
+  expect(session.snapshot().history.length).toBe(2);
+
+  // /redo re-appends the tail → the conversation is byte-for-byte whole again.
+  session.restoreConversation(tail!);
+  expect(session.messageCount).toBe(4);
+  expect(session.snapshot().history.map((m) => m.id)).toEqual(["h1", "h2", "h3", "h4"]);
+
+  // A mark already at/after the current length discards nothing → no tail.
+  expect(session.rewindConversation({ messages: 4, history: 4 })).toBeUndefined();
 });

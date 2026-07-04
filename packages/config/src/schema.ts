@@ -44,6 +44,14 @@ export const ProviderConfigSchema = z.object({
 export const PermissionRuleSchema = z.object({
   tool: z.string(),
   match: z.string().optional(),
+  /** Exact string match, no glob semantics: the scope must equal this value
+   * literally (a `*` is a literal asterisk, not a wildcard). Written by the
+   * interactive "always (project)" grant so approving `rm build/*` persists a
+   * rule that allows exactly `rm build/*` — never a glob-broadened
+   * `rm build/../secret.env`. Compared against the SAME scope forms `match`
+   * uses (command/URL raw; path each normalized spelling) with the SAME
+   * deny>ask>allow precedence as an equivalently-scoped `match` rule. */
+  matchExact: z.string().optional(),
   action: z.enum(["allow", "deny", "ask"]),
 });
 

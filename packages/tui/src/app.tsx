@@ -85,7 +85,7 @@ import {
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH, windowTasks } from "./headless.ts";
 import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
-import { readClipboardImage } from "./clipboard-image.ts";
+import { cleanupClipboardTempDir, readClipboardImage } from "./clipboard-image.ts";
 import { composeInEditor, type EditorSpawn } from "./editor-compose.ts";
 import { brandSpans, rainbow } from "./gradient.ts";
 import { lineToCommand, parsePermissionDecision } from "./slash.ts";
@@ -1167,6 +1167,9 @@ export function App(props: { engine: EngineClient }) {
     void (async () => {
       try {
         await props.engine.finalize?.();
+        // Remove this session's pasted-clipboard PNGs — they can't be unlinked at
+        // paste time (expandMentions reads them at submit). Best-effort + swallowed.
+        await cleanupClipboardTempDir();
       } finally {
         process.exit(0);
       }
@@ -1302,20 +1305,23 @@ export function App(props: { engine: EngineClient }) {
       return;
     }
     const m = menuModel();
+    // Ctrl+P: grant AND remember for this project (durable config rule). Ctrl-chorded
+    // — mirroring the ^Y plan-accept precedent — so the first keystroke of a typed
+    // deny message ("please deny…", "prefer…") can never fire a persistent ALLOW.
+    if (key.ctrl && key.name === "p" && perms().length > 0 && !m.open) {
+      key.preventDefault?.();
+      answerPerm("always-project");
+      return;
+    }
     // Permission shortcuts: while a request is pending and you're not mid-typing,
-    // y/a/n answers it directly and Esc rejects it.
+    // y/a/n answers it directly and Esc rejects it. `p` (always-project) is a
+    // Ctrl+P chord above, NOT a bare letter, because it writes a durable rule.
     if (perms().length > 0 && !m.open && !draft().trim()) {
-      // y once · a always (session) · p always (remember for this project) · n deny.
-      if (key.name === "y" || key.name === "a" || key.name === "p" || key.name === "n") {
+      // y once · a always (session) · n deny.
+      if (key.name === "y" || key.name === "a" || key.name === "n") {
         key.preventDefault?.();
         answerPerm(
-          key.name === "y"
-            ? "once"
-            : key.name === "a"
-              ? "always"
-              : key.name === "p"
-                ? "always-project"
-                : "deny",
+          key.name === "y" ? "once" : key.name === "a" ? "always" : "deny",
         );
         return;
       }
@@ -2594,7 +2600,14 @@ export function App(props: { engine: EngineClient }) {
                     </For>
                   </box>
                 </Show>
-                <box flexDirection="row" flexShrink={0} marginTop={1}>
+                {/* The answer hints flow-WRAP: this concatenated row (y once · a
+                    session · ^P project · n/esc deny · type → deny with feedback)
+                    is ~110 cols and clipped its tail (the deny-with-feedback
+                    affordance) at 80. flexWrap lets it stack onto extra rows at any
+                    width instead of hard-clipping — the footer's own overflow policy,
+                    applied here. ^P (Ctrl-chorded) grants always-for-this-project so
+                    the first keystroke of a typed deny can't fire a durable ALLOW. */}
+                <box flexDirection="row" flexWrap="wrap" flexShrink={0} marginTop={1}>
                   <For
                     each={[
                       { t: "y", fg: palette().assistant },
@@ -2603,7 +2616,7 @@ export function App(props: { engine: EngineClient }) {
                       { t: "a", fg: palette().assistant },
                       { t: " always (session)", fg: palette().muted },
                       { t: "  ·  ", fg: palette().muted },
-                      { t: "p", fg: palette().assistant },
+                      { t: "^P", fg: palette().assistant },
                       { t: " always (project)", fg: palette().muted },
                       { t: "  ·  ", fg: palette().muted },
                       { t: "n", fg: palette().assistant },

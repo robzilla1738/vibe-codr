@@ -10,6 +10,7 @@
 export class Trail {
   #lines: string[] = [];
   #open = "";
+  #lastWasActivity = false;
   readonly #max: number;
 
   constructor(maxLines = 512) {
@@ -30,6 +31,7 @@ export class Trail {
 
   /** Append raw reasoning bytes — splits ONLY this chunk. */
   append(chunk: string): void {
+    if (chunk) this.#lastWasActivity = false;
     const segs = chunk.split("\n");
     this.#open += segs[0] ?? "";
     for (let i = 1; i < segs.length; i++) {
@@ -41,8 +43,13 @@ export class Trail {
 
   /** Record a whole line of its own (a tool-activity label). */
   pushLine(line: string): void {
-    this.#closeOpen();
+    // Between consecutive activity lines there is no streamed blank to honor —
+    // an empty `open` there must not become a paragraph spacer (it double-spaced
+    // the whole trail for non-reasoning models, which emit only activity lines).
+    if (this.#lastWasActivity && !this.#open.trim()) this.#open = "";
+    else this.#closeOpen();
     this.#lines.push(line);
+    this.#lastWasActivity = true;
     this.#cap();
   }
 
@@ -57,6 +64,7 @@ export class Trail {
   reset(): void {
     this.#lines = [];
     this.#open = "";
+    this.#lastWasActivity = false;
   }
 }
 

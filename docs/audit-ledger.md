@@ -2004,3 +2004,83 @@ Smoke harness kept at `.../scratchpad/fresh-install-smoke.sh` (session scratch).
 **GOAL COMPLETE.** Every completion condition holds: every subsystem PASS; two consecutive clean
 adversarial passes; typecheck+lint+full suite green; every fix regression-tested; fresh-install smoke
 succeeds.
+
+---
+
+## POST-CONVERGENCE PASS — 2026-07-03 (delta since 57d9a1b + fresh planning/modes/skills/context sweep)
+
+Five parallel adversarial reviewers over (a) the unaudited post-convergence delta (core/providers/
+config/onboarding + the TUI sidebar/skills-menu/freeze-fix change) and (b) fresh end-to-end passes over
+planning, modes & approvals, and skills + context gathering. Core delta verified CLEAN (block-scalar
+parser probed on 7 edge cases; yield-gate cadence; reasoning-extract middleware; registry configured-
+models filter; onboarding custom-endpoint flow). Freeze fix (ab9ff6e) verified complete: no dropped-
+event path, trail append linear (200k appends / 27ms), windowing boundaries exact, all new signal
+writes carry fresh references. 8 confirmed findings, ALL FIXED + regression-tested:
+
+- **[HIGH] Project `.vibe/config.json` silently stripped ALL user-global permission rules** —
+  `deepMerge` replaces arrays, so a repo-local file declaring any `permissions` array discarded every
+  global rule INCLUDING deny kill-switches (a cloned repo could ship `.vibe/config.json` and erase the
+  user's `deny git push`). Reproduced against the real `loadConfig`+`PermissionChecker`. Fixed:
+  `permissions` UNIONS across layers (global → project → CLI, exact-dup deduped) — safe because deny is
+  absolute within the merged array. Regression: *"a project permissions array UNIONS with global rules"*.
+- **[MED] `/skills` menu offered skills it couldn't invoke** — the menu prefilled bare `/<name>`, which
+  built-ins/custom commands shadow, so a skill named `review`/`init`/`verify`/`loop` ran the WRONG
+  action from its own menu. Fixed: new explicit `/skill <name> [task]` built-in resolving directly
+  against the skills registry (longest-name-prefix match, so space-containing names are reachable too);
+  menu prefills it; shared `runSkillAsPrompt` keeps `/skill` and bare-`/<name>` behavior identical.
+  Regression: *"/skill invokes a skill even when a built-in shadows its bare name"*.
+- **[MED] Plan grounding gate accepted fabricated citations** — the only citation check was URL shape,
+  never "was this actually gathered", so one unrelated `web_search` + a made-up URL presented as fully
+  grounded (the gate's own threat model: a hallucinating model). Fixed: `evaluate` takes an
+  `isHarvested` verifier wired to the session's `SourceLedger` (canonical-URL match, so equivalent
+  spellings don't false-bounce); a cited URL only grounds a plan if the research surfaced it.
+  Regressions: fabricated-refused / harvested-passes / spelling-tolerant.
+- **[LOW-MED] Skill frontmatter `description` was uncapped in the always-on system prompt** — a folded
+  multi-line description permanently inflated every request (the body cap existed; the prompt-side
+  didn't). Fixed: per-skill 500-char cap in `descriptions()` with honest ellipsis. Regression added.
+- **[LOW] Plugin skills/commands silently overrode same-named project-local ones** — plugins loaded
+  after `.vibe/`, inverting most-local-wins. Fixed: load order is now global → plugins → project.
+  Regression: *"project-local skills and commands override plugin-registered ones"*.
+- **[LOW] Block scalars with indentation indicators (`>2`, `|1`, `>2-`, `>-2`) unrecognized** — stored
+  the literal marker as the description and dropped the block (residual "garbage description" class).
+  Fixed: scalar header regex accepts chomping+indentation indicators in either order. Regression added.
+- **[LOW] Mid-turn plan→execute flip un-coerced children spawned later in the same plan turn** —
+  `#forkChild`/`#classifyAgent`/`continue_subagent` read the LIVE mode, not the frozen `turnMode`, so a
+  precisely-timed user flip forked a WRITABLE child inside a plan turn whose green gate was skipped.
+  Fixed: `#parentPlanning()` = turnMode-OR-live-mode (protective in both flip directions); `turnMode`
+  added to `SessionHandle`. Regression verified to FAIL on the old logic: *"a mid-turn mode flip cannot
+  un-coerce a child spawned later in the same plan turn"*.
+- **[LOW] Sidebar trail double-spaced consecutive activity lines** (the non-reasoning-model case its
+  live-trail feature targets) — `pushLine`'s `#closeOpen` turned "no pending open text" into a paragraph
+  spacer. Fixed: spacers only follow streamed reasoning, never another activity line; reasoning→activity
+  paragraph breaks preserved. Regressions added (single-spaced activity; paragraph break survives).
+
+Also: the two `git gc --prune=now` checkpoint tests got explicit 30s timeouts (timed out at the 5s
+default under full-suite load — a gate flake, passed in isolation and on re-run).
+
+Recorded, not fixed (observational): OpenTUI scrollbox listener accumulation warning in the sidebar
+smoke (likely pre-existing in OpenTUI, not app code; not a confirmed regression).
+
+### Verification round (adversarial re-review of the fixes) — 1 defect found in a fix, FIXED
+An independent verifier attacked all 9 fixes empirically (full core 730 + tui 184 suites green; every
+new test confirmed NON-vacuous — each fails against its pre-fix logic):
+- **[MED, in fix 8] The `/skill <name>` prefill re-opened the skills menu** — the picker regex
+  `/^\/skills?…/` (optional `s`) also matched the singular invocation the menu itself prefills, so
+  choosing a skill re-opened the picker and Enter re-prefilled forever (the command could never be
+  submitted; a no-task invocation was fully trapped). Fixed: the picker is PLURAL-only, extracted to
+  the pure `skillsPickerFilter` (commands-catalog.ts) + regression test covering the prefill spelling.
+- All 8 other fixes verified CLEAN. Hardened two verifier observations while at it: `skill` added to
+  `RESERVED_SLASH` (a custom command must not shadow the deliberately-unshadowable spelling), and the
+  description cap now slices by code point (no stranded surrogate half; regression added).
+
+**DECISION (recorded):** with layered `permissions` now a union, a project/CLI layer can no longer
+*relax* a user-global protective rule (e.g. downgrade a global `ask npm*` to `allow`) — the in-tier
+ask-beats-allow semantics apply to the merged array. This is the intended trust model: lower-trust
+layers may only ADD rules; relaxation belongs in the user's own global config.
+**Recorded (edge, not fixed):** SourceLedger caps at 200 entries; in a >200-source session a citation
+of an evicted-but-genuinely-harvested URL could false-bounce until the bounded ungrounded fallback.
+
+**Close:** gate green after every fix — typecheck 8/8, lint clean (283 files), 15/15 turbo tasks
+(core 730 tests, tui 185), sidebar smoke ALL PASS. Two review rounds: 8 findings → fixes → verifier
+found 1 defect in the fixes → fixed + re-verified green. Total this pass: **10 confirmed defects
+fixed, all regression-tested.**

@@ -36,6 +36,24 @@ test("activity lines interleave chronologically and close a streaming line", () 
   expect(t.snapshot()).toEqual(["thinking about the fetch", '◈ search "World Cup"', "got results"]);
 });
 
+test("consecutive activity lines are single-spaced (non-reasoning model)", () => {
+  const t = new Trail();
+  t.pushLine("→ read a.ts");
+  t.pushLine("→ edit a.ts");
+  t.pushLine("$ bun test");
+  expect(t.snapshot()).toEqual(["→ read a.ts", "→ edit a.ts", "$ bun test"]);
+});
+
+test("a reasoning paragraph still gets its break before the next activity line", () => {
+  const t = new Trail();
+  t.append("thought about it\n");
+  t.pushLine("→ read a.ts");
+  t.pushLine("→ edit a.ts");
+  t.append("more thinking\n");
+  // The streamed newline's paragraph break survives; activity lines stay tight.
+  expect(t.snapshot()).toEqual(["thought about it", "", "→ read a.ts", "→ edit a.ts", "more thinking"]);
+});
+
 test("the trail is capped at maxLines, keeping the tail", () => {
   const t = new Trail(8);
   for (let i = 0; i < 50; i++) t.append(`line ${i}\n`);

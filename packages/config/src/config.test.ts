@@ -302,6 +302,49 @@ test("loadConfig tolerates JSONC trailing commas (idiomatic for VS Code users)",
   expect((await loadConfig({ cwd })).model).toBe("a,b/c,d");
 });
 
+test("a project permissions array UNIONS with global rules — a repo file can't strip a global deny", async () => {
+  // Regression: deepMerge replaces arrays, so a repo-local .vibe/config.json
+  // declaring ANY `permissions` array used to discard every user-global rule —
+  // including deny kill-switches — for that project. Layers must union.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-xdg-perm-"));
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-perm-"));
+  const prevXdg = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = dir;
+  try {
+    await mkdir(join(dir, "vibe-codr"), { recursive: true });
+    await writeFile(
+      join(dir, "vibe-codr", "config.json"),
+      JSON.stringify({
+        permissions: [
+          { tool: "bash", match: "rm -rf*", action: "deny" },
+          { tool: "git_push", action: "deny" },
+        ],
+      }),
+    );
+    await mkdir(join(cwd, ".vibe"), { recursive: true });
+    await writeFile(
+      join(cwd, ".vibe", "config.json"),
+      JSON.stringify({
+        permissions: [
+          { tool: "bash", match: "npm*", action: "allow" },
+          { tool: "git_push", action: "deny" }, // exact duplicate of a global rule
+        ],
+      }),
+    );
+    const cfg = await loadConfig({ cwd, overrides: { permissions: [{ tool: "webfetch", action: "ask" }] } });
+    // Global denies survive, in global-first order; project + CLI rules append.
+    expect(cfg.permissions).toEqual([
+      { tool: "bash", match: "rm -rf*", action: "deny" },
+      { tool: "git_push", action: "deny" },
+      { tool: "bash", match: "npm*", action: "allow" },
+      { tool: "webfetch", action: "ask" },
+    ]);
+  } finally {
+    if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdg;
+  }
+});
+
 test("configUnknownKeys reports misspelled top-level keys per file", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-cfg-unk-"));
   await mkdir(join(cwd, ".vibe"), { recursive: true });

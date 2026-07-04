@@ -57,11 +57,24 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "tools", description: "List tools in the current mode" },
   { name: "agents", description: "Named subagents — set a model or create one", arg: "[new <name>]" },
   { name: "skills", description: "Browse skills — searchable menu", arg: "[filter]" },
+  { name: "skill", description: "Run a skill by name (never shadowed by built-ins)", arg: "<name> [task]" },
   { name: "commands", description: "List custom slash commands" },
   { name: "mcp", description: "Show connected MCP servers" },
   { name: "doctor", description: "Run an environment health check" },
   { name: "exit", description: "Exit vibe-codr (alias /quit)" },
 ];
+
+/**
+ * `/skills [filter]` picker query — the PLURAL only. The singular
+ * `/skill <name>` is the invocation the menu itself prefills; if the picker
+ * matched it too, choosing a skill would re-open the menu and Enter would
+ * re-prefill forever instead of submitting. Returns the filter text ("" for a
+ * bare `/skills`), or null when the draft isn't the skills picker.
+ */
+export function skillsPickerFilter(draft: string): string | null {
+  const m = /^\/skills(?:\s+(.*))?$/is.exec(draft);
+  return m ? (m[1] ?? "").trim() : null;
+}
 
 /**
  * True when the draft is a slash line whose command word exactly matches a known

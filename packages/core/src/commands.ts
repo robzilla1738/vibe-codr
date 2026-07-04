@@ -77,6 +77,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "tools", description: "List tools available in the current mode" },
       { name: "agents", description: "List named subagents" },
       { name: "skills", description: "List available skills" },
+      { name: "skill", description: "Run a skill by name (/skill <name> [task])" },
       { name: "commands", description: "List custom slash commands" },
       { name: "mcp", description: "Show connected MCP servers" },
       { name: "doctor", description: "Run an environment health check" },

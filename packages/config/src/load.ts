@@ -270,13 +270,40 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   const cwd = opts.cwd ?? process.cwd();
   let merged: Record<string, unknown> = {};
 
+  // `permissions` is the one array that must UNION across layers, not replace:
+  // deepMerge's replace semantics would let a repo-local `.vibe/config.json`
+  // (which travels with a cloned, possibly untrusted repo) silently discard the
+  // user's global deny kill-switches just by declaring its own `permissions`.
+  // Concatenation is safe — deny is absolute within the merged array regardless
+  // of position — and still lets a project ADD its own allows/asks/denies.
+  const permissionLayers: unknown[] = [];
+  const collectPermissions = (layer: Record<string, unknown>): void => {
+    if (Array.isArray(layer.permissions)) permissionLayers.push(...layer.permissions);
+  };
+
   for (const path of configLocations(cwd)) {
     const fileConfig = await readConfigFile(path);
-    if (fileConfig) merged = deepMerge(merged, fileConfig);
+    if (fileConfig) {
+      collectPermissions(fileConfig);
+      merged = deepMerge(merged, fileConfig);
+    }
   }
 
   if (opts.overrides) {
+    collectPermissions(opts.overrides as Record<string, unknown>);
     merged = deepMerge(merged, opts.overrides as Record<string, unknown>);
+  }
+
+  if (permissionLayers.length > 0) {
+    // Dedup exact-duplicate rules (same JSON shape) so layered files that both
+    // declare a common rule don't accumulate copies; order stays global-first.
+    const seen = new Set<string>();
+    merged.permissions = permissionLayers.filter((rule) => {
+      const key = JSON.stringify(rule);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   const result = ConfigSchema.safeParse(merged);

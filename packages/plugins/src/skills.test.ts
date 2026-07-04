@@ -76,3 +76,46 @@ test("indented continuation lines never become bogus keys", () => {
   expect(frontmatter.name).toBe("ok");
   expect(Object.keys(frontmatter).sort()).toEqual(["description", "name"]);
 });
+
+test("block scalars with indentation indicators (`>2`, `|2-`, `>-2`) parse, never leak the marker", () => {
+  // YAML allows chomping and indentation indicators in either order; the old
+  // regex only knew bare `>`/`|`/`>-`/`|+`, so `>2` stored the literal ">2" as
+  // the description and silently dropped the block — the same "garbage
+  // description" class the block-scalar support was added to fix.
+  for (const marker of [">2", ">2-", ">-2", "|1"]) {
+    const { frontmatter } = parseSkillMarkdown(
+      `---\nname: ind\ndescription: ${marker}\n  hello world\nlicense: MIT\n---\nBody.\n`,
+    );
+    expect([marker, frontmatter.description]).toEqual([marker, "hello world"]);
+    expect(frontmatter.license).toBe("MIT"); // following key still parsed
+  }
+  // A non-scalar value that merely starts with `>` is NOT treated as a block.
+  const { frontmatter } = parseSkillMarkdown("---\ndescription: > junk\n---\n");
+  expect(frontmatter.description).toBe("> junk");
+});
+
+test("descriptions() caps each prompt-resident line — a folded essay can't tax every turn", () => {
+  const reg = new SkillRegistry();
+  reg.register({
+    name: "wordy",
+    description: "x".repeat(5000),
+    dir: "/tmp/wordy",
+    load: async () => "",
+  });
+  const [line] = reg.descriptions();
+  expect(line!.length).toBe(500);
+  expect(line!.endsWith("…")).toBe(true);
+  expect(line!.startsWith("- wordy: xxx")).toBe(true);
+  // A normal description is untouched.
+  reg.register({ name: "tidy", description: "Short.", dir: "/tmp/tidy", load: async () => "" });
+  expect(reg.descriptions()[1]).toBe("- tidy: Short.");
+  // The cut is code-point safe: an emoji straddling the cap boundary is dropped
+  // whole, never stranded as a lone surrogate half.
+  reg.register({ name: "emoji", description: "🎉".repeat(300), dir: "/tmp/emoji", load: async () => "" });
+  const capped = reg.descriptions()[2]!;
+  expect(capped.endsWith("…")).toBe(true);
+  for (let i = 0; i < capped.length; i++) {
+    const c = capped.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) expect(capped.charCodeAt(i + 1)).toBeGreaterThanOrEqual(0xdc00);
+  }
+});

@@ -3,6 +3,7 @@ import {
   paletteState,
   applyPalette,
   isExactCommand,
+  skillsPickerFilter,
   PALETTE_COMMANDS,
 } from "./commands-catalog.ts";
 import { ACCENT_NAMES, THEME_NAMES } from "./themes.ts";
@@ -106,4 +107,16 @@ test("palette matching is tiered fuzzy: prefix, then name-substring, then descri
   expect(names.slice(0, prefixNames.length)).toEqual(prefixNames);
   // Nothing matches anywhere → closed, not an empty shell.
   expect(paletteState("/zzzznope").open).toBe(false);
+});
+
+test("skills picker matches ONLY the plural — the /skill prefill must not re-open the menu", () => {
+  // Regression: `/skills?` (optional s) also matched the singular `/skill <name>`
+  // the menu prefills on Enter, so choosing a skill re-opened the picker and
+  // Enter re-prefilled forever — the invocation could never be submitted.
+  expect(skillsPickerFilter("/skills")).toBe("");
+  expect(skillsPickerFilter("/skills rev")).toBe("rev");
+  expect(skillsPickerFilter("/skill review ")).toBeNull(); // the prefilled invocation
+  expect(skillsPickerFilter("/skill")).toBeNull();
+  expect(skillsPickerFilter("/skillz")).toBeNull();
+  expect(skillsPickerFilter("hello /skills")).toBeNull();
 });

@@ -151,7 +151,8 @@ test("undo with a missing snapshot commit refuses to delete untracked files", as
   // user's untracked file (the old code wiped ALL untracked on a false-empty tree).
   expect(restored).toBeNull();
   expect(await Bun.file(join(dir, "precious.txt")).exists()).toBe(true);
-});
+  // `git gc --prune=now` can exceed the 5s default under full-suite load.
+}, 30_000);
 
 test("undo advances past a dead checkpoint to the next valid one", async () => {
   const dir = await initRepo();
@@ -174,7 +175,8 @@ test("undo advances past a dead checkpoint to the next valid one", async () => {
   const restored = await cp.undo();
   expect(restored?.label).toBe("older-valid");
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
-});
+  // `git gc --prune=now` can exceed the 5s default under full-suite load.
+}, 30_000);
 
 test("diffFrom does not surface the engine's .vibe/ worktree state once excluded", async () => {
   // A nested worktree under .vibe/ would otherwise be staged by diffFrom's

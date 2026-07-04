@@ -64,7 +64,7 @@ import type {
 } from "@vibe/shared";
 import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
-import { applyPalette, paletteState } from "./commands-catalog.ts";
+import { applyPalette, paletteState, skillsPickerFilter } from "./commands-catalog.ts";
 import { displayWidth, renderTable, splitMarkdown, tableFits, type MdBlock } from "./markdown-blocks.ts";
 import {
   barGlyphs,
@@ -428,11 +428,9 @@ export function App(props: { engine: EngineClient }) {
     if (/^new(\s|$)/i.test(rest)) return null;
     return rest;
   };
-  // `/skills [filter]` → the searchable skills menu (Enter prefills `/<name> `).
-  const skillsPickerQuery = (): string | null => {
-    const m = /^\/skills?(?:\s+(.*))?$/is.exec(draft());
-    return m ? (m[1] ?? "").trim() : null;
-  };
+  // `/skills [filter]` → the searchable skills menu (Enter prefills
+  // `/skill <name> `). See skillsPickerFilter for why it is plural-only.
+  const skillsPickerQuery = (): string | null => skillsPickerFilter(draft());
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -742,7 +740,7 @@ export function App(props: { engine: EngineClient }) {
     const skillsQuery = skillsPickerQuery();
     if (skillsQuery !== null) {
       const title = "skills";
-      const hint = "Enter → prefill /<name>  ·  the model can also load them itself";
+      const hint = "Enter → prefill /skill <name>  ·  the model can also load them itself";
       const all = skillsList();
       if (all === null)
         return { open: true, loading: true, kind: "skills" as const, title, hint, rows: [] as MenuRow[] };
@@ -754,8 +752,10 @@ export function App(props: { engine: EngineClient }) {
           // Frontmatter descriptions can span lines — the menu row shows ONE
           // clean line (the renderer ellipsizes at the column edge).
           desc: s.description.replace(/\s+/g, " ").trim(),
-          // Prefill `/<name> ` (skills take freeform args); Enter then runs it.
-          choose: () => setDraft(`/${s.name} `),
+          // Prefill the explicit `/skill <name> ` spelling: the bare `/<name>`
+          // is shadowed by any same-named built-in or custom command (a skill
+          // called `review` or `init` would silently run the wrong thing).
+          choose: () => setDraft(`/skill ${s.name} `),
         }));
       return { open: rows.length > 0, loading: false, kind: "skills" as const, title, hint, rows };
     }

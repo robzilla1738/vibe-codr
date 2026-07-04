@@ -330,6 +330,9 @@ export class Session {
       get mode() {
         return self.mode;
       },
+      get turnMode() {
+        return self.turnMode;
+      },
       get goal() {
         return self.goal;
       },
@@ -932,7 +935,12 @@ export class Session {
         ...(this.#turnGate
           ? (() => {
               const gate = this.#turnGate;
-              return { planGate: (plan: { sources?: { url: string }[] }) => gate.evaluate(plan) };
+              // Citations are verified against the session's harvested source
+              // ledger: a URL the research never surfaced can't ground a plan.
+              return {
+                planGate: (plan: { sources?: { url: string }[] }) =>
+                  gate.evaluate(plan, { isHarvested: (url) => this.#sources.has(url) }),
+              };
             })()
           : {}),
         ...(hooks

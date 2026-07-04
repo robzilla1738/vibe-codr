@@ -316,3 +316,44 @@ test("resuming mid-plan does not strand execution on the planModel", async () =>
   await engine.whenIdle();
   expect(engine.snapshot().model).toBe("prov/A"); // execution restored from config
 });
+
+test("project-local skills and commands override plugin-registered ones (most-local-wins)", async () => {
+  // Regression: plugins used to load AFTER the project dirs, so a plugin's
+  // same-named skill/command silently beat `.vibe/skills/<name>` — the inverse
+  // of the documented most-local-wins precedence.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-prec-"));
+  mkdirSync(join(cwd, ".vibe", "skills", "foo"), { recursive: true });
+  writeFileSync(
+    join(cwd, ".vibe", "skills", "foo", "SKILL.md"),
+    "---\nname: foo\ndescription: project foo\n---\nProject body.",
+  );
+  mkdirSync(join(cwd, ".vibe", "commands"), { recursive: true });
+  writeFileSync(join(cwd, ".vibe", "commands", "bar.md"), "project bar: $ARGS");
+
+  const pluginDir = mkdtempSync(join(tmpdir(), "vibe-engine-prec-plugin-"));
+  mkdirSync(join(pluginDir, "skills", "foo"), { recursive: true });
+  writeFileSync(
+    join(pluginDir, "skills", "foo", "SKILL.md"),
+    "---\nname: foo\ndescription: plugin foo\n---\nPlugin body.",
+  );
+  const pluginPath = join(pluginDir, "plugin.ts");
+  writeFileSync(
+    pluginPath,
+    `export function register(api) {
+       api.addSkillDir(${JSON.stringify(join(pluginDir, "skills"))});
+       api.registerCommand({
+         name: "bar",
+         description: "plugin bar",
+         source: "plugin",
+         run: () => ({ kind: "notice", message: "plugin bar" }),
+       });
+     }`,
+  );
+
+  const engine = new Engine({ config: { ...defaultConfig(), plugins: [pluginPath] }, cwd });
+  await engine.bootstrap();
+  expect(engine.skills.get("foo")?.description).toBe("project foo");
+  // The project FILE command wins over the plugin's registration.
+  expect(engine.commands.get("bar")?.source).toBe("file");
+  expect(engine.commands.get("bar")?.run("x").kind).toBe("prompt");
+});

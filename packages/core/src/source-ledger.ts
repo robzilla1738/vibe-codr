@@ -149,6 +149,12 @@ export class SourceLedger {
     return this.#order;
   }
 
+  /** True when `url` (any equivalent spelling) was actually gathered this
+   * session — the plan gate uses this to refuse fabricated citations. */
+  has(url: string): boolean {
+    return this.#byCanon.has(canonicalizeUrl(url));
+  }
+
   /**
    * Restore a persisted ledger (on `--resume`) so the `[n]` citations already in
    * the resumed transcript still resolve, and new sources continue the numbering

@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { PlanGate, triagePlanRequest } from "./plan-gate.ts";
+import { SourceLedger } from "./source-ledger.ts";
 
 test("triage: time-sensitive / current-events requests need web research", () => {
   expect(triagePlanRequest("build a site about today's world cup match").needsWeb).toBe(true);
@@ -55,6 +56,49 @@ test("gate: research telemetry + sources satisfy the requirements", () => {
   const grounded = gate.evaluate({ sources: [{ url: "https://fifa.com/match" }] });
   expect(grounded.allow).toBe(true);
   expect(grounded.ungrounded).toBeUndefined();
+});
+
+test("gate: a fabricated citation is refused when the ledger can verify — only harvested URLs ground a plan", () => {
+  const gate = new PlanGate();
+  gate.noteRequest("build a site about today's world cup match"); // web-bound
+  gate.recordToolUse("web_search"); // one real (but unrelated) search happened
+  const harvested = new Set(["https://fifa.com/match"]);
+  const isHarvested = (url: string) => harvested.has(url);
+
+  // A well-shaped URL the research never surfaced must NOT present as grounded.
+  const fabricated = gate.evaluate(
+    { sources: [{ url: "https://fabricated-i-never-visited.example/x" }] },
+    { isHarvested },
+  );
+  expect(fabricated.allow).toBe(false);
+  expect(fabricated.reason).toContain("never surfaced");
+
+  // A genuinely-harvested citation passes; fabricated extras alongside don't block it.
+  const grounded = gate.evaluate(
+    {
+      sources: [
+        { url: "https://fabricated-i-never-visited.example/x" },
+        { url: "https://fifa.com/match" },
+      ],
+    },
+    { isHarvested },
+  );
+  expect(grounded.allow).toBe(true);
+  expect(grounded.ungrounded).toBeUndefined();
+});
+
+test("gate: ledger verification tolerates equivalent URL spellings (SourceLedger.has)", () => {
+  const ledger = new SourceLedger();
+  ledger.record({ url: "https://www.fifa.com/match/?utm_source=x", via: "web_search" });
+  const gate = new PlanGate();
+  gate.noteRequest("plan a page about today's match");
+  gate.recordToolUse("web_search");
+  // The model cites a different but equivalent spelling of the harvested page.
+  const verdict = gate.evaluate(
+    { sources: [{ url: "https://fifa.com/match" }] },
+    { isHarvested: (url) => ledger.has(url) },
+  );
+  expect(verdict.allow).toBe(true);
 });
 
 test("gate: self-contained requests pass immediately — no research theater", () => {

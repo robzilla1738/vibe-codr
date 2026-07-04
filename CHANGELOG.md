@@ -2,7 +2,64 @@
 
 All notable changes to vibe-codr are documented here.
 
-## Unreleased
+## v0.2.0 — 2026-07-03
+
+### Security — a repo can no longer strip your global permission rules
+
+- **`permissions` now UNIONS across config layers** (global → project → CLI)
+  instead of the project array replacing the global one. Previously a repo-local
+  `.vibe/config.json` — which travels with a cloned, possibly untrusted repo —
+  that declared *any* `permissions` array silently discarded every user-global
+  rule, **including deny kill-switches** (`deny git push`, `deny rm -rf*`).
+  Layers can now only ADD rules; deny stays absolute wherever it sits in the
+  merged array, and a lower-trust layer can't relax a global `ask` to `allow`.
+
+### Added — `/skill <name> [task]` + the skills menu prefills it
+
+- **`/skill <name> [task]`** runs a skill by name and can never be shadowed by a
+  built-in or custom command (it's in the reserved set). Previously a skill named
+  `review`, `init`, `verify`, or `loop` was uninvocable as `/<name>` — the
+  built-in of the same name silently ran instead — and the `/skills` menu
+  prefilled exactly that broken spelling. The menu now prefills
+  `/skill <name> `; longest-name-prefix matching also makes skills with spaces
+  in their names reachable.
+- The `/skills` picker matches only the plural, so choosing a skill closes the
+  menu and Enter submits (it used to re-open the picker and trap Enter in a
+  prefill loop).
+
+### Fixed — grounded planning verifies its citations
+
+- **`present_plan` citations are now checked against the session's source
+  ledger**: a URL the research never actually surfaced (a hallucinated link)
+  no longer satisfies the grounding gate — only genuinely-fetched/searched
+  sources ground a plan. Equivalent spellings (www/trailing-slash/utm/fragment)
+  still match via canonical-URL comparison.
+- A mid-turn plan→execute switch can no longer un-coerce a subagent spawned
+  later in the same plan turn: child read-only coercion now follows the mode
+  the turn *started* in (or the live mode — whichever is plan), so a precisely
+  timed flip can't fork a writable child inside a plan turn.
+
+### Fixed — skills & plugins polish
+
+- Project-local skills/commands override plugin-registered ones again (plugins
+  used to load last and silently win); precedence is global → plugins → project.
+- YAML block scalars with indentation indicators (`>2`, `|1`, `>2-`, `>-2`)
+  parse correctly instead of leaking the literal marker as the description.
+- Each skill's prompt-resident summary line is capped (500 chars, code-point
+  safe) so a folded multi-line description can't permanently tax every request;
+  the on-demand body cap is unchanged.
+- The sidebar activity trail no longer double-spaces consecutive tool lines for
+  non-reasoning models; reasoning paragraph breaks are preserved.
+
+### Changed — skills menu, white-first opencode palette, sidebar subagents
+
+- `/skills [filter]` opens a searchable skills menu (name + description match);
+  Enter prefills the runnable `/skill <name> ` invocation.
+- The default theme's chrome is white-first (#eeeeee) on opencode graphite, with
+  violet reserved for the selection band and headings.
+- The right sidebar hosts live subagent activity alongside Tasks and Thinking.
+
+## v0.1.1 — 2026-07-03
 
 ### Fixed — the mid-session freeze (structural)
 
@@ -55,6 +112,10 @@ silently killed all live updates while the keyboard stayed alive.
   row, and its bottom edge lands exactly on the input block's bottom edge
   (it used to run two rows past, level with the status footer). Covered by a
   new wide-terminal render smoke: `bun run smoke:sidebar`.
+
+## v0.1.0 — 2026-07-03
+
+First public release.
 
 ### Changed — sidebar spans the full column height
 

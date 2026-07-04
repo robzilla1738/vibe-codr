@@ -5,7 +5,7 @@ import type { Config, ModelPrice } from "@vibe/config";
 import { configUnknownKeys } from "@vibe/config";
 import type { CatalogService, ProviderRegistry, ModelInfo } from "@vibe/providers";
 import type { SandboxPolicy, Toolset } from "@vibe/tools";
-import type { CommandRegistry, SkillRegistry } from "@vibe/plugins";
+import type { CommandRegistry, Skill, SkillRegistry } from "@vibe/plugins";
 import type { Session } from "./session.ts";
 import { helpText, formatModelList, initProject } from "./commands.ts";
 import {
@@ -213,6 +213,20 @@ export async function handleModelCommand(h: EngineHandle, args: string): Promise
   await setMainModel(h, raw);
 }
 
+/** Run a skill as a user prompt — the user-initiated analogue of `use_skill`. */
+async function runSkillAsPrompt(h: EngineHandle, skill: Skill, task: string): Promise<void> {
+  const raw = await skill.load();
+  // Cap the injected body (same discipline as the use_skill tool) so a huge
+  // SKILL.md can't blow up the prompt; the model reads the file for the rest.
+  const body =
+    raw.length > MAX_SKILL_BODY
+      ? `${raw.slice(0, MAX_SKILL_BODY)}\n\n…(skill body truncated at ${MAX_SKILL_BODY} chars — read ${skill.dir}/SKILL.md for the rest)`
+      : raw;
+  const suffix = task ? `\n\nTask: ${task}` : "";
+  h.resetTurnBudgets();
+  await h.handlePrompt(`Use the "${skill.name}" skill.${suffix}\n\n# Skill: ${skill.name}\n\n${body}`);
+}
+
 /** Handle a built-in or plugin/file slash command. */
 export async function handleSlash(h: EngineHandle, name: string, args: string): Promise<void> {
   // Plugin/file commands take precedence over built-ins of the same name —
@@ -319,12 +333,35 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "skills":
       h.notice(
         formatNamedList(
-          "Skills (call /<name> or the model uses use_skill):",
+          "Skills (call /<name> or /skill <name>, or the model uses use_skill):",
           h.skills.list().map((s) => ({ name: s.name, description: s.description })),
           "No skills. Add .vibe/skills/<name>/SKILL.md to define one.",
         ),
       );
       break;
+    case "skill": {
+      // Explicit skill invocation: `/skill <name> [task]`. Unlike the bare
+      // `/<name>` spelling (which built-ins and custom commands shadow — a
+      // skill named `review` or `init` is unreachable that way), this always
+      // resolves against the skills registry. It's also the only spelling that
+      // can reach a skill whose name contains a space: match the longest
+      // registered name that prefixes the args, and treat the rest as the task.
+      const wanted = args.trim();
+      if (!wanted) {
+        h.notice("Usage: /skill <name> [task] — see /skills for the list.", "warn");
+        break;
+      }
+      const match = h.skills
+        .list()
+        .filter((s) => wanted === s.name || wanted.startsWith(`${s.name} `))
+        .sort((a, b) => b.name.length - a.name.length)[0];
+      if (!match) {
+        h.notice(`No skill named "${wanted.split(/\s+/)[0]}". See /skills for the list.`, "warn");
+        break;
+      }
+      await runSkillAsPrompt(h, match, wanted.slice(match.name.length).trim());
+      break;
+    }
     case "commands":
       h.notice(
         formatNamedList(
@@ -450,18 +487,7 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       // precedence, so a skill can't shadow them.
       const skill = h.skills.get(name);
       if (skill) {
-        const raw = await skill.load();
-        // Cap the injected body (same discipline as the use_skill tool) so a huge
-        // SKILL.md can't blow up the prompt; the model reads the file for the rest.
-        const body =
-          raw.length > MAX_SKILL_BODY
-            ? `${raw.slice(0, MAX_SKILL_BODY)}\n\n…(skill body truncated at ${MAX_SKILL_BODY} chars — read ${skill.dir}/SKILL.md for the rest)`
-            : raw;
-        const task = args.trim() ? `\n\nTask: ${args.trim()}` : "";
-        h.resetTurnBudgets();
-        await h.handlePrompt(
-          `Use the "${skill.name}" skill.${task}\n\n# Skill: ${skill.name}\n\n${body}`,
-        );
+        await runSkillAsPrompt(h, skill, args.trim());
         break;
       }
       h.notice(`Unknown command: /${name}`, "warn");
@@ -922,5 +948,8 @@ const KNOWN_THEMES = new Set(THEME_NAMES);
 
 /** Safety-critical built-in slash commands a custom command must not shadow.
  * Only names with a real built-in handler belong here — listing a phantom (there
- * is no `/redo`) would block a user's own `/redo` while offering no replacement. */
-const RESERVED_SLASH = new Set(["undo", "clear", "new", "compact", "exit", "quit"]);
+ * is no `/redo`) would block a user's own `/redo` while offering no replacement.
+ * `skill` is reserved because it exists precisely to be the UNshadowable way to
+ * reach a skill whose bare name collides with a built-in or custom command —
+ * a custom `/skill` would take that escape hatch away. */
+const RESERVED_SLASH = new Set(["undo", "clear", "new", "compact", "exit", "quit", "skill"]);

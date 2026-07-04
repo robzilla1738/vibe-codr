@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
@@ -603,4 +603,75 @@ test("Engine: a fresh top-level prompt clears the blackboard (turn-1 note gone i
   // Turn 2 started a fresh coordination context — the turn-1 note is gone.
   expect(reads[1]).toContain("No shared notes yet.");
   expect(reads[1]).not.toContain("taking auth.ts");
+});
+
+// Regression: the /skills menu used to prefill the bare `/<name>`, which
+// built-ins and custom commands shadow — a skill named `review`/`init`/`verify`
+// was uninvokable from its own menu (it ran the built-in instead). The explicit
+// `/skill <name> [task]` spelling must always resolve the SKILL, and must reach
+// a skill whose name contains a space (longest-name-prefix match).
+test("/skill invokes a skill even when a built-in shadows its bare name", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-skill-"));
+  mkdirSync(join(cwd, ".vibe", "skills", "review"), { recursive: true });
+  writeFileSync(
+    join(cwd, ".vibe", "skills", "review", "SKILL.md"),
+    "---\nname: review\ndescription: Team review checklist\n---\nFollow the team review checklist.",
+  );
+  mkdirSync(join(cwd, ".vibe", "skills", "release notes"), { recursive: true });
+  writeFileSync(
+    join(cwd, ".vibe", "skills", "release notes", "SKILL.md"),
+    "---\nname: release notes\ndescription: Draft release notes\n---\nDraft the release notes.",
+  );
+
+  const prompts: string[] = [];
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never;
+    },
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test" },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const sub = engine.events();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  // The builtin-shadowed name reaches the SKILL via /skill, task text included.
+  engine.send({ type: "run-slash", name: "skill", args: "review the auth diff" });
+  await engine.whenIdle();
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContain("Follow the team review checklist.");
+  expect(prompts[0]).toContain("Task: the auth diff");
+
+  // A space-containing skill name resolves by longest-name-prefix match.
+  engine.send({ type: "run-slash", name: "skill", args: "release notes for v2" });
+  await engine.whenIdle();
+  expect(prompts).toHaveLength(2);
+  expect(prompts[1]).toContain("Draft the release notes.");
+  expect(prompts[1]).toContain("Task: for v2");
+
+  // Unknown skill: an honest warn, no model turn.
+  engine.send({ type: "run-slash", name: "skill", args: "nonexistent thing" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+  expect(prompts).toHaveLength(2);
+  expect(
+    events.some(
+      (e) => e.type === "notice" && e.level === "warn" && e.message.includes('No skill named "nonexistent"'),
+    ),
+  ).toBe(true);
 });

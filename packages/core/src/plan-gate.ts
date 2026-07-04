@@ -195,12 +195,21 @@ export class PlanGate {
    * Gate a `present_plan` call. Missing evidence → reject with instructions
    * (bounded by {@link MAX_REJECTIONS}, then allow with `ungrounded: true`).
    */
-  evaluate(plan: { sources?: { url: string }[] }): PlanGateVerdict {
+  evaluate(
+    plan: { sources?: { url: string }[] },
+    opts: { isHarvested?: (url: string) => boolean } = {},
+  ): PlanGateVerdict {
     const missing: string[] = [];
     const t = this.#telemetry;
     // Only real http(s) URLs count as cited evidence — a junk string like
     // `{url:"appease"}` or a `data:` URL must not satisfy the sources requirement.
-    const validSources = (plan.sources ?? []).filter((s) => /^https?:\/\/\S+\.\S+/i.test(s?.url ?? ""));
+    const shapedSources = (plan.sources ?? []).filter((s) => /^https?:\/\/\S+\.\S+/i.test(s?.url ?? ""));
+    // And a well-shaped URL only counts if it was ACTUALLY gathered this session
+    // (the caller verifies against the source ledger) — otherwise one unrelated
+    // web_search plus a fabricated link would present as fully grounded.
+    const validSources = opts.isHarvested
+      ? shapedSources.filter((s) => opts.isHarvested!(s.url))
+      : shapedSources;
     if (this.#triage.needsWeb) {
       if (t.webSearches === 0) {
         missing.push(
@@ -208,7 +217,9 @@ export class PlanGate {
         );
       } else if (!validSources.length) {
         missing.push(
-          "pass the real web page URLs your plan's facts rest on in present_plan's `sources` array (http(s) links) — a researched plan must show its evidence",
+          shapedSources.length
+            ? "the URLs in `sources` were never surfaced by this session's research — cite the actual URLs from your web_search/webfetch results, not links recalled from memory"
+            : "pass the real web page URLs your plan's facts rest on in present_plan's `sources` array (http(s) links) — a researched plan must show its evidence",
         );
       }
     }

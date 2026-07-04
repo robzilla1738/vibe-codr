@@ -78,6 +78,10 @@ export interface SessionHandle {
   readonly id: string;
   readonly model: string;
   readonly mode: Mode;
+  /** Mode frozen at the current turn's start — the authority for the plan-turn
+   * read-only contract (a mid-turn user mode flip must not un-coerce children
+   * spawned later in the same plan turn). */
+  readonly turnMode: Mode;
   readonly goal: string | null;
   readonly depth: number;
   readonly deps: SessionDeps;
@@ -328,7 +332,7 @@ export class OrchestratorRunner {
         }
         // Re-gate mode like #forkChild: coerce the child to plan while the parent
         // is planning (read-only), never the other way.
-        if (this.#handle.mode === "plan" && child.mode !== "plan") child.setMode("plan");
+        if (this.#parentPlanning() && child.mode !== "plan") child.setMode("plan");
         // The child's isolated bus was closed when its last run settled; give it a
         // fresh one and re-tap so live activity surfaces during the continuation.
         const childBus = new EventBusImpl();
@@ -548,10 +552,18 @@ export class OrchestratorRunner {
     if (!agent) return { ok: true, named: undefined };
     const named = this.#handle.deps.agents?.get(agent);
     if (!named) return { ok: false, reason: "unknown" };
-    if (this.#handle.mode === "plan" && named.mode !== "plan") {
+    if (this.#parentPlanning() && named.mode !== "plan") {
       return { ok: false, reason: "execute-in-plan" };
     }
     return { ok: true, named };
+  }
+
+  /** The parent is planning if EITHER the in-flight turn started in plan mode
+   * (turnMode — a mid-turn flip to execute must not un-coerce children spawned
+   * later in the same plan turn, whose gate still runs as a plan turn) or the
+   * live mode is plan (a mid-turn flip INTO plan means stop writing now). */
+  #parentPlanning(): boolean {
+    return this.#handle.turnMode === "plan" || this.#handle.mode === "plan";
   }
 
   /** Validate a task's named agent against the current mode (mirrors spawn_subagent). */
@@ -1346,8 +1358,9 @@ export class OrchestratorRunner {
     if (counter && counter.used >= this.#handle.deps.config.subagent.maxTotal) return null;
     if (counter) counter.used++;
 
-    const childMode: Mode =
-      this.#handle.mode === "plan" ? "plan" : (requestedMode ?? named?.mode ?? "execute");
+    const childMode: Mode = this.#parentPlanning()
+      ? "plan"
+      : (requestedMode ?? named?.mode ?? "execute");
     // Kickoff context injected into every child: the named agent's own system
     // block, plus the repo symbol map (engine-built, mtime-cached) so a fresh
     // child orients on the codebase's structure without re-deriving it — the

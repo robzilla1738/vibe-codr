@@ -333,7 +333,10 @@ Highlights:
 - **Code & safety** — `/diff`, `/review`, `/verify`, `/undo`, `/checkpoints`.
 - **Extensions & config** — `/config` (effective settings, secrets masked),
   `/memory` (loaded project/global notes), `/permissions`, `/tools`, `/agents`,
-  `/skills`, `/commands`, `/mcp`, `/doctor` (environment health check).
+  `/skills` (searchable menu), `/skill <name> [task]` (run a skill by name —
+  never shadowed by a built-in or custom command, and the only spelling that
+  reaches a skill whose name contains a space), `/commands`, `/mcp`,
+  `/doctor` (environment health check).
 
 Custom commands live in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`,
 named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
@@ -441,7 +444,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   the engine **rejects an ungrounded `present_plan`** (with concrete "run
   web_search / read these files" instructions, up to twice, then presents it
   stamped *⚠ ungrounded*) — so even a weak local model is bounced back into
-  research instead of shipping a 20-second hallucinated plan.
+  research instead of shipping a 20-second hallucinated plan. Cited sources are
+  **verified against the session's source ledger**: a URL the research never
+  actually surfaced (a hallucinated citation) cannot ground a plan.
   When the model calls `present_plan` you get an **interactive approval card** —
   **Enter** accepts & executes (seeding an **id-addressed task list** from the
   plan's checklist), **Ctrl+Y** accepts and runs in **yolo** (unattended), **typing**
@@ -610,8 +615,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   `/memory` shows exactly what's loaded. Drop-in compatible with repos already
   carrying Codex's `AGENTS.md` or Claude Code's `CLAUDE.md`.
 - **Hooks, skills & commands (project + global)** — skills and slash-commands
-  load from both the project's `.vibe/{skills,commands}` and user-global
-  `~/.config/vibe-codr/{skills,commands}` (project overrides global). Declarative
+  load from the project's `.vibe/{skills,commands}`, user-global
+  `~/.config/vibe-codr/{skills,commands}`, and plugins, most-local-wins:
+  a project file overrides both a plugin's and a global one. Declarative
   `hooks` in config run a shell command or POST a URL on lifecycle events and can
   **deny a tool** or **rewrite its input** (a `{deny,reason}` / `{input}` JSON
   protocol), layered onto the in-process plugin hook bus.
@@ -669,8 +675,11 @@ error rather than blocking startup.
 ### Config
 
 Config is JSONC, deep-merged low→high: defaults → `~/.config/vibe-codr/config.json`
-→ `.vibe/config.json` → env → CLI flags. Beyond `model`, `mode`, `maxSteps`,
-`permissions`, and `plugins`:
+→ `.vibe/config.json` → env → CLI flags. The one exception is `permissions`:
+rules **union across layers** instead of replacing, so a repo-local
+`.vibe/config.json` (which travels with a cloned repo) can add its own rules but
+can never strip or relax your global deny/ask kill-switches. Beyond `model`,
+`mode`, `maxSteps`, `permissions`, and `plugins`:
 
 ```jsonc
 {

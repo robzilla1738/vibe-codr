@@ -12,6 +12,9 @@ export interface Skill {
   load(): Promise<string>;
 }
 
+/** Char cap for one skill's prompt-resident summary line (see descriptions()). */
+const MAX_PROMPT_LINE = 500;
+
 export class SkillRegistry {
   #skills = new Map<string, Skill>();
 
@@ -31,11 +34,18 @@ export class SkillRegistry {
    * `whenToUse` trigger guidance (if the author provided it) is included so the
    * model knows when to reach for the skill. */
   descriptions(): string[] {
-    return this.list().map((s) =>
-      s.whenToUse
+    return this.list().map((s) => {
+      const line = s.whenToUse
         ? `- ${s.name}: ${s.description} (use when: ${s.whenToUse})`
-        : `- ${s.name}: ${s.description}`,
-    );
+        : `- ${s.name}: ${s.description}`;
+      // These lines ride the always-on system-prompt prefix EVERY turn, so each
+      // is capped (the body has its own use_skill cap): a folded multi-line
+      // description must not permanently inflate every request. Sliced by code
+      // point so the cut can't strand half a surrogate pair.
+      return line.length > MAX_PROMPT_LINE
+        ? `${[...line].slice(0, MAX_PROMPT_LINE - 1).join("")}…`
+        : line;
+    });
   }
 }
 
@@ -62,11 +72,12 @@ export function parseSkillMarkdown(rawInput: string): {
     const key = line.slice(0, idx).trim();
     if (!key) continue;
     const inline = line.slice(idx + 1).trim();
-    // YAML block scalar (`|` literal / `>` folded, with optional +/- chomping):
+    // YAML block scalar (`|` literal / `>` folded, with optional chomping and
+    // indentation indicators in either order — `>-`, `|2`, `>2-`, `>-2`):
     // real-world skills routinely write `description: >-` with the text on the
     // following indented lines. The old parser stored the literal ">-"/"|"
     // marker as the value — the "garbage description" bug in /skills listings.
-    const scalar = /^([|>])[+-]?$/.exec(inline);
+    const scalar = /^([|>])(?:[1-9][+-]?|[+-][1-9]?)?$/.exec(inline);
     if (scalar) {
       const block: string[] = [];
       while (i + 1 < lines.length && (/^\s/.test(lines[i + 1] ?? "") || (lines[i + 1] ?? "") === "")) {

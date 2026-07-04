@@ -1211,3 +1211,81 @@ test("headless coerces detach to synchronous with a one-time notice", async () =
   // No detached child was tracked.
   expect(session.childRegistry?.runningDetachedCount() ?? 0).toBe(0);
 });
+
+test("a mid-turn mode flip cannot un-coerce a child spawned later in the same plan turn", async () => {
+  // Regression: #forkChild read the LIVE mode, so a user flipping plan→execute
+  // while a plan turn was in flight made a later spawn in that SAME turn fork a
+  // writable child — whose mutations also bypassed the plan turn's skipped gate.
+  const writeTool = {
+    name: "fake_write",
+    description: "write",
+    inputSchema: z.object({}),
+    readOnly: false,
+    concurrencySafe: true,
+    execute: async () => ({ output: "ok" }),
+  } as unknown as ToolDefinition;
+  let flip: (() => void) | undefined;
+  const flipTool = {
+    name: "flip_mode",
+    description: "test stub: simulates the user switching to execute mid-turn",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => {
+      flip?.();
+      return { output: "flipped" };
+    },
+  } as unknown as ToolDefinition;
+
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "f1", toolName: "flip_mode", input: "{}" },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "scout" }) },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "c" },
+      { type: "text-delta", id: "c", delta: "scouted" },
+      { type: "text-end", id: "c" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "p" },
+      { type: "text-delta", id: "p", delta: "done" },
+      { type: "text-end", id: "p" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  const toolNames: string[][] = [];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const tools = (options as { tools?: { name: string }[] }).tools ?? [];
+      toolNames.push(tools.map((t) => t.name));
+      return steps[call++] as never;
+    },
+  });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([writeTool, flipTool]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "plan",
+  });
+  flip = () => session.setMode("execute");
+  await session.run("plan something, flipping mid-turn");
+
+  // The flip really happened before the spawn…
+  expect(session.mode).toBe("execute");
+  // …but the child (3rd model call) still forked READ-ONLY: no mutating tools.
+  expect(toolNames[2]).not.toContain("fake_write");
+});

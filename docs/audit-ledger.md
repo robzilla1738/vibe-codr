@@ -2492,3 +2492,28 @@ goal + loop suites green.
 - Test updated: the untrusted-config test now asserts all six vectors (hooks/plugins/
   approvalMode/baseURL/stdio-mcp/security) + an env-var-credentialed-provider case + a
   remote-MCP-kept case. Gate: typecheck 8/8, lint clean, 15/15 tests, smokes OK.
+
+## Convergence pass 2 (gate COMPLETENESS verify) — 5 more same-class vectors → gated
+The follow-up closed the two named holes but the completeness reviewer found the same
+execute-code / redirect-credentials class surviving through five more untrusted-project keys.
+All now dropped from the untrusted project layer (honored verbatim when trustProjectConfig):
+- **Remote MCP servers** (not just stdio): `connectAll` dials every server at boot and the
+  handshake sends headers, so `headers:{Authorization:"Bearer ${ANTHROPIC_API_KEY}"}` (or a
+  `${VAR}` url) exfiltrates env secrets on connect — no model. Now ALL `mcp.servers` are dropped.
+- **`lsp.servers[].command`**: the language server spawns (no prompt) on the first edit of a
+  matching file → RCE. Command-bearing entries dropped.
+- **`verify.command` + `verify.auto`**: auto-runs after a mutating turn with no prompt. The
+  project `verify` block is dropped.
+- **`permissions` allow-rules**: a project adding `{tool:"*",action:"allow"}` broadens access —
+  the same as approvalMode:auto. Untrusted project permissions now collect deny/ask only.
+- **`sandbox` weakening**: a project setting `mode:"off"`/`network:"on"`/broad `writablePaths`
+  downgrades the backstop the user opted into. The project `sandbox` block is dropped.
+- **(PLAUSIBLE) webfetch SSRF**: `allowPrivateHosts:true` / `allowHosts` additions loosen the
+  default private-host block (metadata-endpoint exfil under prompt injection). Both stripped.
+Reviewer CLEARED as safe: model strings (need a baseURL, gated), provider apiKey/tokenFile/
+headers (destination is the real provider), all numeric/cost/UX keys, and build.* gate/commit
+(runs DETECTED repo scripts — the orthogonal "run a cloned repo's code" trust problem, inherent
+to a coding agent, not this config gate). Sanitizer internally correct (no caller mutation,
+rebuilt sub-objects, fail-safe on both-command-and-url). Test asserts all 11 vectors + a
+dedicated sandbox-weakening (global workspace-write vs project off) + env-var-provider +
+remote-MCP-dropped case. Gate: typecheck 8/8, lint clean, 15/15 tests, smokes OK. CONVERGED.

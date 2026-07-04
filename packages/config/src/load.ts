@@ -365,22 +365,67 @@ function sanitizeUntrustedProjectConfig(project: Record<string, unknown>): {
       dropped.push("providers.*.baseURL");
     }
   }
-  // Drop STDIO MCP servers (those with a `command`) — connecting runs an
-  // arbitrary local command at bootstrap, the same RCE class as hooks. Remote
-  // (url) MCP servers stay: they run no local code and their tools are gated by
-  // the network-permission layer and only fire when the model calls them.
+  // Drop ALL MCP servers. Stdio (`command`) runs an arbitrary local command at
+  // bootstrap; a REMOTE (`url`) server is ALSO dangerous — `connectAll` dials
+  // every server at boot and the handshake sends its headers, so a project
+  // shipping `headers:{Authorization:"Bearer ${ANTHROPIC_API_KEY}"}` (or a
+  // `${VAR}` in the url) exfiltrates env secrets on connect, no model needed.
   if (isPlainObject(clean.mcp) && isPlainObject((clean.mcp as Record<string, unknown>).servers)) {
     const mcp = { ...(clean.mcp as Record<string, unknown>) };
-    const servers: Record<string, unknown> = {};
-    let droppedStdio = false;
-    for (const [name, entry] of Object.entries(mcp.servers as Record<string, unknown>)) {
-      if (isPlainObject(entry) && "command" in entry) droppedStdio = true;
-      else servers[name] = entry;
-    }
-    if (droppedStdio) {
-      mcp.servers = servers;
+    if (Object.keys(mcp.servers as Record<string, unknown>).length) {
+      mcp.servers = {};
       clean.mcp = mcp;
-      dropped.push("mcp.servers (stdio command)");
+      dropped.push("mcp.servers");
+    }
+  }
+  // Drop `lsp.servers` entries carrying a `command` — the language server is
+  // spawned (no permission prompt) the first time the agent edits a matching
+  // file, so a project-supplied command is RCE on the first edit.
+  if (isPlainObject(clean.lsp) && isPlainObject((clean.lsp as Record<string, unknown>).servers)) {
+    const lsp = { ...(clean.lsp as Record<string, unknown>) };
+    const servers: Record<string, unknown> = {};
+    let droppedCmd = false;
+    for (const [lang, entry] of Object.entries(lsp.servers as Record<string, unknown>)) {
+      if (isPlainObject(entry) && "command" in entry) droppedCmd = true;
+      else servers[lang] = entry;
+    }
+    if (droppedCmd) {
+      lsp.servers = servers;
+      clean.lsp = lsp;
+      dropped.push("lsp.servers (command)");
+    }
+  }
+  // Drop the project's `verify` block — `verify.command` with `verify.auto`
+  // auto-runs after a mutating turn with no prompt (config-injected exec).
+  if ("verify" in clean) {
+    delete clean.verify;
+    dropped.push("verify.command");
+  }
+  // Drop the project's `sandbox` block — a project must not be able to WEAKEN
+  // the kernel backstop the user opted into (mode:off, network:on, a broad
+  // writablePath). A stricter sandbox is a trust decision, not a project one.
+  if ("sandbox" in clean) {
+    delete clean.sandbox;
+    dropped.push("sandbox");
+  }
+  // Strip only the SSRF-loosening webfetch keys — a project raising the default
+  // private-host block (allowPrivateHosts / allowHosts to metadata endpoints)
+  // could, with repo-borne prompt injection, exfil cloud IAM creds. Other
+  // webfetch tuning (timeout, caps) is harmless and kept.
+  if (isPlainObject(clean.webfetch)) {
+    const wf = { ...(clean.webfetch as Record<string, unknown>) };
+    let loosened = false;
+    if (wf.allowPrivateHosts === true) {
+      delete wf.allowPrivateHosts;
+      loosened = true;
+    }
+    if ("allowHosts" in wf) {
+      delete wf.allowHosts;
+      loosened = true;
+    }
+    if (loosened) {
+      clean.webfetch = wf;
+      dropped.push("webfetch (SSRF allowlist)");
     }
   }
   return { clean, dropped };
@@ -425,11 +470,19 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   for (const path of configLocations(cwd)) {
     let fileConfig = await readConfigFile(path);
     if (fileConfig) {
-      // The project layer (only) is sanitized when untrusted — permissions are
-      // collected from the ORIGINAL file (deny rules only ever add safety, and
-      // the union merge already can't let a project strip a global deny).
-      collectPermissions(fileConfig);
-      if (path === projectPath && !trustProject) {
+      const untrustedProject = path === projectPath && !trustProject;
+      // The union merge already stops a project from STRIPPING a global deny,
+      // but a project ADDING an `allow` rule broadens access — functionally the
+      // same as `approvalMode:auto`, which the sanitizer drops. So from an
+      // untrusted project layer collect only deny/ask rules (which only tighten).
+      if (untrustedProject && Array.isArray(fileConfig.permissions)) {
+        const kept = (fileConfig.permissions as { action?: string }[]).filter((r) => r?.action !== "allow");
+        if (kept.length !== fileConfig.permissions.length) droppedProjectFields.push("permissions (allow rules)");
+        permissionLayers.push(...kept);
+      } else {
+        collectPermissions(fileConfig);
+      }
+      if (untrustedProject) {
         const { clean, dropped } = sanitizeUntrustedProjectConfig(fileConfig);
         fileConfig = clean;
         droppedProjectFields.push(...dropped);

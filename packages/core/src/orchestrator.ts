@@ -15,6 +15,12 @@
 export interface TaskSpec {
   /** Stable id, referenced by other tasks' `deps`. */
   id: string;
+  /** Identity of the plan this task was submitted in (planIdentity of the whole
+   * spec set, stamped by spawn_tasks). Journal events carry it so a resumed run
+   * seeds ONLY from its own plan's prior completions — a later plan in the same
+   * session reusing an id (even with an identical objective) never inherits a
+   * stale result. Not part of the model-facing schema. */
+  plan?: string;
   /** The self-contained objective handed to the subagent. */
   objective: string;
   /** Ids of tasks that must complete before this one starts. */

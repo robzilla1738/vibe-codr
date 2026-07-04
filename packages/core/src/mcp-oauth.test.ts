@@ -2,11 +2,14 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { McpTokenStore, createMcpOAuthProvider, mcpTokenStorePath } from "./mcp-oauth.ts";
+import { McpTokenStore, createMcpOAuthProvider, legacyMcpTokenStorePath, mcpTokenStorePath } from "./mcp-oauth.ts";
+
+function tmpDir() {
+  return mkdtempSync(join(tmpdir(), "vibe-mcp-oauth-"));
+}
 
 function tmpStore() {
-  const dir = mkdtempSync(join(tmpdir(), "vibe-mcp-oauth-"));
-  return new McpTokenStore(join(dir, "srv.json"));
+  return new McpTokenStore(join(tmpDir(), "srv.json"));
 }
 
 test("McpTokenStore round-trips tokens, client info, and the PKCE verifier", async () => {
@@ -52,8 +55,62 @@ test("McpTokenStore.clear removes the persisted state", async () => {
 });
 
 test("mcpTokenStorePath sanitizes the server name and honors an override", () => {
-  expect(mcpTokenStorePath("gh/api", undefined)).toMatch(/vibe-codr\/mcp\/gh_api\.json$/);
+  expect(mcpTokenStorePath("gh/api", undefined)).toMatch(/vibe-codr\/mcp\/gh_api-[0-9a-f]{8}\.json$/);
   expect(mcpTokenStorePath("gh", "/custom/tokens.json")).toBe("/custom/tokens.json");
+});
+
+test("servers that sanitize-equal get distinct token stores (no grant mixup)", () => {
+  // `gh/api` and `gh_api` both slug to `gh_api`; the bare-slug path collided, so
+  // two DISTINCT servers shared one store — one server could read (and clobber)
+  // the other's grant. The raw-name hash keeps them apart, deterministically.
+  const a = mcpTokenStorePath("gh/api", undefined);
+  const b = mcpTokenStorePath("gh_api", undefined);
+  expect(a).not.toBe(b);
+  expect(mcpTokenStorePath("gh/api", undefined)).toBe(a); // stable across calls
+});
+
+test("a grant at the legacy (pre-hash) path migrates on first read — no forced re-auth", async () => {
+  const dir = tmpDir();
+  const legacy = join(dir, "srv.json");
+  const current = join(dir, "srv-0a1b2c3d.json");
+  await Bun.write(legacy, JSON.stringify({ tokens: { access_token: "old-grant" } }));
+  const store = new McpTokenStore(current, legacy);
+  // The pre-fix grant is still readable through the new path…
+  expect((await store.read()).tokens).toEqual({ access_token: "old-grant" });
+  // …and was MOVED (rename), so it now lives at the current path only.
+  expect(await Bun.file(current).exists()).toBe(true);
+  expect(await Bun.file(legacy).exists()).toBe(false);
+  // Later merges keep everything at the current path.
+  await store.merge({ codeVerifier: "v" });
+  expect((await store.read()).tokens).toEqual({ access_token: "old-grant" });
+  expect(await Bun.file(legacy).exists()).toBe(false);
+});
+
+test("an existing current-path store wins over a stale legacy file", async () => {
+  // The collision pair's OTHER server may still own the legacy slug — a store
+  // that already exists at the current path must never be clobbered by it.
+  const dir = tmpDir();
+  const legacy = join(dir, "srv.json");
+  const current = join(dir, "srv-0a1b2c3d.json");
+  await Bun.write(legacy, JSON.stringify({ tokens: { access_token: "other-servers" } }));
+  await Bun.write(current, JSON.stringify({ tokens: { access_token: "mine" } }));
+  const store = new McpTokenStore(current, legacy);
+  expect((await store.read()).tokens).toEqual({ access_token: "mine" });
+  expect(await Bun.file(legacy).exists()).toBe(true); // left untouched
+});
+
+test("clear drops a not-yet-migrated legacy grant too (revocation can't resurrect)", async () => {
+  const dir = tmpDir();
+  const legacy = join(dir, "srv.json");
+  const store = new McpTokenStore(join(dir, "srv-0a1b2c3d.json"), legacy);
+  await Bun.write(legacy, JSON.stringify({ tokens: { access_token: "revoke-me" } }));
+  await store.clear();
+  expect(await store.read()).toEqual({}); // read would otherwise migrate it back in
+  expect(await Bun.file(legacy).exists()).toBe(false);
+});
+
+test("legacyMcpTokenStorePath is the bare pre-hash slug", () => {
+  expect(legacyMcpTokenStorePath("gh/api")).toMatch(/vibe-codr\/mcp\/gh_api\.json$/);
 });
 
 test("provider persists tokens through the store and reflects config in metadata", async () => {

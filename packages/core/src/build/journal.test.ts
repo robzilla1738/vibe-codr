@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   appendOrchestrationEvent,
   persistTaskReport,
+  planIdentity,
   readTaskReport,
   loadCompletedTasks,
 } from "./journal.ts";
@@ -94,6 +95,65 @@ test("task ids are sanitized in report filenames", () => {
   expect(rel).toBeDefined();
   expect(rel).not.toContain("..");
   expect(readTaskReport(cwd, rel!)).toBe("content");
+});
+
+test("a task seeds only from its OWN plan's prior run (plan identity, same session)", () => {
+  // The journal is per-session, so two spawn_tasks plans in the SAME session
+  // share one file. A later plan reusing a task id with an IDENTICAL objective
+  // used to inherit the earlier plan's stale result (the id+objective drift
+  // guard can't tell them apart) — the plan-identity stamp does.
+  const cwd = tmp();
+  const ses = "ses_plan";
+  const planA = planIdentity([{ id: "impl", objective: "Implement X", deps: [] }]);
+  appendOrchestrationEvent(cwd, ses, {
+    type: "task-finished", at: 1, id: "impl", objective: "Implement X", outcome: "completed", attempts: 1,
+    plan: planA,
+  });
+  // A resume that re-submits the SAME plan seeds its completed task.
+  expect(loadCompletedTasks(cwd, ses, planA).map((r) => r.id)).toEqual(["impl"]);
+  // A DIFFERENT plan reusing the id + the exact objective text must NOT seed.
+  const planB = planIdentity([
+    { id: "impl", objective: "Implement X", deps: [] },
+    { id: "test", objective: "Test X", deps: ["impl"] },
+  ]);
+  expect(planB).not.toBe(planA);
+  expect(loadCompletedTasks(cwd, ses, planB)).toEqual([]);
+  // An unfiltered load (no plan given) keeps the pre-stamp behavior.
+  expect(loadCompletedTasks(cwd, ses)).toHaveLength(1);
+});
+
+test("unstamped (pre-upgrade) journal events never seed a plan-filtered load", () => {
+  // The safe migration direction: a legacy event without a plan stamp re-runs
+  // (one-time cost) rather than risking a cross-plan stale seed.
+  const cwd = tmp();
+  const ses = "ses_plan_legacy";
+  appendOrchestrationEvent(cwd, ses, {
+    type: "task-finished", at: 1, id: "impl", objective: "Implement X", outcome: "completed", attempts: 1,
+  });
+  const plan = planIdentity([{ id: "impl", objective: "Implement X", deps: [] }]);
+  expect(loadCompletedTasks(cwd, ses, plan)).toEqual([]);
+  expect(loadCompletedTasks(cwd, ses)).toHaveLength(1); // unfiltered still reads it
+});
+
+test("planIdentity is stable for the same plan and distinct across plan shapes", () => {
+  const specs = [
+    { id: "a", objective: "do a", deps: [] },
+    { id: "b", objective: "do b", deps: ["a"] },
+  ];
+  expect(planIdentity(specs)).toBe(planIdentity(specs.map((s) => ({ ...s }))));
+  expect(planIdentity(specs)).toMatch(/^[0-9a-f]{8}$/);
+  // Any structural difference — extra task, changed objective, changed deps —
+  // is a different plan.
+  expect(planIdentity(specs.slice(0, 1))).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, objective: "do a differently" }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([specs[0]!, { ...specs[1]!, deps: [] }])).not.toBe(planIdentity(specs));
+  // Behavior-bearing flags are identity too: a re-plan that flips verification,
+  // checks, ownership, or tier must re-run — never inherit a completion produced
+  // under weaker rules (verify-pass regression).
+  expect(planIdentity([{ ...specs[0]!, verify: true }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, check: true }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, files: ["src/a.ts"] }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, tier: "cheap" as const }, specs[1]!])).not.toBe(planIdentity(specs));
 });
 
 test("ids that sanitize-equal get distinct report files (no overwrite/mixup)", () => {

@@ -469,16 +469,21 @@ export class CheckpointManager {
 
     // A phantom step for the pre-rewind working tree, so the forward walk terminates
     // at the ORIGINAL tree rather than one state short. Skip it when that tree is
-    // identical to the newest checkpoint (redoing that checkpoint already lands
-    // there — and adding it would double the last step, as when the tree is clean).
-    // Pushed FIRST → bottom of the batch → restored LAST by the forward walk, so it
-    // also carries the conversation tail for the whole multi-step rewind.
+    // identical to the newest STACKED checkpoint (redoing that checkpoint already
+    // lands there — and adding it would double the last step, as when the tree is
+    // clean). With NO stacked checkpoints (the target IS the newest), the phantom is
+    // kept even when the tree is unchanged: it is the only possible redo step, and
+    // dropping it would orphan the conversation tail the caller stashes right after
+    // (a no-edit newest target — files identical, but the rewound context would be
+    // unrecoverable; redoing the same-tree phantom is a file no-op that hands the
+    // tail back). Pushed FIRST → bottom of the batch → restored LAST by the forward
+    // walk, so it also carries the conversation tail for the whole multi-step rewind.
     if (preTree) {
-      const above = newer.at(-1) ?? target;
-      if (!(await this.#sameTree(preTree.commit, above.commit))) {
+      const above = newer.at(-1);
+      if (!above || !(await this.#sameTree(preTree.commit, above.commit))) {
         const phantom: RedoEntry = {
           commit: preTree.commit,
-          label: newer.at(-1)?.label ?? target.label,
+          label: above?.label ?? target.label,
           reAdd: [],
           ownedRefs: [preTree.id],
         };

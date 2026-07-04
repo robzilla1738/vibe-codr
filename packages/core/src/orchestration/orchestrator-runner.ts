@@ -31,6 +31,7 @@ import {
   appendOrchestrationEvent,
   loadCompletedTasks,
   persistTaskReport,
+  planIdentity,
 } from "../build/journal.ts";
 import { runGate, formatGateFailure } from "../build/gate.ts";
 import { bunExec } from "../build/exec.ts";
@@ -469,8 +470,25 @@ export class OrchestratorRunner {
       readOnly: true,
       concurrencySafe: true,
       execute: async ({ tasks, detach }, ctx) => {
+        // Plan identity: stamped onto every spec (and thus every journal event)
+        // so a resume seeds ONLY from this exact plan's prior run — a later
+        // same-session plan reusing a task id never inherits a stale result.
+        // Behavior-bearing fields ride in the hash too: a re-plan flipping
+        // verify/check/files/tier must re-run, not inherit.
+        const plan = planIdentity(
+          tasks.map((t) => ({
+            id: t.id,
+            objective: t.objective,
+            deps: t.deps ?? [],
+            files: t.files,
+            verify: t.verify,
+            check: t.check,
+            tier: t.tier,
+          })),
+        );
         const specs: TaskSpec[] = tasks.map((t) => ({
           id: t.id,
+          plan,
           objective: t.objective,
           deps: t.deps ?? [],
           ...(t.files ? { files: t.files } : {}),
@@ -492,11 +510,13 @@ export class OrchestratorRunner {
         }
 
         const runPlan = (signal: AbortSignal | undefined, suspendParentSlot: boolean): Promise<string> => {
-          // Resume seed: completed tasks from a prior run of THIS session's plan
-          // (the journal on disk). runDag honors only ids still in this spec set,
-          // so a re-submitted plan re-runs only what didn't finish. Best-effort —
-          // a missing/torn journal simply yields no seed.
-          const seed = loadCompletedTasks(this.#handle.deps.cwd, this.#handle.id);
+          // Resume seed: completed tasks from a prior run of THIS EXACT plan
+          // (the journal on disk, filtered by plan identity — a different
+          // same-session plan's completions are never a seed). runDag honors
+          // only ids still in this spec set, so a re-submitted plan re-runs only
+          // what didn't finish. Best-effort — a missing/torn journal simply
+          // yields no seed.
+          const seed = loadCompletedTasks(this.#handle.deps.cwd, this.#handle.id, plan);
           return runDag(
             specs,
             (spec, depResults) => this.#runTask(spec, depResults, signal, suspendParentSlot),
@@ -692,6 +712,7 @@ export class OrchestratorRunner {
       deps: spec.deps,
       worktree: true,
       ...(spec.tier ? { tier: spec.tier } : {}),
+      ...(spec.plan ? { plan: spec.plan } : {}),
     });
     const settle = (partial: Omit<TaskResult, "durationMs">): TaskResult => {
       // The child's raw final message carries the ```handoff fence, already
@@ -840,6 +861,7 @@ export class OrchestratorRunner {
       deps: spec.deps,
       worktree: true,
       ...(spec.tier ? { tier: spec.tier } : {}),
+      ...(spec.plan ? { plan: spec.plan } : {}),
     });
     const settle = (partial: Omit<TaskResult, "durationMs">): TaskResult => {
       // The child's raw final message carries the ```handoff fence, already
@@ -1088,6 +1110,7 @@ export class OrchestratorRunner {
       objective: spec.objective,
       deps: spec.deps,
       ...(spec.tier ? { tier: spec.tier } : {}),
+      ...(spec.plan ? { plan: spec.plan } : {}),
     });
 
     let feedback = "";
@@ -1392,6 +1415,7 @@ export class OrchestratorRunner {
       attempts: result.attempts,
       ...(result.handoff ? { handoff: result.handoff } : {}),
       ...(reportPath ? { reportPath } : {}),
+      ...(spec.plan ? { plan: spec.plan } : {}),
     });
   }
 

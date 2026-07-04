@@ -259,6 +259,77 @@ test("dirty review: NOT REVIEW-CLEAN enqueues one fix; a 2nd review is bounded b
   expect(reviewCalls()).toBe(1);
 });
 
+test("branch mode + checkpoints disabled: the review sees the turn's diff BEFORE the green commit lands", async () => {
+  // Deferred sweep item: #runGate committed on green BEFORE the adversarial
+  // review. With checkpoints disabled there is no checkpoint baseline, so the
+  // review diff falls back to `git diff HEAD` — and branch mode's gitCommitGreen
+  // had just moved HEAD over the turn's work, blanking the diff. The review then
+  // silently skipped ("nothing to review") AFTER the unreviewed commit already
+  // landed. The review must run against the pre-commit diff; it stays advisory
+  // (the green tree is still committed once the bounded review call returns).
+  const dir = initGitRepo({
+    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "bun.lock": "",
+    "out.txt": "same\n",
+  });
+  const reviewPrompts: string[] = [];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const i = call++;
+      // Prompt 1: a no-op write (tree stays clean, so gitPrepare accepts the
+      // work branch at the first green gate). Prompt 2: a REAL change.
+      if (i === 0) return writeStep("w0", "out.txt", "same\n") as never;
+      if (i === 1) return textStep("done") as never;
+      if (i === 2) return writeStep("w2", "out.txt", "changed\n") as never;
+      return textStep("done") as never;
+    },
+    doGenerate: async (options) => {
+      reviewPrompts.push(JSON.stringify(options.prompt));
+      return {
+        content: [{ type: "text", text: "NOT REVIEW-CLEAN — out.txt:1 suspicious change" }],
+        finishReason: "stop" as const,
+        usage: USAGE,
+        warnings: [],
+      };
+    },
+  });
+  const config = defaultConfig();
+  config.model = "mock/test";
+  config.checkpoints.enabled = false; // no checkpoint baseline → fallback diff
+  config.build.commit.mode = "branch";
+  // The green-ledger writeback drops .vibe/ledger.jsonl into the (untracked) work
+  // tree BEFORE the first gitPrepare, whose dirty check would then refuse the
+  // work branch — keep the tree clean so branch commits actually engage.
+  config.build.recon.ledger = false;
+  const engine = new Engine({ config, cwd: dir, registry: mockRegistry(model), interactive: false });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+  engine.send({ type: "submit-prompt", text: "no-op turn" });
+  await engine.whenIdle();
+  // The work branch was prepared on the first (clean-tree) green gate.
+  expect(notices(events).some((n) => n.message.includes("on work branch"))).toBe(true);
+  engine.send({ type: "submit-prompt", text: "real change" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  // The review actually ran against the REAL diff (it was blank — and silently
+  // skipped — when the commit came first).
+  expect(reviewPrompts.some((p) => p.includes("changed"))).toBe(true);
+  const ns = notices(events);
+  const flaggedIdx = ns.findIndex((n) => n.message.includes("Diff review flagged issues"));
+  const commitIdx = ns.findIndex((n) => n.message.includes("Committed green checkpoint"));
+  expect(flaggedIdx).toBeGreaterThanOrEqual(0);
+  // Advisory, not blocking: the flagged green tree is still committed…
+  expect(commitIdx).toBeGreaterThanOrEqual(0);
+  // …but the review verdict landed BEFORE the commit (it saw the pre-commit diff).
+  expect(flaggedIdx).toBeLessThan(commitIdx);
+});
+
 test("aborted gate: an Esc mid-gate is a terminal non-verdict — no fix, no green checkpoint, quiet notice", async () => {
   // The test command signals it has started (a marker file) then blocks until the
   // test releases it, so we can deterministically Esc while the gate is mid-check.

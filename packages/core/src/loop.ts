@@ -5,6 +5,9 @@ export interface ParsedLoop {
   prompt: string;
   until?: string;
   max?: number;
+  /** Non-fatal usage warnings (a mistyped flag/interval token kept as prompt
+   * text) for the caller to surface — the loop still starts. */
+  warnings?: string[];
 }
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
@@ -32,6 +35,7 @@ export function parseDuration(token: string): number | null {
  */
 export function parseLoopArgs(args: string): ParsedLoop | null {
   let rest = args.trim();
+  const warnings: string[] = [];
 
   let max: number | undefined;
   const maxMatch = rest.match(/--max\s+(\d+)/);
@@ -59,14 +63,40 @@ export function parseLoopArgs(args: string): ParsedLoop | null {
   if (parsedInterval !== null) {
     intervalMs = parsedInterval;
     rest = firstSpace === -1 ? "" : rest.slice(firstSpace + 1).trim();
+  } else if (/^\d+[a-z]+$/i.test(firstToken)) {
+    // Digits+unit in the interval position ("5x", "30sec", "0s") that isn't a
+    // valid duration is almost certainly a mistyped interval — say so instead
+    // of silently pacing at the default. Warn rather than reject: a prompt
+    // genuinely starting with such a token still runs (it stays prompt text).
+    warnings.push(
+      `"${firstToken}" looks like an interval but isn't one (use Ns/Nm/Nh with N > 0, e.g. 30s, 5m, 2h) — ` +
+        "it was kept as prompt text and the loop uses the default 10m interval.",
+    );
   }
 
   if (!rest) return null;
+
+  // A known flag token still in the prompt means it was typed but NOT applied
+  // (missing or invalid value — e.g. `--max ten`, a trailing `--until`): the
+  // user thinks a bound/condition is set when it isn't. Warn, don't reject —
+  // erroring would break a legitimate prompt that merely mentions the flag,
+  // and only the two flags this parser understands are checked (an arbitrary
+  // `--foo` in prompt text stays silent).
+  for (const token of rest.split(/\s+/)) {
+    if (/^--(max|until)$/i.test(token)) {
+      warnings.push(
+        `"${token}" was not applied (missing or invalid value) and was kept as prompt text — ` +
+          "usage: --until <condition>, --max <N>.",
+      );
+    }
+  }
+
   return {
     intervalMs,
     prompt: rest,
     ...(until ? { until } : {}),
     ...(max !== undefined ? { max } : {}),
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { splitMarkdown, renderTable, stripInline, displayWidth, tableFits, type TableLine } from "./markdown-blocks.ts";
+import { splitMarkdown, renderTable, stripInline, displayWidth, tableFits, tailWidth, truncateWidth, type TableLine } from "./markdown-blocks.ts";
 
 /** Reconstruct a grid table line's visual text (the box rules verbatim; a
  * header/row as its cells wrapped by the outer + inner `│` borders the UI draws) so
@@ -317,4 +317,54 @@ test("displayWidth measures grapheme clusters as single glyphs", () => {
   // The fast path is untouched: plain ASCII + CJK still sum per codepoint.
   expect(displayWidth("ab")).toBe(2);
   expect(displayWidth("日本")).toBe(4);
+});
+
+test("truncateWidth cuts by display cells, never past the budget", () => {
+  expect(truncateWidth("hello", 10)).toBe("hello"); // fits — untouched
+  expect(truncateWidth("hello world", 6)).toBe("hello…");
+  // CJK counts 2 cells: keep 日本 (4 cells) + … = 5 ≤ 6, where a char count
+  // would have kept 5 glyphs (11 cells) and blown the column.
+  expect(truncateWidth("日本語のラベル", 6)).toBe("日本…");
+  expect(displayWidth(truncateWidth("日本語のラベル", 6))).toBeLessThanOrEqual(6);
+  // A wide glyph that would STRADDLE the boundary is dropped, not split.
+  expect(truncateWidth("a日本", 4)).toBe("a日…");
+});
+
+test("truncateWidth never strands half a surrogate pair", () => {
+  // 𝕧 etc. are non-BMP (surrogate pairs in UTF-16) but 1 cell wide.
+  expect(truncateWidth("𝕧𝕚𝕓𝕖𝕔𝕠𝕕𝕣", 4)).toBe("𝕧𝕚𝕓…");
+  expect(truncateWidth("𝕧𝕚𝕓𝕖𝕔𝕠𝕕𝕣", 4).isWellFormed()).toBe(true);
+  expect(truncateWidth("𝕧𝕚𝕓𝕖", 4)).toBe("𝕧𝕚𝕓𝕖"); // fits exactly — untouched
+  // Emoji are 2 cells: two fit under a 5-cell budget with the ellipsis.
+  expect(truncateWidth("😀😀😀😀", 5)).toBe("😀😀…");
+});
+
+test("tailWidth keeps the trailing display cells (deep-path identity)", () => {
+  expect(tailWidth("short", 12)).toBe("short");
+  expect(tailWidth("/Users/robert/Code/vibe-codr", 12)).toBe("…e/vibe-codr");
+  // CJK path segments: コード (6) + "/" (1) fill the 7-cell keep budget.
+  expect(tailWidth("プロジェクト/コード", 8)).toBe("…/コード");
+  expect(displayWidth(tailWidth("プロジェクト/コード", 8))).toBeLessThanOrEqual(8);
+  // Non-BMP chars survive whole at the cut.
+  expect(tailWidth("𝕒𝕓𝕔𝕕𝕖𝕗", 4).isWellFormed()).toBe(true);
+  expect(tailWidth("𝕒𝕓𝕔𝕕𝕖𝕗", 4)).toBe("…𝕕𝕖𝕗");
+});
+
+test("truncateWidth/tailWidth honor the cell budget for VS16/ZWJ/flag clusters (verify-pass regression)", () => {
+  // Narrow base + VS16 (❤️ = U+2764 U+FE0F) renders 2 cells; the code-point fast
+  // path counted 1 and blew the budget — cluster strings must walk graphemes.
+  const hearts = "❤️❤️❤️❤️";
+  expect(displayWidth(truncateWidth(hearts, 5))).toBeLessThanOrEqual(5);
+  expect(truncateWidth(hearts, 5)).toBe("❤️❤️…");
+  expect(displayWidth(tailWidth(`abc${"☀️".repeat(3)}`, 4))).toBeLessThanOrEqual(4);
+  // A flag is never split into a lone regional indicator.
+  expect(truncateWidth("🇺🇸🇺🇸🇺🇸", 4)).toBe("🇺🇸…");
+  // A ZWJ family at the tail cut can't open on a bare joiner.
+  expect(tailWidth("👨‍👩‍👧xyz👨‍👩‍👧", 5)).toBe("…yz👨‍👩‍👧");
+  expect(tailWidth("👨‍👩‍👧xyz👨‍👩‍👧", 5).startsWith("…‍")).toBe(false);
+  // A combining mark can't stack onto the ellipsis.
+  expect(tailWidth("xééé", 2).startsWith("…́")).toBe(false);
+  // Degenerate budgets return empty, not a 1-cell overflow.
+  expect(truncateWidth("hello", 0)).toBe("");
+  expect(tailWidth("hello", -1)).toBe("");
 });

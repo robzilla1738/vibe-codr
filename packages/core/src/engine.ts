@@ -1,4 +1,4 @@
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, rm } from "node:fs/promises";
 import { statSync, readdirSync } from "node:fs";
@@ -51,7 +51,12 @@ import {
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
 import { BUILTIN_COMMANDS } from "./commands.ts";
-import { type PermissionReply, type PermissionResolver, scopeString } from "./permissions.ts";
+import {
+  type PermissionReply,
+  type PermissionResolver,
+  grantPathScope,
+  scopeString,
+} from "./permissions.ts";
 import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./agents.ts";
 import { resolveRepoProfile } from "./build/profile.ts";
 import { bunExec } from "./build/exec.ts";
@@ -1130,29 +1135,39 @@ export class Engine implements EngineClient {
           this.#emitGoalRun();
           this.#notice("Steer folded into the goal run — round budget refreshed.", "info");
         }
-        // …and starts a fresh coordination context: the blackboard is per-fan-out
-        // scratch (claims, transient decisions), NOT durable state — the task list
-        // and long-term memory carry that. Clearing here (not on loop iterations,
-        // verify-fix turns, or the plan handoff, which don't route through
-        // submit-prompt) stops a stale note like "taking auth.ts" from turn 1
-        // leaking into an unrelated fan-out many turns later.
-        // Invariant: a DETACHED spawn_tasks batch outlives the turn that spawned
-        // it and its children keep posting claims/decisions across turn
-        // boundaries — clearing mid-run would yank the board out from under a
-        // live fan-out. Skip the clear while any detached child is still running
-        // (the stale-note guard resumes the moment the last one settles).
-        if (!this.#session.childRegistry?.runningDetachedCount()) {
-          this.#blackboard.clear();
-        }
         // Capture any armed plan handoff NOW and bind it to THIS prompt's job, so
         // it can't be stolen by an unrelated prompt that was queued ahead of it
         // (the flag used to be read at turn-run time — see #handlePrompt).
         const handoff = this.#pendingHandoff;
         this.#pendingHandoff = false;
         if (handoff) void this.#persistEngineState();
-        this.#enqueue(queueLabel(command.text), () =>
-          this.#handlePrompt(command.text, { handoff }),
-        );
+        this.#enqueue(queueLabel(command.text), () => {
+          // A fresh top-level prompt starts a fresh coordination context: the
+          // blackboard is per-fan-out scratch (claims, transient decisions), NOT
+          // durable state — the task list and long-term memory carry that.
+          // Clearing here (not on loop iterations, verify-fix turns, or the plan
+          // handoff, which don't route through submit-prompt) stops a stale note
+          // like "taking auth.ts" from turn 1 leaking into an unrelated fan-out
+          // many turns later.
+          // Invariant: a DETACHED spawn_tasks batch outlives the turn that
+          // spawned it and its children keep posting claims/decisions across
+          // turn boundaries — clearing mid-run would yank the board out from
+          // under a live fan-out. Skip the clear while any detached child is
+          // still running (the stale-note guard resumes the moment the last one
+          // settles). The clear runs when THIS prompt's turn STARTS — inside the
+          // queued job, not at enqueue time — because at enqueue time a prior
+          // turn may still be mid-flight: its attached fan-out isn't counted by
+          // runningDetachedCount, and a detached batch it is ABOUT to spawn
+          // hasn't registered yet, so an eager clear used to wipe live
+          // coordination state (e.g. a decision posted moments before the
+          // batch's children kick off and read the board). FIFO guarantees that
+          // by job start the prior turn has finished and anything detached it
+          // started is registered.
+          if (!this.#session.childRegistry?.runningDetachedCount()) {
+            this.#blackboard.clear();
+          }
+          return this.#handlePrompt(command.text, { handoff });
+        });
         break;
       }
       case "set-mode": {
@@ -1384,45 +1399,48 @@ export class Engine implements EngineClient {
   /** Memory key for an `always`-allow decision: tool name plus its content scope
    * (command/path/url) so "always" is remembered for THIS call shape, not the
    * whole tool. `\x00` can't appear in a tool name or scope, so it's an
-   * unambiguous separator. A PATH scope is keyed by its CANONICAL ABSOLUTE form
-   * (resolve(cwd, path)) — the SAME normalization the permission checker matches
-   * a path-scoped rule against — so the SAME file approved as "src/x.ts" isn't
-   * re-prompted when the model next spells it "./src/x.ts". Command/URL/synthetic
-   * scopes have no equivalent normalization and stay spelling-EXACT, so an
-   * "always allow git status" never green-lights a differently-spelled command.
-   * Both the WRITE (grant) and READ (check) sides go through here, so they key
-   * identically. */
+   * unambiguous separator. A PATH scope is keyed by its REALPATH-CANONICAL
+   * ABSOLUTE form (`grantPathScope` — symlink-dereferenced where the target
+   * exists, lexical resolve otherwise): the SAME normalization the permission
+   * checker's allow side judges a path against, so the SAME file approved as
+   * "src/x.ts" isn't re-prompted when the model next spells it "./src/x.ts" or
+   * through a symlinked ancestor. Command/URL/synthetic scopes have no
+   * equivalent normalization and stay spelling-EXACT, so an "always allow git
+   * status" never green-lights a differently-spelled command. Both the WRITE
+   * (grant) and READ (check) sides go through here, so they key identically. */
   #alwaysAllowKey(toolName: string, input: unknown): string {
-    const scope = canonicalPathScope(toolName, input, this.#cwd) ?? scopeString(toolName, input);
+    const scope = grantPathScope(toolName, input, this.#cwd) ?? scopeString(toolName, input);
     return scope === undefined ? toolName : `${toolName}\x00${scope}`;
   }
 
-  /** Persist an "always (this project)" grant as a scoped `{tool, match?,
-   * action:"allow"}` rule in the project config. The `match` scope is derived
-   * from the SAME key derivation `#alwaysAllowKey` uses — canonical absolute path
-   * for path tools, the command/URL/synthetic string for command-bearing tools,
-   * and no `match` (bare tool name) for a tool with no natural scope — so the
-   * persisted rule mirrors the in-memory grant EXACTLY. `appendProjectPermission`
-   * validates the merged config before writing, so a malformed merge is rejected
-   * without bricking the config; any failure degrades to a warn notice (the
-   * in-memory grant already applies, so the session isn't blocked). */
+  /** Persist an "always (this project)" grant as a scoped `{tool, matchExact?,
+   * action:"allow"}` rule in the project config. The scope is derived from the
+   * SAME key derivation `#alwaysAllowKey` uses — realpath-canonical absolute
+   * path for path tools, the command/URL/synthetic string for command-bearing
+   * tools, and no scope (bare tool name) for a tool with no natural scope — so
+   * the persisted rule mirrors the in-memory grant EXACTLY.
+   * `appendProjectPermission` validates the merged config before writing, so a
+   * malformed merge is rejected without bricking the config; any failure
+   * degrades to a warn notice (the in-memory grant already applies, so the
+   * session isn't blocked). */
   async #persistProjectGrant(toolName: string, input: unknown): Promise<void> {
-    // A PATH scope is a canonical absolute path — persisted as `match` (a rule
-    // like `<cwd>/src/*` still needs its `*` to glob normally). A command/URL/
-    // synthetic scope (canonicalPathScope undefined) is persisted as `matchExact`
-    // so it can't glob-broaden across sessions: the in-memory grant is EXACT
-    // string equality, and a `match` would compile a literal `*` in the approved
-    // command into `.*` — approving `rm build/*` would then auto-allow
-    // `rm build/../secret.env`. `matchExact` keeps the persisted rule as tight as
-    // the in-memory grant.
-    const canonicalPath = canonicalPathScope(toolName, input, this.#cwd);
-    const scope = canonicalPath ?? scopeString(toolName, input);
+    // EVERY scoped grant persists as `matchExact` — the user approved ONE
+    // concrete call, and the in-memory grant is exact string equality, so the
+    // persisted rule must be too. A `match` would compile a literal `*` in the
+    // approved command/path into `.*`: approving `rm build/*` would auto-allow
+    // `rm build/../secret.env` next session, and a file literally named
+    // `a*.ts` would grant every `a…ts` sibling. A PATH grant additionally uses
+    // the REALPATH-canonical form (`grantPathScope`): the checker's allow side
+    // confines a path to its real target, so a lexical spelling persisted under
+    // a symlinked ancestor (macOS `/var`→`/private/var`) would NEVER re-match —
+    // the grant silently re-prompted every fresh session. The realpath form is
+    // the exact primary form `check()` compares allow rules against, so it
+    // re-matches every spelling of the same file.
+    const scope = grantPathScope(toolName, input, this.#cwd) ?? scopeString(toolName, input);
     const rule: PermissionRule =
       scope === undefined
         ? { tool: toolName, action: "allow" }
-        : canonicalPath !== undefined
-          ? { tool: toolName, match: scope, action: "allow" }
-          : { tool: toolName, matchExact: scope, action: "allow" };
+        : { tool: toolName, matchExact: scope, action: "allow" };
     try {
       await appendProjectPermission(this.#cwd, rule);
     } catch (err) {
@@ -1565,6 +1583,13 @@ export class Engine implements EngineClient {
       if (cmd) {
         const r = cmd.run(slash.args);
         if (r.kind === "prompt") text = r.text;
+        else if (r.kind === "notice") {
+          // The command failed to expand (e.g. its file vanished mid-session) —
+          // surface that and skip the tick instead of prompting the model with
+          // the raw slash line.
+          this.#notice(r.message, "warn");
+          return r.message;
+        }
       }
     }
     // Route the iteration through the same FIFO queue as user turns so a loop
@@ -1895,6 +1920,10 @@ export class Engine implements EngineClient {
       );
       return;
     }
+    // Surface parse warnings (a mistyped flag/interval kept as prompt text)
+    // BEFORE the "Loop started" notice — the user must see that a bound or
+    // interval they typed was NOT applied while there's time to /loop stop.
+    for (const w of parsed.warnings ?? []) this.#notice(w, "warn");
     const loop = new LoopController({
       id: createId("loop"),
       ...parsed,
@@ -2898,12 +2927,25 @@ export class Engine implements EngineClient {
     // GREEN.
     this.#notice(formatGateOutcome(summary), "info");
     this.#persistGreenLedger(profile);
-    await this.#commitOnGreen(summary);
     // Runtime visual verification (web apps only): boot the app headless and
     // find what green checks can't — console errors + dead controls. Its
     // findings ride the SAME adversarial-review fix budget as the diff review.
-    const visual = await this.#maybeVisualVerify(profile);
-    await this.#maybeReview(visual);
+    // Review BEFORE commit-on-green: branch mode's gitCommitGreen moves HEAD over
+    // this turn's work, and with checkpoints disabled the review diff falls back
+    // to `git diff HEAD` — committing first blanked that diff, silently skipping
+    // the review AFTER the unreviewed commit had already landed. The review stays
+    // advisory and bounded (Esc / 120s / provider failure all degrade inside
+    // #maybeReview, and a flagged diff enqueues a fix turn without blocking); the
+    // finally guarantees the green tree is committed either way, exactly as
+    // before — visual verify rides inside it for the same reason. Checkpoint
+    // mode is ordering-insensitive (hidden ref, and the review diffs from the
+    // PRE-edit baseline) — one order for both keeps this simple.
+    try {
+      const visual = await this.#maybeVisualVerify(profile);
+      await this.#maybeReview(visual);
+    } finally {
+      await this.#commitOnGreen(summary);
+    }
     return summary.outcome;
   }
 
@@ -3194,21 +3236,6 @@ export class Engine implements EngineClient {
 function queueLabel(text: string): string {
   const oneLine = text.replace(/\s+/g, " ").trim();
   return oneLine.length > 48 ? `${oneLine.slice(0, 47)}…` : oneLine;
-}
-
-/** The canonical absolute path a file-tool call targets — `resolve(cwd, path)`,
- * or undefined for a command/URL/no-path scope. Mirrors the (module-private)
- * `resolvedPathScope` in permissions.ts so an `always`-allow grant is keyed on
- * the SAME normalization the permission checker matches a path-scoped rule with
- * — the two MUST stay in lock-step, which is why this replicates it rather than
- * keying on the raw `scopeString` path (which would re-prompt an already-granted
- * file spelled with a different `./`/`../` prefix). */
-function canonicalPathScope(toolName: string, input: unknown, cwd: string): string | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const o = input as Record<string, unknown>;
-  if (toolName === "bash" || typeof o.command === "string") return undefined;
-  if (typeof o.path !== "string") return undefined;
-  return resolvePath(cwd, o.path);
 }
 
 /** Cap on the diff handed to the single-shot reviewer (chars) — the same bound

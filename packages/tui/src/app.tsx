@@ -66,8 +66,9 @@ import type {
 import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
 import { applyPalette, isExactCommand, paletteState, skillsPickerFilter } from "./commands-catalog.ts";
-import { displayWidth, renderTable, splitMarkdown, tableFits, type MdBlock } from "./markdown-blocks.ts";
+import { displayWidth, renderTable, splitMarkdown, tableFits, tailWidth, truncateWidth, type MdBlock } from "./markdown-blocks.ts";
 import {
+  barChartLayout,
   barGlyphs,
   brailleChart,
   compactNum,
@@ -77,9 +78,13 @@ import {
   parseSources,
   parseWeather,
   pieGrid,
+  pieLayout,
+  resamplePoints,
   richKind,
   type Source as SourceItem,
   sharePercents,
+  sparkLayout,
+  sparkRange,
   sparkline,
   weatherIcon,
 } from "./rich-blocks.ts";
@@ -936,7 +941,7 @@ export function App(props: { engine: EngineClient }) {
     // (`anthropic/claude-opus-4-8`) in one aligned column; an outlier past the
     // cap still gets a 2-space gap before its description — the gap must never
     // collapse to zero (labels used to run straight into the desc: "…-4-81M").
-    const labelW = Math.min(32, Math.max(0, ...rows.map((r) => (r.desc ? [...r.label].length : 0))));
+    const labelW = Math.min(32, Math.max(0, ...rows.map((r) => (r.desc ? displayWidth(r.label) : 0))));
     const marker = m.kind === "value" || m.kind === "models";
     // Ellipsize a description that would clip at the column edge (wrapMode="none"
     // hard-cuts mid-word with no affordance): prefix `❯ ` (2) + optional marker
@@ -944,12 +949,14 @@ export function App(props: { engine: EngineClient }) {
     const descW = (labelLen: number) =>
       Math.max(8, contentWidth() - 7 - 2 - (marker ? 2 : 0) - labelLen);
     const view = rows.slice(start, start + win).map((r, i) => {
-      const label = r.desc ? `${r.label.padEnd(labelW)}  ` : r.label;
+      // padRight pads by display CELLS — `.padEnd` counts UTF-16 units, so a
+      // label holding CJK/emoji used to shift every description out of column.
+      const label = r.desc ? `${padRight(r.label, labelW)}  ` : r.label;
       return {
         active: start + i === sel,
         current: !!r.current,
         label,
-        desc: r.desc ? truncate(r.desc, descW([...label].length)) : "",
+        desc: r.desc ? truncate(r.desc, descW(displayWidth(label))) : "",
         fg: r.fg,
         idx: start + i,
       };
@@ -1846,7 +1853,8 @@ export function App(props: { engine: EngineClient }) {
   // resort — so a narrow terminal NEVER hard-clips a status line mid-word.
   const fitParts = (parts: string[], width: number): string => {
     const keep = parts.filter(Boolean);
-    while (keep.length > 1 && [...keep.join("  ·  ")].length > width) keep.pop();
+    // Measured in display cells — a CJK path/branch counts its real columns.
+    while (keep.length > 1 && displayWidth(keep.join("  ·  ")) > width) keep.pop();
     return truncate(keep.join("  ·  "), Math.max(8, width));
   };
   // The persistent "where am I" context — location · git · goal — sits at the
@@ -1883,7 +1891,9 @@ export function App(props: { engine: EngineClient }) {
     // 42 (sidebar) − 2 (column padding) − 4 (panel padding), minus 2 more so
     // the `…` lands INSIDE the box (the render clips at the edge otherwise).
     const valW = SIDEBAR_W - 8;
-    const tail = (s: string) => (s.length > valW ? `…${s.slice(-(valW - 1))}` : s);
+    // Display-cell tail keep (the old `.slice(-(valW - 1))` counted UTF-16 units
+    // and could open on half a surrogate pair in a CJK/emoji path).
+    const tail = (s: string) => tailWidth(s, valW);
     const rows: { value: string; dim?: boolean }[] = [
       { value: tail(cwd) },
       { value: tail(headModel()) },
@@ -1939,8 +1949,8 @@ export function App(props: { engine: EngineClient }) {
   // The under-input status bar is justified (status left, hints right). Only keep
   // both on ONE row when they actually fit with a gap; otherwise the hints drop to
   // their own row so the two never collide / clip on a narrow terminal.
-  const hintsWidth = () => hintSegs().reduce((n, s) => n + [...s.t].length, 0);
-  const footerFits = () => contentWidth() - 2 >= [...detailsRight()].length + hintsWidth() + 6;
+  const hintsWidth = () => hintSegs().reduce((n, s) => n + displayWidth(s.t), 0);
+  const footerFits = () => contentWidth() - 2 >= displayWidth(detailsRight()) + hintsWidth() + 6;
 
   // Hover-vs-arrows: a menu row's onMouseOver would otherwise keep pinning the
   // selection to whatever row is under a RESTING mouse — so pressing ↑/↓ appeared
@@ -3338,7 +3348,7 @@ function CodeBlock(props: {
       <Show when={props.block().lang}>
         <text fg={p.muted}>{props.block().lang}</text>
       </Show>
-      <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{clampWidth(l, w()) || " "}</text>}</For>
+      <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{truncateWidth(l, w()) || " "}</text>}</For>
     </box>
   );
 }
@@ -3481,16 +3491,7 @@ function padRight(s: string, n: number): string {
 function padLeft(s: string, n: number): string {
   return " ".repeat(Math.max(0, n - displayWidth(s))) + s;
 }
-/** Truncate to `n` display cells with an ellipsis. */
-function clampWidth(s: string, n: number): string {
-  if (displayWidth(s) <= n) return s;
-  let out = "";
-  for (const ch of s) {
-    if (displayWidth(out + ch) > n - 1) break;
-    out += ch;
-  }
-  return `${out}…`;
-}
+// (Truncation to display cells is the shared `truncateWidth` in markdown-blocks.)
 
 /** A horizontal bar chart: `label ▇▇▇▇  value`, each bar in a distinct series hue,
  * value labels right-aligned into a column. A quiet title sits above. A chart
@@ -3502,11 +3503,10 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
   const rows = () => {
     const { data } = model();
     const max = Math.max(1, ...data.map((d) => d.value));
-    const labelW = Math.min(20, Math.max(1, ...data.map((d) => displayWidth(d.label))));
-    const valueW = Math.max(1, ...data.map((d) => displayWidth(d.display)));
-    // Row = label(+2) + bar/track + gap(2) + value; keep a cell of slack so the
-    // right-aligned value column never clips at the column edge.
-    const track = Math.max(6, props.width - labelW - valueW - 5);
+    // Row = label(+2) + bar/track + gap(2) + value + a cell of slack; the budget
+    // clamps every column to the available width, so a narrow terminal shrinks
+    // the track (and then the label/value) instead of clipping the value column.
+    const { labelW, valueW, track } = barChartLayout(data, props.width);
     return data.map((d, i) => {
       const bar = barGlyphs(d.value / max, track);
       // Split the bar into its FULL cells (painted as a background fill — one
@@ -3516,10 +3516,10 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
       const tailGlyph = bar.slice(fullCells);
       const gap = " ".repeat(Math.max(0, track - displayWidth(bar)));
       return {
-        label: padRight(clampWidth(d.label, labelW), labelW),
+        label: padRight(truncateWidth(d.label, labelW), labelW),
         full: fullCells,
         tailGlyph,
-        tail: `${gap}  ${padLeft(d.display, valueW)}`,
+        tail: `${gap}  ${padLeft(truncateWidth(d.display, valueW), valueW)}`,
         color: p.series[i % p.series.length]!,
       };
     });
@@ -3570,22 +3570,35 @@ function LineChart(props: { body: string; palette: Palette; width: number; spark
     const pts = model().series[0]!.points;
     const min = Math.min(...pts);
     const max = Math.max(...pts);
-    const axisW = Math.max(displayWidth(compactNum(min)), displayWidth(compactNum(max)));
+    // The axis column yields to the plot: cap it so plot + axis never exceed
+    // the width (an extreme magnitude can push compactNum past 7 cells), then
+    // the plot takes exactly what remains — no fixed floor that overflows.
+    const axisW = Math.min(
+      Math.max(displayWidth(compactNum(min)), displayWidth(compactNum(max))),
+      Math.max(4, props.width - 5),
+    );
     const h = 6;
-    const w = Math.max(8, props.width - axisW - 1);
+    const w = Math.max(4, props.width - axisW - 1);
     const rows = brailleChart(pts, w, h);
     // Axis labels: the series max sits on the top row, the min on the bottom row.
-    return { rows, axisW, top: compactNum(max), bottom: compactNum(min), color: p.series[0]! };
+    return {
+      rows,
+      axisW,
+      top: truncateWidth(compactNum(max), axisW),
+      bottom: truncateWidth(compactNum(min), axisW),
+      color: p.series[0]!,
+    };
   };
   const sparks = () => {
-    const labelW = Math.min(16, Math.max(1, ...model().series.map((s) => displayWidth(s.label ?? ""))));
+    // Budgeted columns: a long series RESAMPLES into the spark column instead of
+    // painting one glyph per point (which overflowed the row and shoved the
+    // range text off-screen); on a very narrow width the range drops first.
+    const { labelW, sparkW, showRange } = sparkLayout(model().series, props.width);
     return model().series.map((s, i) => {
-      const min = Math.min(...s.points);
-      const max = Math.max(...s.points);
       return {
-        label: s.label ? padRight(clampWidth(s.label, labelW), labelW) : "",
-        spark: sparkline(s.points),
-        range: `  ${compactNum(min)}–${compactNum(max)}`,
+        label: s.label ? padRight(truncateWidth(s.label, labelW), labelW) : "",
+        spark: sparkline(resamplePoints(s.points, sparkW)),
+        range: showRange ? `  ${sparkRange(s.points)}` : "",
         color: p.series[i % p.series.length]!,
       };
     });
@@ -3642,18 +3655,17 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
     const { data } = model();
     const values = data.map((d) => d.value);
     const pct = sharePercents(values);
-    const labelW = Math.min(20, Math.max(1, ...data.map((d) => displayWidth(d.label))));
-    const legendW = Math.min(30, labelW + 8);
-    const avail = props.width - legendW - 2;
-    const cols = Math.max(10, Math.min(22, avail % 2 === 0 ? avail : avail - 1));
-    const pieRows = Math.max(5, Math.round(cols / 2));
+    // Budgeted columns: the legend label shrinks before the disc, and when the
+    // width can't seat a legible disc at all (cols = 0) the legend stands alone
+    // — the old fixed 10-col disc floor pushed the legend off a narrow terminal.
+    const { labelW, cols, rows: pieRows } = pieLayout(data.map((d) => d.label), props.width);
     // A SOLID disc (not a donut) — at terminal cell sizes a filled circle reads
     // unmistakably as a pie, where a hole fragments into scattered arcs.
-    const grid = pieGrid(values, cols, pieRows);
+    const grid = cols > 0 ? pieGrid(values, cols, pieRows) : [];
     return {
       grid,
       legend: data.map((d, i) => ({
-        label: padRight(clampWidth(d.label, labelW), labelW),
+        label: padRight(truncateWidth(d.label, labelW), labelW),
         pct: pct[i]!,
         color: p.series[i % p.series.length]!,
       })),
@@ -3687,8 +3699,9 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
             )}
           </For>
         </box>
-        {/* Legend: swatch · label (padded so the percentages align) · share. */}
-        <box flexDirection="column" flexShrink={0} paddingLeft={2}>
+        {/* Legend: swatch · label (padded so the percentages align) · share.
+            The gap belongs to the disc — legend-only mode sits flush left. */}
+        <box flexDirection="column" flexShrink={0} paddingLeft={view().grid.length > 0 ? 2 : 0}>
           <For each={view().legend}>
             {(l) => (
               <box flexDirection="row" flexShrink={0}>
@@ -3800,7 +3813,7 @@ function SourceList(props: { sources: SourceItem[]; palette: Palette; width: num
             <text flexShrink={0} fg={p.muted}>{`${i() + 1}  `}</text>
             <box flexDirection="column" flexGrow={1}>
               <text flexShrink={0} fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="none" link={href(s)}>
-                {clampWidth(s.title, Math.max(8, props.width - 4))}
+                {truncateWidth(s.title, Math.max(8, props.width - 4))}
               </text>
               <Show when={s.domain}>
                 <text flexShrink={0} fg={p.tool} attributes={TextAttributes.UNDERLINE} link={href(s)}>
@@ -4099,12 +4112,13 @@ function fmtContext(tokens: number): string {
   return `${Math.round(tokens / 1000)}k`;
 }
 
-/** Current working directory with $HOME collapsed to `~`. */
+/** Current working directory with $HOME collapsed to `~`. Tail-kept by display
+ * cells (a CJK/emoji dir name measures its real columns; no mid-surrogate cut). */
 function shortCwd(): string {
   const cwd = process.cwd();
   const home = process.env.HOME ?? "";
   const path = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
-  return path.length > 48 ? `…${path.slice(-47)}` : path;
+  return tailWidth(path, 48);
 }
 
 export async function mountApp(engine: EngineClient): Promise<void> {

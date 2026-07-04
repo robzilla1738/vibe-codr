@@ -23,30 +23,72 @@ export interface StoredMcpAuth {
   codeVerifier?: string;
 }
 
-/** Resolve where a server's OAuth state lives (honoring an explicit override). */
+/** Resolve where a server's OAuth state lives (honoring an explicit override).
+ * The sanitized name alone can collide (`gh/api` and `gh_api` both slug to
+ * `gh_api`), which would hand one server's grant — tokens included — to a
+ * DIFFERENT server. A short hash of the RAW name disambiguates (same fix as the
+ * report-path sanitize collision). */
 export function mcpTokenStorePath(server: string, override?: string): string {
   if (override) return override.startsWith("~") ? join(homeDir(), override.slice(1)) : override;
-  const safe = server.replace(/[^A-Za-z0-9_.-]/g, "_");
-  return join(vibeConfigDir(), "mcp", `${safe}.json`);
+  return join(vibeConfigDir(), "mcp", `${sanitizeServer(server)}-${shortHash(server)}.json`);
+}
+
+/** Pre-hash on-disk location (bare slug). Kept as a read/migration fallback so
+ * an existing grant isn't orphaned by the path change — see McpTokenStore. */
+export function legacyMcpTokenStorePath(server: string): string {
+  return join(vibeConfigDir(), "mcp", `${sanitizeServer(server)}.json`);
+}
+
+function sanitizeServer(server: string): string {
+  return server.replace(/[^A-Za-z0-9_.-]/g, "_");
+}
+
+/** Deterministic 8-char hex hash of a string (FNV-1a). Dependency-free and
+ * stable across runs, so every session derives the same store path. */
+function shortHash(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
 }
 
 function homeDir(): string {
   return process.env.HOME || process.env.USERPROFILE || ".";
 }
 
-/** A tiny JSON-file store for one server's OAuth state (atomic-ish overwrite). */
+/** A tiny JSON-file store for one server's OAuth state (atomic-ish overwrite).
+ * When a `legacyPath` is given (the pre-hash bare-slug location), an existing
+ * grant there is migrated on first read — renamed to the new path — so the
+ * path-collision fix doesn't force a re-auth of every already-granted server. */
 export class McpTokenStore {
   #path: string;
+  #legacyPath: string | undefined;
 
-  constructor(path: string) {
+  constructor(path: string, legacyPath?: string) {
     this.#path = path;
+    this.#legacyPath = legacyPath;
   }
 
   get path(): string {
     return this.#path;
   }
 
+  /** One-shot migration: a grant persisted at the legacy (pre-hash) path moves
+   * to the current path when the current one doesn't exist yet. Rename is
+   * atomic, and the moved file then flows through the normal read (including
+   * corrupt-file set-aside) exactly like a natively-written one. Best-effort —
+   * a failed rename just means the grant re-auths, never a broken store. */
+  async #migrateLegacy(): Promise<void> {
+    if (!this.#legacyPath || this.#legacyPath === this.#path) return;
+    if (await Bun.file(this.#path).exists()) return;
+    if (!(await Bun.file(this.#legacyPath).exists())) return;
+    await rename(this.#legacyPath, this.#path).catch(() => undefined);
+  }
+
   async read(): Promise<StoredMcpAuth> {
+    await this.#migrateLegacy();
     const file = Bun.file(this.#path);
     if (!(await file.exists())) return {}; // absent → genuinely empty store
     try {
@@ -78,6 +120,11 @@ export class McpTokenStore {
       await unlink(this.#path);
     } catch {
       /* already gone */
+    }
+    // Drop a not-yet-migrated legacy file too — otherwise the next read would
+    // migrate it back in and resurrect credentials the caller just revoked.
+    if (this.#legacyPath && this.#legacyPath !== this.#path) {
+      await unlink(this.#legacyPath).catch(() => undefined);
     }
   }
 }
@@ -118,7 +165,14 @@ export function createMcpOAuthProvider(
   cfg: McpOAuth,
   deps: McpOAuthDeps = {},
 ): McpOAuthProvider {
-  const store = deps.store ?? new McpTokenStore(mcpTokenStorePath(server, cfg.tokenStore));
+  // No legacy fallback for an explicit tokenStore override — the user names
+  // that path directly; only the derived default path changed shape.
+  const store =
+    deps.store ??
+    new McpTokenStore(
+      mcpTokenStorePath(server, cfg.tokenStore),
+      cfg.tokenStore ? undefined : legacyMcpTokenStorePath(server),
+    );
   const log = deps.logger ?? createLogger("mcp-oauth");
   const redirectUrl = cfg.redirectUri ?? DEFAULT_REDIRECT;
 

@@ -44,6 +44,46 @@ test("parseLoopArgs returns null with no prompt", () => {
   expect(parseLoopArgs("")).toBeNull();
 });
 
+test("parseLoopArgs warns on an unknown interval unit instead of silently defaulting", () => {
+  // "5x" in the interval position used to be silently swallowed into the
+  // prompt — the user thinks they set a 5-something pace but got the 10m
+  // default. It must warn, while still running (kept as prompt text).
+  for (const token of ["5x", "30sec", "0s"]) {
+    const p = parseLoopArgs(`${token} check the build`);
+    expect(p).not.toBeNull();
+    expect(p!.intervalMs).toBe(600_000); // default, not the mistyped value
+    expect(p!.prompt).toBe(`${token} check the build`);
+    expect(p!.warnings?.length).toBe(1);
+    expect(p!.warnings![0]).toContain(`"${token}"`);
+  }
+});
+
+test("parseLoopArgs warns when --max/--until is typed but not applied", () => {
+  // `--max ten` doesn't match the numeric flag regex, so the flag used to stay
+  // in the prompt with NO bound set and no hint — an unbounded loop the user
+  // believes is capped. Same for a value-less trailing `--until`.
+  const badMax = parseLoopArgs("5m deploy --max ten");
+  expect(badMax).not.toBeNull();
+  expect(badMax!.max).toBeUndefined();
+  expect(badMax!.warnings?.some((w) => w.includes('"--max"'))).toBe(true);
+
+  const badUntil = parseLoopArgs("deploy --until");
+  expect(badUntil).not.toBeNull();
+  expect(badUntil!.until).toBeUndefined();
+  expect(badUntil!.warnings?.some((w) => w.includes('"--until"'))).toBe(true);
+});
+
+test("parseLoopArgs stays silent on legitimate prompts that merely contain -- text", () => {
+  // Only the two flags the parser understands warn; arbitrary --flags in
+  // prompt text (asking the model about some tool's flags) must not.
+  const p = parseLoopArgs("5m run the build --watch and report failures");
+  expect(p!.warnings).toBeUndefined();
+  expect(p!.prompt).toBe("run the build --watch and report failures");
+  // A fully well-formed invocation is warning-free too.
+  const ok = parseLoopArgs('30s check ci --until "tests pass" --max 5');
+  expect(ok!.warnings).toBeUndefined();
+});
+
 test("LoopController stops after max iterations", async () => {
   const ticks: number[] = [];
   let runs = 0;

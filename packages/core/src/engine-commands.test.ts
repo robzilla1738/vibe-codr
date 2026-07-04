@@ -378,6 +378,25 @@ test("/undo then immediate /redo still round-trips the conversation tail", async
   expect(session.messageCount).toBe(3); // tail re-appended at the matching mark
 });
 
+test("/undo <n> to a no-edit newest target does not orphan the conversation tail", async () => {
+  // Deferred sweep item: `/undo 1` routes through restoreTo; when the newest
+  // checkpoint's turn made NO file edits, restoreTo produced no redo step at all
+  // — the conversation was rewound but the sliced-off tail had nowhere to live,
+  // so /redo reported "Nothing to redo" and the context was lost for good.
+  const dir = await gitRepo();
+  const session = fakeConversation(3);
+  const { checkpoints, h } = redoHarness(dir, session);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await checkpoints.snapshot("v0", { messages: 1, history: 1 });
+  // The turn after the snapshot only talked — no file edits; tree == v0.
+
+  await handleSlash(h, "undo", "1"); // newest entry → the restoreTo path
+  expect(session.messageCount).toBe(1); // conversation rewound to the mark
+  await handleSlash(h, "redo", "");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v0\n"); // files: no-op
+  expect(session.messageCount).toBe(3); // the tail came back — not orphaned
+});
+
 test("goalStatusText names the run's actual state (active / paused / met / detached / none)", () => {
   const base = { phase: null, round: 0, max: 25, pausedReason: null, met: false } as const;
   expect(goalStatusText(null, { ...base, active: false })).toContain("No goal set");

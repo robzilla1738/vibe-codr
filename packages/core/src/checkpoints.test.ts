@@ -443,6 +443,35 @@ test("restoreTo pins the conversation payload to the topmost step so only the FU
   expect(cp.redoDepth()).toBe(0);
 });
 
+test("restoreTo to the newest checkpoint after a NO-EDIT turn still leaves a redo step for the tail", async () => {
+  // Deferred sweep item: `/undo <n>` targeting the NEWEST checkpoint when the
+  // turn after it made no file edits (working tree == the target's snapshot)
+  // skipped the phantom step as "identical tree" — but with no newer checkpoints
+  // there was NO other step to carry the conversation tail the caller stashes
+  // right after, so stashRedoPayload no-op'd and the rewound context was
+  // unrecoverable (/redo: nothing to redo). The phantom must survive whenever it
+  // is the only possible redo step; redoing it is a file no-op that hands the
+  // tail back.
+  const dir = await initRepo();
+  const cp = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  await cp.snapshot("v1");
+  await Bun.write(join(dir, "a.txt"), "v2\n");
+  const c2 = await cp.snapshot("v2");
+  // The turn after v2 only talked — the tree still matches v2's snapshot.
+
+  const target = await cp.restoreTo(c2!.id);
+  expect(target?.label).toBe("v2");
+  const tail = { marker: "no-edit-tail" };
+  cp.stashRedoPayload(tail);
+
+  expect(cp.redoDepth()).toBe(1); // the pre-rewind capture — the tail's carrier
+  const re = await cp.redo();
+  expect(re?.payload).toBe(tail); // handed back, not orphaned
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v2\n"); // files: no-op walk
+  expect(cp.redoDepth()).toBe(0);
+});
+
 test("a new edit-checkpoint clears the redo stack", async () => {
   const dir = await initRepo();
   const cp = new CheckpointManager(dir);

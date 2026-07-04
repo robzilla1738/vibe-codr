@@ -101,6 +101,74 @@ export function displayWidth(s: string): number {
   return w;
 }
 
+/** Detects strings whose width needs GRAPHEME measurement (matches
+ * {@link displayWidth}'s slow-path trigger): ZWJ sequences, VS16 emoji
+ * presentation (a NARROW base like ❤/☀ + U+FE0F renders 2 cells —
+ * per-codepoint summing undercounts it), flags, skin tones. */
+const CLUSTER_RE = /[\u200d\ufe0f\u{1f1e6}-\u{1f1ff}\u{1f3fb}-\u{1f3ff}]/u;
+
+/** Truncate `s` to at most `n` display cells, appending `…` when it was cut.
+ * Fast path iterates CODE POINTS (a surrogate pair is never split — no stranded
+ * half) and measures terminal cells, so CJK/emoji clip AT the column edge
+ * instead of past it; cluster-bearing strings (VS16/ZWJ/flags) walk GRAPHEMES so
+ * a 2-cell VS16 emoji can't be counted as 1 and blow the budget. Linear either way. */
+export function truncateWidth(s: string, n: number): string {
+  if (n <= 0) return "";
+  if (displayWidth(s) <= n) return s;
+  const keep = n - 1; // reserve one cell for the ellipsis
+  let out = "";
+  let w = 0;
+  if (GRAPHEMES && CLUSTER_RE.test(s)) {
+    for (const { segment } of GRAPHEMES.segment(s)) {
+      const cw = graphemeWidth(segment);
+      if (w + cw > keep) break;
+      out += segment;
+      w += cw;
+    }
+    return `${out}…`; // cluster boundaries — nothing dangling to strip
+  }
+  for (const ch of s) {
+    const cw = charWidth(ch.codePointAt(0)!);
+    if (w + cw > keep) break;
+    out += ch;
+    w += cw;
+  }
+  // A cut mid-ZWJ-sequence must not leave a dangling joiner gluing the `…` into
+  // the previous emoji.
+  return `${out.replace(/[\u200d\ufe0f]+$/u, "")}…`;
+}
+
+/** Keep the TRAILING `n` display cells of `s`, prefixing `…` when it was cut —
+ * for deep paths, where the trailing segments are the ones that identify where
+ * you are. Same fast/cluster split as {@link truncateWidth} (surrogate-safe). */
+export function tailWidth(s: string, n: number): string {
+  if (n <= 0) return "";
+  if (displayWidth(s) <= n) return s;
+  const keep = n - 1; // reserve one cell for the ellipsis
+  let out = "";
+  let w = 0;
+  if (GRAPHEMES && CLUSTER_RE.test(s)) {
+    const segs = [...GRAPHEMES.segment(s)].map((g) => g.segment);
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const cw = graphemeWidth(segs[i]!);
+      if (w + cw > keep) break;
+      out = segs[i]! + out;
+      w += cw;
+    }
+    return `…${out}`; // cluster boundaries — nothing dangling to strip
+  }
+  const chars = [...s];
+  for (let i = chars.length - 1; i >= 0; i--) {
+    const cw = charWidth(chars[i]!.codePointAt(0)!);
+    if (w + cw > keep) break;
+    out = chars[i]! + out;
+    w += cw;
+  }
+  // The cut must not open on a bare joiner/combining mark that would stack onto
+  // the `…`.
+  return `…${out.replace(/^[\u200d\ufe0f\u0300-\u036f]+/u, "")}`;
+}
+
 /**
  * Strip inline markdown (emphasis / code / links) for text we render OURSELVES —
  * table cells, headings, blockquotes. OpenTUI's native `<markdown>` conceals these

@@ -1,6 +1,7 @@
 import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
+import { truncateWidth } from "./markdown-blocks.ts";
 import { toolLabel } from "./tool-icons.ts";
 
 /**
@@ -259,8 +260,9 @@ function noticeColor(level: "info" | "warn" | "error") {
   return level === "error" ? ansi.red : level === "warn" ? ansi.yellow : ansi.dim;
 }
 
+// Cell-aware + surrogate-safe (the old `.slice(0, n)` could cut a pair in half).
 function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s;
+  return truncateWidth(s, n);
 }
 
 /**

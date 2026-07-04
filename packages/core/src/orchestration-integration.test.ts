@@ -11,7 +11,7 @@ import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
 import { Engine } from "./engine.ts";
-import { loadCompletedTasks } from "./build/journal.ts";
+import { loadCompletedTasks, planIdentity } from "./build/journal.ts";
 
 // A fresh cwd per session so the orchestration journal (now written under
 // `.vibe/orchestration/` on every task settle) never lands in the real repo or
@@ -108,6 +108,49 @@ test("spawn_tasks runs a dependency-ordered plan and returns a consolidated repo
   const statuses = events.filter((e) => e.type === "orchestration-task");
   expect(statuses.some((e) => e.type === "orchestration-task" && e.taskId === "a" && e.status === "completed")).toBe(true);
   expect(statuses.some((e) => e.type === "orchestration-task" && e.taskId === "b" && e.status === "completed")).toBe(true);
+});
+
+test("the journal plan stamp includes behavior-bearing fields (verify-pass regression)", async () => {
+  // The spawn_tasks call site must hash files/verify/check/tier into the plan
+  // identity — a stamp computed over id/objective/deps only would let a re-plan
+  // that flips one of those fields inherit this run's completions.
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "t1",
+        toolName: "spawn_tasks",
+        input: JSON.stringify({
+          tasks: [{ id: "a", objective: "do task A", deps: [], files: ["fa.txt"] }],
+        }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    textStep("A is complete"), // child a
+    textStep("all orchestrated"), // parent wrap
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const cwd = tmpCwd();
+  const session = new Session({
+    config: orchestrationConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("orchestrate A");
+
+  const full = planIdentity([{ id: "a", objective: "do task A", deps: [], files: ["fa.txt"] }]);
+  const stripped = planIdentity([{ id: "a", objective: "do task A", deps: [] }]);
+  expect(full).not.toBe(stripped);
+  // The journal event carries the FULL-field stamp: seeding under it works …
+  expect(loadCompletedTasks(cwd, session.id, full).length).toBe(1);
+  // … and a plan differing only in a behavior-bearing field seeds nothing.
+  expect(loadCompletedTasks(cwd, session.id, stripped).length).toBe(0);
 });
 
 test("spawn_tasks rejects an invalid plan (dependency cycle) without running anything", async () => {
@@ -586,6 +629,88 @@ test("submit-prompt clears the blackboard when no detached child is running", as
   const out = readNotesOutput(events);
   expect(out).toContain("No shared notes yet");
   expect(out).not.toContain("BOARD_DECISION_XYZ");
+
+  await engine.finalize();
+  await collector;
+}, 15_000);
+
+test("a submit-prompt racing a not-yet-registered detached spawn does not wipe the board", async () => {
+  // The timing window the detached-count guard alone missed: the clear used to
+  // fire eagerly in send(), at ENQUEUE time. A prompt submitted while turn 1 is
+  // still mid-flight — after it posted a decision but BEFORE its detached spawn
+  // registered — found runningDetachedCount() === 0 and wiped the decision the
+  // detached batch was about to kick off with. The clear now runs when the
+  // queued prompt's turn STARTS (FIFO ⇒ turn 1 is done and its batch is
+  // registered by then), so the decision must survive into turn 2's read.
+  let engine!: Engine;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const p = JSON.stringify(options.prompt ?? "");
+      // The hanging background child (its own prompt has HANGWORK but not the
+      // parent-only detach marker).
+      if (p.includes("HANGWORK") && !p.includes("in the background")) {
+        return hangStream(options.abortSignal) as never;
+      }
+      if (p.includes("MARKER2_RACE")) {
+        // Turn 2 step 2: the read_notes tool-result is in context.
+        if (p.includes('"toolName":"read_notes"')) return textStep("turn2 done") as never;
+        // Turn 2 step 1: read the board.
+        return stream([
+          { type: "stream-start", warnings: [] },
+          { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: "{}" },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ]) as never;
+      }
+      // Turn 1 step 3: the detach handle is in context — wrap up.
+      if (p.includes("in the background")) return textStep("turn1 done") as never;
+      // Turn 1 step 2: the decision is posted, the detached spawn hasn't run yet
+      // — inject the racing prompt in EXACTLY this window, then spawn.
+      if (p.includes("Posted to the shared board")) {
+        engine.send({ type: "submit-prompt", text: "MARKER2_RACE read the board" });
+        return stream([
+          { type: "stream-start", warnings: [] },
+          {
+            type: "tool-call",
+            toolCallId: "s1",
+            toolName: "spawn_subagent",
+            input: JSON.stringify({ prompt: "do HANGWORK now", detach: true }),
+          },
+          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        ]) as never;
+      }
+      // Turn 1 step 1: post the decision the batch depends on.
+      return stream([
+        { type: "stream-start", warnings: [] },
+        {
+          type: "tool-call",
+          toolCallId: "n1",
+          toolName: "post_note",
+          input: JSON.stringify({ note: "BOARD_DECISION_RACE", kind: "decision" }),
+        },
+        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      ]) as never;
+    },
+  });
+
+  const cwd = tmpCwd();
+  const config = orchestrationConfig();
+  config.model = "mock/test";
+  config.build = { ...config.build, enabled: false };
+  config.memory = { ...config.memory, proactiveRecall: false, sessionDigest: false };
+  config.subagent = { ...config.subagent, timeoutMs: 0 };
+  engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: true });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  engine.send({ type: "submit-prompt", text: "MARKER1 post then spawn (prompt 2 injected mid-turn)" });
+  await engine.whenIdle(); // drains BOTH turns (the race prompt was queued mid-turn-1)
+
+  // Turn 2's read_notes still saw the decision → the racing submit-prompt did
+  // not clear the board out from under the about-to-register detached batch.
+  expect(readNotesOutput(events)).toContain("BOARD_DECISION_RACE");
 
   await engine.finalize();
   await collector;

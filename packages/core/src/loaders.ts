@@ -1,7 +1,26 @@
 import { Glob } from "bun";
+import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { parseSkillMarkdown, type SlashCommand, type Skill } from "@vibe/plugins";
 import { vibeConfigDir } from "./memory.ts";
+
+/** Char cap on a loaded command/skill body. Same head-cap discipline as
+ * `use_skill`'s MAX_SKILL_BODY: both bodies land in the prompt verbatim (a
+ * command body via handlePrompt, a skill body via use_skill / /skill), so a
+ * runaway multi-MB file must not blow the context window — the model gets the
+ * head plus a pointer to the full file. */
+export const MAX_BODY_CHARS = 32 * 1024;
+
+/** Lazily (re-)read a command/skill markdown body at invocation time, capped.
+ * Only name/description are held from startup — the body is NOT retained, so a
+ * huge file bloats neither memory nor context, and an edit to the file between
+ * load and invocation is picked up live. */
+function readBody(file: string): string {
+  const body = parseSkillMarkdown(readFileSync(file, "utf8")).body;
+  return body.length > MAX_BODY_CHARS
+    ? `${body.slice(0, MAX_BODY_CHARS)}\n\n…(body truncated at ${MAX_BODY_CHARS} chars — read the full file at ${file} for the rest)`
+    : body;
+}
 
 /** User-global skills directory (`~/.config/vibe-codr/skills`). */
 export function globalSkillsDir(): string {
@@ -38,8 +57,11 @@ export async function loadCommandsFrom(dir: string): Promise<SlashCommand[]> {
       // resolves to a directory) must not abort the whole scan and silently drop
       // every command discovered after it.
       try {
+        // Startup reads the file for frontmatter (name/description) only; the
+        // body is deliberately not captured — `run` re-reads it lazily via
+        // `readBody`, so a giant command file costs nothing until invoked.
         const raw = await Bun.file(file).text();
-        const { frontmatter, body } = parseSkillMarkdown(raw);
+        const { frontmatter } = parseSkillMarkdown(raw);
         // `||`, not `??`: a bare `name:`/`description:` line parses to "" and
         // must fall back the same as an absent field (a ""-named command is
         // uninvocable).
@@ -48,7 +70,18 @@ export async function loadCommandsFrom(dir: string): Promise<SlashCommand[]> {
           name,
           description: frontmatter.description?.trim() || `Custom command /${name}`,
           source: "file",
-          run: (args) => ({ kind: "prompt", text: applyArgs(body, args) }),
+          run: (args) => {
+            try {
+              return { kind: "prompt", text: applyArgs(readBody(file), args) };
+            } catch (err) {
+              // The file vanished/broke between startup and invocation — report
+              // it instead of throwing into the slash dispatcher.
+              return {
+                kind: "notice",
+                message: `/${name}: could not read ${file}: ${(err as Error).message}`,
+              };
+            }
+          },
         });
       } catch {
         // Skip this one file; keep scanning the rest.
@@ -79,8 +112,11 @@ export async function loadSkillsFrom(root: string): Promise<Skill[]> {
     for await (const file of glob.scan({ cwd: root, absolute: true })) {
       // Guard EACH skill file so one unreadable SKILL.md doesn't drop the rest.
       try {
+        // Frontmatter only at startup — the body is re-read lazily in `load()`
+        // (true progressive disclosure: previously the full body string was
+        // captured in the closure despite the on-demand `load` shape).
         const raw = await Bun.file(file).text();
-        const { frontmatter, body } = parseSkillMarkdown(raw);
+        const { frontmatter } = parseSkillMarkdown(raw);
         const dir = dirname(file);
         // `||`, not `??`: a bare `name:` frontmatter line parses to "" — the
         // skill would register unreachable (no `/skill ""`) and inject a blank
@@ -93,7 +129,15 @@ export async function loadSkillsFrom(root: string): Promise<Skill[]> {
             ? { whenToUse: frontmatter.when_to_use }
             : {}),
           dir,
-          load: async () => body,
+          load: async () => {
+            try {
+              return readBody(file);
+            } catch (err) {
+              // Never throw into use_skill / /skill: an honest placeholder
+              // beats a failed tool call for a file deleted mid-session.
+              return `(SKILL.md body unavailable — ${file} could not be read: ${(err as Error).message})`;
+            }
+          },
         });
       } catch {
         // Skip this one skill; keep scanning the rest.

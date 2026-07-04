@@ -13,6 +13,9 @@ interface Job {
   pid?: number;
   /** Localhost server URLs detected in the output so far (deduped). */
   servers: string[];
+  /** Tail of already-scanned output, re-prepended to the next chunk so a URL
+   * split across two writes still matches (see SCAN_OVERLAP). */
+  scanCarry: string;
 }
 
 /** Extract localhost server URLs printed by dev servers (vite/next/etc.). */
@@ -29,6 +32,12 @@ function detectServers(output: string): string[] {
 
 /** Cap on the sticky detected-server list per job (bounds high-cardinality output). */
 const MAX_SERVERS = 64;
+
+/** Chars of already-scanned tail re-scanned with each new chunk. Big enough for
+ * any realistic dev-server URL to span a chunk boundary and still match whole;
+ * a URL longer than this that straddles a boundary may be detected with a
+ * truncated path — acceptable, the origin part is what matters. */
+const SCAN_OVERLAP = 256;
 
 /**
  * Process-wide registry of background shell jobs. Lets the agent start a
@@ -75,6 +84,7 @@ export class BackgroundJobs {
       exitCode: null,
       pid: proc.pid,
       servers: [],
+      scanCarry: "",
     };
     this.#jobs.set(job.id, job);
     this.#onChange?.();
@@ -88,8 +98,15 @@ export class BackgroundJobs {
       // URLs into the sticky list rather than replacing it from the (truncated)
       // buffer — otherwise a server URL printed early scrolls out of the 100k
       // window and vanishes from `/jobs` while the server is still running.
+      // Scan ONLY the carry + new chunk, never the whole accumulated buffer:
+      // rescanning the full 100k tail on every chunk is O(n²) regex over
+      // untrusted job output (the known bad pattern class). The carry re-covers
+      // the chunk boundary so a URL split across two writes still matches, and
+      // the `includes` dedup below keeps overlap re-matches from re-announcing.
+      const window = job.scanCarry + text;
+      job.scanCarry = window.slice(-SCAN_OVERLAP);
       let added = false;
-      for (const url of detectServers(job.output)) {
+      for (const url of detectServers(window)) {
         if (!job.servers.includes(url)) {
           job.servers.push(url);
           // Bound the sticky list: a job that logs many distinct URLs (ephemeral

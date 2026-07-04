@@ -1,8 +1,15 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyArgs, loadCommandFiles, loadCommandsFrom, loadSkills, loadSkillsFrom } from "./loaders.ts";
+import {
+  applyArgs,
+  loadCommandFiles,
+  loadCommandsFrom,
+  loadSkills,
+  loadSkillsFrom,
+  MAX_BODY_CHARS,
+} from "./loaders.ts";
 
 test("loadCommandsFrom + loadSkillsFrom read an arbitrary (e.g. global) directory", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-global-"));
@@ -53,6 +60,65 @@ test("loadSkills surfaces name/description and lazily loads the body", async () 
   expect(pdf.description).toBe("Work with PDFs");
   expect(pdf.whenToUse).toBe("when a PDF is involved");
   expect(await pdf.load()).toContain("Detailed PDF instructions");
+});
+
+test("command and skill bodies are read lazily at invocation, not retained from startup", async () => {
+  // The body used to be captured eagerly in the run/load closure — an edit
+  // after startup was invisible, and a huge file sat in memory for the whole
+  // session. Rewriting the file between load and invocation proves the read
+  // happens at invocation time.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-lazy-"));
+  const cmdFile = join(dir, ".vibe", "commands", "ship.md");
+  await Bun.write(cmdFile, "old command body");
+  const skillFile = join(dir, ".vibe", "skills", "pdf", "SKILL.md");
+  await Bun.write(skillFile, "---\ndescription: PDFs\n---\nold skill body");
+
+  const cmds = await loadCommandFiles(dir);
+  const skills = await loadSkills(dir);
+  await Bun.write(cmdFile, "new command body");
+  await Bun.write(skillFile, "---\ndescription: PDFs\n---\nnew skill body");
+
+  const result = cmds[0]!.run("");
+  expect(result.kind === "prompt" && result.text).toBe("new command body");
+  expect(await skills[0]!.load()).toBe("new skill body");
+});
+
+test("an oversized command/skill body is capped with an honest truncation marker", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-cap-"));
+  const huge = "x".repeat(MAX_BODY_CHARS + 5_000);
+  await Bun.write(join(dir, ".vibe", "commands", "big.md"), huge);
+  await Bun.write(join(dir, ".vibe", "skills", "big", "SKILL.md"), `---\ndescription: big\n---\n${huge}`);
+
+  const cmd = (await loadCommandFiles(dir))[0]!;
+  const result = cmd.run("");
+  expect(result.kind).toBe("prompt");
+  const text = result.kind === "prompt" ? result.text : "";
+  // Head-capped, not the full multi-MB body — plus a marker pointing at the file.
+  expect(text.length).toBeLessThan(MAX_BODY_CHARS + 300);
+  expect(text).toContain(`truncated at ${MAX_BODY_CHARS} chars`);
+
+  const skillBody = await (await loadSkills(dir))[0]!.load();
+  expect(skillBody.length).toBeLessThan(MAX_BODY_CHARS + 300);
+  expect(skillBody).toContain(`truncated at ${MAX_BODY_CHARS} chars`);
+});
+
+test("a command/skill file deleted after startup fails honestly, not with a throw", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-gone-"));
+  const cmdFile = join(dir, ".vibe", "commands", "gone.md");
+  await Bun.write(cmdFile, "body");
+  const skillFile = join(dir, ".vibe", "skills", "gone", "SKILL.md");
+  await Bun.write(skillFile, "body");
+
+  const cmds = await loadCommandFiles(dir);
+  const skills = await loadSkills(dir);
+  rmSync(cmdFile);
+  rmSync(skillFile);
+
+  // Lazy reads must not throw into the slash dispatcher / use_skill.
+  const result = cmds[0]!.run("");
+  expect(result.kind).toBe("notice");
+  expect(result.kind === "notice" && result.message).toContain("could not read");
+  expect(await skills[0]!.load()).toContain("could not be read");
 });
 
 test("loaders tolerate missing directories", async () => {

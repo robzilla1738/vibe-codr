@@ -14,6 +14,10 @@ import {
   pieGrid,
   sharePercents,
   compactNum,
+  barChartLayout,
+  sparkLayout,
+  resamplePoints,
+  pieLayout,
 } from "./rich-blocks.ts";
 
 // ── richKind ─────────────────────────────────────────────────────────────────
@@ -263,4 +267,72 @@ test("compactNum abbreviates with a unit suffix", () => {
   expect(compactNum(1_200_000)).toBe("1.2M");
   expect(compactNum(1_200_000_000)).toBe("1.2B");
   expect(compactNum(2_000_000_000_000)).toBe("2T");
+});
+
+// ── Width budgets (narrow-terminal clamps) ───────────────────────────────────
+// Row width per BarLayout: label + gap(2) + track + gap(2) + value.
+const barRowWidth = (l: { labelW: number; track: number; valueW: number }) =>
+  l.labelW + 2 + l.track + 2 + l.valueW;
+
+test("barChartLayout never overflows a narrow width (the old track floor did)", () => {
+  const data = [
+    { label: "A very long label that used to overflow", display: "$1,234,567" },
+    { label: "日本語のラベル名テスト", display: "42" },
+  ];
+  // Pre-clamp, width 31 gave track = max(6, 31-20-10-5) = 6 → a 40-cell row.
+  for (const width of [12, 16, 20, 24, 31, 40, 60, 120]) {
+    const l = barChartLayout(data, width);
+    expect(l.labelW).toBeGreaterThanOrEqual(1);
+    expect(l.valueW).toBeGreaterThanOrEqual(1);
+    expect(l.track).toBeGreaterThanOrEqual(1);
+    expect(barRowWidth(l)).toBeLessThanOrEqual(width);
+  }
+});
+test("barChartLayout keeps the roomy budget on a wide terminal", () => {
+  const l = barChartLayout([{ label: "BTC", display: "1200" }], 80);
+  expect(l).toEqual({ labelW: 3, valueW: 4, track: 80 - 3 - 4 - 5 });
+});
+
+test("sparkLayout fits label + spark + range, dropping the range before the spark", () => {
+  const series = [{ label: "requests per second", points: [1, 500, 120_000] }];
+  const wide = sparkLayout(series, 60);
+  expect(wide).toEqual({ labelW: 16, sparkW: 60 - 18 - 8, showRange: true }); // "1–120k" + 2-gap = 8
+  // Narrow: the range goes first, then the label shrinks — the spark survives.
+  const narrow = sparkLayout(series, 12);
+  expect(narrow.showRange).toBe(false);
+  expect(narrow.labelW + 2 + narrow.sparkW).toBeLessThanOrEqual(12);
+  expect(narrow.sparkW).toBeGreaterThanOrEqual(4);
+  // Unlabelled series spend no label column at all.
+  const bare = sparkLayout([{ points: [1, 2, 3] }], 12);
+  expect(bare.labelW).toBe(0);
+  expect(bare.sparkW).toBeLessThanOrEqual(12);
+});
+
+test("resamplePoints downsamples a long series to the column budget", () => {
+  const points = Array.from({ length: 500 }, (_, i) => i);
+  const out = resamplePoints(points, 20);
+  expect(out.length).toBe(20); // pre-clamp: sparkline() painted 500 cells
+  expect(out[0]).toBe(0); // keeps the endpoints
+  expect(out[19]).toBe(499);
+  expect(resamplePoints([1, 2, 3], 20)).toEqual([1, 2, 3]); // fits — untouched
+  expect(resamplePoints(points, 1)).toEqual([499]);
+  expect(resamplePoints(points, 0)).toEqual([]);
+});
+
+test("pieLayout shrinks the legend label, then drops the disc, on narrow widths", () => {
+  const labels = ["a very long slice label", "另一个很长的标签"];
+  const wide = pieLayout(labels, 80);
+  expect(wide.labelW).toBe(20);
+  expect(wide.cols).toBe(22); // disc cap unchanged when there's room
+  expect(wide.rows).toBe(11);
+  // Mid: pre-clamp this was labelW 20 → disc 10 + legend 28 = a 40-cell row at
+  // width 34; now the label yields and the whole view fits exactly.
+  const mid = pieLayout(labels, 34);
+  expect(mid.labelW).toBe(14);
+  expect(mid.cols).toBeGreaterThanOrEqual(8);
+  expect(mid.cols + 2 + mid.labelW + 8).toBeLessThanOrEqual(34);
+  // Narrow: no legible disc fits → legend-only (cols 0), still inside the width.
+  const narrow = pieLayout(labels, 16);
+  expect(narrow.cols).toBe(0);
+  expect(narrow.labelW + 8).toBeLessThanOrEqual(16);
 });

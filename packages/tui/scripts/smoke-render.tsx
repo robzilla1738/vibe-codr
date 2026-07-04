@@ -857,6 +857,32 @@ check(
   frame.includes("deny with feedback"),
 );
 
+// 21) REGRESSION (narrow-chart-clamp): at 40 cols the bar chart's fixed 6-cell
+// track floor used to push the right-aligned value column past the edge (the
+// renderer hard-clips it), and a long sparkline painted one glyph PER POINT,
+// shoving its range text off-screen. Both now clamp to the available width.
+await t.mockInput.typeText("y"); // settle §20's pending permission card first
+await settle();
+t.mockInput.pressEnter();
+await settle();
+t.resize(40, 40);
+await settle();
+push({ type: "user-message", text: "narrow charts" });
+push({
+  type: "assistant-text-delta",
+  id: "nc",
+  delta:
+    "```chart\nA very long label that overflows: 7777\nTiny: 8\n```\n\n```spark\ncpu: " +
+    Array.from({ length: 120 }, (_, i) => (i % 9) + 1).join(" ") +
+    "\n```",
+} as UIEvent);
+push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+await settle();
+frame = await waitForText("7777");
+check("narrow bar chart keeps its value column on-screen", frame.includes("7777"));
+check("narrow bar chart ellipsizes the long label", frame.includes("A very long label t…"));
+check("narrow sparkline keeps its range on-screen (resampled, not clipped)", frame.includes("1–9"));
+
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);
   process.exit(1);

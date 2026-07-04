@@ -1,7 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { Handoff } from "@vibe/shared";
-import type { TaskResult } from "../orchestrator.ts";
+import type { TaskResult, TaskSpec } from "../orchestrator.ts";
 import { globalStateDir } from "../state-dir.ts";
 
 /**
@@ -26,6 +26,8 @@ export interface TaskStartedEvent {
   deps: string[];
   tier?: string;
   worktree?: boolean;
+  /** Identity of the plan this task ran under (see planIdentity). */
+  plan?: string;
 }
 
 export interface TaskFinishedEvent {
@@ -38,6 +40,8 @@ export interface TaskFinishedEvent {
   handoff?: Handoff;
   /** Relative path of the persisted full report, when one was written. */
   reportPath?: string;
+  /** Identity of the plan this task ran under (see planIdentity). */
+  plan?: string;
 }
 
 export type OrchestrationEvent = TaskStartedEvent | TaskFinishedEvent;
@@ -122,10 +126,31 @@ function sanitize(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 64);
 }
 
+/** Stable identity of a submitted task plan: a short hash over every task's
+ * behavior-bearing fields, in submission order. The journal is per-SESSION, so
+ * within one session two different spawn_tasks plans append to the same file —
+ * matching a seed by id+objective alone let a later plan that reuses an id
+ * (with the same objective text) inherit the earlier plan's stale result. Every
+ * journal event carries this stamp, and seeding honors only events from the
+ * SAME plan (a resume re-submits the identical plan → identical hash).
+ * files/verify/check/tier are hashed too: a re-plan that flips verification or
+ * ownership must re-run, not inherit a completion produced under weaker rules. */
+export function planIdentity(
+  specs: ReadonlyArray<Pick<TaskSpec, "id" | "objective" | "deps" | "files" | "verify" | "check" | "tier">>,
+): string {
+  return shortHash(
+    JSON.stringify(
+      specs.map((s) => [s.id, s.objective, s.deps, s.files ?? null, s.verify ?? null, s.check ?? null, s.tier ?? null]),
+    ),
+  );
+}
+
 /** Replay a session's journal into the completed results usable as a runDag
  * seed. In-flight (started but never finished) tasks are simply absent — they
- * re-run. Malformed lines are skipped, never thrown on. */
-export function loadCompletedTasks(cwd: string, sessionId: string): TaskResult[] {
+ * re-run. Malformed lines are skipped, never thrown on. When `plan` is given,
+ * only events stamped with that plan identity seed — unstamped (pre-upgrade)
+ * events re-run, the safe direction for a one-time migration cost. */
+export function loadCompletedTasks(cwd: string, sessionId: string, plan?: string): TaskResult[] {
   let raw: string;
   try {
     const global = journalPath(cwd, sessionId);
@@ -144,6 +169,7 @@ export function loadCompletedTasks(cwd: string, sessionId: string): TaskResult[]
       continue;
     }
     if (ev.type !== "task-finished" || ev.outcome !== "completed") continue;
+    if (plan !== undefined && ev.plan !== plan) continue; // another plan's task — never a seed
     const report = ev.reportPath ? readTaskReport(cwd, ev.reportPath) : null;
     done.set(ev.id, {
       id: ev.id,

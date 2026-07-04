@@ -12,6 +12,8 @@
  * palette's `series` ramp, indexed by the caller.
  */
 
+import { displayWidth } from "./markdown-blocks.ts";
+
 /** The kind of rich view a fenced-block language selects. */
 export type RichKind = "bar" | "line" | "sparkline" | "pie" | "weather" | "sources";
 
@@ -523,6 +525,113 @@ export function sharePercents(values: number[]): number[] {
     remainder--;
   }
   return out;
+}
+
+// ── Width budgets (narrow-terminal clamps) ───────────────────────────────────
+// Pure column math for the chart renderers in app.tsx. Each budget guarantees
+// its row can NEVER overflow `width` — the old fixed floors (bar track ≥ 6,
+// pie disc ≥ 10, one spark glyph per point) pushed the right-hand columns past
+// the edge on a narrow terminal, where the renderer hard-clips them. Shrink
+// order: the label column first, then the value/range column, and the
+// bar/spark track absorbs the rest. All widths are display CELLS (CJK/emoji
+// labels measure 2), never string lengths.
+
+export interface BarLayout {
+  /** Label column (ellipsize labels into this). */
+  labelW: number;
+  /** Right-aligned value column. */
+  valueW: number;
+  /** Bar track width (≥ 1). */
+  track: number;
+}
+
+/** Column budget for a bar-chart row — `label··bar…gap··value` + 1 slack cell.
+ * Invariant (width ≥ 10): labelW + 2 + track + 2 + valueW ≤ width. */
+export function barChartLayout(data: { label: string; display: string }[], width: number): BarLayout {
+  let labelW = Math.min(20, Math.max(1, ...data.map((d) => displayWidth(d.label))));
+  let valueW = Math.max(1, ...data.map((d) => displayWidth(d.display)));
+  const budget = Math.max(4, width - 6); // leave the 2+2 gaps + ≥1 track + slack
+  if (labelW + valueW > budget) {
+    labelW = Math.max(3, Math.min(labelW, budget - valueW));
+    valueW = Math.max(1, Math.min(valueW, budget - labelW));
+  }
+  return { labelW, valueW, track: Math.max(1, width - labelW - valueW - 5) };
+}
+
+/** The `min–max` range text of a sparkline row (compact numbers). */
+export function sparkRange(points: number[]): string {
+  return `${compactNum(Math.min(...points))}–${compactNum(Math.max(...points))}`;
+}
+
+export interface SparkLayout {
+  /** Label column (0 = no series in this set is labelled). */
+  labelW: number;
+  /** Cells available for the spark glyphs (resample points into this). */
+  sparkW: number;
+  /** Whether the `  min–max` range suffix still fits. */
+  showRange: boolean;
+}
+
+/** Column budget for sparkline rows — `label··spark··range`. The range column
+ * is dropped before the spark shrinks below ~4 glyphs; the label shrinks last.
+ * Invariant (width ≥ 12): labelW + 2 + sparkW + (range ? rangeW : 0) ≤ width. */
+export function sparkLayout(series: { label?: string; points: number[] }[], width: number): SparkLayout {
+  const hasLabel = series.some((s) => s.label);
+  let labelW = hasLabel
+    ? Math.min(16, Math.max(1, ...series.map((s) => displayWidth(s.label ?? ""))))
+    : 0;
+  // Range chrome: the 2-cell gap + the widest `min–max` text across the series.
+  const rangeW = 2 + Math.max(0, ...series.map((s) => (s.points.length ? displayWidth(sparkRange(s.points)) : 0)));
+  const chrome = () => (labelW > 0 ? labelW + 2 : 0);
+  let showRange = true;
+  let sparkW = width - chrome() - rangeW;
+  if (sparkW < 4) {
+    showRange = false;
+    sparkW = width - chrome();
+  }
+  if (sparkW < 4 && labelW > 0) {
+    labelW = Math.max(3, Math.min(labelW, width - 2 - 4));
+    sparkW = width - chrome();
+  }
+  return { labelW, sparkW: Math.max(1, sparkW), showRange };
+}
+
+/** Downsample `points` to at most `max` entries — evenly spaced, keeping the
+ * first and last — so a long series renders one glyph per COLUMN instead of one
+ * per point (a 500-point series used to paint a 500-cell row). A series that
+ * already fits is returned as-is. */
+export function resamplePoints(points: number[], max: number): number[] {
+  if (max <= 0) return [];
+  if (points.length <= max) return points;
+  if (max === 1) return [points[points.length - 1]!];
+  const out: number[] = [];
+  for (let i = 0; i < max; i++) {
+    out.push(points[Math.round((i * (points.length - 1)) / (max - 1))]!);
+  }
+  return out;
+}
+
+export interface PieLayout {
+  /** Legend label column. */
+  labelW: number;
+  /** Disc columns (0 = too narrow for a disc; render the legend alone). */
+  cols: number;
+  /** Disc rows. */
+  rows: number;
+}
+
+/** Column budget for the pie view — disc + 2-cell gap + legend (`■ label··pct%`
+ * = labelW + 8 cells). The label shrinks first (down to 3); below 8 disc
+ * columns the disc is dropped entirely — a 6-cell "circle" reads as noise, and
+ * the legend alone still carries the data. */
+export function pieLayout(labels: string[], width: number): PieLayout {
+  const natural = Math.max(1, ...labels.map((l) => displayWidth(l)));
+  // Reserve disc(10) + gap(2) + legend chrome(8) before giving the label room.
+  const labelW = Math.min(20, natural, Math.max(3, width - 20));
+  const avail = width - (labelW + 8) - 2;
+  const cols = Math.min(22, avail % 2 === 0 ? avail : avail - 1);
+  if (cols < 8) return { labelW, cols: 0, rows: 0 };
+  return { labelW, cols, rows: Math.max(5, Math.round(cols / 2)) };
 }
 
 /** Compact number for value labels: `1.2M`, `3.4k`, `950`. Preserves a provided

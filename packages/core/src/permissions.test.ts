@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PermissionChecker } from "./permissions.ts";
+import { PermissionChecker, grantPathScope } from "./permissions.ts";
 
 test("allows tools with no matching rule", async () => {
   const checker = new PermissionChecker([]);
@@ -509,4 +509,46 @@ test("a matchExact path rule compares each normalized spelling of the target", a
   }
   // A different file is not covered → default ask → denied.
   expect((await checker.check("edit", { path: "src/other.ts" })).allowed).toBe(false);
+});
+
+test("a matchExact realpath grant re-matches under a symlinked-ancestor cwd (audit-backlog regression)", async () => {
+  // The persisted-grant defect: with cwd spelled THROUGH a symlink (link -> real,
+  // the macOS /var→/private/var shape) the old lexical `match` rule never
+  // re-matched — the allow side judges the REAL target. A rule persisted via
+  // `grantPathScope` (realpath-canonical, matchExact) must re-match every
+  // spelling of the SAME file.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "vibe-perm-symgrant2-")));
+  mkdirSync(join(base, "real", "src"), { recursive: true });
+  symlinkSync(join(base, "real"), join(base, "link"));
+  const cwd = join(base, "link");
+  // The grant scope is the symlink-DEREFERENCED absolute, even though the input
+  // and cwd are spelled through the link (and src/a.ts does not exist yet).
+  const scope = grantPathScope("write", { path: "src/a.ts" }, cwd);
+  expect(scope).toBe(join(base, "real", "src", "a.ts"));
+  const checker = new PermissionChecker(
+    [{ tool: "write", matchExact: scope!, action: "allow" }],
+    () => false, // resolver denies — proves the grant matched without a prompt
+    "ask",
+    cwd,
+  );
+  for (const path of [
+    "src/a.ts",
+    "./src/a.ts",
+    join(cwd, "src", "a.ts"), // lexical absolute through the link
+    join(base, "real", "src", "a.ts"), // real absolute
+  ]) {
+    expect((await checker.check("write", { path })).allowed).toBe(true);
+  }
+  // A different file in the same dir still falls through to ask → denied.
+  expect((await checker.check("write", { path: "src/b.ts" })).allowed).toBe(false);
+});
+
+test("grantPathScope: command/URL scopes stay undefined; a no-symlink path falls back to the lexical resolve", () => {
+  const proj = realpathSync(mkdtempSync(join(tmpdir(), "vibe-perm-grantscope-")));
+  // No symlink anywhere → the lexical canonical IS the scope.
+  expect(grantPathScope("edit", { path: "src/x.ts" }, proj)).toBe(join(proj, "src/x.ts"));
+  // Command-bearing and URL tools have no PATH grant scope (they stay exact-string
+  // keyed via scopeString, never path-canonicalized).
+  expect(grantPathScope("bash", { command: "git status" }, proj)).toBeUndefined();
+  expect(grantPathScope("webfetch", { url: "https://x.dev" }, proj)).toBeUndefined();
 });

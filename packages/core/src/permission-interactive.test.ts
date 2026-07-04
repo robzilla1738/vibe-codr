@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
@@ -277,7 +277,7 @@ test("interactive: 'always' is remembered per content scope, not for the whole t
  * The built-in `edit`/`write` need a real file on disk; a mock keeps the
  * canonical-path keying test hermetic while still flowing a `path` scope through
  * the permission gate. */
-function makePathEngine(steps: unknown[]) {
+function makePathEngine(steps: unknown[], cwdOverride?: string) {
   let runs = 0;
   const writer: ToolDefinition<{ path?: string }> = {
     name: "writer",
@@ -294,7 +294,7 @@ function makePathEngine(steps: unknown[]) {
   const registry = new ProviderRegistry([
     { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
   ]);
-  const cwd = mkdtempSync(join(tmpdir(), "vibe-perm-path-"));
+  const cwd = cwdOverride ?? mkdtempSync(join(tmpdir(), "vibe-perm-path-"));
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test" },
     registry,
@@ -411,15 +411,76 @@ test("always-project: a command grant with a glob char persists as matchExact, N
   expect((await checker.check("danger", { command: "rm build/../secret.env" })).allowed).toBe(false);
 });
 
-test("always-project: a path grant persists the CANONICAL absolute path (mirrors the key scope)", async () => {
+test("always-project: a path grant persists the REALPATH-canonical path as matchExact (mirrors the key scope)", async () => {
+  // Regression (audit backlog): the path grant used to persist `match:
+  // resolve(cwd, path)` — the LEXICAL spelling as a GLOB. Under a symlinked
+  // ancestor (macOS /var→/private/var, which THIS tmpdir cwd sits under) the
+  // checker's allow side judges the REAL target, so the lexical rule never
+  // re-matched (silent re-prompt every session); and a literal `*` in the path
+  // would have glob-broadened. matchExact on the realpath form fixes both.
   const { engine, cwd } = makePathEngine([writerCall("c1", "src/x.ts"), finalText()]);
   drive(engine, "always-project");
   engine.send({ type: "submit-prompt", text: "go" });
   await engine.whenIdle();
-  // The persisted match is the same canonical absolute form #alwaysAllowKey uses.
   expect(await readProjectRules(cwd)).toEqual([
-    { tool: "writer", match: resolve(cwd, "src/x.ts"), action: "allow" },
+    { tool: "writer", matchExact: join(realpathSync(cwd), "src/x.ts"), action: "allow" },
   ]);
+});
+
+test("always-project: a path grant under a symlinked-ancestor cwd is honored on a fresh load", async () => {
+  // End-to-end for the audit-backlog defect: grant in a session whose cwd is
+  // spelled THROUGH a symlink (link -> real), then reload the project config
+  // fresh — the same file must be allowed again in EVERY spelling, with no
+  // re-prompt, and a different file must still ask.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "vibe-perm-symgrant-")));
+  mkdirSync(join(base, "real"));
+  symlinkSync(join(base, "real"), join(base, "link"));
+  const linkCwd = join(base, "link");
+  const { engine, cwd } = makePathEngine([writerCall("c1", "src/x.ts"), finalText()], linkCwd);
+  drive(engine, "always-project");
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+  // Persisted in the symlink-dereferenced form, not the lexical link spelling.
+  expect(await readProjectRules(cwd)).toEqual([
+    { tool: "writer", matchExact: join(base, "real", "src", "x.ts"), action: "allow" },
+  ]);
+  const { loadConfig } = await import("@vibe/config");
+  const { PermissionChecker } = await import("./permissions.ts");
+  const cfg = await loadConfig({ cwd });
+  const checker = new PermissionChecker(cfg.permissions, () => false, "ask", cwd);
+  // Every spelling of the granted file re-matches: relative, ./-prefixed,
+  // lexical absolute (through the link), and the real absolute.
+  for (const path of [
+    "src/x.ts",
+    "./src/x.ts",
+    join(linkCwd, "src", "x.ts"),
+    join(base, "real", "src", "x.ts"),
+  ]) {
+    expect((await checker.check("writer", { path })).allowed).toBe(true);
+  }
+  // A different file is NOT covered → default ask → denied.
+  expect((await checker.check("writer", { path: "src/y.ts" })).allowed).toBe(false);
+});
+
+test("always-project: a path grant with a literal glob char does NOT broaden to sibling files", async () => {
+  // Regression (audit backlog): the old `match` form compiled a literal `*` in
+  // the granted FILENAME into `.*`, so granting `src/a*.ts` auto-allowed
+  // `src/anything.ts` next session. matchExact keeps it to the one file.
+  const { engine, cwd } = makePathEngine([writerCall("c1", "src/a*.ts"), finalText()]);
+  drive(engine, "always-project");
+  engine.send({ type: "submit-prompt", text: "go" });
+  await engine.whenIdle();
+  expect(await readProjectRules(cwd)).toEqual([
+    { tool: "writer", matchExact: join(realpathSync(cwd), "src/a*.ts"), action: "allow" },
+  ]);
+  const { loadConfig } = await import("@vibe/config");
+  const { PermissionChecker } = await import("./permissions.ts");
+  const cfg = await loadConfig({ cwd });
+  const checker = new PermissionChecker(cfg.permissions, () => false, "ask", cwd);
+  // The literally-named file is allowed…
+  expect((await checker.check("writer", { path: "src/a*.ts" })).allowed).toBe(true);
+  // …but a sibling the old glob rule would have wrongly covered still asks.
+  expect((await checker.check("writer", { path: "src/anything.ts" })).allowed).toBe(false);
 });
 
 test("always-project: the persisted rule is honored on a fresh load of the project config", async () => {

@@ -392,3 +392,15 @@ test("firstLine and truncate helpers", () => {
   expect(truncate("abcdef", 4)).toBe("abc…");
   expect(truncate("ab", 4)).toBe("ab");
 });
+
+test("truncate counts display cells and never splits a surrogate pair", () => {
+  // CJK glyphs are 2 cells wide — the cut lands INSIDE the budget (日本 = 4
+  // cells + …), where the old char count kept 4 glyphs (9 cells) past the edge.
+  expect(truncate("日本語テスト", 5)).toBe("日本…");
+  // Emoji (non-BMP, 2 cells): two fit under 5 cells with the ellipsis.
+  expect(truncate("😀😀😀😀", 5)).toBe("😀😀…");
+  // Non-BMP 1-cell chars: the old `.slice(0, n - 1)` cut UTF-16 units and left
+  // a lone surrogate half at the boundary.
+  expect(truncate("𝕒𝕓𝕔𝕕𝕖", 4)).toBe("𝕒𝕓𝕔…");
+  expect(truncate("𝕒𝕓𝕔𝕕𝕖", 4).isWellFormed()).toBe(true);
+});

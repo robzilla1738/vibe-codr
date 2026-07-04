@@ -7,6 +7,7 @@
  */
 
 import { GLYPH } from "./glyphs.ts";
+import { truncateWidth } from "./markdown-blocks.ts";
 import { toolLabel } from "./tool-icons.ts";
 
 /**
@@ -474,7 +475,10 @@ export function firstLine(s: string | undefined): string | undefined {
   return line || undefined;
 }
 
-/** Truncate to `n` chars with an ellipsis. */
+/** Truncate to `n` display CELLS with an ellipsis. Cell-aware (a CJK/emoji
+ * glyph counts 2, so the cut lands inside the column, not past it) and
+ * code-point-safe — the old `.slice(0, n - 1)` cut UTF-16 units and could
+ * strand half a surrogate pair mid-label. */
 export function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+  return truncateWidth(s, n);
 }

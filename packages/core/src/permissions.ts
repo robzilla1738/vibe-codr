@@ -140,6 +140,25 @@ function realpathScope(toolName: string, input: unknown, cwd: string): string | 
 }
 
 /**
+ * The path-scope form an `always`-allow GRANT is keyed and persisted with: the
+ * symlink-DEREFERENCED canonical absolute path (realpath where the target — or
+ * its longest existing ancestor — exists), falling back to the lexical
+ * `resolve(cwd, path)` when nothing diverges. This is exactly the PRIMARY form
+ * `check()` puts in `allowScopes` (`realForms[0]`), so a grant persisted as
+ * `matchExact` on this string re-matches every equivalent spelling of the SAME
+ * file next session — including a cwd spelled through a symlinked ancestor
+ * (macOS `/var`→`/private/var`), where the lexical form would never match
+ * again. Undefined for command/URL/no-path scopes. Exported for the engine's
+ * grant key + project-grant persistence; the two MUST stay in lock-step with
+ * the checker's allow-side path forms.
+ */
+export function grantPathScope(toolName: string, input: unknown, cwd: string): string | undefined {
+  const abs = resolvedPathScope(toolName, input, cwd);
+  if (abs === undefined) return undefined;
+  return realpathScope(toolName, input, cwd) ?? abs;
+}
+
+/**
  * Evaluates tool calls against the configured allow/deny/ask rules.
  *
  * Rules may scope by tool name (glob) and optionally by the call's CONTENT via

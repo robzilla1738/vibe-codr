@@ -61,6 +61,39 @@ test("a detected server URL survives output truncation (sticky server list)", as
   expect(after!.servers.some((u) => u.includes("localhost:5173"))).toBe(true);
 });
 
+test("a server URL split across two output chunks is still detected (scan-overlap carry)", async () => {
+  const jobs = new BackgroundJobs();
+  // Two writes separated by a sleep land as separate stream chunks. The tail-only
+  // scan (which replaced the O(n²) full-buffer rescan) must still see the URL
+  // whole via the carry window spanning the chunk boundary.
+  const job = jobs.start(
+    `printf 'Local:   http://localho'; sleep 0.3; printf 'st:5173/\\n'`,
+    cwd(),
+  );
+  await job.proc.exited;
+  await new Promise((r) => setTimeout(r, 80));
+  const after = jobs.get(job.id);
+  expect(after!.servers.some((u) => u.includes("localhost:5173"))).toBe(true);
+});
+
+test("an already-detected server is not re-announced when its URL is printed again", async () => {
+  let changes = 0;
+  const jobs = new BackgroundJobs({ onChange: () => changes++ });
+  // Same URL in two separate chunks: the second sighting must neither duplicate
+  // the sticky list entry nor fire another onChange (re-announce) — the overlap
+  // window makes re-matches near the boundary possible, so dedup must hold.
+  const job = jobs.start(
+    `echo "http://localhost:5173/"; sleep 0.3; echo "http://localhost:5173/"`,
+    cwd(),
+  );
+  await job.proc.exited;
+  await new Promise((r) => setTimeout(r, 80));
+  const after = jobs.get(job.id);
+  expect(after!.servers).toEqual(["http://localhost:5173/"]);
+  // Exactly: start + first URL detection + exit. A re-announce would add a 4th.
+  expect(changes).toBe(3);
+});
+
 test("the sticky server list is bounded under high-cardinality URL output", async () => {
   const jobs = new BackgroundJobs();
   // Print 300 distinct localhost URLs (varying ports) — the list must stay bounded.

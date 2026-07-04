@@ -352,6 +352,9 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       // `session.clear()` already emits the "Conversation cleared." notice —
       // don't emit a second one here (that showed the message twice).
       h.session.clear();
+      // Stashed redo conversation tails belong to the context that was just
+      // cleared; a later /redo must not resurrect it (files-only redo stays valid).
+      h.checkpoints.dropRedoPayloads();
       break;
     case "status":
       h.notice(await statusText(h));
@@ -1051,11 +1054,29 @@ async function handleRedo(h: EngineHandle): Promise<void> {
     return;
   }
   // Re-append the conversation tail stashed at undo time so the model context moves
-  // forward in lockstep with the restored files. A step with no stashed tail (e.g. a
-  // pre-conversation-mark checkpoint) still restores the files and reports success.
-  if (cp.payload) h.session.restoreConversation(cp.payload as ConversationTail);
+  // forward in lockstep with the restored files — but ONLY while the conversation is
+  // still at the mark the undo rewound it to. A /clear or any turn between the undo
+  // and this redo moved the context; appending the stale tail then would resurrect
+  // cleared messages or splice the undone turn AFTER newer ones. A step with no
+  // stashed tail (e.g. a pre-conversation-mark checkpoint) still restores the files.
+  if (cp.payload) {
+    const stash = cp.payload as RedoConversationStash;
+    const cur = h.session.conversationMark();
+    if (cur.messages === stash.mark.messages && cur.history === stash.mark.history) {
+      h.session.restoreConversation(stash.tail);
+    } else {
+      h.notice("Conversation changed since the undo — files restored, context left as-is.", "warn");
+    }
+  }
   h.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
   h.notice(`Redid: ${cp.label}`);
+}
+
+/** The opaque payload stashed on a redo step: the sliced-off conversation tail plus
+ * the post-rewind mark it belongs at, so /redo can detect an intervening mutation. */
+interface RedoConversationStash {
+  mark: { messages: number; history: number };
+  tail: ConversationTail;
 }
 
 /** Shared tail for /undo: roll the conversation back to match the restored files
@@ -1064,7 +1085,10 @@ async function handleRedo(h: EngineHandle): Promise<void> {
 function finishRestore(h: EngineHandle, cp: { id: string; label: string; conversation?: { messages: number; history: number } }): void {
   if (cp.conversation) {
     const tail = h.session.rewindConversation(cp.conversation);
-    if (tail) h.checkpoints.stashRedoPayload(tail);
+    if (tail) {
+      const stash: RedoConversationStash = { mark: h.session.conversationMark(), tail };
+      h.checkpoints.stashRedoPayload(stash);
+    }
   }
   h.emit({ type: "checkpoint-restored", id: cp.id, label: cp.label });
   h.notice(`Reverted to checkpoint: ${cp.label}`);

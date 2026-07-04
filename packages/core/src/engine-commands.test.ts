@@ -8,7 +8,7 @@ import { defaultConfig } from "@vibe/config";
 import type { Skill } from "@vibe/plugins";
 import { Engine } from "./engine.ts";
 import { CheckpointManager } from "./checkpoints.ts";
-import { buildSkillPrompt } from "./engine-commands.ts";
+import { buildSkillPrompt, handleSlash } from "./engine-commands.ts";
 
 async function git(cwd: string, args: string[]): Promise<void> {
   await Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).exited;
@@ -272,4 +272,106 @@ test("/redo with an empty stack reports honestly", async () => {
   engine.send({ type: "run-slash", name: "redo", args: "" });
   await engine.whenIdle();
   expect(notices(events).at(-1)!.message).toBe("Nothing to redo.");
+});
+
+// The redo conversation stash is position-aware: the tail sliced off by /undo is
+// re-appended ONLY while the conversation still sits at the rewound mark. A /clear
+// or any intervening turn invalidates it — /redo then restores files only, never
+// resurrecting cleared context or splicing the undone turn after newer messages.
+
+/** Minimal stand-in for the Session conversation surface handleSlash touches. */
+function fakeConversation(initial: number) {
+  const msgs: unknown[] = Array.from({ length: initial }, (_, i) => ({ i }));
+  const hist: unknown[] = Array.from({ length: initial }, (_, i) => ({ i }));
+  return {
+    get messageCount() {
+      return msgs.length;
+    },
+    conversationMark: () => ({ messages: msgs.length, history: hist.length }),
+    rewindConversation(mark: { messages: number; history: number }) {
+      if (mark.messages >= msgs.length && mark.history >= hist.length) return undefined;
+      const tail = { modelMessages: msgs.slice(mark.messages), history: hist.slice(mark.history) };
+      msgs.length = Math.min(mark.messages, msgs.length);
+      hist.length = Math.min(mark.history, hist.length);
+      return tail;
+    },
+    restoreConversation(tail: { modelMessages: unknown[]; history: unknown[] }) {
+      msgs.push(...tail.modelMessages);
+      hist.push(...tail.history);
+    },
+    clear() {
+      msgs.length = 0;
+      hist.length = 0;
+    },
+    grow(n: number) {
+      for (let i = 0; i < n; i++) {
+        msgs.push({ fresh: i });
+        hist.push({ fresh: i });
+      }
+    },
+  };
+}
+
+function redoHarness(dir: string, session: ReturnType<typeof fakeConversation>) {
+  const checkpoints = new CheckpointManager(dir);
+  const messages: { message: string; level?: string }[] = [];
+  const h = {
+    checkpoints,
+    session,
+    commands: { get: () => undefined },
+    notice: (message: string, level?: string) => messages.push({ message, level }),
+    emit: () => {},
+  } as unknown as Parameters<typeof handleSlash>[0];
+  return { checkpoints, h, messages };
+}
+
+test("/redo after /clear does not resurrect the cleared conversation (files still restore)", async () => {
+  const dir = await gitRepo();
+  const session = fakeConversation(3);
+  const { checkpoints, h } = redoHarness(dir, session);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await checkpoints.snapshot("v0", { messages: 1, history: 1 });
+  await Bun.write(join(dir, "a.txt"), "v1\n"); // newest edits above the checkpoint
+
+  await handleSlash(h, "undo", ""); // files → v0, conversation → 1 message, tail stashed
+  expect(session.messageCount).toBe(1);
+  await handleSlash(h, "clear", ""); // context deliberately reset
+  expect(session.messageCount).toBe(0);
+
+  await handleSlash(h, "redo", "");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n"); // tree moves forward
+  expect(session.messageCount).toBe(0); // the cleared context stays cleared
+});
+
+test("/redo skips a stale tail when the conversation moved past the undo mark", async () => {
+  const dir = await gitRepo();
+  const session = fakeConversation(3);
+  const { checkpoints, h, messages } = redoHarness(dir, session);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await checkpoints.snapshot("v0", { messages: 1, history: 1 });
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+
+  await handleSlash(h, "undo", "");
+  expect(session.messageCount).toBe(1);
+  session.grow(2); // an intervening (e.g. plan-mode) turn appends messages
+
+  await handleSlash(h, "redo", "");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
+  expect(session.messageCount).toBe(3); // 1 + 2 fresh — the stale tail was NOT appended
+  expect(messages.some((m) => m.message.includes("Conversation changed since the undo"))).toBe(true);
+});
+
+test("/undo then immediate /redo still round-trips the conversation tail", async () => {
+  const dir = await gitRepo();
+  const session = fakeConversation(3);
+  const { checkpoints, h } = redoHarness(dir, session);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await checkpoints.snapshot("v0", { messages: 1, history: 1 });
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+
+  await handleSlash(h, "undo", "");
+  expect(session.messageCount).toBe(1);
+  await handleSlash(h, "redo", "");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
+  expect(session.messageCount).toBe(3); // tail re-appended at the matching mark
 });

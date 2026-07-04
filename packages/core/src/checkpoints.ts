@@ -490,6 +490,13 @@ export class CheckpointManager {
     if (this.#lastRedoPointEntry) this.#lastRedoPointEntry.payload = payload;
   }
 
+  /** Drop every stashed redo payload while keeping the file-restore steps. Called
+   * when the conversation is reset (/clear): the stashed tails belong to a context
+   * that no longer exists, but redoing the TREE forward stays valid. */
+  dropRedoPayloads(): void {
+    for (const entry of this.#redo) entry.payload = undefined;
+  }
+
   /** Re-apply the most recently undone step: restore the tree state that existed
    * BEFORE that undo and re-add its checkpoint(s) to the visible list. Advances
    * past a dead redo target rather than giving up. Null when the stack is empty

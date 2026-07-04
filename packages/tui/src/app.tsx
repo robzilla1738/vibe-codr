@@ -474,13 +474,16 @@ export function App(props: { engine: EngineClient }) {
   // 2-line wraps) so a long list can't push the thinking section off-screen.
   // When BOTH rigid panels are up (Tasks + Subagents) they split that budget,
   // keeping the growing Thinking block on-screen even on a short pane.
+  // (−16: chrome rows + the always-on session card, which is rigid ~5-7 rows.)
   const sidePanelBudget = () =>
-    Math.max(PANEL_MAX_ROWS, Math.min(16, Math.floor((dims().height - 10) / 4)));
+    Math.max(PANEL_MAX_ROWS, Math.min(16, Math.floor((dims().height - 16) / 4)));
   const sideTaskCap = () =>
     subagents().length > 0 ? Math.max(3, Math.floor(sidePanelBudget() / 2)) : sidePanelBudget();
-  // Subagent rows can take TWO lines each (prompt + live activity/result), so
-  // the subagent cap is its half of the budget counted in two-line rows.
-  const sideSubCap = () => Math.max(3, Math.floor(sidePanelBudget() / 2));
+  // Subagent rows can take up to FOUR lines each (a two-line wrapped prompt +
+  // a two-line wrapped activity/result), so the cap counts its half of the
+  // budget in ~3-line rows (most rows use 2-3) — a big fan-out windows into
+  // "+N more" instead of pushing the thinking block off-screen.
+  const sideSubCap = () => Math.max(3, Math.floor(sidePanelBudget() / 3));
   // The thought-log block GROWS to fill every row left under the Tasks block,
   // so the sidebar spans the same height as the chat column — its top block
   // sits level with the first transcript block and its bottom lands level with
@@ -1713,6 +1716,31 @@ export function App(props: { engine: EngineClient }) {
       contentWidth() - 2,
     );
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
+  // The sidebar session card's label→value rows. One line per row: the value
+  // is pre-truncated to the card's inner width (a `wrapMode:none` overflow
+  // would hard-clip mid-glyph instead). The dir keeps its TAIL — in a deep
+  // path the trailing segments are the ones that identify where you are.
+  const sessionRows = (): { label: string; value: string }[] => {
+    // 42 (sidebar) − 2 (column padding) − 4 (panel padding) − 6 (label + gap),
+    // minus 2 more so the `…` lands INSIDE the box — the render clips at the
+    // edge before truncate's ellipsis otherwise (seen as "1.1k cac").
+    const valW = SIDEBAR_W - 14;
+    const tail = (s: string) => (s.length > valW ? `…${s.slice(-(valW - 1))}` : s);
+    const rows: { label: string; value: string }[] = [
+      { label: "dir", value: tail(cwd) },
+      { label: "model", value: tail(headModel()) },
+    ];
+    const g = gitSummary().replace(/^on /, "");
+    if (g) rows.push({ label: "git", value: truncate(g, valW) });
+    // metricsLine's separator is wide ("  ·  "); tighten it for the narrow
+    // card. Its parts self-label (ctx % / tokens / cost / queued), so the row
+    // label stays the generic "usage".
+    const m = metrics().replaceAll("  ·  ", " · ");
+    if (m) rows.push({ label: "usage", value: truncate(m, valW) });
+    const goal = goalInfo();
+    if (goal) rows.push({ label: "goal", value: truncate(`★ ${goal}`, valW) });
+    return rows;
+  };
   // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in
   // the bright foreground; descriptors + separators stay muted. Shown on the empty
   // splash (where discovery matters) and whenever a job is running; the working
@@ -2630,7 +2658,8 @@ export function App(props: { engine: EngineClient }) {
         </box>
       </Show>
       </box>
-      {/* Right sidebar (wide terminals) — Tasks on top, then the live Subagents
+      {/* Right sidebar (wide terminals) — a SESSION card on top (wordmark ·
+          dir · model · git · ctx · goal), then Tasks, then the live Subagents
           fan-out, then the turn's THOUGHT LOG filling the rest. Each section is
           the SAME block language as the chat
           column (filled panel surface + thin left rail + identical padding),
@@ -2644,8 +2673,35 @@ export function App(props: { engine: EngineClient }) {
               margin is swallowed by its scrollbox, so a sidebar margin here
               would land the block one row too low. */}
           <box height={1} flexShrink={0} />
+          {/* Session card — the sidebar's masthead. The small wordmark in the
+              chrome accent (white on the default theme; follows /accent), then
+              muted label rows for the session's vitals. Values are one line
+              each, pre-truncated (the DIR keeps its TAIL — the deep segments
+              are the informative ones). Rows with nothing to say don't render. */}
+          <Rail color={palette().gutter} marginTop={0}>
+            <box
+              backgroundColor={palette().panel}
+              flexDirection="column"
+              paddingTop={1}
+              paddingBottom={1}
+              paddingLeft={2}
+              paddingRight={2}
+            >
+              <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                {"◆ vibe codr"}
+              </text>
+              <For each={sessionRows()}>
+                {(row) => (
+                  <box flexDirection="row" gap={1}>
+                    <text flexShrink={0} fg={palette().muted}>{row.label.padEnd(5)}</text>
+                    <text flexGrow={1} wrapMode="none" fg={palette().assistant}>{row.value}</text>
+                  </box>
+                )}
+              </For>
+            </box>
+          </Rail>
           <Show when={tasks().length > 0}>
-            <Rail color={palette().gutter} marginTop={0}>
+            <Rail color={palette().gutter} marginTop={1}>
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"
@@ -2694,7 +2750,7 @@ export function App(props: { engine: EngineClient }) {
               once finished — its one-line result glimpse. The inline chat-column
               panel hides while the sidebar hosts this (exactly like Tasks). */}
           <Show when={subagents().length > 0}>
-            <Rail color={palette().gutter} marginTop={tasks().length > 0 ? 1 : 0}>
+            <Rail color={palette().gutter} marginTop={1}>
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"
@@ -2735,27 +2791,32 @@ export function App(props: { engine: EngineClient }) {
                           <text flexShrink={0} fg={glyphFg()}>
                             {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
                           </text>
-                          <text flexGrow={1} wrapMode="none" fg={fg()}>
-                            {firstLine(s.prompt) ?? s.prompt}
+                          {/* Word-wrap up to ~2 lines (pre-truncated) instead of
+                              hard-clipping mid-word at the column edge — a 42-col
+                              card cut "fundamental analysis" to "fundamental
+                              analysi", which read as a rendering bug. */}
+                          <text flexGrow={1} wrapMode="word" fg={fg()}>
+                            {truncate(firstLine(s.prompt) ?? s.prompt, 2 * (SIDEBAR_W - 12))}
                           </text>
                           <Show when={elapsed()}>
                             <text flexShrink={0} fg={palette().gutter}>{elapsed()}</text>
                           </Show>
                         </box>
                         <Show when={detail()}>
-                          {/* Hang under the glyph column; one truncated line so a
-                              chatty child can't grow the panel row by row. */}
+                          {/* Hang under the glyph column; wrapped but PRE-CAPPED
+                              to ~2 lines so a chatty child can't grow the panel
+                              row by row. */}
                           <box flexDirection="row" paddingLeft={2}>
                             <text flexShrink={0} fg={palette().muted}>
                               {s.status === "running" ? "· " : `${GLYPH.result} `}
                             </text>
                             <text
                               flexGrow={1}
-                              wrapMode="none"
+                              wrapMode="word"
                               fg={palette().muted}
                               attributes={TextAttributes.ITALIC}
                             >
-                              {truncate(detail(), SIDEBAR_W - 12)}
+                              {truncate(detail(), 2 * (SIDEBAR_W - 12))}
                             </text>
                           </box>
                         </Show>
@@ -2777,14 +2838,9 @@ export function App(props: { engine: EngineClient }) {
               is sent. The block GROWS to fill the rows under the Tasks panel,
               so the sidebar's bottom lines up with the chat column. */}
           <Show when={working() || thoughtLog().length > 0}>
-            {/* First block when neither Tasks nor Subagents render above it
-                (must sit on the chat's first-block row); the usual 1-row
-                inter-block gap otherwise. */}
-            <Rail
-              color={palette().gutter}
-              marginTop={tasks().length > 0 || subagents().length > 0 ? 1 : 0}
-              grow
-            >
+            {/* The session card is always above, so this is never the first
+                block — the uniform 1-row inter-block gap applies. */}
+            <Rail color={palette().gutter} marginTop={1} grow>
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"

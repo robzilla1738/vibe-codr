@@ -4,6 +4,22 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — the sidebar gets a session card, and subagents get room to breathe
+
+- **Session card at the top of the right sidebar**: the small `◆ vibe codr`
+  wordmark in the white chrome accent (follows `/accent`), over muted
+  label rows for the session's vitals — working dir (tail-truncated so the
+  deep segments survive), model, git branch + dirty count, live
+  tokens/cost/context, and the goal when one is set. The sidebar now reads
+  as a complete at-a-glance dashboard instead of floating work panels.
+- **Subagent rows word-wrap instead of hard-clipping mid-word** — a 42-col
+  card used to cut "fundamental analysis" to "fundamental analysi". Prompt
+  titles and the activity/result detail line each wrap to ~2 lines
+  (pre-capped so a chatty child can't grow the panel unbounded), and the
+  windowing budget accounts for the taller rows.
+- Uniform 1-row gaps between all sidebar blocks; the Thinking/Activity block
+  still grows to keep the sidebar's bottom level with the input.
+
 ### Fixed — approving a plan with Shift+Tab now actually starts implementation
 
 - **The plan card is dismissed when you switch modes away from plan.** Approving

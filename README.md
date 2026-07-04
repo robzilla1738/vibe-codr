@@ -143,7 +143,7 @@ and drills into rich submenus (a searchable model picker, clickable toggles).
 |---|---|
 | ![orange accent](docs/screenshots/18-orange.png) | ![accent swatches](docs/screenshots/17-accent.png) |
 
-| Wide terminal — Tasks, the live Subagents fan-out, and the Thinking trail move to a right sidebar |
+| Wide terminal — a session card (wordmark · dir · model · git · usage), Tasks, the live Subagents fan-out, and the Thinking trail move to a right sidebar |
 |---|
 | ![sidebar](docs/screenshots/20-sidebar.png) |
 
@@ -388,7 +388,10 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   (click it, or **Ctrl+T** to expand/collapse every thought at once), so
   the thinking that led to each step stays reviewable instead of evaporating.
   On a **wide terminal (≥140 cols)** the live work moves into a **right
-  sidebar**: the **Tasks panel**, the **Subagents fan-out** — one row per child
+  sidebar**, headed by a **session card** — the small `◆ vibe codr` wordmark
+  over the session's vitals (working dir, model, git branch + dirty count,
+  live tokens/cost) — then the **Tasks panel**, the **Subagents fan-out** —
+  one row per child
   (spinner while it runs, ✓ when done, a right-aligned elapsed) with a live
   **activity line** under a running child ("· rg \"catch\" src/") that folds
   into its **result glimpse** ("↳ 3 swallowed errors") once it finishes — and a

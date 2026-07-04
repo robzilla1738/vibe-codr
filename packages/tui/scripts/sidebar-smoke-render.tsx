@@ -112,6 +112,12 @@ const sidebarText = rows1.map((r) => r.slice(W - 44)).join("\n");
 check("activity trail lists the search", sidebarText.includes("search"), "sidebar shows tool actions");
 check("activity trail lists the fetch", sidebarText.includes("fetch"));
 
+// Session card — the sidebar masthead: small wordmark + dir/model/git rows.
+check("session card shows the wordmark", sidebarText.includes("◆ vibe codr"));
+check("session card shows the working dir", sidebarText.includes("dir"), "label row");
+check("session card shows the model", sidebarText.includes("ollama/gemma4:31b"));
+check("session card shows the git branch", sidebarText.includes("main"));
+
 // Alignment. TOP: the sidebar's first block must start on the transcript
 // viewport's first content row (the row right under the context line) — that
 // is where scrolled content paints, which is the state the user sees

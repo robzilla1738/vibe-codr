@@ -499,3 +499,45 @@ test("an abort-driven throw still propagates (cancellation is not a tool failure
     ),
   ).rejects.toThrow("aborted");
 });
+
+test("a tool whose signal is already aborted never gates or executes (Esc'd batch)", async () => {
+  // The AI SDK fires a step's tool calls via Promise.all; when the user aborts
+  // mid-step, a still-queued mutating call must NOT run its permission gate or
+  // execute — otherwise Esc still lands a write and a stale permission card.
+  const controller = new AbortController();
+  controller.abort(); // the turn was already aborted when this call is reached
+  const gateCalls: string[] = [];
+  let ran = false;
+  const writer: ToolDefinition = {
+    name: "write",
+    description: "mutating write",
+    inputSchema: z.object({}),
+    readOnly: false,
+    concurrencySafe: false,
+    execute: async () => {
+      ran = true;
+      return { output: "wrote" };
+    },
+  };
+  const aiTool = toAISDKTool(
+    writer,
+    {
+      cwd: "/",
+      sessionId: "s",
+      emit: () => {},
+      checkPermission: (name) => {
+        gateCalls.push(name);
+        return { allowed: true };
+      },
+    },
+    (fn) => fn(),
+  );
+  await expect(
+    (aiTool as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute(
+      {},
+      { toolCallId: "t1", abortSignal: controller.signal },
+    ),
+  ).rejects.toThrow(/aborted/);
+  expect(gateCalls).toHaveLength(0); // permission gate never consulted
+  expect(ran).toBe(false); // execute never reached
+});

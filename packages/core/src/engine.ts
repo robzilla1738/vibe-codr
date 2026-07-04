@@ -23,7 +23,7 @@ import {
   type UIEvent,
 } from "@vibe/shared";
 import type { Config, PermissionRule } from "@vibe/config";
-import { appendProjectPermission, writeGlobalConfig } from "@vibe/config";
+import { appendProjectPermission, configSecurityNotices, writeGlobalConfig } from "@vibe/config";
 import {
   ProviderRegistry,
   CatalogService,
@@ -251,7 +251,7 @@ export class Engine implements EngineClient {
     /** Which machinery queued this item. Goal-run turns carry "goal" so the
      * sweep/stack-guard match on provenance, not on the label text — a USER
      * prompt that happens to start with "goal: " must never be swept. */
-    origin?: "goal";
+    origin?: "goal" | "loop";
   }[] = [];
   #active: QueuedItem | null = null;
   #draining = false;
@@ -465,6 +465,7 @@ export class Engine implements EngineClient {
       toolset: this.toolset,
       bus: this.#bus,
       cwd: this.#cwd,
+      sandbox: this.#sandbox,
       // An explicit CLI --model/--mode wins over the resumed session's saved
       // value; otherwise the resumed value wins, falling back to config.
       model: opts.modelOverride ?? resume?.meta.model ?? opts.config.model,
@@ -860,6 +861,10 @@ export class Engine implements EngineClient {
     // no subscriber exists yet then, so the notice would be dropped). Off mode
     // has no warning; an unenforceable requested mode always does.
     if (this.#sandbox.warning) this.#notice(this.#sandbox.warning, "warn");
+    // Surface any sensitive fields dropped from an untrusted project config
+    // (hooks/plugins/approvalMode-auto/provider baseURL) — the user should know
+    // their repo-local settings were ignored, and why.
+    for (const notice of configSecurityNotices(this.#config)) this.#notice(notice, "warn");
     for (const [name, agent] of await loadAgents(this.#cwd)) {
       this.#agents.set(name, agent);
     }
@@ -1291,8 +1296,13 @@ export class Engine implements EngineClient {
       }
       case "run-slash":
         // `/queue` inspects/clears the queue, so it must run immediately rather
-        // than wait behind the work it is meant to describe.
+        // than wait behind the work it is meant to describe. `/loop stop` too:
+        // queued behind an already-enqueued iteration it could not sweep the
+        // tick ahead of it, so one more full model turn ran after "stop". It
+        // only mutates loop/queue state (never the conversation), so running it
+        // at dispatch is safe.
         if (command.name === "queue") this.#handleQueueCommand(command.args);
+        else if (command.name === "loop" && command.args.trim() === "stop") this.#handleLoop(command.args);
         else
           this.#enqueue(`/${command.name}`, () =>
             this.#handleSlash(command.name, command.args),
@@ -1527,6 +1537,7 @@ export class Engine implements EngineClient {
       toolset: this.toolset,
       bus: this.#bus,
       cwd: this.#cwd,
+      sandbox: this.#sandbox,
       model: this.#session.model,
       mode: this.#session.mode,
       goal: this.#session.goal,
@@ -1581,8 +1592,10 @@ export class Engine implements EngineClient {
         // dequeue, /queue clear). Settle the promise — otherwise the
         // LoopController awaits run() forever and the loop dies silently while
         // still reporting active. The rejection surfaces as a loop-stopped
-        // event with this reason.
-        { onCancel: (reason) => reject(new LoopCancelledError(reason)) },
+        // event with this reason. `origin:"loop"` lets the stop sweep match on
+        // provenance, not label text — a typed prompt starting "loop: " is a
+        // user turn, never a tick.
+        { onCancel: (reason) => reject(new LoopCancelledError(reason)), origin: "loop" },
       );
     });
   }
@@ -1857,9 +1870,9 @@ export class Engine implements EngineClient {
         // controller's own stop() only aborts the in-flight `#loopSession`, so
         // without this the queued iteration would still run one full model
         // turn (side effects included) after the user said stop.
-        const queued = this.#pending.filter((p) => p.label.startsWith("loop: "));
+        const queued = this.#pending.filter((p) => p.origin === "loop");
         if (queued.length) {
-          this.#pending = this.#pending.filter((p) => !p.label.startsWith("loop: "));
+          this.#pending = this.#pending.filter((p) => p.origin !== "loop");
           for (const p of queued) p.onCancel?.("loop stopped");
           this.#emitQueue();
         }
@@ -1913,7 +1926,7 @@ export class Engine implements EngineClient {
   #enqueue(
     label: string,
     run: () => Promise<unknown>,
-    opts: { onCancel?: (reason: string) => void; origin?: "goal" } = {},
+    opts: { onCancel?: (reason: string) => void; origin?: "goal" | "loop" } = {},
   ): void {
     this.#pending.push({
       id: createId("q"),

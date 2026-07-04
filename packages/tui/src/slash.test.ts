@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { lineToCommand, parsePermissionDecision } from "./slash.ts";
+import { lineToCommand, lineToCommands, parsePermissionDecision } from "./slash.ts";
 
 test("plain text becomes a prompt submission", () => {
   expect(lineToCommand("fix the bug")).toEqual({
@@ -119,4 +119,19 @@ test("a slash line that isn't a command name is sent to the model, not swallowed
     type: "submit-prompt",
     text: "/api/users returns 500\n<stack trace>",
   });
+});
+
+test("/plan <text> switches mode AND submits the text (not swallowed)", () => {
+  expect(lineToCommands("/plan add oauth to login")).toEqual([
+    { type: "set-mode", mode: "plan" },
+    { type: "submit-prompt", text: "add oauth to login" },
+  ]);
+  expect(lineToCommands("/execute run the migration")).toEqual([
+    { type: "set-mode", mode: "execute" },
+    { type: "submit-prompt", text: "run the migration" },
+  ]);
+  // Bare /plan is still a single mode switch.
+  expect(lineToCommands("/plan")).toEqual([{ type: "set-mode", mode: "plan" }]);
+  // A normal line is a single submit.
+  expect(lineToCommands("fix the bug")).toEqual([{ type: "submit-prompt", text: "fix the bug" }]);
 });

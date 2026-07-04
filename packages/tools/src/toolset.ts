@@ -323,6 +323,19 @@ export function toAISDKTool(
       toolCallId: options.toolCallId,
       abortSignal: options.abortSignal ?? new AbortController().signal,
     };
+    // The AI SDK invokes a step's tool calls via Promise.all, and the serial
+    // lock runs them one at a time — so when the user aborts mid-step, later
+    // calls in the same batch are still queued behind the lock. Bail BEFORE the
+    // permission gate and execute: without this, an Esc'd turn still lands a
+    // queued write/edit/git_push (egress after "stop") and the late
+    // checkPermission emits a permission card after the board was swept. Re-check
+    // after each awaited gate too (the abort can land during them).
+    const abortIfCancelled = (): void => {
+      if (ctx.abortSignal.aborted) {
+        throw Object.assign(new Error("aborted before the tool ran"), { name: "AbortError" });
+      }
+    };
+    abortIfCancelled();
 
     // Plugin/hook veto (runs before the permission gate so a policy hook can
     // block a tool outright) — and may rewrite the tool's input.
@@ -337,6 +350,7 @@ export function toAISDKTool(
       }
       if (verdict.input !== undefined) effectiveInput = verdict.input;
     }
+    abortIfCancelled();
 
     // Gate side-effecting tools through the permission layer — and NETWORK
     // tools too, even when read-only: a read-only flag used to bypass the gate
@@ -360,6 +374,9 @@ export function toAISDKTool(
         return `ERROR: tool "${def.name}" was not permitted (${reason}). Choose a different approach.`;
       }
     }
+    // The permission gate can itself await a user decision — an abort during it
+    // must stop the tool before execute (and before a stale card resolves).
+    abortIfCancelled();
 
     // A THROW must land in the same error contract as a returned isError —
     // without this, a FileOwnedError (or any unexpected throw) skipped the

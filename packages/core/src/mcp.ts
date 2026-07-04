@@ -315,14 +315,21 @@ export class McpHub {
   async #refreshTools(name: string): Promise<void> {
     const entry = this.#entries.find((e) => e.name === name);
     if (!entry?.client || this.#closed) return;
+    // Capture the client BEFORE the await: if the transport closes during the
+    // list (→ #scheduleReconnect runs synchronously, unregisters tools, and sets
+    // entry.client = undefined), registering against the re-read entry.client
+    // would bind tools to an `undefined` client (TypeError on every call) and
+    // poison the name set. Bail if the client was swapped or the hub closed.
+    const client = entry.client;
     try {
       const tools = await withTimeout(
-        entry.client.listTools(),
+        client.listTools(),
         entry.config.timeoutMs ?? this.#connectTimeoutMs,
         `re-listing tools for MCP server "${name}"`,
       );
+      if (this.#closed || entry.client !== client) return;
       this.#unregisterServerTools(entry);
-      this.#registerServerTools(entry, tools, entry.client);
+      this.#registerServerTools(entry, tools, client);
       this.#log.info(`MCP server "${name}" tool list changed → ${tools.length} tools`);
     } catch (err) {
       this.#log.error(`MCP re-list for "${name}" failed: ${(err as Error).message}`);
@@ -334,12 +341,14 @@ export class McpHub {
   async #refreshResources(name: string): Promise<void> {
     const entry = this.#entries.find((e) => e.name === name);
     if (!entry?.client?.listResources || this.#closed) return;
+    const client = entry.client;
     try {
       const resources = await withTimeout(
-        entry.client.listResources(),
+        client.listResources!(),
         entry.config.timeoutMs ?? this.#connectTimeoutMs,
         `re-listing resources for MCP server "${name}"`,
       );
+      if (this.#closed || entry.client !== client) return;
       entry.resources = resources;
       // A server that first advertises resources here still needs the aggregate tool.
       this.#ensureAggregateTools();
@@ -353,12 +362,14 @@ export class McpHub {
   async #refreshPrompts(name: string): Promise<void> {
     const entry = this.#entries.find((e) => e.name === name);
     if (!entry?.client?.listPrompts || this.#closed) return;
+    const client = entry.client;
     try {
       const prompts = await withTimeout(
-        entry.client.listPrompts(),
+        client.listPrompts!(),
         entry.config.timeoutMs ?? this.#connectTimeoutMs,
         `re-listing prompts for MCP server "${name}"`,
       );
+      if (this.#closed || entry.client !== client) return;
       entry.prompts = prompts;
       this.#ensureAggregateTools();
       this.#log.info(`MCP server "${name}" prompt list changed → ${prompts.length} prompts`);
@@ -463,14 +474,14 @@ export class McpHub {
       // configured timeout (a plain `.catch` swallows a rejection, not a hang).
       const resources = client.listResources
         ? await withTimeout(
-            client.listResources(),
+            client.listResources!(),
             deadline,
             `listing resources for MCP server "${name}"`,
           ).catch(() => [] as McpResource[])
         : [];
       const prompts = client.listPrompts
         ? await withTimeout(
-            client.listPrompts(),
+            client.listPrompts!(),
             deadline,
             `listing prompts for MCP server "${name}"`,
           ).catch(() => [] as McpPrompt[])
@@ -828,6 +839,24 @@ const defaultConnect: McpConnect = async (name, config) => {
   let makeTransport: () => Promise<unknown>;
   // Non-literal specifiers so tsc does not try to resolve the optional peer dep.
   const sdk = "@modelcontextprotocol/sdk/client";
+  // Build the remote URL + transport options OUTSIDE the sdk-import try, so a bad
+  // url (e.g. a `${VAR}` that expanded to an invalid URL) or an oauth-provider
+  // error surfaces VERBATIM instead of being mislabeled "MCP requires the sdk
+  // package" — which would send the user down the wrong path.
+  let url: URL | undefined;
+  const options: { requestInit?: { headers: Record<string, string> }; authProvider?: unknown } = {};
+  if (!("command" in config)) {
+    try {
+      url = new URL(config.url);
+    } catch {
+      throw new Error(
+        `MCP server "${name}" has an invalid url "${config.url}" (after \${VAR} expansion) — ` +
+          "check the URL or the referenced environment variable.",
+      );
+    }
+    if (config.headers) options.requestInit = { headers: config.headers };
+    if (config.oauth) options.authProvider = createMcpOAuthProvider(name, config.oauth);
+  }
   try {
     const clientMod = (await import(`${sdk}/index.js`)) as {
       Client: typeof ClientCtor;
@@ -847,24 +876,17 @@ const defaultConnect: McpConnect = async (name, config) => {
           ...(config.cwd ? { cwd: config.cwd } : {}),
         });
     } else {
-      // Transport options: static headers (Authorization / API keys) and/or an
-      // OAuth 2.1 provider so authenticated remote MCP servers can connect.
-      const options: { requestInit?: { headers: Record<string, string> }; authProvider?: unknown } =
-        {};
-      if (config.headers) options.requestInit = { headers: config.headers };
-      if (config.oauth) options.authProvider = createMcpOAuthProvider(name, config.oauth);
-      const url = new URL(config.url);
       // Streamable HTTP is the modern default transport; "sse" selects the legacy one.
       if (config.transport === "sse") {
         const sseMod = (await import(`${sdk}/sse.js`)) as {
           SSEClientTransport: new (url: URL, o?: unknown) => unknown;
         };
-        makeTransport = async () => new sseMod.SSEClientTransport(url, options);
+        makeTransport = async () => new sseMod.SSEClientTransport(url as URL, options);
       } else {
         const httpMod = (await import(`${sdk}/streamableHttp.js`)) as {
           StreamableHTTPClientTransport: new (url: URL, o?: unknown) => unknown;
         };
-        makeTransport = async () => new httpMod.StreamableHTTPClientTransport(url, options);
+        makeTransport = async () => new httpMod.StreamableHTTPClientTransport(url as URL, options);
       }
     }
   } catch (err) {

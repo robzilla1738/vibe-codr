@@ -54,10 +54,13 @@ export function parseSkillMarkdown(rawInput: string): {
   frontmatter: Record<string, string>;
   body: string;
 } {
-  // Normalize CRLF/CR so a Windows- or editor-authored SKILL.md, agent, or
+  // Strip a leading UTF-8 BOM (Notepad and some editors prepend one) and
+  // normalize CRLF/CR so a Windows- or editor-authored SKILL.md, agent, or
   // command file still has its `---` frontmatter recognized (the fence match is
-  // LF-anchored). Without this, such files silently lose all frontmatter.
-  const raw = rawInput.replace(/\r\n?/g, "\n");
+  // LF-anchored and `^`-anchored). Without this, such files silently lose all
+  // frontmatter — the name falls back to the dir/file name and the raw `---`
+  // block leaks into the body/prompt.
+  const raw = rawInput.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) return { frontmatter: {}, body: raw };
   const frontmatter: Record<string, string> = {};

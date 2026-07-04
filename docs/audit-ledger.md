@@ -2386,3 +2386,87 @@ smoke:sidebar OK.
   observation (idle-continue hook can drive a paused run's leftover tasks via the NON-goal
   plan-chain branch — doubly bounded, needs two user-configured hooks, predates the wave)
   recorded as accepted. CONVERGED.
+
+# WHOLE-PROJECT EXCELLENCE SWEEP — 2026-07-04 (every subsystem, not just /goal)
+
+Trigger: the /goal Stop-hook feedback correctly noted the prior pass was /goal-only; the goal
+is "every aspect of this project." Six parallel adversarial reviewers (fresh eyes, ledger-aware)
+covered TUI, permissions+checkpoints, loop+MCP+plugins, providers+config, tools+memory+compaction,
+orchestration+build-gate. Confirmed high/medium findings + cheap-safe lows fixed with tests.
+
+## Security / correctness (high value)
+- **RCE-on-clone (config):** a cloned repo's `.vibe/config.json` could set `hooks` (shell exec
+  on session.start), `plugins` (module import), `approvalMode:auto`, and redirect
+  `providers.*.baseURL`. Now the PROJECT layer is sanitized unless `security.trustProjectConfig`
+  is set in the trusted (global/CLI) layer — hooks/plugins/approvalMode-auto dropped always;
+  baseURL dropped only when it overrides a GLOBALLY-configured provider (a project's OWN custom
+  provider keeps its baseURL). Dropped fields surface as a bootstrap warning
+  (configSecurityNotices). The trust flag is read only from global/CLI (a project can't
+  self-authorize). Tests in config.test.ts.
+- **Gate wedge on abort (build/exec):** `bunExec` forwarded the abort signal to Bun.spawn, which
+  kills only the direct child — grandchildren orphaned holding the stdout pipe → readBounded
+  never EOFs → the gate hangs forever on the abort meant to stop it. Now an abort listener
+  killTree(proc.pid)s the whole tree while the root is alive.
+- **Unsandboxed orchestrator gates + run_check:** the four orchestrator runGate calls and the
+  model-invocable run_check ran repo build scripts with NO sandbox policy even when the user
+  enabled it. SandboxPolicy threaded through SessionDeps; all pass exec: bunExec(sandbox).
+- **Worktree live-sibling clobber:** the worktree PATH derived from task id only (branch embedded
+  the session id); two runners reusing an id force-removed each other's live worktree mid-edit.
+  Path now carries the session tag like the branch (worktreePathName).
+- **Checkpoint restore from a subdir was partial (data loss):** checkout-index / ls-files are
+  cwd-prefix scoped, so a session in repo/sub restored only the subtree while the conversation
+  rewound the whole turn (model forgets on-disk edits). All checkpoint git ops now run from the
+  repo toplevel (#ensureRoot). Plus: restart-after-rewind /undo moved FORWARD (disk merge
+  re-added this-session entries undo removed) → tombstone-by-omission for positively-tagged
+  entries; #commitTree bails on a failed `add -A` (partial snapshot). Tests in checkpoints.test.ts.
+- **Aborted turn ran queued mutating tools:** toolset.run() didn't check the abort signal before
+  the permission gate + execute, so an Esc'd parallel batch still landed a write/git_push (egress
+  after stop) and popped a stale permission card. Now bails (AbortError) before and after each
+  awaited gate. Test in toolset.test.ts.
+
+## Robustness (medium/low)
+- **/loop stop** now runs at dispatch (was FIFO-queued behind an iteration it couldn't sweep →
+  one more full turn ran after "stop"); loop items carry `origin:"loop"` swept by provenance (a
+  typed "loop: …" prompt is never swept — mirrors the /goal origin fix).
+- **/loop --until** eval failures now warn (1st + every 5th) instead of silently turning the
+  condition inert forever.
+- **MCP `${VAR}` url** no longer bricks config load (schema tolerates an unexpanded `${…}`,
+  validated post-expansion; a bad expanded URL degrades that one server with a clear error, not
+  the mislabeled "requires sdk"). **#refreshTools/#refreshResources/#refreshPrompts** capture the
+  client before the await and bail on a swap/close (no undefined-client tool registration).
+- **Catalog window** `limit.context`/`limit.output` coerced through finitePositive (a 0/negative/
+  NaN/string window used to break compaction → the long turn 400s).
+- **ls** output capped at 1000 entries (the one context-producing tool with no cap).
+- **TUI:** Ctrl+G compose latch now resets in a finally (a temp-write failure no longer bricks
+  Ctrl+G for the session); composeInEditor's initial write is guarded → `failed` result, not a
+  throw. `/model` zero-match keeps the picker open with a placeholder (was: closes → Enter
+  persists the typo as the main model); setMainModel refuses a slash-less (typo) id. `/plan
+  <text>` / `/execute <text>` now switch mode AND submit the text (lineToCommands) instead of
+  swallowing it.
+- **Plugins:** a UTF-8 BOM no longer defeats SKILL.md/agent/command frontmatter parsing.
+- **Orchestration:** ensemble teardown removal is per-iteration `.catch`'d (a rejecting removal
+  no longer leaks siblings or clobbers the settled result).
+
+## Verified CLEAN by the reviewers (not re-flagged)
+DAG core, limiter/suspend pairing, child-gate semaphore, structured-output extraction, gitops
+squash-merge, gate verdict logic, recon, journal/ledger; permission rule evaluation + egress
+gating + persisted-grant plumbing; read/edit/write atomicity, bash/jobs/sandbox argv safety,
+grep ReDoS guard, memory (bm25/RRF/vector-store), compaction tool-pairing; catalog fetch/cache
+no-poison, model-string parse, fallback chain, pricing; LoopController interleavings, McpHub
+lifecycle, mcp-oauth persistence, PluginHost isolation; TUI keyboard chords, markdown/rich
+parsers (linear), reducer/trail, Solid cleanup (the sidebar-smoke "11 listeners" warning is a
+confirmed bounded transient from deferred OpenTUI destroys, NOT a leak).
+
+## Deferred (recorded, not silently dropped — lower value / larger scope)
+Persisted path-grant under a symlinked ancestor (realpath normalization) + path grants using
+`match` not `matchExact`; /undo <n> orphaning the tail on a no-edit newest target; parseLoopArgs
+embedded-flag/unknown-unit warnings; command-body MAX cap + lazy skill/command reads; oauth
+token-store path-collision hash; jobs detectServers buffer rescan; branch-mode commit-before-
+review with checkpoints disabled; same-session journal plan-identity; blackboard clear timing;
+TUI narrow-terminal chart overflow + display-cell (vs code-unit) width math. These are the
+next sweep's backlog.
+
+## Verification at close
+Typecheck 8/8, lint clean, 15/15 test tasks (core 830+, +tests for config trust gate, checkpoint
+subdir/restart, toolset abort, slash multi-command, MCP ${VAR} url), smoke:tui + smoke:sidebar OK,
+goal + loop suites green.

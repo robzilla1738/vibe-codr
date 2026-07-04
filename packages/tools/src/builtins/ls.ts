@@ -7,6 +7,11 @@ const Input = z.object({
   path: z.string().optional().describe("Directory to list (default: cwd)."),
 });
 
+/** Cap the entry list like grep/glob do — a directory of hundreds of thousands
+ * of entries (node_modules, a generated-asset dir, an adversarial repo) would
+ * otherwise flood the whole list into the context window in one shot. */
+const LIMIT = 1000;
+
 export const lsTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "ls",
   description: "List the entries of a directory (files and subdirectories).",
@@ -20,7 +25,14 @@ export const lsTool: ToolDefinition<z.infer<typeof Input>> = {
       const lines = entries
         .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
         .sort();
-      return { output: lines.length ? lines.join("\n") : "(empty directory)" };
+      if (!lines.length) return { output: "(empty directory)" };
+      if (lines.length > LIMIT) {
+        const shown = lines.slice(0, LIMIT);
+        return {
+          output: `${shown.join("\n")}\n…(${lines.length - LIMIT} more entries truncated at ${LIMIT}; use glob/grep to filter)`,
+        };
+      }
+      return { output: lines.join("\n") };
     } catch (err) {
       return { output: `Cannot list ${path ?? "."}: ${(err as Error).message}`, isError: true };
     }

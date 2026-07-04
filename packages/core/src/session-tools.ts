@@ -246,7 +246,9 @@ export function buildRunCheckTool(handle: SessionToolsHandle): ToolDefinition<{
         };
       }
       const started = Date.now();
-      const r = await bunExec()(command, {
+      // Confine the repo-authored command under the OS sandbox like the engine
+      // gate does — a model-invoked check was previously unsandboxed.
+      const r = await bunExec(handle.deps.sandbox)(command, {
         cwd: ctx.cwd,
         timeoutSec: timeoutSec ?? 600,
         signal: ctx.abortSignal,

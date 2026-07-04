@@ -71,7 +71,13 @@ export async function composeInEditor(deps: EditorComposeDeps): Promise<EditorCo
   const read = deps.readText ?? ((p) => readFile(p, "utf8"));
   const remove = deps.removeFile ?? ((p) => rm(p, { force: true }));
 
-  await write(path, deps.draft);
+  // Honor the "never throws for the expected cases" contract: a failed temp
+  // write (unwritable/full $TMPDIR) becomes a `failed` result, not a throw.
+  try {
+    await write(path, deps.draft);
+  } catch (err) {
+    return { kind: "failed", reason: (err as Error).message };
+  }
   try {
     await deps.spawn(command, [...args, path]);
   } catch (err) {

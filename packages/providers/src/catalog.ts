@@ -319,6 +319,15 @@ function finiteNum(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
+/** A context window / max-output must be a finite POSITIVE number to be usable.
+ * A malformed upstream value (0, negative, NaN, a string) would otherwise flow
+ * straight into `threshold * window` and break compaction/offload — a `0`
+ * window makes every fill 0, a `NaN` makes the trigger never fire → the long
+ * turn 400s. Coerce a bad value to undefined so the probe/default takes over. */
+function finitePositive(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
 function parseTiers(cost: any): PricingTier[] | undefined {
   const raw = cost?.tiers;
   if (Array.isArray(raw)) {
@@ -366,8 +375,8 @@ export function parseModelsDev(raw: unknown): Map<string, Partial<ModelInfo>> {
         id: modelId,
         providerId,
         name: m?.name,
-        contextWindow: m?.limit?.context,
-        maxOutput: m?.limit?.output,
+        contextWindow: finitePositive(m?.limit?.context),
+        maxOutput: finitePositive(m?.limit?.output),
         cost: {
           input: finiteNum(m?.cost?.input),
           output: finiteNum(m?.cost?.output),

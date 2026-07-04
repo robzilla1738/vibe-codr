@@ -20,6 +20,17 @@ const httpUrl = () =>
     { message: "must be an http(s) URL with a host (e.g. https://host:port/path)" },
   );
 
+/** Like {@link httpUrl} but tolerant of an UNEXPANDED `${VAR}` — the MCP server
+ * `url` supports `${VAR}`/`${VAR:-default}` expansion at connect time (so a
+ * migrated Claude Code entry can reference a secret by env var), and the schema
+ * validates the PRE-expansion string. Without this a documented `${MCP_URL}`
+ * fails validation and bricks the ENTIRE config load; the real URL is validated
+ * post-expansion at connect and that one server degrades if it's malformed. */
+const expandableHttpUrl = () =>
+  z.string().refine((v) => v.includes("${") || httpUrl().safeParse(v).success, {
+    message: "must be an http(s) URL with a host, or an env-var reference expanded at connect time",
+  });
+
 /** Per-provider overrides (api key + base URL + subscription/OAuth token file). */
 export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
@@ -188,7 +199,7 @@ export const McpServerSchema = z.union([
     timeoutMs: z.number().int().positive().optional(),
   }),
   z.object({
-    url: httpUrl(),
+    url: expandableHttpUrl(),
     /** Remote transport: "http" (Streamable HTTP, the modern default) or "sse"
      * (legacy). Defaults to "http". */
     transport: z.enum(["http", "sse"]).optional(),
@@ -282,6 +293,20 @@ export const ConfigSchema = z.object({
    * honor explicit permission rules, so policy can govern egress.
    */
   approvalMode: z.enum(["ask", "auto"]).default("ask"),
+  /**
+   * Trust posture for a repo-local `.vibe/config.json` (which travels with a
+   * cloned, possibly untrusted repo). By default the project layer may not
+   * relax security: its `hooks` (shell exec on lifecycle events), `plugins`
+   * (arbitrary module import), a relaxation of `approvalMode` to `auto`, and
+   * `providers.*.baseURL` (traffic redirection) are DROPPED with a warning —
+   * so merely running `vibe` in a cloned repo can't execute attacker code or
+   * exfiltrate credentials. Set `trustProjectConfig: true` in your USER-GLOBAL
+   * config to honor project-layer values verbatim (the flag itself is only
+   * read from the global/CLI layer — a project file can't self-authorize).
+   */
+  security: z
+    .object({ trustProjectConfig: z.boolean().default(false) })
+    .default({ trustProjectConfig: false }),
   /** UI theme name. */
   theme: z.string().default("default"),
   /** Accent hue (hex) for UI chrome that OVERRIDES the active theme's `primary`.

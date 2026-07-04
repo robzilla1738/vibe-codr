@@ -4,6 +4,52 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Security & hardening — whole-project excellence sweep
+
+- **Untrusted project config can no longer execute code.** A cloned repo's
+  `.vibe/config.json` used to be able to set `hooks` (shell exec on
+  `session.start`), `plugins` (module import), `approvalMode: auto`, and
+  redirect `providers.*.baseURL` — arbitrary code execution or credential
+  exfiltration just by running `vibe` in the directory. Those fields are now
+  **dropped from the project layer** (with a startup warning) unless
+  `security.trustProjectConfig` is set in your **user-global** config; a
+  project's own custom provider keeps its `baseURL` (only a redirect of a
+  globally-configured provider is stripped).
+- **The build gate can't wedge on Esc.** Aborting a gate used to orphan the
+  test/build subprocess tree (grandchildren held the output pipe), hanging the
+  queue forever; the abort now kills the whole process tree.
+- **The OS sandbox now covers orchestrator gates and `run_check`** — repo build
+  scripts run by subagents or the model were previously unconfined even with the
+  sandbox enabled.
+- **An aborted turn no longer runs a queued mutating tool.** A parallel tool
+  batch interrupted by Esc could still land a write/`git_push` after "stop"; the
+  tool now bails before its permission gate and execute.
+- **Checkpoints are correct from a repo subdirectory.** `/undo`/`/redo` from a
+  session rooted in a subdir used to revert only that subtree while rewinding the
+  whole conversation; all snapshot/restore git ops now run from the repo
+  toplevel. A restart after a rewind no longer resurrects rewound edits (a bare
+  `/undo` could move the tree *forward*), and a partial `git add` no longer
+  records a lossy snapshot.
+- **Parallel worktree tasks can't clobber each other.** The worktree directory
+  is now session-scoped (like its branch), so two runners reusing a task id no
+  longer force-remove a live sibling's worktree mid-edit.
+- **`/loop stop` stops immediately** (it used to queue behind a pending
+  iteration and let one more full turn run); loop and goal queue items are swept
+  by provenance, so a typed prompt that happens to start with `loop:`/`goal:` is
+  never dropped. A persistently failing `--until` check now warns instead of
+  looping silently forever.
+- **MCP resilience:** a `${VAR}` server URL no longer bricks config load
+  (validated after expansion; a bad URL degrades just that server with a clear
+  message); a live tool/resource/prompt re-list that races a disconnect can no
+  longer register tools against a dead client.
+- **Smaller fixes:** a malformed catalog context-window (0/negative/NaN) can no
+  longer break compaction; `ls` output is capped like `grep`/`glob`; `Ctrl+G`
+  external-compose survives a temp-write failure instead of going permanently
+  dead; the `/model` picker keeps its menu open on a zero-match filter and
+  refuses to persist a typo'd model id; `/plan <text>` / `/execute <text>` now
+  switch mode **and** submit the text instead of dropping it; a UTF-8 BOM no
+  longer defeats `SKILL.md` frontmatter.
+
 ### Added — `/goal` is now an autonomous plan → execute → verify driver
 
 - **`/goal <text>` starts a run, not just a header.** The engine plans first

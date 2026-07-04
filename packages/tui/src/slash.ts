@@ -6,6 +6,24 @@ import type { EngineCommand } from "@vibe/shared";
  * becomes a `run-slash`; plain text becomes a prompt submission. Shared by the
  * OpenTUI app and the readline REPL so both route input identically.
  */
+/** Map a typed line to the ONE-or-MORE engine commands it expands to. Most lines
+ * are a single command; `/plan <text>` / `/execute <text>` switch the mode AND
+ * submit the text as the first turn (so the text isn't silently swallowed). */
+export function lineToCommands(line: string): EngineCommand[] {
+  const trimmed = line.trim();
+  const m = trimmed.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
+  if (!m) return [{ type: "submit-prompt", text: trimmed }];
+  const name = m[1] ?? "";
+  const args = (m[2] ?? "").trim();
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) return [{ type: "submit-prompt", text: trimmed }];
+  if ((name === "plan" || name === "execute") && args) {
+    // Switch mode, then run the request in it — `/plan add oauth` plans "add
+    // oauth" instead of dropping the description on the floor.
+    return [{ type: "set-mode", mode: name }, { type: "submit-prompt", text: args }];
+  }
+  return [lineToCommand(line)];
+}
+
 export function lineToCommand(line: string): EngineCommand {
   const trimmed = line.trim();
   // Command name is everything up to the first space, matching the engine's

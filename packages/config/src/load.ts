@@ -319,9 +319,82 @@ export async function configUnknownKeys(cwd: string): Promise<{ path: string; ke
  * Load and validate config by deep-merging: schema defaults -> global ->
  * project -> CLI overrides. Throws `ConfigError` on invalid files/values.
  */
+/** Fields a repo-local `.vibe/config.json` must not be able to set on an
+ * untrusted clone: they grant code execution or redirect credentialed traffic
+ * merely by running `vibe` in the directory. Dropped from the PROJECT layer
+ * unless `security.trustProjectConfig` is set in the trusted (global/CLI)
+ * layer. `approvalMode` is dropped only when it RELAXES to `auto`. */
+function sanitizeUntrustedProjectConfig(
+  project: Record<string, unknown>,
+  globalProviderIds: Set<string>,
+): {
+  clean: Record<string, unknown>;
+  dropped: string[];
+} {
+  const clean = { ...project };
+  const dropped: string[] = [];
+  for (const key of ["hooks", "plugins"] as const) {
+    if (key in clean) {
+      delete clean[key];
+      dropped.push(key);
+    }
+  }
+  if (clean.approvalMode === "auto") {
+    delete clean.approvalMode;
+    dropped.push("approvalMode:auto");
+  }
+  // A project may declare its OWN custom provider (a local LLM, an org proxy) —
+  // that's a legitimate, supported pattern. The attack is REDIRECTING a
+  // provider the user configured globally (where their real credentials live)
+  // to an attacker host, so strip `baseURL` only when the project overrides a
+  // globally-declared provider id. A brand-new provider id keeps its baseURL.
+  if (isPlainObject(clean.providers)) {
+    const providers: Record<string, unknown> = {};
+    let redirected = false;
+    for (const [id, entry] of Object.entries(clean.providers as Record<string, unknown>)) {
+      if (globalProviderIds.has(id) && isPlainObject(entry) && "baseURL" in entry) {
+        const { baseURL: _drop, ...rest } = entry as Record<string, unknown>;
+        providers[id] = rest;
+        redirected = true;
+      } else {
+        providers[id] = entry;
+      }
+    }
+    if (redirected) {
+      clean.providers = providers;
+      dropped.push("providers.*.baseURL");
+    }
+  }
+  return { clean, dropped };
+}
+
+/** Security notices (dropped untrusted project-config fields) attached to a
+ * loaded config, surfaced by the engine at bootstrap. Keyed by the returned
+ * object so there is no signature change and no global mutable state. */
+const securityNotices = new WeakMap<object, string[]>();
+
+/** The security notices recorded for a config loaded by {@link loadConfig}
+ * (empty when the project layer was trusted or set nothing sensitive). */
+export function configSecurityNotices(config: object): string[] {
+  return securityNotices.get(config) ?? [];
+}
+
 export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   const cwd = opts.cwd ?? process.cwd();
   let merged: Record<string, unknown> = {};
+  // Trust is decided by the GLOBAL/CLI layer only — a project file can't
+  // authorize its own sensitive fields. Read the flag before the project merge.
+  const globalRaw = (await readConfigFile(globalConfigPath()).catch(() => null)) ?? {};
+  const overridesRaw = (opts.overrides as Record<string, unknown> | undefined) ?? {};
+  const trustFrom = (layer: Record<string, unknown>): boolean =>
+    isPlainObject(layer.security) &&
+    (layer.security as Record<string, unknown>).trustProjectConfig === true;
+  const trustProject = trustFrom(overridesRaw) || trustFrom(globalRaw);
+  const globalProviderIds = new Set(
+    isPlainObject(globalRaw.providers) ? Object.keys(globalRaw.providers as Record<string, unknown>) : [],
+  );
+  const droppedProjectFields: string[] = [];
+  const projectPath = projectConfigPath(cwd);
 
   // `permissions` is the one array that must UNION across layers, not replace:
   // deepMerge's replace semantics would let a repo-local `.vibe/config.json`
@@ -335,9 +408,17 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   };
 
   for (const path of configLocations(cwd)) {
-    const fileConfig = await readConfigFile(path);
+    let fileConfig = await readConfigFile(path);
     if (fileConfig) {
+      // The project layer (only) is sanitized when untrusted — permissions are
+      // collected from the ORIGINAL file (deny rules only ever add safety, and
+      // the union merge already can't let a project strip a global deny).
       collectPermissions(fileConfig);
+      if (path === projectPath && !trustProject) {
+        const { clean, dropped } = sanitizeUntrustedProjectConfig(fileConfig, globalProviderIds);
+        fileConfig = clean;
+        droppedProjectFields.push(...dropped);
+      }
       merged = deepMerge(merged, fileConfig);
     }
   }
@@ -372,7 +453,15 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   // calls) would alias the same nested `providers`/`mcp.servers`/`webfetch.
   // allowHosts` — the engine mutates several of these (e.g. `/model key` writes
   // `providers[id]`), which would then leak across configs (and pollute tests).
-  return structuredClone(result.data);
+  const config = structuredClone(result.data);
+  if (droppedProjectFields.length) {
+    securityNotices.set(config, [
+      `Ignored untrusted project config (${cwd}/.vibe/config.json): ${droppedProjectFields.join(", ")}. ` +
+        "These can execute code or redirect credentialed traffic. Set security.trustProjectConfig:true " +
+        "in your global config to honor them.",
+    ]);
+  }
+  return config;
 }
 
 /** Synchronous defaults, useful for tests and headless boot before disk read. */

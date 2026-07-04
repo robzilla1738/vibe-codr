@@ -28,6 +28,7 @@ import {
   createSerialLock,
   type ToolRuntimeBase,
   type FileLock,
+  type SandboxPolicy,
 } from "@vibe/tools";
 import type { HookBus, SkillRegistry } from "@vibe/plugins";
 import type { EventBus } from "./event-bus.ts";
@@ -106,6 +107,9 @@ export interface SessionDeps {
   toolset: Toolset;
   bus: EventBus;
   cwd: string;
+  /** Resolved OS-sandbox policy, so orchestrator gates + `run_check` confine
+   * repo-authored build scripts the same way the engine's own gate does. */
+  sandbox?: SandboxPolicy;
   model: string;
   mode: Mode;
   goal?: string | null;

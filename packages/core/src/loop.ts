@@ -93,6 +93,10 @@ export class LoopController {
   #stopped = false;
   #iteration = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  /** Consecutive `--until` evaluation failures — a persistently failing check
+   * (bad model id, dead key) would otherwise silently make the condition inert
+   * and, with no `--max`, loop forever. Warned on the 1st and every 5th. */
+  #evalFailStreak = 0;
   #resolveDone!: () => void;
   #done: Promise<void>;
 
@@ -149,12 +153,25 @@ export class LoopController {
     if (this.#opts.until && this.#opts.evaluate) {
       try {
         const verdict = await this.#opts.evaluate(result, this.#opts.until);
+        this.#evalFailStreak = 0;
         if (verdict.done) {
           this.stop(`condition met: ${verdict.reason}`);
           return;
         }
       } catch {
-        // Treat evaluation failure as "not yet" and keep looping.
+        // Treat evaluation failure as "not yet" and keep looping — but a
+        // PERSISTENTLY failing check (model unreachable / bad id) silently turns
+        // `--until` into "never", so surface it instead of looping mutely.
+        this.#evalFailStreak += 1;
+        if (this.#evalFailStreak === 1 || this.#evalFailStreak % 5 === 0) {
+          this.#opts.emit({
+            type: "notice",
+            level: "warn",
+            message:
+              `Loop --until check failed ${this.#evalFailStreak}× (model unreachable or the ` +
+              "condition can't be evaluated); the loop continues. /loop stop to cancel.",
+          });
+        }
       }
     }
 

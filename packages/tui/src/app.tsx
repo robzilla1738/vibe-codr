@@ -89,7 +89,7 @@ import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.
 import { cleanupClipboardTempDir, readClipboardImage } from "./clipboard-image.ts";
 import { composeInEditor, type EditorSpawn } from "./editor-compose.ts";
 import { brandSpans, rainbow } from "./gradient.ts";
-import { lineToCommand, parsePermissionDecision } from "./slash.ts";
+import { lineToCommands, parsePermissionDecision } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
@@ -720,7 +720,18 @@ export function App(props: { engine: EngineClient }) {
             },
           } satisfies MenuRow;
         });
-      return { open: rows.length > 0, loading: false, kind: "models" as const, isAgent, title, hint, rows };
+      // Zero matches must keep the menu OPEN with a placeholder — otherwise the
+      // menu silently closes (looks like "still loading") and a stray Enter
+      // submits the literal `/model <typo>` line, persisting an unresolvable id
+      // as the main model. Choosing the placeholder is a no-op.
+      if (rows.length === 0) {
+        rows.push({
+          label: "No matching models",
+          desc: "backspace to widen the filter, or type a full provider/id",
+          choose: () => {},
+        } satisfies MenuRow);
+      }
+      return { open: true, loading: false, kind: "models" as const, isAgent, title, hint, rows };
     }
     const provQuery = providersPickerQuery();
     if (provQuery !== null) {
@@ -1245,21 +1256,24 @@ export function App(props: { engine: EngineClient }) {
       return;
     }
     renderer.suspend();
-    let result: Awaited<ReturnType<typeof composeInEditor>>;
     try {
-      result = await composeInEditor({ editor, draft: draft(), spawn: editorSpawn });
+      const result = await composeInEditor({ editor, draft: draft(), spawn: editorSpawn });
+      if (result.kind === "replaced") {
+        setDraft(result.draft);
+        refocusInput();
+      } else if (result.kind === "kept") {
+        apply({ type: "notice", text: "Editor draft was empty — kept your prior text.", level: "info" });
+      } else if (result.kind === "failed") {
+        apply({ type: "notice", text: `Editor failed: ${result.reason}`, level: "warn" });
+      }
+    } catch (err) {
+      // A throw (e.g. an unwritable $TMPDIR) must NOT leave the `composing` latch
+      // stuck true — that would make Ctrl+G a permanent no-op for the session.
+      apply({ type: "notice", text: `Editor failed: ${(err as Error)?.message ?? String(err)}`, level: "warn" });
     } finally {
       renderer.resume();
+      composing = false;
     }
-    if (result.kind === "replaced") {
-      setDraft(result.draft);
-      refocusInput();
-    } else if (result.kind === "kept") {
-      apply({ type: "notice", text: "Editor draft was empty — kept your prior text.", level: "info" });
-    } else if (result.kind === "failed") {
-      apply({ type: "notice", text: `Editor failed: ${result.reason}`, level: "warn" });
-    }
-    composing = false;
   };
   // Apply the highlighted menu row; `run` also submits a complete one.
   const choosePalette = (run: boolean) => chooseAt(selIdx(), run);
@@ -1789,8 +1803,9 @@ export function App(props: { engine: EngineClient }) {
       setProviders(null);
     }
     // Route through the shared mapper so `/model <id>`, `/goal <text>`, etc.
-    // keep their arguments (the same logic the REPL uses).
-    props.engine.send(lineToCommand(text));
+    // keep their arguments (the same logic the REPL uses). A line may expand to
+    // more than one command (`/plan <text>` = switch mode + submit the text).
+    for (const cmd of lineToCommands(text)) props.engine.send(cmd);
   };
   // OpenTUI's input passes the committed value on Enter; fall back to the
   // controlled draft. When the command menu is open the keyboard handler

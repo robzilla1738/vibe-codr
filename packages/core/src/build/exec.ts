@@ -60,20 +60,27 @@ export function bunExec(policy?: SandboxPolicy): Exec {
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
-        ...(signal ? { signal } : {}),
+        // Deliberately NOT forwarding `signal` to Bun.spawn: on abort Bun kills
+        // only the DIRECT child (`bash -lc …`), orphaning grandchildren (test
+        // workers, spawned servers) that still hold the inherited stdout/stderr
+        // pipe write-ends — `readBounded` never observes EOF and `bunExec` hangs
+        // forever, wedging the gate the abort was meant to stop. Instead we
+        // killTree while the root is still alive (below), so `pgrep -P` can walk
+        // the descendants before they reparent to PID 1.
       });
-      // On timeout, kill the whole PROCESS TREE, not just the `bash -lc` child.
-      // A `bash -lc "vitest run"` (or any command with a worker pool / spawned
-      // server) leaves grandchildren holding the inherited stdout/stderr pipe
-      // write-ends after a bare `proc.kill()`; `readBounded` then never observes
-      // `done`, the reader `Promise.all` never resolves, and `bunExec` hangs
-      // forever — wedging the green-gate (which passes no abort signal). Killing
-      // the tree closes those pipes so the readers finish and the gate unwinds.
+      // On timeout OR abort, kill the whole PROCESS TREE, not just the `bash -lc`
+      // child — killing the tree closes the inherited pipes so the readers finish
+      // and this call unwinds instead of hanging.
       const timer = timeoutSec
         ? setTimeout(() => {
             killTree(proc.pid);
           }, timeoutSec * 1000)
         : undefined;
+      const onAbort = () => killTree(proc.pid);
+      if (signal) {
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
       try {
         const [stdout, stderr] = await Promise.all([
           readBounded(proc.stdout, MAX_PROBE_OUTPUT),
@@ -83,6 +90,7 @@ export function bunExec(policy?: SandboxPolicy): Exec {
         return { out: `${stdout}${stderr}`, code };
       } finally {
         if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
       }
     } catch (err) {
       return { out: (err as Error)?.message ?? String(err), code: 127 };

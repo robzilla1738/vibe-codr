@@ -3,7 +3,7 @@ import type { EngineClient } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
 import { renderHeadless } from "./headless.ts";
-import { lineToCommand, parsePermissionDecision } from "./slash.ts";
+import { lineToCommands, parsePermissionDecision } from "./slash.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
 
 /**
@@ -114,7 +114,7 @@ async function startRepl(engine: EngineClient): Promise<void> {
         rl.close();
         return;
       }
-      if (trimmed) engine.send(lineToCommand(trimmed));
+      if (trimmed) for (const cmd of lineToCommands(trimmed)) engine.send(cmd);
       ask();
     });
   ask();

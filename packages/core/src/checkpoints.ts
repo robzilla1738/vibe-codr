@@ -115,9 +115,28 @@ export class CheckpointManager {
     return !mine || !c.sessionId || c.sessionId === mine;
   }
 
+  /** Repo TOPLEVEL, resolved once. All snapshot/restore git ops must run from
+   * the toplevel, not `#cwd`: `git add -A`/`write-tree` are repo-wide even from
+   * a subdir, but `checkout-index -a -f` and `ls-files --others` are CWD-PREFIX
+   * scoped — so restoring from `repo/sub` would revert only the subtree while
+   * the conversation is rewound for the whole turn (the model forgets edits
+   * still on disk). Null until resolved; falls back to `#cwd` outside a repo. */
+  #gitRoot: string | null = null;
+
+  /** Resolve and memoize the repo toplevel. The bootstrap `rev-parse` runs from
+   * `#cwd` (with `#gitRoot` still null) — `--show-toplevel` is correct from any
+   * subdir — then every later `#git` runs from the toplevel. */
+  async #ensureRoot(): Promise<string> {
+    if (this.#gitRoot === null) {
+      const top = await this.#git(["rev-parse", "--show-toplevel"]);
+      this.#gitRoot = top.ok && top.stdout ? top.stdout : this.#cwd;
+    }
+    return this.#gitRoot;
+  }
+
   async #git(args: string[], env?: Record<string, string>): Promise<GitResult> {
     const proc = Bun.spawn(["git", ...args], {
-      cwd: this.#cwd,
+      cwd: this.#gitRoot ?? this.#cwd,
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
@@ -140,6 +159,9 @@ export class CheckpointManager {
   }
 
   async #ensureLoaded(): Promise<void> {
+    // Resolve the repo toplevel before any git op so restore/cleanup are
+    // repo-wide even when the session runs in a subdir (idempotent + memoized).
+    await this.#ensureRoot();
     if (this.#loaded) return;
     this.#loaded = true;
     // Global state dir first; fall back to a pre-relocation in-project log.
@@ -186,8 +208,20 @@ export class CheckpointManager {
       // sessions' entries into this session's in-memory #list, or /undo would
       // restore ANOTHER session's checkpoint. #list stays scoped to this session.
       const onDisk = await this.#readListFrom(this.#file);
+      const mine = this.#sessionId?.();
+      const myIds = new Set(this.#list.map((c) => c.id));
       const byId = new Map<string, Checkpoint>();
-      for (const c of onDisk) byId.set(c.id, c);
+      for (const c of onDisk) {
+        // An entry POSITIVELY tagged with this session's id but absent from
+        // #list was removed here (undo/restoreTo splices #list only). Re-adding
+        // it via the merge would resurrect it across a restart — then a bare
+        // /undo, seeing it as the newest, moves the tree FORWARD to edits the
+        // user rewound away. Drop it (removal = tombstone-by-omission). Only a
+        // POSITIVE id match qualifies, so untagged legacy entries and other
+        // sessions' entries (the concurrent-manager case) are always preserved.
+        if (mine && c.sessionId === mine && !myIds.has(c.id)) continue;
+        byId.set(c.id, c);
+      }
       for (const c of this.#list) byId.set(c.id, c);
       const merged = [...byId.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_CHECKPOINTS);
       await Bun.write(tmp, `${JSON.stringify(merged, null, 2)}\n`);
@@ -224,7 +258,11 @@ export class CheckpointManager {
     const env = { GIT_INDEX_FILE: indexFile };
     let commit = "";
     try {
-      await this.#git(["add", "-A"], env);
+      // A partial `add -A` (e.g. one unreadable file) still yields a valid
+      // write-tree, so the checkpoint would record a tree MISSING that file —
+      // and a later restore's untracked-cleanup would then delete it as
+      // "created since". Bail on a failed add so the snapshot is all-or-nothing.
+      if (!(await this.#git(["add", "-A"], env)).ok) return null;
       const tree = (await this.#git(["write-tree"], env)).stdout;
       if (!tree) return null;
       const head = await this.#git(["rev-parse", "HEAD"]);
@@ -282,7 +320,7 @@ export class CheckpointManager {
         );
         for (const file of untracked) {
           if (!inSnapshot.has(file)) {
-            await rm(join(this.#cwd, file), { force: true }).catch(() => undefined);
+            await rm(join(this.#gitRoot ?? this.#cwd, file), { force: true }).catch(() => undefined);
           }
         }
       }

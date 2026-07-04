@@ -553,3 +553,61 @@ test("a resumed manager's /undo is scoped to ITS session, not others in the shar
   expect(restored?.label).toBe("A-safety"); // A's own, not B-work
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("A-original\n");
 });
+
+test("restore from a repo SUBDIRECTORY reverts the whole tree, not just the subtree", async () => {
+  // Regression: checkout-index / ls-files --others are cwd-prefix scoped, so a
+  // manager rooted at repo/sub used to restore only sub/* while the engine
+  // rewound the conversation for the whole turn.
+  const dir = await initRepo();
+  await Bun.write(join(dir, "sub/inner.txt"), "v0\n");
+  await Bun.write(join(dir, "root.txt"), "root-v0\n");
+  await git(dir, ["add", "-A"]);
+  await git(dir, ["commit", "-qm", "add files"]);
+
+  const cp = new CheckpointManager(join(dir, "sub")); // session runs in the subdir
+  const snap = await cp.snapshot("before edits");
+  expect(snap).not.toBeNull();
+
+  // Edit BOTH a file in the subdir and a file at the repo root, plus an
+  // untracked file above the subdir.
+  await Bun.write(join(dir, "sub/inner.txt"), "v1\n");
+  await Bun.write(join(dir, "root.txt"), "root-v1\n");
+  await Bun.write(join(dir, "created-root.txt"), "new\n");
+
+  await cp.undo();
+
+  // Every path is reverted — including the ones OUTSIDE the session's subdir.
+  expect(await Bun.file(join(dir, "sub/inner.txt")).text()).toBe("v0\n");
+  expect(await Bun.file(join(dir, "root.txt")).text()).toBe("root-v0\n");
+  expect(await Bun.file(join(dir, "created-root.txt")).exists()).toBe(false);
+});
+
+test("restart after restoreTo: a fresh manager's /undo does not resurrect rewound edits", async () => {
+  // Regression: the disk merge re-added this-session entries that restoreTo had
+  // removed, so after a restart a bare /undo moved the tree FORWARD.
+  const dir = await initRepo();
+  const sid = () => "sess-restart";
+  const cp = new CheckpointManager(dir, sid);
+  const v1 = await cp.snapshot("v1");
+  await Bun.write(join(dir, "a.txt"), "v1-edit\n");
+  await cp.snapshot("v2");
+  await Bun.write(join(dir, "a.txt"), "v2-edit\n");
+  await cp.snapshot("v3");
+
+  // Rewind all the way back to v1's tree (v2/v3 popped from #list).
+  await cp.restoreTo(v1!.id);
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("original\n");
+
+  // Simulate a restart: a fresh manager for the SAME session id reloads from
+  // disk (the redo stack is legitimately gone). A bare /undo must not exist —
+  // there is no checkpoint newer than the current tree to move toward.
+  const cp2 = new CheckpointManager(dir, sid);
+  const list = await cp2.list();
+  // The popped v2/v3 are not resurrected as live entries.
+  expect(list.map((c) => c.label).sort()).toEqual(["v1"]);
+  await Bun.write(join(dir, "a.txt"), "post-restart\n");
+  const undone = await cp2.undo();
+  // /undo rewinds to v1 (the only checkpoint), never forward to v2/v3's edits.
+  expect(undone?.label).toBe("v1");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("original\n");
+});

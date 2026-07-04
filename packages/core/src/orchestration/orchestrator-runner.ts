@@ -33,6 +33,7 @@ import {
   persistTaskReport,
 } from "../build/journal.ts";
 import { runGate, formatGateFailure } from "../build/gate.ts";
+import { bunExec } from "../build/exec.ts";
 import {
   gitAddWorktree,
   gitRemoveWorktree,
@@ -664,7 +665,7 @@ export class OrchestratorRunner {
   ): Promise<TaskResult> {
     const mainCwd = this.#handle.deps.cwd;
     const slug = worktreeSlug(spec.id);
-    const wtPath = join(mainCwd, ".vibe", "worktrees", slug);
+    const wtPath = join(mainCwd, ".vibe", "worktrees", worktreePathName(this.#handle.id, slug));
     const branch = worktreeBranch(this.#handle.id, slug);
     const wt = await gitAddWorktree(mainCwd, { path: wtPath, branch });
     if (!wt) {
@@ -767,6 +768,9 @@ export class OrchestratorRunner {
             const gate = await runGate(mainCwd, profile!, 0, {
               checks: this.#handle.deps.config.build.gate.checks,
               timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+              // Confine repo-authored build scripts under the OS sandbox exactly
+              // like the engine's own gate — orchestrator gates were unsandboxed.
+              exec: bunExec(this.#handle.deps.sandbox),
               ...(parentSignal ? { signal: parentSignal } : {}),
             });
             if (gate.outcome === "red") {
@@ -937,6 +941,9 @@ export class OrchestratorRunner {
             const gate = await runGate(mainCwd, profile!, 0, {
               checks: this.#handle.deps.config.build.gate.checks,
               timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+              // Confine repo-authored build scripts under the OS sandbox exactly
+              // like the engine's own gate — orchestrator gates were unsandboxed.
+              exec: bunExec(this.#handle.deps.sandbox),
               ...(parentSignal ? { signal: parentSignal } : {}),
             });
             if (gate.outcome === "red") {
@@ -972,9 +979,12 @@ export class OrchestratorRunner {
     } finally {
       // Discard EVERY attempt's worktree + branch (the winner's merge is done, so
       // its branch is now redundant; losers are thrown away). Serialized so a
-      // removal can't race a merge on the shared .git.
+      // removal can't race a merge on the shared .git. A rejecting removal must
+      // not abort the loop (leaking the remaining attempts' worktrees) or, from
+      // this finally, clobber the already-settled result — swallow per iteration
+      // (matches the worktree-path teardown).
       for (const a of attempts) {
-        if (a.wt) await this.#mergeLock(() => gitRemoveWorktree(mainCwd, a.wtPath, a.branch));
+        if (a.wt) await this.#mergeLock(() => gitRemoveWorktree(mainCwd, a.wtPath, a.branch)).catch(() => {});
       }
     }
   }
@@ -995,7 +1005,7 @@ export class OrchestratorRunner {
     const strategy = ENSEMBLE_STRATEGIES[i]!;
     const label = strategy.name;
     const wtId = `${worktreeSlug(spec.id)}-a${i}`;
-    const wtPath = join(mainCwd, ".vibe", "worktrees", wtId);
+    const wtPath = join(mainCwd, ".vibe", "worktrees", worktreePathName(this.#handle.id, wtId));
     const branch = worktreeBranch(this.#handle.id, wtId);
     const base: EnsembleAttempt = { i, label, wt: null, wtPath, branch, text: "", score: -1, diffSize: Infinity, verdict: "not-run" };
 
@@ -1030,6 +1040,7 @@ export class OrchestratorRunner {
         const gate = await runGate(wt, profile, 0, {
           checks: this.#handle.deps.config.build.gate.checks,
           timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+          exec: bunExec(this.#handle.deps.sandbox),
           ...(parentSignal ? { signal: parentSignal } : {}),
         });
         // An interrupted gate (aborted) scores 0 alongside red: never select
@@ -1175,6 +1186,7 @@ export class OrchestratorRunner {
           runGate(this.#handle.deps.cwd, profile!, attempts - 1, {
             checks: this.#handle.deps.config.build.gate.checks,
             timeoutSec: this.#handle.deps.config.build.gate.timeoutSec,
+            exec: bunExec(this.#handle.deps.sandbox),
             ...(parentSignal ? { signal: parentSignal } : {}),
           }),
         );
@@ -1882,10 +1894,24 @@ export function worktreeSlug(id: string): string {
   return `${sanitizeId(id)}-${idHash(id)}`;
 }
 
+/** The 8-char session tag both the path and the branch embed so two runners
+ * sharing a cwd (concurrent sessions, or a re-submitted plan reusing a task id)
+ * never collide on the same worktree directory — the `gitAddWorktree` stale
+ * cleanup would otherwise `rm -rf` a live sibling's worktree mid-edit. */
+function sessionTag(sessionId: string): string {
+  return sessionId.replace(/[^A-Za-z0-9]/g, "").slice(-8) || "root";
+}
+
+/** The session-scoped worktree DIRECTORY name — the slug prefixed with the
+ * session tag, mirroring the branch so path and branch stay in lockstep AND
+ * are unique per session. */
+export function worktreePathName(sessionId: string, slug: string): string {
+  return `${sessionTag(sessionId)}-${slug}`;
+}
+
 /** The fresh branch name for a worktree task: `vibe-wt/<session-short>-<slug>`.
  * Takes an already-safe slug (from `worktreeSlug`) so it is never re-truncated —
  * truncating here would chop the disambiguating hash off the tail. */
 function worktreeBranch(sessionId: string, slug: string): string {
-  const short = sessionId.replace(/[^A-Za-z0-9]/g, "").slice(-8) || "root";
-  return `vibe-wt/${short}-${slug}`;
+  return `vibe-wt/${sessionTag(sessionId)}-${slug}`;
 }

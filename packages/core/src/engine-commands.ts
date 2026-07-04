@@ -153,6 +153,18 @@ function providerKeyHint(h: EngineHandle, modelId: string): string {
 
 /** Switch the main model live on the session AND persist it (remembered). */
 export async function setMainModel(h: EngineHandle, id: string): Promise<void> {
+  // A model string is always `provider/id` (e.g. anthropic/claude-opus-4-8,
+  // ollama/llama3.1). A bare token is a typo — refuse it instead of persisting a
+  // value that unresolvably breaks every later turn until the user edits config
+  // by hand (the failure mode a mistyped `/model` filter used to cause).
+  if (!id.includes("/")) {
+    h.notice(
+      `"${id}" is not a valid model string — use provider/id (e.g. anthropic/claude-opus-4-8). ` +
+        "Run /models to see what's available. Model not changed.",
+      "warn",
+    );
+    return;
+  }
   h.session.setModel(id);
   h.config.model = id;
   await h.persistConfig({ model: id });

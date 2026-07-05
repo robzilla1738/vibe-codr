@@ -204,6 +204,14 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   - `/loop` iterations run **through the engine queue** (`#enqueue`) so they
     serialize with user turns; `LoopController.stop()` aborts the in-flight turn
     via `onStop`.
+  - **The drain loop re-checks `#pending` after the idle consultation.** The
+    outer `do-while` condition is `await #maybeContinueOnIdle() || #pending.length`
+    — a prompt enqueued DURING the `session.idle` hook's async await (an
+    HTTP/shell config hook, or any async in-process handler) would otherwise be
+    stranded: `#enqueue`'s `void #drain()` is a no-op against `#draining` still
+    true, and a `{continue:false}` hook made the loop exit with the item still in
+    `#pending`. The `|| #pending.length` tail loops back to drain it before
+    settling idle.
   - Compaction prepends the summary as a leading **user** turn (folding into an
     existing leading user message) to keep strict alternation, and never cuts the
     kept window across a tool boundary: tool results are their own `role: "tool"`

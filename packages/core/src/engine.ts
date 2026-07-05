@@ -2065,7 +2065,17 @@ export class Engine implements EngineClient {
           // (New work may also have been queued during this gap; the loop re-checks.)
           await new Promise((resolve) => setTimeout(resolve, 0));
         } while (this.#pending.length);
-      } while (await this.#maybeContinueOnIdle());
+      // A prompt may have been enqueued DURING the session.idle hook's async
+      // await (an HTTP/shell config hook, or any async in-process handler): the
+      // inner loop already exited (it saw #pending empty before the idle
+      // consultation started), so #enqueue's void #drain() was a no-op against
+      // #draining still true, and a {continue:false} hook would strand the
+      // queued item forever — the finally would clear #draining and emit
+      // engine-idle with the prompt still sitting in #pending. Re-check #pending
+      // AFTER the idle consultation: if items arrived during its await, loop back
+      // and drain them instead of settling idle. The session.idle hook re-fires
+      // on the next pass (correctly — the queue was never truly idle).
+      } while (await this.#maybeContinueOnIdle() || this.#pending.length);
     } catch (err) {
       // A throw outside the per-item catch (e.g. a bus subscriber or session.idle
       // #onError callback) must not wedge the queue — log and fall through to the

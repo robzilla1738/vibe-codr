@@ -27,6 +27,7 @@ export {
   presentPlanTool,
 } from "./builtins/index.ts";
 export type { WebSearchOptions } from "./builtins/web-search.ts";
+export { canonicalizeUrl } from "./builtins/searchcore.ts";
 export { unifiedDiff, type DiffResult } from "./diff.ts";
 export { killTree, processTree } from "./builtins/process-tree.ts";
 export {

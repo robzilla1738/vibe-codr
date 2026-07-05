@@ -165,11 +165,16 @@ export function planOffloads(messages: ModelMessage[], opts: PlanOptions): ToolR
     const p = targetPath(r, opts.canonicalize);
     if (p && WRITE_LIKE.has(r.toolName)) lastTouch.set(p, i);
   });
+  // Pre-compute each ref's index in the full refs array so the supersession
+  // check is O(1) per eligible item (O(n) total), not O(n) via indexOf per item
+  // (O(n²) total) — a long agentic turn can accumulate dozens of tool results.
+  const refIndex = new Map<ToolResultRef, number>();
+  refs.forEach((r, i) => { refIndex.set(r, i); });
   const isSuperseded = (r: ToolResultRef): boolean => {
     const p = targetPath(r, opts.canonicalize);
     if (!p || !READ_LIKE.has(r.toolName)) return false;
     const last = lastTouch.get(p);
-    return last !== undefined && last > refs.indexOf(r);
+    return last !== undefined && last > (refIndex.get(r) ?? -1);
   };
 
   const ordered = [

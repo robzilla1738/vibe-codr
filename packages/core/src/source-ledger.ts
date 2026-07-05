@@ -9,35 +9,10 @@
  * is never inherited by forks (each session tracks the sources it read itself).
  */
 
+import { canonicalizeUrl } from "@vibe/tools";
+
 /** The research tools whose results are harvested into the ledger. */
 export const RESEARCH_TOOL_NAMES = new Set(["web_search", "webfetch", "crawl_docs"]);
-
-/** Query params that are pure tracking noise — dropped from the canonical form. */
-const TRACKING_KEYS = new Set(["fbclid", "gclid", "mc_cid", "mc_eid"]);
-
-/**
- * Stable canonical form for dedup: strip tracking params (`utm_*`, fbclid, …),
- * drop `www.`, lower-case the host, remove a trailing slash and the fragment,
- * and sort the remaining query so two spellings of one page collapse to one key.
- * Kept local (searchcore's twin isn't exported from `@vibe/tools`'s root).
- */
-export function canonicalizeUrl(url: string): string {
-  let u: URL;
-  try {
-    u = new URL(url.trim());
-  } catch {
-    return url.trim().toLowerCase();
-  }
-  const pairs = [...u.searchParams.entries()].filter(
-    ([k]) => !TRACKING_KEYS.has(k.toLowerCase()) && !k.toLowerCase().startsWith("utm_"),
-  );
-  pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  const query = pairs.length ? `?${pairs.map(([k, v]) => `${k}=${v}`).join("&")}` : "";
-  const host = u.hostname.toLowerCase().replace(/^www\./, "");
-  let path = u.pathname || "/";
-  if (path !== "/") path = path.replace(/\/+$/, "");
-  return `${u.protocol.toLowerCase()}//${host}${path}${query}`;
-}
 
 /**
  * Extract up to `max` distinct http(s) URLs from free text (a tool's rendered

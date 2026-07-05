@@ -9,7 +9,8 @@ import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { composeSystemPrompt, formatWorkspaceState } from "./system-prompt.ts";
 import { handleSlash, type EngineHandle } from "./engine-commands.ts";
-import { SourceLedger, canonicalizeUrl, harvestUrls } from "./source-ledger.ts";
+import { SourceLedger, harvestUrls } from "./source-ledger.ts";
+import { canonicalizeUrl } from "@vibe/tools";
 
 // ── canonicalizeUrl ────────────────────────────────────────────────────────
 

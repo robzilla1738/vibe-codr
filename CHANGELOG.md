@@ -4,6 +4,27 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — drain race, microcompaction performance, and URL canonicalization dedup
+
+- **A prompt submitted during an async `session.idle` hook's await is no longer
+  stranded.** The outer drain loop exited on `{continue:false}` without
+  re-checking `#pending` — a prompt enqueued during the hook's async yield (an
+  HTTP/shell config hook, or any async in-process handler) sat in the queue
+  forever: `#enqueue`'s `void #drain()` was a no-op against `#draining` still
+  true, the `finally` cleared the latch and emitted `engine-idle`, and nothing
+  re-triggered the drain. The outer loop condition now also checks
+  `#pending.length`, so items that arrived during the idle consultation are
+  drained before settling idle.
+- **`planOffloads` supersession check is O(n) instead of O(n²).** The
+  `isSuperseded` predicate used `refs.indexOf(r)` per eligible item, making the
+  filter O(n²) for a turn with many tool results. A pre-computed
+  `Map<ToolResultRef, number>` index makes each lookup O(1).
+- **`canonicalizeUrl` is no longer duplicated between `@vibe/tools` and
+  `@vibe/core`.** The searchcore implementation (now with input `.trim()` for
+  robustness with harvested URLs) is exported from `@vibe/tools`'s root and
+  imported by `source-ledger.ts`, eliminating the maintainability risk of two
+  copies drifting.
+
 ### Fixed — freeze/stall/interaction hardening pass
 
 - **The engine no longer wedges on stalled control paths.** Queue draining now

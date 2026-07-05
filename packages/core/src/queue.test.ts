@@ -216,3 +216,38 @@ test("finalize sweeps queued work — it never runs a model turn post-teardown",
   // "second" was swept by finalize and never started a turn.
   expect(prompts).not.toContain("second");
 });
+
+test("a prompt submitted DURING an async session.idle hook's await is not stranded", async () => {
+  // Regression: when the session.idle hook is async (an HTTP/shell config hook
+  // or any async in-process handler) and a prompt arrives during its await, the
+  // outer drain loop exited on {continue:false} without re-checking #pending —
+  // the prompt sat in the queue forever (engine-idle fired, #draining cleared,
+  // but nothing re-triggered #drain). The fix: the outer loop condition also
+  // checks #pending.length so items that arrived during the idle await are
+  // drained before settling.
+  const hooks = new HookBus(() => {});
+  let idleHookInAwait: () => void;
+  const idleHookStarted = new Promise<void>((r) => { idleHookInAwait = r; });
+  hooks.on("session.idle", async () => {
+    // Yield long enough for the test to inject a prompt during the await.
+    idleHookInAwait!();
+    await new Promise((r) => setTimeout(r, 50));
+    return { sessionId: "", continue: false }; // do NOT request a continuation
+  });
+
+  const { engine, events } = mockEngine(replyModel(0), hooks);
+
+  engine.send({ type: "submit-prompt", text: "first" });
+  // Wait until the idle hook is IN its async await (the inner loop has already
+  // exited and #maybeContinueOnIdle is suspended on the hook's promise).
+  await idleHookStarted;
+  // Inject a prompt during the hook's await — this is the race window.
+  engine.send({ type: "submit-prompt", text: "second" });
+  await engine.whenIdle();
+
+  const prompts = events
+    .filter((e): e is Extract<UIEvent, { type: "user-message" }> => e.type === "user-message")
+    .map((e) => e.text);
+  // The second prompt must not be stranded — it runs after the hook settles.
+  expect(prompts).toEqual(["first", "second"]);
+});

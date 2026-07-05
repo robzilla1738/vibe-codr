@@ -67,13 +67,16 @@ export function reformulate(query: string): string {
 
 const TRACKING_KEYS = new Set(["fbclid", "gclid", "mc_cid", "mc_eid"]);
 
-/** Stable canonical form for dedup: strip tracking params, www, trailing slash; sort the query. */
+/** Stable canonical form for dedup: strip tracking params, www, trailing slash; sort the query.
+ * Trims the input so a URL harvested from free text (with incidental surrounding
+ * whitespace) canonicalizes the same as its clean form. */
 export function canonicalizeUrl(url: string): string {
+  const trimmed = url.trim();
   let u: URL;
   try {
-    u = new URL(url);
+    u = new URL(trimmed);
   } catch {
-    return url.toLowerCase();
+    return trimmed.toLowerCase();
   }
   const pairs = [...u.searchParams.entries()].filter(
     ([k]) => !TRACKING_KEYS.has(k.toLowerCase()) && !k.toLowerCase().startsWith("utm_"),

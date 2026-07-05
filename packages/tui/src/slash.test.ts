@@ -1,5 +1,10 @@
 import { test, expect } from "bun:test";
-import { lineToCommand, lineToCommands, parsePermissionDecision } from "./slash.ts";
+import {
+  lineToCommand,
+  lineToCommands,
+  parsePermissionDecision,
+  routePendingPermLine,
+} from "./slash.ts";
 
 test("plain text becomes a prompt submission", () => {
   expect(lineToCommand("fix the bug")).toEqual({
@@ -134,4 +139,24 @@ test("/plan <text> switches mode AND submits the text (not swallowed)", () => {
   expect(lineToCommands("/plan")).toEqual([{ type: "set-mode", mode: "plan" }]);
   // A normal line is a single submit.
   expect(lineToCommands("fix the bug")).toEqual([{ type: "submit-prompt", text: "fix the bug" }]);
+});
+
+test("routePendingPermLine: a slash line passes through to command handling (not a deny)", () => {
+  // /clear must be able to rescue a stuck permission card; every slash line is a
+  // command, not a permission answer.
+  expect(routePendingPermLine("/clear")).toEqual({ kind: "passthrough" });
+  expect(routePendingPermLine("/theme dark")).toEqual({ kind: "passthrough" });
+  expect(routePendingPermLine("  /model gpt-5  ")).toEqual({ kind: "passthrough" });
+});
+
+test("routePendingPermLine: a non-slash line still answers the pending permission", () => {
+  expect(routePendingPermLine("y")).toEqual({ kind: "perm", decision: "once" });
+  expect(routePendingPermLine("a")).toEqual({ kind: "perm", decision: "always" });
+  expect(routePendingPermLine("n")).toEqual({ kind: "perm", decision: "deny" });
+  // Free text = deny WITH feedback (steers the next attempt).
+  expect(routePendingPermLine("use staging instead")).toEqual({
+    kind: "perm",
+    decision: "deny",
+    feedback: "use staging instead",
+  });
 });

@@ -2,7 +2,16 @@ import { mkdir, rm, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createId, type GateSummary } from "@vibe/shared";
+import { killTree } from "@vibe/tools";
 import { globalStateDir } from "./state-dir.ts";
+
+/** Wall-clock bound on a single checkpoint git spawn. Git rarely hangs (stdin is
+ * ignored, so it can't block on a credential/merge prompt), but a wedged
+ * fsmonitor/index.lock edge would otherwise freeze the queue with no escape —
+ * `git add -A` runs at the start of every checkpointed turn. Generous, because a
+ * huge repo's add is legitimately slow; on timeout killTree closes the pipes so
+ * the readers finish and the caller's existing !ok degradation takes over. */
+const GIT_TIMEOUT_MS = 120_000;
 
 /** Monotonic per-process counter for unique checkpoint temp names (with pid). */
 let checkpointWriteSeq = 0;
@@ -142,12 +151,19 @@ export class CheckpointManager {
       stdin: "ignore",
       ...(env ? { env: { ...process.env, ...env } } : {}),
     });
-    const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    const code = await proc.exited;
-    return { ok: code === 0, stdout: stdout.trim(), stderr: stderr.trim() };
+    const timer = setTimeout(() => {
+      killTree(proc.pid);
+    }, GIT_TIMEOUT_MS);
+    try {
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      const code = await proc.exited;
+      return { ok: code === 0, stdout: stdout.trim(), stderr: stderr.trim() };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Whether `cwd` is inside a git work tree (memoized). */

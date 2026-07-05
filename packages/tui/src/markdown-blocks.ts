@@ -247,13 +247,27 @@ function parseAlign(delim: string): Align[] {
  * in-progress; a table without its delimiter row yet stays prose until it arrives.
  */
 export function splitMarkdown(src: string): MdBlock[] {
+  return splitMarkdownIndexed(src).blocks;
+}
+
+/** Like `splitMarkdown` but also returns, per block, the SOURCE LINE INDEX where
+ * that block began. The line indices power `createMarkdownSplitter`'s incremental
+ * re-parse: for append-only input, everything before the last block's start is
+ * immutable, so only the tail needs re-splitting. */
+export function splitMarkdownIndexed(src: string): { blocks: MdBlock[]; startLines: number[] } {
   const lines = src.split("\n");
   const blocks: MdBlock[] = [];
+  const startLines: number[] = [];
   let prose: string[] = [];
+  let proseStart = -1;
   const flushProse = () => {
     const text = prose.join("\n").replace(/^\n+|\n+$/g, "");
-    if (text.trim()) blocks.push({ kind: "prose", text });
+    if (text.trim()) {
+      blocks.push({ kind: "prose", text });
+      startLines.push(proseStart);
+    }
     prose = [];
+    proseStart = -1;
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -261,6 +275,7 @@ export function splitMarkdown(src: string): MdBlock[] {
     const fence = /^(\s*)(`{3,}|~{3,})(.*)$/.exec(line);
     if (fence) {
       flushProse();
+      const start = i;
       const marker = fence[2]!;
       const lang = (fence[3] ?? "").trim();
       const code: string[] = [];
@@ -272,6 +287,7 @@ export function splitMarkdown(src: string): MdBlock[] {
       }
       // i now sits on the closing fence (or past EOF for a streaming-open block).
       blocks.push({ kind: "code", lang, lines: code });
+      startLines.push(start);
       continue;
     }
     // An ATX heading — `#`..`######` + at least one space + text. A lone `#` (no
@@ -281,6 +297,7 @@ export function splitMarkdown(src: string): MdBlock[] {
     if (heading) {
       flushProse();
       blocks.push({ kind: "heading", level: heading[1]!.length, text: stripInline(heading[2]!) });
+      startLines.push(i);
       continue;
     }
     // A `>` blockquote — gather consecutive quoted lines, stripping the marker.
@@ -289,6 +306,7 @@ export function splitMarkdown(src: string): MdBlock[] {
     // scale anyway).
     if (/^\s*>/.test(line)) {
       flushProse();
+      const start = i;
       const quoted: string[] = [];
       while (i < lines.length && /^\s*>/.test(lines[i] ?? "")) {
         quoted.push(stripInline((lines[i] ?? "").replace(/^\s*(?:>[ \t]?)+/, "")));
@@ -296,10 +314,12 @@ export function splitMarkdown(src: string): MdBlock[] {
       }
       i--; // step back so the for-loop's ++ lands on the first non-quote line
       blocks.push({ kind: "quote", lines: quoted });
+      startLines.push(start);
       continue;
     }
     if (line.includes("|") && isDelimiterRow(lines[i + 1] ?? "")) {
       flushProse();
+      const start = i;
       const rows: string[][] = [parseRow(line)];
       const align = parseAlign(lines[i + 1] ?? "");
       i += 2;
@@ -309,12 +329,49 @@ export function splitMarkdown(src: string): MdBlock[] {
       }
       i--; // step back so the for-loop's ++ lands on the first non-table line
       blocks.push({ kind: "table", rows, align });
+      startLines.push(start);
       continue;
     }
+    if (proseStart < 0) proseStart = i;
     prose.push(line);
   }
   flushProse();
-  return blocks;
+  return { blocks, startLines };
+}
+
+/**
+ * A stateful splitter that re-parses ONLY the changed tail for append-only input.
+ * `AssistantText` re-splits the whole accumulated reply on every frame during
+ * streaming — O(n) per frame, O(n²) over the turn. The parser is a forward line
+ * scan with ≤1 line of lookahead and no cross-block state, so for append-only
+ * input every block strictly before the last is immutable; re-parsing from the
+ * last block's start line is byte-identical to a full parse. Any non-append input
+ * (a shrink, an edit) falls back to a full re-split. One splitter per component
+ * instance (each AssistantText caches its own stream).
+ */
+export function createMarkdownSplitter(): (src: string) => MdBlock[] {
+  let prevSrc = "";
+  let prevBlocks: MdBlock[] = [];
+  let prevStartLines: number[] = [];
+  return (src) => {
+    if (src === prevSrc) return prevBlocks;
+    if (prevBlocks.length > 0 && src.startsWith(prevSrc)) {
+      const from = prevStartLines[prevStartLines.length - 1]!;
+      const suffix = src.split("\n").slice(from).join("\n");
+      const tail = splitMarkdownIndexed(suffix);
+      const blocks = [...prevBlocks.slice(0, -1), ...tail.blocks];
+      const startLines = [...prevStartLines.slice(0, -1), ...tail.startLines.map((s) => s + from)];
+      prevSrc = src;
+      prevBlocks = blocks;
+      prevStartLines = startLines;
+      return blocks;
+    }
+    const fresh = splitMarkdownIndexed(src);
+    prevSrc = src;
+    prevBlocks = fresh.blocks;
+    prevStartLines = fresh.startLines;
+    return fresh.blocks;
+  };
 }
 
 /** Take the leading `w` display columns of `s`, returning `[head, rest]`. Never

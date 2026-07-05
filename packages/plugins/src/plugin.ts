@@ -60,7 +60,15 @@ export class PluginHost {
     const deadline = opts.timeoutMs ?? PLUGIN_REGISTER_TIMEOUT_MS;
     for (const spec of specifiers) {
       try {
-        const mod = (await import(spec)) as { default?: Plugin } & Partial<Plugin>;
+        // Bound the import too, not just register(): a module with a hanging
+        // top-level `await` would block boot BEFORE register() is ever reached
+        // (bootstrap awaits load() before the TUI starts). A timeout is logged
+        // and skipped, not fatal.
+        const mod = (await withTimeout(
+          import(spec),
+          deadline,
+          `plugin ${spec} import timed out`,
+        )) as { default?: Plugin } & Partial<Plugin>;
         const plugin = mod.default ?? (mod as Plugin);
         if (typeof plugin.register === "function") {
           // Bound register() with a wall-clock deadline: a plugin whose

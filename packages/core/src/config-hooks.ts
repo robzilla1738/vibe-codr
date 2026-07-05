@@ -98,8 +98,16 @@ async function defaultPost(url: string, payload: unknown, timeoutMs: number): Pr
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) return {};
-  return parseHookOutput((await res.text()).trim());
+  // Cap the body a hook endpoint can return (the wall clock is already bounded by
+  // the abort signal above; this bounds memory). A hook's directive is tiny JSON.
+  const body = res.body
+    ? (await readCappedText(res.body, { cap: HOOK_BODY_CAP })).text
+    : await res.text();
+  return parseHookOutput(body.trim());
 }
+
+/** Cap on a `url:` hook's HTTP response body (its directive is small JSON). */
+const HOOK_BODY_CAP = 256_000;
 
 /** Parse a hook's textual output into a result (empty/non-JSON → no-op). */
 export function parseHookOutput(text: string): HookRunResult {

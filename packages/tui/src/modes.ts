@@ -22,6 +22,25 @@ export function nextUiMode(cur: UiMode): UiMode {
   return cur === "plan" ? "execute" : cur === "execute" ? "yolo" : "plan";
 }
 
+/** The engine (mode, approvals) a UiMode projects to — the inverse of
+ * `deriveUiMode`. Used to update the TUI's local mirrors OPTIMISTICALLY the moment
+ * a Shift+Tab cycle is sent, so a fast double-press computes the next target from
+ * the just-set value instead of the stale mirror the engine hasn't echoed yet
+ * (which made the second press recompute the same target and stick a step). */
+export function engineStateForUiMode(target: UiMode): {
+  mode: "plan" | "execute";
+  approvals: "ask" | "auto";
+} {
+  switch (target) {
+    case "plan":
+      return { mode: "plan", approvals: "ask" };
+    case "execute":
+      return { mode: "execute", approvals: "ask" };
+    case "yolo":
+      return { mode: "execute", approvals: "auto" };
+  }
+}
+
 /** The engine commands that put the session into `target` (order matters:
  * set-mode always lands in gated `ask` engine-side, so yolo's `auto` must
  * follow it). All `set-approvals` here are quiet: this is the Shift+Tab cycle,

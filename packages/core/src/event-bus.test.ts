@@ -68,3 +68,25 @@ test("a subscriber that attaches after close terminates immediately (still drain
   bus.close();
   expect((await drain(s1)).length).toBe(1);
 });
+
+test("breaking out of a subscriber unsubscribes it (later emits aren't buffered for it)", async () => {
+  // A consumer that stops iterating (break/return/throw) must be detached, not
+  // left buffering every future event for the process lifetime. Its generator's
+  // finally removes it from the fan-out; other subscribers are unaffected.
+  const bus = new EventBus();
+  const leaver = bus.subscribe();
+  const stayer = bus.subscribe();
+
+  // Consume one event from `leaver`, then break out of its loop.
+  bus.emit(ev("one"));
+  for await (const _e of leaver) break; // runs the generator's finally → detach
+
+  // Emit more after the leaver detached.
+  bus.emit(ev("two"));
+  bus.emit(ev("three"));
+  bus.close();
+
+  // The stayer still received everything (the detach didn't disturb it).
+  const stayed = await drain(stayer);
+  expect(stayed.map((e) => (e as { message: string }).message)).toEqual(["one", "two", "three"]);
+});

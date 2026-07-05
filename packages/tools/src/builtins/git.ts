@@ -8,6 +8,12 @@ import type { ToolContext, ToolDefinition } from "@vibe/shared";
  * Kept as head+tail: git output whose tail matters (a diff's last hunk, an error
  * printed last) must survive to the display cap, which is itself head+tail. */
 const MAX_GIT_STREAM = 64_000;
+/** Wall-clock bound on a git spawn so a lock-waiting or network git (fetch/pull
+ * on a hung remote, `index.lock` contention) can't wait forever short of Esc.
+ * Generous — a large local op is legitimately slow. Unlike bash.ts, git here
+ * spawns no tree worth killing, so the direct signal (SIGTERM on the child) is
+ * enough. */
+const GIT_TIMEOUT_MS = 120_000;
 
 /** Run a git subcommand in the session cwd; returns combined output + exit code. */
 async function git(args: string[], ctx: ToolContext): Promise<{ code: number; out: string }> {
@@ -15,7 +21,7 @@ async function git(args: string[], ctx: ToolContext): Promise<{ code: number; ou
     cwd: ctx.cwd,
     stdout: "pipe",
     stderr: "pipe",
-    signal: ctx.abortSignal,
+    signal: AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(GIT_TIMEOUT_MS)]),
   });
   const capOpts = { cap: MAX_GIT_STREAM, keep: "head+tail" as const, marker: omittedMarker };
   const [stdout, stderr, code] = await Promise.all([

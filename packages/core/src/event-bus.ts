@@ -15,7 +15,20 @@ export class EventBus {
   subscribe(): AsyncIterable<UIEvent> {
     const queue = new AsyncQueue<UIEvent>();
     this.#subscribers.add(queue);
-    return queue;
+    // Wrap the queue in a generator whose finally detaches it: a consumer that
+    // `break`s / `return`s / throws out of its `for await` (a closed TUI
+    // sub-view, an abandoned engine.events() reader) is removed from the fan-out
+    // instead of buffering every future event for the process lifetime.
+    return this.#consume(queue);
+  }
+
+  async *#consume(queue: AsyncQueue<UIEvent>): AsyncGenerator<UIEvent> {
+    try {
+      yield* queue;
+    } finally {
+      this.#subscribers.delete(queue);
+      queue.close();
+    }
   }
 
   close(): void {

@@ -246,6 +246,49 @@ test("abort auto-denies a pending permission AND emits permission-settled with i
   expect(runs()).toBe(0); // the cancelled tool never ran
 });
 
+test("steer settles a permission parked in the running turn (the queue isn't frozen behind a dead card)", async () => {
+  // Steer aborts the session but (unlike the `abort` case) never called
+  // #settlePendingPermissions — a tool parked in #askPermission blocked the
+  // tool-execute promise, so the whole FIFO queue (and the steered prompt behind
+  // it) froze until a human answered a card the steer was meant to kill. The
+  // abort-aware ask now denies the parked prompt + emits permission-settled.
+  const { engine, runs } = makeEngine([toolCall("c1"), finalText()], true);
+  const events: UIEvent[] = [];
+  let steered = false;
+  void (async () => {
+    for await (const e of engine.events()) {
+      events.push(e);
+      // When "A" parks on the permission, steer the queued "B" instead of answering.
+      if (e.type === "permission-request" && !steered) {
+        steered = true;
+        for (const q of events) {
+          if (q.type === "queue-changed") {
+            const hit = q.pending.find((p) => p.label === "B");
+            if (hit) {
+              engine.send({ type: "steer", id: hit.id });
+              break;
+            }
+          }
+        }
+      }
+    }
+  })();
+  engine.send({ type: "submit-prompt", text: "A" });
+  engine.send({ type: "submit-prompt", text: "B" });
+  await engine.whenIdle();
+
+  const settled = events.find(
+    (e): e is Extract<UIEvent, { type: "permission-settled" }> => e.type === "permission-settled",
+  );
+  expect(settled?.reason).toBe("aborted");
+  expect(runs()).toBe(0); // the parked tool never ran
+  // B still ran — the queue wasn't wedged behind the dead permission card.
+  const prompts = events
+    .filter((e): e is Extract<UIEvent, { type: "user-message" }> => e.type === "user-message")
+    .map((e) => e.text);
+  expect(prompts).toContain("B");
+});
+
 test("interactive: 'always' is remembered per content scope, not for the whole tool", async () => {
   // Approving `danger {command:"safe"}` with 'always' must NOT auto-allow a later
   // `danger {command:"rm -rf /"}` — that call still prompts.

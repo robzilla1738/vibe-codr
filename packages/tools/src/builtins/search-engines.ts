@@ -27,6 +27,12 @@ export type FetchLike = (
 const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0";
 
+/** Cap on the HTML fed to a result parser. Result rows live near the top of the
+ * page, so the head is all that matters — this bounds a hostile/huge engine
+ * response's parse work + retained size (the wall clock is already bounded by the
+ * caller's abort signal). */
+const MAX_SEARCH_HTML = 512_000;
+
 /** Decode the handful of HTML entities that show up in result text. */
 function decodeEntities(s: string): string {
   return s
@@ -175,7 +181,7 @@ export async function bingSearch(
     ...(signal ? { signal } : {}),
   });
   if (!res.ok) throw new Error(`Bing HTTP ${res.status}`);
-  const all = parseBingHtml(await res.text());
+  const all = parseBingHtml((await res.text()).slice(0, MAX_SEARCH_HTML));
   return opts.maxResults ? all.slice(0, opts.maxResults) : all;
 }
 
@@ -194,7 +200,7 @@ export async function duckDuckGoSearch(
     ...(signal ? { signal } : {}),
   });
   if (!res.ok) throw new Error(`DuckDuckGo HTTP ${res.status}`);
-  const all = parseDuckDuckGoHtml(await res.text());
+  const all = parseDuckDuckGoHtml((await res.text()).slice(0, MAX_SEARCH_HTML));
   return opts.maxResults ? all.slice(0, opts.maxResults) : all;
 }
 

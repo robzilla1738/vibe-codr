@@ -111,3 +111,15 @@ test("createOpenAICompatible builds a spec-v2 model with id passthrough (no netw
   expect(model.specificationVersion).toBe("v2");
   expect(model.modelId).toBe("vendor/model-x");
 });
+
+test("a builtin provider's listModels passes a bounded timeout signal to the fetch", async () => {
+  // defs.ts used to pass `undefined` for the signal, so a blackholed baseURL hung
+  // /models, --models, the picker, and onboarding until the OS TCP timeout. The
+  // def must now hand the fetch a real (timeout-backed) AbortSignal.
+  const { builtinProviders } = await import("./defs.ts");
+  const cap = stubFetch(() => ({ ok: true, json: async () => ({ data: [] }) }));
+  const openai = builtinProviders().find((p) => p.id === "openai");
+  expect(openai).toBeDefined();
+  await openai!.listModels({ apiKey: "sk-test" });
+  expect(cap.init?.signal).toBeInstanceOf(AbortSignal);
+});

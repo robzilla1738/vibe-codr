@@ -6,6 +6,7 @@ import {
   buildCrashRecord,
   crashDoctorCheck,
   handleCrash,
+  handleFatalSignal,
   recentCrashes,
   redactCrash,
   writeCrashLog,
@@ -142,4 +143,20 @@ test("crashDoctorCheck is honest: clean → null, dirty → false", () => {
   expect(check.ok).toBe(false);
   expect(check.detail).toContain("2 crash log(s)");
   expect(check.detail).toContain("2.log");
+});
+
+test("handleFatalSignal restores the terminal and exits 143 (SIGTERM) / 129 (SIGHUP)", () => {
+  let out = "";
+  let code = -1;
+  handleFatalSignal("SIGTERM", { writeStdout: (s) => (out += s), exit: (c) => (code = c) });
+  // Exits alt-screen + shows the cursor (the literal restore sequence).
+  expect(out).toContain("\x1b[?1049l");
+  expect(out).toContain("\x1b[?25h");
+  expect(code).toBe(143);
+
+  out = "";
+  code = -1;
+  handleFatalSignal("SIGHUP", { writeStdout: (s) => (out += s), exit: (c) => (code = c) });
+  expect(out).toContain("\x1b[?1049l");
+  expect(code).toBe(129);
 });

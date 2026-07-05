@@ -2671,3 +2671,66 @@ was adversarially verified by 2 fresh-eyes reviewers + 1 delta verifier.
 ## Verification at close
 Typecheck 8/8, lint clean, 15/15 turbo test tasks (core 848+, up from 826 — every fix carries
 regressions), smoke:tui + smoke:sidebar OK.
+
+# FREEZE / STALL / INTERACTION HARDENING PASS — 2026-07-05
+
+Continuation from Claude plan `work-through-this-and-jazzy-hamster.md`, starting at clean
+baseline `76561e4`. Scope: freezing/stalling failure modes, TUI interaction edge cases, and
+mode-crossing logic across plan/execute/yolo, `/goal`, `/loop`, queue, permissions, MCP, and
+terminal lifecycle.
+
+## Confirmed + fixed
+
+- **Queue and shutdown wedges:** `#drain` now clears `#draining`, `#active`, emits terminal
+  `engine-idle`, and resolves idle waiters from a `finally`; shutdown cancels queued work and
+  aborts live main/loop sessions before teardown. Regression coverage: `queue.test.ts`,
+  `engine-commands.test.ts`, `hook-feedback.test.ts`.
+- **Permission/verify/process hangs:** pending permissions now listen to the active session abort
+  signal, settle their card, and deny the parked call; engine-owned verify commands run through
+  `bunExec` with timeout, abort, output cap, and process-tree cleanup; `runVerify` keeps bounded
+  output and abort coverage. Regression coverage: `permission-interactive.test.ts`,
+  `verify.test.ts`, `engine-scenarios.test.ts`.
+- **Unbounded boundary awaits:** provider model-list fetches, embedding calls, plugin import +
+  hook execution, git spawns, config HTTP hooks, built-in git, search-engine body reads, and bash
+  pipe-drain return paths now have explicit deadlines or capped readers. Regression coverage:
+  providers, embeddings, plugin, config-hooks, git-info/checkpoints, built-in bash/git/search
+  tests.
+- **Headless stream stalls + aux calls:** non-interactive root streams have an idle watchdog,
+  stalled streams surface `lastError` instead of `interrupted`, and summarize/digest calls are
+  bounded. Regression coverage: `session.test.ts`.
+- **Goal/plan mode-crossing:** switching to plan mode during an active goal run pauses the run;
+  plan-card accepts during a goal run are refused; stale plans are cleared when a goal run starts;
+  hook-denied plan handoffs re-arm their approval. Regression coverage: `engine-goal.test.ts`,
+  `engine-scenarios.test.ts`, `hook-feedback.test.ts`.
+- **TUI input/perf/lifecycle:** slash lines pass through while permission cards are pending, mode
+  cycling updates optimistic mirrors, clean event-stream end clears the working latch, a single
+  giant turn is render-windowed, markdown streaming uses an incremental splitter, clipboard writes
+  flush, fatal signals restore terminal state, onboarding Ctrl+C restores the cursor, and REPL
+  fallback restores raw/alt-screen state before starting readline. Regression/smoke coverage:
+  `slash.test.ts`, `modes.test.ts`, `trail.test.ts`, `markdown-blocks.test.ts`,
+  `clipboard.test.ts`, `crash.test.ts`, `bun run smoke:tui`, `bun run smoke:sidebar`.
+- **MCP robustness:** list/resource/prompt change notifications are coalesced per server/kind; MCP
+  OAuth now waits on the configured loopback callback, extracts code/error params, finishes auth,
+  rebuilds transport, and retries once. Regression coverage: `mcp.test.ts`,
+  `mcp-oauth.test.ts`.
+- **Undo/detached safety + EventBus:** `/undo`/`/redo` refuse while detached subagents are still
+  running, and breaking out of an event subscriber removes its queue so abandoned consumers do not
+  buffer forever. Regression coverage: `checkpoints.test.ts`, `event-bus.test.ts`.
+
+## Refuted / deliberately unchanged
+
+- Bare `a` as a permission-card answer remains the deliberate session "always allow" shortcut.
+- Esc during a running turn remains the advertised interrupt path; draft clearing is handled by the
+  existing non-running path / alternate control flow.
+- `/compact` using a fresh auxiliary abort controller remains acceptable: queued compacts are swept
+  before execution, and the residual sub-tick window is the existing accepted-risk class.
+
+## Verification at close
+
+- `bun run typecheck` — PASS, 8/8 Turbo tasks.
+- `bun run lint` — PASS, 289 files checked, no warnings after final TUI wiring.
+- `bun test` — PASS, 1509 tests / 0 fail across 141 files.
+- `bun run test` — PASS, 15/15 Turbo tasks; core suite reports 868 tests / 0 fail.
+- `bun run smoke:tui` — PASS, `SMOKE OK`.
+- `bun run smoke:sidebar` — PASS, `ALL CHECKS PASSED` (OpenTUI emitted the known EventTarget
+  listener warning during the smoke, but all assertions passed).

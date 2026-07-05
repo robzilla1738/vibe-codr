@@ -4,6 +4,12 @@ import { ProviderAuthError, VibeError } from "@vibe/shared";
 import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
 
+/** Wall-clock bound on the `/v1/models` listing fetch. Without it a blackholed
+ * custom baseURL hangs `/models`, `--models`, the model picker, and onboarding
+ * until the OS TCP timeout (listConfiguredModels awaits all providers at once).
+ * A timeout degrades to "this provider isn't listed", never an error. */
+export const LIST_MODELS_TIMEOUT_MS = 8_000;
+
 /**
  * Static loader map for the provider SDKs. The specifiers are LITERAL `import()`
  * calls (not `import(variable)`) for one critical reason: `bun build --compile`
@@ -366,7 +372,13 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
     async listModels(opts): Promise<ModelInfo[]> {
       const url = baseURL(opts);
       if (!url) return []; // no endpoint configured yet (e.g. custom) → nothing to list
-      return listOpenAICompatibleModels(spec.id, url, opts.apiKey, undefined, opts.headers);
+      return listOpenAICompatibleModels(
+        spec.id,
+        url,
+        opts.apiKey,
+        AbortSignal.timeout(LIST_MODELS_TIMEOUT_MS),
+        opts.headers,
+      );
     },
   };
 }

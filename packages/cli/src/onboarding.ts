@@ -359,9 +359,15 @@ function input(label: string, opts: InputOptions = {}): Promise<string> {
   });
 }
 
-/** Braille spinner around an async task; no-op output when not a TTY. */
-async function withSpinner<T>(label: string, work: Promise<T>): Promise<T> {
+/** Braille spinner around an async task; no-op output when not a TTY. `deps.exit`
+ * is injectable for tests. */
+export async function withSpinner<T>(
+  label: string,
+  work: Promise<T>,
+  deps: { exit?: (code: number) => void } = {},
+): Promise<T> {
   if (!stdout.isTTY) return work;
+  const exit = deps.exit ?? ((c: number) => process.exit(c));
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   let i = 0;
   cursor.hide();
@@ -369,9 +375,20 @@ async function withSpinner<T>(label: string, work: Promise<T>): Promise<T> {
     const frame = frames[i++ % frames.length] ?? "";
     stdout.write(`\r${fg(frame, CHROME)} ${dim(label)}   `);
   }, 80);
+  // No keyLoop/raw mode is active during the awaited work, so Ctrl+C is a default
+  // SIGINT that would kill the process with the cursor still hidden. Restore it
+  // first (clear the spinner line + show the cursor), then exit.
+  const onSigint = () => {
+    clearInterval(timer);
+    stdout.write("\r\x1b[0K");
+    cursor.show();
+    exit(130);
+  };
+  process.once("SIGINT", onSigint);
   try {
     return await work;
   } finally {
+    process.removeListener("SIGINT", onSigint);
     clearInterval(timer);
     stdout.write("\r\x1b[0K");
     cursor.show();

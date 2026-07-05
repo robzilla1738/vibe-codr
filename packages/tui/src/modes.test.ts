@@ -3,6 +3,7 @@ import {
   deriveUiMode,
   nextUiMode,
   commandsForUiMode,
+  engineStateForUiMode,
   modeColor,
   MODE_COLORS,
   type UiMode,
@@ -71,4 +72,29 @@ test("modeColor maps ASK→blue, PLAN→green, YOLO→red (distinct hexes)", () 
   const hexes = new Set([modeColor("execute"), modeColor("plan"), modeColor("yolo")]);
   expect(hexes.size).toBe(3);
   for (const h of hexes) expect(h).toMatch(/^#[0-9a-f]{6}$/);
+});
+
+test("engineStateForUiMode round-trips through deriveUiMode for every mode", () => {
+  for (const target of ["plan", "execute", "yolo"] as UiMode[]) {
+    const { mode, approvals } = engineStateForUiMode(target);
+    expect(deriveUiMode(mode, approvals)).toBe(target);
+  }
+});
+
+test("optimistic mirrors let two rapid Shift+Tab presses advance two full steps", () => {
+  // Model the app's cycleMode: read the local mirror, compute next, and update
+  // the mirror OPTIMISTICALLY (before the engine echoes). Two presses in a row
+  // must advance plan → execute → yolo, not stick on execute (the stale-mirror bug).
+  let mode = "plan";
+  let approvals = "ask";
+  const press = () => {
+    const target = nextUiMode(deriveUiMode(mode, approvals));
+    const next = engineStateForUiMode(target);
+    mode = next.mode;
+    approvals = next.approvals;
+    return target;
+  };
+  expect(press()).toBe("execute");
+  expect(press()).toBe("yolo");
+  expect(press()).toBe("plan");
 });

@@ -332,6 +332,50 @@ test("tools/list_changed re-lists and swaps the server's registered tools", asyn
   expect(reg.names()).toEqual(["mcp__demo__b"]);
 });
 
+test("a burst of list_changed notifications coalesces to one in-flight re-list + one trailing rerun", async () => {
+  // A chatty/malicious server spamming tools/list_changed used to fan out into
+  // one concurrent listTools() per notification (unbounded concurrency + churn).
+  // The coalescer collapses a burst into a single in-flight re-list plus one
+  // trailing rerun.
+  let listCalls = 0;
+  let releaseFirst: (() => void) | undefined;
+  let fire: (() => void) | undefined;
+  const client: McpClient = {
+    listTools: async () => {
+      listCalls += 1;
+      // Let the initial start() list (call 1) complete; hold the first RE-LIST
+      // (call 2) open so the notification burst lands while it runs.
+      if (listCalls === 2) {
+        await new Promise<void>((r) => {
+          releaseFirst = r;
+        });
+      }
+      return [{ name: "a" }];
+    },
+    callTool: async () => ({ content: "ok" }),
+    onListChanged: (cb) => {
+      fire = cb;
+    },
+    close: async () => {},
+  };
+  const reg = registry();
+  const hub = new McpHub({ ...reg, connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  await tick();
+  expect(listCalls).toBe(1); // initial enumeration only
+  // Storm: the first fire starts re-list #2 (which blocks); the rest coalesce.
+  fire!();
+  fire!();
+  fire!();
+  fire!();
+  await tick();
+  expect(listCalls).toBe(2); // one in-flight re-list, burst collapsed into a rerun
+  releaseFirst?.();
+  await tick(5);
+  // Exactly ONE trailing rerun ran after the in-flight one completed (not four).
+  expect(listCalls).toBe(3);
+});
+
 test("reconnects with backoff after the transport drops, re-registering tools", async () => {
   let dials = 0;
   let closeCb: (() => void) | undefined;

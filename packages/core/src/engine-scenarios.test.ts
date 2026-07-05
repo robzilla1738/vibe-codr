@@ -320,3 +320,56 @@ test("a mid-turn mode flip cannot smuggle a mutating turn past the gate", async 
     events.some((e) => e.type === "notice" && e.message.includes("UNVERIFIED")),
   ).toBe(true);
 });
+
+test("a denied handoff prompt re-arms the plan approval (the next message retries it)", async () => {
+  // #pendingHandoff is consumed off the flag at enqueue and bound to the job. A
+  // user.prompt.submit deny used to lose the approval entirely (#lastPlan was
+  // already spent), so only --resume could resurrect it. The deny branch now
+  // re-arms #pendingHandoff so the user's next message retries the handoff.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-handoff-deny-"));
+  const PLAN = "## Steps\n- [ ] Do the thing";
+  const prompts: string[] = [];
+  const steps = [
+    toolStep("p1", "present_plan", { plan: PLAN }),
+    textStep("Plan presented."),
+    textStep("Implementing."),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return steps[Math.min(call++, steps.length - 1)] as never;
+    },
+  });
+  const registry = new ProviderRegistry([
+    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+  ]);
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
+    cwd,
+    registry,
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const collector = (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+  // Deny the FIRST handoff attempt only (raw text "go"); allow the retry.
+  engine.hooks.on("user.prompt.submit", (p) => (p.text === "go" ? { ...p, deny: true } : p));
+
+  engine.send({ type: "submit-prompt", text: "plan it" });
+  await engine.whenIdle();
+  engine.send({ type: "set-mode", mode: "execute" }); // arms the deferred handoff
+  engine.send({ type: "submit-prompt", text: "go" }); // consumes it → DENIED → re-arm
+  await engine.whenIdle();
+  engine.send({ type: "submit-prompt", text: "go again" }); // retries the re-armed handoff
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  // The deny re-armed the approval and said so.
+  expect(events.some((e) => e.type === "notice" && /Plan approval preserved/.test(e.message))).toBe(true);
+  // The retry carried the handoff directive into the model prompt.
+  expect(prompts.at(-1)).toContain("approved by the user");
+});

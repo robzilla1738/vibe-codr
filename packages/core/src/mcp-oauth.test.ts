@@ -2,7 +2,14 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { McpTokenStore, createMcpOAuthProvider, legacyMcpTokenStorePath, mcpTokenStorePath } from "./mcp-oauth.ts";
+import {
+  McpTokenStore,
+  createMcpOAuthProvider,
+  extractOAuthCallbackParams,
+  legacyMcpTokenStorePath,
+  mcpTokenStorePath,
+  waitForOAuthCallback,
+} from "./mcp-oauth.ts";
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), "vibe-mcp-oauth-"));
@@ -160,4 +167,34 @@ test("invalidateCredentials('all') clears the store", async () => {
   await provider.saveTokens({ access_token: "a" });
   await provider.invalidateCredentials("all");
   expect(await store.read()).toEqual({});
+});
+
+test("extractOAuthCallbackParams parses code and error from the redirect URL", () => {
+  expect(extractOAuthCallbackParams("/callback?code=abc123")).toEqual({ code: "abc123" });
+  expect(extractOAuthCallbackParams("http://localhost:8976/callback?error=access_denied")).toEqual({
+    error: "access_denied",
+  });
+  expect(extractOAuthCallbackParams("/callback")).toEqual({});
+  expect(extractOAuthCallbackParams("not a url ::::")).toEqual({});
+});
+
+test("waitForOAuthCallback resolves the code from a loopback hit", async () => {
+  const redirect = "http://127.0.0.1:8977/callback";
+  const pending = waitForOAuthCallback(redirect, 5_000);
+  // Drive the callback with a local fetch (simulates the browser redirect).
+  await fetch(`${redirect}?code=xyz789`).catch(() => {});
+  await expect(pending).resolves.toBe("xyz789");
+});
+
+test("waitForOAuthCallback rejects on an error param", async () => {
+  const redirect = "http://127.0.0.1:8978/callback";
+  const pending = waitForOAuthCallback(redirect, 5_000);
+  pending.catch(() => {}); // pre-attach so the rejection during fetch isn't "unhandled"
+  await fetch(`${redirect}?error=access_denied`).catch(() => {});
+  await expect(pending).rejects.toThrow(/access_denied/);
+});
+
+test("waitForOAuthCallback rejects on timeout", async () => {
+  const redirect = "http://127.0.0.1:8979/callback";
+  await expect(waitForOAuthCallback(redirect, 100)).rejects.toThrow(/timed out/);
 });

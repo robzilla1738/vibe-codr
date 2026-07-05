@@ -29,6 +29,13 @@ export interface HookPayloads {
 
 export type HookName = keyof HookPayloads;
 
+/** Per-handler wall-clock deadline. A never-resolving plugin handler is awaited
+ * on hot paths (session.idle inside the drain loop, user.prompt.submit at every
+ * turn start, tool.before/after.execute, step.finish) — without a bound it would
+ * hang the engine. A timeout is treated exactly like a throw: reported via
+ * onError, the chain continues with the current payload. Mirrors config-hooks. */
+const HANDLER_TIMEOUT_MS = 10_000;
+
 export type HookHandler<N extends HookName> = (
   payload: HookPayloads[N],
 ) => HookPayloads[N] | void | Promise<HookPayloads[N] | void>;
@@ -45,9 +52,12 @@ export class HookBus {
   #handlers = new Map<HookName, AnyHandler[]>();
   /** Notified when a handler throws (engine wires it to a UI notice/log). */
   #onError?: (name: HookName, err: Error) => void;
+  /** Per-handler deadline (overridable for tests). */
+  #timeoutMs: number;
 
-  constructor(onError?: (name: HookName, err: Error) => void) {
+  constructor(onError?: (name: HookName, err: Error) => void, timeoutMs = HANDLER_TIMEOUT_MS) {
     this.#onError = onError;
+    this.#timeoutMs = timeoutMs;
   }
 
   on<N extends HookName>(name: N, handler: HookHandler<N>): void {
@@ -62,13 +72,27 @@ export class HookBus {
   ): Promise<HookPayloads[N]> {
     let current = payload;
     for (const handler of this.#handlers.get(name) ?? []) {
-      // Isolate each handler: one throwing plugin must not abort the turn or
-      // skip the remaining handlers in the chain.
+      // Isolate each handler: one throwing OR HANGING plugin must not abort the
+      // turn or skip the remaining handlers in the chain. A per-handler deadline
+      // bounds the await; a timeout surfaces through #onError like any throw. The
+      // abandoned promise keeps running (unavoidable in-process) but the chain
+      // proceeds.
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const next = await handler(current);
+        const next = await Promise.race([
+          Promise.resolve(handler(current)),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`hook handler for "${name}" timed out after ${this.#timeoutMs}ms`)),
+              this.#timeoutMs,
+            );
+          }),
+        ]);
         if (next) current = next as HookPayloads[N];
       } catch (err) {
         this.#onError?.(name, err as Error);
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }
     return current;

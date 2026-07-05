@@ -169,11 +169,37 @@ export function handleCrash(kind: string, err: unknown, deps: CrashHandlerDeps):
   exit(1);
 }
 
+/** Restore the terminal on a fatal SIGNAL (SIGTERM/SIGHUP), then exit with the
+ * conventional 128+signal code. NOT a crash: no log, no finalize (the engine is
+ * unreachable from this static context) — just make sure `kill`/terminal-close
+ * doesn't strand the user in raw/alt-screen. Exported so tests can drive it. */
+export function handleFatalSignal(
+  sig: "SIGTERM" | "SIGHUP",
+  deps: { writeStdout?: (s: string) => void; exit?: (code: number) => void } = {},
+): void {
+  const writeOut =
+    deps.writeStdout ??
+    ((s: string) => {
+      try {
+        process.stdout.write(s);
+      } catch {
+        /* stdout may be closed */
+      }
+    });
+  const exit = deps.exit ?? ((c: number) => process.exit(c));
+  restoreTerminal(writeOut);
+  exit(sig === "SIGTERM" ? 143 : 129);
+}
+
 /** Bind the process-level fatal-error handlers. SIGINT is intentionally NOT
- * bound here — the TUI owns Ctrl+C (graceful finalize-then-exit). */
+ * bound here — the TUI owns Ctrl+C (graceful finalize-then-exit). SIGTERM/SIGHUP
+ * (kill, terminal close) ARE bound: without a handler the default action skips
+ * OpenTUI's exit hook and leaves the terminal in raw/alt-screen. */
 export function installCrashHandlers(deps: { version: string }): void {
   process.on("uncaughtException", (err) => handleCrash("uncaughtException", err, deps));
   process.on("unhandledRejection", (reason) => handleCrash("unhandledRejection", reason, deps));
+  process.on("SIGTERM", () => handleFatalSignal("SIGTERM"));
+  process.on("SIGHUP", () => handleFatalSignal("SIGHUP"));
 }
 
 /** Crash-log files (absolute paths) with an mtime within `withinDays`, oldest

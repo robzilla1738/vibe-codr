@@ -92,7 +92,6 @@ import { globalStateDir } from "./state-dir.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
 import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
-import { runVerify } from "./verify.ts";
 import { withRetry } from "./retry.ts";
 import { expandMentions } from "./mentions.ts";
 import {
@@ -117,6 +116,10 @@ const MAX_GOAL_CLEAN_PASSES = 2;
 
 /** Evidence cap for the goal self-assessment prompt (diff portion). */
 const GOAL_ASSESS_DIFF_CAP = 8_000;
+
+/** Cap on verify-command output fed back to the model (matches the legacy
+ * runVerify MAX_OUTPUT). */
+const VERIFY_MAX_OUTPUT = 8_000;
 
 /** Build manifests whose appearance/change signals the project's check set may
  * have shifted (a scaffolder ran) — used by the gate's no-checks refresh guard. */
@@ -701,10 +704,19 @@ export class Engine implements EngineClient {
       this.#bus.emit({ type: "notice", level: "info", message: "Kept planning — the plan wasn't started." });
       return;
     }
-    // accept — the plan card's immediate-run surface. The double-accept guard
-    // (a double-click, a scripted/plugin re-send) lives here: #approvePlan clears
-    // #lastPlan synchronously, so a second resolve-plan{accept} fails this guard
-    // instead of seeding the task list twice + firing two execute turns.
+    // accept — the plan card's immediate-run surface.
+    // An active goal run owns the task spine (#startGoalRun clears #lastPlan, but
+    // a card presented DURING a mid-run plan excursion could re-arm it): accepting
+    // it would #seedTasksFromPlan over the run's tasks and enqueue a competing
+    // execute-plan driver. Refuse; the user clears the run first.
+    if (this.#goalRunActive) {
+      this.#notice("A goal run owns the task list — /goal clear before accepting a plan.", "warn");
+      return;
+    }
+    // The double-accept guard (a double-click, a scripted/plugin re-send) lives
+    // here: #approvePlan clears #lastPlan synchronously, so a second
+    // resolve-plan{accept} fails this guard instead of seeding the task list twice
+    // + firing two execute turns.
     if (!this.#lastPlan) return;
     this.#approvePlan(true, approvals);
   }
@@ -1051,6 +1063,18 @@ export class Engine implements EngineClient {
   }
 
   async #doFinalize(): Promise<void> {
+    // Quiesce first: drop everything still queued (a loop iteration, goal round,
+    // or typed-ahead prompt) and abort the in-flight turn. Without this, a
+    // dequeued item would run a full model turn AFTER teardown — against a closed
+    // bus (emits become no-ops) and a closed MCP hub. Cancel callbacks fire so
+    // origin-tagged loop/goal items settle cleanly. buildDigest below installs a
+    // fresh AbortController, so aborting here doesn't poison the digest.
+    const dropped = this.#pending;
+    this.#pending = [];
+    for (const item of dropped) item.onCancel?.("shutdown");
+    if (dropped.length) this.#emitQueue();
+    this.#session.abort();
+    this.#loopSession?.abort();
     try {
       // Digests are for INTERACTIVE sessions: a headless `-p` one-shot must not
       // pay an extra model call (cost + latency) on every scripted invocation.
@@ -1197,6 +1221,14 @@ export class Engine implements EngineClient {
             // to a read-only turn — a directive the mode can't honor.
             this.#pendingHandoff = false;
             void this.#persistEngineState();
+          }
+          if (command.mode === "plan" && this.#goalRunActive) {
+            // Switching to plan mode mid-run would make every goal continuation a
+            // read-only plan turn (#ensureExecuteModeForGoal only runs at
+            // start/resume) — tasks can't complete, so the run burns its whole
+            // round budget on deterministic not-met rounds. Honor the intent: pause
+            // the run (resume re-ensures execute mode).
+            this.#pauseGoalRun("switched to plan mode");
           }
         }
         break;
@@ -1367,12 +1399,35 @@ export class Engine implements EngineClient {
     // tool name (the whole tool is remembered).
     const key = this.#alwaysAllowKey(req.toolName, req.input);
     if (this.#alwaysAllow.has(key)) return true;
+    // Bail if the turn is already aborted — no point emitting a card the abort
+    // just settled.
+    const signal = (this.#loopSession ?? this.#session).abortSignal;
+    if (signal.aborted) return { allowed: false };
     const id = createId("perm");
+    // The ask is abort-aware: steer / budget-stop / loop-stop abort the session
+    // WITHOUT going through #settlePendingPermissions (only the `abort`/`shutdown`
+    // cases do). Without this, a tool parked here blocks the tool-execute promise,
+    // the SDK turn can't unwind, and the whole FIFO queue freezes behind a card
+    // the abort was meant to kill. On abort we deny THIS id and emit
+    // permission-settled so the UI drops the dead card — mirroring
+    // #settlePendingPermissions for the single parked prompt.
+    let onAbort: (() => void) | undefined;
     const reply = await new Promise<{
       decision: "once" | "always" | "always-project" | "deny";
       feedback?: string;
     }>((resolve) => {
       this.#pendingPermissions.set(id, (decision, feedback) => resolve({ decision, feedback }));
+      onAbort = () => {
+        if (!this.#pendingPermissions.delete(id)) return;
+        this.#bus.emit({
+          type: "permission-settled",
+          sessionId: this.#session.id,
+          ids: [id],
+          reason: "aborted",
+        });
+        resolve({ decision: "deny" });
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
       this.#bus.emit({
         type: "permission-request",
         sessionId: this.#session.id,
@@ -1380,6 +1435,8 @@ export class Engine implements EngineClient {
         toolName: req.toolName,
         input: req.input,
       });
+    }).finally(() => {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
     });
     // Both `always` and `always-project` grant for the rest of THIS session
     // (in-memory). `always-project` ADDITIONALLY persists a scoped allow rule
@@ -1974,47 +2031,61 @@ export class Engine implements EngineClient {
   async #drain(): Promise<void> {
     if (this.#draining) return;
     this.#draining = true;
-    // Outer loop: after the queue drains, the Stop-equivalent session.idle hook
-    // may inject one more turn (bounded). When it enqueues work, re-drain; when
-    // it declines (or the budget caps), fall through to the terminal signal so
-    // engine-idle ALWAYS fires eventually on every path.
-    do {
+    // Everything after this point runs inside try/finally: a throw from
+    // #emitQueue, the idle-continue frame, or any non-item path must NOT leave
+    // #draining stuck true (that would silently wedge every future #enqueue).
+    // The finally clears the latch and fires the terminal engine-idle signal so
+    // the invariant "engine-idle ALWAYS fires on every path" holds even on throw.
+    try {
+      // Outer loop: after the queue drains, the Stop-equivalent session.idle hook
+      // may inject one more turn (bounded). When it enqueues work, re-drain; when
+      // it declines (or the budget caps), fall through to the terminal signal so
+      // engine-idle ALWAYS fires eventually on every path.
       do {
-        while (this.#pending.length) {
-          const item = this.#pending.shift()!;
-          this.#active = { id: item.id, label: item.label };
-          this.#emitQueue();
-          try {
-            await item.run();
-          } catch (err) {
-            this.#log.error("turn failed", err);
-            this.#bus.emit({
-              type: "engine-error",
-              sessionId: this.#session.id,
-              message: (err as Error).message,
-            });
+        do {
+          while (this.#pending.length) {
+            const item = this.#pending.shift()!;
+            this.#active = { id: item.id, label: item.label };
+            this.#emitQueue();
+            try {
+              await item.run();
+            } catch (err) {
+              this.#log.error("turn failed", err);
+              this.#bus.emit({
+                type: "engine-error",
+                sessionId: this.#session.id,
+                message: (err as Error).message,
+              });
+            }
           }
-        }
-        this.#active = null;
-        this.#emitQueue();
-        // Yield a macrotask so subscribers flush their buffered events before we
-        // report idle — callers awaiting whenIdle() then see a delivered stream.
-        // (New work may also have been queued during this gap; the loop re-checks.)
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      } while (this.#pending.length);
-    } while (await this.#maybeContinueOnIdle());
-    this.#draining = false;
-    // The queue is fully drained — the prompt AND every follow-up turn it spawned
-    // (gate-fix / review-fix / verify-fix / idle-continue) are done. Signal the
-    // true terminal point so a headless one-shot stops HERE, not on the first
-    // per-turn `session-idle` (which would cut off follow-up output and race
-    // finalize()).
-    this.#bus.emit({
-      type: "engine-idle",
-      sessionId: this.#session.id,
-      ...(this.#lastGateOutcome ? { gate: this.#lastGateOutcome } : {}),
-    });
-    for (const resolve of this.#idleResolvers.splice(0)) resolve();
+          this.#active = null;
+          this.#emitQueue();
+          // Yield a macrotask so subscribers flush their buffered events before we
+          // report idle — callers awaiting whenIdle() then see a delivered stream.
+          // (New work may also have been queued during this gap; the loop re-checks.)
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        } while (this.#pending.length);
+      } while (await this.#maybeContinueOnIdle());
+    } catch (err) {
+      // A throw outside the per-item catch (e.g. a bus subscriber or session.idle
+      // #onError callback) must not wedge the queue — log and fall through to the
+      // finally so the latch clears and engine-idle still fires.
+      this.#log.error("drain loop failed", err);
+    } finally {
+      this.#draining = false;
+      this.#active = null;
+      // The queue is fully drained — the prompt AND every follow-up turn it spawned
+      // (gate-fix / review-fix / verify-fix / idle-continue) are done. Signal the
+      // true terminal point so a headless one-shot stops HERE, not on the first
+      // per-turn `session-idle` (which would cut off follow-up output and race
+      // finalize()).
+      this.#bus.emit({
+        type: "engine-idle",
+        sessionId: this.#session.id,
+        ...(this.#lastGateOutcome ? { gate: this.#lastGateOutcome } : {}),
+      });
+      for (const resolve of this.#idleResolvers.splice(0)) resolve();
+    }
   }
 
   /**
@@ -2074,6 +2145,19 @@ export class Engine implements EngineClient {
     const hooked = await this.hooks.run("user.prompt.submit", { text });
     if (hooked.deny) {
       this.#notice("Prompt blocked by a user.prompt.submit hook.", "warn");
+      // A DEFERRED plan handoff was consumed off #pendingHandoff at enqueue and
+      // bound to this job (see submit-prompt). A deny here would otherwise lose
+      // the approval entirely — #lastPlan was already spent at approval time, so
+      // only a full --resume could resurrect it. Re-arm the flag (as the doc
+      // comment above promises) so the user's next message retries the handoff.
+      if (opts.handoff) {
+        this.#pendingHandoff = true;
+        void this.#persistEngineState();
+        this.#notice(
+          "Plan approval preserved — your next message will retry the handoff.",
+          "info",
+        );
+      }
       // Callers that must know no turn ran (the goal run's closures — a vetoed
       // turn would otherwise leave the run armed with nothing queued and skip
       // no state) read this; the void-returning paths ignore it.
@@ -2354,6 +2438,10 @@ export class Engine implements EngineClient {
     // goal (its prompt bakes the old text in) and interleave two drivers.
     this.#sweepQueuedGoalTurns("goal replaced");
     this.#ensureExecuteModeForGoal();
+    // Discard any leftover presented plan: a stale card accepted mid-run would
+    // pass the #resolvePlan guard, re-seed the task spine the run owns, and
+    // interleave a second "execute plan" driver. The run seeds its own tasks.
+    this.#lastPlan = undefined;
     // The run owns the task spine. A leftover list (an earlier plan's tasks)
     // would otherwise read as "the plan turn seeded these" in
     // #beginGoalExecution and hijack the contract — and its unfinished rows
@@ -3189,10 +3277,26 @@ export class Engine implements EngineClient {
     return true;
   }
 
-  /** Run the verify command, emitting start/finish events. */
+  /** Run the verify command, emitting start/finish events. Runs through
+   * `bunExec` (not the legacy `runVerify`) so it inherits a wall-clock timeout
+   * AND the session abort signal with killTree teardown — a watch-mode or hung
+   * `verify.command` can't wedge the FIFO queue forever, and Esc reaches it.
+   * `bunExec` upgrades a read-only sandbox to workspace-write for these
+   * engine-owned check commands, same as `runVerify` did via `policyForChecks`. */
   async #runVerifyCommand(command: string): Promise<{ ok: boolean; output: string }> {
     this.#bus.emit({ type: "verify-started", command });
-    const result = await runVerify(this.#cwd, command, undefined, this.#sandbox);
+    const exec = bunExec(this.#sandbox);
+    const r = await exec(command, {
+      cwd: this.#cwd,
+      timeoutSec: 600,
+      signal: this.#session.abortSignal,
+    });
+    const combined = r.out.trim();
+    const output =
+      combined.length > VERIFY_MAX_OUTPUT
+        ? `${combined.slice(0, VERIFY_MAX_OUTPUT)}\n…(truncated)`
+        : combined;
+    const result = { ok: r.code === 0, output };
     this.#bus.emit({
       type: "verify-finished",
       ok: result.ok,

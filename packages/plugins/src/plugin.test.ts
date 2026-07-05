@@ -106,3 +106,52 @@ test("PluginHost does not hang on a plugin whose register() never resolves", asy
   expect(performance.now() - start).toBeLessThan(2000); // did NOT hang
   expect(commands.get("after")).toBeDefined(); // the good plugin still loaded
 });
+
+test("PluginHost does not hang on a plugin whose module IMPORT never resolves", async () => {
+  // The import() itself was outside the register() deadline, so a module with a
+  // hanging top-level await blocked boot BEFORE register() was ever reached. The
+  // import is now bounded too — it times out (logged) and a good plugin after it
+  // still loads.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-import-"));
+  const okPath = join(dir, "ok.ts");
+  await Bun.write(
+    okPath,
+    `export function register(api) {
+       api.registerCommand({ name: "after-import", description: "x", source: "plugin", run: () => ({ kind: "notice", message: "ok" }) });
+     }`,
+  );
+  const commands = new CommandRegistry();
+  const host = new PluginHost({
+    hooks: new HookBus(),
+    commands,
+    skills: new SkillRegistry(),
+    registerTool: () => {},
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+  // A data: module whose top-level await never resolves.
+  const hangImport = "data:text/javascript,await new Promise(() => {})";
+  const start = performance.now();
+  await host.load([hangImport, okPath], { timeoutMs: 50 });
+  expect(performance.now() - start).toBeLessThan(2000); // did NOT hang on the import
+  expect(commands.get("after-import")).toBeDefined();
+});
+
+test("HookBus times out a hung handler and still runs later handlers", async () => {
+  // A never-resolving plugin handler is awaited on hot paths (session.idle inside
+  // the drain loop, user.prompt.submit at turn start, etc.) — it must time out
+  // (reported via onError) and let the chain continue, not hang the engine.
+  const errors: string[] = [];
+  const bus = new HookBus((_name, err) => errors.push(err.message), 30); // 30ms deadline
+  let laterRan = false;
+  bus.on("session.idle", () => new Promise<never>(() => {})); // hangs forever
+  bus.on("session.idle", (p) => {
+    laterRan = true;
+    return p;
+  });
+  const start = performance.now();
+  await bus.run("session.idle", { sessionId: "s" });
+  expect(performance.now() - start).toBeLessThan(2000); // did NOT hang
+  expect(errors.some((m) => /timed out/.test(m))).toBe(true);
+  expect(laterRan).toBe(true); // the chain continued past the hung handler
+});

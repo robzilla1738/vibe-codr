@@ -118,3 +118,18 @@ test("background run without a job registry is rejected cleanly", async () => {
   expect(r.isError).toBe(true);
   expect(String(r.output)).toContain("unavailable");
 });
+
+test("a backgrounded child holding the pipe doesn't hang the call past the grace deadline", async () => {
+  // `sh -c "sleep 5 & echo hi"` exits instantly, but the backgrounded `sleep`
+  // inherits stdout and keeps the pipe open. Without the post-exit grace race the
+  // call would block for the full 5s on pump(); it must return promptly with the
+  // captured output plus a note.
+  const start = Date.now();
+  const r = await bashTool(undefined, undefined, { postKillGraceMs: 200 }).execute(
+    { command: "sleep 5 & echo hi" },
+    ctx(cwd()),
+  );
+  expect(Date.now() - start).toBeLessThan(3000); // did NOT wait out the 5s sleep
+  expect(String(r.output)).toContain("hi");
+  expect(String(r.output)).toContain("still holding stdout");
+});

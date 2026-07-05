@@ -18,6 +18,14 @@ const MAX_STREAM = 64_000;
  * capture the result. A non-zero exit means failure; output is capped — read
  * incrementally so a runaway command doesn't materialize its whole output in
  * memory before truncation.
+ *
+ * NOTE: the engine no longer uses this — `#runVerifyCommand` runs through
+ * `bunExec`, which killTree()s the whole process tree on abort/timeout. This
+ * helper forwards `signal` STRAIGHT to `Bun.spawn`, the pattern `build/exec.ts`
+ * (lines 63-69) documents as broken: on abort Bun kills only the direct
+ * `bash -lc` child, orphaning grandchildren that still hold the stdout/stderr
+ * pipe write-ends → `readCappedText` never sees EOF and this hangs. Retained
+ * only as an exported utility; wire a signal through `bunExec` instead.
  */
 export async function runVerify(
   cwd: string,

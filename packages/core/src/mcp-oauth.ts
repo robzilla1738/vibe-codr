@@ -228,6 +228,83 @@ export function createMcpOAuthProvider(
   };
 }
 
+/** Parse an OAuth redirect request URL into its `code` / `error` params. Pure
+ * (no I/O) so the callback parsing is unit-testable without a live server. */
+export function extractOAuthCallbackParams(reqUrl: string): { code?: string; error?: string } {
+  try {
+    // reqUrl may be a bare path+query ("/callback?code=…") — resolve against a
+    // dummy origin so the URL constructor accepts it.
+    const u = new URL(reqUrl, "http://localhost");
+    const code = u.searchParams.get("code") ?? undefined;
+    const error = u.searchParams.get("error") ?? undefined;
+    return { ...(code ? { code } : {}), ...(error ? { error } : {}) };
+  } catch {
+    return {};
+  }
+}
+
+/** Serve the loopback OAuth redirect ONCE and resolve with the authorization
+ * `code`. Spins up a one-shot `Bun.serve` on the redirect URL's host/port, serves
+ * a "you can close this tab" page, and always stops the server (success, error,
+ * or timeout). Rejects on an `error` param, a bad/blank code, or the timeout. */
+export function waitForOAuthCallback(redirectUrl: string, timeoutMs = 120_000): Promise<string> {
+  const target = new URL(redirectUrl);
+  const port = Number(target.port) || (target.protocol === "https:" ? 443 : 80);
+  return new Promise<string>((resolve, reject) => {
+    let server: { stop: (closeActiveConnections?: boolean) => void } | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const done = (err: Error | null, code?: string) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      // Defer the stop a tick so the response we're about to return flushes to the
+      // browser BEFORE the server closes its connections.
+      setTimeout(() => {
+        try {
+          server?.stop(true);
+        } catch {
+          /* already stopped */
+        }
+      }, 0);
+      if (err) reject(err);
+      else resolve(code as string);
+    };
+    try {
+      server = Bun.serve({
+        port,
+        hostname: target.hostname,
+        fetch(req) {
+          const { code, error } = extractOAuthCallbackParams(req.url);
+          if (error) {
+            done(new Error(`OAuth authorization denied: ${error}`));
+            return new Response(`Authorization failed: ${error}. You can close this tab.`, {
+              status: 400,
+              headers: { "content-type": "text/plain" },
+            });
+          }
+          if (code) {
+            done(null, code);
+            return new Response("Authorization complete — you can close this tab and return to the terminal.", {
+              headers: { "content-type": "text/plain" },
+            });
+          }
+          return new Response("Waiting for the OAuth callback…", {
+            headers: { "content-type": "text/plain" },
+          });
+        },
+      });
+    } catch (err) {
+      done(new Error(`could not listen on ${target.host} for the OAuth callback: ${(err as Error).message}`));
+      return;
+    }
+    timer = setTimeout(
+      () => done(new Error(`timed out waiting for the OAuth callback on ${target.host}`)),
+      timeoutMs,
+    );
+  });
+}
+
 /** Best-effort "open this URL in the default browser" across platforms. */
 function openInBrowser(url: string): void {
   const cmd =

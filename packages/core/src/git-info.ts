@@ -1,4 +1,11 @@
 import type { GitInfo } from "@vibe/shared";
+import { killTree } from "@vibe/tools";
+
+/** Wall-clock bound on a git spawn (gitPrepare/gitCommitGreen run inside the
+ * gate's finally; a wedged git would freeze the queue). On timeout killTree
+ * closes the pipes so the readers finish and the !ok path degrades. Generous —
+ * large repos are legitimately slow. */
+const GIT_TIMEOUT_MS = 120_000;
 
 /**
  * Working-tree git introspection for the header (branch, dirty count, ahead/behind,
@@ -24,12 +31,19 @@ export const spawnGit: GitRunner = async (cwd, args) => {
     stderr: "pipe",
     stdin: "ignore",
   });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  const code = await proc.exited;
-  return { ok: code === 0, stdout, stderr };
+  const timer = setTimeout(() => {
+    killTree(proc.pid);
+  }, GIT_TIMEOUT_MS);
+  try {
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const code = await proc.exited;
+    return { ok: code === 0, stdout, stderr };
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 /**

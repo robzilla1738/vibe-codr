@@ -7,7 +7,7 @@ import {
   omittedMarker,
   type ToolDefinition,
 } from "@vibe/shared";
-import { createMcpOAuthProvider } from "./mcp-oauth.ts";
+import { createMcpOAuthProvider, waitForOAuthCallback } from "./mcp-oauth.ts";
 
 /** One MCP tool as reported by the server (incl. the read-only annotation). */
 export interface McpToolSpec {
@@ -170,6 +170,11 @@ export class McpHub {
   #closed = false;
   /** Servers with a reconnect loop in flight (so a drop storm can't stack loops). */
   #reconnecting = new Set<string>();
+  /** In-flight state per `<name>\x00<kind>` re-list, so a malicious/chatty server
+   * spamming `list_changed` notifications can't fan out into unbounded concurrent
+   * re-lists + registration churn: while one runs, further triggers collapse into
+   * a single trailing rerun. */
+  #refreshing = new Map<string, "running" | "queued">();
   /** Whether the aggregate read_mcp_resource / get_mcp_prompt tools are registered
    * (once each, lazily), so a server that first exposes resources/prompts on a
    * later RECONNECT still gets them surfaced to the model. */
@@ -305,10 +310,35 @@ export class McpHub {
   /** Wire live-update handlers for a connected client: re-list on tools/list_changed,
    * reconnect on transport close. No-ops for fakes/transports lacking the hooks. */
   #wire(entry: McpEntry, client: McpClient): void {
-    client.onListChanged?.(() => void this.#refreshTools(entry.name));
-    client.onResourcesChanged?.(() => void this.#refreshResources(entry.name));
-    client.onPromptsChanged?.(() => void this.#refreshPrompts(entry.name));
+    client.onListChanged?.(() =>
+      void this.#coalesce(`${entry.name}\x00tools`, () => this.#refreshTools(entry.name)),
+    );
+    client.onResourcesChanged?.(() =>
+      void this.#coalesce(`${entry.name}\x00resources`, () => this.#refreshResources(entry.name)),
+    );
+    client.onPromptsChanged?.(() =>
+      void this.#coalesce(`${entry.name}\x00prompts`, () => this.#refreshPrompts(entry.name)),
+    );
     client.onClose?.(() => void this.#scheduleReconnect(entry.name));
+  }
+
+  /** Run `fn` for `key`, collapsing concurrent triggers: while one is running,
+   * additional calls set a single trailing rerun instead of stacking. A burst of
+   * N list_changed notifications yields at most one in-flight re-list + one rerun. */
+  async #coalesce(key: string, fn: () => Promise<void>): Promise<void> {
+    if (this.#refreshing.has(key)) {
+      this.#refreshing.set(key, "queued");
+      return;
+    }
+    this.#refreshing.set(key, "running");
+    try {
+      do {
+        this.#refreshing.set(key, "running");
+        await fn().catch(() => {});
+      } while (this.#refreshing.get(key) === "queued");
+    } finally {
+      this.#refreshing.delete(key);
+    }
   }
 
   /** Re-list a server's tools (tools/list_changed) and swap the registration. */
@@ -929,7 +959,26 @@ const defaultConnect: McpConnect = async (name, config) => {
     else if (n?.method === "notifications/prompts/list_changed")
       for (const cb of promptsChangedCbs) cb();
   };
-  await client.connect(await makeTransport());
+  // Connect. When OAuth is configured and the server demands authorization, the
+  // SDK opens the browser (via the provider's redirectToAuthorization) and throws
+  // UnauthorizedError to hand control back. Complete the flow: listen on the
+  // configured loopback redirect for the `code`, exchange it via the transport's
+  // finishAuth, then rebuild the transport and retry connect ONCE (per the SDK's
+  // documented pattern). No OAuth configured → the error propagates unchanged.
+  let transport = await makeTransport();
+  try {
+    await client.connect(transport);
+  } catch (err) {
+    const needsAuth =
+      options.authProvider && (err as { name?: string })?.name === "UnauthorizedError";
+    if (!needsAuth) throw err;
+    const redirectUrl = (options.authProvider as { redirectUrl?: string }).redirectUrl;
+    if (!redirectUrl) throw err;
+    const code = await waitForOAuthCallback(redirectUrl);
+    await (transport as { finishAuth?: (code: string) => Promise<void> }).finishAuth?.(code);
+    transport = await makeTransport();
+    await client.connect(transport);
+  }
   return {
     async listTools() {
       const res = await client.listTools();

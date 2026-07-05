@@ -86,3 +86,21 @@ export function parsePermissionDecision(input: string): {
   if (!t || t === "n" || t === "no" || t === "deny") return { decision: "deny" };
   return { decision: "deny", feedback: input.trim() };
 }
+
+/**
+ * Route a submitted line while a permission card is pending. A slash line is NOT
+ * a permission answer — it's a command the user wants to run (e.g. `/clear` to
+ * escape a stuck card, `/theme`, or a value-menu selection). Without this, every
+ * slash line became a DENY carrying the command as feedback, and `/clear` could
+ * never rescue a pending card. A non-slash line still answers the card via
+ * `parsePermissionDecision` (free text = deny-with-feedback). Mirrors the plan
+ * card's own slash exemption.
+ */
+export function routePendingPermLine(
+  input: string,
+):
+  | { kind: "passthrough" }
+  | { kind: "perm"; decision: "once" | "always" | "always-project" | "deny"; feedback?: string } {
+  if (input.trim().startsWith("/")) return { kind: "passthrough" };
+  return { kind: "perm", ...parsePermissionDecision(input) };
+}

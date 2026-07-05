@@ -66,7 +66,7 @@ import type {
 import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
 import { applyPalette, isExactCommand, paletteState, skillsPickerFilter } from "./commands-catalog.ts";
-import { displayWidth, renderTable, splitMarkdown, tableFits, tailWidth, truncateWidth, type MdBlock } from "./markdown-blocks.ts";
+import { createMarkdownSplitter, displayWidth, renderTable, tableFits, tailWidth, truncateWidth, type MdBlock } from "./markdown-blocks.ts";
 import {
   barChartLayout,
   barGlyphs,
@@ -94,11 +94,11 @@ import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.
 import { cleanupClipboardTempDir, readClipboardImage } from "./clipboard-image.ts";
 import { composeInEditor, type EditorSpawn } from "./editor-compose.ts";
 import { brandSpans, rainbow } from "./gradient.ts";
-import { lineToCommands, parsePermissionDecision } from "./slash.ts";
+import { lineToCommands, routePendingPermLine } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
-import { Trail, windowStartIndex } from "./trail.ts";
+import { Trail, turnWindowStart, windowStartIndex } from "./trail.ts";
 import {
   initialTranscript,
   reduceTranscript,
@@ -152,6 +152,13 @@ const PANEL_MAX_ROWS = 8;
  * Generous: 40 turns is far more than fits on screen, so the fold is only ever
  * seen while deliberately scrolling back. */
 const WINDOW_TURNS = 40;
+/** In-turn item window: turn windowing bounds relayout ACROSS turns, but one turn
+ * with hundreds of tool blocks still grows the yoga tree without bound. Cap a
+ * turn's rendered items, advancing the start in whole STEP jumps so the <Index>
+ * reshuffles at most once every STEP appends (per-append would re-key every row
+ * on the hot streaming path). See `turnWindowStart`. */
+const TURN_ITEMS_MAX = 120;
+const TURN_ITEMS_STEP = 24;
 /** Turns each tap of the fold row reveals. */
 const REVEAL_PAGE = 20;
 /** The wordmark is rendered with OpenTUI's native ASCII-font renderable
@@ -1767,12 +1774,17 @@ export function App(props: { engine: EngineClient }) {
       return;
     }
     // While permission prompts are pending, a typed reply answers the oldest:
-    // exact y/yes/a/always/n/no decide; anything else denies WITH the text as
-    // feedback (the model sees "denied by user — <text>" and can adjust).
+    // exact y/yes/a/always/n/no decide; free text denies WITH the text as feedback
+    // (the model sees "denied by user — <text>" and can adjust). A SLASH line is
+    // not an answer — it's a command (e.g. `/clear` to escape a stuck card),
+    // routed to the command handling below (mirrors the plan card's exemption).
     if (perms().length > 0) {
-      const parsed = parsePermissionDecision(text);
-      answerPerm(parsed.decision, parsed.feedback);
-      return;
+      const routed = routePendingPermLine(text);
+      if (routed.kind === "perm") {
+        answerPerm(routed.decision, routed.feedback);
+        return;
+      }
+      // passthrough → fall through to /clear + command handling below.
     }
     // A plan card is up: a non-slash message is revision feedback (re-plan), not a
     // fresh turn. Slash commands (/execute, /model, …) still route normally.
@@ -2186,6 +2198,8 @@ export function App(props: { engine: EngineClient }) {
             {(turn) => {
               const hasNode = () => turn().user !== undefined;
               const items = () => turn().items;
+              const itemStart = () => turnWindowStart(items().length, TURN_ITEMS_MAX, TURN_ITEMS_STEP);
+              const visibleItems = () => items().slice(itemStart());
               const folded = () => hasNode() && collapsedTurns().has(turn().key);
               const foldTap = () => {
                 if (hasNode() && items().length > 0) anchoredToggle(() => toggleTurn(turn().key));
@@ -2234,14 +2248,21 @@ export function App(props: { engine: EngineClient }) {
                         paddingLeft={2}
                         paddingRight={2}
                       >
-                        <Index each={items()}>
+                        <Show when={itemStart() > 0}>
+                          <text flexShrink={0} fg={palette().muted} marginBottom={1}>
+                            {`▸ ${itemStart()} earlier item${itemStart() === 1 ? "" : "s"} in this turn hidden`}
+                          </text>
+                        </Show>
+                        <Index each={visibleItems()}>
                           {(blk, i) => {
+                            const sourceIndex = () => itemStart() + i;
+                            const prev = () => items()[sourceIndex() - 1];
                             // A step row (tool or thinking) stacks flush under a
                             // preceding step — a run of thought→act→act reads as one
                             // segment; otherwise a gap row above it.
                             const steppy = (k: string | undefined) => k === "tool" || k === "thinking";
                             const chained = () =>
-                              steppy(blk().kind) && steppy(items()[i - 1]?.kind);
+                              steppy(blk().kind) && steppy(prev()?.kind);
                             return (
                               <>
                                 <Show when={blk().kind === "assistant"}>
@@ -2249,7 +2270,7 @@ export function App(props: { engine: EngineClient }) {
                                     id={`msg-${(blk() as { id: number }).id}`}
                                     flexDirection="column"
                                     flexShrink={0}
-                                    marginTop={i > 0 && (blk() as { gap: boolean }).gap ? 1 : 0}
+                                    marginTop={sourceIndex() > 0 && (blk() as { gap: boolean }).gap ? 1 : 0}
                                   >
                                     <AssistantText
                                       text={(blk() as { text: string }).text}
@@ -2267,8 +2288,8 @@ export function App(props: { engine: EngineClient }) {
                                     block={blk as () => Extract<Block, { kind: "tool" }>}
                                     palette={palette()}
                                     style={mdStyle}
-                                    chained={i > 0 && chained()}
-                                    first={i === 0}
+                                    chained={sourceIndex() > 0 && chained()}
+                                    first={sourceIndex() === 0}
                                     width={blockInner()}
                                     spin={() => spinnerFrame(tick())}
                                     onToggle={(id) => anchoredToggle(() => toggle(id))}
@@ -2278,8 +2299,8 @@ export function App(props: { engine: EngineClient }) {
                                   <ThinkingBlockView
                                     block={blk as () => Extract<Block, { kind: "thinking" }>}
                                     palette={palette()}
-                                    chained={i > 0 && chained()}
-                                    first={i === 0}
+                                    chained={sourceIndex() > 0 && chained()}
+                                    first={sourceIndex() === 0}
                                     width={blockInner()}
                                     onToggle={(id) => anchoredToggle(() => toggle(id))}
                                   />
@@ -2299,7 +2320,7 @@ export function App(props: { engine: EngineClient }) {
                                           ? palette().notice
                                           : palette().muted
                                     }
-                                    marginTop={i > 0 ? 1 : 0}
+                                    marginTop={sourceIndex() > 0 ? 1 : 0}
                                   >
                                     {/* Clamped per line so one long unbroken notice
                                         (an error payload) can't widen the panel. */}
@@ -3225,7 +3246,8 @@ function AssistantText(props: {
    * they align with the full-width input frame. Default 0. */
   indent?: number;
 }) {
-  const blocks = () => splitMarkdown(props.text);
+  const split = createMarkdownSplitter();
+  const blocks = () => split(props.text);
   const indent = () => props.indent ?? 0;
   // One left edge for all assistant content. `code` and `quote` carry their OWN
   // left marker (the `│` border / the `▎` bar), so they sit flush at the block

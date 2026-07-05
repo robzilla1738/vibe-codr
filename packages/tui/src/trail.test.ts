@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { Trail, windowStartIndex } from "./trail.ts";
+import { Trail, turnWindowStart, windowStartIndex } from "./trail.ts";
 
 /** The OLD full-rebuild trail (what pushReasoning did per token before the
  * incremental Trail): re-split the whole buffer, trim, collapse blank runs,
@@ -85,4 +85,23 @@ test("a 5k-block-scale transcript renders at most the window", () => {
   const total = 120;
   const start = windowStartIndex(total, 40, 0);
   expect(total - start).toBe(40);
+});
+
+test("turnWindowStart: 0 under the cap, quantized + monotonic above it, visible bounded", () => {
+  const MAX = 120;
+  const STEP = 24;
+  // At or under the cap → no windowing.
+  expect(turnWindowStart(0, MAX, STEP)).toBe(0);
+  expect(turnWindowStart(120, MAX, STEP)).toBe(0);
+  // Just over the cap: the start jumps one step and stays there for a whole band.
+  for (let n = 121; n <= 144; n++) expect(turnWindowStart(n, MAX, STEP)).toBe(24);
+  for (let n = 145; n <= 168; n++) expect(turnWindowStart(n, MAX, STEP)).toBe(48);
+  // Monotonic non-decreasing, and the visible count never exceeds max (≤ max+step).
+  let prev = 0;
+  for (let n = 0; n <= 1000; n++) {
+    const start = turnWindowStart(n, MAX, STEP);
+    expect(start).toBeGreaterThanOrEqual(prev);
+    expect(n - start).toBeLessThanOrEqual(MAX + STEP);
+    prev = start;
+  }
 });

@@ -77,3 +77,20 @@ export class Trail {
 export function windowStartIndex(totalTurns: number, windowTurns: number, revealed: number): number {
   return Math.max(0, totalTurns - windowTurns - revealed);
 }
+
+/**
+ * In-turn render window: the index of the first ITEM kept in a single turn's
+ * layout. Turn-level windowing bounds relayout across turns, but ONE turn with
+ * hundreds of tool blocks (a scaffold generator, a long yolo run) still grows the
+ * yoga tree without bound — the same freeze class. This caps a turn's rendered
+ * items to `maxItems`, but only advances the start in whole `step` increments so
+ * the `<Index>` list reshuffles at most once every `step` appends (a per-append
+ * slice would re-key every row on the hot streaming path). Returns 0 until the
+ * item count exceeds the cap.
+ */
+export function turnWindowStart(totalItems: number, maxItems: number, step: number): number {
+  if (totalItems <= maxItems) return 0;
+  // Smallest multiple of `step` that keeps the visible count (total - start) at
+  // or under `maxItems` — so the start only moves in whole `step` jumps.
+  return Math.ceil((totalItems - maxItems) / step) * step;
+}

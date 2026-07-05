@@ -4,6 +4,30 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — freeze/stall/interaction hardening pass
+
+- **The engine no longer wedges on stalled control paths.** Queue draining now
+  clears its latch in a `finally`, shutdown aborts the live turn and cancels
+  queued work, permission prompts settle on abort/steer, verify commands inherit
+  timeout + abort-aware process-tree cleanup, and boundary calls for model lists,
+  embeddings, plugin imports, hooks, git, bash, and config HTTP hooks are
+  bounded.
+- **Headless and goal runs fail honestly instead of going silent.** Root provider
+  streams have a headless idle watchdog, auxiliary summarize/digest calls are
+  bounded, genuine no-output provider failures surface as errors, and mid-run
+  plan-mode flips or stale plan accepts pause/refuse instead of burning goal
+  rounds or reseeding the goal task spine.
+- **MCP is more robust.** `list_changed` notification storms coalesce into one
+  in-flight refresh plus one trailing rerun, and interactive MCP OAuth now has a
+  one-shot loopback callback listener that exchanges the authorization code and
+  retries the connection.
+- **TUI interaction and performance fixes.** Slash commands work while a
+  permission card is pending, Shift+Tab mode cycling uses optimistic local state,
+  clean event-stream termination clears the working latch, large single turns are
+  render-windowed, streaming markdown parsing is incremental, clipboard writes
+  flush before closing, and terminal restore paths cover fatal signals,
+  onboarding Ctrl+C, and REPL fallback.
+
 ### Fixed — deferred-backlog burn-down (production-readiness pass)
 
 - **Project "always allow" path grants survive symlinked paths.** On macOS,

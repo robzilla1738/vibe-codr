@@ -1395,3 +1395,68 @@ test("a hook-denied goal turn pauses the run; a denied PLAN turn never fabricate
   expect(engine.snapshot().tasks).toHaveLength(0);
   expect(events.some((e) => e.type === "notice" && /single task/.test(e.message))).toBe(false);
 });
+
+test("switching to plan mode mid-goal-run pauses the run (no read-only continuation rounds)", async () => {
+  // #ensureExecuteModeForGoal only runs at start/resume, so a mid-run Shift+Tab
+  // to plan would make every goal continuation a read-only plan turn — burning
+  // the whole round budget on deterministic not-met rounds. The set-mode handler
+  // now pauses the run instead (resume re-ensures execute).
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-planflip-"));
+  const assess = assessments([{ met: false, gaps: ["more"], reason: "not done" }]);
+  const model = new MockLanguageModelV2({
+    doStream: async () => textStep("done") as never,
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "do the thing" });
+  // Shift+Tab to plan mode while the run is active.
+  engine.send({ type: "set-mode", mode: "plan" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  expect(
+    events.some((e) => e.type === "notice" && /Goal run paused — switched to plan mode/.test(e.message)),
+  ).toBe(true);
+  expect(engine.snapshot().goalRun?.active).toBe(false);
+  // The ★ goal stays set — a pause, not a clear.
+  expect(engine.snapshot().goal).toBe("do the thing");
+});
+
+test("a resolve-plan accept during an active goal run cannot reseed the task spine", async () => {
+  // The goal run owns the task list. A scripted/leftover plan-card accept must
+  // not #seedTasksFromPlan over it and enqueue a competing execute-plan driver.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-planaccept-"));
+  const assess = assessments([{ met: false, gaps: ["more"], reason: "not done" }]);
+  const model = new MockLanguageModelV2({
+    doStream: async () => textStep("done") as never,
+    doGenerate: assess.doGenerate,
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+
+  engine.send({ type: "run-slash", name: "goal", args: "ship it" });
+  // A plan-card accept lands while the run is active — must be refused.
+  engine.send({ type: "resolve-plan", decision: "accept" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await done;
+
+  expect(
+    events.some((e) => e.type === "notice" && /A goal run owns the task list/.test(e.message)),
+  ).toBe(true);
+});

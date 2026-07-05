@@ -327,6 +327,32 @@ function redoHarness(dir: string, session: ReturnType<typeof fakeConversation>) 
   return { checkpoints, h, messages };
 }
 
+test("/undo refuses while a detached subagent is still writing, then succeeds once it settles", async () => {
+  // A checkpoint restore (checkout-index -a -f + untracked deletion) would race a
+  // background subagent mid-write (the file lock covers tool-vs-tool writes, not
+  // checkout). /undo and /redo refuse with a notice while any detached child runs.
+  const dir = await gitRepo();
+  const session = fakeConversation(2);
+  let detached = 1;
+  (session as unknown as { childRegistry: unknown }).childRegistry = {
+    runningDetachedCount: () => detached,
+  };
+  const { checkpoints, h, messages } = redoHarness(dir, session);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await checkpoints.snapshot("v0", { messages: 1, history: 1 });
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+
+  // Refused while a detached child runs: files untouched + a warn notice.
+  await handleSlash(h, "undo", "");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
+  expect(messages.some((m) => /background subagent/.test(m.message))).toBe(true);
+
+  // The child settles → the restore goes through.
+  detached = 0;
+  await handleSlash(h, "undo", "");
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v0\n");
+});
+
 test("/redo after /clear does not resurrect the cleared conversation (files still restore)", async () => {
   const dir = await gitRepo();
   const session = fakeConversation(3);

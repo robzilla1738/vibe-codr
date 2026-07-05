@@ -6,6 +6,7 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { HookBus } from "@vibe/plugins";
 import { defaultConfig } from "@vibe/config";
 import { Engine } from "./engine.ts";
 
@@ -30,7 +31,10 @@ function replyModel(delayMs = 0): MockLanguageModelV2 {
   });
 }
 
-function mockEngine(model: MockLanguageModelV2): { engine: Engine; events: UIEvent[] } {
+function mockEngine(
+  model: MockLanguageModelV2,
+  hooks?: HookBus,
+): { engine: Engine; events: UIEvent[] } {
   const registry = new ProviderRegistry([
     {
       id: "mock",
@@ -43,6 +47,7 @@ function mockEngine(model: MockLanguageModelV2): { engine: Engine; events: UIEve
     config: { ...defaultConfig(), model: "mock/test" },
     registry,
     toolset: new Toolset([]),
+    ...(hooks ? { hooks } : {}),
     cwd: mkdtempSync(join(tmpdir(), "vibe-queue-")), // isolated, non-git
   });
   const events: UIEvent[] = [];
@@ -149,6 +154,35 @@ test("steer jumps a queued prompt to the front and interrupts the running turn",
   expect(prompts.indexOf("C")).toBeLessThan(prompts.indexOf("B"));
 });
 
+test("a throw outside the per-item catch doesn't wedge the queue", async () => {
+  // The drain loop's per-item try/catch covers item.run() only. A session.idle
+  // hook whose #onError ALSO throws escapes hooks.run into #maybeContinueOnIdle,
+  // i.e. the drain loop OUTSIDE that catch. Without the drain's own try/finally,
+  // #draining would stick true and every future #enqueue would silently no-op —
+  // a permanent, invisible engine wedge. The finally must clear the latch and
+  // still fire engine-idle so the queue keeps working.
+  const hooks = new HookBus(() => {
+    throw new Error("onError boom");
+  });
+  hooks.on("session.idle", () => {
+    throw new Error("idle boom");
+  });
+  const { engine, events } = mockEngine(replyModel(5), hooks);
+
+  engine.send({ type: "submit-prompt", text: "first" });
+  await engine.whenIdle();
+  // If the latch stuck true, this second prompt would never run.
+  engine.send({ type: "submit-prompt", text: "second" });
+  await engine.whenIdle();
+
+  const prompts = events
+    .filter((e): e is Extract<UIEvent, { type: "user-message" }> => e.type === "user-message")
+    .map((e) => e.text);
+  expect(prompts).toEqual(["first", "second"]);
+  // engine-idle still fired despite the escaped throw (whenIdle resolved above).
+  expect(events.some((e) => e.type === "engine-idle")).toBe(true);
+});
+
 test("abort clears the pending queue", async () => {
   const { engine, events } = mockEngine(replyModel(5));
 
@@ -162,4 +196,23 @@ test("abort clears the pending queue", async () => {
     .map((e) => e.text);
   // "two" was dropped from the queue by the abort.
   expect(prompts).toEqual(["one"]);
+});
+
+test("finalize sweeps queued work — it never runs a model turn post-teardown", async () => {
+  // #doFinalize used to leave #pending intact and never abort the live turn, so a
+  // dequeued item (loop iteration, goal round, typed-ahead prompt) would run a
+  // full model turn AFTER teardown, against a closed bus and MCP hub. Finalize
+  // now drops the queue (firing onCancel) and aborts the in-flight turn first.
+  const { engine, events } = mockEngine(replyModel(50));
+
+  engine.send({ type: "submit-prompt", text: "first" });
+  engine.send({ type: "submit-prompt", text: "second" });
+  // Finalize while "first" is still streaming and "second" is queued behind it.
+  await engine.finalize();
+
+  const prompts = events
+    .filter((e): e is Extract<UIEvent, { type: "user-message" }> => e.type === "user-message")
+    .map((e) => e.text);
+  // "second" was swept by finalize and never started a turn.
+  expect(prompts).not.toContain("second");
 });

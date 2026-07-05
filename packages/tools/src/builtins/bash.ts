@@ -30,14 +30,23 @@ const DEFAULT_TIMEOUT = 120_000;
  * as head+tail rather than head-only: a failing build prints its error LAST, so
  * dropping the tail would hide exactly the line the model needs to see. */
 const OUTPUT_CAP = 30_000;
+/** After the process exits (or is killed), wait at most this long for the output
+ * pumps to drain before returning anyway. A backgrounded child (`sleep 30 &`) or
+ * a kill-missed grandchild can inherit the stdout/stderr pipe and hold it open
+ * past the direct child's exit — without this bound the tool call would block on
+ * `pump()` for as long as that child lives. */
+const POST_EXIT_GRACE_MS = 5_000;
 
 /** Build the bash tool. A shared job registry enables `background: true`; an
  * optional sandbox policy wraps every foreground spawn (unless the call opts out
- * with `dangerouslyUnsandboxed`, which the permission engine gates separately). */
+ * with `dangerouslyUnsandboxed`, which the permission engine gates separately).
+ * `postKillGraceMs` overrides the post-exit pump-drain deadline (exposed for tests). */
 export function bashTool(
   jobs?: BackgroundJobs,
   sandbox?: SandboxPolicy,
+  opts: { postKillGraceMs?: number } = {},
 ): ToolDefinition<z.infer<typeof Input>> {
+  const postKillGraceMs = opts.postKillGraceMs ?? POST_EXIT_GRACE_MS;
   return {
     name: "bash",
     description:
@@ -110,10 +119,20 @@ export function bashTool(
           out.push(chunk);
         });
 
+      // Start draining concurrently, then await the direct child's exit FIRST.
+      // Once it has exited, race the pumps against a grace deadline: if a
+      // backgrounded/leaked grandchild is still holding the pipe, we stop waiting
+      // on it and return what we captured instead of hanging on `pump()`.
+      const pumps = Promise.all([pump(proc.stdout), pump(proc.stderr)]);
       let code: number;
+      let pipeHeld = false;
       try {
-        await Promise.all([pump(proc.stdout), pump(proc.stderr)]);
         code = await proc.exited;
+        const drained = await Promise.race([
+          pumps.then(() => "done" as const),
+          new Promise<"held">((r) => setTimeout(() => r("held"), postKillGraceMs)),
+        ]);
+        pipeHeld = drained === "held";
       } finally {
         clearTimeout(timer);
         ctx.abortSignal.removeEventListener("abort", onAbort);
@@ -123,7 +142,10 @@ export function bashTool(
       const status = timedOut
         ? `timed out after ${limit}ms (process killed; rerun with a larger timeoutMs or background:true)`
         : `exit ${code}`;
-      const raw = `${status}\n${trimmed || "(no output)"}`;
+      const heldNote = pipeHeld
+        ? "\n[a background child is still holding stdout/stderr — returning output captured so far; use background:true for long-running processes]"
+        : "";
+      const raw = `${status}${heldNote}\n${trimmed || "(no output)"}`;
       // On a sandboxed failure, append one actionable line if the output carries
       // a kernel-denial signature (no-op otherwise, so ordinary failures are
       // untouched).

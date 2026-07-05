@@ -19,11 +19,17 @@ export function clipboardCommands(platform: string): string[][] {
 /** Spawn `cmd` and pipe `text` to its stdin. Returns false if it can't launch. */
 export type ClipboardWriter = (cmd: string[], text: string) => boolean;
 
-const bunWrite: ClipboardWriter = (cmd, text) => {
+export const bunWrite: ClipboardWriter = (cmd, text) => {
   try {
     const proc = Bun.spawn(cmd, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
-    proc.stdin.write(text);
-    void proc.stdin.end();
+    // Flush the write BEFORE end(): a large selection can return a pending write
+    // under backpressure, and end()ing immediately would truncate it. Reap the
+    // child too (`proc.exited`) so a long session doesn't leak one zombie per copy.
+    const flushed = proc.stdin.write(text);
+    void Promise.resolve(flushed)
+      .then(() => proc.stdin.end())
+      .catch(() => {});
+    void proc.exited.catch(() => {});
     return true;
   } catch {
     return false; // binary not found / spawn failed — try the next candidate

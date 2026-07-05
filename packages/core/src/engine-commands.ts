@@ -1069,11 +1069,28 @@ async function handleVerify(h: EngineHandle): Promise<void> {
 /** `/undo [n|id]` — bare restores the most recent checkpoint (single-step);
  * with an index (as shown by `/checkpoints`, newest = 1) or a checkpoint id it
  * rewinds multiple steps at once, stacking the skipped ones for `/redo`. */
+/** Refuse a checkpoint restore while background (detached) subagents are still
+ * writing: `checkout-index -a -f` + untracked-file deletion would race their
+ * in-progress edits (the file lock covers tool-vs-tool writes, not checkout).
+ * Returns true when the restore should be blocked. */
+function blockedByDetached(h: EngineHandle): boolean {
+  const live = h.session.childRegistry?.runningDetachedCount() ?? 0;
+  if (!live) return false;
+  h.notice(
+    `${live} background subagent(s) are still writing — restoring now would race them. ` +
+      "Wait for them (check_task) or stop them first (Esc aborts the turn; background children " +
+      "are reaped at exit), then retry.",
+    "warn",
+  );
+  return true;
+}
+
 async function handleUndo(h: EngineHandle, args: string): Promise<void> {
   if (!(await h.checkpoints.isGitRepo())) {
     h.notice("Checkpoints need a git repository; nothing to undo.", "warn");
     return;
   }
+  if (blockedByDetached(h)) return;
   const arg = args.trim();
   if (arg) {
     const list = await h.checkpoints.list();
@@ -1104,6 +1121,7 @@ async function handleRedo(h: EngineHandle): Promise<void> {
     h.notice("Checkpoints need a git repository; nothing to redo.", "warn");
     return;
   }
+  if (blockedByDetached(h)) return;
   const cp = await h.checkpoints.redo();
   if (!cp) {
     h.notice("Nothing to redo.");

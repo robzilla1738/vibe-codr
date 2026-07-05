@@ -261,6 +261,14 @@ export const ConfigSchema = z.object({
   mode: z.enum(["plan", "execute"]).default("execute"),
   /** Hard cap on agentic steps per turn. */
   maxSteps: z.number().int().positive().default(64),
+  /** Watchdog for a stalled provider stream: if no stream part arrives for this
+   * many ms, the turn aborts and surfaces as an error. Applied ONLY to
+   * non-interactive (headless `-p`/CI) runs — an interactive stream is
+   * legitimately silent while a tool runs or a permission card waits for a human,
+   * and Esc already covers a wedged interactive turn. Must comfortably exceed
+   * `subagent.timeoutMs` (a sync subagent legitimately silences the parent
+   * stream). 0 disables. */
+  streamIdleTimeoutMs: z.number().int().min(0).default(600_000),
   /** Per-provider credential/baseURL overrides (env vars take precedence). */
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
   /** Tool permission rules. Among matching rules: deny > ask > allow. */

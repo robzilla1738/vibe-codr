@@ -3,7 +3,7 @@ import type { EngineClient } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
 import { renderHeadless } from "./headless.ts";
-import { lineToCommands, parsePermissionDecision } from "./slash.ts";
+import { lineToCommands, routePendingPermLine } from "./slash.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
 
 /**
@@ -89,14 +89,17 @@ async function startRepl(engine: EngineClient): Promise<void> {
   let buffer: string[] = [];
   const ask = () =>
     rl.question(buffer.length ? ansi.dim("… ") : ansi.green("› "), (line) => {
-      const permId = pendingPerms.shift();
-      if (permId) {
-        const parsed = parsePermissionDecision(line.trim());
+      // A slash line while a permission is pending is a COMMAND (e.g. /clear to
+      // escape a stuck card), not an answer — route it below. Only a non-slash
+      // line answers the oldest pending permission.
+      const routed = pendingPerms.length ? routePendingPermLine(line.trim()) : undefined;
+      if (routed?.kind === "perm") {
+        const permId = pendingPerms.shift()!;
         engine.send({
           type: "resolve-permission",
           id: permId,
-          decision: parsed.decision,
-          ...(parsed.feedback ? { feedback: parsed.feedback } : {}),
+          decision: routed.decision,
+          ...(routed.feedback ? { feedback: routed.feedback } : {}),
         });
         ask();
         return;

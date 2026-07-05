@@ -1032,3 +1032,107 @@ test("rewindConversation returns the sliced-off tail and restoreConversation re-
   // A mark already at/after the current length discards nothing → no tail.
   expect(session.rewindConversation({ messages: 4, history: 4 })).toBeUndefined();
 });
+
+test("a NoOutputGeneratedError without an abort is a fault (lastError set, not interrupted)", async () => {
+  // #isAbortError must NOT treat NoOutputGeneratedError as a cancel on its own:
+  // a genuine provider no-output failure (never aborted) is a fault. Painting it
+  // as interrupt would suppress lastError and leave a goal run armed-but-idle
+  // behind the interrupted guard with no pause reason.
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      throw Object.assign(new Error("no output generated"), { name: "NoOutputGeneratedError" });
+    },
+  });
+  const cfg = defaultConfig();
+  cfg.retry = { ...cfg.retry, maxAttempts: 0, baseDelayMs: 0 };
+  const bus = new EventBus();
+  const session = new Session({
+    config: cfg,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("go");
+  bus.close();
+  expect(session.interrupted).toBe(false);
+  expect(session.lastError).toContain("No output generated");
+});
+
+test("a stalled provider stream aborts via the watchdog and surfaces lastError (headless)", async () => {
+  // A half-open stream (a part arrives, then nothing — no finish, no error)
+  // would hang the turn forever. In a non-interactive run the chunk-idle watchdog
+  // aborts it and the catch routes to lastError (a fault), not interrupted.
+  const model = new MockLanguageModelV2({
+    doStream: async () => ({
+      // Emit a start part, then never close the stream — a stall.
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings: [] });
+          controller.enqueue({ type: "text-start", id: "t" });
+          controller.enqueue({ type: "text-delta", id: "t", delta: "partial" });
+          // deliberately no finish + never close: the reader blocks here.
+        },
+      }) as never,
+    }),
+  });
+  const cfg = defaultConfig();
+  cfg.streamIdleTimeoutMs = 50; // tiny watchdog for the test
+  cfg.retry = { ...cfg.retry, maxAttempts: 0, baseDelayMs: 0 };
+  const bus = new EventBus();
+  const session = new Session({
+    config: cfg,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    // interactive omitted → falsy → the watchdog is active (headless path).
+  });
+  await session.run("go");
+  bus.close();
+  expect(session.interrupted).toBe(false);
+  expect(session.lastError).toContain("stalled");
+});
+
+test("an interactive session does NOT arm the stream-idle watchdog", async () => {
+  // Interactive streams go legitimately silent during tool runs / permission
+  // waits; Esc covers a wedged turn. The watchdog must not fire and auto-abort a
+  // legitimately-slow interactive turn. A slow-but-completing stream finishes
+  // cleanly with no lastError even though its gap exceeds the tiny timeout.
+  const model = new MockLanguageModelV2({
+    doStream: async () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "t" },
+          { type: "text-delta", id: "t", delta: "ok" },
+          { type: "text-end", id: "t" },
+          { type: "finish", finishReason: "stop", usage: USAGE },
+        ] as never[],
+        initialDelayInMs: 120, // exceeds the 50ms timeout below
+        chunkDelayInMs: 0,
+      }),
+    }),
+  });
+  const cfg = defaultConfig();
+  cfg.streamIdleTimeoutMs = 50;
+  const bus = new EventBus();
+  const session = new Session({
+    config: cfg,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+    interactive: true, // watchdog disabled
+  });
+  await session.run("go");
+  bus.close();
+  expect(session.interrupted).toBe(false);
+  expect(session.lastError).toBeNull();
+});

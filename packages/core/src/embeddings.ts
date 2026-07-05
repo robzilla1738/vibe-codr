@@ -23,6 +23,12 @@ export interface Embedder {
 /** The default on-device model (small, fast, good for code/prose retrieval). */
 const DEFAULT_LOCAL_MODEL = "Xenova/bge-small-en-v1.5";
 
+/** Wall-clock bound on a cloud embedding call. Proactive recall awaits the query
+ * embed on the first-prompt turn path, so a stalled embedding endpoint would
+ * wedge that turn indefinitely (the callers catch rejections, but a hang has no
+ * error to catch). A timeout degrades to "no recall this turn". */
+const EMBED_TIMEOUT_MS = 30_000;
+
 /** Wrap an AI-SDK embedding model (cloud provider) as an Embedder. */
 export function aiSdkEmbedder(id: string, model: EmbeddingModel<string>): Embedder {
   return {
@@ -30,7 +36,11 @@ export function aiSdkEmbedder(id: string, model: EmbeddingModel<string>): Embedd
     dimensions: 0,
     async embed(texts) {
       if (!texts.length) return [];
-      const { embeddings } = await embedMany({ model, values: texts });
+      const { embeddings } = await embedMany({
+        model,
+        values: texts,
+        abortSignal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      });
       return embeddings;
     },
   };

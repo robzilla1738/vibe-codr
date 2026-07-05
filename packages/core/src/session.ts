@@ -92,6 +92,9 @@ const COMPACT_OVERHEAD_MARGIN = 12_000;
  * Compaction fires when context is near-full, so an uncapped transcript would
  * make the summarize call itself risk the window. */
 const SUMMARY_INPUT_CAP = 24_000;
+/** Wall-clock bound on the auxiliary (summarize / digest) provider calls so a
+ * stalled stream can't hang the turn that triggered compaction, or shutdown. */
+const AUX_CALL_TIMEOUT_MS = 120_000;
 
 /** The conversation segments a `rewindConversation` sliced off. `/undo` stashes
  * this on its redo step (as an opaque payload, so the checkpoint module stays free
@@ -252,6 +255,10 @@ export class Session {
    * spend-stop) rather than completing or erroring. Drives "don't auto-verify a
    * turn the user interrupted" and keeps a cancel from being painted as a fault. */
   #interrupted = false;
+  /** Set when the headless stream-idle watchdog aborted the turn: the abort makes
+   * the error look like a cancel, but a stall is a FAULT — this steers the catch
+   * to #lastError (not #interrupted) so a goal run pauses with a reason. */
+  #streamStalled = false;
   /** Mode captured at run() start (null before the first turn) — see turnMode. */
   #turnMode: Mode | null = null;
   /** Messages from each COMPLETED step of the current turn (buffered in
@@ -587,11 +594,15 @@ export class Session {
     return this.#abort.signal.aborted;
   }
 
-  /** True when `err` represents the turn being cancelled rather than failing. */
+  /** True when `err` represents the turn being cancelled rather than failing.
+   * A post-abort `NoOutputGeneratedError` is already covered by the #aborted()
+   * check above (same controller the cancel fired). The name is NOT matched on
+   * its own: a genuine provider no-output failure (empty stream, never aborted)
+   * is a FAULT, not a cancel — painting it as interrupt would suppress
+   * #lastError and leave a goal run armed-but-idle with no pause notice. */
   #isAbortError(err: unknown): boolean {
     if (this.#aborted()) return true;
-    const name = (err as { name?: string })?.name;
-    return name === "AbortError" || name === "NoOutputGeneratedError";
+    return (err as { name?: string })?.name === "AbortError";
   }
 
   /** Run a provider call through the tree-global limiter when one is wired (so
@@ -823,6 +834,7 @@ export class Session {
     this.#turnMode = this.mode;
     this.#lastError = null;
     this.#interrupted = false;
+    this.#streamStalled = false;
     this.#toolCallErrors.clear();
     this.#committedSteps = [];
     // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
@@ -1322,11 +1334,18 @@ export class Session {
       }
       });
     } catch (err) {
-      // A user cancel (Esc / steer / spend-stop) makes the stream and
-      // `result.response` reject — that's not a fault. Don't paint it red or set
-      // `#lastError` (which would make a steered subagent read as "failed" to its
-      // parent). The stream's `abort` part already surfaced a "Turn aborted." notice.
-      if (this.#isAbortError(err)) {
+      // A stalled provider stream (the headless watchdog aborted us) LOOKS like a
+      // cancel — the abort makes the stream reject — but it's a fault: surface it
+      // as #lastError so a goal run pauses with a reason instead of sitting
+      // armed-but-idle behind the interrupted guard.
+      if (this.#streamStalled) {
+        this.#lastError = `provider stream stalled — no data for ${this.#deps.config.streamIdleTimeoutMs}ms`;
+        bus.emit({ type: "engine-error", sessionId: this.id, message: this.#lastError });
+      } else if (this.#isAbortError(err)) {
+        // A user cancel (Esc / steer / spend-stop) makes the stream and
+        // `result.response` reject — that's not a fault. Don't paint it red or set
+        // `#lastError` (which would make a steered subagent read as "failed" to its
+        // parent). The stream's `abort` part already surfaced a "Turn aborted." notice.
         this.#interrupted = true;
       } else {
         this.#lastError = (err as Error).message;
@@ -1357,7 +1376,11 @@ export class Session {
   /** Force a compaction pass now (used by /compact). */
   async compact(): Promise<void> {
     // Fresh controller so a prior turn's abort doesn't pre-cancel this, and so an
-    // Esc during the (possibly long) summarize can interrupt it.
+    // Esc during the (possibly long) summarize can interrupt it. A queued Esc
+    // can't be lost: the engine's `abort` case sweeps ALL pending items (dropping
+    // this /compact) before it would ever start, so the only unguarded window is
+    // the same sub-tick between dequeue and this line that run() documents as
+    // accepted — pre-cancel is unnecessary.
     this.#abort = new AbortController();
     const model = await this.#deps.registry.resolveModel(
       this.model,
@@ -1397,7 +1420,9 @@ export class Session {
             "(names, paths, commands) over generalities. No preamble, no markdown " +
             "headings, no bullet list.\n\n" +
             transcript,
-          abortSignal: this.#abort.signal,
+          // Bounded: this runs at finalize; a stalled provider must not hang
+          // shutdown. Esc still propagates through #abort.
+          abortSignal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(AUX_CALL_TIMEOUT_MS)]),
         }),
       );
       const digest = text.trim().replace(/\s+/g, " ");
@@ -1513,9 +1538,11 @@ export class Session {
         summarize: (msgs) => this.#summarize(model, msgs),
       });
     } catch (err) {
-      // A cancellation must propagate — Esc during a long summarize should stop
-      // the turn, not be swallowed into a silent "no compaction".
-      if (this.#abort.signal.aborted || (err as { name?: string })?.name === "AbortError") throw err;
+      // A real cancellation (Esc) must propagate — but ONLY when THIS turn's
+      // controller aborted. A bare AbortError from the summarize timeout (which
+      // aborts a separate combined signal, not #abort) must fall through to the
+      // graceful "Compaction skipped" below instead of failing the turn.
+      if (this.#abort.signal.aborted) throw err;
       // Any other summarizer failure (transient provider error on the AUXILIARY
       // summarize call) must not fail the turn — the real work might still fit.
       // Skip compaction and proceed with the uncompacted context; a subsequent
@@ -1592,8 +1619,12 @@ export class Session {
           "## OPEN THREADS — unfinished work / next steps\n\n" +
           transcript,
         // Make compaction interruptible — an Esc during a long summarize shouldn't
-        // be ignored (the same controller the turn/`/compact` runs under).
-        abortSignal: this.#abort.signal,
+        // be ignored (the same controller the turn/`/compact` runs under) — AND
+        // bounded, so a stalled summarize stream can't hang the turn that
+        // triggered it. The timeout aborts only the combined signal (not #abort),
+        // so #maybeCompact's catch degrades to "Compaction skipped" while a real
+        // Esc (which flips #abort.signal.aborted) still propagates.
+        abortSignal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(AUX_CALL_TIMEOUT_MS)]),
       }),
     );
     return text;
@@ -1722,13 +1753,46 @@ export class Session {
       return assistant;
     };
 
+    // Stalled-stream watchdog (headless only). A half-open provider stream that
+    // never emits another part — no error, no `finish` — would hang this loop
+    // forever; interactive runs are covered by Esc, but a scripted `-p` run has
+    // no human to press it. We drive the iterator by hand and race each `.next()`
+    // against an idle deadline: if a part doesn't arrive within `idleMs` we flag
+    // the stall, abort the SDK pipeline (best-effort cleanup), release the
+    // iterator, and throw out of the loop into run()'s catch, which surfaces it
+    // as a fault. Racing the read ourselves (rather than only aborting the signal)
+    // is what actually unblocks a read the SDK is stuck on. Interactive streams
+    // skip this — they go legitimately silent during tool runs / permission waits.
+    const idleMs = this.#deps.interactive ? 0 : this.#deps.config.streamIdleTimeoutMs;
+    const iterator = (result.fullStream as AsyncIterable<unknown>)[Symbol.asyncIterator]();
     // Cooperative yield: a fast provider stream (or a replayed/buffered one)
     // can resolve part after part on the microtask queue, and the engine
     // shares its thread with the TUI — without an occasional macrotask hop,
     // stdin and timers starve during a long uninterrupted burst. Yield between
     // WHOLE parts so event order is untouched.
     const partGate = makeYieldGate(CONSUME_YIELD_PARTS);
-    for await (const raw of result.fullStream) {
+    try {
+    while (true) {
+      let next: IteratorResult<unknown>;
+      if (idleMs) {
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const stalled = new Promise<"stall">((resolve) => {
+          idleTimer = setTimeout(() => resolve("stall"), idleMs);
+        });
+        const raced = await Promise.race([iterator.next(), stalled]);
+        if (idleTimer) clearTimeout(idleTimer);
+        if (raced === "stall") {
+          this.#streamStalled = true;
+          this.#abort.abort();
+          void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
+          throw Object.assign(new Error("provider stream stalled"), { name: "AbortError" });
+        }
+        next = raced as IteratorResult<unknown>;
+      } else {
+        next = await iterator.next();
+      }
+      if (next.done) break;
+      const raw = next.value;
       if (partGate(1)) await new Promise((r) => setTimeout(r, 0));
       const part = raw as Record<string, any>;
       switch (part.type) {
@@ -1845,6 +1909,11 @@ export class Session {
         default:
           break;
       }
+    }
+    } finally {
+      // Release the iterator on every exit (normal end, stall, or a throw while
+      // processing a part) so a partially-consumed SDK stream is cleaned up.
+      void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
     }
     return assistant;
   }

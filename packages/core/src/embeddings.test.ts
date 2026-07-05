@@ -74,3 +74,19 @@ test("resolveEmbedder builds a working embedder + learns dimensions from the pro
   expect(embedder!.dimensions).toBe(5); // learned from the probe vector
   expect(embedder!.id).toBe("fake/embed-1");
 });
+
+test("aiSdkEmbedder bounds the embedding call with an abort signal (no unbounded hang)", async () => {
+  // embedMany used to be called with no signal — awaited on the first-prompt turn
+  // path via proactive recall, so a stalled embedding endpoint wedged the turn.
+  // The embedder must now pass a (timeout-backed) AbortSignal into doEmbed.
+  let captured: AbortSignal | undefined;
+  const model = new MockEmbeddingModelV2({
+    doEmbed: async ({ values, abortSignal }: { values: string[]; abortSignal?: AbortSignal }) => {
+      captured = abortSignal;
+      return { embeddings: values.map(() => [0, 0, 0]), usage: { tokens: values.length } };
+    },
+  });
+  const e = aiSdkEmbedder("mock/embed", model);
+  await e.embed(["hello"]);
+  expect(captured).toBeInstanceOf(AbortSignal);
+});

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { splitMarkdown, renderTable, stripInline, displayWidth, tableFits, tailWidth, truncateWidth, type TableLine } from "./markdown-blocks.ts";
+import { splitMarkdown, createMarkdownSplitter, renderTable, stripInline, displayWidth, tableFits, tailWidth, truncateWidth, type TableLine } from "./markdown-blocks.ts";
 
 /** Reconstruct a grid table line's visual text (the box rules verbatim; a
  * header/row as its cells wrapped by the outer + inner `│` borders the UI draws) so
@@ -367,4 +367,51 @@ test("truncateWidth/tailWidth honor the cell budget for VS16/ZWJ/flag clusters (
   // Degenerate budgets return empty, not a 1-cell overflow.
   expect(truncateWidth("hello", 0)).toBe("");
   expect(tailWidth("hello", -1)).toBe("");
+});
+
+test("createMarkdownSplitter equals a fresh splitMarkdown for every streamed prefix", () => {
+  // The incremental splitter must be BYTE-IDENTICAL to a full re-parse at every
+  // streamed prefix — a mixed fixture (prose, open+closed fences, a table that
+  // only becomes a table once its delimiter row arrives, a heading, a quote) fed
+  // cumulatively in small chunks exercises the ≤1-line lookahead boundary.
+  const full = [
+    "Intro paragraph one.",
+    "still the same paragraph.",
+    "",
+    "## A heading",
+    "",
+    "```ts",
+    "const x = 1;",
+    "const y = 2;",
+    "```",
+    "",
+    "> a quoted line",
+    "> more quote",
+    "",
+    "| a | b |",
+    "| --- | --- |",
+    "| 1 | 2 |",
+    "",
+    "Trailing prose after the table.",
+    "",
+    "```py",
+    "print('still open')",
+  ].join("\n");
+
+  const split = createMarkdownSplitter();
+  for (let i = 1; i <= full.length; i += 7) {
+    const prefix = full.slice(0, i);
+    expect(split(prefix)).toEqual(splitMarkdown(prefix));
+  }
+  // And the exact full string.
+  expect(split(full)).toEqual(splitMarkdown(full));
+});
+
+test("createMarkdownSplitter falls back to a full re-split on non-append input", () => {
+  const split = createMarkdownSplitter();
+  expect(split("## Heading\n\nbody text here")).toEqual(splitMarkdown("## Heading\n\nbody text here"));
+  // A completely different (non-prefix) string must not reuse the cached tail.
+  expect(split("```js\ncode\n```")).toEqual(splitMarkdown("```js\ncode\n```"));
+  // A shrink (not a prefix of the previous) also re-parses fresh.
+  expect(split("short")).toEqual(splitMarkdown("short"));
 });

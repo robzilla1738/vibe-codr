@@ -111,6 +111,30 @@ test("a passing verify command triggers no retry", async () => {
   expect(events.filter((e) => e.type === "verify-started").length).toBe(1);
 });
 
+test("auto-verify is killed by an abort — a long verify command can't wedge the queue", async () => {
+  // #runVerifyCommand now runs through bunExec with the session abort signal +
+  // killTree, so Esc (or steer/loop-stop) reaches a watch-mode/long verify
+  // command instead of hanging the FIFO queue on it forever.
+  const { engine, events } = makeEngine(mutateThenDone, {
+    command: "sleep 30",
+    auto: true,
+    maxRetries: 0,
+  });
+  // Abort the moment the verify command starts (before its 30s elapses).
+  void (async () => {
+    for await (const e of engine.events()) {
+      if (e.type === "verify-started") engine.send({ type: "abort" });
+    }
+  })();
+  const start = Date.now();
+  engine.send({ type: "submit-prompt", text: "edit" });
+  await engine.whenIdle();
+  // Killed promptly, not waited out.
+  expect(Date.now() - start).toBeLessThan(5000);
+  const finished = events.find((e) => e.type === "verify-finished");
+  expect(finished && finished.type === "verify-finished" && finished.ok).toBe(false);
+});
+
 test("runVerify bounds a high-volume command's output in memory", async () => {
   const start = Date.now();
   const r = await runVerify(process.cwd(), "yes xxxxxxxxxxxxxxxxxxxxxxxxxxxx | head -100000; exit 1");

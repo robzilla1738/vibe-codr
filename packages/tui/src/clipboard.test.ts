@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { clipboardCommands, copyToClipboard } from "./clipboard.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { bunWrite, clipboardCommands, copyToClipboard } from "./clipboard.ts";
 
 test("clipboardCommands picks the platform tool", () => {
   expect(clipboardCommands("darwin")).toEqual([["pbcopy"]]);
@@ -57,4 +60,25 @@ test("copyToClipboard ignores empty text", () => {
   };
   expect(copyToClipboard("", { write })).toBe(false);
   expect(called).toBe(false);
+});
+
+test("bunWrite delivers a large payload intact (no backpressure truncation)", async () => {
+  // A ~2MB selection under stdin backpressure must not be truncated by an
+  // immediate end(); bunWrite flushes the write before closing.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-clip-"));
+  const out = join(dir, "out.txt");
+  const payload = "x".repeat(2_000_000);
+  expect(bunWrite(["sh", "-c", `cat > ${out}`], payload)).toBe(true);
+  // Poll for the sink to reach the OS-piped child and complete the copy (re-stat
+  // a fresh Bun.file each iteration — its size is snapshotted at creation).
+  let got = "";
+  for (let i = 0; i < 300; i++) {
+    const f = Bun.file(out);
+    if ((await f.exists()) && f.size >= payload.length) {
+      got = await f.text();
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(got).toBe(payload);
 });

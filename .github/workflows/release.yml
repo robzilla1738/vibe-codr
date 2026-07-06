@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   # Cross-compile the standalone binaries. Bun compiles every target from Linux,
@@ -89,11 +90,16 @@ jobs:
       # Promote the CHANGELOG (Unreleased → this version) so the notes extractor
       # finds the section for the tag.
       - run: bun scripts/release/set-version.ts
-      - uses: actions/download-artifact@v7
-        with:
-          pattern: binary-*
-          path: artifacts
-          merge-multiple: true
+      - name: Download binary artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "binary-*" \
+            --dir artifacts-download
+          mkdir -p artifacts
+          find artifacts-download -maxdepth 2 -type f -exec mv {} artifacts/ \;
       - name: Aggregate SHA256SUMS
         working-directory: artifacts
         run: |

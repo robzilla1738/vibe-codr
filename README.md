@@ -178,7 +178,7 @@ the engine is fully testable headless.
 | `@vibe/providers` | `ProviderRegistry`, `resolveModel`, `CatalogService` (models.dev + `/v1/models`) |
 | `@vibe/tools` | Built-in tools with `readOnly` flags + the AI-SDK `tool()` adapter / `Toolset` |
 | `@vibe/core` | Agent loop (`Session.run`), mode gating, subagent fork, event bus, `Engine` |
-| `@vibe/plugins` | `HookBus`, `PluginApi`, slash-command + skill runtimes |
+| `@vibe/plugins` | `HookBus`, `PluginApi`, slash-command + skill runtimes; config hooks accept stdout logs only before a final-line JSON directive |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers |
 | `@vibe/cli` | `bin/vibe` entrypoint (argv, config, headless `-p` vs TUI) |
 
@@ -537,7 +537,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   fanning out across **DuckDuckGo + Bing** in parallel and quality-ranking the
   deduped merge (no API key); a [TinyFish](https://tinyfish.ai) key
   (`TINYFISH_API_KEY` / `search.apiKey`) is an optional higher-quality booster that
-  joins the fan-out. Disable with `search.enabled: false`. The model follows up
+  joins the fan-out. The HTML parsers keep snippets paired to their local result
+  row, so malformed/skipped rows do not shift later snippets. Disable with
+  `search.enabled: false`. The model follows up
   with `webfetch` (SSRF-guarded with DNS-rebinding-safe IP pinning, wall-clock
   timeout, streaming size cap, **PDF** extraction, optional Readability,
   cache-through). Search depth is **adaptive and

@@ -46,6 +46,20 @@ test("parseDuckDuckGoHtml keeps snippets aligned when a malformed result is skip
   });
 });
 
+test("parseDuckDuckGoHtml keeps snippets aligned when a skipped row has no snippet", () => {
+  const html = `
+<a class="result__a" href="/not-a-real-destination">Bad row</a>
+<a class="result__a" href="https://example.com/good">Good row</a>
+<a class="result__snippet">Snippet for good row.</a>`;
+  const results = parseDuckDuckGoHtml(html);
+  expect(results).toHaveLength(1);
+  expect(results[0]).toMatchObject({
+    position: 2,
+    url: "https://example.com/good",
+    snippet: "Snippet for good row.",
+  });
+});
+
 test("parseDuckDuckGoHtml is LINEAR on unclosed anchors (adversarial P7-W1)", () => {
   // The snippet/link captures used a lazy `[\s\S]*?</a>` that re-scans to EOF per
   // unclosed `<a …>` opener → O(n²); the keyless-search fetch reads res.text()

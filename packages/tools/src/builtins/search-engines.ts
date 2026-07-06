@@ -78,15 +78,16 @@ function resolveDdgHref(href: string): string {
  * every unclosed `<a …>` opener → O(n²) and froze the (uncapped, synchronous)
  * keyless-search parse on an oversized/garbled results page (~4.5s at 720KB). */
 export function parseDuckDuckGoHtml(html: string): SearchResult[] {
-  const snippetRe = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/g;
-  const snippets = [...html.matchAll(snippetRe)].map((m) => stripTags(m[1] ?? ""));
   const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/g;
+  const snippetRe = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/;
+  const links = [...html.matchAll(linkRe)];
   const results: SearchResult[] = [];
-  let m: RegExpExecArray | null;
-  let row = 0;
-  while ((m = linkRe.exec(html)) !== null) {
-    const snippet = snippets[row] ?? "";
-    row++;
+  for (let i = 0; i < links.length; i++) {
+    const m = links[i]!;
+    const row = i + 1;
+    const block = html.slice(m.index, links[i + 1]?.index);
+    const snippetMatch = snippetRe.exec(block);
+    const snippet = snippetMatch ? stripTags(snippetMatch[1] ?? "") : "";
     const url = resolveDdgHref(decodeEntities(m[1] ?? ""));
     const title = stripTags(m[2] ?? "");
     if (!url || !title) continue;

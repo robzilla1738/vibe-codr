@@ -129,18 +129,15 @@ function parseHookJson(text: string): Record<string, unknown> | undefined {
     const parsed = JSON.parse(text) as unknown;
     return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
   } catch {
-    // Some real hook commands print progress to stdout before a final JSON
-    // directive. Treat the last JSON-looking line as the directive; everything
-    // else remains a harmless log line.
-    for (const line of text.split(/\r?\n/).reverse()) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
-      } catch {
-        // Keep scanning earlier lines.
-      }
+    // Hooks may print progress before their directive, but the directive must be
+    // the final non-empty stdout line so logged payloads can't be mistaken for it.
+    const lastLine = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+    if (!lastLine?.startsWith("{") || !lastLine.endsWith("}")) return undefined;
+    try {
+      const parsed = JSON.parse(lastLine) as unknown;
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+    } catch {
+      // Final line is not a valid directive.
     }
     return undefined;
   }

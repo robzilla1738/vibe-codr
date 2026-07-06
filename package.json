@@ -60,5 +60,8 @@
   },
   "engines": {
     "bun": ">=1.2.0"
+  },
+  "patchedDependencies": {
+    "@opentui/core@0.4.2": "patches/@opentui%2Fcore@0.4.2.patch"
   }
 }

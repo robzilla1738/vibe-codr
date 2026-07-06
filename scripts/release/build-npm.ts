@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -58,6 +58,7 @@ type Pkg = {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  patchedDependencies?: Record<string, string>;
 };
 
 /** Merge every dep declaration across the workspace into a name→range map.
@@ -81,10 +82,22 @@ export function collectWorkspaceVersions(pkgs: Pkg[]): Record<string, string> {
 
 /** Build the optionalDependencies map from the resolved workspace versions,
  * falling back for the deps the repo doesn't pin. Sorted for a stable diff. */
-export function resolveOptionalDeps(versions: Record<string, string>): Record<string, string> {
+function patchedExactVersion(
+  name: string,
+  patchedDependencies: Record<string, string>,
+): string | undefined {
+  for (const key of Object.keys(patchedDependencies)) {
+    if (key.startsWith(`${name}@`)) return key.slice(name.length + 1);
+  }
+}
+
+export function resolveOptionalDeps(
+  versions: Record<string, string>,
+  patchedDependencies: Record<string, string> = {},
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of [...OPTIONAL_DEP_NAMES].sort()) {
-    out[name] = versions[name] ?? FALLBACK_VERSIONS[name] ?? "*";
+    out[name] = patchedExactVersion(name, patchedDependencies) ?? versions[name] ?? FALLBACK_VERSIONS[name] ?? "*";
   }
   return out;
 }
@@ -96,6 +109,8 @@ export function generateNpmPackageJson(opts: {
   optionalDependencies: Record<string, string>;
 }): Record<string, unknown> {
   const { version, rootPkg } = opts;
+  const patchedDependencies = rootPkg.patchedDependencies;
+  const hasPatches = patchedDependencies && Object.keys(patchedDependencies).length > 0;
   return {
     name: "vibe-codr",
     version,
@@ -106,10 +121,11 @@ export function generateNpmPackageJson(opts: {
     homepage: `https://github.com/${REPO_SLUG}`,
     ...(rootPkg.funding ? { funding: rootPkg.funding } : {}),
     type: "module",
-    bin: { vibecodr: "./vibecodr.js", vibe: "./vibecodr.js" },
+    bin: { vibecodr: "vibecodr.js", vibe: "vibecodr.js" },
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },
-    files: ["vibecodr.js", "README.md", "CHANGELOG.md", "LICENSE"],
+    files: ["vibecodr.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
     optionalDependencies: opts.optionalDependencies,
+    ...(hasPatches ? { patchedDependencies } : {}),
   };
 }
 
@@ -179,17 +195,20 @@ async function main(): Promise<void> {
   const npmPkg = generateNpmPackageJson({
     version: VERSION,
     rootPkg,
-    optionalDependencies: resolveOptionalDeps(versions),
+    optionalDependencies: resolveOptionalDeps(versions, rootPkg.patchedDependencies),
   });
   writeFileSync(join(outDir, "package.json"), `${JSON.stringify(npmPkg, null, 2)}\n`);
 
-  // 4. copy docs/license.
+  // 4. copy docs/license and any dependency patches needed by the runtime package.
   for (const f of ["README.md", "CHANGELOG.md", "LICENSE"]) {
     try {
       copyFileSync(join(root, f), join(outDir, f));
     } catch {
       process.stderr.write(`warning: could not copy ${f}\n`);
     }
+  }
+  if (rootPkg.patchedDependencies && existsSync(join(root, "patches"))) {
+    cpSync(join(root, "patches"), join(outDir, "patches"), { recursive: true });
   }
 
   // 5. verify the provider SDKs stayed INLINED (self-contained bundle). Assert

@@ -123,6 +123,9 @@
       ],
     },
   },
+  "patchedDependencies": {
+    "@opentui/core@0.4.2": "patches/@opentui%2Fcore@0.4.2.patch",
+  },
   "packages": {
     "@ai-sdk/anthropic": ["@ai-sdk/anthropic@2.0.83", "", { "dependencies": { "@ai-sdk/provider": "2.0.3", "@ai-sdk/provider-utils": "3.0.27" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-R0uwSr9TFuW/lnSE/k9kp/S9U8POXl1/S0IlKgxmAF65P8Jzlr5NwyJER9mlqca0gXbHvx14weob+2zWZfsgrg=="],
 

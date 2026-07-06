@@ -2734,3 +2734,41 @@ terminal lifecycle.
 - `bun run smoke:tui` — PASS, `SMOKE OK`.
 - `bun run smoke:sidebar` — PASS, `ALL CHECKS PASSED` (OpenTUI emitted the known EventTarget
   listener warning during the smoke, but all assertions passed).
+
+# BRACKETED-PASTE INPUT FREEZE FOLLOW-UP — 2026-07-06
+
+Root cause confirmed against the real OpenTUI test renderer: `@opentui/core@0.4.2`
+enters bracketed-paste mode on `ESC[200~` and, if the terminal never delivers the
+matching `ESC[201~`, remains there indefinitely. The render loop continues, so
+animated spinners still move, but keyboard, Enter, and mouse scroll are consumed
+as paste payload and never reach the app. `@opentui/core@0.4.3` was checked and
+still carries the same parser behavior, so a plain dependency bump was not a
+production fix.
+
+## Confirmed + fixed
+
+- **Stuck paste state is bounded.** The bundled OpenTUI stdin parser is patched
+  with a paste timeout and a max-pending-paste recovery path. A complete
+  bracketed paste still emits a paste event; an unterminated paste abandons the
+  paste collector and lets subsequent keyboard/mouse input reach the TUI.
+- **Fresh npm installs receive the fix.** `patchedDependencies` now records the
+  `@opentui/core@0.4.2` patch in the root install, and `scripts/release/build-npm.ts`
+  carries that patch into `dist/npm/package.json`, includes the `patches/`
+  directory, and pins the optional runtime `@opentui/core` dependency to the exact
+  patched version.
+- **Regression coverage uses the real app.** `packages/tui/src/input-freeze.test.ts`
+  drives the real `App` with OpenTUI's deterministic renderer, verifies normal
+  bracketed paste, reproduces the unterminated-paste start, and then asserts both
+  scroll and prompt submission recover.
+
+## Verification at close
+
+- `bun install --frozen-lockfile` — PASS, patch metadata applies cleanly.
+- `bun test packages/tui/src/input-freeze.test.ts` — PASS.
+- `bun test ./scripts/release/build-npm.test.ts` — PASS.
+- `bun run typecheck` — PASS, 8/8 Turbo tasks.
+- `bun run lint` — PASS.
+- `bun run smoke:tui` — PASS, `SMOKE OK`.
+- `bun scripts/release/build-npm.ts` — PASS; generated npm package includes
+  `patchedDependencies`, `patches/`, and `@opentui/core: 0.4.2`.
+- `bun run build:binary` — PASS.

@@ -4,6 +4,23 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — OpenTUI bracketed-paste input freeze
+
+- **The rich TUI no longer permanently swallows keyboard and mouse input after a
+  broken bracketed-paste sequence.** OpenTUI's stdin parser could enter paste
+  mode on `ESC[200~` and wait forever for `ESC[201~`; after that, spinners kept
+  rendering but normal typing, Enter, and scroll events were consumed as paste
+  payload. The bundled `@opentui/core@0.4.2` install is now patched to abandon
+  an unterminated paste after a bounded timeout and on excessive pending paste
+  bytes, while complete bracketed paste still submits normally.
+- **The npm runtime package carries the dependency patch instead of relying on a
+  local checkout.** The generated npm package pins patched `@opentui/core` to
+  `0.4.2`, includes the `patches/` directory, and emits `patchedDependencies`
+  so fresh installs receive the same production fix.
+- **Regression coverage now drives the real OpenTUI app through the deterministic
+  test renderer.** The new test proves complete bracketed paste still works and
+  an unterminated paste start no longer blocks scroll or prompt submission.
+
 ### Fixed — drain race, microcompaction performance, and URL canonicalization dedup
 
 - **A prompt submitted during an async `session.idle` hook's await is no longer

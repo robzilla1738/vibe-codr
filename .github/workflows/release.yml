@@ -89,7 +89,7 @@ jobs:
       # Promote the CHANGELOG (Unreleased → this version) so the notes extractor
       # finds the section for the tag.
       - run: bun scripts/release/set-version.ts
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v7
         with:
           pattern: binary-*
           path: artifacts

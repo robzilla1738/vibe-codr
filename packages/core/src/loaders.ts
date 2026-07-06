@@ -1,7 +1,7 @@
 import { Glob } from "bun";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { parseSkillMarkdown, type SlashCommand, type Skill } from "@vibe/plugins";
+import { isSlashCommandName, parseSkillMarkdown, type SlashCommand, type Skill } from "@vibe/plugins";
 import { vibeConfigDir } from "./memory.ts";
 
 /** Char cap on a loaded command/skill body. Same head-cap discipline as
@@ -66,6 +66,7 @@ export async function loadCommandsFrom(dir: string): Promise<SlashCommand[]> {
         // must fall back the same as an absent field (a ""-named command is
         // uninvocable).
         const name = frontmatter.name?.trim() || basename(file, ".md");
+        if (!isSlashCommandName(name)) continue;
         commands.push({
           name,
           description: frontmatter.description?.trim() || `Custom command /${name}`,

@@ -83,19 +83,20 @@ export function parseDuckDuckGoHtml(html: string): SearchResult[] {
   const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/g;
   const results: SearchResult[] = [];
   let m: RegExpExecArray | null;
-  let i = 0;
+  let row = 0;
   while ((m = linkRe.exec(html)) !== null) {
+    const snippet = snippets[row] ?? "";
+    row++;
     const url = resolveDdgHref(decodeEntities(m[1] ?? ""));
     const title = stripTags(m[2] ?? "");
     if (!url || !title) continue;
     results.push({
-      position: i + 1,
+      position: row,
       site_name: hostOf(url),
       title,
       url,
-      snippet: snippets[i] ?? "",
+      snippet,
     });
-    i++;
   }
   return results;
 }

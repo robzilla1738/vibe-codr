@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HookBus } from "./hooks.ts";
-import { CommandRegistry } from "./commands.ts";
+import { CommandRegistry, parseSlash } from "./commands.ts";
 import { SkillRegistry } from "./skills.ts";
 import { PluginHost } from "./plugin.ts";
 
@@ -154,4 +154,60 @@ test("HookBus times out a hung handler and still runs later handlers", async () 
   expect(performance.now() - start).toBeLessThan(2000); // did NOT hang
   expect(errors.some((m) => /timed out/.test(m))).toBe(true);
   expect(laterRan).toBe(true); // the chain continued past the hung handler
+});
+
+test("HookBus isolates a throwing onError reporter too", async () => {
+  const bus = new HookBus(() => {
+    throw new Error("reporter down");
+  });
+  let laterRan = false;
+  bus.on("session.idle", () => {
+    throw new Error("handler down");
+  });
+  bus.on("session.idle", (p) => {
+    laterRan = true;
+    return { ...p, reason: "continued" };
+  });
+
+  const out = await bus.run("session.idle", { sessionId: "s" });
+  expect(laterRan).toBe(true);
+  expect(out.reason).toBe("continued");
+});
+
+test("parseSlash only treats plausible slash command names as commands", () => {
+  expect(parseSlash("/queue clear")).toEqual({ name: "queue", args: "clear" });
+  expect(parseSlash("/run-tests src")).toEqual({ name: "run-tests", args: "src" });
+
+  // Paths, comments, and HTTP-ish routes are prompts that merely start with "/".
+  expect(parseSlash("/etc/hosts is world-readable")).toBeNull();
+  expect(parseSlash("// TODO: fix this later")).toBeNull();
+  expect(parseSlash("/api/users returns 500")).toBeNull();
+  expect(parseSlash("/foo.bar")).toBeNull();
+});
+
+test("CommandRegistry ignores names the slash parser can never dispatch", () => {
+  const commands = new CommandRegistry();
+  commands.register({
+    name: "ship-it",
+    description: "ok",
+    source: "plugin",
+    run: () => ({ kind: "notice", message: "ok" }),
+  });
+  commands.register({
+    name: "ship.it",
+    description: "dead",
+    source: "plugin",
+    run: () => ({ kind: "notice", message: "dead" }),
+  });
+  commands.register({
+    name: "ship it",
+    description: "dead",
+    source: "plugin",
+    run: () => ({ kind: "notice", message: "dead" }),
+  });
+
+  expect(commands.get("ship-it")).toBeDefined();
+  expect(commands.get("ship.it")).toBeUndefined();
+  expect(commands.get("ship it")).toBeUndefined();
+  expect(commands.list().map((c) => c.name)).toEqual(["ship-it"]);
 });

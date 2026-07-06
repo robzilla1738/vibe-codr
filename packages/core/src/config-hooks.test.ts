@@ -16,6 +16,22 @@ test("parseHookOutput reads deny/reason/input, ignores non-JSON", () => {
   expect(parseHookOutput('{"input":{"path":"x"}}')).toEqual({ input: { path: "x" } });
 });
 
+test("parseHookOutput accepts a final JSON directive after stdout logs", () => {
+  expect(parseHookOutput('checking policy...\n{"deny":true,"reason":"blocked"}')).toEqual({
+    deny: true,
+    reason: "blocked",
+  });
+  expect(parseHookOutput('first\n{"deny":true,"reason":"old"}\nlast non-json log')).toEqual({
+    deny: true,
+    reason: "old",
+  });
+});
+
+test("parseHookOutput ignores malformed JSON-looking log lines", () => {
+  expect(parseHookOutput('log\n{"deny":true')).toEqual({});
+  expect(parseHookOutput('log\n{"deny":true}\n{not json}')).toEqual({ deny: true });
+});
+
 test("parseHookOutput reads a prompt-rewrite {text}", () => {
   expect(parseHookOutput('{"text":"rewritten"}')).toEqual({ text: "rewritten" });
 });

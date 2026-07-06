@@ -146,3 +146,16 @@ test("an explicitly EMPTY name:/description: falls back like an absent field", a
   expect(cmds).toHaveLength(1);
   expect(cmds[0]!.name).toBe("ship"); // file-name fallback
 });
+
+test("loadCommandsFrom skips names the slash parser can never invoke", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-cmd-invalid-"));
+  await Bun.write(join(dir, ".vibe", "commands", "ship-it.md"), "Ship it.");
+  await Bun.write(join(dir, ".vibe", "commands", "api.users.md"), "Dead command.");
+  await Bun.write(
+    join(dir, ".vibe", "commands", "bad.md"),
+    `---\nname: bad/name\n---\nDead command.`,
+  );
+
+  const cmds = await loadCommandFiles(dir);
+  expect(cmds.map((c) => c.name)).toEqual(["ship-it"]);
+});

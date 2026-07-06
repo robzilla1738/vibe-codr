@@ -42,7 +42,7 @@ interface Parsed {
 }
 
 function parse(v: string): Parsed | null {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(v.trim());
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v.trim());
   if (!m) return null;
   const tag = (m[4] ?? "").toLowerCase();
   const pre: Channel = tag.startsWith("dev")

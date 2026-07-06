@@ -112,18 +112,37 @@ const HOOK_BODY_CAP = 256_000;
 /** Parse a hook's textual output into a result (empty/non-JSON → no-op). */
 export function parseHookOutput(text: string): HookRunResult {
   if (!text) return {};
+  const parsed = parseHookJson(text);
+  if (!parsed || Array.isArray(parsed)) return {};
+  const result: HookRunResult = {};
+  if (parsed.deny === true) result.deny = true;
+  if (typeof parsed.reason === "string") result.reason = parsed.reason;
+  if ("input" in parsed) result.input = parsed.input;
+  if (typeof parsed.text === "string") result.text = parsed.text;
+  if (typeof parsed.additionalContext === "string") result.additionalContext = parsed.additionalContext;
+  if (parsed.continue === true) result.continue = true;
+  return result;
+}
+
+function parseHookJson(text: string): Record<string, unknown> | undefined {
   try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    const result: HookRunResult = {};
-    if (parsed.deny === true) result.deny = true;
-    if (typeof parsed.reason === "string") result.reason = parsed.reason;
-    if ("input" in parsed) result.input = parsed.input;
-    if (typeof parsed.text === "string") result.text = parsed.text;
-    if (typeof parsed.additionalContext === "string") result.additionalContext = parsed.additionalContext;
-    if (parsed.continue === true) result.continue = true;
-    return result;
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
   } catch {
-    return {}; // non-JSON output (e.g. a log line) is not a directive
+    // Some real hook commands print progress to stdout before a final JSON
+    // directive. Treat the last JSON-looking line as the directive; everything
+    // else remains a harmless log line.
+    for (const line of text.split(/\r?\n/).reverse()) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) continue;
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+      } catch {
+        // Keep scanning earlier lines.
+      }
+    }
+    return undefined;
   }
 }
 

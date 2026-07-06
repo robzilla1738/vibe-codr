@@ -37,6 +37,14 @@ test("isNewer: an -rc/prerelease build is behind the final of the same core", ()
 test("isNewer: an unparseable version on either side never nags", () => {
   expect(isNewer("not-a-version", "1.0.0")).toBe(false);
   expect(isNewer("1.0.0", "garbage")).toBe(false);
+  expect(isNewer("1.0.0", "1.0.1-not actually semver")).toBe(false);
+  expect(isNewer("1.0.0-trailing", "1.0.1junk")).toBe(false);
+});
+
+test("isNewer: build metadata is accepted but ignored for precedence", () => {
+  expect(isNewer("1.0.0+local.1", "1.0.1+build.2")).toBe(true);
+  expect(isNewer("1.0.0+local.1", "1.0.0+build.2")).toBe(false);
+  expect(isNewer("1.0.0-rc.1+build.1", "1.0.0+build.2")).toBe(true);
 });
 
 test("checkForUpdate: gated off returns null (config flag or env)", async () => {

@@ -90,7 +90,12 @@ export class HookBus {
         ]);
         if (next) current = next as HookPayloads[N];
       } catch (err) {
-        this.#onError?.(name, err as Error);
+        try {
+          this.#onError?.(name, err as Error);
+        } catch {
+          // Error reporters are extension/UI plumbing too; a broken notice/log
+          // sink must not make an already-isolated hook failure escape.
+        }
       } finally {
         if (timer) clearTimeout(timer);
       }

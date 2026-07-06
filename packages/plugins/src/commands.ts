@@ -13,11 +13,17 @@ export interface SlashCommand {
   run(args: string): SlashResult;
 }
 
+/** Slash command names the parser can actually dispatch. */
+export function isSlashCommandName(name: string): boolean {
+  return /^[A-Za-z0-9_-]+$/.test(name);
+}
+
 /** Registry of slash commands, keyed by name (without the leading slash). */
 export class CommandRegistry {
   #commands = new Map<string, SlashCommand>();
 
   register(cmd: SlashCommand): void {
+    if (!isSlashCommandName(cmd.name)) return;
     this.#commands.set(cmd.name, cmd);
   }
 
@@ -36,7 +42,7 @@ export function parseSlash(line: string): { name: string; args: string } | null 
   if (!trimmed.startsWith("/")) return null;
   const rest = trimmed.slice(1);
   const space = rest.indexOf(" ");
-  return space === -1
-    ? { name: rest, args: "" }
-    : { name: rest.slice(0, space), args: rest.slice(space + 1).trim() };
+  const name = space === -1 ? rest : rest.slice(0, space);
+  if (!isSlashCommandName(name)) return null;
+  return space === -1 ? { name, args: "" } : { name, args: rest.slice(space + 1).trim() };
 }

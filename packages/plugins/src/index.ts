@@ -2,6 +2,7 @@ export { HookBus } from "./hooks.ts";
 export type { HookName, HookHandler, HookPayloads } from "./hooks.ts";
 export {
   CommandRegistry,
+  isSlashCommandName,
   parseSlash,
   type SlashCommand,
   type SlashResult,

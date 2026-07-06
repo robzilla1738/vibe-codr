@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { HookBus } from "@vibe/plugins";
 import type { HookConfig } from "@vibe/config";
 import { registerConfigHooks, parseHookOutput, defaultExec, type HookRunResult } from "./config-hooks.ts";
@@ -218,10 +221,14 @@ test("a hook with neither command nor url is skipped", async () => {
 test("defaultExec bounds wall-clock even when the hook backgrounds a lingering child", async () => {
   // The command prints its verdict then backgrounds a 30s sleep that inherits the
   // stdout pipe. The old `Response(stdout).text()` blocked on that fd for 30s;
-  // defaultExec must return within ~the timeout and still parse the verdict.
+  // defaultExec must return within ~the timeout, parse the verdict, and reap the
+  // whole process tree rather than leaving the background child alive.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-hook-pid-"));
+  const pidFile = join(dir, "child.pid");
+  const quotedPidFile = `'${pidFile.replaceAll("'", "'\\''")}'`;
   const start = Date.now();
   const result = await defaultExec(
-    `echo '{"deny":true,"reason":"blocked"}'; sleep 30 &`,
+    `echo '{"deny":true,"reason":"blocked"}'; sleep 30 & echo $! > ${quotedPidFile}; wait`,
     "{}",
     400,
   );
@@ -230,6 +237,21 @@ test("defaultExec bounds wall-clock even when the hook backgrounds a lingering c
   // The verdict that was printed before the timeout is still honored.
   expect(result.deny).toBe(true);
   expect(result.reason).toBe("blocked");
+  const childPid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+  let childAlive = true;
+  try {
+    process.kill(childPid, 0);
+  } catch {
+    childAlive = false;
+  }
+  if (childAlive) {
+    try {
+      process.kill(childPid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+  expect(childAlive).toBe(false);
 });
 
 test("defaultExec returns a fast hook's verdict immediately (no timeout wait)", async () => {

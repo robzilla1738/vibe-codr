@@ -573,6 +573,10 @@ export function App(props: { engine: EngineClient }) {
   // tmux/SSH; the platform command (pbcopy/clip/wl-copy…) covers local terminals
   // that ignore OSC52. Copy is best-effort — a failure must never break the render.
   const renderer = useRenderer();
+  // A real transcript can legitimately mount many selectable markdown/renderable
+  // surfaces. Bun's EventEmitter default (10) is too low for that and emits a
+  // noisy "possible memory leak" warning even when Solid cleanup is correct.
+  renderer.setMaxListeners?.(64);
   useSelectionHandler((selection: { isDragging: boolean; getSelectedText?: () => string }) => {
     if (selection.isDragging) return; // still dragging → wait for the release
     const text = selection.getSelectedText?.() ?? "";

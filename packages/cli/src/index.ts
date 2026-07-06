@@ -31,7 +31,7 @@ USAGE
 OPTIONS
   -p, --prompt <text>   run a single prompt (headless / pipeable); use - for stdin
   -m, --model <id>      model string, e.g. anthropic/claude-opus-4-8, lmstudio/<id>
-      --mode <mode>     start mode: plan | execute  (default: execute)
+      --mode <mode>     start mode: plan | execute | yolo  (default: execute)
       --cwd <dir>       working directory (default: current)
       --output-format   one-shot output: text (default) | json
       --reasoning       print model reasoning to stderr
@@ -51,6 +51,30 @@ IN-SESSION
   @file to attach file contents, and /exit to quit. Project notes in VIBE.md,
   AGENTS.md or CLAUDE.md are injected into every prompt.
 `;
+
+export function applyCliModeOverride(overrides: Partial<Config>, mode: string): boolean {
+  // CLI --mode is the same user-facing 3-way projection as the TUI mode chip:
+  // plan = read-only gated baseline, execute = mutating but gated, yolo =
+  // mutating with approvals off. Therefore explicit plan/execute must clear a
+  // persisted approvalMode:auto; otherwise `--mode execute` in a yolo-default
+  // config still starts unattended.
+  if (mode === "plan") {
+    overrides.mode = "plan";
+    overrides.approvalMode = "ask";
+    return true;
+  }
+  if (mode === "execute") {
+    overrides.mode = "execute";
+    overrides.approvalMode = "ask";
+    return true;
+  }
+  if (mode === "yolo") {
+    overrides.mode = "execute";
+    overrides.approvalMode = "auto";
+    return true;
+  }
+  return false;
+}
 
 export async function run(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -85,11 +109,10 @@ export async function run(argv: string[]): Promise<number> {
   if (values.mode !== undefined) {
     // Error on an unrecognized --mode rather than silently defaulting to execute
     // (a `--mode plann` typo would otherwise run in the wrong mode with no signal).
-    if (values.mode !== "plan" && values.mode !== "execute") {
-      process.stderr.write(`vibecodr: invalid --mode "${values.mode}" (expected "plan" or "execute")\n`);
+    if (!applyCliModeOverride(overrides, values.mode)) {
+      process.stderr.write(`vibecodr: invalid --mode "${values.mode}" (expected "plan", "execute", or "yolo")\n`);
       return 1;
     }
-    overrides.mode = values.mode;
   }
   if (values["output-format"] !== undefined && values["output-format"] !== "json" && values["output-format"] !== "text") {
     process.stderr.write(`vibecodr: invalid --output-format "${values["output-format"]}" (expected "json" or "text")\n`);

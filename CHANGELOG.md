@@ -4,6 +4,26 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — audit closeout and release hardening
+
+- **Untrusted project config can no longer smuggle approval bypasses through
+  glob-scoped allow rules.** Repo-authored `permissions` allows with `match`
+  are now dropped unless project config is explicitly trusted; only literal
+  `matchExact` grants survive in untrusted project config, preserving the app's
+  own "always allow for this project" persistence without letting a cloned repo
+  broaden `bash`/`git` approvals with `match:"*"` or `match:"git *"`.
+- **CLI `--mode` now matches the product's three real user-facing modes.**
+  `--mode yolo` is accepted, and explicit `--mode plan` / `--mode execute`
+  reset approvals back to gated `ask` instead of inheriting a persisted
+  `approvalMode:auto`.
+- **Timed-out shell hooks now reap their whole process tree.** A trusted hook
+  that backgrounds a child process can no longer survive the timeout after the
+  hook runner has returned.
+- **The rich TUI no longer emits false EventEmitter leak warnings for large
+  selectable transcripts.** The app raises the renderer listener ceiling for
+  legitimate selectable/markdown surfaces, and the OpenTUI smoke harnesses now
+  destroy their test renderers explicitly.
+
 ### Fixed — OpenTUI bracketed-paste input freeze
 
 - **The rich TUI no longer permanently swallows keyboard and mouse input after a
@@ -110,10 +130,10 @@ All notable changes to vibe-codr are documented here.
   layer now drops (with a startup warning) every vector of that class: `hooks`,
   `plugins`, `approvalMode: auto`, the whole `providers` block, all
   `mcp.servers`, command-bearing `lsp` servers, `verify.command`/`verify.auto`,
-  broad permission `allow` rules (scoped grants survive), `sandbox` weakening,
-  webfetch SSRF loosening, and the project's own `security` block. Set
-  `security.trustProjectConfig` in your **user-global** config to honor a repo's
-  config verbatim.
+  repo-authored permission allow-globs (literal `matchExact` grants survive),
+  `sandbox` weakening, webfetch SSRF loosening, and the project's own
+  `security` block. Set `security.trustProjectConfig` in your
+  **user-global** config to honor a repo's config verbatim.
 - **The build gate can't wedge on Esc.** Aborting a gate used to orphan the
   test/build subprocess tree (grandchildren held the output pipe), hanging the
   queue forever; the abort now kills the whole process tree.

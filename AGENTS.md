@@ -1,8 +1,8 @@
 # vibe-codr — project notes for agents
 
 A model-agnostic CLI coding agent for the terminal (in the class of Claude Code
-and Codex). TypeScript + Bun monorepo. This file is read as project memory by
-vibe-codr itself, Codex (`AGENTS.md`), and Claude Code (`CLAUDE.md`).
+and Codex). TypeScript + Bun monorepo. `AGENTS.md` is the canonical project
+memory; `CLAUDE.md` exists as the Claude Code bridge and points back here.
 
 ## Stack & layout
 

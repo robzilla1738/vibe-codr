@@ -778,14 +778,15 @@ running `vibe` in a clone can't execute code or leak credentials. Dropped from a
 untrusted project (with a startup warning): `hooks`, `plugins`, a relaxation of
 `approvalMode` to `auto`, the whole `providers` block (baseURL redirects + a
 `tokenFile` that would read and exfiltrate a local secret), all `mcp.servers`,
-`lsp.servers` with a `command`/`args`, `verify.command`, broad `permissions`
-allow-rules, the `sandbox` block, and `webfetch` SSRF-loosening keys. Two things
-are *never* weakened by a project: `permissions` rules **union across layers**
-(a project can add deny/ask and scoped allows but never strip your global
-kill-switches), and a scoped `always-allow (this project)` grant persists as
-normal. Set `security.trustProjectConfig: true` in your **user-global** config to
-honor a project's file verbatim. Beyond `model`, `mode`, `maxSteps`,
-`permissions`, and `plugins`:
+`lsp.servers` with a `command`/`args`, `verify.command`, repo-authored
+`permissions` allow-globs, the `sandbox` block, and `webfetch` SSRF-loosening
+keys. Two things are *never* weakened by a project: `permissions` rules
+**union across layers** (a project can add deny/ask and literal `matchExact`
+allows, but never strip your global kill-switches), and an `always-allow (this
+project)` grant persists as normal. Set `security.trustProjectConfig: true` in
+your **user-global** config to honor a project's file verbatim, including hooks,
+plugins, provider overrides, and MCP servers. Beyond `model`, `mode`,
+`maxSteps`, and `permissions`:
 
 ```jsonc
 {

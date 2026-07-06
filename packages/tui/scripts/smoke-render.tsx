@@ -885,7 +885,9 @@ check("narrow sparkline keeps its range on-screen (resampled, not clipped)", fra
 
 if (failures.length) {
   console.error(`\nSMOKE FAILED: ${failures.join(", ")}`);
+  await t.destroy?.().catch?.(() => {});
   process.exit(1);
 }
 console.log("\nSMOKE OK");
+await t.destroy?.().catch?.(() => {});
 process.exit(0);

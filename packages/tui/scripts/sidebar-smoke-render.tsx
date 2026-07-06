@@ -242,4 +242,5 @@ if (failures > 0) {
   console.log("\n--- frame 1 ---\n" + frame1);
   console.log("\n--- frame 3 (tail) ---\n" + frame3.split("\n").slice(0, 14).join("\n"));
 }
+await t.destroy?.().catch?.(() => {});
 process.exit(failures === 0 ? 0 : 1);

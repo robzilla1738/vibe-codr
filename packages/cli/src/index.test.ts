@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { run } from "./index.ts";
+import { applyCliModeOverride, run } from "./index.ts";
 
 // Capture stdout/stderr around a run() call so we can assert on the CLI's
 // actual user-facing output and exit code — exercising real arg parsing,
@@ -47,6 +47,7 @@ test("--help prints usage and exits 0", async () => {
   expect(code).toBe(0);
   expect(out).toContain("USAGE");
   expect(out).toContain("--prompt");
+  expect(out).toContain("plan | execute | yolo");
 });
 
 test("`sessions` on a fresh dir reports none and exits 0", async () => {
@@ -54,6 +55,39 @@ test("`sessions` on a fresh dir reports none and exits 0", async () => {
   const { code, out } = await capture(["sessions", "--cwd", cwd]);
   expect(code).toBe(0);
   expect(out).toContain("No saved sessions");
+});
+
+test("--mode yolo is accepted as the third user-facing mode", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cli-"));
+  const { code, out, err } = await capture(["sessions", "--cwd", cwd, "--mode", "yolo"]);
+  expect(code).toBe(0);
+  expect(out).toContain("No saved sessions");
+  expect(err).toBe("");
+});
+
+test("CLI --mode maps the 3 user-facing labels to exact engine approval state", () => {
+  const plan = { approvalMode: "auto" as const };
+  expect(applyCliModeOverride(plan, "plan")).toBe(true);
+  expect(plan).toMatchObject({ mode: "plan", approvalMode: "ask" });
+
+  const execute = { approvalMode: "auto" as const };
+  expect(applyCliModeOverride(execute, "execute")).toBe(true);
+  expect(execute).toMatchObject({ mode: "execute", approvalMode: "ask" });
+
+  const yolo = { approvalMode: "ask" as const };
+  expect(applyCliModeOverride(yolo, "yolo")).toBe(true);
+  expect(yolo).toMatchObject({ mode: "execute", approvalMode: "auto" });
+
+  const invalid = {};
+  expect(applyCliModeOverride(invalid, "plann")).toBe(false);
+  expect(invalid).toEqual({});
+});
+
+test("--mode rejects typos with every accepted value named", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-cli-"));
+  const { code, err } = await capture(["sessions", "--cwd", cwd, "--mode", "plann"]);
+  expect(code).toBe(1);
+  expect(err).toContain('expected "plan", "execute", or "yolo"');
 });
 
 test("a headless prompt with no provider key fails cleanly with exit 1", async () => {

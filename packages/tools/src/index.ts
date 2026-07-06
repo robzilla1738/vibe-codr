@@ -29,7 +29,7 @@ export {
 export type { WebSearchOptions } from "./builtins/web-search.ts";
 export { canonicalizeUrl } from "./builtins/searchcore.ts";
 export { unifiedDiff, type DiffResult } from "./diff.ts";
-export { killTree, processTree } from "./builtins/process-tree.ts";
+export { killTree, killTreeAndWait, processTree } from "./builtins/process-tree.ts";
 export {
   type SandboxPolicy,
   type SandboxConfig,

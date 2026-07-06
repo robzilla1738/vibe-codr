@@ -305,12 +305,14 @@ export const ConfigSchema = z.object({
    * Trust posture for a repo-local `.vibe/config.json` (which travels with a
    * cloned, possibly untrusted repo). By default the project layer may not
    * relax security: its `hooks` (shell exec on lifecycle events), `plugins`
-   * (arbitrary module import), a relaxation of `approvalMode` to `auto`, and
-   * `providers.*.baseURL` (traffic redirection) are DROPPED with a warning —
-   * so merely running `vibe` in a cloned repo can't execute attacker code or
-   * exfiltrate credentials. Set `trustProjectConfig: true` in your USER-GLOBAL
-   * config to honor project-layer values verbatim (the flag itself is only
-   * read from the global/CLI layer — a project file can't self-authorize).
+   * (arbitrary module import), a relaxation of `approvalMode` to `auto`,
+   * providers, MCP servers, exec-carrying LSP/verify settings, sandbox
+   * weakening, SSRF allowlists, and repo-authored permission allow-globs are
+   * DROPPED with a warning — so merely running `vibe` in a cloned repo can't
+   * execute attacker code or exfiltrate credentials. Set `trustProjectConfig:
+   * true` in your USER-GLOBAL config to honor project-layer values verbatim
+   * (the flag itself is only read from the global/CLI layer — a project file
+   * can't self-authorize).
    */
   security: z
     .object({ trustProjectConfig: z.boolean().default(false) })

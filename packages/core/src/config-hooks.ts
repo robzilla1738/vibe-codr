@@ -2,6 +2,7 @@ import { Glob } from "bun";
 import { readCappedText } from "@vibe/shared";
 import type { HookConfig } from "@vibe/config";
 import type { HookBus, HookName, HookHandler } from "@vibe/plugins";
+import { killTreeAndWait } from "@vibe/tools";
 
 /**
  * Bridges declarative config hooks (shell command / HTTP URL) onto the in-process
@@ -60,8 +61,8 @@ const MAX_HOOK_OUTPUT = 1_000_000;
  * inherited stdout pipe open, so a naive `await Response(stdout).text()` blocks
  * far past `timeoutMs` — indefinitely for a long-lived helper — wedging the whole
  * agent turn (the hook runs on the tool-execute path). Instead we read with a
- * cancelable reader and, on timeout, kill the shell AND cancel the read so the
- * function always returns within `timeoutMs`, parsing whatever output arrived.
+ * cancelable reader and, on timeout, kill the whole process tree AND cancel the
+ * read so the function always returns promptly, parsing whatever output arrived.
  */
 export async function defaultExec(
   command: string,
@@ -74,18 +75,25 @@ export async function defaultExec(
     stderr: "ignore",
   });
   const abort = new AbortController();
+  let killPromise: Promise<void> | undefined;
+  const reap = (): Promise<void> => {
+    killPromise ??= killTreeAndWait(proc.pid, 250);
+    return killPromise;
+  };
   const timer = setTimeout(() => {
-    proc.kill(); // best-effort SIGTERM the shell (a detached child may linger)
+    void reap();
     abort.abort(); // cancel the read too, to unblock a read wedged on the pipe
   }, timeoutMs);
   try {
-    const { text } = await readCappedText(proc.stdout, {
+    const { text, truncated } = await readCappedText(proc.stdout, {
       cap: MAX_HOOK_OUTPUT,
       signal: abort.signal,
     });
+    if (truncated) void reap();
     return parseHookOutput(text.trim());
   } finally {
     clearTimeout(timer);
+    if (killPromise) await killPromise;
   }
 }
 

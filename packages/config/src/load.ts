@@ -489,18 +489,31 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
       // A project ADDING a BROAD allow — `tool:"*"` or an unscoped name-only
       // rule — silently widens access like `approvalMode:auto` (which the
       // sanitizer drops), so those are dropped from an untrusted project. A
-      // SCOPED allow (`match`/`matchExact`) is kept: that is exactly the shape
-      // the app's own "always-allow (this project)" grant persists via
-      // appendProjectPermission, and dropping it would break that feature every
-      // session. The raw array is removed from the merged fileConfig so deepMerge
-      // can't carry a dropped rule past the rebuild below.
+      // glob-scoped allow (`match`) can be just as broad (`match:"*"`) and is
+      // repo-authored, so keep only literal `matchExact` allows: that is exactly
+      // the shape the app's own "always-allow (this project)" grant persists via
+      // appendProjectPermission. The raw array is removed from the merged
+      // fileConfig so deepMerge can't carry a dropped rule past the rebuild below.
       if (untrustedProject && Array.isArray(fileConfig.permissions)) {
         sawPermissions = true;
-        const raw = fileConfig.permissions as { action?: string; tool?: string; match?: string; matchExact?: string }[];
-        const isBroadAllow = (r: { action?: string; tool?: string; match?: string; matchExact?: string }): boolean =>
-          r?.action === "allow" && (r.tool === "*" || (r.match === undefined && r.matchExact === undefined));
-        const kept = raw.filter((r) => !isBroadAllow(r));
-        if (kept.length !== raw.length) droppedProjectFields.push("permissions (broad allow rules)");
+        const raw = fileConfig.permissions as {
+          action?: string;
+          tool?: string;
+          match?: string;
+          matchExact?: string;
+        }[];
+        const isUntrustedAllow = (r: {
+          action?: string;
+          tool?: string;
+          match?: string;
+          matchExact?: string;
+        }): boolean =>
+          r?.action === "allow" &&
+          (r.tool === "*" ||
+            r.match !== undefined ||
+            r.matchExact === undefined);
+        const kept = raw.filter((r) => !isUntrustedAllow(r));
+        if (kept.length !== raw.length) droppedProjectFields.push("permissions (untrusted allow rules)");
         permissionLayers.push(...kept);
         fileConfig = { ...fileConfig };
         delete fileConfig.permissions;

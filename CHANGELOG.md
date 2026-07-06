@@ -23,6 +23,14 @@ All notable changes to vibe-codr are documented here.
   selectable transcripts.** The app raises the renderer listener ceiling for
   legitimate selectable/markdown surfaces, and the OpenTUI smoke harnesses now
   destroy their test renderers explicitly.
+- **The npm package no longer installs the heavy semantic-memory transformer
+  stack by default.** `@huggingface/transformers` is now a true optional peer:
+  users who want local semantic recall can install it explicitly, while fresh
+  CLI installs stay lighter and avoid its transitive install warnings.
+- **The npm package no longer installs provider SDKs it already bundles.**
+  Dedicated provider packages remain inlined into `vibecodr.js` and covered by
+  the release guard, avoiding duplicate optional installs and their transitive
+  advisory surface.
 
 ### Fixed — OpenTUI bracketed-paste input freeze
 

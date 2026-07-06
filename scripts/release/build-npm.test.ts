@@ -5,8 +5,10 @@ import {
   generateNpmPackageJson,
   missingInlinedSymbols,
   OPTIONAL_DEP_NAMES,
+  OPTIONAL_PEER_DEP_NAMES,
   REQUIRED_INLINED_SYMBOLS,
   resolveOptionalDeps,
+  resolveOptionalPeerDeps,
 } from "./build-npm.ts";
 
 test("collectWorkspaceVersions: root deps/devDeps win over per-package peers", () => {
@@ -21,7 +23,7 @@ test("collectWorkspaceVersions: root deps/devDeps win over per-package peers", (
   expect(versions.ai).toBe("^5.0.0");
 });
 
-test("resolveOptionalDeps: uses workspace versions, pins patched deps, falls back to * for the unpinned two", () => {
+test("resolveOptionalDeps: uses workspace versions, pins patched deps, falls back to * for unpinned runtime deps", () => {
   const versions = {
     "@ai-sdk/anthropic": "^2.0.83",
     "@ai-sdk/openai": "^2.0.109",
@@ -37,14 +39,24 @@ test("resolveOptionalDeps: uses workspace versions, pins patched deps, falls bac
   });
   // Every advertised optional dep is present.
   for (const name of OPTIONAL_DEP_NAMES) expect(name in opt).toBe(true);
-  expect(opt["@ai-sdk/anthropic"]).toBe("^2.0.83");
+  // Provider SDKs are bundled into vibecodr.js, not installed as npm deps.
+  expect(opt["@ai-sdk/anthropic"]).toBeUndefined();
+  expect(opt["@ai-sdk/openai"]).toBeUndefined();
+  expect(opt["@ai-sdk/deepseek"]).toBeUndefined();
+  expect(opt["@ai-sdk/openai-compatible"]).toBeUndefined();
   expect(opt["@opentui/core"]).toBe("0.4.2");
   expect(opt["web-tree-sitter"]).toBe("0.25.10");
-  // The repo doesn't pin these — fall back to `*`.
+  // The repo doesn't pin this — fall back to `*`.
   expect(opt["@modelcontextprotocol/sdk"]).toBe("*");
-  expect(opt["@huggingface/transformers"]).toBe("*");
+  expect(opt["@huggingface/transformers"]).toBeUndefined();
   // Keys are sorted for a stable diff.
   expect(Object.keys(opt)).toEqual([...Object.keys(opt)].sort());
+});
+
+test("resolveOptionalPeerDeps: keeps heavy semantic-memory deps opt-in", () => {
+  const peers = resolveOptionalPeerDeps({});
+  for (const name of OPTIONAL_PEER_DEP_NAMES) expect(name in peers).toBe(true);
+  expect(peers["@huggingface/transformers"]).toBe("*");
 });
 
 test("generateNpmPackageJson produces the published shape", () => {
@@ -59,6 +71,7 @@ test("generateNpmPackageJson produces the published shape", () => {
       },
     },
     optionalDependencies: { "@ai-sdk/anthropic": "^2.0.83" },
+    optionalPeerDependencies: { "@huggingface/transformers": "*" },
   });
   expect(pkg.name).toBe("vibe-codr");
   expect(pkg.version).toBe("0.3.0");
@@ -69,6 +82,8 @@ test("generateNpmPackageJson produces the published shape", () => {
   expect(pkg.files).toContain("vibecodr.js");
   expect(pkg.files).toContain("patches");
   expect(pkg.optionalDependencies).toEqual({ "@ai-sdk/anthropic": "^2.0.83" });
+  expect(pkg.peerDependencies).toEqual({ "@huggingface/transformers": "*" });
+  expect(pkg.peerDependenciesMeta).toEqual({ "@huggingface/transformers": { optional: true } });
   expect(pkg.patchedDependencies).toEqual({
     "@opentui/core@0.4.2": "patches/@opentui%2Fcore@0.4.2.patch",
   });

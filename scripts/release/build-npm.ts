@@ -7,15 +7,20 @@ import { join } from "node:path";
  *  1. `bun build … --target=bun` bundles the CLI + all `@vibe/*` workspace source
  *     into a single `vibecodr.js` (with a `#!/usr/bin/env bun` shebang).
  *  2. generate `dist/npm/package.json` (name `vibe-codr`, bins, engines,
- *     optionalDependencies for the optional peer deps we load lazily).
+ *     optionalDependencies for lazily-loaded deps that should work out of the
+ *     box, plus optional peer metadata for opt-in heavy extras).
  *  3. copy README / CHANGELOG / LICENSE.
  *  4. sanity-check that the provider SDKs are still INLINED (self-contained).
  *
  * CRITICAL: no `--external` for the provider SDKs — the `PROVIDER_MODULES`
  * literal-import map in @vibe/providers must be inlined so the bundle is
  * self-contained (mirrors the standalone binary). The optional peers we load via
- * *variable* specifiers (OpenTUI, MCP SDK, transformers) can't be bundled, so
- * they're declared as optionalDependencies for the install to resolve at runtime.
+ * *variable* specifiers (OpenTUI, MCP SDK, transformers) can't be bundled.
+ * OpenTUI/MCP are installed for out-of-the-box TUI/MCP support. Provider SDKs
+ * are bundled into vibecodr.js and are NOT installed separately. The semantic
+ * memory transformer stack stays a true optional peer because the app degrades
+ * to BM25 recall when it is absent, and installing it by default pulls a large
+ * native inference stack into every CLI install.
  *
  * The version comes from `packages/cli/src/version.ts` (stamped by set-version).
  * Pure generators are exported for tests; `main()` does the IO.
@@ -23,23 +28,23 @@ import { join } from "node:path";
 
 const REPO_SLUG = "robzilla1738/vibe-codr";
 
-/** The optional peer deps to advertise as optionalDependencies, and how they're
- * loaded. Provider SDKs are ALSO bundled (belt-and-suspenders); OpenTUI/MCP/
- * transformers are the ones that actually must resolve from node_modules. */
+/** Lazily-loaded deps to advertise as optionalDependencies. Provider SDKs are
+ * deliberately absent here: the npm bundle inlines them and `missingInlinedSymbols`
+ * guards that invariant, so installing a second copy only bloats fresh installs
+ * and exposes avoidable transitive advisories. */
 export const OPTIONAL_DEP_NAMES = [
-  "@ai-sdk/anthropic",
-  "@ai-sdk/openai",
-  "@ai-sdk/deepseek",
-  "@ai-sdk/openai-compatible",
   "@opentui/core",
   "@opentui/solid",
   "solid-js",
   "web-tree-sitter",
   "@modelcontextprotocol/sdk",
-  "@huggingface/transformers",
 ] as const;
 
-/** The repo doesn't pin these two (loaded via variable specifier + graceful
+/** Heavy opt-in extras: the app has a graceful fallback when absent, so these
+ * should NOT be installed by default by npm's optionalDependencies behavior. */
+export const OPTIONAL_PEER_DEP_NAMES = ["@huggingface/transformers"] as const;
+
+/** The repo doesn't pin these (loaded via variable specifier + graceful
  * degradation), so fall back to `*` — matching the repo's own optional-peer
  * convention in packages/tui's peerDependencies. */
 const FALLBACK_VERSIONS: Record<string, string> = {
@@ -102,15 +107,26 @@ export function resolveOptionalDeps(
   return out;
 }
 
+export function resolveOptionalPeerDeps(versions: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of [...OPTIONAL_PEER_DEP_NAMES].sort()) {
+    out[name] = versions[name] ?? FALLBACK_VERSIONS[name] ?? "*";
+  }
+  return out;
+}
+
 /** The generated dist/npm/package.json (pure). */
 export function generateNpmPackageJson(opts: {
   version: string;
   rootPkg: Pkg;
   optionalDependencies: Record<string, string>;
+  optionalPeerDependencies?: Record<string, string>;
 }): Record<string, unknown> {
   const { version, rootPkg } = opts;
   const patchedDependencies = rootPkg.patchedDependencies;
   const hasPatches = patchedDependencies && Object.keys(patchedDependencies).length > 0;
+  const optionalPeerDependencies = opts.optionalPeerDependencies ?? {};
+  const hasOptionalPeers = Object.keys(optionalPeerDependencies).length > 0;
   return {
     name: "vibe-codr",
     version,
@@ -125,6 +141,14 @@ export function generateNpmPackageJson(opts: {
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },
     files: ["vibecodr.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
     optionalDependencies: opts.optionalDependencies,
+    ...(hasOptionalPeers
+      ? {
+          peerDependencies: optionalPeerDependencies,
+          peerDependenciesMeta: Object.fromEntries(
+            Object.keys(optionalPeerDependencies).map((name) => [name, { optional: true }]),
+          ),
+        }
+      : {}),
     ...(hasPatches ? { patchedDependencies } : {}),
   };
 }
@@ -196,6 +220,7 @@ async function main(): Promise<void> {
     version: VERSION,
     rootPkg,
     optionalDependencies: resolveOptionalDeps(versions, rootPkg.patchedDependencies),
+    optionalPeerDependencies: resolveOptionalPeerDeps(versions),
   });
   writeFileSync(join(outDir, "package.json"), `${JSON.stringify(npmPkg, null, 2)}\n`);
 

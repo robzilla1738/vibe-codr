@@ -31,6 +31,10 @@ All notable changes to vibe-codr are documented here.
   Dedicated provider packages remain inlined into `vibecodr.js` and covered by
   the release guard, avoiding duplicate optional installs and their transitive
   advisory surface.
+- **The release workflow now uses Node 24-compatible first-party actions.**
+  `setup-node`, `upload-artifact`, and `download-artifact` are pinned to current
+  majors so future tag releases do not emit Node 20 runtime deprecation
+  annotations.
 
 ### Fixed — OpenTUI bracketed-paste input freeze
 

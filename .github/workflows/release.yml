@@ -41,7 +41,7 @@ jobs:
             --outfile vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
       - name: Per-file checksum
         run: sha256sum vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -57,7 +57,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.11
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -89,7 +89,7 @@ jobs:
       # Promote the CHANGELOG (Unreleased → this version) so the notes extractor
       # finds the section for the tag.
       - run: bun scripts/release/set-version.ts
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: binary-*
           path: artifacts

@@ -1242,12 +1242,7 @@ export class OrchestratorRunner {
         // green or unverified → fall through to the diff review (for verify).
       }
 
-      // A task that did nothing on its FIRST attempt has nothing to verify → done.
-      // But on a RETRY (feedback set), a non-mutating child leaves the previous
-      // attempt's REJECTED edits on disk — don't short-circuit to "completed" and
-      // drop the reviewer's feedback; fall through to re-review so outstanding
-      // issues still gate completion.
-      if (!spec.verify || (!child.didMutate && !feedback)) {
+      if (!spec.verify) {
         return settle({
           id: spec.id,
           objective: spec.objective,

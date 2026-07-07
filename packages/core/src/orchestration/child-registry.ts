@@ -151,10 +151,15 @@ export class ChildRegistry {
     }
   }
 
-  /** Await all detached settle promises, bounded by `timeoutMs`. */
-  async awaitAllDetached(timeoutMs: number): Promise<void> {
+  /** Await all detached settle promises. When `timeoutMs` is provided, return
+   * after that bound even if a wedged detached promise has not settled. */
+  async awaitAllDetached(timeoutMs?: number): Promise<void> {
     const promises = [...this.#detached.values()].map((r) => r.promise);
     if (!promises.length) return;
+    if (timeoutMs === undefined) {
+      await Promise.allSettled(promises);
+      return;
+    }
     await Promise.race([
       Promise.allSettled(promises),
       new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),

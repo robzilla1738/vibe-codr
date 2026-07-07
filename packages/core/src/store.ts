@@ -42,6 +42,7 @@ export interface PersistedSession {
   meta: SessionMeta;
   modelMessages: ModelMessage[];
   history: Message[];
+  warnings?: string[];
 }
 
 /** Tag key for a base64-encoded binary blob in persisted JSONL. Deliberately
@@ -165,11 +166,17 @@ export class SessionStore {
         // session truly absent.
         continue;
       }
-      const modelMessages = await this.#readJsonl<ModelMessage>(
+      const modelRead = await this.#readJsonl<ModelMessage>(
         join(dir, "messages.jsonl"),
       );
-      const history = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
-      return { meta, modelMessages, history };
+      const historyRead = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
+      const warnings = [...modelRead.warnings, ...historyRead.warnings];
+      return {
+        meta,
+        modelMessages: modelRead.items,
+        history: historyRead.items,
+        ...(warnings.length ? { warnings } : {}),
+      };
     }
     return null;
   }
@@ -179,25 +186,28 @@ export class SessionStore {
    * Returns [] if the session or its history is absent/unreadable. */
   async loadHistory(id: string): Promise<Message[]> {
     const current = await this.#readJsonl<Message>(join(this.#dir(id), "history.jsonl"));
-    if (current.length) return current;
-    return this.#readJsonl<Message>(join(this.#legacy, id, "history.jsonl"));
+    if (current.items.length) return current.items;
+    return (await this.#readJsonl<Message>(join(this.#legacy, id, "history.jsonl"))).items;
   }
 
-  async #readJsonl<T>(path: string): Promise<T[]> {
+  async #readJsonl<T>(path: string): Promise<{ items: T[]; warnings: string[] }> {
     const file = Bun.file(path);
-    if (!(await file.exists())) return [];
+    if (!(await file.exists())) return { items: [], warnings: [] };
     const text = await file.text();
     const out: T[] = [];
+    const warnings: string[] = [];
+    let lineNo = 0;
     for (const line of text.split("\n")) {
+      lineNo++;
       if (!line.trim()) continue;
-      // Skip an unparseable (truncated) trailing line rather than failing load.
       try {
         out.push(JSON.parse(line, u8Reviver) as T);
       } catch {
-        /* skip corrupt line */
+        warnings.push(`${path}:${lineNo}: corrupt JSONL line; transcript truncated at the last valid entry`);
+        break;
       }
     }
-    return out;
+    return { items: out, warnings };
   }
 
   /** All persisted sessions, newest first — the global dir merged with any

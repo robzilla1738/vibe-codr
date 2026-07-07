@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CheckpointManager } from "./checkpoints.ts";
@@ -303,6 +303,21 @@ test("two managers on one repo merge checkpoints instead of clobbering (and writ
   const { globalStateDir } = await import("./state-dir.ts");
   const files = readdirSync(globalStateDir(dir));
   expect(files.some((f) => f.startsWith("checkpoints.json.") && f.endsWith(".tmp"))).toBe(false);
+  expect(existsSync(join(globalStateDir(dir), "checkpoints.json.lock"))).toBe(false);
+});
+
+test("checkpoint metadata save clears a stale cross-process lock", async () => {
+  const dir = await initRepo();
+  const { globalStateDir } = await import("./state-dir.ts");
+  const state = globalStateDir(dir);
+  mkdirSync(join(state, "checkpoints.json.lock"), { recursive: true });
+  const stale = new Date(Date.now() - 120_000);
+  utimesSync(join(state, "checkpoints.json.lock"), stale, stale);
+
+  const cp = new CheckpointManager(dir);
+  const snap = await cp.snapshot("after-stale-lock");
+  expect(snap).not.toBeNull();
+  expect(existsSync(join(state, "checkpoints.json.lock"))).toBe(false);
 });
 
 test("/undo restores THIS session's checkpoint, never a concurrent session's (no #list pollution)", async () => {

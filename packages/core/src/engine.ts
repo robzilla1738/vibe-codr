@@ -1,7 +1,7 @@
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, rm } from "node:fs/promises";
-import { statSync, readdirSync } from "node:fs";
+import { mkdirSync, statSync, readdirSync } from "node:fs";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import {
@@ -153,17 +153,28 @@ const GATE_MANIFEST_FILES = [
  * Pure + injectable for testing.
  */
 /** Deterministic override on the goal self-assessment: a model verdict of
- * "met" can never stand on a RED gate — failing checks are a hard gap, not a
- * judgment call. Pure + exported for unit testing. */
+ * "met" can never stand on a non-green gate verdict. Failing, missing, or
+ * aborted checks are hard gaps, not judgment calls. Undefined means no gate has
+ * reported for the turn and remains a no-op for non-mutating goal tests. Pure +
+ * exported for unit testing. */
 export function applyGateToVerdict(
   verdict: { met: boolean; gaps: string[]; reason: string },
   gate: "green" | "red" | "unverified" | "aborted" | undefined,
 ): { met: boolean; gaps: string[]; reason: string } {
-  if (!verdict.met || gate !== "red") return verdict;
+  if (!verdict.met || gate === "green" || gate === undefined) return verdict;
+  const detail =
+    gate === "red"
+      ? "project checks failing (gate red)"
+      : gate === "aborted"
+        ? "project checks aborted"
+        : "project checks unverified";
   return {
     met: false,
-    gaps: [...verdict.gaps, "project checks failing (gate red)"],
-    reason: "the gate is red — checks must pass before the goal can be met",
+    gaps: [...verdict.gaps, detail],
+    reason:
+      gate === "red"
+        ? "the gate is red — checks must pass before the goal can be met"
+        : "the gate is unverified — checks must run green before the goal can be met",
   };
 }
 
@@ -219,6 +230,16 @@ export interface EngineOptions {
   logger?: Logger;
 }
 
+export function sandboxStateDirs(cwd: string): string[] {
+  return [
+    vibeConfigDir(),
+    process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+    join(cwd, ".vibe"),
+    // Per-project machine state (sessions/plans/checkpoints) now lives here.
+    globalStateDir(cwd),
+  ];
+}
+
 /**
  * Top-level engine: owns the active session, the event bus, the provider
  * registry, and the toolset. Implements `EngineClient` so any UI can drive it.
@@ -263,6 +284,7 @@ export class Engine implements EngineClient {
   }[] = [];
   #active: QueuedItem | null = null;
   #draining = false;
+  #drainPromise: Promise<void> | undefined;
   #idleResolvers: (() => void)[] = [];
   #agents = new Map<string, NamedAgent>();
   /** One per-file write lock shared across the whole session tree (parent +
@@ -297,6 +319,7 @@ export class Engine implements EngineClient {
   #proactiveRecallDone = false;
   /** Memoized finalize promise (digest + teardown runs once). */
   #finalizing: Promise<void> | undefined;
+  #shutdownRequested = false;
   /** The last plan the model presented via present_plan (for handoff on execute). */
   #lastPlan: string | undefined;
   /** Set when plan→execute happens after a presented plan: the next prompt gets
@@ -395,15 +418,17 @@ export class Engine implements EngineClient {
     // Resolve the OS sandbox once from config + the real state dirs. Writable
     // roots (under workspace-write) always include cwd + tmp; add the app's own
     // state dirs so its writes (config, caches, .vibe sessions) never get denied.
+    const stateDirs = sandboxStateDirs(this.#cwd);
+    for (const dir of stateDirs) {
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch {
+        /* best-effort; sandbox resolution still reports/degrades normally */
+      }
+    }
     this.#sandbox = resolveSandboxPolicy(opts.config.sandbox, {
       cwd: this.#cwd,
-      stateDirs: [
-        vibeConfigDir(),
-        process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
-        join(this.#cwd, ".vibe"),
-        // Per-project machine state (sessions/plans/checkpoints) now lives here.
-        globalStateDir(this.#cwd),
-      ],
+      stateDirs,
     });
     // The registry was created before the policy resolved (field initializer);
     // apply it so background jobs run under the same backstop as foreground bash.
@@ -1069,12 +1094,20 @@ export class Engine implements EngineClient {
     // bus (emits become no-ops) and a closed MCP hub. Cancel callbacks fire so
     // origin-tagged loop/goal items settle cleanly. buildDigest below installs a
     // fresh AbortController, so aborting here doesn't poison the digest.
+    this.#shutdownRequested = true;
     const dropped = this.#pending;
     this.#pending = [];
     for (const item of dropped) item.onCancel?.("shutdown");
     if (dropped.length) this.#emitQueue();
     this.#session.abort();
     this.#loopSession?.abort();
+    this.#loop?.stop("shutdown");
+    // Unblock any in-flight permission prompts before waiting for the current
+    // queue item to unwind. Resource teardown must happen only after the drainer
+    // has exited; otherwise active turns can emit to a closed bus or call closed
+    // MCP transports.
+    this.#settlePendingPermissions("shutdown");
+    await this.#drainPromise;
     try {
       // Digests are for INTERACTIVE sessions: a headless `-p` one-shot must not
       // pay an extra model call (cost + latency) on every scripted invocation.
@@ -1093,20 +1126,17 @@ export class Engine implements EngineClient {
       this.#log.debug(`session digest skipped: ${(err as Error).message}`);
     }
     void this.hooks.run("session.end", { sessionId: this.#session.id });
-    this.#loop?.stop("shutdown");
-    // Abort + bounded-await any outstanding DETACHED (background) subagents: a
+    // Abort + await any outstanding DETACHED (background) subagents: a
     // detached child gets `parentSignal: undefined` so the spawning turn ending
     // can't kill it, so finalize is the ONLY thing that reaps it — otherwise a
-    // background child would outlive the process (or wedge shutdown). Mirrors the
-    // job-reaper below. No-op when the tree never spawned a detached child.
+    // background child could still emit to the bus or use MCP while teardown is
+    // closing those resources. Mirrors the job-reaper below. No-op when the tree
+    // never spawned a detached child.
     const registry = this.#session.childRegistry;
     if (registry) {
       registry.abortAllDetached();
-      await registry.awaitAllDetached(5_000);
+      await registry.awaitAllDetached();
     }
-    // Unblock any in-flight permission prompts so nothing hangs — and tell the UI
-    // so their now-dead cards drop rather than linger.
-    this.#settlePendingPermissions("shutdown");
     // Reap surviving background jobs (dev servers etc.) — the process is going
     // away; leaving them orphaned made every `bash background:true` a leak. Await
     // the SIGKILL escalation so a child that ignores SIGTERM can't outlive us.
@@ -1604,33 +1634,6 @@ export class Engine implements EngineClient {
     this.#session.setProjectMemory(this.#projectMemory);
   }
 
-  /** Build an ephemeral session sharing infra but with a fresh context. */
-  #buildSession(): Session {
-    return new Session({
-      config: this.#config,
-      registry: this.registry,
-      toolset: this.toolset,
-      bus: this.#bus,
-      cwd: this.#cwd,
-      sandbox: this.#sandbox,
-      model: this.#session.model,
-      mode: this.#session.mode,
-      goal: this.#session.goal,
-      projectMemory: this.#projectMemory,
-      permissionResolver: this.#permissionResolver,
-      agents: this.#agents,
-      fileLock: this.#fileLock,
-      limiter: this.#limiter,
-      blackboard: this.#blackboard,
-      skills: this.skills,
-      hooks: this.hooks,
-      interactive: this.#interactive,
-      ...(this.#memory ? { memory: this.#memory } : {}),
-      getContextWindow: (model) => this.#resolveContextWindow(model),
-      getPricing: (model) => this.#resolvePricing(model),
-    });
-  }
-
   /** Run one loop iteration; expands a leading custom /command if present. */
   async #runLoopIteration(prompt: string): Promise<string> {
     let text = prompt;
@@ -1649,19 +1652,19 @@ export class Engine implements EngineClient {
         }
       }
     }
-    // Route the iteration through the same FIFO queue as user turns so a loop
-    // tick never executes concurrently with a user prompt (which would race
-    // file writes and interleave output). `#loopSession` is exposed so `/loop
-    // stop` / shutdown can abort the turn that's actually in flight.
+    // Route the iteration through the same FIFO queue and prompt handler as user
+    // turns so a loop tick inherits conversation history, repo facts,
+    // diagnostics, checkpoints, and the post-turn gate. `#loopSession` aliases
+    // the active session while the tick runs so `/loop stop` / shutdown target
+    // the turn that's actually in flight.
     return new Promise<string>((resolve, reject) => {
       this.#enqueue(
         `loop: ${queueLabel(text)}`,
         async () => {
-          const session = this.#buildSession();
-          this.#loopSession = session;
+          this.#loopSession = this.#session;
           try {
-            await session.run(text);
-            resolve(session.lastAssistantText());
+            await this.#handlePrompt(text);
+            resolve(this.#session.lastAssistantText());
           } catch (err) {
             // Without this reject, a job that throws before resolve() would leave
             // the LoopController awaiting forever — a silent, permanent hang.
@@ -1751,6 +1754,7 @@ export class Engine implements EngineClient {
       const probed = await probeOllamaContextWindow(
         model,
         this.#config.providers?.ollama?.baseURL,
+        this.#config.providers?.ollama?.apiKey,
       );
       if (probed) return probed;
     }
@@ -2029,8 +2033,13 @@ export class Engine implements EngineClient {
 
   /** Run queued work to completion, emitting queue state as it changes. */
   async #drain(): Promise<void> {
-    if (this.#draining) return;
+    if (this.#draining) return this.#drainPromise;
     this.#draining = true;
+    this.#drainPromise = this.#runDrain();
+    return this.#drainPromise;
+  }
+
+  async #runDrain(): Promise<void> {
     // Everything after this point runs inside try/finally: a throw from
     // #emitQueue, the idle-continue frame, or any non-item path must NOT leave
     // #draining stuck true (that would silently wedge every future #enqueue).
@@ -2075,7 +2084,7 @@ export class Engine implements EngineClient {
       // AFTER the idle consultation: if items arrived during its await, loop back
       // and drain them instead of settling idle. The session.idle hook re-fires
       // on the next pass (correctly — the queue was never truly idle).
-      } while (await this.#maybeContinueOnIdle() || this.#pending.length);
+      } while ((await this.#maybeContinueOnIdle()) || this.#pending.length);
     } catch (err) {
       // A throw outside the per-item catch (e.g. a bus subscriber or session.idle
       // #onError callback) must not wedge the queue — log and fall through to the
@@ -2083,6 +2092,7 @@ export class Engine implements EngineClient {
       this.#log.error("drain loop failed", err);
     } finally {
       this.#draining = false;
+      this.#drainPromise = undefined;
       this.#active = null;
       // The queue is fully drained — the prompt AND every follow-up turn it spawned
       // (gate-fix / review-fix / verify-fix / idle-continue) are done. Signal the
@@ -2112,6 +2122,7 @@ export class Engine implements EngineClient {
    * by the HookBus (no continue field) → returns false → idle settles.
    */
   async #maybeContinueOnIdle(): Promise<boolean> {
+    if (this.#shutdownRequested) return false;
     // A user-aborted turn (Esc) or a cost-budget STOP must settle idle, never be
     // resurrected by a `session.idle {continue:true}` hook — mirrors the
     // !interrupted guards guarding the task-continuation path in #afterTurn.
@@ -2267,9 +2278,9 @@ export class Engine implements EngineClient {
       return;
     }
     // The gate runs on the same terms the legacy verify did: only after a
-    // mutating execute turn the user didn't interrupt. (/loop iterations run on
-    // an ephemeral session and never route through #handlePrompt, so they never
-    // reach the gate — inherited from this call site.)
+    // mutating execute turn the user didn't interrupt. Loop iterations route
+    // through #handlePrompt too, so a mutating loop tick is verified the same
+    // way as a typed prompt.
     if (!this.#turnIsGateable()) {
       // A plan-execution turn that produced no edit (the model narrated or asked
       // instead of working) must not silently strand the chain — nudge the

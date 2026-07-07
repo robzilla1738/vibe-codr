@@ -1,9 +1,10 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
 import { readTool } from "./read.ts";
+import { assertFresh, _resetFreshness } from "./freshness.ts";
 
 function ctx(cwd: string): ToolContext {
   const events: UIEvent[] = [];
@@ -88,6 +89,37 @@ test("detects a binary file whose first NUL is past the 4096-byte head sniff", a
   const r = await readTool.execute({ path: "mid.bin" }, ctx(cwd));
   expect(r.isError).toBe(true);
   expect(r.output).toContain("binary file");
+});
+
+test("does not record a freshness baseline when a read fails as binary", async () => {
+  _resetFreshness();
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-read-bin-fresh-"));
+  const full = join(cwd, "mid.bin");
+  const head = new Uint8Array(5000).fill(0x61);
+  await Bun.write(full, new Uint8Array([...head, 0x00, 0x62]));
+  const r = await readTool.execute({ path: "mid.bin" }, ctx(cwd));
+  expect(r.isError).toBe(true);
+  utimesSync(full, new Date(), new Date(Date.now() + 10_000));
+  expect(assertFresh("ses_test", full).stale).toBe(false);
+});
+
+test("refuses a file that changes while it is being streamed", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-read-changing-"));
+  const full = join(cwd, "big.txt");
+  const original = `${"line\n".repeat(5_000_000)}last\n`;
+  writeFileSync(full, original);
+  const quoted = `'${full.replaceAll("'", "'\\''")}'`;
+  const toucher = Bun.spawn(["sh", "-c", `sleep 0.01; touch ${quoted}`], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  try {
+    const r = await readTool.execute({ path: "big.txt", offset: 4_900_000, limit: 1 }, ctx(cwd));
+    expect(r.isError).toBe(true);
+    expect(r.output).toContain("changed while being read");
+  } finally {
+    await toucher.exited.catch(() => undefined);
+  }
 });
 
 test("offset/limit read only the requested window of a large file (no full slurp)", async () => {

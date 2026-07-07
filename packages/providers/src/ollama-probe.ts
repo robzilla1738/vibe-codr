@@ -17,27 +17,30 @@ interface ShowResponse {
  * @param model   Full `ollama/<name>` model string.
  * @param baseURL The provider's OpenAI-compatible base (e.g. `.../v1`); the
  *                native API lives at the same host without the `/v1` suffix.
+ * @param apiKey  Resolved Ollama API key from config/env/token resolution.
  */
 export async function probeOllamaContextWindow(
   model: string,
   baseURL?: string,
+  apiKey?: string,
 ): Promise<number | undefined> {
-  if (cache.has(model)) return cache.get(model);
   const name = model.replace(/^ollama\//, "");
+  const resolvedApiKey = apiKey ?? process.env.OLLAMA_API_KEY;
   // Route the probe to the SAME host the model runs on. Precedence: explicit
   // baseURL → $OLLAMA_BASE_URL → Ollama CLOUD (when an API key is set, so a cloud
   // user isn't misrouted to a localhost daemon that may not exist) → local daemon.
-  const cloudDefault = process.env.OLLAMA_API_KEY ? "https://ollama.com" : "http://localhost:11434/v1";
+  const cloudDefault = resolvedApiKey ? "https://ollama.com" : "http://localhost:11434/v1";
   const root = (baseURL ?? process.env.OLLAMA_BASE_URL ?? cloudDefault)
     .replace(/\/v1\/?$/, "")
     .replace(/\/$/, "");
+  const cacheKey = `${model}\0${root}\0${resolvedApiKey ? "auth" : "noauth"}`;
+  if (cache.has(cacheKey)) return cache.get(cacheKey);
   try {
-    const apiKey = process.env.OLLAMA_API_KEY;
     const res = await fetch(`${root}/api/show`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        ...(resolvedApiKey ? { authorization: `Bearer ${resolvedApiKey}` } : {}),
       },
       body: JSON.stringify({ name }),
       signal: AbortSignal.timeout(4000),
@@ -49,7 +52,7 @@ export async function probeOllamaContextWindow(
     // and let the next turn re-probe.
     if (!res.ok) return undefined;
     const ctx = extractContextLength((await res.json()) as ShowResponse);
-    cache.set(model, ctx);
+    cache.set(cacheKey, ctx);
     return ctx;
   } catch {
     return undefined;

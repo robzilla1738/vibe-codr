@@ -149,3 +149,29 @@ test("awaitAllDetached is bounded — returns even if a promise never settles", 
   await reg.awaitAllDetached(50);
   expect(Date.now() - start).toBeLessThan(1_000); // did not hang on the wedged promise
 });
+
+test("awaitAllDetached without a timeout waits for detached work to settle", async () => {
+  const reg = new ChildRegistry(4);
+  let resolveDetached!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    resolveDetached = resolve;
+  });
+  reg.registerDetached({
+    id: "d1",
+    kind: "subagent",
+    status: "running",
+    abort: new AbortController(),
+    promise,
+    summary: "slow",
+  });
+
+  let done = false;
+  const wait = reg.awaitAllDetached().then(() => {
+    done = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(done).toBe(false);
+  resolveDetached();
+  await wait;
+  expect(done).toBe(true);
+});

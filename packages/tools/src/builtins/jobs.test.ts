@@ -1,10 +1,32 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { BackgroundJobs } from "./jobs.ts";
+import { join } from "node:path";
+import { BackgroundJobs, backgroundJobArgv } from "./jobs.ts";
+import type { SandboxPolicy } from "../sandbox.ts";
 
 const cwd = () => mkdtempSync(join(tmpdir(), "vibe-jobs-"));
-import { join } from "node:path";
+
+function sandbox(): SandboxPolicy {
+  return {
+    mode: "workspace-write",
+    network: "off",
+    writablePaths: ["/work"],
+    backend: "bwrap",
+    available: true,
+  };
+}
+
+test("background job argv honors dangerouslyUnsandboxed", () => {
+  const wrapped = backgroundJobArgv("echo hi", "/work", sandbox());
+  expect(wrapped[0]).toBe("bwrap");
+  expect(wrapped).toContain("--unshare-net");
+  expect(backgroundJobArgv("echo hi", "/work", sandbox(), { dangerouslyUnsandboxed: true })).toEqual([
+    "bash",
+    "-lc",
+    "echo hi",
+  ]);
+});
 
 test("a background job runs and transitions to exited with captured output", async () => {
   const jobs = new BackgroundJobs();

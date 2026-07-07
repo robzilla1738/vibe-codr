@@ -88,9 +88,15 @@ export function windowStartIndex(totalTurns: number, windowTurns: number, reveal
  * slice would re-key every row on the hot streaming path). Returns 0 until the
  * item count exceeds the cap.
  */
-export function turnWindowStart(totalItems: number, maxItems: number, step: number): number {
-  if (totalItems <= maxItems) return 0;
+export function turnWindowStart(
+  totalItems: number,
+  maxItems: number,
+  step: number,
+  revealed = 0,
+): number {
+  const targetVisible = maxItems + Math.max(0, revealed);
+  if (totalItems <= targetVisible) return 0;
   // Smallest multiple of `step` that keeps the visible count (total - start) at
-  // or under `maxItems` — so the start only moves in whole `step` jumps.
-  return Math.ceil((totalItems - maxItems) / step) * step;
+  // or under `targetVisible` — so the start only moves in whole `step` jumps.
+  return Math.ceil((totalItems - targetVisible) / step) * step;
 }

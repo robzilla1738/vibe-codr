@@ -99,30 +99,35 @@ export const WebfetchConfigSchema = z.object({
  *                           `reason` instead of settling idle (Stop-equivalent). Bounded per user
  *                           prompt by the engine, so a runaway hook cannot loop forever.
  *   - session.start / step.finish / assistant.message / session.end — observe-only (response ignored). */
-export const HookSchema = z.object({
-  /** Lifecycle event to hook (matches @vibe/plugins HookName). */
-  event: z.enum([
-    "session.start",
-    "user.prompt.submit",
-    "tool.before.execute",
-    "tool.after.execute",
-    "step.finish",
-    "assistant.message",
-    "session.idle",
-    "session.end",
-  ]),
-  /** Glob matched against the tool name for tool.* events (omit = all). */
-  matcher: z.string().optional(),
-  /** Shell command; receives the payload as JSON on stdin. Its stdout JSON is
-   * honored per the per-event contract above: `tool.before.execute` → `{deny,reason,input}`;
-   * `tool.after.execute` → `{additionalContext,deny,reason}`; `user.prompt.submit` →
-   * `{deny,text}`; `session.idle` → `{continue,reason}`. Other events ignore the response. */
-  command: z.string().optional(),
-  /** URL to POST the payload to (JSON in, JSON out, same protocol as `command`). */
-  url: httpUrl().optional(),
-  /** Fire-and-forget: don't await or let it block/deny (e.g. notifications). */
-  async: z.boolean().default(false),
-});
+export const HookSchema = z
+  .object({
+    /** Lifecycle event to hook (matches @vibe/plugins HookName). */
+    event: z.enum([
+      "session.start",
+      "user.prompt.submit",
+      "tool.before.execute",
+      "tool.after.execute",
+      "step.finish",
+      "assistant.message",
+      "session.idle",
+      "session.end",
+    ]),
+    /** Glob matched against the tool name for tool.* events (omit = all). */
+    matcher: z.string().optional(),
+    /** Shell command; receives the payload as JSON on stdin. Its stdout JSON is
+     * honored per the per-event contract above: `tool.before.execute` → `{deny,reason,input}`;
+     * `tool.after.execute` → `{additionalContext,deny,reason}`; `user.prompt.submit` →
+     * `{deny,text}`; `session.idle` → `{continue,reason}`. Other events ignore the response. */
+    command: z.string().optional(),
+    /** URL to POST the payload to (JSON in, JSON out, same protocol as `command`). */
+    url: httpUrl().optional(),
+    /** Fire-and-forget: don't await or let it block/deny (e.g. notifications). */
+    async: z.boolean().default(false),
+  })
+  .refine((hook) => Boolean(hook.command?.trim() || hook.url), {
+    message: "hook requires either command or url",
+    path: ["command"],
+  });
 
 /** Long-term memory configuration (semantic recall + write-path + injection). */
 export const MemoryConfigSchema = z.object({

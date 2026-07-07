@@ -23,6 +23,8 @@ export interface StoredMcpAuth {
   codeVerifier?: string;
 }
 
+let tokenWriteSeq = 0;
+
 /** Resolve where a server's OAuth state lives (honoring an explicit override).
  * The sanitized name alone can collide (`gh/api` and `gh_api` both slug to
  * `gh_api`), which would hand one server's grant — tokens included — to a
@@ -65,6 +67,7 @@ function homeDir(): string {
 export class McpTokenStore {
   #path: string;
   #legacyPath: string | undefined;
+  #chain: Promise<unknown> = Promise.resolve();
 
   constructor(path: string, legacyPath?: string) {
     this.#path = path;
@@ -108,11 +111,25 @@ export class McpTokenStore {
    * the previous good file intact instead of a truncated one that reads as empty
    * (which would drop the whole grant on the next merge). */
   async merge(patch: Partial<StoredMcpAuth>): Promise<void> {
+    const next = this.#chain.then(() => this.#mergeLocked(patch), () => this.#mergeLocked(patch));
+    this.#chain = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  async #mergeLocked(patch: Partial<StoredMcpAuth>): Promise<void> {
     const next = { ...(await this.read()), ...patch };
     await mkdir(dirname(this.#path), { recursive: true });
-    const tmp = `${this.#path}.tmp`;
-    await Bun.write(tmp, JSON.stringify(next, null, 2));
-    await rename(tmp, this.#path);
+    const tmp = `${this.#path}.${process.pid}.${tokenWriteSeq++}.tmp`;
+    try {
+      await Bun.write(tmp, JSON.stringify(next, null, 2));
+      await rename(tmp, this.#path);
+    } catch (err) {
+      await unlink(tmp).catch(() => undefined);
+      throw err;
+    }
   }
 
   async clear(): Promise<void> {
@@ -202,6 +219,7 @@ export function createMcpOAuthProvider(
       await store.merge({ tokens });
     },
     async redirectToAuthorization(url) {
+      rememberOAuthCallbackState(redirectUrl, url.searchParams.get("state") ?? undefined);
       log.info(`MCP "${server}" needs authorization — open:\n${url.toString()}`);
       try {
         (deps.openUrl ?? openInBrowser)(url.toString());
@@ -230,78 +248,157 @@ export function createMcpOAuthProvider(
 
 /** Parse an OAuth redirect request URL into its `code` / `error` params. Pure
  * (no I/O) so the callback parsing is unit-testable without a live server. */
-export function extractOAuthCallbackParams(reqUrl: string): { code?: string; error?: string } {
+export function extractOAuthCallbackParams(reqUrl: string): { code?: string; error?: string; state?: string } {
   try {
     // reqUrl may be a bare path+query ("/callback?code=…") — resolve against a
     // dummy origin so the URL constructor accepts it.
     const u = new URL(reqUrl, "http://localhost");
     const code = u.searchParams.get("code") ?? undefined;
     const error = u.searchParams.get("error") ?? undefined;
-    return { ...(code ? { code } : {}), ...(error ? { error } : {}) };
+    const state = u.searchParams.get("state") ?? undefined;
+    return { ...(code ? { code } : {}), ...(error ? { error } : {}), ...(state ? { state } : {}) };
   } catch {
     return {};
   }
 }
 
-/** Serve the loopback OAuth redirect ONCE and resolve with the authorization
- * `code`. Spins up a one-shot `Bun.serve` on the redirect URL's host/port, serves
- * a "you can close this tab" page, and always stops the server (success, error,
- * or timeout). Rejects on an `error` param, a bad/blank code, or the timeout. */
-export function waitForOAuthCallback(redirectUrl: string, timeoutMs = 120_000): Promise<string> {
-  const target = new URL(redirectUrl);
-  const port = Number(target.port) || (target.protocol === "https:" ? 443 : 80);
-  return new Promise<string>((resolve, reject) => {
-    let server: { stop: (closeActiveConnections?: boolean) => void } | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    const done = (err: Error | null, code?: string) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      // Defer the stop a tick so the response we're about to return flushes to the
-      // browser BEFORE the server closes its connections.
-      setTimeout(() => {
-        try {
-          server?.stop(true);
-        } catch {
-          /* already stopped */
-        }
-      }, 0);
-      if (err) reject(err);
-      else resolve(code as string);
-    };
+interface OAuthCallbackWaiter {
+  state?: string;
+  resolve: (code: string) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface OAuthCallbackServer {
+  server: { stop: (closeActiveConnections?: boolean) => void };
+  waitersByState: Map<string, OAuthCallbackWaiter>;
+  fallbackWaiters: OAuthCallbackWaiter[];
+}
+
+const callbackServers = new Map<string, OAuthCallbackServer>();
+const pendingCallbackStates = new Map<string, string[]>();
+
+function callbackKey(target: URL): string {
+  const port = String(Number(target.port) || (target.protocol === "https:" ? 443 : 80));
+  return `${target.protocol}//${target.hostname}:${port}${target.pathname}`;
+}
+
+function rememberOAuthCallbackState(redirectUrl: string, state: string | undefined): void {
+  if (!state) return;
+  const key = callbackKey(new URL(redirectUrl));
+  const pending = pendingCallbackStates.get(key) ?? [];
+  pending.push(state);
+  pendingCallbackStates.set(key, pending);
+}
+
+function takeOAuthCallbackState(key: string): string | undefined {
+  const pending = pendingCallbackStates.get(key);
+  const state = pending?.shift();
+  if (pending && pending.length === 0) pendingCallbackStates.delete(key);
+  return state;
+}
+
+function removeWaiter(key: string, waiter: OAuthCallbackWaiter): void {
+  const entry = callbackServers.get(key);
+  if (!entry) return;
+  if (waiter.state) entry.waitersByState.delete(waiter.state);
+  else entry.fallbackWaiters = entry.fallbackWaiters.filter((w) => w !== waiter);
+  if (entry.waitersByState.size || entry.fallbackWaiters.length) return;
+  callbackServers.delete(key);
+  setTimeout(() => {
     try {
-      server = Bun.serve({
-        port,
-        hostname: target.hostname,
-        fetch(req) {
-          const { code, error } = extractOAuthCallbackParams(req.url);
-          if (error) {
-            done(new Error(`OAuth authorization denied: ${error}`));
-            return new Response(`Authorization failed: ${error}. You can close this tab.`, {
-              status: 400,
-              headers: { "content-type": "text/plain" },
-            });
-          }
-          if (code) {
-            done(null, code);
-            return new Response("Authorization complete — you can close this tab and return to the terminal.", {
-              headers: { "content-type": "text/plain" },
-            });
-          }
-          return new Response("Waiting for the OAuth callback…", {
+      entry.server.stop(true);
+    } catch {
+      /* already stopped */
+    }
+  }, 0);
+}
+
+function settleWaiter(key: string, waiter: OAuthCallbackWaiter, err: Error | null, code?: string): void {
+  clearTimeout(waiter.timer);
+  removeWaiter(key, waiter);
+  if (err) waiter.reject(err);
+  else waiter.resolve(code as string);
+}
+
+function getCallbackServer(target: URL, key: string): OAuthCallbackServer {
+  const existing = callbackServers.get(key);
+  if (existing) return existing;
+  const port = Number(target.port) || (target.protocol === "https:" ? 443 : 80);
+  const entry: OAuthCallbackServer = {
+    server: Bun.serve({
+      port,
+      hostname: target.hostname,
+      fetch(req) {
+        const reqUrl = new URL(req.url);
+        if (reqUrl.pathname !== target.pathname) {
+          return new Response("Unknown OAuth callback path.", {
+            status: 404,
             headers: { "content-type": "text/plain" },
           });
-        },
-      });
+        }
+        const { code, error, state } = extractOAuthCallbackParams(req.url);
+        const waiter = state ? entry.waitersByState.get(state) : entry.fallbackWaiters[0];
+        if (!waiter) {
+          return new Response("No matching OAuth callback is waiting. You can close this tab.", {
+            status: 400,
+            headers: { "content-type": "text/plain" },
+          });
+        }
+        if (error) {
+          settleWaiter(key, waiter, new Error(`OAuth authorization denied: ${error}`));
+          return new Response(`Authorization failed: ${error}. You can close this tab.`, {
+            status: 400,
+            headers: { "content-type": "text/plain" },
+          });
+        }
+        if (code) {
+          settleWaiter(key, waiter, null, code);
+          return new Response("Authorization complete — you can close this tab and return to the terminal.", {
+            headers: { "content-type": "text/plain" },
+          });
+        }
+        return new Response("Waiting for the OAuth callback…", {
+          headers: { "content-type": "text/plain" },
+        });
+      },
+    }),
+    waitersByState: new Map(),
+    fallbackWaiters: [],
+  };
+  callbackServers.set(key, entry);
+  return entry;
+}
+
+/** Serve the loopback OAuth redirect and resolve with the authorization `code`.
+ * One listener is shared per redirect host/port/path, so concurrent OAuth flows
+ * on the same redirect URL are routed by the authorization `state` parameter
+ * remembered from redirectToAuthorization. Flows without state keep FIFO fallback
+ * compatibility. Rejects on an `error` param, blank code, listen failure, or
+ * timeout. */
+export function waitForOAuthCallback(redirectUrl: string, timeoutMs = 120_000): Promise<string> {
+  const target = new URL(redirectUrl);
+  const key = callbackKey(target);
+  const state = takeOAuthCallbackState(key);
+  return new Promise<string>((resolve, reject) => {
+    let entry: OAuthCallbackServer;
+    try {
+      entry = getCallbackServer(target, key);
     } catch (err) {
-      done(new Error(`could not listen on ${target.host} for the OAuth callback: ${(err as Error).message}`));
+      reject(new Error(`could not listen on ${target.host} for the OAuth callback: ${(err as Error).message}`));
       return;
     }
-    timer = setTimeout(
-      () => done(new Error(`timed out waiting for the OAuth callback on ${target.host}`)),
-      timeoutMs,
-    );
+    const waiter: OAuthCallbackWaiter = {
+      ...(state ? { state } : {}),
+      resolve,
+      reject,
+      timer: setTimeout(
+        () => settleWaiter(key, waiter, new Error(`timed out waiting for the OAuth callback on ${target.host}`)),
+        timeoutMs,
+      ),
+    };
+    if (state) entry.waitersByState.set(state, waiter);
+    else entry.fallbackWaiters.push(waiter);
   });
 }
 

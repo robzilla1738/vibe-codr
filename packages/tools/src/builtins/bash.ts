@@ -59,7 +59,7 @@ export function bashTool(
         if (!jobs) {
           return { output: "Background execution is unavailable here.", isError: true };
         }
-        const job = jobs.start(command, ctx.cwd);
+        const job = jobs.start(command, ctx.cwd, { dangerouslyUnsandboxed });
         return {
           output: `Started ${job.id} in the background. Poll with job_status({id:"${job.id}"}).`,
         };

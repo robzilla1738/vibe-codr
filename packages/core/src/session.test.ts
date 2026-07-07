@@ -563,6 +563,78 @@ test("spend guard with onExceed=stop does NOT block the next turn on ESTIMATED s
   expect(text).toContain("SECOND-RAN");
 });
 
+test("pre-turn spend guard blocks on prior actual spend even after switching to an estimated-price model", async () => {
+  const reply = (delta: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+    ]);
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => [reply("first"), reply("SHOULD-NOT-RUN")][call++] as never });
+  const bus = new EventBus();
+  const session = new Session({
+    config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/actual",
+    mode: "execute",
+    getPricing: async (m) =>
+      m === "mock/estimated"
+        ? { input: 1000, output: 1000, estimated: true }
+        : { input: 1000, output: 1000 },
+  });
+
+  await collect(bus, () => session.run("turn one"));
+  session.setModel("mock/estimated");
+  const events = await collect(bus, () => session.run("turn two"));
+  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  expect(blocked).toBe(true);
+  expect(call).toBe(1);
+});
+
+test("pre-turn spend guard does not block estimated prior spend after switching to an actual-price model", async () => {
+  const reply = (delta: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+    ]);
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => [reply("first"), reply("SECOND-RAN")][call++] as never });
+  const bus = new EventBus();
+  const session = new Session({
+    config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    model: "mock/estimated",
+    mode: "execute",
+    getPricing: async (m) =>
+      m === "mock/estimated"
+        ? { input: 1000, output: 1000, estimated: true }
+        : { input: 1000, output: 1000 },
+  });
+
+  await collect(bus, () => session.run("turn one"));
+  session.setModel("mock/actual");
+  const events = await collect(bus, () => session.run("turn two"));
+  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  expect(blocked).toBe(false);
+  const text = events
+    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .map((e) => e.delta)
+    .join("");
+  expect(text).toContain("SECOND-RAN");
+});
+
 test("spend guard with onExceed=warn notifies once but completes the turn", async () => {
   const reply = () =>
     stream([

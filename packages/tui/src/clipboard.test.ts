@@ -12,9 +12,9 @@ test("clipboardCommands picks the platform tool", () => {
   expect(clipboardCommands("linux").some((c) => c[0] === "xclip")).toBe(true);
 });
 
-test("copyToClipboard writes via the first launcher that succeeds", () => {
+test("copyToClipboard writes via the first launcher that succeeds", async () => {
   const calls: { cmd: string[]; text: string }[] = [];
-  const ok = copyToClipboard("hello", {
+  const ok = await copyToClipboard("hello", {
     platform: "darwin",
     write: (cmd, text) => {
       calls.push({ cmd, text });
@@ -25,9 +25,9 @@ test("copyToClipboard writes via the first launcher that succeeds", () => {
   expect(calls).toEqual([{ cmd: ["pbcopy"], text: "hello" }]);
 });
 
-test("copyToClipboard falls through to the next Linux tool when one can't launch", () => {
+test("copyToClipboard falls through to the next Linux tool when one can't launch", async () => {
   const tried: string[] = [];
-  const ok = copyToClipboard("x", {
+  const ok = await copyToClipboard("x", {
     platform: "linux",
     write: (cmd) => {
       tried.push(cmd[0]!);
@@ -38,9 +38,9 @@ test("copyToClipboard falls through to the next Linux tool when one can't launch
   expect(tried).toEqual(["wl-copy", "xclip"]);
 });
 
-test("copyToClipboard reports success from OSC52 even if no command launches", () => {
+test("copyToClipboard reports success from OSC52 even if no command launches", async () => {
   let osc52Text = "";
-  const ok = copyToClipboard("copied", {
+  const ok = await copyToClipboard("copied", {
     platform: "linux",
     osc52: (t) => {
       osc52Text = t;
@@ -52,14 +52,28 @@ test("copyToClipboard reports success from OSC52 even if no command launches", (
   expect(osc52Text).toBe("copied");
 });
 
-test("copyToClipboard ignores empty text", () => {
+test("copyToClipboard ignores empty text", async () => {
   let called = false;
   const write = () => {
     called = true;
     return true;
   };
-  expect(copyToClipboard("", { write })).toBe(false);
+  expect(await copyToClipboard("", { write })).toBe(false);
   expect(called).toBe(false);
+});
+
+test("copyToClipboard reports failure when every async writer fails", async () => {
+  const tried: string[] = [];
+  const ok = await copyToClipboard("nope", {
+    platform: "linux",
+    write: async (cmd) => {
+      tried.push(cmd[0]!);
+      await new Promise((r) => setTimeout(r, 1));
+      return false;
+    },
+  });
+  expect(ok).toBe(false);
+  expect(tried).toEqual(["wl-copy", "xclip", "xsel"]);
 });
 
 test("bunWrite delivers a large payload intact (no backpressure truncation)", async () => {
@@ -68,17 +82,11 @@ test("bunWrite delivers a large payload intact (no backpressure truncation)", as
   const dir = mkdtempSync(join(tmpdir(), "vibe-clip-"));
   const out = join(dir, "out.txt");
   const payload = "x".repeat(2_000_000);
-  expect(bunWrite(["sh", "-c", `cat > ${out}`], payload)).toBe(true);
-  // Poll for the sink to reach the OS-piped child and complete the copy (re-stat
-  // a fresh Bun.file each iteration — its size is snapshotted at creation).
-  let got = "";
-  for (let i = 0; i < 300; i++) {
-    const f = Bun.file(out);
-    if ((await f.exists()) && f.size >= payload.length) {
-      got = await f.text();
-      break;
-    }
-    await new Promise((r) => setTimeout(r, 10));
-  }
+  expect(await bunWrite(["sh", "-c", `cat > ${out}`], payload)).toBe(true);
+  const got = await Bun.file(out).text();
   expect(got).toBe(payload);
+});
+
+test("bunWrite reports non-zero clipboard command exit as failure", async () => {
+  expect(await bunWrite(["sh", "-c", "cat >/dev/null; exit 7"], "payload")).toBe(false);
 });

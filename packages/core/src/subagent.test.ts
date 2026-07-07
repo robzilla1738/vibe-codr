@@ -778,15 +778,20 @@ test("fork() gives a subagent a fresh context — no inherited history/usage/cos
   // initial*/store in its deps; a forked subagent must NOT inherit any of it.
   const dir = mkdtempSync(join(tmpdir(), "vibe-fork-"));
   const store = new SessionStore(dir);
+  const prompts: string[] = [];
   const model = new MockLanguageModelV2({
-    doStream: async () =>
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return (
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "c" },
         { type: "text-delta", id: "c", delta: "child" },
         { type: "text-end", id: "c" },
         { type: "finish", finishReason: "stop", usage: USAGE },
-      ]) as never,
+      ]) as never
+      );
+    },
   });
   const parent = new Session({
     config: defaultConfig(),
@@ -799,7 +804,9 @@ test("fork() gives a subagent a fresh context — no inherited history/usage/cos
     store,
     // Simulate a resumed parent with prior history / usage / cost.
     initialUsage: { inputTokens: 100, outputTokens: 100 },
+    initialLastInputTokens: 50_000,
     initialCostUSD: 5,
+    initialRecalledContext: "PARENT-RECALL-MARKER do not leak",
     initialModelMessages: [{ role: "user", content: "old history" }],
   });
 
@@ -811,6 +818,8 @@ test("fork() gives a subagent a fresh context — no inherited history/usage/cos
   await child.run("do the subtask");
   // Only the child's own single step is counted (2 tokens), not 200 + 2.
   expect(child.snapshot().usage.totalTokens).toBe(2);
+  expect(prompts[0]).not.toContain("old history");
+  expect(prompts[0]).not.toContain("PARENT-RECALL-MARKER");
   // The child is ephemeral: it must not persist itself into the parent's store
   // (which would pollute /resume and hijack --continue).
   expect(await store.list()).toHaveLength(0);

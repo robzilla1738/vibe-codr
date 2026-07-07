@@ -178,16 +178,20 @@ test("a corrupt GLOBAL meta.json falls back to an intact LEGACY copy (load agree
   expect(loaded!.meta.goal).toBe("from-legacy"); // fell back to the intact legacy copy
 });
 
-test("load tolerates a truncated trailing line in messages.jsonl", async () => {
+test("load warns and truncates at a corrupt messages.jsonl line", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
   const store = new SessionStore(cwd);
   const a = fixture();
   await store.save(a.meta, a.model, a.history);
-  // Append a half-written line (a crash mid-append) — load should skip it.
+  // Append a half-written line followed by a syntactically-valid line. Loading
+  // must stop at the corrupt line rather than skipping it and accepting later
+  // lines that may have lost their matching tool-call context.
   const path = join(sessionDir(cwd, a.meta.id), "messages.jsonl");
-  await Bun.write(path, `${await Bun.file(path).text()}\n{"role":"assistant","cont`);
+  await Bun.write(path, `${await Bun.file(path).text()}\n{"role":"assistant","cont\n{"role":"user","content":"after corrupt"}`);
   const loaded = await store.load(a.meta.id);
   expect(loaded!.modelMessages).toEqual(a.model); // the good lines survive
+  expect(loaded!.warnings?.[0]).toContain("corrupt JSONL line");
+  expect(loaded!.warnings?.[0]).toContain("messages.jsonl");
 });
 
 test("save leaves no .tmp files behind", async () => {

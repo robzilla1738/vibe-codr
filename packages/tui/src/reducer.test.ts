@@ -85,8 +85,9 @@ test("tool-finish output objects are JSON-stringified", () => {
 
 test("file-changed folds the diff into the producing tool block and suppresses its echo", () => {
   let s = run([
-    { type: "tool-start", toolCallId: "c1", toolName: "edit", input: { path: "a.ts" } },
-    { type: "file-changed", toolCallId: "c1", path: "a.ts", action: "edit", added: 3, removed: 1, diff: "+a\n-b" },
+    { type: "tool-start", toolCallId: "c1", toolName: "edit", input: { path: "a.ts" }, at: 1000 },
+    { type: "tool-progress", toolCallId: "c1", chunk: "rewriting file..." },
+    { type: "file-changed", toolCallId: "c1", path: "a.ts", action: "edit", added: 3, removed: 1, diff: "+a\n-b", at: 4500 },
   ]);
   // Only one block (the tool block became the diff), not a separate diff row.
   expect(s.blocks).toHaveLength(1);
@@ -95,6 +96,9 @@ test("file-changed folds the diff into the producing tool block and suppresses i
   expect(t.collapsed).toBe(false); // diffs are expanded by default
   expect(t.label).toContain("edited a.ts");
   expect(t.output).toEqual(["+a", "-b"]);
+  expect(t.startedAt).toBe(1000);
+  expect(t.elapsedMs).toBe(3500);
+  expect(t.tail).toContain("rewriting file");
   // The suppressed finish echo is dropped (no output overwrite, no new block).
   s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "ok", isError: false });
   expect(s.blocks).toHaveLength(1);

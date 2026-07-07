@@ -540,11 +540,17 @@ export class McpHub {
     server?: string,
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<string> {
-    const entry = this.#entries.find(
+    const entries = this.#entries.filter(
       (e) =>
         e.client?.readResource &&
         (server ? e.name === server : e.resources.some((r) => r.uri === uri)),
     );
+    if (!server && entries.length > 1) {
+      throw new Error(
+        `MCP resource "${uri}" is provided by multiple servers (${entries.map((e) => e.name).join(", ")}); pass \`server\` to disambiguate.`,
+      );
+    }
+    const entry = entries[0];
     if (!entry?.client?.readResource) {
       throw new Error(`no MCP server provides resource "${uri}"`);
     }
@@ -679,6 +685,16 @@ export class McpHub {
    * (fired during shutdown) can't kick off a reconnect loop. */
   async close(): Promise<void> {
     this.#closed = true;
+    for (const entry of this.#entries) this.#unregisterServerTools(entry);
+    if (this.#resourceToolRegistered) {
+      this.#deps.unregisterTool?.("read_mcp_resource");
+      this.#resourceToolRegistered = false;
+    }
+    if (this.#promptToolRegistered) {
+      this.#deps.unregisterTool?.("get_mcp_prompt");
+      this.#promptToolRegistered = false;
+    }
+    this.#usedNames.clear();
     await Promise.all(this.#entries.map((e) => e.client?.close().catch(() => undefined)));
     this.#entries = [];
   }

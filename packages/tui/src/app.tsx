@@ -90,7 +90,7 @@ import {
 } from "./rich-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH, windowTasks } from "./headless.ts";
-import { commandsForUiMode, deriveUiMode, modeColor, nextUiMode } from "./modes.ts";
+import { commandsForUiMode, deriveUiMode, engineStateForUiMode, modeColor, nextUiMode } from "./modes.ts";
 import { cleanupClipboardTempDir, readClipboardImage } from "./clipboard-image.ts";
 import { composeInEditor, type EditorSpawn } from "./editor-compose.ts";
 import { brandSpans, rainbow } from "./gradient.ts";
@@ -159,6 +159,7 @@ const WINDOW_TURNS = 40;
  * on the hot streaming path). See `turnWindowStart`. */
 const TURN_ITEMS_MAX = 120;
 const TURN_ITEMS_STEP = 24;
+const TURN_ITEM_REVEAL_PAGE = TURN_ITEMS_STEP;
 /** Turns each tap of the fold row reveals. */
 const REVEAL_PAGE = 20;
 /** The wordmark is rendered with OpenTUI's native ASCII-font renderable
@@ -218,6 +219,15 @@ export function App(props: { engine: EngineClient }) {
   const [revealTurns, setRevealTurns] = createSignal(0);
   const windowStart = createMemo(() => windowStartIndex(turns().length, WINDOW_TURNS, revealTurns()));
   const windowedTurns = createMemo(() => turns().slice(windowStart()));
+  const [revealedTurnItems, setRevealedTurnItems] = createSignal<Map<number, number>>(new Map());
+  const revealTurnItems = (turnKey: number, hidden: number) =>
+    anchoredToggle(() => {
+      setRevealedTurnItems((prev) => {
+        const next = new Map(prev);
+        next.set(turnKey, (next.get(turnKey) ?? 0) + Math.min(TURN_ITEM_REVEAL_PAGE, hidden));
+        return next;
+      });
+    });
   // Ctrl+O: fold every turn that has a node + work, or unfold all if any is folded.
   const toggleAllTurns = () =>
     setCollapsedTurns((prev) =>
@@ -488,6 +498,7 @@ export function App(props: { engine: EngineClient }) {
   // completed list hides so it doesn't linger) — shared by the inline panel
   // and the sidebar so exactly one of them ever renders it.
   const tasksVisible = () => tasks().length > 0 && tasks().some((t) => t.status !== "completed");
+  const hasRunningSubagents = () => subagents().some((s) => s.status === "running");
   // The right sidebar mounts on a wide terminal whenever there is work to host:
   // ANY task list (completed ones included — it must not vanish, reflowing the
   // whole transcript, the moment the last task finishes), a running turn, or a
@@ -581,12 +592,15 @@ export function App(props: { engine: EngineClient }) {
     if (selection.isDragging) return; // still dragging → wait for the release
     const text = selection.getSelectedText?.() ?? "";
     if (!text.trim()) return;
-    try {
-      copyToClipboard(text, { osc52: (t) => renderer.copyToClipboardOSC52?.(t) ?? false });
-      flashCopied();
-    } catch {
-      // best-effort — ignore clipboard failures
-    }
+    void (async () => {
+      try {
+        if (await copyToClipboard(text, { osc52: (t) => renderer.copyToClipboardOSC52?.(t) ?? false })) {
+          flashCopied();
+        }
+      } catch {
+        // best-effort — ignore clipboard failures
+      }
+    })();
   });
 
   // ESTIMATE of the input's current row count, used only to budget the menu
@@ -1029,6 +1043,41 @@ export function App(props: { engine: EngineClient }) {
     if (!flushTimer) flushTimer = setTimeout(flushAssistant, STREAM_FLUSH_MS);
   };
 
+  let suppressAfterClear = false;
+  const clearScopedEventTypes = new Set<UIEvent["type"]>([
+    "assistant-text-delta",
+    "reasoning-delta",
+    "tool-call-started",
+    "tool-call-progress",
+    "tool-call-finished",
+    "file-changed",
+    "permission-request",
+    "plan-presented",
+    "subagent-started",
+    "subagent-activity",
+    "subagent-finished",
+    "notice",
+    "compacted",
+    "loop-stopped",
+    "loop-tick",
+    "checkpoint-restored",
+    "verify-started",
+    "verify-finished",
+    "engine-error",
+  ]);
+  const shouldSuppressAfterClear = (event: UIEvent) => {
+    if (!suppressAfterClear) return false;
+    if (event.type === "user-message") {
+      suppressAfterClear = false;
+      return false;
+    }
+    if (event.type === "turn-finished" || event.type === "session-idle") {
+      suppressAfterClear = false;
+      return true;
+    }
+    return clearScopedEventTypes.has(event.type);
+  };
+
   // Two ways to apply a transcript action. Both land buffered stream text
   // first (so the action sees the up-to-date reply) and reduce IMMEDIATELY —
   // `ts` is always in exact event order. They differ only in when the state
@@ -1192,8 +1241,12 @@ export function App(props: { engine: EngineClient }) {
   // name "tab" with `shift` set. The engine emits mode/approvals events back,
   // which refresh the header.
   const cycleMode = () => {
-    const target = nextUiMode(deriveUiMode(mode, approvals));
+    const target = nextUiMode(uiMode());
     for (const cmd of commandsForUiMode(target)) props.engine.send(cmd);
+    const next = engineStateForUiMode(target);
+    mode = next.mode;
+    approvals = next.approvals;
+    setUiMode(target);
   };
   // Graceful exit — the SAME teardown the `/exit` command runs (await finalize:
   // session digest, background-job reap, MCP close — then exit; OpenTUI's own
@@ -1461,10 +1514,10 @@ export function App(props: { engine: EngineClient }) {
 
   onMount(() => {
     // Animate the working spinner / elapsed clock while a turn runs — and also
-    // while the /jobs sub-view is open, so its per-job running spinners actually
-    // spin (otherwise `tick` never advances at idle and they freeze).
+    // while independent running rows are visible, so jobs/subagents keep moving
+    // after the parent turn itself has gone idle.
     const timer = setInterval(() => {
-      if (working() || showJobs()) setTick((t) => t + 1);
+      if (working() || showJobs() || hasRunningSubagents()) setTick((t) => t + 1);
     }, 90);
     onCleanup(() => {
       clearInterval(timer);
@@ -1477,12 +1530,13 @@ export function App(props: { engine: EngineClient }) {
       // landPending's frame flush and the /clear reset.
       // The reducer owns per-turn call maps; endTurn lands any dangling
       // thinking, finalizes the reply, drops the maps, and stops the spinner.
-      const endTurn = () => {
+      const endTurn = (opts: { stopWorking?: boolean } = {}) => {
         commitThinking();
         apply({ type: "clear-turn" });
-        setWorking(false);
+        if (opts.stopWorking ?? true) setWorking(false);
       };
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
+        if (shouldSuppressAfterClear(event)) continue;
         // A throwing handler must not kill this loop: the keyboard hook lives
         // outside it, so an uncaught throw here used to leave a half-alive UI
         // (typing works, nothing updates) with no visible cause. Surface the
@@ -1571,6 +1625,7 @@ export function App(props: { engine: EngineClient }) {
               action: event.action,
               added: event.added,
               removed: event.removed,
+              at: Date.now(),
               ...(event.diff ? { diff: event.diff } : {}),
             });
             break;
@@ -1686,9 +1741,13 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "turn-finished":
           case "session-idle":
-            // The turn ended — finalize the reply, drop per-turn maps, stop the
-            // spinner.
-            endTurn();
+            // A model turn ended — finalize the reply and drop per-turn maps, but
+            // keep the spinner alive until engine-idle so automated follow-up
+            // turns don't briefly look idle between queue-drain passes.
+            endTurn({ stopWorking: false });
+            break;
+          case "engine-idle":
+            endTurn({ stopWorking: true });
             break;
           case "notice":
             enqueue({ type: "notice", text: event.message, level: event.level });
@@ -1802,6 +1861,7 @@ export function App(props: { engine: EngineClient }) {
     // is in flight so the engine stops streaming into the cleared screen.
     if (text === "/clear" || text === "/new") {
       if (working()) props.engine.send({ type: "abort" });
+      suppressAfterClear = true;
       pendingDelta = "";
       pendingProgress.clear();
       resetTranscript();
@@ -2202,11 +2262,17 @@ export function App(props: { engine: EngineClient }) {
             {(turn) => {
               const hasNode = () => turn().user !== undefined;
               const items = () => turn().items;
-              const itemStart = () => turnWindowStart(items().length, TURN_ITEMS_MAX, TURN_ITEMS_STEP);
+              const revealedItems = () => revealedTurnItems().get(turn().key) ?? 0;
+              const itemStart = () =>
+                turnWindowStart(items().length, TURN_ITEMS_MAX, TURN_ITEMS_STEP, revealedItems());
               const visibleItems = () => items().slice(itemStart());
               const folded = () => hasNode() && collapsedTurns().has(turn().key);
               const foldTap = () => {
                 if (hasNode() && items().length > 0) anchoredToggle(() => toggleTurn(turn().key));
+              };
+              const hiddenTap = () => {
+                const hidden = itemStart();
+                if (hidden > 0) revealTurnItems(turn().key, hidden);
               };
               // Content width inside a block = column pad(2) + block left border(1) +
               // block padding L(2)+R(2) = 7 consumed.
@@ -2253,9 +2319,11 @@ export function App(props: { engine: EngineClient }) {
                         paddingRight={2}
                       >
                         <Show when={itemStart() > 0}>
-                          <text flexShrink={0} fg={palette().muted} marginBottom={1}>
-                            {`▸ ${itemStart()} earlier item${itemStart() === 1 ? "" : "s"} in this turn hidden`}
-                          </text>
+                          <box flexDirection="column" flexShrink={0} marginBottom={1} onMouseDown={hiddenTap}>
+                            <text flexShrink={0} fg={palette().muted}>
+                              {`▸ ${itemStart()} earlier item${itemStart() === 1 ? "" : "s"} in this turn hidden · tap to load ${Math.min(TURN_ITEM_REVEAL_PAGE, itemStart())} more`}
+                            </text>
+                          </box>
                         </Show>
                         <Index each={visibleItems()}>
                           {(blk, i) => {
@@ -3305,7 +3373,7 @@ function AssistantText(props: {
                       can't trigger. Inline bold/italic/code still conceal here. */}
                   <markdown
                     content={(block() as Extract<MdBlock, { kind: "prose" }>).text}
-                    streaming={false}
+                    streaming={props.streaming}
                     syntaxStyle={props.style!}
                     fg={props.fg}
                   />

@@ -234,6 +234,10 @@ export class Session {
   #contextWindow = DEFAULT_CONTEXT_WINDOW;
   /** Cost accrued per step at the price in effect then (correct across model switches). */
   #costUSD: number;
+  /** Portion of accrued cost priced from exact/non-estimated pricing. */
+  #actualCostUSD: number;
+  /** True once any accrued cost came from an estimated/base-model fallback price. */
+  #costEstimated = false;
   #price: (ModelPrice & { estimated?: boolean }) | undefined;
   #turnMutated = false;
   /** Set once the session's cumulative cost crosses the configured budget. */
@@ -327,6 +331,7 @@ export class Session {
         : {}),
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
+    this.#actualCostUSD = deps.initialCostUSD ?? 0;
     this.#lastInputTokens = deps.initialLastInputTokens ?? 0;
     this.#recalledContext = deps.initialRecalledContext;
     if (deps.initialSources?.length) this.#sources.hydrate(deps.initialSources);
@@ -378,6 +383,8 @@ export class Session {
     if (child.didMutate) this.#turnMutated = true;
     addUsage(this.#usage, child.usage);
     this.#costUSD += child.costUSD;
+    this.#actualCostUSD += child.actualCostUSD;
+    this.#costEstimated ||= child.costEstimated;
     this.#deps.bus.emit({ type: "usage-updated", sessionId: this.id, usage: this.#usageSnapshot() });
     this.#enforceBudget();
   }
@@ -410,7 +417,7 @@ export class Session {
       costUSD: this.#costUSD,
       // The cost is an estimate when the active price came from a base-model
       // catalog fallback (e.g. an Ollama Cloud tag) rather than an exact entry.
-      ...(this.#price?.estimated && this.#costUSD > 0 ? { costEstimated: true } : {}),
+      ...(this.#costEstimated && this.#costUSD > 0 ? { costEstimated: true } : {}),
       ...(this.#usage.cachedInputTokens
         ? { cachedInputTokens: this.#usage.cachedInputTokens }
         : {}),
@@ -432,14 +439,16 @@ export class Session {
         level: "warn",
         message: `Spend limit reached: $${this.#costUSD.toFixed(4)} ≥ $${budget.limitUSD} (${budget.onExceed}).`,
       });
-      // Only HARD-STOP on cost we actually know. An `estimated` price is a
-      // base-model catalog guess (e.g. a local `lmstudio/…`/`ollama/…` tag that
-      // inherited a cloud namesake's rate for a model that may be genuinely free)
-      // — aborting a session on phantom spend is worse than letting it run. The
-      // warn above still fires so the user sees the (estimated) crossing.
-      if (budget.onExceed === "stop" && !this.#price?.estimated) this.#abort.abort();
     }
+    // Only HARD-STOP on cost we actually know. Estimated/base-model fallback
+    // spend still warns above, but cannot by itself abort or block a session.
+    if (budget.onExceed === "stop" && this.#actualCostUSD >= budget.limitUSD) this.#abort.abort();
     return true;
+  }
+
+  #hardBudgetExceeded(): boolean {
+    const budget = this.#deps.config.budget;
+    return !!budget.limitUSD && budget.onExceed === "stop" && this.#actualCostUSD >= budget.limitUSD;
   }
 
   /** Cumulative token totals for this session (for persistence/diagnostics). */
@@ -450,6 +459,14 @@ export class Session {
   /** Accrued cost in USD for this session (incl. folded-in subagent cost). */
   get costUSD(): number {
     return this.#costUSD;
+  }
+
+  get actualCostUSD(): number {
+    return this.#actualCostUSD;
+  }
+
+  get costEstimated(): boolean {
+    return this.#costEstimated;
   }
 
   /** The last turn's fatal error message, or null if it succeeded. */
@@ -851,14 +868,12 @@ export class Session {
     let histRef: Message | undefined;
 
     try {
-      // If a prior turn already blew the spend limit under `stop`, refuse the new
+      // If prior ACTUAL spend already blew the spend limit under `stop`, refuse the new
       // turn — but do so BEFORE pushing the user message, so we don't leave an
       // orphan user turn with no assistant reply (consecutive same-role messages
-      // 400 on Anthropic/others). The user sees why via a notice. Only ACTUAL
-      // (non-estimated) spend blocks a new turn: an estimated base-model price
-      // must never hard-stop a possibly-free local session — same invariant the
-      // in-turn abort honors.
-      if (config.budget.onExceed === "stop" && !this.#price?.estimated && this.#enforceBudget()) {
+      // 400 on Anthropic/others). Estimated/base-model fallback spend can warn,
+      // but never hard-stops a possibly-free local session.
+      if (this.#hardBudgetExceeded()) {
         bus.emit({
           type: "notice",
           level: "warn",
@@ -1267,13 +1282,16 @@ export class Session {
           }
           // Accrue cost at the price in effect for this step, so a mid-session
           // model/price change doesn't retroactively reprice earlier tokens.
-          this.#costUSD += computeCost(
+          const stepCostUSD = computeCost(
             stepUsage?.inputTokens ?? 0,
             stepUsage?.outputTokens ?? 0,
             this.#price,
             stepUsage?.cachedInputTokens ?? 0,
             cacheWrites,
           );
+          this.#costUSD += stepCostUSD;
+          if (this.#price?.estimated) this.#costEstimated = true;
+          else this.#actualCostUSD += stepCostUSD;
           bus.emit({
             type: "usage-updated",
             sessionId: this.id,
@@ -1676,7 +1694,10 @@ export class Session {
       initialHistory: undefined,
       initialTasks: undefined,
       initialUsage: undefined,
+      initialLastInputTokens: undefined,
       initialCostUSD: undefined,
+      initialRecalledContext: undefined,
+      initialSources: undefined,
       store: undefined,
       extraSystem: undefined,
       // Don't inherit a parent agent's tool restriction — #forkChild re-applies

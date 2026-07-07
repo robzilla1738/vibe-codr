@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
-import { readTaskReport, taskReportPath } from "../build/journal.ts";
+import { readTaskObjective, readTaskReport, taskReportPath } from "../build/journal.ts";
 
 /**
  * Per-session-tree store of finished orchestrator task reports. A task handoff
@@ -44,7 +44,9 @@ export class ReportStore {
     const hit = this.#mem.get(taskId);
     if (hit) return hit;
     const disk = readTaskReport(this.#cwd, taskReportPath(this.#cwd, this.#sessionId, taskId));
-    return disk !== null ? { objective: taskId, output: disk } : null;
+    return disk !== null
+      ? { objective: readTaskObjective(this.#cwd, this.#sessionId, taskId) ?? taskId, output: disk }
+      : null;
   }
 }
 

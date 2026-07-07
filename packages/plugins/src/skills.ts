@@ -62,6 +62,9 @@ export function parseSkillMarkdown(rawInput: string): {
   // block leaks into the body/prompt.
   const raw = rawInput.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match && raw.startsWith("---\n")) {
+    throw new Error("Unclosed frontmatter fence: expected closing --- line");
+  }
   if (!match) return { frontmatter: {}, body: raw };
   const frontmatter: Record<string, string> = {};
   const lines = (match[1] ?? "").split("\n");

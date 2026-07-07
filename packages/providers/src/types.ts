@@ -56,6 +56,8 @@ export interface ProviderCreateOptions {
 export interface ProviderAuth {
   env: string[];
   baseURLEnv?: string;
+  /** True when keyless auth is allowed but an endpoint URL is still required. */
+  requiresBaseURL?: boolean;
   /** True for providers that need no key (e.g. LM Studio on localhost). */
   keyless?: boolean;
   /** Default credential file to read a token from (e.g. Codex's auth.json). */

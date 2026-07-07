@@ -16,22 +16,23 @@ export function clipboardCommands(platform: string): string[][] {
   return [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]];
 }
 
-/** Spawn `cmd` and pipe `text` to its stdin. Returns false if it can't launch. */
-export type ClipboardWriter = (cmd: string[], text: string) => boolean;
+/** Spawn `cmd` and pipe `text` to its stdin. Returns false if it can't launch or complete. */
+export type ClipboardWriter = (cmd: string[], text: string) => boolean | Promise<boolean>;
 
-export const bunWrite: ClipboardWriter = (cmd, text) => {
+export const bunWrite: ClipboardWriter = async (cmd, text) => {
+  let proc: ReturnType<typeof Bun.spawn> | undefined;
   try {
-    const proc = Bun.spawn(cmd, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+    proc = Bun.spawn(cmd, { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+    const stdin = proc.stdin;
+    if (!stdin || typeof stdin === "number") return false;
     // Flush the write BEFORE end(): a large selection can return a pending write
     // under backpressure, and end()ing immediately would truncate it. Reap the
     // child too (`proc.exited`) so a long session doesn't leak one zombie per copy.
-    const flushed = proc.stdin.write(text);
-    void Promise.resolve(flushed)
-      .then(() => proc.stdin.end())
-      .catch(() => {});
-    void proc.exited.catch(() => {});
-    return true;
+    await Promise.resolve(stdin.write(text));
+    await Promise.resolve(stdin.end());
+    return (await proc.exited) === 0;
   } catch {
+    proc?.kill();
     return false; // binary not found / spawn failed — try the next candidate
   }
 };
@@ -41,10 +42,10 @@ export const bunWrite: ClipboardWriter = (cmd, text) => {
  * renderer's `copyToClipboardOSC52`) AND writes to the first platform command that
  * launches. Returns whether any path reported success.
  */
-export function copyToClipboard(
+export async function copyToClipboard(
   text: string,
   opts: { osc52?: (t: string) => boolean; write?: ClipboardWriter; platform?: string } = {},
-): boolean {
+): Promise<boolean> {
   if (!text) return false;
   let ok = false;
   try {
@@ -54,7 +55,7 @@ export function copyToClipboard(
   }
   const write = opts.write ?? bunWrite;
   for (const cmd of clipboardCommands(opts.platform ?? process.platform)) {
-    if (write(cmd, text)) return true;
+    if (await write(cmd, text)) return true;
   }
   return ok;
 }

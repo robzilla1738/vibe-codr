@@ -541,15 +541,19 @@ test("pipeline: task continuations charge the UNIFIED goal budget and exhaust wi
   expect(engine.snapshot().goal).toBe("do the impossible");
 });
 
-test("applyGateToVerdict: a met verdict can never stand on a red gate", () => {
+test("applyGateToVerdict: a met verdict requires a green gate", () => {
   const met = { met: true, gaps: [], reason: "looks done" };
   expect(applyGateToVerdict(met, "green")).toEqual(met);
+  const red = applyGateToVerdict(met, "red");
+  expect(red.met).toBe(false);
+  expect(red.gaps).toContain("project checks failing (gate red)");
+  const unverified = applyGateToVerdict(met, "unverified");
+  expect(unverified.met).toBe(false);
+  expect(unverified.gaps).toContain("project checks unverified");
   expect(applyGateToVerdict(met, undefined)).toEqual(met);
-  const overridden = applyGateToVerdict(met, "red");
-  expect(overridden.met).toBe(false);
-  expect(overridden.gaps).toContain("project checks failing (gate red)");
   const notMet = { met: false, gaps: ["x"], reason: "gaps" };
   expect(applyGateToVerdict(notMet, "red")).toEqual(notMet);
+  expect(applyGateToVerdict(notMet, "unverified")).toEqual(notMet);
 });
 
 test("pipeline: a live run persists to engine.json and --resume re-enters it", async () => {

@@ -174,6 +174,15 @@ test("HookBus isolates a throwing onError reporter too", async () => {
   expect(out.reason).toBe("continued");
 });
 
+test("HookBus merges partial handler returns without dropping required payload fields", async () => {
+  const bus = new HookBus();
+  bus.on("user.prompt.submit", () => ({ deny: false }) as never);
+  bus.on("user.prompt.submit", (p) => ({ text: `${p.text} kept` }));
+
+  const out = await bus.run("user.prompt.submit", { text: "original" });
+  expect(out).toEqual({ text: "original kept", deny: false });
+});
+
 test("parseSlash only treats plausible slash command names as commands", () => {
   expect(parseSlash("/queue clear")).toEqual({ name: "queue", args: "clear" });
   expect(parseSlash("/run-tests src")).toEqual({ name: "run-tests", args: "src" });
@@ -185,7 +194,7 @@ test("parseSlash only treats plausible slash command names as commands", () => {
   expect(parseSlash("/foo.bar")).toBeNull();
 });
 
-test("CommandRegistry ignores names the slash parser can never dispatch", () => {
+test("CommandRegistry rejects names the slash parser can never dispatch", () => {
   const commands = new CommandRegistry();
   commands.register({
     name: "ship-it",
@@ -193,18 +202,22 @@ test("CommandRegistry ignores names the slash parser can never dispatch", () => 
     source: "plugin",
     run: () => ({ kind: "notice", message: "ok" }),
   });
-  commands.register({
-    name: "ship.it",
-    description: "dead",
-    source: "plugin",
-    run: () => ({ kind: "notice", message: "dead" }),
-  });
-  commands.register({
-    name: "ship it",
-    description: "dead",
-    source: "plugin",
-    run: () => ({ kind: "notice", message: "dead" }),
-  });
+  expect(() =>
+    commands.register({
+      name: "ship.it",
+      description: "dead",
+      source: "plugin",
+      run: () => ({ kind: "notice", message: "dead" }),
+    }),
+  ).toThrow(/Invalid slash command name/);
+  expect(() =>
+    commands.register({
+      name: "ship it",
+      description: "dead",
+      source: "plugin",
+      run: () => ({ kind: "notice", message: "dead" }),
+    }),
+  ).toThrow(/Invalid slash command name/);
 
   expect(commands.get("ship-it")).toBeDefined();
   expect(commands.get("ship.it")).toBeUndefined();

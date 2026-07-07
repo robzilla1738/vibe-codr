@@ -6,11 +6,18 @@ import {
   buildOnboardingPatch,
   PROVIDER_CHOICES,
   initialChoiceIndex,
+  choiceIsConfigured,
+  modelListOptions,
 } from "./onboarding.ts";
 
-const stub = (id: string, env: string[], keyless = false): ProviderDef => ({
+const stub = (
+  id: string,
+  env: string[],
+  keyless = false,
+  auth: Partial<ProviderDef["auth"]> = {},
+): ProviderDef => ({
   id,
-  auth: keyless ? { env, keyless: true } : { env },
+  auth: keyless ? { env, keyless: true, ...auth } : { env, ...auth },
   create: () => ({}) as never,
   listModels: async () => [],
 });
@@ -18,12 +25,20 @@ const stub = (id: string, env: string[], keyless = false): ProviderDef => ({
 const registry = new ProviderRegistry([
   stub("anthropic", ["ANTHROPIC_API_KEY"]),
   stub("lmstudio", [], true),
+  stub("ollama", ["OLLAMA_API_KEY"], true),
+  stub("custom", ["CUSTOM_API_KEY"], true, { baseURLEnv: "CUSTOM_BASE_URL", requiresBaseURL: true }),
 ]);
 
 const realKey = process.env.ANTHROPIC_API_KEY;
+const realOllamaKey = process.env.OLLAMA_API_KEY;
+const realCustomBaseURL = process.env.CUSTOM_BASE_URL;
 afterEach(() => {
   if (realKey === undefined) delete process.env.ANTHROPIC_API_KEY;
   else process.env.ANTHROPIC_API_KEY = realKey;
+  if (realOllamaKey === undefined) delete process.env.OLLAMA_API_KEY;
+  else process.env.OLLAMA_API_KEY = realOllamaKey;
+  if (realCustomBaseURL === undefined) delete process.env.CUSTOM_BASE_URL;
+  else process.env.CUSTOM_BASE_URL = realCustomBaseURL;
 });
 
 test("needs onboarding when the model's provider has no key", () => {
@@ -47,9 +62,34 @@ test("no onboarding for a keyless provider (e.g. LM Studio)", () => {
   expect(needsOnboarding(config, registry)).toBe(false);
 });
 
+test("custom endpoint needs onboarding until a base URL is configured", () => {
+  delete process.env.CUSTOM_BASE_URL;
+  expect(needsOnboarding({ ...defaultConfig(), model: "custom/foo" }, registry)).toBe(true);
+  expect(
+    needsOnboarding(
+      { ...defaultConfig(), model: "custom/foo", providers: { custom: { baseURL: "https://endpoint.example.com/v1" } } },
+      registry,
+    ),
+  ).toBe(false);
+  process.env.CUSTOM_BASE_URL = "https://env-endpoint.example.com/v1";
+  expect(needsOnboarding({ ...defaultConfig(), model: "custom/foo" }, registry)).toBe(false);
+});
+
 test("no onboarding for an unknown provider (handled by normal errors)", () => {
   const config = { ...defaultConfig(), model: "mystery/x" };
   expect(needsOnboarding(config, registry)).toBe(false);
+});
+
+test("malformed model strings for known providers reopen onboarding", () => {
+  delete process.env.ANTHROPIC_API_KEY;
+  expect(needsOnboarding({ ...defaultConfig(), model: "anthropic" }, registry)).toBe(true);
+  expect(needsOnboarding({ ...defaultConfig(), model: "anthropic/" }, registry)).toBe(true);
+  expect(needsOnboarding({ ...defaultConfig(), model: "lmstudio" }, registry)).toBe(true);
+});
+
+test("malformed model strings for unknown providers still fall through to normal errors", () => {
+  expect(needsOnboarding({ ...defaultConfig(), model: "mystery" }, registry)).toBe(false);
+  expect(needsOnboarding({ ...defaultConfig(), model: "/missing-provider" }, registry)).toBe(false);
 });
 
 test("buildOnboardingPatch includes keys only when provided", () => {
@@ -120,6 +160,21 @@ test("Ollama Cloud is offered as a key-required choice on the `ollama` provider"
   expect(cloud?.defaultModel).toMatch(/^ollama\//);
 });
 
+test("Ollama Cloud choice requires an actual key despite the local keyless provider", () => {
+  delete process.env.OLLAMA_API_KEY;
+  const cloud = PROVIDER_CHOICES.find((c) => c.key === "ollama-cloud")!;
+  const local = PROVIDER_CHOICES.find((c) => c.key === "ollama-local")!;
+  expect(choiceIsConfigured(cloud, defaultConfig(), registry)).toBe(false);
+  expect(choiceIsConfigured(local, defaultConfig(), registry)).toBe(true);
+  expect(choiceIsConfigured(
+    cloud,
+    { ...defaultConfig(), providers: { ollama: { apiKey: "ol-saved" } } },
+    registry,
+  )).toBe(true);
+  process.env.OLLAMA_API_KEY = "ol-env";
+  expect(choiceIsConfigured(cloud, defaultConfig(), registry)).toBe(true);
+});
+
 test("an Ollama Cloud key persists onto the ollama provider (enables cloud URL)", () => {
   // The registry swaps to ollama.com when providers.ollama.apiKey is set.
   expect(
@@ -131,6 +186,23 @@ test("an Ollama Cloud key persists onto the ollama provider (enables cloud URL)"
   ).toEqual({
     model: "ollama/gpt-oss:120b-cloud",
     providers: { ollama: { apiKey: "ol-cloud-key" } },
+  });
+});
+
+test("Ollama local model listing does not inherit cloud credentials", () => {
+  process.env.OLLAMA_API_KEY = "ol-env";
+  const local = PROVIDER_CHOICES.find((c) => c.key === "ollama-local")!;
+  const cloud = PROVIDER_CHOICES.find((c) => c.key === "ollama-cloud")!;
+  const config = {
+    ...defaultConfig(),
+    providers: { ollama: { apiKey: "ol-saved", baseURL: "http://local.example:11434/v1" } },
+  };
+
+  expect(modelListOptions(registry, local, config, process.env.OLLAMA_API_KEY)).toEqual({
+    baseURL: "http://local.example:11434/v1",
+  });
+  expect(modelListOptions(registry, cloud, config, process.env.OLLAMA_API_KEY)).toEqual({
+    apiKey: "ol-env",
   });
 });
 

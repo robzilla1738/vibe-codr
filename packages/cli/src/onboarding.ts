@@ -1,7 +1,7 @@
 import { emitKeypressEvents } from "node:readline";
 import { stdin, stdout } from "node:process";
 import { writeGlobalConfig, globalConfigPath, type Config } from "@vibe/config";
-import type { ProviderRegistry, ModelInfo, ProviderCreateOptions } from "@vibe/providers";
+import { parseModelString, type ProviderRegistry, type ModelInfo, type ProviderCreateOptions } from "@vibe/providers";
 import {
   PROVIDER_CHOICES,
   initialChoiceIndex,
@@ -19,10 +19,61 @@ export function needsOnboarding(
   config: Config,
   registry: ProviderRegistry,
 ): boolean {
-  const providerId = config.model.split("/")[0] ?? "";
+  let providerId: string;
+  try {
+    providerId = parseModelString(config.model).providerId;
+  } catch {
+    const trimmed = config.model.trim();
+    if (registry.has(trimmed)) return true;
+    const slash = trimmed.indexOf("/");
+    if (slash > 0 && registry.has(trimmed.slice(0, slash))) return true;
+    return false;
+  }
   const def = registry.get(providerId);
-  if (!def || def.auth.keyless) return false;
+  if (!def) return false;
   return !registry.isConfigured(providerId, config);
+}
+
+export function choiceIsConfigured(
+  choice: ProviderChoice,
+  config: Config,
+  registry: ProviderRegistry,
+): boolean {
+  if (choice.localKeyless) return true;
+  if (choice.customEndpoint) return false;
+  const def = registry.get(choice.registryId);
+  if (!def) return false;
+  if (def.auth.keyless) {
+    // Shared-id providers can be keyless for local use but key-required for a
+    // specific menu choice (Ollama local vs Ollama Cloud). For those choices,
+    // require an actual resolved credential instead of accepting keyless.
+    if (choice.env || choice.keyUrl) {
+      return Boolean(registry.resolveAuth(choice.registryId, config).apiKey);
+    }
+    return true;
+  }
+  return registry.isConfigured(choice.registryId, config);
+}
+
+export function modelListOptions(
+  registry: ProviderRegistry,
+  choice: ProviderChoice,
+  config: Config,
+  apiKey: string | undefined,
+): ProviderCreateOptions {
+  if (choice.localKeyless) {
+    const provider = config.providers[choice.registryId];
+    return {
+      ...(provider?.baseURL !== undefined ? { baseURL: provider.baseURL } : {}),
+      ...(provider?.headers !== undefined ? { headers: provider.headers } : {}),
+    };
+  }
+  if (apiKey) return { apiKey };
+  try {
+    return registry.resolveAuth(choice.registryId, config);
+  } catch {
+    return {};
+  }
 }
 
 export interface OnboardingAnswers {
@@ -405,18 +456,11 @@ async function chooseModel(
   apiKey: string | undefined,
 ): Promise<string> {
   const def = registry.get(choice.registryId);
-  // A key in `opts` is enough for the cloud endpoint: the registry's baseURL
+  // A key in `opts` is enough for cloud endpoints: the registry's baseURL
   // resolver swaps in the hosted URL (e.g. ollama.com) whenever a key is set.
-  // With no freshly-entered key, resolve via the registry so token-file
-  // providers (e.g. codex reusing ~/.codex/auth.json) and saved keys still list.
-  let opts: ProviderCreateOptions = apiKey ? { apiKey } : {};
-  if (!apiKey && def) {
-    try {
-      opts = registry.resolveAuth(choice.registryId, config);
-    } catch {
-      opts = {};
-    }
-  }
+  // Local-keyless choices deliberately do NOT forward env/config keys, otherwise
+  // "Ollama · local" lists/routes cloud models when OLLAMA_API_KEY is present.
+  const opts = modelListOptions(registry, choice, config, apiKey);
   let models: ModelInfo[] = [];
   if (def) {
     try {
@@ -579,7 +623,23 @@ export async function runOnboarding(
         `${fg("✗", WARN)} ${dim("A model string is required — provider/model-id, e.g. anthropic/claude-opus-4-8")}\n`,
       );
     }
-    const providerId = model.split("/")[0] ?? "";
+    let providerId = "";
+    for (;;) {
+      try {
+        providerId = parseModelString(model).providerId;
+        break;
+      } catch {
+        stdout.write(
+          `${fg("✗", WARN)} ${dim("A model string must be provider/model-id, e.g. anthropic/claude-opus-4-8")}\n`,
+        );
+        model = (
+          await input("Model string", {
+            placeholder: "provider/model-id",
+            hint: "e.g. anthropic/claude-opus-4-8 or zai/glm-5.2",
+          })
+        ).trim();
+      }
+    }
     const def = registry.get(providerId);
     let apiKey: string | undefined;
     if (def && !def.auth.keyless && !registry.isConfigured(providerId, config)) {
@@ -602,7 +662,7 @@ export async function runOnboarding(
   const envKey = choice.env ? process.env[choice.env] : undefined;
   if (choice.localKeyless) {
     if (choice.note) stdout.write(`${dim(`note: ${choice.note}`)}\n`);
-  } else if (registry.isConfigured(choice.registryId, config)) {
+  } else if (choiceIsConfigured(choice, config, registry)) {
     const how = envKey
       ? `${bold(choice.env ?? "")} from your environment`
       : choice.registryId === "codex"
@@ -644,7 +704,7 @@ export async function runOnboarding(
   // and we must not claim "all set" (which sends them into a re-onboarding loop
   // with a false confirmation).
   const configured =
-    Boolean(choice.localKeyless) || registry.isConfigured(choice.registryId, config) || Boolean(apiKey);
+    choiceIsConfigured(choice, config, registry) || Boolean(apiKey);
   return persist({ model, providerId: choice.registryId, apiKey, searchKey }, { configured });
 }
 

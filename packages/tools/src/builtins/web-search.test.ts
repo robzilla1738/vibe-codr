@@ -168,6 +168,20 @@ test("reports an error only when every engine fails", async () => {
   expect(String(res.output)).toMatch(/duckduckgo|bing/i);
 });
 
+test("reports a cooldown error when every engine is temporarily skipped", async () => {
+  delete process.env.TINYFISH_API_KEY;
+  const failing = routingFetch({ ddg: { body: "boom", status: 503 }, bing: { body: "boom", status: 503 } });
+  const first = await webSearchTool({ fetchImpl: failing.fetch }).execute({ query: "x" }, ctx());
+  expect(first.isError).toBe(true);
+
+  const healthy = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: BING_HTML } });
+  const second = await webSearchTool({ fetchImpl: healthy.fetch }).execute({ query: "x" }, ctx());
+  expect(second.isError).toBe(true);
+  expect(String(second.output)).toContain("temporarily cooling down");
+  expect(String(second.output)).not.toContain("No results");
+  expect(healthy.seen.urls).toEqual([]);
+});
+
 test("deep mode fans the query into multiple phrasings (more engine calls)", async () => {
   delete process.env.TINYFISH_API_KEY;
   const shallow = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });

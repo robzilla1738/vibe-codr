@@ -117,6 +117,22 @@ check("input shows the placeholder", frame.includes("Send a message"));
 check("input border shows the ASK mode", frame.includes("ASK"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));
 
+// Shift+Tab cycles optimistically from the local mirror, so two rapid presses
+// advance two steps even before engine mode/approval echo events arrive.
+sent.length = 0;
+await t.mockInput.pressKeys(["\x1b[Z", "\x1b[Z"]);
+await settle();
+check(
+  "rapid Shift+Tab cycles two distinct modes",
+  sent.some((c) => c.type === "set-approvals" && c.mode === "auto") &&
+    sent.some((c) => c.type === "set-mode" && c.mode === "plan"),
+);
+push({ type: "mode-changed", mode: "execute" } as UIEvent);
+push({ type: "approvals-changed", mode: "ask" } as UIEvent);
+sent.length = 0;
+t.mockInput.pressEscape();
+await settle();
+
 // The wordmark must be a single-hue VIOLET gradient (the royal-purple brand):
 // many distinct per-column colors (a real sweep, not a flat fill) that are ALL
 // blue-dominant with red above green (violet — no rainbow, no drift back to the
@@ -294,11 +310,16 @@ frame = t.captureCharFrame();
 check("status line shows context-window fill", frame.includes("ctx 12%"));
 check("status line shows token usage + cost", frame.includes("tok") && frame.includes("$0.0123"));
 
-// The turn ends → the working spinner clears.
+// A turn can finish while automated follow-ups are still queued; the working
+// spinner clears only once the engine reaches terminal idle.
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = t.captureCharFrame();
-check("working indicator clears when the turn finishes", !frame.includes("Working"));
+check("working indicator stays up until engine-idle", frame.includes("Working"));
+push({ type: "engine-idle", sessionId: "smoke" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check("working indicator clears when the engine idles", !frame.includes("Working"));
 // Idle: the under-input status line still carries the session model.
 check("status line shows the model when idle", frame.includes("ollama/glm-5.2"));
 
@@ -322,6 +343,54 @@ if (msgRow >= 0) {
   frame = t.captureCharFrame();
   check("tapping again unfolds the turn", frame.includes("edited g.ts"));
 }
+
+// 6d) `/clear` during an active turn must not let late aborted-turn events
+// repaint the freshly cleared transcript.
+sent.length = 0;
+push({ type: "user-message", text: "clear race turn" });
+push({ type: "assistant-text-delta", id: "race", delta: "VISIBLE_BEFORE_CLEAR" } as UIEvent);
+await settle();
+await t.mockInput.typeText("/clear");
+t.mockInput.pressEnter();
+await settle();
+frame = t.captureCharFrame();
+check("clear sends abort for an in-flight turn", sent.some((c) => c.type === "abort"));
+check(
+  "clear forwards the slash command to the engine",
+  sent.some((c) => c.type === "run-slash" && c.name === "clear"),
+);
+check("clear removes the active transcript", !frame.includes("VISIBLE_BEFORE_CLEAR"));
+push({ type: "assistant-text-delta", id: "race", delta: "LATE_DELTA_AFTER_CLEAR" } as UIEvent);
+push({ type: "tool-call-started", toolCallId: "late", toolName: "bash", input: { command: "echo late" } } as UIEvent);
+push({ type: "notice", message: "LATE_NOTICE_AFTER_CLEAR", level: "info" } as UIEvent);
+push({ type: "session-idle", sessionId: "smoke" } as UIEvent);
+await settle();
+frame = t.captureCharFrame();
+check(
+  "late aborted-turn events stay suppressed after clear",
+  !frame.includes("LATE_DELTA_AFTER_CLEAR") &&
+    !frame.includes("echo late") &&
+    !frame.includes("LATE_NOTICE_AFTER_CLEAR"),
+);
+
+// 6e) A detached/running subagent can outlive the parent turn; its spinner must
+// keep animating after the parent `Working` indicator clears.
+push({ type: "user-message", text: "spawn detached work" });
+push({ type: "subagent-started", subagentId: "sa_after_turn", prompt: "keep checking" });
+push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+push({ type: "engine-idle", sessionId: "smoke" } as UIEvent);
+await settle();
+const subagentFrameA = t.captureCharFrame();
+await new Promise((r) => setTimeout(r, 220));
+await t.flush();
+const subagentFrameB = t.captureCharFrame();
+check("parent working indicator is clear while subagent still runs", !subagentFrameA.includes("Working"));
+check(
+  "running subagent spinner keeps animating after parent turn ends",
+  subagentFrameA.includes("keep checking") && subagentFrameA !== subagentFrameB,
+);
+push({ type: "subagent-finished", subagentId: "sa_after_turn", result: "done" });
+await settle();
 
 // 7) The slash-command menu opens, drills into values, and runs the selection.
 sent.length = 0;
@@ -642,6 +711,7 @@ push({
     "## RICHHEAD\n\nPROSE_ALPHA before.\n\n> RICHQUOTE noted.\n\n```ts\nconst RICHCODE = 1;\n```\n\n| **Name** | Size |\n| --- | --- |\n| Zustand | tiny |\n\nPROSE_OMEGA after.",
 } as UIEvent);
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+push({ type: "engine-idle", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = await waitForText("PROSE_OMEGA");
 check("rich reply: prose before a code/table block renders", frame.includes("PROSE_ALPHA"));
@@ -686,6 +756,7 @@ push({
     "Here's the breakdown:\n\n```chart\n# Market cap ($B)\nBitcoin: 1200\nEthereum: 190\nSolana: 62\n```\n\n```pie\nBitcoin: 55\nEthereum: 25\nOthers: 20\n```\n\n```sources\nBitcoin surges | coindesk.com | BTC past $58k on ETF inflows.\n```",
 } as UIEvent);
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+push({ type: "engine-idle", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = await waitForText("Market cap");
 // Bars are painted as BACKGROUND-colored cell runs (one seamless band; only a
@@ -734,6 +805,7 @@ push({
   delta: "Live spot:\n\n```chart\n# BTC price (USD)\nCurrent: $61,715.53\n```",
 } as UIEvent);
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+push({ type: "engine-idle", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = await waitForText("61,715");
 const statRowBarFree = t
@@ -793,6 +865,7 @@ frame = t.captureCharFrame();
 check("spawn_tasks summarizes its DAG shape", frame.includes("2 tasks: recon → impl"));
 check("spawn_tasks never dumps raw objects", !frame.includes("[object Object]"));
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+push({ type: "engine-idle", sessionId: "smoke" } as UIEvent);
 await settle();
 
 // 18) `/accent` opens a swatch submenu: preset names each painted in their own
@@ -877,6 +950,7 @@ push({
     "\n```",
 } as UIEvent);
 push({ type: "turn-finished", sessionId: "smoke" } as UIEvent);
+push({ type: "engine-idle", sessionId: "smoke" } as UIEvent);
 await settle();
 frame = await waitForText("7777");
 check("narrow bar chart keeps its value column on-screen", frame.includes("7777"));

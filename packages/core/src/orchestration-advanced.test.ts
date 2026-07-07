@@ -12,6 +12,7 @@ import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { ReportStore, buildReadReportTool } from "./orchestration/report-store.ts";
 import { spawnGit } from "./git-info.ts";
+import { appendOrchestrationEvent, persistTaskReport } from "./build/journal.ts";
 
 // ── shared test scaffolding ────────────────────────────────────────────────
 
@@ -170,6 +171,28 @@ test("read_report returns a task's full report, and caps an oversized one at 32k
 
   const miss = await tool.execute({ task_id: "nope" }, ctx);
   expect(miss.isError).toBe(true);
+});
+
+test("ReportStore disk fallback preserves the journaled task objective on resume", () => {
+  const cwd = tmpCwd();
+  const sessionId = "ses_report_resume";
+  const reportPath = persistTaskReport(cwd, sessionId, "task-a", "persisted report");
+  expect(reportPath).toBeTruthy();
+  appendOrchestrationEvent(cwd, sessionId, {
+    type: "task-finished",
+    at: 1,
+    id: "task-a",
+    objective: "write the parser",
+    outcome: "completed",
+    attempts: 1,
+    reportPath,
+  });
+
+  const resumedStore = new ReportStore(cwd, sessionId);
+  expect(resumedStore.get("task-a")).toEqual({
+    objective: "write the parser",
+    output: "persisted report",
+  });
 });
 
 // ── 3. model-tier resolution ────────────────────────────────────────────────
@@ -356,6 +379,41 @@ test("a verify task's reviewer prompt contains the real git diff of the task's f
   const reviewPrompt = prompts.find((p) => p.includes("The ACTUAL diff of the task's changes"));
   expect(reviewPrompt).toBeDefined();
   expect(reviewPrompt!).toContain("MARKER_DIFF_HUNK");
+});
+
+test("a verify task that does not mutate still runs the reviewer", async () => {
+  const prompts: string[] = [];
+  const steps = [
+    spawnTasksStep([{ id: "t", objective: "inspect without editing", verify: true }]),
+    textStep("inspection report; no edits needed"), // worker report, no tools → no mutation
+    textStep("REVIEW-CLEAN"), // reviewer must still run
+    textStep("wrapped"), // parent wrap
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? ""));
+      return steps[call++] as never;
+    },
+  });
+
+  const bus = new EventBus();
+  const session = new Session({
+    config: orchestrationConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: tmpCwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("inspect and verify");
+  bus.close();
+
+  const reviewPrompt = prompts.find((p) => p.includes("The ACTUAL diff of the task's changes"));
+  expect(reviewPrompt).toBeDefined();
+  expect(reviewPrompt!).toContain("(no textual diff");
+  expect(call).toBe(4);
 });
 
 // ── 6. tree-global spawn ceiling ────────────────────────────────────────────

@@ -1,6 +1,10 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Embedder } from "./embeddings.ts";
-import { openSemanticMemory } from "./semantic-memory.ts";
+import { globalStateDir } from "./state-dir.ts";
+import { openSemanticMemory, semanticIndexPath } from "./semantic-memory.ts";
 
 /** Deterministic bag-of-words embedder: similar token sets → similar vectors,
  * so cosine search behaves like token overlap. Counts how many texts it embeds. */
@@ -25,6 +29,12 @@ function spyEmbedder(dim = 64): Embedder & { texts: number } {
   };
   return e;
 }
+
+test("semanticIndexPath uses the global project state dir, not project .vibe", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-semantic-path-"));
+  expect(semanticIndexPath(cwd)).toBe(join(globalStateDir(cwd), "memory", "index.sqlite"));
+  expect(semanticIndexPath(cwd)).not.toContain(join(cwd, ".vibe"));
+});
 
 test("indexes a corpus and finds the semantically nearest chunk", async () => {
   const embedder = spyEmbedder();

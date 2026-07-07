@@ -123,12 +123,11 @@ export async function loadSkillsFrom(root: string): Promise<Skill[]> {
         // skill would register unreachable (no `/skill ""`) and inject a blank
         // `- : …` line into the system prompt's skills block.
         const name = frontmatter.name?.trim() || basename(dir);
+        const whenToUse = frontmatter.when_to_use?.trim() || frontmatter.whenToUse?.trim();
         skills.push({
           name,
           description: frontmatter.description?.trim() || name,
-          ...(frontmatter.when_to_use
-            ? { whenToUse: frontmatter.when_to_use }
-            : {}),
+          ...(whenToUse ? { whenToUse } : {}),
           dir,
           load: async () => {
             try {

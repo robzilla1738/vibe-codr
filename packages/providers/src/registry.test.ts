@@ -27,6 +27,23 @@ test("keyless local providers (ollama, lmstudio) are configured without a key", 
   expect(reg.isConfigured("lmstudio", defaultConfig())).toBe(true);
 });
 
+test("custom keyless provider still requires a base URL to be configured", () => {
+  const reg = new ProviderRegistry();
+  const prev = process.env.CUSTOM_BASE_URL;
+  delete process.env.CUSTOM_BASE_URL;
+  try {
+    expect(reg.isConfigured("custom", defaultConfig())).toBe(false);
+    expect(
+      reg.isConfigured("custom", withProvider("custom", { baseURL: "https://endpoint.example.com/v1" })),
+    ).toBe(true);
+    process.env.CUSTOM_BASE_URL = "https://env-endpoint.example.com/v1";
+    expect(reg.isConfigured("custom", defaultConfig())).toBe(true);
+  } finally {
+    if (prev === undefined) delete process.env.CUSTOM_BASE_URL;
+    else process.env.CUSTOM_BASE_URL = prev;
+  }
+});
+
 test("ollama stays keyless for local use but accepts a cloud key", () => {
   const reg = new ProviderRegistry();
   // Local: no key needed, no apiKey resolved.
@@ -153,7 +170,11 @@ test("the generic `custom` provider requires a base URL but works once given one
   const prev = process.env.CUSTOM_BASE_URL;
   delete process.env.CUSTOM_BASE_URL;
   try {
-    await expect(custom.create("m", { apiKey: "k" })).rejects.toThrow(/base URL/i);
+    await expect(custom.create("m", { apiKey: "k" })).rejects.toMatchObject({
+      name: "VibeError",
+      code: "PROVIDER_CONFIG",
+      message: expect.stringMatching(/base URL/i),
+    });
     // listing degrades gracefully (no endpoint yet → empty, never throws).
     expect(await custom.listModels({ apiKey: "k" })).toEqual([]);
     // With a base URL it builds a normal spec-v2 model.

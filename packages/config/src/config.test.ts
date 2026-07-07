@@ -52,6 +52,24 @@ test("provider baseURL requires an http(s) scheme + host (adversarial P10-W1)", 
   }
 });
 
+test("config hooks require a shell command or HTTP URL", () => {
+  expect(
+    ConfigSchema.safeParse({ hooks: [{ event: "session.start", command: "echo hi" }] }).success,
+  ).toBe(true);
+  expect(
+    ConfigSchema.safeParse({ hooks: [{ event: "session.start", url: "https://hooks.example/run" }] }).success,
+  ).toBe(true);
+
+  const missing = ConfigSchema.safeParse({ hooks: [{ event: "session.start" }] });
+  expect(missing.success).toBe(false);
+  if (!missing.success) {
+    expect(missing.error.issues.some((i) => i.message.includes("command or url"))).toBe(true);
+  }
+  expect(
+    ConfigSchema.safeParse({ hooks: [{ event: "session.start", command: "   " }] }).success,
+  ).toBe(false);
+});
+
 test("lsp accepts per-language overrides and a partial block fills defaults", () => {
   const r = ConfigSchema.safeParse({
     lsp: { timeoutMs: 500, disabledLanguages: ["go"], servers: { py: { command: "pyright-langserver", args: ["--stdio"] } } },

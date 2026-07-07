@@ -105,3 +105,14 @@ test("turnWindowStart: 0 under the cap, quantized + monotonic above it, visible 
     prev = start;
   }
 });
+
+test("turnWindowStart: revealed items page older in-turn blocks back into view", () => {
+  const MAX = 120;
+  const STEP = 24;
+  expect(turnWindowStart(200, MAX, STEP)).toBe(96);
+  expect(turnWindowStart(200, MAX, STEP, 24)).toBe(72);
+  expect(turnWindowStart(200, MAX, STEP, 48)).toBe(48);
+  expect(turnWindowStart(200, MAX, STEP, 96)).toBe(0);
+  // Reveal budgets are clamped at zero so stale/invalid state cannot hide more.
+  expect(turnWindowStart(200, MAX, STEP, -24)).toBe(96);
+});

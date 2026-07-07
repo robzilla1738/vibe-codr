@@ -18,6 +18,21 @@ interface Job {
   scanCarry: string;
 }
 
+export interface BackgroundJobStartOptions {
+  dangerouslyUnsandboxed?: boolean;
+}
+
+export function backgroundJobArgv(
+  command: string,
+  cwd: string,
+  sandbox: SandboxPolicy | undefined,
+  opts: BackgroundJobStartOptions = {},
+): string[] {
+  return sandbox && !opts.dangerouslyUnsandboxed
+    ? wrapCommand(sandbox, { cwd, command })
+    : ["bash", "-lc", command];
+}
+
 /** Extract localhost server URLs printed by dev servers (vite/next/etc.). */
 function detectServers(output: string): string[] {
   const urls = new Set<string>();
@@ -66,10 +81,8 @@ export class BackgroundJobs {
     this.#sandbox = sandbox;
   }
 
-  start(command: string, cwd: string): Job {
-    const argv = this.#sandbox
-      ? wrapCommand(this.#sandbox, { cwd, command })
-      : ["bash", "-lc", command];
+  start(command: string, cwd: string, opts: BackgroundJobStartOptions = {}): Job {
+    const argv = backgroundJobArgv(command, cwd, this.#sandbox, opts);
     const proc = Bun.spawn(argv, {
       cwd,
       stdout: "pipe",

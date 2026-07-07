@@ -25,8 +25,8 @@ export interface VectorHit {
 
 /**
  * A small local vector store over Bun's built-in SQLite — no native deps, no
- * daemon. The DB at `.vibe/memory/index.sqlite` is a gitignored, rebuildable
- * SHADOW of the markdown memory files (markdown stays the source of truth).
+ * daemon. The DB under the project global state dir is a rebuildable SHADOW of
+ * the markdown memory files (markdown stays the source of truth).
  *
  * Search is exact brute-force cosine: for a per-project memory corpus (hundreds
  * to a few thousand chunks) this is sub-millisecond and avoids the complexity and

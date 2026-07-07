@@ -30,6 +30,10 @@ const LIMIT = 500;
  * catastrophic backtracking against a very long single line (minified JS, a data
  * blob) would otherwise hang synchronously and ignore the abort signal. */
 const MAX_LINE_LEN = 50_000;
+/** Maximum single file size the dependency-free fallback will read into memory.
+ * Ripgrep is the preferred path for large files; when it is unavailable, this
+ * cap prevents one huge candidate from OOMing the tool process. */
+const MAX_FALLBACK_FILE_BYTES = 10 * 1024 * 1024;
 
 /** Multi-extension `fileType` sets mirroring ripgrep's `--type` definitions, so
  * the fallback's `fileType:"ts"` matches .ts/.tsx/.mts/.cts (not just literal
@@ -100,6 +104,12 @@ async function ripgrepTypes(cwd: string): Promise<Set<string>> {
   return types;
 }
 
+export function ripgrepFileTypeArgs(fileType: string, knownTypes: ReadonlySet<string>): string[] {
+  if (knownTypes.has(fileType)) return ["-t", fileType];
+  const exts = FILE_TYPE_EXTS[fileType] ?? [fileType];
+  return exts.flatMap((ext) => ["--glob", `*.${ext}`]);
+}
+
 /** Fast path: shell out to ripgrep. Throws if `rg` isn't on PATH (→ fallback). */
 async function ripgrepSearch(
   { pattern, path, glob, ignoreCase, context, fileType }: GrepInput,
@@ -111,8 +121,7 @@ async function ripgrepSearch(
   if (ctxN > 0) args.push("-C", String(ctxN));
   if (fileType) {
     const known = await ripgrepTypes(ctx.cwd);
-    if (known.has(fileType)) args.push("-t", fileType);
-    else args.push("--glob", `*.${fileType}`);
+    args.push(...ripgrepFileTypeArgs(fileType, known));
   }
   if (glob) args.push("--glob", glob);
   // `--` terminates option parsing so a pattern/path beginning with `-` is a term.
@@ -205,12 +214,20 @@ export async function builtinGrep(
   const files = await listFiles(ctx.cwd, path ?? ".", glob, fileType);
   const results: string[] = [];
   let matchCount = 0;
+  let skippedLarge = 0;
   outer: for (const rel of files) {
     if (matchCount > LIMIT) break;
     if (ctx.abortSignal.aborted) break;
+    const abs = join(ctx.cwd, rel);
+    const info = await stat(abs).catch(() => null);
+    if (!info?.isFile()) continue;
+    if (info.size > MAX_FALLBACK_FILE_BYTES) {
+      skippedLarge++;
+      continue;
+    }
     let text: string;
     try {
-      text = await Bun.file(join(ctx.cwd, rel)).text();
+      text = await Bun.file(abs).text();
     } catch {
       continue; // unreadable / binary
     }
@@ -249,7 +266,13 @@ export async function builtinGrep(
       if (isMatch.has(idx)) matchCount++;
     }
   }
-  return capResults(results);
+  const capped = capResults(results);
+  if (!skippedLarge) return capped;
+  const note = `…(skipped ${skippedLarge} file${skippedLarge === 1 ? "" : "s"} over ${Math.floor(MAX_FALLBACK_FILE_BYTES / 1024 / 1024)}MB in fallback grep)`;
+  return {
+    ...capped,
+    output: capped.output === "(no matches)" ? `(no matches)\n${note}` : `${capped.output}\n${note}`,
+  };
 }
 
 /** Enumerate files to scan: a single file, or every tracked/walked file under a

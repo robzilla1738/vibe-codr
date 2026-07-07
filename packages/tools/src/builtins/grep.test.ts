@@ -1,9 +1,9 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, truncateSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
-import { grepTool, builtinGrep, readCappedLines, _resetRipgrepTypeCache } from "./grep.ts";
+import { grepTool, builtinGrep, readCappedLines, ripgrepFileTypeArgs, _resetRipgrepTypeCache } from "./grep.ts";
 
 beforeEach(() => _resetRipgrepTypeCache());
 
@@ -102,6 +102,22 @@ test("builtinGrep still finds a literal match on a very long single line", async
   expect(String(r.output)).toContain("getUserById");
 });
 
+test("builtinGrep skips oversized files before reading them into memory", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-grep-huge-"));
+  const huge = join(dir, "huge.txt");
+  closeSync(openSync(huge, "w"));
+  truncateSync(huge, 11 * 1024 * 1024);
+  await Bun.write(join(dir, "small.txt"), "needle in small file\n");
+
+  const r = await builtinGrep({ pattern: "needle" }, ctx(dir));
+  expect(String(r.output)).toContain("small.txt:1:needle in small file");
+  expect(String(r.output)).toContain("skipped 1 file over 10MB");
+
+  const miss = await builtinGrep({ pattern: "absent" }, ctx(dir));
+  expect(String(miss.output)).toContain("(no matches)");
+  expect(String(miss.output)).toContain("skipped 1 file over 10MB");
+});
+
 // ── New parity params: ignoreCase / context / fileType ─────────────────────────
 // Each is asserted on BOTH the ripgrep path (grepTool.execute — uses rg when
 // installed) and the dependency-free fallback (builtinGrep directly, always).
@@ -194,6 +210,27 @@ test("fileType with an rg-unknown extension still filters via a glob fallback", 
   const r = await grepTool.execute({ pattern: "needle", fileType: "xyzzy" }, ctx(dir));
   expect(r.output).toContain("a.xyzzy");
   expect(r.output).not.toContain("b.txt");
+});
+
+test("ripgrep fileType aliases fall back to real extension globs when unknown", () => {
+  expect(ripgrepFileTypeArgs("python", new Set())).toEqual([
+    "--glob",
+    "*.py",
+    "--glob",
+    "*.pyi",
+  ]);
+  expect(ripgrepFileTypeArgs("typescript", new Set())).toEqual([
+    "--glob",
+    "*.ts",
+    "--glob",
+    "*.tsx",
+    "--glob",
+    "*.mts",
+    "--glob",
+    "*.cts",
+  ]);
+  expect(ripgrepFileTypeArgs("python", new Set(["python"]))).toEqual(["-t", "python"]);
+  expect(ripgrepFileTypeArgs("xyzzy", new Set())).toEqual(["--glob", "*.xyzzy"]);
 });
 
 test("fallback matches untracked-but-not-ignored files (ripgrep parity), skips ignored", async () => {

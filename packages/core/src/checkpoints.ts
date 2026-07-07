@@ -1,4 +1,4 @@
-import { mkdir, rm, rename } from "node:fs/promises";
+import { mkdir, rm, rename, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createId, type GateSummary } from "@vibe/shared";
@@ -22,6 +22,44 @@ let checkpointWriteSeq = 0;
  * later rename clobbers the earlier merge. Keyed by the file path. (A separate
  * OS process is a rarer race the merge narrows but can't fully close.) */
 const checkpointSaveLocks = new Map<string, Promise<void>>();
+
+const CHECKPOINT_LOCK_STALE_MS = 60_000;
+const CHECKPOINT_LOCK_RETRY_MS = 25;
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withCheckpointFileLock<T>(file: string, fn: () => Promise<T>): Promise<T> {
+  const lockDir = `${file}.lock`;
+  await mkdir(dirname(file), { recursive: true });
+  for (;;) {
+    try {
+      await mkdir(lockDir);
+      break;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code !== "EEXIST") throw err;
+      try {
+        const s = await stat(lockDir);
+        if (Date.now() - s.mtimeMs > CHECKPOINT_LOCK_STALE_MS) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        // It disappeared between mkdir/stat; retry acquisition.
+        continue;
+      }
+      await sleep(CHECKPOINT_LOCK_RETRY_MS);
+    }
+  }
+  try {
+    await writeFile(join(lockDir, "owner"), `${process.pid}\n${Date.now()}\n`, "utf8").catch(() => {});
+    return await fn();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
 export interface Checkpoint {
   id: string;
@@ -211,6 +249,10 @@ export class CheckpointManager {
   }
 
   async #saveLocked(): Promise<void> {
+    await withCheckpointFileLock(this.#file, () => this.#saveLockedCrossProcess());
+  }
+
+  async #saveLockedCrossProcess(): Promise<void> {
     const tmp = `${this.#file}.${process.pid}.${checkpointWriteSeq++}.tmp`;
     try {
       await mkdir(dirname(this.#file), { recursive: true });

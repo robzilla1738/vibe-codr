@@ -259,6 +259,30 @@ test("registers read_mcp_resource + get_mcp_prompt and they list/read/render", a
   expect(hub.prompts()[0]!.server).toBe("demo");
 });
 
+test("read_mcp_resource requires server when a URI is exposed by multiple servers", async () => {
+  const registered: ToolDefinition[] = [];
+  const client = (label: string): McpClient => ({
+    listTools: async () => [],
+    callTool: async () => ({ content: "ok" }),
+    listResources: async () => [{ uri: "file:///shared.md", name: "Shared" }],
+    readResource: async (uri) => ({ content: [{ type: "text", text: `${label}: ${uri}` }] }),
+    close: async () => {},
+  });
+  const hub = new McpHub({
+    registerTool: (d) => registered.push(d),
+    connect: async (name) => client(name),
+  });
+  await hub.start({ alpha: { command: "x" }, beta: { command: "y" } });
+  const readTool = registered.find((t) => t.name === "read_mcp_resource")!;
+
+  const ambiguous = await readTool.execute({ uri: "file:///shared.md" }, {} as never);
+  expect(ambiguous.isError).toBe(true);
+  expect(ambiguous.output).toContain("multiple servers (alpha, beta)");
+
+  const scoped = await readTool.execute({ uri: "file:///shared.md", server: "beta" }, {} as never);
+  expect(scoped.output).toContain("beta: file:///shared.md");
+});
+
 test("a server without resources/prompts capability degrades cleanly", async () => {
   const registered: ToolDefinition[] = [];
   const client: McpClient = {
@@ -301,6 +325,23 @@ test("a disabled server is not connected", async () => {
   expect(connectCalls).toBe(1);
   expect(reg.names()).toEqual(["mcp__on__echo"]);
   expect(hub.status().map((s) => s.name)).toEqual(["on"]); // disabled server omitted
+});
+
+test("close unregisters server and aggregate MCP tools", async () => {
+  const reg = registry();
+  const client: McpClient = {
+    listTools: async () => [{ name: "echo" }],
+    listResources: async () => [{ uri: "file://x", name: "X" }],
+    listPrompts: async () => [{ name: "summarize" }],
+    callTool: async () => ({ content: "ok" }),
+    close: async () => {},
+  };
+  const hub = new McpHub({ ...reg, connect: async () => client });
+  await hub.start({ demo: { command: "x" } });
+  expect(reg.names()).toEqual(["get_mcp_prompt", "mcp__demo__echo", "read_mcp_resource"]);
+
+  await hub.close();
+  expect(reg.names()).toEqual([]);
 });
 
 test("tools/list_changed re-lists and swaps the server's registered tools", async () => {

@@ -226,6 +226,23 @@ test("/undo <index> routes through restoreTo to the chosen checkpoint", async ()
   expect(notices(events).some((n) => n.message === "Reverted to checkpoint: v0")).toBe(true);
 });
 
+test("/undo <index> ignores green result markers", async () => {
+  const dir = await gitRepo();
+  const seed = new CheckpointManager(dir);
+  await Bun.write(join(dir, "a.txt"), "v0\n");
+  await seed.snapshot("v0");
+  await Bun.write(join(dir, "a.txt"), "v1\n");
+  await seed.snapshot("green: v1", undefined, { green: true });
+
+  const engine = new Engine({ config: defaultConfig(), cwd: dir });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "undo", args: "1" });
+  await engine.whenIdle();
+
+  expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v0\n");
+  expect(notices(events).some((n) => n.message === "Reverted to checkpoint: v0")).toBe(true);
+});
+
 test("/undo with an out-of-range index reports honestly instead of restoring", async () => {
   const dir = await gitRepo();
   const seed = new CheckpointManager(dir);

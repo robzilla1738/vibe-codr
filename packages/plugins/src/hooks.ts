@@ -88,7 +88,9 @@ export class HookBus {
             );
           }),
         ]);
-        if (next) current = next as HookPayloads[N];
+        if (next && typeof next === "object" && !Array.isArray(next)) {
+          current = { ...current, ...(next as Partial<HookPayloads[N]>) };
+        }
       } catch (err) {
         try {
           this.#onError?.(name, err as Error);

@@ -184,8 +184,12 @@ export async function run(argv: string[]): Promise<number> {
     const store = new SessionStore(cwd);
     const id = values.resume ?? (await store.latestId());
     const loaded = id ? await store.load(id) : null;
-    if (loaded) resume = loaded;
-    else process.stderr.write("No session to resume; starting fresh.\n");
+    if (loaded) {
+      resume = loaded;
+      for (const warning of loaded.warnings ?? []) {
+        process.stderr.write(`Warning: ${warning}\n`);
+      }
+    } else process.stderr.write("No session to resume; starting fresh.\n");
   }
 
   // Inject project memory (VIBE.md / AGENTS.md / CLAUDE.md + user-global notes)

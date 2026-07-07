@@ -169,6 +169,12 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
       let { candidates, errors, anyAnswered } = collect(
         await runFanout(deep ? expandQueries(query) : [query]),
       );
+      if (!candidates.length && !errors.length && !anyAnswered) {
+        return {
+          output: "Search failed: all configured search engines are temporarily cooling down after recent failures.",
+          isError: true,
+        };
+      }
       if (ctx.abortSignal.aborted) return { output: "Search aborted." };
 
       // Zero results with live engines → retry ONCE with the keyword core (a
@@ -179,6 +185,12 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
         if (alt) {
           reformulatedTo = alt;
           const second = collect(await runFanout([alt]));
+          if (!second.candidates.length && !second.errors.length && !second.anyAnswered) {
+            return {
+              output: "Search failed: all configured search engines are temporarily cooling down after recent failures.",
+              isError: true,
+            };
+          }
           candidates = second.candidates;
           errors = errors.concat(second.errors);
           anyAnswered = anyAnswered || second.anyAnswered;

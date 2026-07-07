@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { statSync } from "node:fs";
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
 import { recordSeen } from "./freshness.ts";
@@ -19,6 +20,14 @@ const Input = z.object({
  * single multi-megabyte line is truncated with an explicit marker. */
 const MAX_OUTPUT = 100_000;
 
+function mtimeOf(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
 export const readTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "read",
   description:
@@ -32,6 +41,7 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
     if (!(await file.exists())) {
       return { output: `File not found: ${path}`, isError: true };
     }
+    const beforeMtime = mtimeOf(full);
     // Sniff the leading bytes for a NUL — present in binary files, never in
     // valid UTF-8 text — and refuse rather than flood the context with thousands
     // of mojibake tokens (an image, an executable, a compiled artifact).
@@ -42,11 +52,6 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
         isError: true,
       };
     }
-    // The model has now seen this file's on-disk state; record its mtime so a
-    // later edit/write can detect an external change since this read (stale-write
-    // guard). Recorded for empty/truncated reads too — the model still saw them.
-    recordSeen(ctx.sessionId, full);
-
     // Stream the file and apply offset/limit + the char cap WITHOUT slurping the
     // whole thing into memory: `read({limit:10})` on a multi-GB log must not OOM
     // (the old `await file.text()` loaded everything before slicing). We retain
@@ -134,6 +139,17 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
         isError: true,
       };
     }
+    const afterMtime = mtimeOf(full);
+    if (beforeMtime !== undefined && afterMtime !== undefined && afterMtime !== beforeMtime) {
+      return {
+        output: `Cannot read ${path}: it changed while being read. Re-read the file before editing.`,
+        isError: true,
+      };
+    }
+    // The model has now seen a stable on-disk state; record its mtime so a later
+    // edit/write can detect an external change since this read (stale-write
+    // guard). Recorded for empty/truncated reads too — the model still saw them.
+    recordSeen(ctx.sessionId, full);
     if (bytes === 0) return { output: "(empty file)" };
     const totalLines = lineIdx;
     // A non-empty file read entirely past its end is a paging mistake worth

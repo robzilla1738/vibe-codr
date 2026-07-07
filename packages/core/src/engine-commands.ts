@@ -1093,7 +1093,7 @@ async function handleUndo(h: EngineHandle, args: string): Promise<void> {
   if (blockedByDetached(h)) return;
   const arg = args.trim();
   if (arg) {
-    const list = await h.checkpoints.list();
+    const list = visibleCheckpoints(await h.checkpoints.list());
     const target = resolveCheckpointArg(list, arg);
     if (!target) {
       h.notice(`No checkpoint "${arg}". Run /checkpoints to see the list.`, "warn");
@@ -1182,7 +1182,7 @@ function resolveCheckpointArg<T extends { id: string }>(list: T[], arg: string):
 
 /** `/checkpoints` — list saved checkpoints, numbered newest-first with age. */
 async function handleCheckpoints(h: EngineHandle): Promise<void> {
-  const list = await h.checkpoints.list();
+  const list = visibleCheckpoints(await h.checkpoints.list());
   if (!list.length) {
     h.notice("No checkpoints yet. One is taken before each edit turn (git repos).");
     return;
@@ -1199,6 +1199,10 @@ async function handleCheckpoints(h: EngineHandle): Promise<void> {
     .filter(Boolean)
     .join("\n");
   h.notice(`Checkpoints (newest first):\n${lines.join("\n")}\n${footer}`);
+}
+
+function visibleCheckpoints<T extends { green?: boolean }>(list: T[]): T[] {
+  return list.filter((c) => !c.green);
 }
 
 /** Compact "3m ago"-style age from a millisecond delta. */

@@ -1,6 +1,6 @@
 import type { LanguageModel, EmbeddingModel } from "ai";
 import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
-import { ProviderAuthError, VibeError } from "@vibe/shared";
+import { VibeError } from "@vibe/shared";
 import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
 
@@ -51,6 +51,7 @@ interface BuiltinSpec {
   env: string[];
   baseURL: string;
   baseURLEnv?: string;
+  requiresBaseURL?: boolean;
   keyless?: boolean;
   /**
    * Hosted endpoint used automatically when an API key is present and no base
@@ -258,6 +259,7 @@ const BUILTINS: BuiltinSpec[] = [
     env: ["CUSTOM_API_KEY"],
     baseURL: "",
     baseURLEnv: "CUSTOM_BASE_URL",
+    requiresBaseURL: true,
     keyless: true,
     module: "@ai-sdk/openai-compatible",
     factory: "createOpenAICompatible",
@@ -299,14 +301,18 @@ async function buildProvider(
   // unusable until one is set — fail with an actionable message rather than
   // letting the SDK build a broken relative URL.
   if (!url) {
-    throw new ProviderAuthError(spec.id, [
-      `set a base URL: config.providers.${spec.id}.baseURL or $${spec.baseURLEnv ?? "BASE_URL"}`,
-    ]);
+    throw new VibeError(
+      `Provider "${spec.id}" needs a base URL. Set config.providers.${spec.id}.baseURL or $${spec.baseURLEnv ?? "BASE_URL"}.`,
+      "PROVIDER_CONFIG",
+    );
   }
   const mod = await loadProviderModule(spec.module!, spec.id);
   const factory = mod[spec.factory!];
   if (typeof factory !== "function") {
-    throw new ProviderAuthError(spec.id, [`${spec.module} has no export "${spec.factory}"`]);
+    throw new VibeError(
+      `Provider "${spec.id}" SDK ${spec.module} has no export "${spec.factory}".`,
+      "PROVIDER_SDK_INVALID",
+    );
   }
   // openai-compatible needs a `name`; others ignore extra fields.
   return factory({
@@ -331,6 +337,7 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
     auth: {
       env: spec.env,
       baseURLEnv: spec.baseURLEnv,
+      requiresBaseURL: spec.requiresBaseURL,
       keyless: spec.keyless,
       tokenFile: spec.tokenFile,
     },
@@ -362,9 +369,10 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
         textEmbeddingModel?: (id: string) => EmbeddingModel<string>;
       }).textEmbeddingModel;
       if (typeof embed !== "function") {
-        throw new ProviderAuthError(spec.id, [
-          `provider "${spec.id}" does not support text embeddings`,
-        ]);
+        throw new VibeError(
+          `Provider "${spec.id}" does not support text embeddings.`,
+          "PROVIDER_UNSUPPORTED",
+        );
       }
       return embed.call(provider, modelId);
     },

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, appendFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -43,6 +43,24 @@ test("failed tasks are not seeded; torn/malformed lines tolerated", () => {
   // Append a torn line to the ACTUAL (global) journal the writer used.
   appendFileSync(join(globalStateDir(cwd), "orchestration", `${ses}.jsonl`), '{"type":"task-fin');
   expect(loadCompletedTasks(cwd, ses)).toEqual([]);
+});
+
+test("completed tasks replay from atomic event files without a jsonl journal", () => {
+  const cwd = tmp();
+  const ses = "ses_atomic";
+  appendOrchestrationEvent(cwd, ses, {
+    type: "task-finished", at: 1, id: "done", objective: "x", outcome: "completed", attempts: 1,
+  });
+  const orchDir = join(globalStateDir(cwd), "orchestration");
+  expect(existsSync(join(orchDir, `${ses}.jsonl`))).toBe(false);
+  const eventRoot = join(orchDir, "events");
+  const [sessionDir] = readdirSync(eventRoot);
+  expect(sessionDir).toContain("ses_atomic");
+  writeFileSync(join(eventRoot, sessionDir!, "ignored.tmp"), '{"type":"task-finished"');
+
+  const seeded = loadCompletedTasks(cwd, ses);
+  expect(seeded.map((r) => r.id)).toEqual(["done"]);
+  unlinkSync(join(eventRoot, sessionDir!, "ignored.tmp"));
 });
 
 test("orchestration state is written OUT of the project cwd (global state dir)", () => {
@@ -154,6 +172,20 @@ test("planIdentity is stable for the same plan and distinct across plan shapes",
   expect(planIdentity([{ ...specs[0]!, check: true }, specs[1]!])).not.toBe(planIdentity(specs));
   expect(planIdentity([{ ...specs[0]!, files: ["src/a.ts"] }, specs[1]!])).not.toBe(planIdentity(specs));
   expect(planIdentity([{ ...specs[0]!, tier: "cheap" as const }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, worktree: true }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, hard: true }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, agent: "review" }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([
+    { ...specs[0]!, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
+    specs[1]!,
+  ])).not.toBe(planIdentity(specs));
+  expect(planIdentity([
+    { ...specs[0]!, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
+    specs[1]!,
+  ])).toBe(planIdentity([
+    { ...specs[0]!, outputSchema: { properties: { ok: { type: "boolean" } }, type: "object" } },
+    specs[1]!,
+  ]));
 });
 
 test("ids that sanitize-equal get distinct report files (no overwrite/mixup)", () => {

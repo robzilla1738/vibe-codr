@@ -23,7 +23,11 @@ export class CommandRegistry {
   #commands = new Map<string, SlashCommand>();
 
   register(cmd: SlashCommand): void {
-    if (!isSlashCommandName(cmd.name)) return;
+    if (!isSlashCommandName(cmd.name)) {
+      throw new Error(
+        `Invalid slash command name "${cmd.name}". Use only letters, numbers, underscores, and hyphens.`,
+      );
+    }
     this.#commands.set(cmd.name, cmd);
   }
 

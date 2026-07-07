@@ -53,13 +53,23 @@ test("loadSkills surfaces name/description and lazily loads the body", async () 
     join(dir, ".vibe", "skills", "pdf", "SKILL.md"),
     `---\nname: pdf\ndescription: Work with PDFs\nwhen_to_use: when a PDF is involved\n---\nDetailed PDF instructions here.`,
   );
+  await Bun.write(
+    join(dir, ".vibe", "skills", "deploy", "SKILL.md"),
+    `---\nname: deploy\ndescription: Ship apps\nwhenToUse: when deployment is requested\n---\nDeploy carefully.`,
+  );
+  await Bun.write(
+    join(dir, ".vibe", "skills", "both", "SKILL.md"),
+    `---\nname: both\ndescription: Both keys\nwhenToUse: camel\nwhen_to_use: snake\n---\nBody.`,
+  );
   const skills = await loadSkills(dir);
-  expect(skills).toHaveLength(1);
-  const pdf = skills[0]!;
+  expect(skills).toHaveLength(3);
+  const pdf = skills.find((s) => s.name === "pdf")!;
   expect(pdf.name).toBe("pdf");
   expect(pdf.description).toBe("Work with PDFs");
   expect(pdf.whenToUse).toBe("when a PDF is involved");
   expect(await pdf.load()).toContain("Detailed PDF instructions");
+  expect(skills.find((s) => s.name === "deploy")?.whenToUse).toBe("when deployment is requested");
+  expect(skills.find((s) => s.name === "both")?.whenToUse).toBe("snake");
 });
 
 test("command and skill bodies are read lazily at invocation, not retained from startup", async () => {
@@ -145,6 +155,26 @@ test("an explicitly EMPTY name:/description: falls back like an absent field", a
   const cmds = await loadCommandFiles(dir);
   expect(cmds).toHaveLength(1);
   expect(cmds[0]!.name).toBe("ship"); // file-name fallback
+});
+
+test("loaders skip markdown files with unclosed frontmatter fences", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-frontmatter-bad-"));
+  await Bun.write(
+    join(dir, ".vibe", "skills", "broken", "SKILL.md"),
+    "---\nname: broken\ndescription: missing close\nBody that should not become metadata",
+  );
+  await Bun.write(
+    join(dir, ".vibe", "skills", "valid", "SKILL.md"),
+    "---\nname: valid\ndescription: OK\n---\nBody.",
+  );
+  await Bun.write(
+    join(dir, ".vibe", "commands", "broken.md"),
+    "---\nname: broken-command\ndescription: missing close\nPrompt.",
+  );
+  await Bun.write(join(dir, ".vibe", "commands", "valid.md"), "---\nname: valid-command\n---\nPrompt.");
+
+  expect((await loadSkills(dir)).map((s) => s.name)).toEqual(["valid"]);
+  expect((await loadCommandFiles(dir)).map((c) => c.name)).toEqual(["valid-command"]);
 });
 
 test("loadCommandsFrom skips names the slash parser can never invoke", async () => {

@@ -217,6 +217,32 @@ test("finalize sweeps queued work — it never runs a model turn post-teardown",
   expect(prompts).not.toContain("second");
 });
 
+test("finalize waits for the in-flight queue item before teardown", async () => {
+  const hooks = new HookBus(() => {});
+  let releaseHook!: () => void;
+  let hookStarted!: () => void;
+  const started = new Promise<void>((resolve) => { hookStarted = resolve; });
+  const release = new Promise<void>((resolve) => { releaseHook = resolve; });
+  hooks.on("user.prompt.submit", async (event) => {
+    hookStarted();
+    await release;
+    return { text: event.text };
+  });
+  const { engine } = mockEngine(replyModel(0), hooks);
+
+  engine.send({ type: "submit-prompt", text: "blocked" });
+  await started;
+
+  let finalized = false;
+  const finalizing = engine.finalize().then(() => { finalized = true; });
+  await Bun.sleep(10);
+  expect(finalized).toBe(false);
+
+  releaseHook();
+  await finalizing;
+  expect(finalized).toBe(true);
+});
+
 test("a prompt submitted DURING an async session.idle hook's await is not stranded", async () => {
   // Regression: when the session.idle hook is async (an HTTP/shell config hook
   // or any async in-process handler) and a prompt arrives during its await, the

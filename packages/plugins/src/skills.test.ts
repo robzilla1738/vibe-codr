@@ -27,6 +27,12 @@ test("a document with no frontmatter is all body", () => {
   expect(body).toBe("Just text, no fence.");
 });
 
+test("an opening frontmatter fence without a closing fence is an error", () => {
+  expect(() => parseSkillMarkdown("---\nname: broken\ndescription: never closes\nBody")).toThrow(
+    /Unclosed frontmatter fence/,
+  );
+});
+
 test("registry exposes whenToUse in progressive-disclosure descriptions", () => {
   const reg = new SkillRegistry();
   reg.register({

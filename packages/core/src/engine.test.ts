@@ -1,11 +1,11 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "bun:test";
 import type { UIEvent } from "@vibe/shared";
 import { defaultConfig, type Config } from "@vibe/config";
 import { CommandRegistry } from "@vibe/plugins";
-import { Engine } from "./engine.ts";
+import { Engine, sandboxStateDirs } from "./engine.ts";
 
 // Each Engine gets an isolated temp cwd so `/recall`, `/memory`, checkpoints and
 // session persistence never read or write the developer's real `.vibe/` — that
@@ -26,6 +26,32 @@ function collect(engine: Engine): { events: UIEvent[]; stop: () => void } {
   })();
   return { events, stop: () => (active = false) };
 }
+
+test("constructor creates sandbox state dirs before bwrap can bind them", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-sandbox-cwd-"));
+  const envRoot = mkdtempSync(join(tmpdir(), "vibe-engine-sandbox-env-"));
+  const prevConfig = process.env.XDG_CONFIG_HOME;
+  const prevCache = process.env.XDG_CACHE_HOME;
+  const prevState = process.env.VIBE_STATE_DIR;
+  process.env.XDG_CONFIG_HOME = join(envRoot, "config");
+  process.env.XDG_CACHE_HOME = join(envRoot, "cache");
+  process.env.VIBE_STATE_DIR = join(envRoot, "state");
+  try {
+    const config = defaultConfig();
+    config.sandbox = { mode: "workspace-write", network: "on", writablePaths: [] };
+    const dirs = sandboxStateDirs(cwd);
+    expect(dirs.every((dir) => !existsSync(dir))).toBe(true);
+    new Engine({ config, cwd });
+    for (const dir of dirs) expect(existsSync(dir)).toBe(true);
+  } finally {
+    if (prevConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevConfig;
+    if (prevCache === undefined) delete process.env.XDG_CACHE_HOME;
+    else process.env.XDG_CACHE_HOME = prevCache;
+    if (prevState === undefined) delete process.env.VIBE_STATE_DIR;
+    else process.env.VIBE_STATE_DIR = prevState;
+  }
+});
 
 test("/help lists commands, /model switches, /clear clears", async () => {
   const engine = makeEngine();

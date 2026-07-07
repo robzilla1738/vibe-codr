@@ -70,7 +70,13 @@ export class ProviderRegistry {
   isConfigured(id: string, config: Config): boolean {
     const def = this.#providers.get(id);
     if (!def) return false;
-    if (def.auth.keyless) return true;
+    if (def.auth.keyless) {
+      if (!def.auth.requiresBaseURL) return true;
+      return Boolean(
+        config.providers[id]?.baseURL ||
+          (def.auth.baseURLEnv ? process.env[def.auth.baseURLEnv] : undefined),
+      );
+    }
     return Boolean(this.#resolveKey(def, config.providers[id]));
   }
 

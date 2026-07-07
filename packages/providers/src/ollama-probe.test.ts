@@ -57,3 +57,30 @@ test("probeOllamaContextWindow does NOT memoize a transient failure (re-probes a
     globalThis.fetch = realFetch;
   }
 });
+
+test("probeOllamaContextWindow uses a config API key for cloud routing and auth", async () => {
+  const { probeOllamaContextWindow } = await import("./ollama-probe.ts");
+  const realFetch = globalThis.fetch;
+  const prevKey = process.env.OLLAMA_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
+  let seenUrl = "";
+  let seenAuth = "";
+  globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+    seenUrl = String(url);
+    seenAuth = String(new Headers(init?.headers).get("authorization") ?? "");
+    return new Response(JSON.stringify({ model_info: { "glm.context_length": 32768 } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    const model = "ollama/uniq-config-key-probe-fixture";
+    expect(await probeOllamaContextWindow(model, undefined, "ol-config-key")).toBe(32768);
+    expect(seenUrl).toBe("https://ollama.com/api/show");
+    expect(seenAuth).toBe("Bearer ol-config-key");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (prevKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = prevKey;
+  }
+});

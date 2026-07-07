@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   McpTokenStore,
   createMcpOAuthProvider,
@@ -39,7 +39,21 @@ test("McpTokenStore.merge is atomic (no leftover temp file) and preserves prior 
   expect(state.clientInformation).toEqual({ client_id: "dyn-123" }); // preserved across merges
   expect(state.tokens).toEqual({ access_token: "a", refresh_token: "r" });
   // No stray temp file left behind (the write is temp+rename).
-  expect(await Bun.file(`${store.path}.tmp`).exists()).toBe(false);
+  expect(readdirSync(dirname(store.path)).some((f) => f.includes(".tmp"))).toBe(false);
+});
+
+test("McpTokenStore.merge serializes concurrent read-merge-writes", async () => {
+  const store = tmpStore();
+  await Promise.all([
+    store.merge({ clientInformation: { client_id: "dyn-123" } }),
+    store.merge({ tokens: { access_token: "a", refresh_token: "r" } }),
+    store.merge({ codeVerifier: "verifier-xyz" }),
+  ]);
+  const state = await store.read();
+  expect(state.clientInformation).toEqual({ client_id: "dyn-123" });
+  expect(state.tokens).toEqual({ access_token: "a", refresh_token: "r" });
+  expect(state.codeVerifier).toBe("verifier-xyz");
+  expect(readdirSync(dirname(store.path)).some((f) => f.includes(".tmp"))).toBe(false);
 });
 
 test("a corrupt token file is set aside on read, not silently clobbered", async () => {
@@ -174,6 +188,7 @@ test("extractOAuthCallbackParams parses code and error from the redirect URL", (
   expect(extractOAuthCallbackParams("http://localhost:8976/callback?error=access_denied")).toEqual({
     error: "access_denied",
   });
+  expect(extractOAuthCallbackParams("/callback?code=abc123&state=s1")).toEqual({ code: "abc123", state: "s1" });
   expect(extractOAuthCallbackParams("/callback")).toEqual({});
   expect(extractOAuthCallbackParams("not a url ::::")).toEqual({});
 });
@@ -184,6 +199,23 @@ test("waitForOAuthCallback resolves the code from a loopback hit", async () => {
   // Drive the callback with a local fetch (simulates the browser redirect).
   await fetch(`${redirect}?code=xyz789`).catch(() => {});
   await expect(pending).resolves.toBe("xyz789");
+});
+
+test("waitForOAuthCallback multiplexes concurrent flows on one redirect URL by state", async () => {
+  const redirect = "http://127.0.0.1:8980/callback";
+  const p1 = createMcpOAuthProvider("one", { redirectUri: redirect }, { store: tmpStore(), openUrl: () => {} });
+  const p2 = createMcpOAuthProvider("two", { redirectUri: redirect }, { store: tmpStore(), openUrl: () => {} });
+  await p1.redirectToAuthorization(new URL("https://auth.example.com/authorize?state=state-one"));
+  await p2.redirectToAuthorization(new URL("https://auth.example.com/authorize?state=state-two"));
+  const waitOne = waitForOAuthCallback(redirect, 5_000);
+  const waitTwo = waitForOAuthCallback(redirect, 5_000);
+
+  // Reverse arrival order: each promise must receive the code matching its own
+  // authorization state, not whichever callback hits the shared listener first.
+  await fetch(`${redirect}?code=code-two&state=state-two`).catch(() => {});
+  await fetch(`${redirect}?code=code-one&state=state-one`).catch(() => {});
+  await expect(waitOne).resolves.toBe("code-one");
+  await expect(waitTwo).resolves.toBe("code-two");
 });
 
 test("waitForOAuthCallback rejects on an error param", async () => {

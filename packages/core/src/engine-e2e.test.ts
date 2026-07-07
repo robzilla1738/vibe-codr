@@ -530,6 +530,52 @@ test("abort during a loop iteration interrupts the loop's session (not just the 
   expect(deltas.some((e) => e.type === "assistant-text-delta" && e.delta.includes("SHOULD_NOT_APPEAR"))).toBe(false);
 });
 
+test("loop iterations reuse the main session context", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-loopctx-"));
+  const prompts: string[] = [];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      call += 1;
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        {
+          type: "text-delta",
+          id: "t",
+          delta: call === 1 ? "MEMORY_MARKER_ALPHA" : "loop saw context",
+        },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never;
+    },
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
+    cwd,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const collector = (async () => {
+    for await (const _e of engine.events()) {
+      /* drain */
+    }
+  })();
+
+  engine.send({ type: "submit-prompt", text: "remember this" });
+  await engine.whenIdle();
+  engine.send({ type: "run-slash", name: "loop", args: "1h use prior context --max 1" });
+  await engine.whenIdle();
+
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  expect(prompts).toHaveLength(2);
+  expect(prompts[1]).toContain("MEMORY_MARKER_ALPHA");
+});
+
 test("Engine /clear emits exactly one 'Conversation cleared.' notice", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-clear-"));
   const model = new MockLanguageModelV2({ doStream: async () => stream([]) });

@@ -144,6 +144,7 @@ export type TranscriptAction =
       added: number;
       removed: number;
       diff?: string;
+      at?: number;
     }
   | { type: "notice"; text: string; level?: "info" | "warn" | "error" }
   | { type: "toggle"; id: number }
@@ -310,15 +311,23 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       const idx = fin.toolByCallId[a.toolCallId];
       const target = idx == null ? undefined : fin.blocks[idx];
       const canFold = !!target && target.kind === "tool" && !target.isDiff;
+      const prior = canFold ? (target as Extract<Block, { kind: "tool" }>) : undefined;
       const folded: Block = {
         kind: "tool",
-        id: canFold ? (target as { id: number }).id : fin.nextId,
+        id: prior ? prior.id : fin.nextId,
         label: header,
         output: lines,
         collapsed: false,
         isDiff: true,
         isError: false,
         done: true,
+        ...(prior?.tail !== undefined ? { tail: prior.tail } : {}),
+        ...(prior?.startedAt !== undefined ? { startedAt: prior.startedAt } : {}),
+        ...(prior?.elapsedMs !== undefined
+          ? { elapsedMs: prior.elapsedMs }
+          : a.at !== undefined && prior?.startedAt !== undefined
+            ? { elapsedMs: Math.max(0, a.at - prior.startedAt) }
+            : {}),
       };
       if (canFold && idx != null) {
         const blocks = fin.blocks.slice();

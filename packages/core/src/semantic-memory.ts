@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { Embedder } from "./embeddings.ts";
 import { chunkMarkdown } from "./chunk.ts";
+import { globalStateDir } from "./state-dir.ts";
 import { VectorStore, type VectorHit, type VectorRecord } from "./vector-store.ts";
 
 /** A source document to index: a logical id/path plus its current markdown. */
@@ -75,9 +76,9 @@ export class SemanticMemory {
   }
 }
 
-/** Path to a project's semantic index (a gitignored, rebuildable shadow). */
+/** Path to a project's semantic index (machine-local, rebuildable shadow). */
 export function semanticIndexPath(cwd: string): string {
-  return join(cwd, ".vibe", "memory", "index.sqlite");
+  return join(globalStateDir(cwd), "memory", "index.sqlite");
 }
 
 /**

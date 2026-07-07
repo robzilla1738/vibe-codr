@@ -4,6 +4,35 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — bug ledger remediation pass
+
+- **Session persistence and resume paths now fail more honestly.** Truncated
+  session JSONL files stop replay at the first malformed line and surface a
+  resume warning instead of silently stitching later partial state into the
+  conversation.
+- **The rich TUI is steadier across clear, follow-up, streaming, and clipboard
+  paths.** `/clear` suppresses late aborted-turn events, streamed Markdown now
+  stays in streaming mode, detached subagent spinners keep animating after the
+  parent turn idles, clipboard success toasts wait for a confirmed write, file
+  change folding preserves duration/tail metadata, and automated follow-up
+  turns keep the working indicator active until `engine-idle`.
+- **Orchestration, budgeting, and file freshness are harder to misread.** Resumed
+  report fallback keeps the original task objective, budget enforcement uses
+  actual accrued spend when models switch between priced and estimated pricing,
+  and large file reads now detect mid-read external writes before recording a
+  stale-write baseline.
+- **Plugin, skill, config hook, and provider setup errors are now explicit.**
+  Hook payload merges preserve required fields, malformed skill frontmatter is
+  rejected, `whenToUse` frontmatter is honored, invalid plugin slash commands
+  throw a clear load error, hooks without a `command` or `url` fail config
+  validation, malformed known-provider model strings reopen onboarding, and the
+  generic `custom` provider is not considered configured until a base URL exists.
+- **Provider and MCP edge cases no longer masquerade as unrelated failures.**
+  Non-auth provider configuration/SDK/unsupported-capability failures now carry
+  specific error codes instead of `ProviderAuthError`, and duplicate MCP resource
+  URIs require an explicit `server` argument instead of reading whichever server
+  was registered first.
+
 ### Fixed — audit closeout and release hardening
 
 - **Untrusted project config can no longer smuggle approval bypasses through

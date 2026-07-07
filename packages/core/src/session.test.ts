@@ -812,6 +812,58 @@ test("compaction frees the reported context immediately (no stale provider count
   expect(events.some((e) => e.type === "compacted")).toBe(true);
 });
 
+test("/clear resets token + offload accounting (no stale contextTokens or poisoned meta) (BUG-046)", async () => {
+  // After a long session the provider's last input count (`#lastInputTokens`), the
+  // system/tool scaffolding (`#overheadTokens`), the projection anchor
+  // (`#lastSentEstimate`), and the offload map (`#offloaded`) are all populated.
+  // `clear()` wiped the messages but left those pinned — `context-updated` and
+  // `/context` reported a fill the empty transcript no longer had, `#maybeCompact`
+  // could spuriously fire on the next short prompt, `#persist` wrote poisoned
+  // `lastInputTokens` into meta for `--resume`, and the stale `#offloaded` map
+  // made re-emitted previews look like duplicates (over-aggressive offload on
+  // the next `prepareStep`). The fix resets every field and posts a fresh
+  // `context-updated` so the UI and the next compaction see the freed space.
+  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const reply = (text: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: text },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+    ]);
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => reply(`turn ${call++}`) as never });
+
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: mkdtempSync(join(tmpdir(), "vibe-clear-acct-")),
+    model: "mock/test",
+    mode: "execute",
+    getContextWindow: async () => 128_000,
+  });
+  for (let i = 0; i < 5; i++) await session.run(`turn ${i}`);
+  expect(session.contextTokens).toBe(90_000); // pinned at the provider's count
+  expect(session.messageCount).toBeGreaterThan(0);
+
+  const events = await collect(bus, () => Promise.resolve(session.clear()));
+
+  expect(session.messageCount).toBe(0);
+  expect(session.contextTokens).toBe(0); // fresh estimate of empty ≈ 0
+  const ctxUpdate = events.findLast((e) => e.type === "context-updated");
+  expect(ctxUpdate && ctxUpdate.type === "context-updated" && ctxUpdate.usedTokens).toBe(0);
+
+  // A short follow-up should NOT fire a bogus compaction (stale `#lastInputTokens`
+  // was the trigger of the pre-fix bug — `#maybeCompact` saw ~90k above the
+  // threshold and tried to compact an empty transcript).
+  const follow = await collect(bus, () => session.run("hi"));
+  expect(follow.some((e) => e.type === "compacted")).toBe(false);
+});
+
 test("a failing summarizer skips compaction with a notice instead of failing the turn", async () => {
   // The summarizer (generateText) is an AUXILIARY call. A transient failure on it
   // must NOT abort the turn (or mark a subagent fork as failed) — compaction is

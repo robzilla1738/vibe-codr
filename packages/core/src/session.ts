@@ -747,6 +747,30 @@ export class Session {
     this.#history = [];
     this.#recalledContext = undefined;
     if (this.#tasks.length) this.setTasks([]);
+    // BUG-046: every token/offload accounting field the prior session populated
+    // must reset too. Clearing only the message list left `#lastInputTokens`
+    // (the provider's pre-clear prompt size), `#overheadTokens` (system+tool
+    // scaffolding from the prior turns), `#lastSentEstimate` (the projection
+    // anchor for mid-turn offload), and `#offloaded` (already-emitted previews)
+    // pinned at their pre-clear values — `context-updated` reported a fill the
+    // empty transcript no longer had, `#maybeCompact` could spuriously fire on
+    // the next short prompt, `prepareStep` could offload too aggressively (the
+    // stale `#offloaded` map made re-emitted previews look like duplicates),
+    // and `#persist()` wrote poisoned `lastInputTokens` into session meta that
+    // `--resume` inherited. Compaction explicitly resets `#lastInputTokens`
+    // (line ~1577) — `clear()` mirrors that and re-arms the offload map. A fresh
+    // `context-updated` event posts the honest zero so `/context`, `ctx %`,
+    // and the live sidebar reflect the freed space immediately.
+    this.#lastInputTokens = 0;
+    this.#overheadTokens = 0;
+    this.#lastSentEstimate = 0;
+    this.#offloaded = new Map();
+    this.#deps.bus.emit({
+      type: "context-updated",
+      sessionId: this.id,
+      usedTokens: 0,
+      contextWindow: this.#contextWindow,
+    });
     this.#deps.bus.emit({
       type: "notice",
       level: "info",

@@ -23,13 +23,37 @@ test("round-trip: append then load by exact manifest hash", () => {
   expect(rec?.conventions).toEqual(["biome"]);
 });
 
-test("latest record wins among matches; malformed lines are skipped", async () => {
+test("latest record wins among matches; malformed records are skipped", async () => {
   const cwd = tmp();
   const key = { manifestHash: "m1", commandsHash: "c1" };
   appendLedger(cwd, { ...key, at: 1, commands: { test: "old" }, conventions: [] });
-  await Bun.write(ledgerPath(cwd), `${await Bun.file(ledgerPath(cwd)).text()}not-json\n`);
+  // Drop a malformed record file directly between two real writes (mirrors the
+  // pre-BUG-049 torn-line test): a corrupted .json (disk error, not a torn
+  // write — temp+rename now makes the latter impossible) must be skipped, and
+  // the loader still surfaces the latest valid record by `at`.
+  await Bun.write(join(cwd, ".vibe", "ledger", "0000000000001-z-corrupt.json"), "not-json");
   appendLedger(cwd, { ...key, at: 2, commands: { test: "new" }, conventions: [] });
   expect(loadLedger(cwd, key)?.commands.test).toBe("new");
+});
+
+test("a torn .tmp file (crash before rename) is ignored and never loses the prior record", async () => {
+  // BUG-049: per-record temp+rename makes a crash mid-write leave ONLY an
+  // ignored .tmp file — the durable .json either all-landed or never existed.
+  const cwd = tmp();
+  const key = { manifestHash: "m1", commandsHash: "c1" };
+  appendLedger(cwd, { ...key, at: 5, commands: { test: "real" }, conventions: [] });
+  await Bun.write(join(cwd, ".vibe", "ledger", "0000000000009-aborted.tmp"), JSON.stringify({ ...key, at: 9 }));
+  expect(loadLedger(cwd, key)?.commands.test).toBe("real");
+});
+
+test("legacy in-cwd ledger.jsonl still loads after the upgrade (backward compatibility)", async () => {
+  // An existing pre-BUG-049 repo has a .vibe/ledger.jsonl file; the loader must
+  // still read it on the first run after upgrading (the per-record dir is
+  // empty), so no confirmed command is silently dropped across the migration.
+  const cwd = tmp();
+  const key = { manifestHash: "legacy", commandsHash: "c1" };
+  await Bun.write(join(cwd, ".vibe", "ledger.jsonl"), `${JSON.stringify({ ...key, at: 7, commands: { test: "legacy-cmd" }, conventions: [] })}\n`);
+  expect(loadLedger(cwd, key)?.commands.test).toBe("legacy-cmd");
 });
 
 test("a dep bump (manifestHash changed, commandsHash same) keeps confirmed commands", () => {

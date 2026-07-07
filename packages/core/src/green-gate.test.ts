@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
@@ -130,18 +130,21 @@ test("green gate: passing checks → GREEN notice + green checkpoint + review ru
   expect(notices(events).some((n) => n.message.includes("Diff review: clean"))).toBe(true);
 
   // Cross-run ledger writeback: the green gate persisted the confirmed commands
-  // to .vibe/ledger.jsonl so the NEXT session's recon inherits them. (Previously
-  // appendLedger had no caller, so the whole ledger feature was dead code.)
-  const ledger = readFileSync(ledgerPath(dir), "utf8").trim().split("\n").filter(Boolean);
-  expect(ledger.length).toBeGreaterThanOrEqual(1);
-  const rec = JSON.parse(ledger[ledger.length - 1]!) as {
+  // so the NEXT session's recon inherits them. (Previously appendLedger had no
+  // caller, so the whole ledger feature was dead code.) BUG-049 moved the
+  // store from a single in-place ledger.jsonl to per-record atomic files under
+  // .vibe/ledger/ — read them, not the legacy path.
+  const dir2 = join(dir, ".vibe", "ledger");
+  const names = readdirSync(dir2).sort();
+  expect(names.length).toBeGreaterThanOrEqual(1);
+  const last = JSON.parse(readFileSync(join(dir2, names[names.length - 1]!), "utf8")) as {
     commands: Record<string, string>;
     manifestHash: string;
     commandsHash: string;
   };
-  expect(rec.commands.test).toBe("bun run test");
-  expect(rec.manifestHash).toBeTruthy();
-  expect(rec.commandsHash).toBeTruthy();
+  expect(last.commands.test).toBe("bun run test");
+  expect(last.manifestHash).toBeTruthy();
+  expect(last.commandsHash).toBeTruthy();
 });
 
 test("ledger writeback respects the build.recon.ledger kill-switch (no file when off)", async () => {
@@ -154,12 +157,9 @@ test("ledger writeback respects the build.recon.ledger kill-switch (no file when
   await runEngine(dir, model, (c) => {
     c.build.recon.ledger = false;
   });
-  let existed = true;
-  try {
-    readFileSync(ledgerPath(dir), "utf8");
-  } catch {
-    existed = false;
-  }
+  // Neither legacy .vibe/ledger.jsonl nor the post-BUG-049 per-record dir under
+  // .vibe/ledger/ should exist once the kill-switch flips.
+  const existed = existsSync(ledgerPath(dir)) || existsSync(join(dir, ".vibe", "ledger"));
   expect(existed).toBe(false);
 });
 

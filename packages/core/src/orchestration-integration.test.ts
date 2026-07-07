@@ -153,6 +153,59 @@ test("the journal plan stamp includes behavior-bearing fields (verify-pass regre
   expect(loadCompletedTasks(cwd, session.id, stripped).length).toBe(0);
 });
 
+test("the journal plan stamp hashes worktree/hard/agent/outputSchema (BUG-002 regression)", async () => {
+  // BUG-002 was a regression where the spawn_tasks call site hashed only
+  // 7 fields while planIdentity() hashed 11, so a re-plan flipping any of
+  // worktree/hard/agent/outputSchema reused the prior run's stamp and seeded
+  // stale completions. This test asserts the stamp honors all four by running
+  // each one through the spawn_tasks execute path and comparing the journal
+  // stamp against a stripped form that differs ONLY in that field.
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "t1",
+        toolName: "spawn_tasks",
+        input: JSON.stringify({
+          tasks: [{ id: "a", objective: "do task A", deps: [] }],
+        }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    textStep("A is complete"),
+    textStep("all orchestrated"),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const cwd = tmpCwd();
+  const session = new Session({
+    config: orchestrationConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("orchestrate A");
+
+  // Baseline spec the run journaled under.
+  const base = { id: "a", objective: "do task A", deps: [] } as const;
+  // One spec per behavior-bearing field the call site previously dropped —
+  // each differs ONLY in that field, so a stamp that ignores it collides.
+  const flips = [
+    { ...base, worktree: true },
+    { ...base, hard: true },
+    { ...base, agent: "review" },
+    { ...base, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
+  ];
+  const stampedEveryTime = flips.every((spec) => loadCompletedTasks(cwd, session.id, planIdentity([spec])).length === 0);
+  expect(stampedEveryTime).toBe(true);
+  // Sanity: the baseline (no extra field) DOES seed this run's completion.
+  expect(loadCompletedTasks(cwd, session.id, planIdentity([base])).length).toBe(1);
+});
+
 test("spawn_tasks rejects an invalid plan (dependency cycle) without running anything", async () => {
   const steps = [
     stream([

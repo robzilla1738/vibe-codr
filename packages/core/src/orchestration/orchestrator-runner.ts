@@ -470,25 +470,17 @@ export class OrchestratorRunner {
       readOnly: true,
       concurrencySafe: true,
       execute: async ({ tasks, detach }, ctx) => {
-        // Plan identity: stamped onto every spec (and thus every journal event)
-        // so a resume seeds ONLY from this exact plan's prior run — a later
-        // same-session plan reusing a task id never inherits a stale result.
-        // Behavior-bearing fields ride in the hash too: a re-plan flipping
-        // verify/check/files/tier must re-run, not inherit.
-        const plan = planIdentity(
-          tasks.map((t) => ({
-            id: t.id,
-            objective: t.objective,
-            deps: t.deps ?? [],
-            files: t.files,
-            verify: t.verify,
-            check: t.check,
-            tier: t.tier,
-          })),
-        );
+        // Spec construction mirrors every behavior-bearing TaskSpec field from
+        // the model's input. `plan` (the identity hash) is computed FROM this
+        // spec set — never from a parallel hand-list — so the journal stamp and
+        // the runtime spec set can never diverge. Every field that can change
+        // how a task runs (verify/check/files/tier/worktree/hard/agent/
+        // outputSchema) rides through BOTH paths: BUG-002 was a regression
+        // where the stamp hash omitted the last four while the specs carried
+        // them — a re-plan flipping them would inherit a stale completion.
         const specs: TaskSpec[] = tasks.map((t) => ({
           id: t.id,
-          plan,
+          plan: "", // stamped below once known
           objective: t.objective,
           deps: t.deps ?? [],
           ...(t.files ? { files: t.files } : {}),
@@ -500,6 +492,13 @@ export class OrchestratorRunner {
           ...(t.hard ? { hard: t.hard } : {}),
           ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
         }));
+        // Plan identity: stamped onto every spec (and thus every journal event)
+        // so a resume seeds ONLY from this exact plan's prior run — a later
+        // same-session plan reusing a task id never inherits a stale result.
+        // Every behavior-bearing field is hashed, so a re-plan flipping ANY of
+        // them forces a fresh run instead of seeding the prior completion.
+        const plan = planIdentity(specs);
+        for (const s of specs) s.plan = plan;
         // Validate the plan SYNCHRONOUSLY so a bad plan errors immediately, even
         // for a detached run (it must not be deferred into the background).
         const dagError = validateDag(specs);

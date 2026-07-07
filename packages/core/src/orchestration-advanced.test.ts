@@ -321,6 +321,77 @@ test("verify task: an Esc during the gate settles the task failed, with no retry
   expect(events.filter((e) => e.type === "subagent-started").length).toBe(1);
 });
 
+// ── 4c. check:true on a repo with NO detected checks fails as `unverified` ──
+
+test("check:true on a repo with no detected checks fails the task as unverified (BUG-047)", async () => {
+  // The green-gate honesty invariant: `unverified` is never green. A `check:true`
+  // task that explicitly requested machine verification must FAIL when the repo
+  // has no detected commands — not journal `completed` with zero verification.
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => (call++ === 0
+      ? spawnTasksStep([{ id: "t", objective: "make a change", check: true }])
+      : textStep("did the change")) as never,
+  });
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+
+  const session = new Session({
+    config: orchestrationConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: tmpCwd(),
+    model: "mock/test",
+    mode: "execute",
+    repoProfile: fakeProfile({}), // no detected commands → gate `unverified`
+  });
+  await session.run("do it and check");
+  bus.close();
+  await done;
+
+  const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  const out = finished && finished.type === "tool-call-finished" ? String(finished.output) : "";
+  expect(out).toContain("no detected checks");
+  expect(out).toContain("0 completed");
+  // Honest failure: the task journal carries `failed`, not `completed`.
+  const failed = events.find((e) => e.type === "orchestration-task" && e.taskId === "t" && e.status === "failed");
+  expect(failed).toBeDefined();
+});
+
+// ── 4d. verify:true with empty profile fails the shared task as unverified ──
+
+test("verify:true with no detected checks fails the task as unverified (BUG-047)", async () => {
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => (call++ === 0
+      ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
+      : textStep("did the change")) as never,
+  });
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+
+  const session = new Session({
+    config: orchestrationConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: tmpCwd(),
+    model: "mock/test",
+    mode: "execute",
+    repoProfile: fakeProfile({}),
+  });
+  await session.run("do it and verify");
+  bus.close();
+  await done;
+
+  const failed = events.find((e) => e.type === "orchestration-task" && e.taskId === "t" && e.status === "failed");
+  expect(failed).toBeDefined();
+  const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  const out = finished && finished.type === "tool-call-finished" ? String(finished.output) : "";
+  expect(out).toContain("no detected checks");
+});
+
 // ── 5. the reviewer gets the REAL diff ──────────────────────────────────────
 
 test("a verify task's reviewer prompt contains the real git diff of the task's files", async () => {

@@ -773,7 +773,17 @@ export class OrchestratorRunner {
       // the outer finally, also serialized.
       const verdict = await this.#mergeLock(
         async (): Promise<{ ok: true; diff?: string } | { ok: false; output: string }> => {
-          await commitWorktree(wt, `vibecodr(task ${spec.id}): ${spec.objective}`);
+          // BUG-048: commitWorktree returns false when the child made nothing
+          // committable. The ensemble path already checks this; the worktree
+          // path awaited without checking → a false return silently proceeded to
+          // an empty-delta merge, a gate that passed on unchanged main, a
+          // `completed` verdict, and a worktree removal that ORPHANED the child's
+          // uncommitted edits. Fail the task honestly — nothing to verify, no
+          // merge to gate.
+          const committed = await commitWorktree(wt, `vibecodr(task ${spec.id}): ${spec.objective}`);
+          if (!committed) {
+            return { ok: false, output: "Worktree child made no committable changes — task not verified." };
+          }
           // Sibling tasks' already-staged (uncommitted) changes in this shared tree,
           // captured BEFORE our merge so the revert set is OUR delta only.
           const preStaged = new Set(await gitStagedFiles(mainCwd));
@@ -803,6 +813,18 @@ export class OrchestratorRunner {
             if (gate.outcome === "aborted") {
               await gitRestoreFiles(mainCwd, mergedFiles);
               return { ok: false, output: "Gate interrupted before a verdict — merged changes reverted." };
+            }
+            // BUG-047: a `check:true`/`verify:true` task explicitly requested
+            // machine verification. An `unverified` gate means the repo had no
+            // detected checks to run — the user's intent ("verify this with real
+            // checks") is unsatisfiable, NOT silently satisfied. Revert the
+            // merge and fail honestly with actionable feedback, mirroring the
+            // green-gate invariant root path (`#maybeContinueGoal`) enforces:
+            // `unverified` is never green. Without this a check-less repo could
+            // journal `completed` with zero machine verification.
+            if (gate.outcome === "unverified") {
+              await gitRestoreFiles(mainCwd, mergedFiles);
+              return { ok: false, output: "Repo has no detected checks — worktree task not verified. Configure build/test detection or drop `check`/`verify`." };
             }
           }
           // Capture the diff of THIS task's merged changes while the tree is still
@@ -900,10 +922,15 @@ export class OrchestratorRunner {
       return this.#runSharedTask(spec, depResults, parentSignal, suspendParentSlot);
     }
 
-    // Winner: highest score, ties broken by the smaller diff. Must score > 0.
+    // BUG-047: winner must have a GREEN gate (score 2). `unverified` (1) and
+    // red/aborted/no-profile (0) never merge — only machine-verified work
+    // squash-merges into the main tree, mirroring the green-gate honesty
+    // invariant. A best-of-N where every attempt was `unverified` (or every
+    // attempt found no detected repo checks — BUG-050) fails the task with the
+    // per-attempt verdicts instead of merging the diffSize-smallest attempt.
     const winner = [...attempts]
-      .filter((a) => a.score > 0)
-      .sort((x, y) => y.score - x.score || x.diffSize - y.diffSize)[0];
+      .filter((a) => a.score === 2)
+      .sort((x, y) => x.diffSize - y.diffSize)[0];
 
     try {
       if (!winner) {
@@ -974,6 +1001,15 @@ export class OrchestratorRunner {
             if (gate.outcome === "aborted") {
               await gitRestoreFiles(mainCwd, mergedFiles);
               return { ok: false, output: "Gate interrupted before a verdict — merged changes reverted." };
+            }
+            // BUG-047: a re-gate landing `unverified` (the repo's detected
+            // checks have since changed — e.g. a sibling flush changed the
+            // profile) means the merged tree has no machine verification. Revert
+            // and fail honestly — the winner's isolated green no longer holds
+            // against the combined tree, and `unverified` is never green.
+            if (gate.outcome === "unverified") {
+              await gitRestoreFiles(mainCwd, mergedFiles);
+              return { ok: false, output: "Repo no longer has detected checks — ensemble merged task not verified." };
             }
           }
           return { ok: true };
@@ -1055,8 +1091,17 @@ export class OrchestratorRunner {
       if (!committed) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score: -1, verdict: "no-changes" };
 
       const diffSize = (await gitDiffSince(wt, baseRef)).length;
-      let score = 1;
-      let verdict = "unverified";
+      // Default score 0: an attempt that ran no gate (no profile, BUG-050) is
+      // NEVER merge-eligible — a hard task without a repo profile has no
+      // machine truth to win by, so diffSize tiebreak among un-run attempts
+      // would squash-merge work the gate never judged. Only a GREEN gate
+      // earns the merge-eligible score 2 (BUG-047: unverified is never a
+      // pass). Red/aborted score 0 alongside skipped/no-profile attempts;
+      // `unverified` scores 1 (visible in the summary) but no winner filter
+      // accepts it, so an all-unverified ensemble fails honestly instead of
+      // merging a "winner" with zero machine verification.
+      let score = 0;
+      let verdict: string = "no-profile";
       if (profile) {
         const gate = await runGate(wt, profile, 0, {
           checks: this.#handle.deps.config.build.gate.checks,
@@ -1238,7 +1283,25 @@ export class OrchestratorRunner {
             ...(handoff ? { handoff } : {}),
           });
         }
-        // green or unverified → fall through to the diff review (for verify).
+        // BUG-047: a `check:true`/`verify:true` task explicitly requested
+        // machine verification. An `unverified` outcome means the repo had no
+        // detected checks to run — the user's intent ("verify this with real
+        // checks") is unsatisfiable, NOT silently satisfied. Fail with
+        // actionable feedback instead of journaling `completed` with zero
+        // verification (the green-gate honesty invariant: `unverified` is never
+        // green). The retry path is intentionally skipped: a re-run would match
+        // no detected commands either, so the only escape is configuration.
+        if (gate.outcome === "unverified") {
+          return settle({
+            id: spec.id,
+            objective: spec.objective,
+            outcome: "failed",
+            output: "Repo has no detected checks — task not verified. Configure build/test detection or drop `check`/`verify`.",
+            attempts,
+            ...(handoff ? { handoff } : {}),
+          });
+        }
+        // green → fall through to the diff review (for verify).
       }
 
       if (!spec.verify) {

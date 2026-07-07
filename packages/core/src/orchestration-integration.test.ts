@@ -191,10 +191,10 @@ test("the journal plan stamp hashes worktree/hard/agent/outputSchema (BUG-002 re
   await session.run("orchestrate A");
 
   // Baseline spec the run journaled under.
-  const base = { id: "a", objective: "do task A", deps: [] } as const;
+  const base = { id: "a", objective: "do task A", deps: [] as string[] };
   // One spec per behavior-bearing field the call site previously dropped —
   // each differs ONLY in that field, so a stamp that ignores it collides.
-  const flips = [
+  const flips: ReadonlyArray<Parameters<typeof planIdentity>[0][number]> = [
     { ...base, worktree: true },
     { ...base, hard: true },
     { ...base, agent: "review" },

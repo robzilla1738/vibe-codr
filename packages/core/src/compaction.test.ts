@@ -237,3 +237,70 @@ test("compaction with a non-iterable user content prepends a summary turn instea
   expect(result!.messages[0]!.content).toBe("[Summary of earlier conversation]\nRECAP");
   expect(result!.messages.length).toBe(3); // note + the 2 kept
 });
+
+test("overrun is false on a normal compaction that fits within the keep window", async () => {
+  const messages = msgs(10); // 10 messages, keep=4 → older prefix exists
+  const result = await compactMessages(messages, {
+    contextWindow: 100_000,
+    threshold: 0.75,
+    keep: 4,
+    force: true,
+    summarize: async () => "summary",
+  });
+  expect(result).not.toBeNull();
+  expect(result!.overrun).toBe(false);
+});
+
+test("overrun is true when messages.length <= keep triggers emergency shrink", async () => {
+  // 4 messages with keep=6: normally returns null, but force=true + >threshold
+  // triggers emergency shrink → keep window dropped to 1, overrun=true.
+  const messages = msgs(4);
+  const result = await compactMessages(messages, {
+    contextWindow: 100_000,
+    threshold: 0.75,
+    keep: 6,
+    force: true,
+    summarize: async () => "emergency",
+  });
+  expect(result).not.toBeNull();
+  expect(result!.overrun).toBe(true);
+  // With keep=6, effectiveKeep=1 → cut = 4-1 = 3, older = 3 messages summarized
+  expect(result!.messages[0]!.content).toContain("emergency");
+});
+
+test("overrun still false for threshold-triggered compaction with ample messages", async () => {
+  const messages = msgs(20);
+  const tokens = estimateTokens(messages);
+  const result = await compactMessages(messages, {
+    contextWindow: tokens,
+    threshold: 0.5,
+    keep: 4,
+    summarize: async () => "S",
+  });
+  expect(result).not.toBeNull();
+  expect(result!.overrun).toBe(false);
+});
+
+test("fewer than 3 messages returns null even when forced and over threshold", async () => {
+  // 2 messages can't be sliced safely — return null for manual intervention.
+  const two = msgs(2);
+  const nullResult = await compactMessages(two, {
+    contextWindow: 1,
+    threshold: 0,
+    keep: 6,
+    force: true,
+    summarize: async () => "should not be called",
+  });
+  expect(nullResult).toBeNull();
+
+  // 1 message also returns null.
+  const one = msgs(1);
+  const nullOne = await compactMessages(one, {
+    contextWindow: 1,
+    threshold: 0,
+    keep: 6,
+    force: true,
+    summarize: async () => "should not be called",
+  });
+  expect(nullOne).toBeNull();
+});

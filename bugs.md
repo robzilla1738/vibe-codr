@@ -1,6 +1,6 @@
 # vibe-codr — Bug & Weakness Audit
 
-**Status:** Fix pass in progress (2026-07-06) — 36 confirmed active findings, 43 fixed, 2 refuted (intentional design)
+**Status:** Remediation pass complete (2026-07-07) — 31 confirmed active findings, 48 fixed, 2 refuted (intentional design)
 **Mode:** Active remediation — fixed entries carry `**Fix:**` and `**Verification:**`
 **Method:** Static code review + cross-reference with tests and invariants in `AGENTS.md`. Every entry is grounded in source; speculative items are excluded.
 
@@ -26,8 +26,8 @@ Every `BUG-001`–`BUG-081` was re-read against current source. Each entry carri
 
 | Outcome | Count | IDs |
 |---------|-------|-----|
-| **confirmed active** | 36 | All except 001, 002, 003, 004, 005, 006, 007, 008, 009, 010, 011, 012, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 027, 028, 029, 030, 031, 032, 033, 034, 035, 036, 037, 038, 039, 040, 041, 042, 043, 044, 045 |
-| **fixed** | 43 | BUG-001, BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-011, BUG-012, BUG-013, BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025, BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-034, BUG-036, BUG-037, BUG-038, BUG-039, BUG-040, BUG-041, BUG-042, BUG-043, BUG-044, BUG-045 |
+| **confirmed active** | 31 | All except 001, 002, 003, 004, 005, 006, 007, 008, 009, 010, 011, 012, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 027, 028, 029, 030, 031, 032, 033, 034, 035, 036, 037, 038, 039, 040, 041, 042, 043, 044, 045, 046, 047, 048, 049, 050 |
+| **fixed** | 48 | BUG-001, BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-011, BUG-012, BUG-013, BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025, BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-034, BUG-036, BUG-037, BUG-038, BUG-039, BUG-040, BUG-041, BUG-042, BUG-043, BUG-044, BUG-045, BUG-046, BUG-047, BUG-048, BUG-049, BUG-050 |
 | **refuted** | 2 | BUG-033 (permission glob limitation), BUG-035 (LRU stale-write tradeoff) |
 | **stale citation** | 0 | Line numbers verified against current source |
 
@@ -38,10 +38,10 @@ Every `BUG-001`–`BUG-081` was re-read against current source. Each entry carri
 | Severity | Active | Refuted | Notes |
 |----------|--------|---------|-------|
 | Critical | 0 | 0 | BUG-001 fixed |
-| High | 3 | 0 | BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010 fixed |
-| Medium | 18 | 0 | BUG-010, BUG-011, BUG-012, BUG-013, BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025, BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031 fixed |
+| High | 1 | 0 | BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-047, BUG-048 fixed |
+| Medium | 15 | 0 | BUG-010, BUG-011, BUG-012, BUG-013, BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025, BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-046, BUG-049, BUG-050 fixed |
 | Low | 15 | 2 | BUG-032, BUG-034, BUG-036, BUG-037, BUG-038, BUG-039, BUG-040, BUG-041, BUG-042, BUG-043, BUG-044, BUG-045 fixed; BUG-033, BUG-035 → intentional design |
-| **Total** | **36** | **2** | 81 audited; 36 active, 43 fixed |
+| **Total** | **31** | **2** | 81 audited; 31 active, 48 fixed |
 
 **Verification method:** Static read of every cited file at current line numbers (2026-07-06). Full per-id log in scratch `verification-log.md`.
 
@@ -1154,7 +1154,9 @@ snake_case key taking precedence when both are present.
 | **File** | `packages/core/src/session.ts` (728–738, 745–749, 1155–1197, 1514–1529, 1577) |
 | **Severity** | Medium |
 
-**Verdict:** confirmed (static source review, 2026-07-06)
+**Verdict:** fixed (2026-07-07) — clear() now resets `#lastInputTokens`, `#overheadTokens`, `#lastSentEstimate`, `#offloaded` and emits fresh `context-updated` with `usedTokens:0`.
+
+**Fix:** `commit 0cb8ad8` — session `clear()` resets token and offload accounting.
 
 **Description:** `clear()` wipes `#modelMessages` and `#history` but does **not** reset `#lastInputTokens`, `#overheadTokens`, `#lastSentEstimate`, or `#offloaded`. After a long session, `/context` and `context-updated` still report pre-clear provider fill; `#maybeCompact` can fire on a nearly empty transcript; `prepareStep` microcompaction may offload too aggressively. `#persist()` can write inflated `lastInputTokens` into session meta for `--resume`.
 
@@ -1174,7 +1176,9 @@ snake_case key taking precedence when both are present.
 | **Files** | `packages/core/src/orchestration/orchestrator-runner.ts` (1199–1258, 788–824), `packages/core/src/build/gate.ts` |
 | **Severity** | High |
 
-**Verdict:** confirmed (static source review, 2026-07-06)
+**Verdict:** fixed (2026-07-07) — shared-tree and worktree gate paths now treat `unverified` as failure; only `green` allows completion.
+
+**Fix:** `commit 67e272b` — orchestration treats unverified gate as failure for check/verify tasks.
 
 **Description:** Shared-tree and worktree tasks with `check` or `verify` run `runGate` but only `red` and `aborted` fail the task. **`unverified` falls through to `completed`**, contradicting gate honesty ("no detected checks → unverified, never green"). Differs from root engine path. Worktree path keeps merged changes when post-merge gate is `unverified`.
 
@@ -1194,7 +1198,9 @@ snake_case key taking precedence when both are present.
 | **Files** | `packages/core/src/orchestration/orchestrator-runner.ts` (777–824), `packages/core/src/build/gitops.ts` (178–189) |
 | **Severity** | High |
 
-**Verdict:** confirmed (static source review, 2026-07-06)
+**Verdict:** fixed (2026-07-07) — `#runWorktreeTask` now checks `commitWorktree` return value and fails the task on `false`, matching the ensemble path.
+
+**Fix:** `commit 67e272b` — orchestration: check commitWorktree return value in worktree path.
 
 **Description:** `#runEnsembleAttempt` checks `commitWorktree` return value and bails on `false`. `#runWorktreeTask` **awaits but does not check** the boolean. If commit fails after child edits, merge may succeed with empty delta, gate passes on unchanged main, task reports **`completed`**, and `finally` removes the worktree — **orphaning child edits**.
 
@@ -1214,7 +1220,9 @@ snake_case key taking precedence when both are present.
 | **File** | `packages/core/src/build/ledger.ts` (57–64) |
 | **Severity** | Medium |
 
-**Verdict:** confirmed (static source review, 2026-07-06)
+**Verdict:** fixed (2026-07-07) — switched from `appendFileSync` JSONL to atomic per-record temp+rename files under `.vibe/ledger/`. Legacy `.vibe/ledger.jsonl` still read for migration.
+
+**Fix:** `commit d674fea` — ledger: atomic per-record files (BUG-049).
 
 **Description:** `appendLedger` uses bare `appendFileSync` with no locking. Two concurrent sessions appending green-gate records can interleave bytes → torn JSONL lines. `loadLedger` skips malformed lines silently → confirmed commands/conventions dropped.
 
@@ -1232,7 +1240,9 @@ snake_case key taking precedence when both are present.
 | **File** | `packages/core/src/orchestration/orchestrator-runner.ts` (1058–1074) |
 | **Severity** | Medium |
 
-**Verdict:** confirmed (static source review, 2026-07-06)
+**Verdict:** fixed (2026-07-07) — ensemble with missing `repoProfile` scores attempts at 0 with verdict `"no-profile"`, and the winner filter requires `score >= 2` (green-only). No profile = no merge.
+
+**Fix:** `commit 67e272b` — orchestration: unverified gate + ensemble scoring fixes (BUG-047/048/050).
 
 **Description:** When `this.#handle.deps.repoProfile` is falsy, gate block is skipped; each attempt keeps defaults `score = 1`, `verdict = "unverified"`. Winner filter requires `score > 0`, so attempts with **no gate run** can win by `diffSize` tiebreak and squash-merge. Post-merge re-gate also gated on `profile`.
 

@@ -57,6 +57,15 @@ export interface CompactOptions {
 export interface CompactResult {
   messages: ModelMessage[];
   freed: number;
+  /** True when compaction ran in EMERGENCY mode: the transcript had fewer
+   * messages than `keep` normally preserves, but the prompt was already over
+   * the threshold (or `force`d), so the keep window was shrunk to allow an
+   * older prefix to summarize. Surfaced so the caller can warn instead of
+   * reporting a clean "freed N tokens" success — the context may STILL exceed
+   * the window after the shrink if the offending message sits in the kept
+   * tail (e.g. a single massive paste), and a follow-up attempt may need a
+   * manual `/clear` rather than another auto-compaction pass. */
+  overrun: boolean;
 }
 
 /**
@@ -77,7 +86,33 @@ export async function compactMessages(
   // prompt + tool schemas the estimate can't see); fall back to the estimate.
   const trigger = opts.currentTokens && opts.currentTokens > 0 ? opts.currentTokens : estimate;
   if (!opts.force && trigger < opts.threshold * opts.contextWindow) return null;
-  if (messages.length <= opts.keep) return null;
+  // Under-threshold AND not forced → nothing to do. Otherwise the prompt is over
+  // the threshold (or the user forced it) — compaction MUST do work or the next
+  // provider call 400s on length. If `messages.length <= opts.keep`, the old code
+  // returned null here (no older prefix to summarize). That was correct for the
+  // threshold-driven case when the threshold waited until enough messages piled
+  // up, but it broke for a transcript with a SINGLE huge message (one large file
+  // paste, one massive tool output) that sailed past the limit on a very short
+  // message list. In that emergency case the keep window MUST shrink so the
+  // boundary walk has an older prefix to summarize; without it the next turn
+  // 400'd on length while compaction reported "nothing to compact."
+  let overrun = false;
+  let effectiveKeep = opts.keep;
+  if (messages.length <= opts.keep) {
+    // Fewer than 3 messages: no meaningfully older prefix exists — return null so
+    // the caller can surface a manual-intervention notice ("prompt over window;
+    // try /clear"). One or two big messages can't be sliced safely.
+    if (messages.length < 3) return null;
+    // Keep ONE recent message and summarize the rest. The boundary walk below
+    // inflates this if it has to swallow orphan tool results, but at least the
+    // bulk of the offending content (a paste in an early user turn, a giant tool
+    // dump) becomes the `older` prefix and gets summarized. Flag `overrun` so
+    // the caller knows this was an emergency shrink, not the normal keep-window
+    // compaction, and may need follow-up help (the kept tail can STILL exceed the
+    // window if it alone carries the bulk of the tokens).
+    overrun = true;
+    effectiveKeep = 1;
+  }
 
   // Never cut between an assistant's `tool-call` and its `tool` result message:
   // `response.messages` records tool results as their own `role: "tool"` message,
@@ -87,7 +122,7 @@ export async function compactMessages(
   // starts on a non-`tool` message, pulling the owning assistant turn along with
   // it so the step stays whole. If that swallows everything, there is nothing
   // older left to summarize.
-  let cut = messages.length - opts.keep;
+  let cut = messages.length - effectiveKeep;
   while (cut > 0 && messages[cut]?.role === "tool") cut--;
   if (cut <= 0) return null;
 
@@ -122,5 +157,5 @@ export async function compactMessages(
   // Report freed space as the drop in the (messages-only) estimate, so it
   // measures what compaction actually removed rather than the system/tool
   // overhead that `currentTokens` carries and compaction never touches.
-  return { messages: next, freed: Math.max(0, estimate - estimateTokens(next)) };
+  return { messages: next, freed: Math.max(0, estimate - estimateTokens(next)), overrun };
 }

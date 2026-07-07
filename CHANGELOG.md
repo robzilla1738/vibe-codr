@@ -365,6 +365,36 @@ All notable changes to vibe-codr are documented here.
 - **Every skill load now discloses the skill's directory**, so `SKILL.md`-
   referenced bundled files (helpers, catalogs) are resolvable by the model.
 
+### Fixed — orchestration, ledger, compaction, and accounting (BUG-046–050)
+
+- **`/clear` now resets all token and offload accounting.** `#lastInputTokens`,
+  `#overheadTokens`, `#lastSentEstimate`, and `#offloaded` are cleared alongside
+  the transcript, so `/context` and `context-updated` correctly report 0 tokens
+  instead of stale pre-clear fill. (BUG-046)
+- **Orchestrator `check`/`verify` tasks no longer treat `unverified` gate results
+  as success.** Shared-tree and worktree task paths now fail on any gate outcome
+  other than `green` — matching the root engine path. (BUG-047)
+- **`#runWorktreeTask` now checks `commitWorktree`'s return value.** A failed
+  commit rejects the task instead of silently merging an empty delta and reporting
+  `completed` while the child's edits are orphaned when the worktree is removed.
+  (BUG-048)
+- **Build-ledger records are now stored as atomic per-record files** (temp+rename
+  under `.vibe/ledger/`) instead of a shared JSONL append that could interleave
+  across concurrent sessions. The legacy `.vibe/ledger.jsonl` is still read for
+  migration. (BUG-049)
+- **Ensemble with a missing `repoProfile` no longer scores attempts as passable.**
+  Missing profile → score 0, verdict `"no-profile"`, winner filter requires
+  `score >= 2` (green-only). No checks run → no merge. (BUG-050)
+- **`engine.finalize()` is bounded to 5 seconds.** `awaitAllDetached(5_000)` caps
+  the time spent awaiting detached children, so a stuck subagent can't hang
+  shutdown indefinitely.
+- **Compaction handles the emergency overrun case.** When the context is over the
+  threshold but fewer messages exist than the keep window normally preserves, the
+  keep window is shrunk to 1 (or the safe minimum) so there's an older prefix to
+  summarize. An `overrun` flag is surfaced to the caller so it can warn the user
+  that the context may still be near the limit. Fewer than 3 messages returns null
+  for manual `/clear` intervention.
+
 ## v0.4.1 — 2026-07-04
 
 ### Changed — the session card earns its place

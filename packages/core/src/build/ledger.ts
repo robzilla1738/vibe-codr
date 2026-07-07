@@ -109,7 +109,7 @@ function readPerFileRecords(cwd: string): LedgerRecord[] {
     try {
       recs.push(JSON.parse(readFileSync(join(dir, name), "utf8")) as LedgerRecord);
     } catch {
-      continue;
+      // skip malformed record
     }
   }
   return recs;
@@ -134,7 +134,7 @@ function readLegacyJsonlRecords(cwd: string): LedgerRecord[] {
     try {
       recs.push(JSON.parse(line) as LedgerRecord);
     } catch {
-      continue;
+      // skip malformed line
     }
   }
   return recs;

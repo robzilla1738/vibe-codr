@@ -1603,7 +1603,7 @@ export class Session {
         this.#deps.bus.emit({
           type: "notice",
           level: "info",
-          message: "Nothing to compact yet.",
+          message: "Nothing to compact — too few distinct messages or the summary was empty. If the prompt still exceeds the window, try /clear.",
         });
       }
       return;
@@ -1628,6 +1628,13 @@ export class Session {
       sessionId: this.id,
       freedTokens: result.freed,
     });
+    if (result.overrun) {
+      this.#deps.bus.emit({
+        type: "notice",
+        level: "warn",
+        message: "Compaction ran in emergency mode — the context may still be near the window limit. If the prompt is still too large, try /clear.",
+      });
+    }
   }
 
   async #summarize(model: LanguageModel, messages: ModelMessage[]): Promise<string> {

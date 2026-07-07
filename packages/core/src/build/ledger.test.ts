@@ -8,7 +8,6 @@ import {
   manifestHash,
   commandsHash,
   mergeConfirmedCommands,
-  ledgerPath,
 } from "./ledger.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "vibe-ledger-"));

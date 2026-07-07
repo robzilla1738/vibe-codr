@@ -1135,7 +1135,14 @@ export class Engine implements EngineClient {
     const registry = this.#session.childRegistry;
     if (registry) {
       registry.abortAllDetached();
-      await registry.awaitAllDetached();
+      // Finalize hang: `awaitAllDetached()` without a bound waits indefinitely
+      // for a wedged background child whose promise never settles. An abort was
+      // already signaled above, so anything still settling is hung — not
+      // finishing — and would otherwise block graceful exit forever. The bound
+      // is generous so normal async unwind completes; if it hits, teardown
+      // carries on (a pride-straggler is reaped when the process exits; it can
+      // no longer touch resources that already tore down above).
+      await registry.awaitAllDetached(5_000);
     }
     // Reap surviving background jobs (dev servers etc.) — the process is going
     // away; leaving them orphaned made every `bash background:true` a leak. Await

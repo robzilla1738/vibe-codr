@@ -111,6 +111,27 @@ test("markDetachedFinished queues a surfacing note, cleared by takePendingFinish
   expect(reg.takePendingFinished()).toEqual([]);
 });
 
+test("finalize shape: abortAllDetached + a bounded awaitAllDetached completes within the bound even on a wedged promise", async () => {
+  // Engine.finalize() does `abortAllDetached()` then `awaitAllDetached(5_000)`.
+  // Bounded finalize must terminate — a wedged detached child whose promise
+  // never settles (the abort was signaled but the SDK didn't unwind) must not
+  // trap graceful exit. Shadows the case `awaitAllDetached(timeoutMs)` already
+  // punts; this asserts the COMBINED abort+await sequence is what finalize uses.
+  const reg = new ChildRegistry(4);
+  reg.registerDetached({
+    id: "wedged",
+    kind: "subagent",
+    status: "running",
+    abort: new AbortController(),
+    promise: new Promise<void>(() => {}), // never resolves
+    summary: "stuck",
+  });
+  reg.abortAllDetached();
+  const start = Date.now();
+  await reg.awaitAllDetached(50);
+  expect(Date.now() - start).toBeLessThan(1_000);
+});
+
 test("abortAllDetached signals running children; awaitAllDetached resolves", async () => {
   const reg = new ChildRegistry(4);
   const abort = new AbortController();

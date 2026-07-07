@@ -526,6 +526,48 @@ test("engine finalize aborts an outstanding detached subagent", async () => {
   expect(finished && finished.type === "subagent-finished" && /interrupt/i.test(finished.result)).toBe(true);
 }, 15_000);
 
+test("engine finalize terminates within a wall-clock bound even when a detached child wedges", async () => {
+  // The finalize() timeout fix: when a background child's settle promise never
+  // resolves (an abort was already signaled but the SDK ignored it), finalize
+  // MUST still return — graceful exit can't be blocked forever by a wedged child.
+  // The 5_000ms bound is generous enough for real unwind but caps the wait.
+  const cwd = tmpCwd();
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      const p = JSON.stringify(options.prompt ?? "");
+      if (p.includes("in the background")) return textStep("spawned") as never;
+      if (p.includes("WEDGEWORK")) return wedgeStream() as never; // hangs forever, even on abort
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "do WEDGEWORK now", detach: true }) },
+        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      ]) as never;
+    },
+  });
+
+  const config = orchestrationConfig();
+  config.model = "mock/test";
+  config.build = { ...config.build, enabled: false };
+  config.memory = { ...config.memory, proactiveRecall: false, sessionDigest: false };
+  config.subagent = { ...config.subagent, timeoutMs: 0 };
+
+  const engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: true });
+  await engine.bootstrap();
+  const sub = engine.events();
+  const collector = (async () => {
+    for await (const _e of sub) { /* drain */ }
+  })();
+
+  engine.send({ type: "submit-prompt", text: "spawn a wedged background subagent" });
+  await engine.whenIdle();
+  // The detached child is wedged — finalize must bound itself and return.
+  const start = Date.now();
+  await engine.finalize();
+  const elapsed = Date.now() - start;
+  expect(elapsed).toBeLessThan(15_000); // well under forever; 5s bound + teardown slack
+  void collector;
+}, 20_000);
+
 // A stream that opens then blocks until aborted — used to pin a detached child
 // in the "running" state across a turn boundary.
 function hangStream(signal: AbortSignal | undefined) {
@@ -544,6 +586,21 @@ function hangStream(signal: AbortSignal | undefined) {
           },
           { once: true },
         );
+      },
+    }),
+  };
+}
+
+// A stream that opens then IGNORES its abort signal — the SDK never unwinds, so
+// the child's settle promise never resolves (the genuine wedged-child case the
+// finalize timeout must bound). Used by the engine-finalize-wedge test.
+function wedgeStream() {
+  return {
+    stream: new ReadableStream({
+      start(controller) {
+        controller.enqueue({ type: "stream-start", warnings: [] });
+        // Deliberately no abort listener — the stream hangs forever even after
+        // the engine aborts the session.
       },
     }),
   };

@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -55,6 +56,7 @@ test("the system prompt is byte-stable across turns even when the task list chan
     registry: anthropicRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "anthropic/claude-test",
     mode: "execute",
@@ -102,6 +104,7 @@ test("exactly one conversation cache breakpoint rides the trailing message (plus
     registry: anthropicRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "anthropic/claude-test",
     mode: "execute",

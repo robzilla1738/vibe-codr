@@ -1,5 +1,8 @@
 import { test, expect, afterEach, beforeEach } from "bun:test";
 import type { ToolContext } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { webSearchTool, formatResults, _resetSearchCooldown } from "./web-search.ts";
 import type { FetchLike } from "./search-engines.ts";
 
@@ -14,6 +17,7 @@ function ctx(): ToolContext {
     emit: () => {},
     toolCallId: "t",
     abortSignal: new AbortController().signal,
+    freshness,
   };
 }
 

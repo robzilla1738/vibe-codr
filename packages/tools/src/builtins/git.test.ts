@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
 import { gitStatusTool, gitDiffTool, gitCommitTool, gitLogTool, gitPushTool } from "./git.ts";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 
 function ctx(cwd: string): ToolContext {
   const events: UIEvent[] = [];
@@ -13,6 +16,7 @@ function ctx(cwd: string): ToolContext {
     abortSignal: new AbortController().signal,
     emit: (e) => events.push(e),
     toolCallId: "c1",
+    freshness,
   };
 }
 

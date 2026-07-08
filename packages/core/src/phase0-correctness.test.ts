@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { HookBus } from "@vibe/plugins";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
@@ -73,6 +74,7 @@ test("a tool's isError result is reported as a failed tool call (not a success)"
     registry: mockRegistry(model),
     toolset: new Toolset([flaky]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -122,6 +124,7 @@ test("under budget=stop, a second prompt is refused without an orphan user turn"
     ]),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -165,6 +168,7 @@ test("setProjectMemory is reflected in the next turn's system prompt", async () 
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -195,6 +199,7 @@ test("the step.finish hook fires at each step boundary", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -224,6 +229,7 @@ test("a user cancel is not surfaced as an engine error", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",

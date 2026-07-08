@@ -3,6 +3,9 @@ import { mkdtempSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { globTool } from "./glob.ts";
 
 function ctx(cwd: string): ToolContext {
@@ -11,6 +14,7 @@ function ctx(cwd: string): ToolContext {
     cwd,
     sessionId: "ses_test",
     abortSignal: new AbortController().signal,
+    freshness,
     emit: (e) => events.push(e),
     toolCallId: "call_1",
   };

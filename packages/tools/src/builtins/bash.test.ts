@@ -3,6 +3,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { bashTool } from "./bash.ts";
 
 function ctx(cwd: string, events: UIEvent[] = []): ToolContext {
@@ -10,6 +13,7 @@ function ctx(cwd: string, events: UIEvent[] = []): ToolContext {
     cwd,
     sessionId: "ses_test",
     abortSignal: new AbortController().signal,
+    freshness,
     emit: (e) => events.push(e),
     toolCallId: "call_1",
   };

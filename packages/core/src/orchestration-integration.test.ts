@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
@@ -88,6 +89,7 @@ test("spawn_tasks runs a dependency-ordered plan and returns a consolidated repo
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -138,6 +140,7 @@ test("the journal plan stamp includes behavior-bearing fields (verify-pass regre
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -184,6 +187,7 @@ test("the journal plan stamp hashes worktree/hard/agent/outputSchema (BUG-002 re
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -240,6 +244,7 @@ test("spawn_tasks rejects an invalid plan (dependency cycle) without running any
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -268,6 +273,7 @@ test("spawn_tasks is only offered when orchestration is enabled", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -284,6 +290,7 @@ test("spawn_tasks is only offered when orchestration is enabled", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -365,6 +372,7 @@ test("a verify task whose retry makes no changes is NOT falsely marked completed
     registry: mockRegistry(model),
     toolset: new Toolset([touchTool]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -427,6 +435,7 @@ test("a detached spawn_tasks batch runs in the background, journals, and honors 
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",

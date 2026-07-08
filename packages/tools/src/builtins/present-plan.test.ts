@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
 import type { ToolContext, UIEvent } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { presentPlanTool } from "./present-plan.ts";
 
 function ctx(): { ctx: ToolContext; events: UIEvent[] } {
@@ -10,6 +13,7 @@ function ctx(): { ctx: ToolContext; events: UIEvent[] } {
       cwd: "/tmp",
       sessionId: "ses_plan",
       abortSignal: new AbortController().signal,
+    freshness,
       emit: (e) => events.push(e),
       toolCallId: "call_1",
     },

@@ -7,6 +7,7 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset, presentPlanTool } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -97,6 +98,7 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
     ]),
     toolset: new Toolset([presentPlanTool, fakeSearch]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-")),
     model: "mock/test",
     mode: "plan",
@@ -185,6 +187,7 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
     ]),
     toolset: new Toolset([presentPlanTool, flippingSearch]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-flip-")),
     model: "mock/test",
     mode: "plan",
@@ -252,6 +255,7 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
     ]),
     toolset: new Toolset([presentPlanTool, emptySearch]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-empty-")),
     model: "mock/test",
     mode: "plan",

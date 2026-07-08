@@ -9,6 +9,7 @@ export {
   type SerialLock,
   type ToolRuntimeBase,
 } from "./toolset.ts";
+export { FreshnessRegistry } from "./builtins/freshness.ts";
 export { buildRepoMap, type RepoMapResult } from "./builtins/repo-map.ts";
 export {
   builtinTools,

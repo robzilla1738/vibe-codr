@@ -1,12 +1,14 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync, utimesSync, readdirSync, statSync, chmodSync, symlinkSync, lstatSync } from "node:fs";
+import { mkdtempSync, utimesSync, readdirSync, statSync, chmodSync, symlinkSync, lstatSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
 import { writeTool } from "./write.ts";
-import { recordSeen, _resetFreshness } from "./freshness.ts";
+import { FreshnessRegistry } from "./freshness.ts";
 
-beforeEach(() => _resetFreshness());
+const freshness = new FreshnessRegistry();
+
+beforeEach(() => freshness.clear());
 
 function ctx(cwd: string, sessionId = "ses_write"): { ctx: ToolContext; events: UIEvent[] } {
   const events: UIEvent[] = [];
@@ -18,6 +20,7 @@ function ctx(cwd: string, sessionId = "ses_write"): { ctx: ToolContext; events: 
       abortSignal: new AbortController().signal,
       emit: (e) => events.push(e),
       toolCallId: "call_1",
+      freshness,
     },
   };
 }
@@ -96,7 +99,7 @@ test("stale-write guard: an external touch after a read blocks the write", async
   const { ctx: c } = ctx(dir, "ses_stale");
 
   // Simulate the session having read the file earlier (records its mtime baseline).
-  recordSeen("ses_stale", full);
+  freshness.recordRead("ses_stale", full);
   // An external process edits it → bump the on-disk mtime past the baseline.
   utimesSync(full, new Date(), new Date(Date.now() + 10_000));
 
@@ -168,6 +171,32 @@ test("writing THROUGH a symlink preserves the link and updates its real target",
   expect(readdirSync(dir).filter((f) => f.includes(".tmp"))).toEqual([]);
 });
 
+test("write on a previously-seen then-deleted path is treated as a fresh create (C-2)", async () => {
+  // C-2 regression at the tool level. A sibling process unlinks the file
+  // between the session's earlier read and the current write call. The OLD
+  // write.ts did `await file.exists()` then `await file.text()` as two
+  // awaits; if the file vanished between them, text() threw ENOENT and the
+  // toolset handler surfaced "ERROR: write threw: ENOENT" — the user's
+  // intent (write the new content) was blocked by a race. The NEW code does
+  // ONE read via readTextIfExists (Bun's native FD lifecycle is
+  // race-free against unlink); on ENOENT the helper returns null and we
+  // treat the path as a fresh create with no stale-check baseline to
+  // compare against, so the write proceeds cleanly.
+  const dir = mkdtempSync(join(tmpdir(), "vibe-write-stale-deleted-"));
+  const full = join(dir, "shared.txt");
+  await Bun.write(full, "original\n");
+  const { ctx: c } = ctx(dir, "ses_stale_deleted");
+  // Simulate the session having read the file (records mtime baseline).
+  freshness.recordRead("ses_stale_deleted", full);
+  // A sibling unlinks the file between the read baseline and the write.
+  unlinkSync(full);
+  const res = await writeTool.execute({ path: "shared.txt", content: "new\n" }, c);
+  expect(res.isError).toBeUndefined();
+  // No prior content to diff against → reported as a fresh create.
+  expect(res.output).toContain("Created shared.txt");
+  expect(await Bun.file(full).text()).toBe("new\n");
+});
+
 test("write after our own write does not self-flag as stale (baseline advances)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-write-self-"));
   const { ctx: c } = ctx(dir, "ses_self");
@@ -179,3 +208,5 @@ test("write after our own write does not self-flag as stale (baseline advances)"
   expect(second.isError).toBeUndefined();
   expect(second.output).toContain("Overwrote f.txt");
 });
+
+

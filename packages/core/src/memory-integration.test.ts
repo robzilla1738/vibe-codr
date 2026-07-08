@@ -6,6 +6,7 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -70,6 +71,7 @@ test("save_memory persists a fact that recall_memory then surfaces", async () =>
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: dir,
     model: "mock/test",
     mode: "execute",
@@ -110,6 +112,7 @@ test("setRecalledContext is injected into the system prompt", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: dir,
     model: "mock/test",
     mode: "execute",
@@ -143,6 +146,7 @@ test("buildDigest summarizes a worked session and skips an empty one", async () 
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: dir,
     model: "mock/test",
     mode: "execute",
@@ -180,6 +184,7 @@ test("save_memory is not offered in plan mode (read-only)", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: dir,
     model: "mock/test",
     mode: "plan",

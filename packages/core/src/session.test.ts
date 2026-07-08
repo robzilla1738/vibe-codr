@@ -8,6 +8,7 @@ import type { UIEvent, ToolDefinition, Message } from "@vibe/shared";
 import type { ModelMessage } from "ai";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -98,6 +99,7 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
     toolset: new Toolset([echoTool]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
   });
@@ -158,6 +160,7 @@ test("persists after a turn and can be resumed with prior context", async () => 
     registry,
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -178,6 +181,7 @@ test("persists after a turn and can be resumed with prior context", async () => 
     registry,
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd,
     model: persisted!.meta.model,
     mode: persisted!.meta.mode,
@@ -210,6 +214,7 @@ test("resume seeds the real prior prompt size so the first turn's compaction che
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -231,6 +236,7 @@ test("resume seeds the real prior prompt size so the first turn's compaction che
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd,
     model: persisted!.meta.model,
     mode: persisted!.meta.mode,
@@ -270,6 +276,7 @@ test("accumulates per-step usage and prices it (no double-counting)", async () =
     toolset: new Toolset([echoTool]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     getPricing: async () => ({ input: 3, output: 15 }), // USD per 1M tokens
@@ -315,6 +322,7 @@ test("Anthropic's disjoint cache-read tokens are folded into input for cost + co
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "anthropic/claude-x",
     mode: "execute",
     // $3/1M input, $0.30/1M cache read.
@@ -371,6 +379,7 @@ test("a turn that fails before any assistant reply rolls back its user message (
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
   });
@@ -417,6 +426,7 @@ test("cost accrues at the price in effect per step, across a model switch", asyn
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/cheap",
     mode: "execute",
     getPricing: async (m) => prices[m],
@@ -453,6 +463,7 @@ test("image attachments reach the model as multimodal content", async () => {
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
   });
@@ -506,6 +517,7 @@ test("spend guard with onExceed=stop aborts after the budget is crossed", async 
     toolset: new Toolset([echoTool]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     getPricing: async () => ({ input: 1000, output: 1000 }),
@@ -546,6 +558,7 @@ test("spend guard with onExceed=stop does NOT block the next turn on ESTIMATED s
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     // ESTIMATED price → big enough to cross the tiny budget on turn 1.
@@ -581,6 +594,7 @@ test("pre-turn spend guard blocks on prior actual spend even after switching to 
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/actual",
     mode: "execute",
     getPricing: async (m) =>
@@ -615,6 +629,7 @@ test("pre-turn spend guard does not block estimated prior spend after switching 
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/estimated",
     mode: "execute",
     getPricing: async (m) =>
@@ -659,6 +674,7 @@ test("spend guard with onExceed=warn notifies once but completes the turn", asyn
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     getPricing: async () => ({ input: 1000, output: 1000 }),
@@ -721,6 +737,7 @@ test("a deny permission rule blocks a side-effecting tool", async () => {
     toolset: new Toolset([dangerTool]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
   });
@@ -740,6 +757,7 @@ test("emits engine-error when the provider is unconfigured", async () => {
     toolset: new Toolset(),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "anthropic/claude-opus-4-8",
     mode: "execute",
   });
@@ -789,6 +807,7 @@ test("compaction frees the reported context immediately (no stale provider count
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     getContextWindow: async () => 128_000,
@@ -841,6 +860,7 @@ test("/clear resets token + offload accounting (no stale contextTokens or poison
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-clear-acct-")),
     model: "mock/test",
     mode: "execute",
@@ -892,6 +912,7 @@ test("a failing summarizer skips compaction with a notice instead of failing the
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     getContextWindow: async () => 128_000,
@@ -937,6 +958,7 @@ test("the compaction summarizer uses the sectioned contract and caps its input",
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -981,6 +1003,7 @@ test("model failover: an unresolvable primary switches to the first working fall
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "deadprov/x",
     mode: "execute",
   });
@@ -1000,6 +1023,7 @@ test("model failover: no resolvable fallback keeps the original error", async ()
     registry: new ProviderRegistry([]),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "deadprov/x",
     mode: "execute",
@@ -1052,6 +1076,7 @@ test("an interrupted turn keeps completed tool steps in the transcript (a resume
     registry: mockRegistry(model),
     toolset: new Toolset([echoTool, stopTool]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -1093,6 +1118,7 @@ test("a persisted session stamps the SessionMeta schema version", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -1130,6 +1156,7 @@ test("rewindConversation returns the sliced-off tail and restoreConversation re-
     registry: mockRegistry(new MockLanguageModelV2({ doStream: async () => stream([]) as never })),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -1176,6 +1203,7 @@ test("a NoOutputGeneratedError without an abort is a fault (lastError set, not i
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
   });
@@ -1212,6 +1240,7 @@ test("a stalled provider stream aborts via the watchdog and surfaces lastError (
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     // interactive omitted → falsy → the watchdog is active (headless path).
@@ -1251,6 +1280,7 @@ test("an interactive session does NOT arm the stream-idle watchdog", async () =>
     toolset: new Toolset([]),
     bus,
     cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
     model: "mock/test",
     mode: "execute",
     interactive: true, // watchdog disabled

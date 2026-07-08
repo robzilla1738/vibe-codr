@@ -3,6 +3,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import {
   repoMapTool,
   extractSymbols,
@@ -16,7 +19,7 @@ import {
 beforeEach(() => _resetRepoMapCache());
 
 function ctx(cwd: string): ToolContext {
-  return { cwd, sessionId: "s", emit: () => {}, toolCallId: "t", abortSignal: new AbortController().signal };
+  return { cwd, sessionId: "s", emit: () => {}, toolCallId: "t", abortSignal: new AbortController().signal, freshness };
 }
 
 test("extractSymbols pulls top-level TS declarations, skipping nested members", () => {

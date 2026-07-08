@@ -9,6 +9,7 @@ import {
   createId,
   makeYieldGate,
   type EngineSnapshot,
+  type FreshnessRegistryLike,
   type Message,
   type Mode,
   type Part,
@@ -138,6 +139,12 @@ export interface SessionDeps {
    * another already owns is hard-rejected (FileOwnedError) while same-agent
    * writes serialize. */
   fileLock?: FileLock;
+  /** Tree-wide stale-write guard (engine-owned, one per Session tree). Forks
+   * inherit the SAME instance via `...this.#deps`, so a subagent that reads a
+   * file at M1 is correctly flagged when the disk moves to M2, regardless of
+   * which session the next write came from. Cleared at root-session
+   * teardown so a worker-thread reuse can't leak a prior tree's records. */
+  freshness: FreshnessRegistryLike;
   /** Long-term memory (hybrid recall + save). When present, recall_memory does
    * semantic+lexical search over saved memory and sessions, and save_memory is
    * offered; when absent, recall_memory degrades to lexical session search. */
@@ -387,6 +394,13 @@ export class Session {
     this.#costEstimated ||= child.costEstimated;
     this.#deps.bus.emit({ type: "usage-updated", sessionId: this.id, usage: this.#usageSnapshot() });
     this.#enforceBudget();
+    // Drop the child's per-session freshness tracking now that it's done. The
+    // child read files under its own sessionId; its entries would otherwise
+    // linger in the per-tree registry for the whole tree's lifetime, so a
+    // long-running tree with many spawned children grew unboundedly with dead
+    // sessionId entries (bug2.md C-3 follow-up). One per-child drop, bounded by
+    // active sessions, not lifetime.
+    this.#deps.freshness.clearSession(child.id);
   }
 
   snapshot(): EngineSnapshot {
@@ -1023,6 +1037,11 @@ export class Session {
         ...(this.#deps.diagnostics
           ? { diagnose: (absPath: string) => this.#deps.diagnostics!.diagnose(absPath) }
           : {}),
+        // Per-tree stale-write guard (engine-owned). Tools prefer
+        // `ctx.freshness` over the module-level default so every session in
+        // the tree shares one registry — a read by a subagent is visible to
+        // the parent's stale check, and vice versa.
+        freshness: this.#deps.freshness,
         checkPermission: (name: string, input: unknown, opts?: { fallback?: "allow" | "deny" | "ask" }) =>
           checker.check(name, input, opts),
         // Plan-readiness gate for present_plan (plan mode only): rejects a plan

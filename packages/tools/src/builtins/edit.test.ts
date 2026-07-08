@@ -5,6 +5,10 @@ import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
 import { editTool } from "./edit.ts";
 import { writeTool } from "./write.ts";
+import { readTool } from "./read.ts";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 
 function ctx(cwd: string, events: UIEvent[]): ToolContext {
   return {
@@ -13,6 +17,7 @@ function ctx(cwd: string, events: UIEvent[]): ToolContext {
     abortSignal: new AbortController().signal,
     emit: (e) => events.push(e),
     toolCallId: "call_1",
+    freshness,
   };
 }
 
@@ -185,6 +190,28 @@ test("a mid-write failure leaves the ORIGINAL file intact with no temp", async (
   expect(readdirSync(cwd).some((f) => f.includes(".tmp"))).toBe(false);
 });
 
+test("editing a missing file reports 'File not found' (C-2), not 'looks binary'", async () => {
+  // C-2 regression at the tool level. The OLD edit.ts did
+  //   if (!(await file.exists())) return "File not found";
+  //   before = new TextDecoder({fatal:true}).decode(await file.arrayBuffer());
+  // and the arrayBuffer() call landed an ENOENT in the TextDecoder catch arm,
+  // misreporting a missing file as "is not valid UTF-8 (looks binary)". The
+  // NEW code uses readBytesIfExists: one atomic read, ENOENT → null
+  // (→ "File not found"), and the strict-decode is reserved for the
+  // genuinely-binary case (see the existing "refuses to edit a non-UTF-8"
+  // test). The "binary" wording must NOT appear in the missing-file path.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-edit-missing-"));
+  const path = "absent.txt";
+  const r = await editTool.execute(
+    { path, oldString: "x", newString: "y" },
+    ctx(cwd, []),
+  );
+  expect(r.isError).toBe(true);
+  expect(String(r.output)).toContain("File not found");
+  expect(String(r.output)).not.toContain("looks binary");
+  expect(String(r.output)).not.toContain("not valid UTF-8");
+});
+
 test("editing THROUGH a symlink preserves the link and updates its real target", async () => {
   // Temp+rename swaps the inode at the edited path. Editing a symlink must
   // dereference to the target so the link survives and its target is updated —
@@ -203,6 +230,37 @@ test("editing THROUGH a symlink preserves the link and updates its real target",
   expect(await Bun.file(join(cwd, "real.txt")).text()).toBe("hello there\n");
   // No stray temp beside either the link or its target.
   expect(readdirSync(cwd).filter((f) => f.includes(".tmp"))).toEqual([]);
+});
+
+
+
+test("edit after an external chmod lands at the CURRENT target mode (C-1: captured on target, not on full)", async () => {
+  // C-1 regression directly. The OLD edit.ts captured `statSync(full).mode`
+  // outside atomicReplace — if a chmod happens between the read and the
+  // atomicReplace, the OLD code would land at the pre-read mode; the NEW code
+  // captures the mode INSIDE atomicReplace on the post-deref target, so it
+  // lands at the CURRENT post-chmod mode (the user's intent). `chmod` updates
+  // ctime only — mtime is unchanged — so the freshness guard still allows
+  // the edit on the same file.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-edit-chmod-"));
+  const path = "exec.sh";
+  const full = join(cwd, path);
+  await Bun.write(full, "#!/bin/sh\necho original\n");
+  chmodSync(full, 0o755);
+
+  // Simulate the session having read the file (records mtime baseline).
+  await readTool.execute({ path }, ctx(cwd, []));
+  // An external chmod (does NOT touch mtime, so the freshness guard still
+  // allows the edit). The user's intent is now 0o700.
+  chmodSync(full, 0o700);
+
+  const r = await editTool.execute(
+    { path, oldString: "original", newString: "new" },
+    ctx(cwd, []),
+  );
+  expect(r.isError).toBeUndefined();
+  // The file lands at the CURRENT post-chmod mode, not the pre-read one.
+  expect(statSync(full).mode & 0o777).toBe(0o700);
 });
 
 test("write emits a file-changed event with an all-additions diff for a new file", async () => {

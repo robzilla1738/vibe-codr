@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { RepoProfile, ToolContext, ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -136,6 +137,7 @@ test("a dependency's handoff propagates verbatim into the dependent's kickoff (n
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -159,7 +161,7 @@ test("read_report returns a task's full report, and caps an oversized one at 32k
   store.set("a", { objective: "A", output: full });
   store.set("big", { objective: "B", output: "x".repeat(40_000) });
   const tool = buildReadReportTool(store);
-  const ctx = { cwd: ".", sessionId: "s", abortSignal: new AbortController().signal, emit() {}, toolCallId: "t" } as ToolContext;
+  const ctx = { cwd: ".", sessionId: "s", abortSignal: new AbortController().signal, emit() {}, toolCallId: "t", freshness: new FreshnessRegistry() } as ToolContext;
 
   const hit = await tool.execute({ task_id: "a" }, ctx);
   expect(String(hit.output)).toContain("FULL_REPORT_BODY");
@@ -216,6 +218,7 @@ test("tier resolves to the configured tier model; absent tier falls back to suba
     registry: mockRegistry(model, ids),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/parent",
     mode: "execute",
@@ -246,6 +249,7 @@ test("check:true with a red gate fails the attempt on PASS/FAIL text, with no LL
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -288,6 +292,7 @@ test("verify task: an Esc during the gate settles the task failed, with no retry
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -341,6 +346,7 @@ test("check:true on a repo with no detected checks fails the task as unverified 
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -376,6 +382,7 @@ test("verify:true with no detected checks fails the task as unverified (BUG-047)
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -438,6 +445,7 @@ test("a verify task's reviewer prompt contains the real git diff of the task's f
     registry: mockRegistry(model),
     toolset: new Toolset([apply]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",
@@ -474,6 +482,7 @@ test("a verify task that does not mutate still runs the reviewer", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -510,6 +519,7 @@ test("the spawn ceiling errors the task that would exceed subagent.maxTotal", as
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: tmpCwd(),
     model: "mock/test",
     mode: "execute",
@@ -556,6 +566,7 @@ test("a re-submitted plan re-runs only unfinished tasks (journal seed)", async (
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",

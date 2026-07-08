@@ -3,6 +3,9 @@ import { mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { lsTool } from "./ls.ts";
 
 function ctx(cwd: string): ToolContext {
@@ -10,6 +13,7 @@ function ctx(cwd: string): ToolContext {
     cwd,
     sessionId: "ses_test",
     abortSignal: new AbortController().signal,
+    freshness,
     emit: () => {},
     toolCallId: "call_1",
   };

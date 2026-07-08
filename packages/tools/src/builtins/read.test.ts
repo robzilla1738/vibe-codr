@@ -1,10 +1,14 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach } from "bun:test";
 import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
 import { readTool } from "./read.ts";
-import { assertFresh, _resetFreshness } from "./freshness.ts";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
+
+beforeEach(() => freshness.clear());
 
 function ctx(cwd: string): ToolContext {
   const events: UIEvent[] = [];
@@ -14,6 +18,7 @@ function ctx(cwd: string): ToolContext {
     abortSignal: new AbortController().signal,
     emit: (e) => events.push(e),
     toolCallId: "call_1",
+    freshness,
   };
 }
 
@@ -92,7 +97,7 @@ test("detects a binary file whose first NUL is past the 4096-byte head sniff", a
 });
 
 test("does not record a freshness baseline when a read fails as binary", async () => {
-  _resetFreshness();
+  freshness.clear();
   const cwd = mkdtempSync(join(tmpdir(), "vibe-read-bin-fresh-"));
   const full = join(cwd, "mid.bin");
   const head = new Uint8Array(5000).fill(0x61);
@@ -100,7 +105,7 @@ test("does not record a freshness baseline when a read fails as binary", async (
   const r = await readTool.execute({ path: "mid.bin" }, ctx(cwd));
   expect(r.isError).toBe(true);
   utimesSync(full, new Date(), new Date(Date.now() + 10_000));
-  expect(assertFresh("ses_test", full).stale).toBe(false);
+  expect(freshness.assertFresh("ses_test", full).stale).toBe(false);
 });
 
 test("refuses a file that changes while it is being streamed", async () => {

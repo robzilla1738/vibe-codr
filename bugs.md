@@ -1,6 +1,6 @@
 # vibe-codr — Bug & Weakness Audit
 
-**Status:** Remediation pass complete (2026-07-07) — 31 confirmed active findings, 48 fixed, 2 refuted (intentional design)
+**Status:** Remediation pass complete (2026-07-08) — 29 confirmed active findings, 50 fixed, 2 refuted (intentional design)
 **Mode:** Active remediation — fixed entries carry `**Fix:**` and `**Verification:**`
 **Method:** Static code review + cross-reference with tests and invariants in `AGENTS.md`. Every entry is grounded in source; speculative items are excluded.
 
@@ -26,8 +26,8 @@ Every `BUG-001`–`BUG-081` was re-read against current source. Each entry carri
 
 | Outcome | Count | IDs |
 |---------|-------|-----|
-| **confirmed active** | 31 | All except 001, 002, 003, 004, 005, 006, 007, 008, 009, 010, 011, 012, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 027, 028, 029, 030, 031, 032, 033, 034, 035, 036, 037, 038, 039, 040, 041, 042, 043, 044, 045, 046, 047, 048, 049, 050 |
-| **fixed** | 48 | BUG-001, BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-011, BUG-012, BUG-013, BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025, BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-034, BUG-036, BUG-037, BUG-038, BUG-039, BUG-040, BUG-041, BUG-042, BUG-043, BUG-044, BUG-045, BUG-046, BUG-047, BUG-048, BUG-049, BUG-050 |
+| **confirmed active** | 29 | All except 001, 002, 003, 004, 005, 006, 007, 008, 009, 010, 011, 012, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 027, 028, 029, 030, 031, 032, 033, 034, 035, 036, 037, 038, 039, 040, 041, 042, 043, 044, 045, 046, 047, 048, 049, 050, 082, 083 |
+| **fixed** | 50 | BUG-001, BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-011, BUG-012, BUG-013, BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025, BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-032, BUG-034, BUG-036, BUG-037, BUG-038, BUG-039, BUG-040, BUG-041, BUG-042, BUG-043, BUG-044, BUG-045, BUG-046, BUG-047, BUG-048, BUG-049, BUG-050, BUG-082, BUG-083 |
 | **refuted** | 2 | BUG-033 (permission glob limitation), BUG-035 (LRU stale-write tradeoff) |
 | **stale citation** | 0 | Line numbers verified against current source |
 
@@ -37,17 +37,95 @@ Every `BUG-001`–`BUG-081` was re-read against current source. Each entry carri
 
 | Severity | Active | Refuted | Notes |
 |----------|--------|---------|-------|
-| Critical | 0 | 0 | BUG-001 fixed |
-| High | 1 | 0 | BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-047, BUG-048 fixed |
+| Critical | 0 | 0 | BUG-001, BUG-083 fixed |
+| High | 1 | 0 | BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-007, BUG-008, BUG-009, BUG-010, BUG-047, BUG-048, BUG-082 fixed |
 | Medium | 15 | 0 | BUG-010, BUG-011, BUG-012, BUG-013, BUG-014, BUG-015, BUG-016, BUG-017, BUG-018, BUG-019, BUG-020, BUG-021, BUG-022, BUG-023, BUG-024, BUG-025, BUG-026, BUG-027, BUG-028, BUG-029, BUG-030, BUG-031, BUG-046, BUG-049, BUG-050 fixed |
-| Low | 15 | 2 | BUG-032, BUG-034, BUG-036, BUG-037, BUG-038, BUG-039, BUG-040, BUG-041, BUG-042, BUG-043, BUG-044, BUG-045 fixed; BUG-033, BUG-035 → intentional design |
-| **Total** | **31** | **2** | 81 audited; 31 active, 48 fixed |
+| Low | 15 | 2 | BUG-032, BUG-034, BUG-036, BUG-037, BUG-038, BUG-039, BUG-040, BUG-041, BUG-042, BUG-043, BUG-044, BUG-045 fixed; BUG-033, BUG-035 → superseded by BUG-083 (LRU cap removed; class refactor) |
+| **Total** | **29** | **2** | 83 audited; 29 active, 50 fixed |
 
 **Verification method:** Static read of every cited file at current line numbers (2026-07-06). Full per-id log in scratch `verification-log.md`.
 
 ---
 
 ## Critical
+
+### BUG-083 — Freshness registry is a module-level singleton; subagents are blind to each other's edits (C-3)
+
+| Field | Value |
+|-------|-------|
+| **Package** | `@vibe/tools`, `@vibe/core` |
+| **Files** | `packages/tools/src/builtins/freshness.ts` (rewritten), `packages/shared/src/tool.ts` (FreshnessRegistryLike), `packages/tools/src/fs/canonical-key.ts` (new), `packages/tools/src/toolset.ts`, `packages/core/src/session.ts` (#foldChildUsage), `packages/core/src/engine.ts` |
+| **Severity** | Critical |
+
+**Verdict:** fixed (2026-07-08)
+
+**Fix:** `freshness.ts` is rewritten as a `FreshnessRegistry` class with per-session
+storage (`Map<sessionId, Map<canonicalPath, mtime>>`), `clearSession()` for
+per-subagent cleanup, and `clear()` for full teardown. The LRU cap is removed
+entirely (the silent-degradation bug). There is no module-level singleton; the
+class instance is the single source of truth. The `FreshnessRegistryLike`
+interface lives in `@vibe/shared` (no `@vibe/tools` import) so `ToolContext` and
+`ToolRuntimeBase` declare a `freshness` field as **required**. `canonicalLockKey`
+is extracted to its own file (`packages/tools/src/fs/canonical-key.ts`) to break
+the `freshness.ts` ↔ `toolset.ts` circular import. The engine creates one
+`FreshnessRegistry` and threads it through `SessionDeps` via `#deps`; subagent
+settle in `#foldChildUsage` calls `freshness.clearSession(child.id)`, bounding
+the per-tree footprint to the active session set. `clear()` runs in
+`#doFinalize` after the in-flight drain.
+
+**Verification:** `bun test packages/tools/src/builtins/freshness.test.ts`; `bun test packages/tools/src/builtins/edit.test.ts`; `bun test packages/tools/src/builtins/write.test.ts`; `bun test packages/tools/src/builtins/read.test.ts`; `bun test packages/core/src/subagent.test.ts`; `bun test packages/core/src/session.test.ts`; `bun test`; `bun run typecheck`.
+
+**Description:** A module-level `Map<sessionId, Map<path, mtime>>` is shared
+across every session in the worker. Subagent sessions are children of the root
+session but use a *different* `sessionId`; the parent's edit to a file the child
+read is invisible to the child's stale-write guard (and vice versa). A 2000-path
+LRU cap silently drops tracking under long sessions. Together: the stale-write
+guard has blind spots across the subagent tree and degrades silently in long
+refactors.
+
+**Evidence:** `freshness.ts` line 32 (`const registry = new Map<...>()`) and
+lines 23–26 (`MAX_PATHS_PER_SESSION = 2000`). Tests in `freshness.test.ts`
+asserted the LRU behavior as intended.
+
+**Reproduction:** Run a parent + child subagent that both read the same file →
+sibling edits it → child's stale-write guard returns "fresh" (different
+sessionId key) → child's edit clobbers sibling's write. Or: a 2001st file read
+in a long session evicts the LRU entry → the next edit bypasses the guard.
+
+---
+
+### BUG-082 — `write` tool races `statSync` against a concurrently deleted file (C-2)
+
+| Field | Value |
+|-------|-------|
+| **Package** | `@vibe/tools` |
+| **File** | `packages/tools/src/builtins/write.ts` (86) |
+| **Severity** | High |
+
+**Verdict:** fixed (2026-07-08)
+
+**Fix:** `write` now wraps the `statSync(full)` mode-preserving call in a
+try/catch. A `statSync` that fails with `ENOENT` (the file was deleted between
+the earlier `await file.exists()` and the `statSync`) is treated as "fresh
+create" — `mode` becomes `undefined`, same as a brand-new file. The
+`withFileLock` block no longer propagates the unhandled `ENOENT` to the
+tool-call result.
+
+**Verification:** `bun test packages/tools/src/builtins/write.test.ts`; `bun run typecheck`.
+
+**Description:** `await file.exists()` on line 71 and `statSync(full).mode` on
+line 86 are a TOCTOU pair. The file lock only serializes against other
+vibe-codr sessions, not external processes. A file that existed at
+`await file.exists()` but was deleted by an external process (or another tool
+not yet routed through the file lock) before the `statSync` fires will throw
+`ENOENT` from inside `withFileLock`, crashing the tool call with an unhandled
+error.
+
+**Reproduction:** External `rm` of a file between `exists` and `statSync` (e.g.
+a build watch that deletes stale outputs) → `write` to that file → unhandled
+`ENOENT` propagated as a tool error instead of a clean overwrite.
+
+---
 
 ### BUG-001 — `finalize()` tears down MCP/bus without awaiting in-flight queue work
 
@@ -1796,7 +1874,7 @@ snake_case key taking precedence when both are present.
 | **File** | `packages/tools/src/builtins/freshness.ts` (23–27, 82–106) |
 | **Severity** | Low |
 
-**Verdict:** refuted — documented accepted LRU tradeoff in `freshness.ts` (lines 23–26), not a defect
+**Verdict:** refuted — documented accepted LRU tradeoff in `freshness.ts` (lines 23–26), not a defect. **Superseded by BUG-083 (2026-07-08):** the LRU cap is removed entirely and the module-level singleton is replaced by a per-tree `FreshnessRegistry` class with `clearSession` on subagent settle and `clear()` at engine teardown.
 
 **Description:** `MAX_PATHS_PER_SESSION` (2000) LRU eviction drops path entries; evicted paths treated as "never read" → `edit`/`write` skip stale check. Documented in source as accepted tradeoff.
 
@@ -1823,7 +1901,7 @@ snake_case key taking precedence when both are present.
 | Store / resume | `core/store.ts` | ✅ Audited | BUG-025 |
 | Limiter | `core/limiter.ts` | ✅ Reviewed | Main suspend pairing tested; miscounted `releaseSlot` theoretical only — not filed |
 | Config hooks | `core/config-hooks.ts` | ✅ Audited | BUG-053, 056, 057, 060 |
-| Tools — bash/edit/write | `tools/builtins/` | ✅ Audited | BUG-015, 036; BUG-035 refuted |
+| Tools — bash/edit/write | `tools/builtins/` | ✅ Audited | BUG-015, 036, 082, 083; BUG-035 refuted (superseded by BUG-083) |
 | Tools — grep/glob/read/repo_map | `tools/builtins/` | ✅ Audited | BUG-016, 018, 051, 052, 055 |
 | Tools — git_* | `tools/builtins/git.ts` | ✅ Audited | BUG-054 |
 | Tools — web/fetch/package | `tools/builtins/` | ✅ Audited | BUG-017; fetch-cache, pdftext, package_info reviewed — no new issues |
@@ -1871,6 +1949,9 @@ Documented here so later loops don't re-investigate known-good paths unless code
 - Headless stream stall watchdog (`session.ts` `#consume`)
 - `webfetch` SSRF pinning (`net-guard.ts` — extensive tests)
 - `edit`/`write` atomic replace + file lock (`tools/builtins/`)
+- `write` `statSync` ENOENT race (BUG-082) — wrapped in try/catch
+- `FreshnessRegistry` class (BUG-083) — per-tree instance, per-session storage, explicit teardown
+- `canonicalLockKey` extraction (BUG-083) — leaf module, no circular import
 - Plan-gate rejection reset on user prompt — **by design** (`plan-gate.ts` 170–174)
 - `fetch-cache.ts`, `pdftext.ts`, `package_info.ts` — reviewed Loop 2
 - `scripts/release/` build/version guards — reviewed Loop 2

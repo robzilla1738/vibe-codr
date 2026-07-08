@@ -4,6 +4,32 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — file freshness is per-tree, no LRU cap, no module-level singleton
+
+- **The stale-write guard is now scoped to the session tree, not a global
+  module-level `Map`.** A subagent that reads a file can no longer be
+  blind to its sibling's (or parent's) edit just because the underlying
+  `sessionId` key differs. The `freshness` registry is a `FreshnessRegistry`
+  class instance held on the engine, threaded through `SessionDeps` and
+  `ToolContext` as a **required** field, and torn down on
+  `engine.finalize()`. Per-session entries are dropped on subagent
+  settle (`clearSession(child.id)` in `#foldChildUsage`), so the
+  per-tree footprint is bounded by the active session set — not the
+  lifetime of the process. The structural `FreshnessRegistryLike` interface
+  lives in `@vibe/shared` (no `@vibe/tools` import, no circular
+  dependency).
+- **No LRU cap. The silent-degradation bug is gone.** The previous
+  `MAX_PATHS_PER_SESSION = 2000` cap evicted the least-recently-touched
+  path, so a long refactor silently lost tracking and the next edit to
+  that path bypassed the guard. The class is unbounded; the tree's
+  lifetime bounds its growth; `clear()` runs at engine teardown.
+- **`write` no longer races `statSync` against a concurrently deleted
+  file.** The `exists` check and the mode-preserving `statSync` are no
+  longer a TOCTOU pair. A `statSync` that fails with `ENOENT` (the
+  file was deleted between the check and the stat) is now treated as
+  "fresh create" — same path as a brand-new file. No more unhandled
+  crash on a race with external deletion.
+
 ### Fixed — interactive TUI visual freeze (the freeze class)
 
 - **The rich TUI no longer visually freezes mid-coding or mid-planning.** The

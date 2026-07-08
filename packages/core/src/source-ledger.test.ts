@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -219,6 +220,7 @@ test("session harvests URLs from a web_search result and injects them into the n
     registry: mockRegistry(model),
     toolset: new Toolset([webSearch]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -285,6 +287,7 @@ test("webfetch records the URL it FETCHED, not links found inside the page body"
     registry: mockRegistry(model),
     toolset: new Toolset([webfetch]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",

@@ -1,5 +1,8 @@
 import { test, expect, afterEach } from "bun:test";
 import type { ToolContext } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { packageInfoTool } from "./package-info.ts";
 
 function ctx(): ToolContext {
@@ -9,6 +12,7 @@ function ctx(): ToolContext {
     emit: () => {},
     toolCallId: "t",
     abortSignal: new AbortController().signal,
+    freshness,
   };
 }
 

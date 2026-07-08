@@ -38,6 +38,7 @@ export type {
   PermissionResult,
   CheckPermission,
   PlanGateVerdict,
+  FreshnessRegistryLike,
 } from "./tool.ts";
 
 // Errors

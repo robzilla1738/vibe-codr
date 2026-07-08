@@ -6,12 +6,13 @@ import type { ToolContext, UIEvent } from "@vibe/shared";
 import { readTool } from "./read.ts";
 import { editTool } from "./edit.ts";
 import { writeTool } from "./write.ts";
-import {
-  recordSeen,
-  assertFresh,
-  clearSession,
-  _resetFreshness,
-} from "./freshness.ts";
+import { FreshnessRegistry } from "./freshness.ts";
+
+// One per-test-suite registry; cleared before each test for isolation. This is
+// the test pattern, NOT a module-level singleton — production code paths
+// construct their own `FreshnessRegistry` (one per Session tree, owned by the
+// engine), so the test registry never shares state with anything else.
+const freshness = new FreshnessRegistry();
 
 function ctx(cwd: string, sessionId = "ses_test"): ToolContext {
   const events: UIEvent[] = [];
@@ -21,6 +22,7 @@ function ctx(cwd: string, sessionId = "ses_test"): ToolContext {
     abortSignal: new AbortController().signal,
     emit: (e) => events.push(e),
     toolCallId: "call_1",
+    freshness,
   };
 }
 
@@ -30,8 +32,7 @@ function touchFuture(path: string): void {
   utimesSync(path, future, future);
 }
 
-// The registry is module-level, so isolate every test.
-beforeEach(() => _resetFreshness());
+beforeEach(() => freshness.clear());
 
 // ── Tool integration ───────────────────────────────────────────────────────
 
@@ -139,13 +140,13 @@ test("assertFresh: unseen path is fresh; recorded-then-touched path is stale", (
   writeFileSync(path, "x");
 
   // Never recorded → fresh.
-  expect(assertFresh("s1", path).stale).toBe(false);
+  expect(freshness.assertFresh("s1", path).stale).toBe(false);
 
-  recordSeen("s1", path);
-  expect(assertFresh("s1", path).stale).toBe(false);
+  freshness.recordRead("s1", path);
+  expect(freshness.assertFresh("s1", path).stale).toBe(false);
 
   touchFuture(path);
-  const res = assertFresh("s1", path);
+  const res = freshness.assertFresh("s1", path);
   expect(res.stale).toBe(true);
   expect(res.ageMs).toBeGreaterThan(0);
 });
@@ -155,29 +156,34 @@ test("clearSession drops a session's tracking so its files read as fresh again",
   const path = join(cwd, "f.txt");
   writeFileSync(path, "x");
 
-  recordSeen("s1", path);
+  freshness.recordRead("s1", path);
   touchFuture(path);
-  expect(assertFresh("s1", path).stale).toBe(true);
+  expect(freshness.assertFresh("s1", path).stale).toBe(true);
 
-  clearSession("s1");
-  expect(assertFresh("s1", path).stale).toBe(false);
+  freshness.clearSession("s1");
+  expect(freshness.assertFresh("s1", path).stale).toBe(false);
 });
 
-test("the per-session registry is bounded (LRU eviction past the cap)", () => {
+test("the per-session registry has no LRU cap (tracking persists past any size)", () => {
+  // bug2.md C-3: the old 2000-file LRU silently evicted the oldest entries, so
+  // a file a session had read days ago suddenly read as fresh and a stale edit
+  // slipped through. The fix removes the cap — the tree's lifetime is bounded
+  // by `freshness.clear()` at root-session teardown, so worst-case memory is
+  // O(files_in_tree). Record well past what the old cap would have allowed
+  // and assert the FIRST file is still guarded: the stale-detection must not
+  // silently degrade under any real workload.
   const cwd = mkdtempSync(join(tmpdir(), "vibe-fresh-cap-"));
-  // Record well past the 2000-path cap; the oldest entries must be evicted, and
-  // an evicted (untracked) path reads as fresh — the safe direction.
   const first = join(cwd, "file-0.txt");
   writeFileSync(first, "0");
-  recordSeen("s1", first);
+  freshness.recordRead("s1", first);
   touchFuture(first);
-  expect(assertFresh("s1", first).stale).toBe(true); // tracked, changed
+  expect(freshness.assertFresh("s1", first).stale).toBe(true); // tracked, changed
 
   for (let i = 1; i <= 2100; i++) {
     const p = join(cwd, `file-${i}.txt`);
     writeFileSync(p, String(i));
-    recordSeen("s1", p);
+    freshness.recordRead("s1", p);
   }
-  // The very first path has been evicted → no longer guarded → fresh.
-  expect(assertFresh("s1", first).stale).toBe(false);
+  // The FIRST path is still tracked → still stale. No silent degradation.
+  expect(freshness.assertFresh("s1", first).stale).toBe(true);
 });

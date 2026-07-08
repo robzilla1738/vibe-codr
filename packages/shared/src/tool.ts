@@ -64,6 +64,34 @@ export interface ToolContext {
    * model deadlocking.
    */
   planGate?: (plan: { sources?: { url: string }[] }) => PlanGateVerdict;
+  /**
+   * Tree-global stale-write guard (one per Session tree, set by core on the
+   * engine-owned instance). Used by `read`/`edit`/`write` to record the
+   * mtime of every file the tree has read and refuse a later mutation whose
+   * disk mtime has moved past the recorded baseline. Required: the engine
+   * always provides one per Session tree, and unit tests must construct their
+   * own `FreshnessRegistry` (no module-level singleton — that was the bug2.md
+   * C-3 leak). Declared structurally so `@vibe/shared` doesn't pull in
+   * `@vibe/tools`; the implementation lives in `FreshnessRegistry`
+   * (`packages/tools/src/builtins/freshness.ts`).
+   */
+  freshness: FreshnessRegistryLike;
+}
+
+/** Structural shape the tools layer needs from the freshness registry. The
+ * concrete class (`FreshnessRegistry` in `@vibe/tools/builtins/freshness`)
+ * is the only implementation but it isn't imported here to keep the
+ * `@vibe/shared` boundary clean of `@vibe/tools`. `clearSession` is called
+ * by core on child settle so the per-tree footprint stays bounded by active
+ * sessions, not lifetime. */
+export interface FreshnessRegistryLike {
+  recordRead(sessionId: string, absPath: string): void;
+  recordWrite(sessionId: string, absPath: string): void;
+  assertFresh(
+    sessionId: string,
+    absPath: string,
+  ): { stale: boolean; ageMs?: number };
+  clearSession(sessionId: string): void;
 }
 
 /** Verdict from the plan-readiness gate (see {@link ToolContext.planGate}). */

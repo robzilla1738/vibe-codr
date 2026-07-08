@@ -1,5 +1,8 @@
 import { test, expect, afterEach } from "bun:test";
 import type { ToolContext } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { crawlDocsTool, extractLinks } from "./crawl-docs.ts";
 
 const realFetch = globalThis.fetch;
@@ -14,6 +17,7 @@ function ctx(): ToolContext {
     emit: () => {},
     toolCallId: "t",
     abortSignal: new AbortController().signal,
+    freshness,
   };
 }
 

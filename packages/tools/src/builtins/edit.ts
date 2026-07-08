@@ -1,59 +1,10 @@
 import { resolve } from "node:path";
-import { rename, chmod, rm } from "node:fs/promises";
-import { statSync, lstatSync, realpathSync } from "node:fs";
 import { z } from "zod";
 import type { ToolContext, ToolDefinition } from "@vibe/shared";
 import { unifiedDiff } from "../diff.ts";
 import { withFileLock } from "../toolset.ts";
-import { assertFresh, recordSeen } from "./freshness.ts";
-
-/** Monotonic per-process counter for unique temp names (paired with the pid), so
- * two concurrent writers never collide on one temp path. */
-let writeSeq = 0;
-
-/**
- * Dereference a symlink to the real file it points at. Temp+rename swaps the inode
- * AT the given path, so renaming over a symlink would replace the LINK with a
- * regular file and strand its target byte-for-byte stale. Editing THROUGH a link
- * must instead update the target in place, so we resolve it and land the atomic
- * swap on the real path (its temp sits beside it, staying on one filesystem).
- * `lstat` (not `stat`) so the link is detected rather than followed; a non-symlink
- * — or a path that doesn't exist yet — is returned unchanged.
- */
-function derefSymlink(full: string): string {
-  try {
-    if (lstatSync(full).isSymbolicLink()) return realpathSync(full);
-  } catch {
-    // Nothing at `full` (or an unreadable link) — nothing to dereference.
-  }
-  return full;
-}
-
-/**
- * Replace `full`'s contents ATOMICALLY: write to a per-write-unique temp file in
- * the SAME directory (rename is only atomic WITHIN one filesystem, so a temp in
- * `/tmp` could cross a mount boundary and silently degrade to a copy), preserve
- * the original file's mode across the rename, then rename over the target. A
- * crash mid-write leaves the ORIGINAL byte-for-byte intact — the torn bytes only
- * ever land in the temp, never the real path, closing the truncation window that
- * an in-place `Bun.write` leaves open. On any failure we unlink our own temp and
- * re-throw so the caller still learns the write failed. Mirrors the session
- * store's temp+rename discipline (pid + counter suffix, cleanup-on-failure).
- */
-async function atomicReplace(full: string, data: string, mode: number): Promise<void> {
-  const target = derefSymlink(full);
-  const tmp = `${target}.${process.pid}.${writeSeq++}.tmp`;
-  try {
-    await Bun.write(tmp, data);
-    // rename drops the original inode, so its mode would be lost — an edited
-    // executable script must stay +x. Carry the original mode onto the temp.
-    await chmod(tmp, mode);
-    await rename(tmp, target);
-  } catch (err) {
-    await rm(tmp, { force: true }).catch(() => undefined);
-    throw err;
-  }
-}
+import { atomicReplace } from "../fs/atomic.ts";
+import { readBytesIfExists } from "../fs/safe-read.ts";
 
 const SingleEdit = z.object({
   oldString: z.string().describe("Exact text to replace."),
@@ -159,11 +110,24 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
       };
     }
 
+    // Per-tree stale-write guard (engine-owned `FreshnessRegistry`, required
+    // on `ctx.freshness`). One per Session tree so a long-running tree's
+    // records are bounded by finalize(), and so two engines in the same worker
+    // process can't observe each other's tracking.
+    const freshness = ctx.freshness;
+
     // Serialize the whole read-modify-write on this path so a concurrent
     // subagent editing the same file can't clobber our change (cross-tree lock).
     return withFileLock(ctx, full, async () => {
-      const file = Bun.file(full);
-      if (!(await file.exists())) {
+      // Single atomic read of the RAW bytes — the C-2 fix. The previous shape
+      // (`await file.exists()` then `await file.arrayBuffer()`) was a TOCTOU
+      // AND misdiagnosed a deleted file as "looks binary" because the
+      // ENOENT from the arrayBuffer() call landed in the TextDecoder catch
+      // arm. readBytesIfExists is one atomic step: it returns null on
+      // ENOENT (we say "File not found"), raw bytes on success, throws on
+      // any other error (EACCES, EISDIR) so a real failure isn't swallowed.
+      const rawBytes = await readBytesIfExists(full);
+      if (rawBytes === null) {
         return { output: `File not found: ${path}`, isError: true };
       }
 
@@ -172,21 +136,23 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
       // now-outdated view and silently clobber someone else's change. Checked
       // INSIDE the lock so a concurrent subagent's write can't slip in between
       // this check and our read-modify-write.
-      if (assertFresh(ctx.sessionId, full).stale) {
+      if (freshness.assertFresh(ctx.sessionId, full).stale) {
         return {
           output: `${path} changed on disk since you last read it (external edit?). Re-read it first, then re-apply your change.`,
           isError: true,
         };
       }
 
-      // Read the RAW bytes and decode strictly: `file.text()` lossily maps any
-      // invalid-UTF-8 byte to U+FFFD, and the subsequent `Bun.write(buffer)` would
-      // then re-encode that replacement — silently corrupting binary/non-UTF-8
-      // bytes ANYWHERE in the file, even far from the edited region, while
-      // reporting success. Refuse to edit a non-UTF-8 file instead of destroying it.
+      // Strict-decode the RAW bytes (not the lossy text) so any invalid-UTF-8
+      // byte is caught here instead of being silently mapped to U+FFFD by
+      // Bun.file().text(). The lossy path would round-trip 0xFF → U+FFFD →
+      // 0xEF 0xBF 0xBD and persist that corruption far from the edited
+      // region while reporting success — the literal pre-C-2 corruption bug.
+      // ENOENT cannot reach this decode because readBytesIfExists already
+      // returned null in that case.
       let before: string;
       try {
-        before = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+        before = new TextDecoder("utf-8", { fatal: true }).decode(rawBytes);
       } catch {
         return {
           output: `${path} is not valid UTF-8 (looks binary) — refusing to edit, since a text edit would corrupt its bytes. Use a different tool for binary files.`,
@@ -210,12 +176,16 @@ export const editTool: ToolDefinition<z.infer<typeof Input>> = {
         return { output: `No changes: replacement matched existing content in ${path}.` };
       }
 
-      // Temp+rename so a crash can't leave a truncated file (see atomicReplace).
-      // The file exists (checked above), so its mode is preservable.
-      await atomicReplace(full, buffer, statSync(full).mode);
-      // Advance the freshness baseline to our own write's mtime so the next edit
-      // in this session doesn't mistake our change for an external one.
-      recordSeen(ctx.sessionId, full);
+      // Temp+rename so a crash can't leave a truncated file. atomicReplace
+      // captures the target's mode INTERNALLY on the post-deref `target` —
+      // capturing it here at `full` would race an external symlink-swap
+      // or chmod and could land the wrong mode on the wrong inode (bug2.md
+      // C-1). A missing target falls back to umask-default; the file just
+      // verified-exists covers the "existing target" path cleanly.
+      await atomicReplace(full, buffer);
+    // Advance the freshness baseline to our own write's mtime so the next edit
+    // in this session doesn't mistake our change for an external one.
+    freshness.recordWrite(ctx.sessionId, full);
       const diff = unifiedDiff(before, buffer);
       ctx.emit({
         type: "file-changed",

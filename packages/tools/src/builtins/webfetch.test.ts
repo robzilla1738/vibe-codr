@@ -1,6 +1,9 @@
 import { test, expect, afterEach } from "bun:test";
 import { join } from "node:path";
 import type { ToolContext } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { webfetchTool } from "./webfetch.ts";
 import { createFetchCache } from "./fetch-cache.ts";
 
@@ -11,6 +14,7 @@ function ctx(): ToolContext {
     emit: () => {},
     toolCallId: "t",
     abortSignal: new AbortController().signal,
+    freshness,
   };
 }
 

@@ -10,10 +10,13 @@ import {
   createSemaphore,
   createFileLock,
   isConcurrencySafe,
-  canonicalLockKey,
   toAISDKTool,
 } from "./toolset.ts";
+import { canonicalLockKey } from "./fs/canonical-key.ts";
 import { builtinTools } from "./builtins/index.ts";
+import { FreshnessRegistry } from "./builtins/freshness.ts";
+
+const freshness = new FreshnessRegistry();
 
 test("plan mode exposes only read-only tools", () => {
   const ts = new Toolset();
@@ -123,6 +126,7 @@ test("beforeTool hook can veto a tool call; afterTool observes output", async ()
     cwd: ".",
     sessionId: "s",
     emit: () => {},
+    freshness,
     beforeTool: async () => ({ deny: true, reason: "policy" }),
     afterTool: (_n, out) => void seen.push(out),
   });
@@ -135,6 +139,7 @@ test("beforeTool hook can veto a tool call; afterTool observes output", async ()
     cwd: ".",
     sessionId: "s",
     emit: () => {},
+    freshness,
     beforeTool: async () => ({}),
     afterTool: (_n, out) => void seen.push(out),
   });
@@ -164,6 +169,7 @@ function afterToolHarness(
     cwd: ".",
     sessionId: "s",
     emit: () => {},
+    freshness,
     afterTool,
     ...(recorded ? { recordToolResult: (id: string, isError: boolean) => recorded.push({ id, isError }) } : {}),
   });
@@ -215,7 +221,7 @@ test("aiTools serializes mutating tools but lets read-only tools overlap", async
     makeTool("mutB", false, 1),
     makeTool("safe", true, 8),
   ]);
-  const tools = ts.aiTools("execute", { cwd: ".", sessionId: "s", emit: () => {} });
+  const tools = ts.aiTools("execute", { cwd: ".", sessionId: "s", emit: () => {}, freshness });
   const call = (n: string) => {
     const exec = (tools[n] as unknown as {
       execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
@@ -429,6 +435,7 @@ test("a THROWN tool error is normalized into the ERROR contract (not a raw throw
     cwd: "/",
     sessionId: "s",
     emit: () => {},
+    freshness,
     recordToolResult: (id, isError) => errors.push([id, isError]),
   });
   const out = await (aiTool as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute(
@@ -462,6 +469,7 @@ test("a read-only NETWORK tool still consults the permission gate (MCP egress go
       cwd: "/",
       sessionId: "s",
       emit: () => {},
+      freshness,
       checkPermission: (name, _input, opts) => {
         seen.push({ name, fallback: opts?.fallback });
         return { allowed: false, reason: "policy" }; // a deny rule fires
@@ -491,7 +499,7 @@ test("an abort-driven throw still propagates (cancellation is not a tool failure
       throw err;
     },
   };
-  const aiTool = toAISDKTool(aborter, { cwd: "/", sessionId: "s", emit: () => {} });
+  const aiTool = toAISDKTool(aborter, { cwd: "/", sessionId: "s", emit: () => {}, freshness });
   await expect(
     (aiTool as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute(
       {},
@@ -525,6 +533,7 @@ test("a tool whose signal is already aborted never gates or executes (Esc'd batc
       cwd: "/",
       sessionId: "s",
       emit: () => {},
+      freshness,
       checkPermission: (name) => {
         gateCalls.push(name);
         return { allowed: true };

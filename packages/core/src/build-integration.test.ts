@@ -11,6 +11,7 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { RepoProfile, ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -120,6 +121,7 @@ test("run_check: offered only in execute mode with detected commands; parses PAS
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-runcheck-")),
     model: "mock/test",
     mode: "execute",
@@ -161,6 +163,7 @@ test("run_check on an undetected command errors with the detected list", async (
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-runcheck2-")),
     model: "mock/test",
     mode: "execute",
@@ -196,6 +199,7 @@ test("subagent forks inherit the repo profile and get the symbol map injected", 
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-fork-map-")),
     model: "mock/test",
     mode: "execute",
@@ -290,6 +294,7 @@ test("mid-turn microcompaction: older bulky results are offloaded, previewed, an
     registry: mockRegistry(model),
     toolset: new Toolset([bigTool]),
     bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
     cwd,
     model: "mock/test",
     mode: "execute",

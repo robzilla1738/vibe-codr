@@ -33,11 +33,12 @@ import {
   type PricingResult,
 } from "@vibe/providers";
 import {
+  BackgroundJobs,
+  FreshnessRegistry,
   Toolset,
   builtinTools,
   buildRepoMap,
   createFileLock,
-  BackgroundJobs,
   resolveSandboxPolicy,
   type SandboxPolicy,
 } from "@vibe/tools";
@@ -290,6 +291,12 @@ export class Engine implements EngineClient {
   /** One per-file write lock shared across the whole session tree (parent +
    * every subagent), so concurrent agents can't corrupt the same file. */
   #fileLock = createFileLock();
+  /** Per-tree stale-write guard (one per Session tree, owned by the engine).
+   * Threaded into every fork via `handle.deps.freshness`; cleared in
+   * `finalize` so a worker-thread reuse can't leak a prior tree's tracking
+   * into the next one. See `FreshnessRegistry` for the per-session storage
+   * + tree-lifetime teardown design. */
+  #freshness = new FreshnessRegistry();
   /** Tree-global adaptive concurrency gate in front of every provider call
    * (initialized in the constructor once config is available). */
   #limiter!: Limiter;
@@ -508,6 +515,10 @@ export class Engine implements EngineClient {
       permissionResolver: this.#permissionResolver,
       agents: this.#agents,
       fileLock: this.#fileLock,
+      // Per-tree stale-write guard, threaded into every fork via
+      // `...this.#deps` (mirrors the file-lock pattern). The session base
+      // picks it up and passes it to `ctx.freshness` for `read`/`edit`/`write`.
+      freshness: this.#freshness,
       limiter: this.#limiter,
       blackboard: this.#blackboard,
       diagnostics: this.#diagnostics,
@@ -1154,6 +1165,10 @@ export class Engine implements EngineClient {
     this.#diagnostics.dispose?.();
     this.#memory?.close();
     this.#bus.close();
+    // Drop the per-tree stale-write tracking so a worker-thread reuse can't
+    // leak the prior tree's records into the next one. Called after
+    // `bus.close()` so any in-flight tool's read/edit/write has settled.
+    this.#freshness.clear();
   }
 
   /** Resolves when the queue (running + pending work) has fully drained. */

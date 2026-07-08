@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import type { McpServer } from "@vibe/config";
 import type { ToolDefinition } from "@vibe/shared";
+import { FreshnessRegistry } from "@vibe/tools";
 import {
   expandServerConfig,
   MCP_MAX_OUTPUT,
@@ -823,6 +824,7 @@ test("MCP tool calls thread the turn's abort signal and a per-call deadline", as
       sessionId: "s",
       toolCallId: "t",
       emit: () => {},
+      freshness: new FreshnessRegistry(),
       abortSignal: controller.signal,
     },
   );

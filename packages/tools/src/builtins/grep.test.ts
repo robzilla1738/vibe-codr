@@ -3,6 +3,9 @@ import { closeSync, mkdtempSync, openSync, truncateSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
+import { FreshnessRegistry } from "./freshness.ts";
+
+const freshness = new FreshnessRegistry();
 import { grepTool, builtinGrep, readCappedLines, ripgrepFileTypeArgs, _resetRipgrepTypeCache } from "./grep.ts";
 
 beforeEach(() => _resetRipgrepTypeCache());
@@ -18,6 +21,7 @@ function ctx(cwd: string): ToolContext {
     cwd,
     sessionId: "ses_test",
     abortSignal: new AbortController().signal,
+    freshness,
     emit: (e) => events.push(e),
     toolCallId: "call_1",
   };

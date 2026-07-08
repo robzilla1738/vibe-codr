@@ -3,6 +3,7 @@ import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
+import { FreshnessRegistry } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
@@ -78,6 +79,7 @@ test("update_tasks records the task list and emits tasks-updated", async () => {
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -135,6 +137,7 @@ test("update_tasks id-addressed patches flip statuses without resending the list
     registry: mockRegistry(model),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -165,6 +168,7 @@ test("patchTasks applies positional updates, appends, and reports out-of-range r
     registry: new ProviderRegistry(),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -196,6 +200,7 @@ test("task events carry fresh snapshots — a patch never aliases a prior emissi
     registry: new ProviderRegistry(),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
@@ -232,6 +237,7 @@ test("setTasks reuses ids for tasks whose title is unchanged", () => {
     registry: new ProviderRegistry(),
     toolset: new Toolset([]),
     bus,
+    freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",

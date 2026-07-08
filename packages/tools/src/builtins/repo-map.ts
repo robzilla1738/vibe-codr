@@ -3,6 +3,7 @@ import { Glob } from "bun";
 import { statSync } from "node:fs";
 import { dirname, extname, join, normalize } from "node:path";
 import type { ToolDefinition } from "@vibe/shared";
+import { readTextIfExists } from "../fs/safe-read.ts";
 
 const Input = z.object({
   path: z
@@ -251,8 +252,8 @@ export async function buildRepoMap(
       entries.set(file, cached);
       continue;
     }
-    const content = await Bun.file(full).text().catch(() => "");
-    if (!content) continue;
+    const content = await readTextIfExists(full).catch(() => null);
+    if (content === null) continue;
     const ext = extname(file);
     const entry: FileEntry = {
       mtimeMs,

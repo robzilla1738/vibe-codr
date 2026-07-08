@@ -2,7 +2,6 @@ import { resolve } from "node:path";
 import { statSync } from "node:fs";
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
-import { recordSeen } from "./freshness.ts";
 
 const Input = z.object({
   path: z.string().describe("File path, absolute or relative to the cwd."),
@@ -149,7 +148,7 @@ export const readTool: ToolDefinition<z.infer<typeof Input>> = {
     // The model has now seen a stable on-disk state; record its mtime so a later
     // edit/write can detect an external change since this read (stale-write
     // guard). Recorded for empty/truncated reads too — the model still saw them.
-    recordSeen(ctx.sessionId, full);
+    ctx.freshness.recordRead(ctx.sessionId, full);
     if (bytes === 0) return { output: "(empty file)" };
     const totalLines = lineIdx;
     // A non-empty file read entirely past its end is a paging mistake worth

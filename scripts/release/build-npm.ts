@@ -139,7 +139,7 @@ export function generateNpmPackageJson(opts: {
     type: "module",
     bin: { vibecodr: "vibecodr.js", vibe: "vibecodr.js" },
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },
-    files: ["vibecodr.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
+    files: ["vibecodr.js", "vibecodr-engine-worker.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
     optionalDependencies: opts.optionalDependencies,
     ...(hasOptionalPeers
       ? {
@@ -203,7 +203,28 @@ async function main(): Promise<void> {
     throw new Error("bun build failed");
   }
 
-  // 2. shebang + executable bit.
+  // 1b. bundle the engine worker entry as a SIBLING file so the TUI's
+  // `WorkerEngineClient` can spawn it via `new Worker(path)` for thread
+  // isolation (the freeze fix — see packages/cli/src/engine-worker-client.ts).
+  // Same `--target=bun` + no `--external` so the worker runs self-contained
+  // with provider SDKs inlined. If this fails, the runtime host falls back
+  // to in-process `Engine` (Option B's yield gate alone bounds the freeze),
+  // but a missing worker sibling silently halves the fix for npm users.
+  const workerFile = join(outDir, "vibecodr-engine-worker.js");
+  const buildWorker = Bun.spawnSync([
+    "bun",
+    "build",
+    join(root, "packages", "cli", "src", "engine-worker-entry.ts"),
+    "--target=bun",
+    "--outfile",
+    workerFile,
+  ]);
+  if (buildWorker.exitCode !== 0) {
+    process.stderr.write(buildWorker.stderr.toString());
+    throw new Error("bun build (engine worker) failed");
+  }
+
+  // 2. shebang + executable bit on the main bundle.
   writeFileSync(outFile, ensureShebang(readFileSync(outFile, "utf8")));
   chmodSync(outFile, 0o755);
 

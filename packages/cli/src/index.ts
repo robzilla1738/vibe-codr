@@ -1,15 +1,20 @@
 import { parseArgs } from "node:util";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { loadConfig, defaultConfig, type Config } from "@vibe/config";
 import {
   Engine,
   formatModelList,
+  handleCrash,
   loadProjectMemory,
   SessionStore,
   type PersistedSession,
 } from "@vibe/core";
 import { checkForUpdate, isNewer, readUpdateCache } from "@vibe/core";
 import { ProviderRegistry } from "@vibe/providers";
+import type { EngineClient } from "@vibe/shared";
 import { runOneShot, startTui } from "@vibe/tui";
+import { createWorkerEngineClient } from "./engine-worker-client.ts";
 import { needsOnboarding, runOnboarding } from "./onboarding.ts";
 import { upgradeInstructions } from "./upgrade.ts";
 import { VERSION } from "./version.ts";
@@ -17,6 +22,33 @@ import { VERSION } from "./version.ts";
 // Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
 // literal now lives in ./version.ts (stamped at release by set-version.ts).
 export { VERSION };
+
+/**
+ * Locate the engine worker entry. Order:
+ *   1. Sibling of this executable named `vibecodr-engine-worker` — the
+ *      second `bun build --compile` target shipped alongside the main binary.
+ *   2. The in-repo source entry `packages/cli/src/engine-worker-entry.ts`
+ *      discoverable relative to this file (dev / `bun packages/cli/bin/vibecodr.ts`).
+ * Returns null when neither exists — the host then falls back to an in-process
+ * `Engine` (no worker-host isolation; the cooperative-yield gate alone bounds
+ * the freeze). `VIBE_NO_WORKER=1` short-circuits to that fallback too.
+ */
+function resolveEngineWorkerPath(): string | null {
+  // (1) Compiled binary: the worker build target shipped as a sibling of the
+  //     main executable. `process.execPath` is the binary itself.
+  const binarySibling = join(dirname(process.execPath), "vibecodr-engine-worker");
+  if (existsSync(binarySibling)) return binarySibling;
+  // (2) npm install: the worker entry shipped next to `vibecodr.js` as a
+  //     `--target=bun` bundle. `import.meta.dir` is the JS file's directory
+  //     (the bundling inlines everything so no sibling imports dangle).
+  const here = import.meta.dir;
+  const npmSibling = join(here, "vibecodr-engine-worker.js");
+  if (existsSync(npmSibling)) return npmSibling;
+  // (3) Source/dev: the in-repo TS entry discoverable next to this file.
+  const src = join(here, "engine-worker-entry.ts");
+  if (existsSync(src)) return src;
+  return null;
+}
 
 const HELP = `vibecodr ${VERSION} — a model-agnostic coding agent for the terminal
 
@@ -196,7 +228,14 @@ export async function run(argv: string[]): Promise<number> {
   // into every system prompt so the agent knows the project's conventions.
   const projectMemory = await loadProjectMemory(cwd);
 
-  const engine = new Engine({
+  // The shared Engine-construction shape used by every branch below. The TUI
+  // path forwards this verbatim to the worker entry (`engine-worker-entry.ts`),
+  // which constructs `new Engine({...})` exactly as the in-process branches do
+  // — keeping bootstrap/lifecycle identical across hostings. The interactive
+  // (-p / `models` excluded) TUI is the only path that BENEFITS from the worker
+  // (single-shot-and-list paths are throughput-sensitive and have no real-time
+  // consumer to starve — they stay in-process with no serialization tax).
+  const engineOpts = {
     config,
     cwd,
     interactive,
@@ -206,16 +245,24 @@ export async function run(argv: string[]): Promise<number> {
     // onboarding just configured a (possibly different) provider/model above.
     ...(values.model && !onboardingRan ? { modelOverride: values.model } : {}),
     ...(overrides.mode ? { modeOverride: overrides.mode } : {}),
-  });
-  await engine.bootstrap();
+  };
 
   // `vibe models` — list available models for configured providers and exit.
+  // Stays in-process: it doesn't stream UI events and gains nothing from the
+  // worker's freeze fix. Heavy MCP/recon bootstrap is preserved as before.
   if (positionals[0] === "models") {
+    const engine = new Engine(engineOpts);
+    await engine.bootstrap();
     process.stdout.write(`${formatModelList(await engine.listModels())}\n`);
+    await engine.finalize();
     return 0;
   }
 
+  // Headless `-p` path — output only, no real-time consumer to starve. Keep
+  // in-process to avoid per-event structured-clone tax on a single-shot run.
   if (values.prompt !== undefined) {
+    const engine = new Engine(engineOpts);
+    await engine.bootstrap();
     const outputFormat = values["output-format"] === "json" ? "json" : "text";
     // `-p -` (or an empty `-p` with piped input) reads the prompt from stdin,
     // so `cat task.md | vibecodr -p -` works for scripting. On a TTY with no
@@ -247,8 +294,41 @@ export async function run(argv: string[]): Promise<number> {
   // config `update.check` + `$VIBE_NO_UPDATE_CHECK` inside the core helpers.
   await maybePrintUpdateHint(config);
 
-  await startTui(engine);
-  await engine.finalize();
+  // Interactive TUI. Default to the worker-host `EngineClient` so an engine
+  // burst can never again starve paint/stdin (the freeze root cause — see
+  // `engine-worker-client.ts`). `VIBE_NO_WORKER=1` OR a missing worker entry
+  // (e.g. an incomplete release tarball) silently fall back to the in-process
+  // `Engine` so a packaging hiccup never bricks the CLI. In that mode the
+  // cooperative-yield gate on `app.tsx`'s `for await` (Option B) alone bounds
+  // the freeze.
+  const wantWorker = !process.env.VIBE_NO_WORKER;
+  const workerPath = wantWorker ? resolveEngineWorkerPath() : null;
+
+  let client: EngineClient;
+  if (workerPath) {
+    client = await createWorkerEngineClient({
+      workerPath,
+      workerData: engineOpts,
+      onFatal: (message) => {
+        // Workers can't `process.exit` the parent nor restore its raw-mode
+        // stdin — defer to the in-process `handleCrash`, which restores the
+        // terminal, writes a redacted crash log, and exits 1. Same path a
+        // `uncaughtException` on the main thread would take.
+        handleCrash("engine-worker-fatal", new Error(message), { version: VERSION });
+      },
+    });
+  } else {
+    const engine = new Engine(engineOpts);
+    await engine.bootstrap();
+    client = engine;
+  }
+
+  await startTui(client);
+  // `client.finalize?.()` covers both: the worker client terminates the
+  // Worker and awaits its finalize handshake; the in-process Engine runs its
+  // own teardown. Optional `?.()` because the EngineClient interface marks
+  // finalize optional (tests pass a mock without it).
+  await client.finalize?.();
   return 0;
 }
 

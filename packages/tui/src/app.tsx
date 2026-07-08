@@ -63,6 +63,7 @@ import type {
   Task,
   UIEvent,
 } from "@vibe/shared";
+import { makeYieldGate } from "@vibe/shared";
 import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
 import { applyPalette, isExactCommand, paletteState, skillsPickerFilter } from "./commands-catalog.ts";
@@ -1535,7 +1536,20 @@ export function App(props: { engine: EngineClient }) {
         apply({ type: "clear-turn" });
         if (opts.stopWorking ?? true) setWorking(false);
       };
+      // Cooperative yield budget (Option B — defense-in-depth). The worker-host
+      // `EngineClient` already delivers events as MACROTASKS so an engine burst
+      // can never starve the main thread (the structural freeze fix). This gate
+      // bounds the in-process path (when the worker host isn't deployed —
+      // `VIBE_NO_WORKER=1` OR a missing worker binary) where `AsyncQueue`'s
+      // async iterator drains its buffer with synchronous microtask yields and
+      // would otherwise pre-empt paint/stdin. Mirrors `session.ts`'s
+      // `CONSUME_YIELD_PARTS`: yield to the macrotask queue every N events so
+      // the 24ms paint timer + 90ms spinner interval + OpenTUI stdin pump
+      // fire during long bursts.
+      const EVENT_YIELD_COUNT = 50;
+      const eventGate = makeYieldGate(EVENT_YIELD_COUNT);
       for await (const event of props.engine.events() as AsyncIterable<UIEvent>) {
+        if (eventGate(1)) await new Promise<void>((r) => setTimeout(r, 0));
         if (shouldSuppressAfterClear(event)) continue;
         // A throwing handler must not kill this loop: the keyboard hook lives
         // outside it, so an uncaught throw here used to leave a half-alive UI

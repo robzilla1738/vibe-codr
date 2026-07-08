@@ -2772,3 +2772,66 @@ production fix.
 - `bun scripts/release/build-npm.ts` — PASS; generated npm package includes
   `patchedDependencies`, `patches/`, and `@opentui/core: 0.4.2`.
 - `bun run build:binary` — PASS.
+
+# INTERACTIVE TUI VISUAL FREEZE — 2026-07-08
+
+A long-standing class of bug: the rich TUI would visually freeze mid-coding or
+mid-planning, halting screen repaints, keyboard input, and scroll while the
+engine kept running. Spinner/turns appeared "stuck" until the burst drained.
+
+## Root cause (confirmed, not refuted)
+
+`AsyncQueue`'s async iterator (`packages/shared/src/async-queue.ts:31`) drains
+its buffer with synchronous yields, so the TUI's `for await (const event of
+engine.events())` in `app.tsx:1538` consumed any engine burst as a **run of
+microtasks**. Microtasks pre-empt every macrotask (the 24ms paint timer, the
+90ms spinner interval, OpenTUI's stdin pump) — so paint/stdin/scroll stalled
+until the buffer emptied. The existing producer-side gates (`makeYieldGate` in
+`session.ts:1825` and `stream.ts:161`) mitigate but never bounded the consumer
+drain — every new burst source re-triggered the freeze.
+
+## Fix — structural thread separation (Option A) + defense-in-depth (B)
+
+- **Option A (root-cause removal):** the engine now runs in a `worker_threads`
+  Worker on the interactive TUI path. `postMessage` landings are macrotasks,
+  so an engine burst can never starve paint/stdin. New code lives entirely in
+  `@vibe/cli` — `WorkerEngineClient implements EngineClient` (host), the
+  worker entry script (`engine-worker-entry.ts`), and the construction fork in
+  `cli/index.ts`. `@vibe/core`, `@vibe/tui`, and the `EngineClient` interface
+  are byte-unchanged — the core/TUI seam the project already enforces is
+  exactly the seam this fix uses.
+- **Wire protocol:** `EngineCommand`/`UIEvent` cross the boundary verbatim
+  (structured-cloneable plain POJOs; `Uint8Array` for image parts clones too);
+  RPC over `{ __req, op }`/`{ __resp, ok, value }`; a `{ __fatal__: true,
+  message }` sentinel funnels in-worker crashes back to the main thread so the
+  existing `crash.ts` `handleCrash` owns terminal restore + exit (workers can't
+  `process.exit` the parent nor restore its raw-mode stdin).
+- **Option B (defense-in-depth):** `app.tsx`'s `for await` loop now carries a
+  `makeYieldGate(50)` cooperative-macrotask-yield budget — mirrors
+  `session.ts`'s producer gate exactly. Even in the
+  `VIBE_NO_WORKER=1`/missing-worker fallback (which silently uses the
+  in-process `Engine`), this bounds the freeze.
+- **Headless `-p` path and `vibe models` stay in-process** (single-shot, no
+  real-time consumer to starve, no serialization tax on throughput).
+- **Release engineering:** `build:binary` produces a second compile target
+  `dist/vibecodr-engine-worker`; `scripts/release/build-npm.ts` bundles a
+  sibling `dist/npm/vibecodr-engine-worker.js` and ships it in the npm tarball's
+  `files`. Provider SDKs stay inlined in both targets.
+- **Packaging safety:** a missing worker binary (or `VIBE_NO_WORKER=1`)
+  gracefully falls back to the in-process `Engine` so a packaging hiccup never
+  bricks the CLI — the consumer yield gate (B) alone still bounds the freeze
+  in that mode. Industry-standard precedent: this mirrors VS Code's
+  extension host and Electron's main/renderer thread split.
+
+## Verification at close
+
+- `bun run typecheck` — PASS, 8/8 Turbo tasks.
+- `bun test` — PASS, 1579 pass / 2 skip / 0 fail (8 new `WorkerEngineClient`
+  contract tests covering event forwarding, RPC round-trip, `Uint8Array`
+  structured-clone, fatal-sentinel → `onFatal`, worker error event → fatal,
+  `send()` forwarding, finalize teardown, RPC error propagation).
+- `bun run lint` — PASS, 293 files, no fixes applied.
+- `bun run smoke:tui` — PASS, `SMOKE OK` (all 60+ behavioral assertions).
+- `bun test packages/tui/src/input-freeze.test.ts` — PASS (both freeze regressions).
+- `bun ./scripts/release/build-npm.test.ts` — PASS.
+- `bun run build:binary` — PASS (main: 60MB, worker: 60MB; provider SDKs inlined in both).

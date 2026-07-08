@@ -60,6 +60,30 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   have already shipped once. Keep their config on its defaults.
 - Keep the **core/TUI boundary** intact: core must not import from `@vibe/tui`;
   UIs communicate only through `UIEvent` / `EngineCommand`.
+- **Engine runs in a `worker_threads` Worker on the interactive TUI path** (the
+  freeze fix — see `packages/cli/src/engine-worker-client.ts`). The CLI fork in
+  `packages/cli/src/index.ts` constructs `WorkerEngineClient implements
+  EngineClient` for the TUI; the headless `-p` path AND `vibe models` stay
+  in-process with direct `new Engine(...)` (single-shot, no real-time consumer
+  to starve, no serialization tax on throughput). The worker entry is
+  `packages/cli/src/engine-worker-entry.ts`. Wire protocol: `EngineCommand`s
+  (UI→core) and `UIEvent`s (core→UI) cross the boundary unmodified and are
+  plain structured-cloneable POJOs (`Uint8Array` for image parts clones too);
+  RPC over `{ __req, op }`/`{ __resp, ok, value }`; a `{ __fatal__: true,
+  message }` sentinel funnels an in-worker crash back to the main thread so the
+  existing `crash.ts` `handleCrash` runs (workers can't `process.exit` the
+  parent nor restore its raw-mode stdin). `resolveEngineWorkerPath` finds the
+  worker — sibling of `process.execPath` for the compiled binary, sibling of
+  `import.meta.url` for the npm bundle, in-repo `.ts` for source/dev. `VIBE_NO_WORKER=1`
+  OR a missing worker binary falls back to in-process `Engine` so a packaging
+  hiccup never bricks the CLI; in that fallback the cooperative-yield gate on
+  `app.tsx`'s `for await (const event of engine.events())` (`makeYieldGate(50)`)
+  still bounds the freeze (Option B's defense-in-depth — keeps working in both
+  paths). `build:binary` produces a second compile target
+  `dist/vibecodr-engine-worker`; `build-npm.ts` produces `dist/npm/vibecodr-engine-worker.js`
+  so npm users also get thread isolation. Don't re-introduce an in-process
+  synchronous-iterator drain in `app.tsx` — microtasks pre-empt macrotasks
+  (paint/stdin/spinner) and that's the freeze class.
 - Provider SDKs, OpenTUI, `@modelcontextprotocol/sdk`, and
   `@huggingface/transformers` (on-device embeddings for semantic memory) are
   **optional peer deps** — import them via non-literal specifiers and fail with a

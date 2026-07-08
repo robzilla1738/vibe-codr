@@ -4,6 +4,50 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — interactive TUI visual freeze (the freeze class)
+
+- **The rich TUI no longer visually freezes mid-coding or mid-planning.** The
+  root cause was thread-coupling: the engine, the render loop, and OpenTUI's
+  stdin/scroll pump all shared one JS event loop on the main thread, and
+  `AsyncQueue`'s async iterator drained its buffer with synchronous microtask
+  yields — so a dense engine burst (a fast/buffered provider stream, a tool
+  touching hundreds of files, a subagent fan-out's `subagent-activity`, a
+  chatty `bun test` output) drove the TUI's `for await (const event of
+  engine.events())` as a microtask run that pre-empted every macrotask (the
+  24ms paint timer, the 90ms spinner interval, the stdin pump). Screen, keys,
+  and scroll stalled until the buffer emptied; mid-coding/planning bursts are
+  densest, which is exactly when the freeze struck. Existing producer-side
+  gates (`makeYieldGate` in `session.ts` and `stream.ts`) only mitigated —
+  every new burst source re-triggered it because the consumer drain stayed
+  structurally unbounded.
+
+  The structural fix moves `@vibe/core`'s `Engine` into a `worker_threads`
+  Worker on the interactive TUI path, keeping the TUI on the main thread.
+  Cross-thread `postMessage` landings are **macrotasks** — the renderer + stdin
+  pump get the loop back between every event — so an engine burst can never
+  again starve paint/stdin. Communication is unchanged: `EngineCommand`s
+  (UI→core) and `UIEvent`s (core→UI) cross the boundary verbatim and are plain
+  structured-cloneable POJOs (`Uint8Array` for image parts clones too); RPC
+  over `{ __req, op }`/`{ __resp, ok, value }`; a `{ __fatal__: true, message }`
+  sentinel funnels an in-worker crash back to the main thread so the existing
+  `crash.ts` `handleCrash` owns terminal restore + exit (workers can't
+  `process.exit` the parent nor restore its raw-mode stdin). The `EngineClient`
+  interface and `@vibe/core` itself are byte-unchanged — all new code lives in
+  `@vibe/cli` (`WorkerEngineClient` + the worker entry script), so the
+  core/TUI seam the project already enforces is *exactly* the seam this uses.
+
+  The headless `-p` path and `vibe models` stay in-process (single-shot, no
+  real-time consumer to starve, no serialization tax on throughput). `VIBE_NO_WORKER=1`
+  OR a missing worker binary silently fall back to in-process `Engine` so a
+  packaging hiccup never bricks the CLI; in that fallback the
+  cooperative-yield gate now on `app.tsx`'s `for await`
+  (`makeYieldGate(50)` — mirrors `session.ts`'s producer gate) still bounds
+  the freeze as defense-in-depth. `build:binary` produces a second compile
+  target `dist/vibecodr-engine-worker`; the npm bundle ships a sibling
+  `vibecodr-engine-worker.js` so npm users get the same thread isolation. This
+  mirrors how VS Code's extension host and Electron's main/renderer split work
+  — the seam between engine and UI already exists for exactly this.
+
 ### Fixed — bug ledger remediation pass
 
 - **Session persistence and resume paths now fail more honestly.** Truncated

@@ -31,7 +31,7 @@
   "scripts": {
     "vibecodr": "bun packages/cli/bin/vibecodr.ts",
     "build": "turbo run build",
-    "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr",
+    "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr && bun build packages/cli/src/engine-worker-entry.ts --compile --outfile dist/vibecodr-engine-worker",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "smoke:tui": "bun packages/tui/scripts/smoke.ts",

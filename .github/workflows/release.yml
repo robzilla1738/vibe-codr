@@ -40,14 +40,27 @@ jobs:
           bun build --compile --target=${{ matrix.target }} \
             packages/cli/bin/vibecodr.ts \
             --outfile vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+      # Worker sibling (the freeze fix — engine runs in a worker on the TUI
+      # path). Mirrors main binary compile, just from the worker entry. A user
+      # who installs just `vibecodr-…` falls back to in-process `Engine` +
+      # Option B's yield gate alone — still substantially improves the freeze.
+      - name: Compile ${{ matrix.target }} (engine worker)
+        run: |
+          bun build --compile --target=${{ matrix.target }} \
+            packages/cli/src/engine-worker-entry.ts \
+            --outfile vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
       - name: Per-file checksum
-        run: sha256sum vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
+        run: |
+          sha256sum vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
+          sha256sum vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
       - uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
             vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
+            vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+            vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
 
   # Build + publish the npm/bun package. A tag containing `-rc` publishes NOTHING
   # (dry-run only), so a release candidate can exercise the whole path safely.
@@ -105,7 +118,10 @@ jobs:
         run: |
           sha256sum vibecodr-darwin-arm64 vibecodr-darwin-x64 \
                     vibecodr-linux-x64 vibecodr-linux-arm64 \
-                    vibecodr-windows-x64.exe > SHA256SUMS
+                    vibecodr-windows-x64.exe \
+                    vibecodr-engine-worker-darwin-arm64 vibecodr-engine-worker-darwin-x64 \
+                    vibecodr-engine-worker-linux-x64 vibecodr-engine-worker-linux-arm64 \
+                    vibecodr-engine-worker-windows-x64.exe > SHA256SUMS
           cat SHA256SUMS
       - name: Extract release notes
         env:
@@ -127,4 +143,9 @@ jobs:
             artifacts/vibecodr-linux-x64 \
             artifacts/vibecodr-linux-arm64 \
             artifacts/vibecodr-windows-x64.exe \
+            artifacts/vibecodr-engine-worker-darwin-arm64 \
+            artifacts/vibecodr-engine-worker-darwin-x64 \
+            artifacts/vibecodr-engine-worker-linux-x64 \
+            artifacts/vibecodr-engine-worker-linux-arm64 \
+            artifacts/vibecodr-engine-worker-windows-x64.exe \
             artifacts/SHA256SUMS

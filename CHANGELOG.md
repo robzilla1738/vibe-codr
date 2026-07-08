@@ -4,6 +4,35 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — full inventory close-out (BUG-051–096, 43 defects)
+
+Closed the open bug ledger end-to-end with paired regressions. Root `bugs.md`
+now reports **0 active** Critical/High/Medium/Low. Highlights:
+
+- **Worker TUI chrome honesty (BUG-084):** `WorkerEngineClient` awaits the first
+  real engine snapshot before the TUI mounts — model, YOLO/`approvalMode`, and
+  theme no longer stick on the empty placeholder.
+- **Bootstrap notices reach the UI (BUG-085):** `EventBus` late-join history;
+  worker subscribes before bootstrap; `engine.start()` emits session identity.
+- **Worktree verify honesty (BUG-086):** dirty post-merge review restores the
+  squash-merge on main (same discard contract as a red gate).
+- **Orphan user after emergency compact (BUG-087):** re-bind identity after
+  keep=1 fold so pre-assistant abort rolls back correctly (strict-provider 400
+  class). Anti-theater regression proves the rebind is required.
+- **git_push option/refspec injection (BUG-054):** reject dash-prefixed
+  remote/branch; pass `--` before positionals; block force/delete refspecs.
+- **Local embed hang (BUG-061):** wall-clock timeout on load + embed.
+- **/loop built-ins (BUG-075):** loop iterations run built-in slash handlers
+  (`/status`, `/diff`, …) instead of feeding the raw slash line to the model.
+- **Reviewer detector (BUG-093):** `isReviewClean` rejects common `path:line`
+  finding shapes that previously mixed with `REVIEW-CLEAN`.
+- **Also:** glob/repo_map path containment, empty-file write stale-guard, search
+  HTML / grep / webfetch / package_info caps, config atomic writes, config-hook
+  abort + observe-only async, memory fail-closed dedup, vector busy_timeout +
+  bounded search, LSP server-request replies, plugin register rollback, editor
+  non-zero exit keeps draft, crash-log uniqueness, update-check atomic write,
+  upgrade channel detects `node`, and remaining medium/low items in `bugs.md`.
+
 ### Changed — sidebar is reasoning-only; tool work stays in the chat
 
 - **No more redundant “Activity” trail in the wide-terminal sidebar.** Tool

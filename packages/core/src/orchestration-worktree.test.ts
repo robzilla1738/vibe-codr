@@ -810,3 +810,65 @@ async function worktreeBranches(cwd: string): Promise<string[]> {
   const r = await spawnGit(cwd, ["branch", "--list", "vibe-wt/*"]);
   return r.stdout.split("\n").map((l) => l.replace(/^[*+]?\s*/, "").trim()).filter(Boolean);
 }
+
+// ── BUG-086: dirty post-merge review must restore squash-merge on main ────────
+
+test("worktree verify:true dirty review reverts the squash-merge on main (BUG-086)", async () => {
+  // Gate is green (or skipped with no profile checks). Reviewer returns dirty.
+  // Pre-fix: task failed but BAD content stayed on main. Fix restores files.
+  const cwd = await gitRepo();
+  const model = routedModel((p) => {
+    if (p.includes("DIRTY-REVIEW-RUN")) {
+      return p.includes("Orchestrated")
+        ? textStep("wrapped")
+        : spawnTasksStep([
+            {
+              id: "dirty",
+              objective: "task-dirty: write BAD_MARKER into leaked.txt",
+              worktree: true,
+              verify: true,
+              files: ["leaked.txt"],
+            },
+          ]);
+    }
+    if (p.includes("The ACTUAL diff of the task's changes") || p.includes("REVIEW")) {
+      // Reviewer: findings + REVIEW-CLEAN must still fail isReviewClean; pure findings too.
+      return textStep("leaked.txt:1 — BAD_MARKER must not ship\nNOT REVIEW-CLEAN");
+    }
+    if (p.includes("APPLIED") || p.includes("child report") || p.includes("task-dirty")) {
+      if (p.includes("APPLIED")) return textStep("child report with BAD_MARKER");
+      return toolCallStep("apply", { path: "leaked.txt", content: "BAD_MARKER" });
+    }
+    // Default child path: apply then report
+    if (p.includes("write BAD_MARKER") || p.includes("leaked")) {
+      return toolCallStep("apply", { path: "leaked.txt", content: "BAD_MARKER" });
+    }
+    return textStep("child report");
+  });
+
+  const bus = new EventBus();
+  const { events, done } = collect(bus);
+  const session = new Session({
+    config: orchConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([applyTool]),
+    bus,
+    freshness: new FreshnessRegistry(),
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+  });
+  await session.run("DIRTY-REVIEW-RUN");
+  bus.close();
+  await done;
+
+  const orch = events.filter(
+    (e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task",
+  );
+  const failed = orch.filter((e) => e.status === "failed");
+  expect(failed.length).toBeGreaterThanOrEqual(1);
+  const out = spawnTasksOutput(events);
+  expect(out.toLowerCase()).toMatch(/review|failed|reverted/);
+  // Main tree must NOT keep the rejected worktree merge (BUG-086).
+  expect(existsSync(join(cwd, "leaked.txt"))).toBe(false);
+});

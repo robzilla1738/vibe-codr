@@ -26,6 +26,32 @@ test("delivers buffered events in order, then close() ends iteration", async () 
   expect(got.map((e) => (e as { message: string }).message)).toEqual(["a", "b", "c"]);
 });
 
+test("late subscriber receives bootstrap history (BUG-085)", async () => {
+  // Mirror production: an internal watcher subscribes first; bootstrap emits
+  // before the UI attaches; the UI must still see security notices.
+  const bus = new EventBus();
+  const early = bus.subscribe();
+  bus.emit(ev("sandbox warn"));
+  bus.emit(ev("untrusted config"));
+  const late = bus.subscribe();
+  bus.emit(ev("after join"));
+  bus.close();
+
+  const earlyMsgs = (await drain(early)).map((e) => (e as { message: string }).message);
+  const lateMsgs = (await drain(late)).map((e) => (e as { message: string }).message);
+  expect(earlyMsgs).toEqual(["sandbox warn", "untrusted config", "after join"]);
+  expect(lateMsgs).toEqual(["sandbox warn", "untrusted config", "after join"]);
+});
+
+test("subscriber after emits-with-no-listeners still gets history", async () => {
+  const bus = new EventBus();
+  bus.emit(ev("pre"));
+  const sub = bus.subscribe();
+  bus.close();
+  const got = await drain(sub);
+  expect(got.map((e) => (e as { message: string }).message)).toEqual(["pre"]);
+});
+
 test("every subscriber gets every event (fan-out, no stealing)", async () => {
   const bus = new EventBus();
   const s1 = bus.subscribe();

@@ -834,3 +834,16 @@ test("a submit-prompt racing a not-yet-registered detached spawn does not wipe t
   await engine.finalize();
   await collector;
 }, 15_000);
+
+test("isReviewClean rejects path:line: and path:line space findings (BUG-093)", () => {
+  expect(
+    isReviewClean("src/foo.ts:10: missing null check\nREVIEW-CLEAN"),
+  ).toBe(false);
+  expect(
+    isReviewClean("src/foo.ts:10 missing null check\nREVIEW-CLEAN"),
+  ).toBe(false);
+  expect(
+    isReviewClean("src/foo.ts:10 — problem\nREVIEW-CLEAN"),
+  ).toBe(false);
+  expect(isReviewClean("All good.\nREVIEW-CLEAN")).toBe(true);
+});

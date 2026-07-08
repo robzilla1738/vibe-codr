@@ -115,7 +115,16 @@ export async function readUpdateCache(file: string = updateCacheFile()): Promise
 async function writeUpdateCache(cache: UpdateCache, file: string): Promise<void> {
   try {
     await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify(cache));
+    // BUG-079: temp+rename so a crash mid-write cannot leave corrupt JSON.
+    const tmp = `${file}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify(cache));
+    const { rename, rm } = await import("node:fs/promises");
+    try {
+      await rename(tmp, file);
+    } catch (err) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw err;
+    }
   } catch {
     // best-effort; a write failure just means we re-check next time
   }

@@ -52,6 +52,25 @@ export function aiSdkEmbedder(id: string, model: EmbeddingModel<string>): Embedd
  * Throws an actionable error when the package isn't installed; the caller treats
  * that as "no embedder" and falls back to lexical recall.
  */
+/** Race `p` against a wall-clock timeout (BUG-061 — local embed hangs).
+ * Exported so tests drive the same helper localEmbedder uses. */
+export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms ${what}`)), ms);
+    (timer as { unref?: () => void }).unref?.();
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 export async function localEmbedder(
   modelId: string = DEFAULT_LOCAL_MODEL,
 ): Promise<Embedder> {
@@ -70,7 +89,12 @@ export async function localEmbedder(
         }`,
     );
   }
-  const extractor = (await pipelineFn("feature-extraction", modelId)) as (
+  // Model download / ONNX init can hang on a stalled CDN — same budget as cloud.
+  const extractor = (await withTimeout(
+    pipelineFn("feature-extraction", modelId),
+    EMBED_TIMEOUT_MS,
+    `loading local embedder ${modelId}`,
+  )) as (
     text: string,
     opts: { pooling: string; normalize: boolean },
   ) => Promise<{ data: ArrayLike<number> }>;
@@ -80,7 +104,11 @@ export async function localEmbedder(
     async embed(texts) {
       const out: number[][] = [];
       for (const text of texts) {
-        const res = await extractor(text, { pooling: "mean", normalize: true });
+        const res = await withTimeout(
+          extractor(text, { pooling: "mean", normalize: true }),
+          EMBED_TIMEOUT_MS,
+          "local embed",
+        );
         out.push(Array.from(res.data));
       }
       return out;

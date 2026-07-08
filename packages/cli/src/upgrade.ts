@@ -19,7 +19,17 @@ export function detectChannel(execPath: string): UpgradeChannel {
   // Split on both separators so a Windows path is parsed correctly even when
   // this runs on POSIX (node's basename only honors the host separator).
   const base = (execPath.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.exe$/, "");
-  return base === "bun" || base.startsWith("bun-") ? "bun" : "binary";
+  // Package channel: bun runtime OR node (npm global bins often use node).
+  // BUG-096: bare `node` used to fall through to "binary" GitHub instructions.
+  if (
+    base === "bun" ||
+    base.startsWith("bun-") ||
+    base === "node" ||
+    base.startsWith("node")
+  ) {
+    return "bun";
+  }
+  return "binary";
 }
 
 export function upgradeInstructions(opts: { execPath: string; version: string }): string {

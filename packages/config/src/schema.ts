@@ -178,7 +178,7 @@ export const McpOAuthSchema = z.object({
   /** Client name advertised during dynamic registration. */
   clientName: z.string().optional(),
   /** Redirect URI the local callback listens on. Default http://localhost:<port>/callback. */
-  redirectUri: z.string().url().optional(),
+  redirectUri: httpUrl().optional(),
   /** Override where tokens are stored (default ~/.config/vibe-codr/mcp/<server>.json). */
   tokenStore: z.string().optional(),
 });

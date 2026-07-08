@@ -42,6 +42,8 @@ export class VectorStore {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.#db = new Database(path);
     this.#db.exec("PRAGMA journal_mode = WAL;");
+    // BUG-063: multi-process writers wait instead of SQLITE_BUSY failure.
+    this.#db.exec("PRAGMA busy_timeout = 5000;");
     this.#db.run(
       `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
     );
@@ -129,13 +131,21 @@ export class VectorStore {
     tx(dead);
   }
 
-  /** Top-`k` chunks by cosine similarity to `queryVector` (brute-force). */
+  /** Hard cap on rows scanned per query (BUG-066) — unbounded episodic growth
+   * must not OOM `/recall`. Prefer newest chunks when over the cap. */
+  static readonly MAX_SEARCH_ROWS = 50_000;
+
+  /** Top-`k` chunks by cosine similarity to `queryVector` (brute-force, bounded). */
   search(queryVector: number[], k = 8): VectorHit[] {
     const rows = this.#db
       .query<
         { id: string; source: string; heading: string; text: string; vector: Uint8Array },
         []
-      >(`SELECT id, source, heading, text, vector FROM chunks`)
+      >(
+        `SELECT id, source, heading, text, vector FROM chunks
+         ORDER BY updated_at DESC
+         LIMIT ${VectorStore.MAX_SEARCH_ROWS}`,
+      )
       .all();
     const hits: VectorHit[] = [];
     for (const r of rows) {

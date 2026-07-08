@@ -252,21 +252,25 @@ function isNearDuplicate(existing: string, fact: string): boolean {
  * `save_memory` fact carries no such tag, so it keeps exact-substring dedup only. */
 const DIGEST_TAG = "session-digest";
 
-/** Read the concatenated text of every `*.md` in a scope dir, best-effort: dedup
- * must FAIL OPEN — a transient read error means "can't prove it's a duplicate",
- * and appending twice is recoverable where silently dropping a save is not. */
-async function scopeText(dir: string): Promise<string> {
+/** Read the concatenated text of every `*.md` in a scope dir for dedup.
+ * BUG-064: fail CLOSED on unreadable dirs (return null) so callers skip
+ * append rather than treating "can't read" as "no existing facts". */
+async function scopeText(dir: string): Promise<string | null> {
   let entries: string[];
   try {
     entries = await readdir(dir);
-  } catch {
-    return "";
+  } catch (err) {
+    // Missing dir is empty store (OK to append); other errors are fail-closed.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") return "";
+    return null;
   }
   const texts = await Promise.all(
     entries
       .filter((name) => name.endsWith(".md"))
-      .map((name) => Bun.file(join(dir, name)).text().catch(() => "")),
+      .map((name) => Bun.file(join(dir, name)).text().catch(() => null)),
   );
+  if (texts.some((t) => t === null)) return null;
   return texts.join("\n");
 }
 
@@ -393,6 +397,10 @@ export async function appendMemory(
     // (paraphrase-prone), so a reworded re-digest of a resumed session is caught
     // without over-deduping ordinary saves.
     const scope = await scopeText(dir);
+    // BUG-064: unreadable store → refuse append rather than duplicate.
+    if (scope === null) {
+      throw new Error(`memory scope unreadable: ${dir}`);
+    }
     if (containsFact(scope, input.fact) || (fuzzy && isNearDuplicate(scope, input.fact))) {
       deduped = true;
       return;

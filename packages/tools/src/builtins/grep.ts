@@ -158,6 +158,9 @@ async function ripgrepSearch(
  * the caller need not drain (and buffer) the rest. Shared shape with capResults:
  * a `truncated` batch carries `limit + 1` lines (capResults slices to `limit`
  * and appends the marker). Exported for a deterministic streaming-cap test. */
+/** Max bytes retained for a single line while scanning (BUG-090). */
+export const MAX_GREP_LINE_BYTES = 256_000;
+
 export async function readCappedLines(
   stream: ReadableStream<Uint8Array>,
   limit: number,
@@ -172,6 +175,12 @@ export async function readCappedLines(
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
+      // Bound a single-line buffer so a multi-MB match line can't OOM (BUG-090).
+      if (buf.length > MAX_GREP_LINE_BYTES) {
+        lines.push(buf.slice(0, MAX_GREP_LINE_BYTES));
+        truncated = true;
+        break;
+      }
       let nl: number;
       while ((nl = buf.indexOf("\n")) !== -1) {
         lines.push(buf.slice(0, nl));
@@ -184,7 +193,14 @@ export async function readCappedLines(
     }
     if (!truncated) {
       buf += decoder.decode();
-      if (buf) lines.push(buf); // trailing line with no terminating newline
+      if (buf) {
+        if (buf.length > MAX_GREP_LINE_BYTES) {
+          lines.push(buf.slice(0, MAX_GREP_LINE_BYTES));
+          truncated = true;
+        } else {
+          lines.push(buf); // trailing line with no terminating newline
+        }
+      }
     }
   } finally {
     await reader.cancel().catch(() => {});

@@ -1748,6 +1748,29 @@ export class Engine implements EngineClient {
           this.#notice(r.message, "warn");
           return r.message;
         }
+      } else if (
+        // BUG-075: built-ins live in handleSlash, not CommandRegistry. Without
+        // this branch `/loop 1h /diff` sent the raw slash string to the model.
+        BUILTIN_COMMANDS.some((c) => c.name === slash.name) ||
+        this.skills.get(slash.name)
+      ) {
+        return new Promise<string>((resolve, reject) => {
+          this.#enqueue(
+            `loop: /${slash.name}`,
+            async () => {
+              this.#loopSession = this.#session;
+              try {
+                await this.#handleSlash(slash.name, slash.args);
+                resolve(this.#session.lastAssistantText() || `/${slash.name}`);
+              } catch (err) {
+                reject(err as Error);
+              } finally {
+                this.#loopSession = undefined;
+              }
+            },
+            { onCancel: (reason) => reject(new LoopCancelledError(reason)), origin: "loop" },
+          );
+        });
       }
     }
     // Route the iteration through the same FIFO queue and prompt handler as user

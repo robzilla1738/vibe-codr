@@ -309,7 +309,10 @@ async function tinyFishSearch(
     const detail = res.status === 401 || res.status === 403 ? " (check your TinyFish API key)" : "";
     throw new Error(`HTTP ${res.status}${detail}`);
   }
-  const data = JSON.parse(await res.text()) as { results?: unknown };
+  // BUG-095: cap TinyFish body before JSON.parse (same class as search HTML).
+  const rawText = await res.text();
+  const capped = rawText.length > 512_000 ? rawText.slice(0, 512_000) : rawText;
+  const data = JSON.parse(capped) as { results?: unknown };
   // TinyFish is an external, unvalidated engine, so sanitize FULLY — both the
   // container and every element. `?? []` only catches null/undefined; a truthy
   // non-array (an error-envelope 200 like `{"results":{"error":…}}`) or an array

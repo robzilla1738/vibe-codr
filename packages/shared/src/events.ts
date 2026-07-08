@@ -31,6 +31,7 @@ export type UIEvent =
   | {
       type: "tool-call-progress";
       sessionId: string;
+      subagentId?: string;
       toolCallId: string;
       chunk: string;
     }

@@ -14,11 +14,10 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** Run an editor process to completion with the terminal inherited. Rejects only
- * on a spawn failure (missing binary); a non-zero editor exit still resolves
- * (the file is read back regardless — that's how `git commit` treats `:cq`-less
- * exits). */
-export type EditorSpawn = (command: string, args: string[]) => Promise<void>;
+/** Run an editor process to completion with the terminal inherited. Resolves
+ * with the process exit code. Rejects only on a spawn failure (missing binary).
+ * Non-zero exit is returned so composeInEditor can keep the prior draft (BUG-080). */
+export type EditorSpawn = (command: string, args: string[]) => Promise<number>;
 
 export type EditorComposeResult =
   /** A non-empty file came back — use it as the new draft. */
@@ -78,11 +77,18 @@ export async function composeInEditor(deps: EditorComposeDeps): Promise<EditorCo
   } catch (err) {
     return { kind: "failed", reason: (err as Error).message };
   }
+  let exitCode = 0;
   try {
-    await deps.spawn(command, [...args, path]);
+    exitCode = await deps.spawn(command, [...args, path]);
   } catch (err) {
     await remove(path).catch(() => {});
     return { kind: "failed", reason: (err as Error).message };
+  }
+
+  // BUG-080: non-zero exit (editor abort / :cq) keeps the prior draft.
+  if (exitCode !== 0) {
+    await remove(path).catch(() => {});
+    return { kind: "kept" };
   }
 
   let contents: string;

@@ -164,12 +164,34 @@ export const gitPushTool: ToolDefinition<z.infer<typeof PushInput>> = {
       if (head.code !== 0) return { output: head.out || "cannot resolve HEAD", isError: true };
       target = head.out.trim();
     }
+    // BUG-054: reject dash-prefixed remote/branch so values like `--force` or
+    // `--mirror` cannot be parsed as git options. Same class as git_diff's ref
+    // guard. Pass `--` before positionals so refspecs cannot smuggle flags.
+    const remoteName = remote ?? "origin";
+    if (remoteName.startsWith("-") || target.startsWith("-")) {
+      return {
+        output:
+          "git_push: remote and branch must not start with '-' (refusing option-like values). " +
+          "Use a plain remote name and branch ref.",
+        isError: true,
+      };
+    }
+    // Block force/delete refspec forms unless the user uses a real git shell
+    // command under permission review.
+    if (target.startsWith(":") || target.startsWith("+") || target.includes(":")) {
+      return {
+        output:
+          "git_push: refspec force/delete forms (leading '+', ':', or 'src:dst') are not allowed. " +
+          "Push a plain branch name.",
+        isError: true,
+      };
+    }
     const args = ["push"];
     if (setUpstream) args.push("-u");
-    args.push(remote ?? "origin", target);
+    args.push("--", remoteName, target);
     const { code, out } = await git(args, ctx);
     if (code !== 0) return { output: out || "git push failed", isError: true };
-    return { output: out || `Pushed ${target} to ${remote ?? "origin"}.` };
+    return { output: out || `Pushed ${target} to ${remoteName}.` };
   },
 };
 

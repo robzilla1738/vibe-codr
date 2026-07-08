@@ -1290,3 +1290,86 @@ test("an interactive session does NOT arm the stream-idle watchdog", async () =>
   expect(session.interrupted).toBe(false);
   expect(session.lastError).toBeNull();
 });
+
+test("orphan rollback after emergency compaction re-binds userMsgRef (BUG-087)", async () => {
+  // Emergency keep=1 (messages.length <= COMPACT_KEEP_RECENT=6 after push) folds
+  // the just-pushed user into a NEW object. Without rebind after #maybeCompact,
+  // identity-matched orphan rollback skips the pop → consecutive user messages.
+  //
+  // Seeds must be ≤5 so after pushUser length is ≤6 (the emergency gate). Six
+  // seeds → length 7 > keep → normal keep-window path keeps the user BY REF and
+  // this test becomes theater (passes without the rebind).
+  const huge = "H".repeat(8_000);
+  let failStream = true;
+  let summarizeCalls = 0;
+  let sentPrompt: { role: string }[] = [];
+  const model = new MockLanguageModelV2({
+    // #summarize uses generateText → doGenerate. Must SUCCEED so emergency
+    // compact actually replaces messages (otherwise rebind is never exercised).
+    doGenerate: async () => {
+      summarizeCalls += 1;
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              "## STATE\ncompacted\n## DECISIONS\nnone\n## FILES TOUCHED\nnone\n" +
+              "## VERIFIED FACTS\nnone\n## OPEN THREADS\nnone",
+          },
+        ],
+        finishReason: "stop",
+        usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+        warnings: [],
+      } as never;
+    },
+    doStream: async (options) => {
+      sentPrompt = (options.prompt as { role: string }[]) ?? [];
+      if (failStream) throw new Error("stream boom after compact");
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]) as never;
+    },
+  });
+  const cfg = defaultConfig();
+  cfg.compaction = { ...cfg.compaction, threshold: 0.01 };
+  const bus = new EventBus();
+  const session = new Session({
+    config: cfg,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/test",
+    mode: "execute",
+    getContextWindow: async () => 2_000,
+    // 4 seeds + 1 push = 5 ≤ keep(6) → emergency keep=1 + fold creates NEW user object.
+    initialModelMessages: [
+      { role: "user", content: huge },
+      { role: "assistant", content: huge },
+      { role: "user", content: huge },
+      { role: "assistant", content: huge },
+    ] as ModelMessage[],
+  });
+
+  await session.run("ORPHAN-AFTER-COMPACT prompt that must be rolled back");
+  expect(session.lastError).toBeTruthy();
+  // Prove emergency compact actually ran (summarize → doGenerate).
+  expect(summarizeCalls).toBeGreaterThanOrEqual(1);
+  failStream = false;
+  await session.run("SECOND clean prompt");
+  bus.close();
+
+  const roles = sentPrompt.map((m) => m.role);
+  for (let i = 1; i < roles.length; i++) {
+    expect(roles[i] === "user" && roles[i - 1] === "user").toBe(false);
+  }
+  expect(JSON.stringify(sentPrompt)).toContain("SECOND clean prompt");
+  // The aborted first user text must be gone — only true if orphan pop ran on
+  // the post-compact (re-bound) message object.
+  expect(JSON.stringify(sentPrompt)).not.toContain("ORPHAN-AFTER-COMPACT");
+});

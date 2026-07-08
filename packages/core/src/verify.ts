@@ -1,5 +1,5 @@
 import { readCappedText } from "@vibe/shared";
-import { policyForChecks, type SandboxPolicy, wrapCommand } from "@vibe/tools";
+import { killTreeAndWait, policyForChecks, type SandboxPolicy, wrapCommand } from "@vibe/tools";
 
 export interface VerifyResult {
   ok: boolean;
@@ -19,13 +19,8 @@ const MAX_STREAM = 64_000;
  * incrementally so a runaway command doesn't materialize its whole output in
  * memory before truncation.
  *
- * NOTE: the engine no longer uses this — `#runVerifyCommand` runs through
- * `bunExec`, which killTree()s the whole process tree on abort/timeout. This
- * helper forwards `signal` STRAIGHT to `Bun.spawn`, the pattern `build/exec.ts`
- * (lines 63-69) documents as broken: on abort Bun kills only the direct
- * `bash -lc` child, orphaning grandchildren that still hold the stdout/stderr
- * pipe write-ends → `readCappedText` never sees EOF and this hangs. Retained
- * only as an exported utility; wire a signal through `bunExec` instead.
+ * BUG-059: on abort/timeout, kill the whole process tree (not just bash -lc)
+ * so grandchildren cannot hold pipes open and hang `readCappedText`.
  */
 export async function runVerify(
   cwd: string,
@@ -44,17 +39,30 @@ export async function runVerify(
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
-    ...(signal ? { signal } : {}),
   });
-  const [stdout, stderr] = await Promise.all([
-    readCappedText(proc.stdout, { cap: MAX_STREAM }),
-    readCappedText(proc.stderr, { cap: MAX_STREAM }),
-  ]);
-  const code = await proc.exited;
-  const combined = `${stdout.text}${stderr.text}`.trim();
-  const output =
-    combined.length > MAX_OUTPUT
-      ? `${combined.slice(0, MAX_OUTPUT)}\n…(truncated)`
-      : combined;
-  return { ok: code === 0, output };
+  let killed = false;
+  const onAbort = () => {
+    killed = true;
+    void killTreeAndWait(proc.pid).catch(() => {});
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  try {
+    const [stdout, stderr] = await Promise.all([
+      readCappedText(proc.stdout, { cap: MAX_STREAM, ...(signal ? { signal } : {}) }),
+      readCappedText(proc.stderr, { cap: MAX_STREAM, ...(signal ? { signal } : {}) }),
+    ]);
+    const code = await proc.exited;
+    const combined = `${stdout.text}${stderr.text}`.trim();
+    const output =
+      combined.length > MAX_OUTPUT
+        ? `${combined.slice(0, MAX_OUTPUT)}\n…(truncated)`
+        : combined;
+    if (killed || signal?.aborted) {
+      return { ok: false, output: output || "verify aborted" };
+    }
+    return { ok: code === 0, output };
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
 }

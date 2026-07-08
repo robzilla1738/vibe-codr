@@ -25,6 +25,7 @@ function memDeps(
     spawn: async (_command, args) => {
       const path = args[args.length - 1]!;
       files.set(path, editorEdit(files.get(path) ?? ""));
+      return 0;
     },
     removed: () => removed,
   };
@@ -67,6 +68,7 @@ test("no $VISUAL/$EDITOR → unavailable (nothing spawned)", async () => {
     draft: "x",
     spawn: async () => {
       spawned = true;
+      return 0;
     },
   });
   expect(res).toEqual({ kind: "unavailable" });
@@ -87,4 +89,20 @@ test("a spawn failure (bad editor) degrades to failed, not a throw", async () =>
   });
   expect(res.kind).toBe("failed");
   if (res.kind === "failed") expect(res.reason).toMatch(/ENOENT/);
+});
+
+test("non-zero editor exit keeps the prior draft (BUG-080)", async () => {
+  const files = new Map<string, string>();
+  const res = await composeInEditor({
+    editor: "vim",
+    draft: "keep me",
+    outPath: "/tmp/vibe-compose-cq.md",
+    writeText: async (p, t) => {
+      files.set(p, t);
+    },
+    readText: async (p) => files.get(p) ?? "partial junk",
+    removeFile: async () => {},
+    spawn: async () => 1, // :cq / abort
+  });
+  expect(res).toEqual({ kind: "kept" });
 });

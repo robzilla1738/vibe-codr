@@ -116,30 +116,13 @@ const engine = new Engine({
   ...(opts.modeOverride ? { modeOverride: opts.modeOverride as never } : {}),
 });
 
-// Bootstrap the engine (load agents/commands/skills/plugins, MCP connect,
-// recon, restore engine state, git emit) before wiring ports — events
-// emitted during bootstrap are buffered in the EventBus's per-subscriber
-// AsyncQueue, so they're delivered in order to whoever subscribes next.
-await engine.bootstrap();
+// Accept host RPC/commands as soon as the worker starts (host beginHydrate
+// races bootstrap). Queue until bootstrap finishes so snapshot includes
+// commands/skills/plugins and model resolution is stable (BUG-084).
+let bootstrapped = false;
+const inboundQueue: Inbound[] = [];
 
-// Subscribe ONCE to the engine's event stream and pipe every event to the
-// host. The EventBus hands each subscriber its own lossless, unbounded
-// AsyncQueue — same backpressure semantics as a MessagePort. Structured
-// clone is the wire format; every UIEvent payload is a plain object (some
-// carry `Uint8Array` image parts, which clone cleanly).
-void (async () => {
-  for await (const event of engine.events() as AsyncIterable<UIEvent>) {
-    port.postMessage(event);
-  }
-  // The event stream ends on `engine.finalize()` (EventBus.close()) — signal
-  // end-of-stream to the host so its `events()` queue closes (parity with
-  // the in-process `EventBus.close()` behavior the TUI relied on today).
-  // We post a sentinel that the host recognizes as "stream-end" by virtue of
-  // the worker exiting (the host's `onExit(code=0)` closes the queue).
-})();
-
-// Handle inbound commands + RPC from the host.
-port.on("message", async (msg: Inbound) => {
+async function handleInbound(msg: Inbound): Promise<void> {
   if (isRpc(msg)) {
     try {
       const value = await handleRpc(msg.op);
@@ -155,9 +138,37 @@ port.on("message", async (msg: Inbound) => {
     }
     return;
   }
-  // Plain `EngineCommand` — forward verbatim. `engine.send` is sync-safe.
   engine.send(msg);
+}
+
+port.on("message", (msg: Inbound) => {
+  if (!bootstrapped) {
+    inboundQueue.push(msg);
+    return;
+  }
+  void handleInbound(msg);
 });
+
+// Subscribe BEFORE bootstrap (BUG-085): bootstrap emits security/sandbox
+// notices and git-updated. The host's WorkerEngineClient AsyncQueue buffers
+// postMessage landings until the TUI attaches, so early events still reach
+// the UI. Subscribing only after bootstrap dropped those notices forever.
+const eventStream = engine.events() as AsyncIterable<UIEvent>;
+void (async () => {
+  for await (const event of eventStream) {
+    port.postMessage(event);
+  }
+})();
+
+await Promise.resolve();
+await engine.bootstrap();
+// Identity event for first-paint chrome (model/mode).
+engine.start();
+
+bootstrapped = true;
+for (const msg of inboundQueue.splice(0)) {
+  await handleInbound(msg);
+}
 
 async function handleRpc(op: RpcOp): Promise<unknown> {
   switch (op) {
@@ -174,9 +185,6 @@ async function handleRpc(op: RpcOp): Promise<unknown> {
     case "finalize": {
       await engine.finalize();
       port.unref();
-      // Allow the parent to exit; the host calls `worker.terminate()` after
-      // finalize resolves regardless. We do NOT exit preemptively — the
-      // finalize RPC reply must be flushed first (the host awaits it).
       return undefined;
     }
     default:

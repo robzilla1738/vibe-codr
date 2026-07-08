@@ -11,14 +11,17 @@ const Input = z.object({
     .number()
     .int()
     .positive()
+    .max(500_000)
     .optional()
     .describe(
-      "Max characters of text to return (default 25000). Raise it to read a long " +
+      "Max characters of text to return (default 25000, hard max 500000). Raise it to read a long " +
         "page (docs, changelog) in full; lower it to skim.",
     ),
 });
 
 const DEFAULT_MAX_CHARS = 25_000;
+/** Hard ceiling even if the schema is bypassed (BUG-091). */
+const HARD_MAX_CHARS = 500_000;
 const DEFAULT_TIMEOUT_MS = 8_000;
 /** Hard ceiling on bytes pulled off the wire, before the char cap, so a huge or
  * unbounded response can't OOM the process. */
@@ -372,7 +375,7 @@ export function webfetchTool(opts: WebfetchOptions = {}): ToolDefinition<z.infer
           full = await fetchAndExtract();
         }
         const prefix = stale ? "(served a cached copy — the live fetch failed)\n\n" : "";
-        const cap = maxChars ?? DEFAULT_MAX_CHARS;
+        const cap = Math.min(maxChars ?? DEFAULT_MAX_CHARS, HARD_MAX_CHARS);
         if (full.length > cap) {
           return {
             output: `${prefix}${full.slice(0, cap)}\n…(truncated ${full.length - cap} more chars; raise maxChars to read further)`,

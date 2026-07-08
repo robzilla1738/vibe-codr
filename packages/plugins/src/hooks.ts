@@ -66,6 +66,17 @@ export class HookBus {
     this.#handlers.set(name, list);
   }
 
+  /** Remove every handler registered for a hook name (BUG-071 reload). */
+  clear(name?: HookName): void {
+    if (name) this.#handlers.delete(name);
+    else this.#handlers.clear();
+  }
+
+  /** Snapshot of handler counts (tests / diagnostics). */
+  handlerCount(name: HookName): number {
+    return this.#handlers.get(name)?.length ?? 0;
+  }
+
   async run<N extends HookName>(
     name: N,
     payload: HookPayloads[N],

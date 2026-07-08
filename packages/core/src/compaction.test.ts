@@ -304,3 +304,28 @@ test("fewer than 3 messages returns null even when forced and over threshold", a
   });
   expect(nullOne).toBeNull();
 });
+
+test("emergency keep=1 folds the kept user into a NEW object (BUG-087 sameRef break)", async () => {
+  // length ≤ keep trips emergency keep=1; the kept user is recent[0] and is
+  // folded with the summary into a brand-new message object — identity === the
+  // pre-compact ref is false. Session orphan rollback must re-bind after this.
+  const messages = msgs(5); // u/a/u/a/u — ends on user; length 5 ≤ keep 6
+  const lastUser = messages[messages.length - 1]!;
+  expect(lastUser.role).toBe("user");
+  const result = await compactMessages(messages, {
+    contextWindow: 1,
+    threshold: 0,
+    keep: 6,
+    force: true,
+    summarize: async () => "prior turns summarized",
+  });
+  expect(result).not.toBeNull();
+  expect(result!.overrun).toBe(true);
+  const folded = result!.messages[result!.messages.length - 1]!;
+  expect(folded.role).toBe("user");
+  // THE point of BUG-087: not the same reference as the pre-compact user.
+  expect(folded).not.toBe(lastUser);
+  expect(typeof folded.content === "string" && folded.content.includes("prior turns summarized")).toBe(
+    true,
+  );
+});

@@ -387,3 +387,45 @@ test("a denied handoff prompt re-arms the plan approval (the next message retrie
   // The retry carried the handoff directive into the model prompt.
   expect(prompts.at(-1)).toContain("approved by the user");
 });
+
+test("/loop iteration runs built-in /status without prompting the model (BUG-075)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-loop-"));
+  let modelCalls = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      modelCalls += 1;
+      return textStep("model should not run for /status loop tick") as never;
+    },
+  });
+  const registry = new ProviderRegistry([
+    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+  ]);
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test" },
+    cwd,
+    registry,
+    interactive: false,
+  });
+  const events: UIEvent[] = [];
+  const sub = engine.events();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+  await engine.bootstrap();
+  // Real slash path → handleLoop → #runLoopIteration → #handleSlash("status")
+  engine.send({ type: "run-slash", name: "loop", args: "1s /status --max 1" });
+  for (let i = 0; i < 80; i++) {
+    if (events.some((e) => e.type === "loop-stopped")) break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  expect(events.some((e) => e.type === "loop-stopped")).toBe(true);
+  // Built-in /status emits a notice; it must not burn a model turn.
+  const statusNotice = events.find(
+    (e) => e.type === "notice" && /model|cwd|session|status/i.test(e.message),
+  );
+  expect(statusNotice).toBeDefined();
+  expect(modelCalls).toBe(0);
+});

@@ -22,7 +22,12 @@ export interface EngineOptions {
 export type FetchLike = (
   url: string,
   init?: { headers?: Record<string, string>; signal?: AbortSignal },
-) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  text(): Promise<string>;
+  body?: ReadableStream<Uint8Array> | null;
+}>;
 
 const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0";
@@ -183,7 +188,9 @@ export async function bingSearch(
     ...(signal ? { signal } : {}),
   });
   if (!res.ok) throw new Error(`Bing HTTP ${res.status}`);
-  const all = parseBingHtml((await res.text()).slice(0, MAX_SEARCH_HTML));
+  // Cap DURING read (BUG-089) — never materialize an unbounded body then slice.
+  const html = await readCappedResponseText(res, MAX_SEARCH_HTML);
+  const all = parseBingHtml(html);
   return opts.maxResults ? all.slice(0, opts.maxResults) : all;
 }
 
@@ -202,8 +209,23 @@ export async function duckDuckGoSearch(
     ...(signal ? { signal } : {}),
   });
   if (!res.ok) throw new Error(`DuckDuckGo HTTP ${res.status}`);
-  const all = parseDuckDuckGoHtml((await res.text()).slice(0, MAX_SEARCH_HTML));
+  const html = await readCappedResponseText(res, MAX_SEARCH_HTML);
+  const all = parseDuckDuckGoHtml(html);
   return opts.maxResults ? all.slice(0, opts.maxResults) : all;
+}
+
+/** Read at most `cap` chars from a fetch response body (BUG-089). Prefers
+ * streaming when `body` is present so a hostile payload never fully buffers. */
+export async function readCappedResponseText(
+  res: { text(): Promise<string>; body?: ReadableStream<Uint8Array> | null },
+  cap: number,
+): Promise<string> {
+  if (res.body) {
+    const { readCappedText } = await import("@vibe/shared");
+    return (await readCappedText(res.body, { cap, keep: "head" })).text;
+  }
+  const text = await res.text();
+  return text.length > cap ? text.slice(0, cap) : text;
 }
 
 /**

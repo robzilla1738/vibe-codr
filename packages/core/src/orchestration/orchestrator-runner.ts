@@ -772,7 +772,10 @@ export class OrchestratorRunner {
       // wraps git ops + the gate build, never a child turn. Worktree removal runs in
       // the outer finally, also serialized.
       const verdict = await this.#mergeLock(
-        async (): Promise<{ ok: true; diff?: string } | { ok: false; output: string }> => {
+        async (): Promise<
+          | { ok: true; diff?: string; mergedFiles: string[] }
+          | { ok: false; output: string }
+        > => {
           // BUG-048: commitWorktree returns false when the child made nothing
           // committable. The ensemble path already checks this; the worktree
           // path awaited without checking → a false return silently proceeded to
@@ -829,7 +832,13 @@ export class OrchestratorRunner {
           }
           // Capture the diff of THIS task's merged changes while the tree is still
           // stable (before releasing the lock lets a sibling merge land).
-          return { ok: true, ...(spec.verify ? { diff: await this.#captureTaskDiff(spec) } : {}) };
+          // Carry mergedFiles out so a dirty post-merge review can restore
+          // (BUG-086) — same discard contract as gate red.
+          return {
+            ok: true,
+            mergedFiles,
+            ...(spec.verify ? { diff: await this.#captureTaskDiff(spec) } : {}),
+          };
         },
       );
       if (!verdict.ok) {
@@ -839,7 +848,19 @@ export class OrchestratorRunner {
       if (spec.verify) {
         const review = await this.#reviewCapturedDiff(spec, reportText, verdict.diff ?? "", parentSignal, suspendParentSlot);
         if (!review.clean) {
-          return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: `Post-merge review found issues:\n${review.feedback}`, attempts: 1, ...(handoff ? { handoff } : {}) });
+          // BUG-086: gate failures already restored; review must too or main
+          // keeps rejected edits while the task reports failed.
+          if (verdict.mergedFiles.length) {
+            await this.#mergeLock(() => gitRestoreFiles(mainCwd, verdict.mergedFiles)).catch(() => {});
+          }
+          return settle({
+            id: spec.id,
+            objective: spec.objective,
+            outcome: "failed",
+            output: `Post-merge review found issues (merged changes reverted):\n${review.feedback}`,
+            attempts: 1,
+            ...(handoff ? { handoff } : {}),
+          });
         }
       }
       return settle({ id: spec.id, objective: spec.objective, outcome: "completed", output: reportText, attempts: 1, ...(handoff ? { handoff } : {}) });
@@ -1922,9 +1943,10 @@ export function isReviewClean(out: string): boolean {
   // Require REVIEW-CLEAN as a line-start token (not a bare substring — "NOT
   // REVIEW-CLEAN" must fail). Also reject when any `path:line` issue line is
   // present: a sloppy reviewer that lists findings then ends with REVIEW-CLEAN
-  // must not pass.
+  // must not pass (BUG-093 — cover dash, colon, and space-separated shapes).
   if (!/(^|\n)\s*REVIEW-CLEAN\b/.test(out)) return false;
-  if (/(^|\n)\s*\S[^:\n]*:\d+\s*[—\-–]/.test(out)) return false;
+  // path:line — issue | path:line: issue | path:line issue | path:line:col: issue
+  if (/(^|\n)\s*\S[^:\n]*:\d+(?::\d+)?(?:\s*[—\-–]|\s*:|\s+\S)/.test(out)) return false;
   return true;
 }
 

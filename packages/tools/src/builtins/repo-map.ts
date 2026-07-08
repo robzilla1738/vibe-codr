@@ -2,6 +2,7 @@ import { z } from "zod";
 import { Glob } from "bun";
 import { statSync } from "node:fs";
 import { dirname, extname, join, normalize } from "node:path";
+import { resolveContainedDir } from "./glob.ts";
 import type { ToolDefinition } from "@vibe/shared";
 import { readTextIfExists } from "../fs/safe-read.ts";
 
@@ -159,12 +160,21 @@ async function listFiles(cwd: string, sub: string | undefined): Promise<string[]
   } catch {
     /* not a git repo (or git missing) — fall through to glob */
   }
+  // BUG-055: contain `sub` under cwd — never walk `../sibling` via relative globs.
+  let scanCwd = cwd;
+  if (sub) {
+    const resolved = resolveContainedDir(cwd, sub);
+    if (typeof resolved === "object") return [];
+    scanCwd = resolved;
+  }
   const files: string[] = [];
-  const glob = new Glob(`${sub ? `${sub.replace(/\/$/, "")}/` : ""}**/*`);
+  const glob = new Glob("**/*");
   try {
-    for await (const f of glob.scan({ cwd, onlyFiles: true })) {
-      if (f.includes("node_modules/") || f.startsWith(".git/")) continue;
-      if (isCodeFile(f)) files.push(f);
+    for await (const f of glob.scan({ cwd: scanCwd, onlyFiles: true })) {
+      if (f.includes("node_modules/") || f.startsWith(".git/") || f.includes("/.git/")) continue;
+      // Re-prefix relative to the original session cwd when we scanned a subdir.
+      const rel = sub ? `${sub.replace(/\/$/, "")}/${f}` : f;
+      if (isCodeFile(rel)) files.push(rel);
       if (files.length >= 5_000) break; // bound the scan
     }
   } catch {

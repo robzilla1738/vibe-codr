@@ -57,15 +57,22 @@ async function npmInfo(name: string, signal: AbortSignal): Promise<{ output: str
   const license =
     typeof latest.license === "string" ? latest.license : latest.license?.type;
   const lines = [`npm · ${name}`, `latest: ${latest.version ?? "unknown"}`];
-  if (latest.description) lines.push(`description: ${latest.description.trim()}`);
-  if (license) lines.push(`license: ${license}`);
-  if (latest.homepage) lines.push(`homepage: ${latest.homepage}`);
-  if (latest.deprecated) lines.push(`⚠ deprecated: ${latest.deprecated}`);
+  if (latest.description) lines.push(`description: ${clip(latest.description.trim(), 500)}`);
+  if (license) lines.push(`license: ${clip(String(license), 80)}`);
+  if (latest.homepage) lines.push(`homepage: ${clip(latest.homepage, 200)}`);
+  if (latest.deprecated) lines.push(`⚠ deprecated: ${clip(latest.deprecated, 300)}`);
   const otherTags = Object.entries(tags).filter(([k]) => k !== "latest");
   if (otherTags.length) {
-    lines.push(`other dist-tags: ${otherTags.map(([k, v]) => `${k}=${v}`).join(", ")}`);
+    lines.push(
+      `other dist-tags: ${clip(otherTags.map(([k, v]) => `${k}=${v}`).join(", "), 400)}`,
+    );
   }
-  return { output: lines.join("\n") };
+  return { output: clip(lines.join("\n"), 4000) };
+}
+
+/** BUG-094: bound registry field lengths so a hostile payload cannot flood context. */
+function clip(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
 interface PypiJson {
@@ -93,12 +100,14 @@ async function pypiInfo(name: string, signal: AbortSignal): Promise<{ output: st
   }
   const info = ((await res.json()) as PypiJson).info ?? {};
   const lines = [`pypi · ${name}`, `latest: ${info.version ?? "unknown"}`];
-  if (info.summary) lines.push(`summary: ${info.summary.trim()}`);
-  if (info.license) lines.push(`license: ${info.license}`);
+  if (info.summary) lines.push(`summary: ${clip(info.summary.trim(), 500)}`);
+  if (info.license) lines.push(`license: ${clip(info.license, 80)}`);
   const home = info.home_page || info.project_url;
-  if (home) lines.push(`homepage: ${home}`);
-  if (info.yanked) lines.push(`⚠ yanked${info.yanked_reason ? `: ${info.yanked_reason}` : ""}`);
-  return { output: lines.join("\n") };
+  if (home) lines.push(`homepage: ${clip(home, 200)}`);
+  if (info.yanked) {
+    lines.push(`⚠ yanked${info.yanked_reason ? `: ${clip(info.yanked_reason, 300)}` : ""}`);
+  }
+  return { output: clip(lines.join("\n"), 4000) };
 }
 
 export const packageInfoTool: ToolDefinition<z.infer<typeof Input>> = {

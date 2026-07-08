@@ -80,3 +80,12 @@ test("excludes node_modules and .git by default", async () => {
   expect(files.some((f) => f.includes("node_modules/"))).toBe(false);
   expect(files.some((f) => f.startsWith(".git/"))).toBe(false);
 });
+
+import { resolveContainedDir } from "./glob.ts";
+
+test("resolveContainedDir rejects workspace escape (BUG-051)", () => {
+  const root = "/tmp/workspace";
+  expect(resolveContainedDir(root, "src")).toBe("/tmp/workspace/src");
+  expect(typeof resolveContainedDir(root, "../outside")).toBe("object");
+  expect((resolveContainedDir(root, "../outside") as { error: string }).error).toMatch(/escapes/);
+});

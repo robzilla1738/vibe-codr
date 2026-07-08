@@ -970,6 +970,16 @@ export class Session {
         return;
       }
       await this.#maybeCompact(model, false);
+      // BUG-087: emergency compaction (keep=1) folds the just-pushed user into a
+      // NEW object. Orphan rollback identity-matches the pre-compact ref and
+      // would leave a consecutive user turn after a pre-stream abort. Re-bind
+      // to the current tail when it is still a user message.
+      if (userMsgRef) {
+        const tail = this.#modelMessages[this.#modelMessages.length - 1];
+        if (tail?.role === "user") userMsgRef = tail;
+        const hTail = this.#history[this.#history.length - 1];
+        if (hTail && hTail.role === "user") histRef = hTail;
+      }
       if (this.#aborted()) {
         this.#interrupted = true;
         return;

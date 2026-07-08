@@ -201,3 +201,10 @@ test("a genuinely failing iteration still stops with an 'iteration failed' reaso
     "iteration failed: provider exploded",
   );
 });
+
+test("parseLoopArgs does not steal prose --until (BUG-076)", () => {
+  const p = parseLoopArgs("30s explain how --until loops work");
+  expect(p).not.toBeNull();
+  expect(p!.until).toBeUndefined();
+  expect(p!.prompt).toContain("--until loops work");
+});

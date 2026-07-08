@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { MockEmbeddingModelV2 } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
-import { aiSdkEmbedder, resolveEmbedder, cosineSimilarity } from "./embeddings.ts";
+import { aiSdkEmbedder, resolveEmbedder, cosineSimilarity, withTimeout } from "./embeddings.ts";
 
 /** Deterministic 3-dim mock: vector keyed by the input's first char code. */
 function mockEmbedding(dim = 3) {
@@ -89,4 +89,16 @@ test("aiSdkEmbedder bounds the embedding call with an abort signal (no unbounded
   const e = aiSdkEmbedder("mock/embed", model);
   await e.embed(["hello"]);
   expect(captured).toBeInstanceOf(AbortSignal);
+});
+
+test("withTimeout rejects a hanging promise (BUG-061 local embed hang guard)", async () => {
+  const hang = new Promise<string>(() => {}); // never settles
+  const start = Date.now();
+  await expect(withTimeout(hang, 40, "local embed probe")).rejects.toThrow(/timed out after 40ms/);
+  expect(Date.now() - start).toBeLessThan(500);
+});
+
+test("withTimeout resolves a fast promise before the deadline (BUG-061)", async () => {
+  const v = await withTimeout(Promise.resolve(42), 200, "local embed probe");
+  expect(v).toBe(42);
 });

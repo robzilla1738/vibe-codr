@@ -48,11 +48,27 @@ export function parseLoopArgs(args: string): ParsedLoop | null {
     rest = rest.replace(maxMatch[0], "").trim();
   }
 
+  // BUG-076: only accept a TRAILING `--until` with a single token or a quoted
+  // value. `/--until\s+(.+)$/` stole prose like "explain how --until loops work".
   let until: string | undefined;
-  const untilMatch = rest.match(/--until\s+(.+)$/);
-  if (untilMatch) {
-    until = untilMatch[1]!.trim().replace(/^["']|["']$/g, "");
-    rest = rest.replace(untilMatch[0], "").trim();
+  const untilQuoted =
+    rest.match(/\s--until\s+"([^"]+)"\s*$/) ?? rest.match(/\s--until\s+'([^']+)'\s*$/);
+  const untilBare = untilQuoted ? null : rest.match(/\s--until\s+(\S+)\s*$/);
+  const untilLeadQuoted =
+    rest.match(/^--until\s+"([^"]+)"\s+/) ?? rest.match(/^--until\s+'([^']+)'\s+/);
+  const untilLeadBare = untilLeadQuoted ? null : rest.match(/^--until\s+(\S+)(?:\s+|$)/);
+  if (untilQuoted) {
+    until = untilQuoted[1]!.trim();
+    rest = rest.slice(0, untilQuoted.index).trim();
+  } else if (untilBare) {
+    until = untilBare[1]!.trim();
+    rest = rest.slice(0, untilBare.index).trim();
+  } else if (untilLeadQuoted) {
+    until = untilLeadQuoted[1]!.trim();
+    rest = rest.slice(untilLeadQuoted[0].length).trim();
+  } else if (untilLeadBare) {
+    until = untilLeadBare[1]!.trim();
+    rest = rest.slice(untilLeadBare[0].length).trim();
   }
 
   // Optional leading interval token.
@@ -76,19 +92,20 @@ export function parseLoopArgs(args: string): ParsedLoop | null {
 
   if (!rest) return null;
 
-  // A known flag token still in the prompt means it was typed but NOT applied
-  // (missing or invalid value — e.g. `--max ten`, a trailing `--until`): the
-  // user thinks a bound/condition is set when it isn't. Warn, don't reject —
-  // erroring would break a legitimate prompt that merely mentions the flag,
-  // and only the two flags this parser understands are checked (an arbitrary
-  // `--foo` in prompt text stays silent).
-  for (const token of rest.split(/\s+/)) {
-    if (/^--(max|until)$/i.test(token)) {
-      warnings.push(
-        `"${token}" was not applied (missing or invalid value) and was kept as prompt text — ` +
-          "usage: --until <condition>, --max <N>.",
-      );
-    }
+  // BUG-077: warn only for failed flag applications, not prose that mentions
+  // `--watch` etc. Detect a bare trailing `--until`/`--max`, or `--max <non-int>`.
+  if (/\s--(?:max|until)\s*$/i.test(rest) || /^--(?:max|until)\s*$/i.test(rest)) {
+    const token = rest.match(/--(max|until)\s*$/i)?.[0] ?? "--until";
+    warnings.push(
+      `"${token}" was not applied (missing or invalid value) and was kept as prompt text — ` +
+        "usage: --until <condition>, --max <N>.",
+    );
+  } else if (/\s--max\s+\S+/i.test(rest) && max === undefined) {
+    // e.g. `--max ten` — present but not applied as a number.
+    warnings.push(
+      `"--max" was not applied (missing or invalid value) and was kept as prompt text — ` +
+        "usage: --until <condition>, --max <N>.",
+    );
   }
 
   return {

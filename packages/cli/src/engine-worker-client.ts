@@ -103,12 +103,17 @@ export class WorkerEngineClient implements EngineClient {
   #closed = false;
   #onFatal?: (message: string) => void;
   #snapshotCache: EngineSnapshot | undefined;
-  #snapshotPending = false;
+  /** Resolves once the first real snapshot is cached (BUG-084). */
+  #ready: Promise<void>;
+  #resolveReady!: () => void;
 
   /** Internal — use `createWorkerEngineClient` (resolves `Worker` ctor lazily). */
   constructor(worker: WorkerType, opts: WorkerEngineOptions) {
     this.#worker = worker;
     this.#onFatal = opts.onFatal;
+    this.#ready = new Promise<void>((r) => {
+      this.#resolveReady = r;
+    });
     worker.on("message", (msg: Inbound) => this.#onMessage(msg));
     worker.on("error", (err: Error) => this.#onWorkerError(err));
     worker.on("exit", (code: number) => this.#onWorkerExit(code));
@@ -117,6 +122,35 @@ export class WorkerEngineClient implements EngineClient {
     if (opts.inheritStderr !== false) {
       worker.stderr?.on("data", (chunk: Buffer) => process.stderr.write(chunk));
     }
+  }
+
+  /**
+   * Await until the first real engine snapshot is cached. The CLI must call
+   * this before `startTui` so `App` seeds model/approvalMode/theme from truth
+   * (BUG-084) — not from PLACEHOLDER_SNAPSHOT.
+   */
+  ready(): Promise<void> {
+    return this.#ready;
+  }
+
+  /** Kick the initial snapshot RPC. Called once from `createWorkerEngineClient`. */
+  beginHydrate(): void {
+    const timeout = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 15_000);
+      (t as { unref?: () => void }).unref?.();
+    });
+    void Promise.race([
+      this.#rpc<EngineSnapshot>("snapshot").then((s) => {
+        this.#snapshotCache = s;
+      }),
+      timeout,
+    ])
+      .catch(() => {
+        // Worker died before first snapshot — still resolve ready.
+      })
+      .finally(() => {
+        this.#resolveReady();
+      });
   }
 
   /** Main message router — events → `events()` queue, RPC replies →
@@ -194,32 +228,10 @@ export class WorkerEngineClient implements EngineClient {
   }
 
   snapshot(): EngineSnapshot {
-    // First-paint call. The worker hasn't necessarily replied yet, so fire
-    // the RPC and cache the result for the NEXT call. The live stream's
-    // `session-start`/`model-changed`/`mode-changed`/`goal-changed`/
-    // `git-updated`/`usage-updated` events fire at bootstrap before the UI
-    // is fully mounted (the AsyncQueue buffers pre-subscriber events), so
-    // the footer/icon populate from the stream even without the snapshot.
-    // The placeholder is type-correct so first paint renders cleanly.
-    //
-    // The RPC is fired AT MOST ONCE: `#snapshotPending` guards against
-    // duplicate-snapshot RPCs from a host that polls `snapshot()` any
-    // number of times before the worker replies (the TUI's mountApp polls
-    // exactly once, but the type contract allows arbitrary polling, and a
-    // duplicate RPC would waste a round-trip per poll).
+    // After `ready()` the cache holds the real engine snapshot (BUG-084).
+    // A cold call before hydrate still returns a type-correct placeholder so
+    // unit tests that skip ready() don't throw on first paint fields.
     if (this.#snapshotCache) return this.#snapshotCache;
-    if (this.#snapshotPending) return PLACEHOLDER_SNAPSHOT;
-    this.#snapshotPending = true;
-    void this.#rpc<EngineSnapshot>("snapshot")
-      .then((s) => {
-        this.#snapshotCache = s;
-      })
-      .catch(() => {
-        // Worker died / tearing down — events stream carries the same fields.
-      })
-      .finally(() => {
-        this.#snapshotPending = false;
-      });
     return PLACEHOLDER_SNAPSHOT;
   }
 
@@ -277,18 +289,17 @@ export async function createWorkerEngineClient(opts: WorkerEngineOptions): Promi
     type: "module",
     workerData: { ...(opts.workerData ?? {}), env: opts.env ?? { ...process.env } },
   });
-  return new WorkerEngineClient(worker, opts);
+  const client = new WorkerEngineClient(worker, opts);
+  // BUG-084: block until the first real snapshot is cached so startTui /
+  // App seed model + approvalMode + theme from the engine, not the placeholder.
+  client.beginHydrate();
+  await client.ready();
+  return client;
 }
 
 /**
- * The minimal `EngineSnapshot` returned before the worker has replied. The
- * interactive TUI populates model/mode/goal/git/usage from `session-start` +
- * `model-changed` + `mode-changed` + `goal-changed` + `git-updated` +
- * `usage-updated` events that fire on bootstrap (the AsyncQueue buffers them
- * pre-subscriber, so they arrive before the TUI is fully mounted). The
- * placeholder only frames the very first paint — and every field is
- * type-correct (matches `EngineSnapshot`) so the theme/mode-chip render runs
- * without throwing.
+ * Type-correct empty snapshot used only before `ready()` resolves (or if
+ * hydrate fails). Production CLI always awaits ready before startTui.
  */
 const PLACEHOLDER_SNAPSHOT: EngineSnapshot = {
   sessionId: "",

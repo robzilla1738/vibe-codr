@@ -234,7 +234,7 @@ export function writeGlobalConfig(
           .join("; ")}`,
       );
     }
-    await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
+    await atomicWriteJson(path, merged);
     return merged;
   };
   const result = writeChain.then(run, run);
@@ -245,6 +245,23 @@ export function writeGlobalConfig(
     () => undefined,
   );
   return result;
+}
+
+/** Atomic temp+rename JSON write (BUG-092) — crash mid-write cannot truncate
+ * the live config into unparseable garbage. */
+async function atomicWriteJson(path: string, value: unknown): Promise<void> {
+  const { dirname, join } = await import("node:path");
+  const { rename, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const dir = dirname(path);
+  await mkdir(dir, { recursive: true });
+  const tmp = join(dir, `.config.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await rename(tmp, path);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 }
 
 /**
@@ -284,7 +301,7 @@ export function appendProjectPermission(
           .join("; ")}`,
       );
     }
-    await Bun.write(path, `${JSON.stringify(merged, null, 2)}\n`);
+    await atomicWriteJson(path, merged);
     return merged;
   };
   const result = writeChain.then(run, run);

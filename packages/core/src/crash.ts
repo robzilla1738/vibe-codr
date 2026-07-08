@@ -88,11 +88,15 @@ export function buildCrashRecord(
 export function writeCrashLog(record: CrashRecord, dir: string = crashesDir()): string {
   mkdirSync(dir, { recursive: true });
   // ISO timestamps carry `:`/`.` which are invalid in filenames on some
-  // platforms (Windows) — normalize to `-`.
-  const path = join(dir, `${record.ts.replace(/[:.]/g, "-")}.log`);
+  // platforms (Windows) — normalize to `-`. Append pid+counter so two crashes
+  // in the same millisecond cannot overwrite each other (BUG-078).
+  const uniq = `${process.pid}-${crashSeq++}`;
+  const path = join(dir, `${record.ts.replace(/[:.]/g, "-")}-${uniq}.log`);
   writeFileSync(path, JSON.stringify(redactCrash(record), null, 2));
   return path;
 }
+
+let crashSeq = 0;
 
 /** Restore the terminal from a raw/alt-screen state via literal ANSI (core can't
  * import the TUI). Best-effort — a failure here must not block the crash log. */

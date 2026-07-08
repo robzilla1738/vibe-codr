@@ -135,7 +135,18 @@ export function paletteState(draft: string): PaletteState {
   const command = PALETTE_COMMANDS.find((c) => c.name === name);
   if (!command?.values) return { open: false };
   const query = draft.slice(space + 1).trim().toLowerCase();
-  const items = command.values.filter((v) => v.startsWith(query));
+  // BUG-081: prefix → substring (same tiers as the command menu, minus fuzzy).
+  const tier = (v: string): number => {
+    const n = v.toLowerCase();
+    if (!query || n.startsWith(query)) return 0;
+    if (n.includes(query)) return 1;
+    return 3;
+  };
+  const items = command.values
+    .map((v) => ({ v, t: tier(v) }))
+    .filter(({ t }) => t < 3)
+    .sort((a, b) => a.t - b.t)
+    .map(({ v }) => v);
   return items.length ? { open: true, mode: "value", command, query, items } : { open: false };
 }
 

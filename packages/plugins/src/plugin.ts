@@ -42,28 +42,36 @@ export class PluginHost {
     this.#log = deps.logger ?? createLogger("plugins");
   }
 
-  #api(): PluginApi {
-    return {
-      registerTool: this.#deps.registerTool,
-      registerProvider: this.#deps.registerProvider,
-      registerCommand: (cmd) => this.#deps.commands.register(cmd),
-      addSkillDir: this.#deps.addSkillDir,
-      hooks: this.#deps.hooks,
-      logger: this.#log,
-    };
-  }
-
   /** Import and register each plugin module specifier (npm name or path).
    * `timeoutMs` bounds each plugin's register() (default 15s); exposed mainly for
    * tests. */
   async load(specifiers: string[], opts: { timeoutMs?: number } = {}): Promise<void> {
     const deadline = opts.timeoutMs ?? PLUGIN_REGISTER_TIMEOUT_MS;
+    // BUG-071: reloading the same plugins must not double-register hooks.
+    // Clear hook handlers once at the start of a load batch (commands overwrite
+    // by name already; tools refuse shadowing).
+    if (specifiers.length) this.#deps.hooks.clear();
     for (const spec of specifiers) {
+      // BUG-070: track registrations for this plugin so a timed-out register()
+      // can roll back partial wiring.
+      const registeredCommands: string[] = [];
+      const registeredTools: string[] = [];
+      const hookSnap = snapshotHooks(this.#deps.hooks);
+      const api: PluginApi = {
+        registerTool: (def) => {
+          registeredTools.push(def.name);
+          this.#deps.registerTool(def);
+        },
+        registerProvider: this.#deps.registerProvider,
+        registerCommand: (cmd) => {
+          registeredCommands.push(cmd.name);
+          this.#deps.commands.register(cmd);
+        },
+        addSkillDir: this.#deps.addSkillDir,
+        hooks: this.#deps.hooks,
+        logger: this.#log,
+      };
       try {
-        // Bound the import too, not just register(): a module with a hanging
-        // top-level `await` would block boot BEFORE register() is ever reached
-        // (bootstrap awaits load() before the TUI starts). A timeout is logged
-        // and skipped, not fatal.
         const mod = (await withTimeout(
           import(spec),
           deadline,
@@ -71,13 +79,8 @@ export class PluginHost {
         )) as { default?: Plugin } & Partial<Plugin>;
         const plugin = mod.default ?? (mod as Plugin);
         if (typeof plugin.register === "function") {
-          // Bound register() with a wall-clock deadline: a plugin whose
-          // register() never resolves (or is pathologically slow) would otherwise
-          // hang the entire CLI boot — bootstrap() awaits this before the TUI
-          // starts. Matches the MCP hub's per-server connect timeout. A timeout is
-          // logged and skipped, not fatal.
           await withTimeout(
-            Promise.resolve(plugin.register(this.#api())),
+            Promise.resolve(plugin.register(api)),
             deadline,
             `plugin ${spec} register() timed out`,
           );
@@ -86,10 +89,46 @@ export class PluginHost {
           this.#log.warn(`plugin ${spec} has no register()`);
         }
       } catch (err) {
+        // Roll back partial register work from a timed-out/hung plugin.
+        restoreHooks(this.#deps.hooks, hookSnap);
+        for (const name of registeredCommands) {
+          this.#deps.commands.unregister(name);
+        }
         this.#log.error(`failed to load plugin ${spec}: ${(err as Error).message}`);
       }
     }
   }
+}
+
+/** Capture handler lists so a failed register can restore (BUG-070). */
+function snapshotHooks(hooks: HookBus): Map<string, number> {
+  const names = [
+    "session.start",
+    "user.prompt.submit",
+    "tool.before.execute",
+    "tool.after.execute",
+    "step.finish",
+    "assistant.message",
+    "session.idle",
+    "session.end",
+  ] as const;
+  const snap = new Map<string, number>();
+  for (const n of names) snap.set(n, hooks.handlerCount(n));
+  return snap;
+}
+
+function restoreHooks(hooks: HookBus, snap: Map<string, number>): void {
+  // If counts grew during a partial register, clear all and accept loss of
+  // earlier plugins' hooks in this batch — load() clears at batch start, so
+  // only this batch's hooks exist. Full clear is the safe rollback.
+  let grew = false;
+  for (const [name, n] of snap) {
+    if (hooks.handlerCount(name as never) > n) {
+      grew = true;
+      break;
+    }
+  }
+  if (grew) hooks.clear();
 }
 
 /** Per-plugin register() deadline (ms) so one hung plugin can't block CLI boot. */

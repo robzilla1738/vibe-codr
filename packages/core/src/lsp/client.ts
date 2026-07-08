@@ -216,6 +216,9 @@ export class LspClient {
   /** Kill the process tree (idempotent). */
   dispose(): void {
     if (!this.#proc) return;
+    // BUG-065: settle pending + flip exited BEFORE kill so concurrent
+    // diagnose() fails closed instead of writing to a dead stdin.
+    this.#handleExit(-1);
     try {
       this.#proc.stdin.end?.();
     } catch {
@@ -357,9 +360,25 @@ export class LspClient {
         this.#waiters.delete(params.uri);
         w.resolve(params.diagnostics ?? []);
       }
+      return;
     }
-    // Any other request from the server (e.g. window/workDoneProgress/create,
-    // client/registerCapability) is left unanswered — harmless for diagnostics.
+    // BUG-062: reply to server *requests* so strict LSPs (jdtls, etc.) don't
+    // hang waiting for client/registerCapability / workspace/configuration.
+    if (msg.id !== undefined && msg.method) {
+      const result =
+        msg.method === "workspace/configuration"
+          ? []
+          : msg.method === "client/registerCapability" ||
+              msg.method === "client/unregisterCapability" ||
+              msg.method === "window/workDoneProgress/create"
+            ? null
+            : {};
+      try {
+        this.#send({ jsonrpc: "2.0", id: msg.id, result });
+      } catch {
+        /* process may be dying */
+      }
+    }
   }
 }
 

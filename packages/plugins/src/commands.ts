@@ -31,6 +31,11 @@ export class CommandRegistry {
     this.#commands.set(cmd.name, cmd);
   }
 
+  /** Remove a command by name (plugin register rollback — BUG-070). */
+  unregister(name: string): void {
+    this.#commands.delete(name);
+  }
+
   get(name: string): SlashCommand | undefined {
     return this.#commands.get(name);
   }

@@ -88,6 +88,11 @@ export function scopeString(toolName: string, input: unknown): string | undefine
   }
   if (typeof o.path === "string") return o.path;
   if (typeof o.url === "string") return o.url;
+  // BUG-051: expose glob search root so path-scoped deny/ask rules can govern it.
+  if (toolName === "glob") {
+    if (typeof o.cwd === "string" && o.cwd) return o.cwd;
+    if (typeof o.pattern === "string") return o.pattern;
+  }
   if (toolName === "run_check" && typeof o.check === "string") return o.check;
   return undefined;
 }

@@ -95,14 +95,48 @@ function stub(op) {
   expect(models).toEqual([{ id: "m", providerId: "stub", name: "Stub" }]);
   const providers = await client.listProviders();
   expect(providers).toEqual([{ id: "stub", configured: true, keyless: false, env: ["STUB_KEY"] }]);
-  // Snapshot: sync API. First call fires the RPC and returns a type-correct
-  // placeholder (worker hasn't replied); a duplicate-snapshot guard prevents
-  // re-fires. Polling once more after the RPC resolves returns the cached.
-  let snap = client.snapshot();
-  expect(snap.model).toBe(""); // placeholder until the worker replies
-  await new Promise((r) => setTimeout(r, 50));
-  snap = client.snapshot();
+  // BUG-084: createWorkerEngineClient awaits ready() so the first snapshot()
+  // is the real engine state (model/approvalMode/theme), not a placeholder.
+  const snap = client.snapshot();
   expect(snap.model).toBe("stub/m");
+  await client.finalize();
+});
+
+test("ready snapshot carries approvalMode auto (BUG-084 YOLO chrome)", async () => {
+  const path = writeStubWorker(`
+parentPort.on("message", (m) => {
+  if (m.__req) {
+    if (m.op === "snapshot") {
+      parentPort.postMessage({
+        __resp: m.__req,
+        ok: true,
+        value: {
+          sessionId: "s",
+          model: "openai/gpt-4",
+          mode: "execute",
+          approvalMode: "auto",
+          goal: null,
+          history: [],
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+          tasks: [],
+          busy: false,
+          theme: "tokyonight",
+          accentColor: "#ff0000",
+          commandNames: ["help"],
+        },
+      });
+      return;
+    }
+    parentPort.postMessage({ __resp: m.__req, ok: true, value: m.op === "listModels" ? [] : undefined });
+  }
+});
+`);
+  const client = await createWorkerEngineClient(makeOpts(path, {}));
+  const snap = client.snapshot();
+  expect(snap.model).toBe("openai/gpt-4");
+  expect(snap.approvalMode).toBe("auto");
+  expect(snap.theme).toBe("tokyonight");
+  expect(snap.accentColor).toBe("#ff0000");
   await client.finalize();
 });
 
@@ -194,7 +228,29 @@ parentPort.postMessage({ type: "turn-finished", sessionId: "s" });
 test("finalize terminates the worker; the events stream closes", async () => {
   const path = writeStubWorker(`
 parentPort.on("message", (m) => {
-  if (m.__req && m.op === "finalize") return parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
+  if (!m.__req) return;
+  if (m.op === "snapshot") {
+    return parentPort.postMessage({
+      __resp: m.__req,
+      ok: true,
+      value: {
+        sessionId: "s",
+        model: "m",
+        mode: "execute",
+        approvalMode: "ask",
+        goal: null,
+        history: [],
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+        tasks: [],
+        busy: false,
+        theme: "default",
+        accentColor: "",
+        commandNames: [],
+      },
+    });
+  }
+  if (m.op === "finalize") return parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
+  parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
 });
 `);
   const client = await createWorkerEngineClient(makeOpts(path, {}));

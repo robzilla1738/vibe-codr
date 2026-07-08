@@ -130,3 +130,9 @@ test("a very large diff is bounded in memory, keeping head AND the trailing tail
   // Bounded well under the 5MB the diff would be (read cap 64k + display cap 20k).
   expect(out.length).toBeLessThan(70_000);
 });
+
+test("git_push rejects dash-prefixed branch/remote (BUG-054)", async () => {
+  const r = await gitPushTool.execute({ branch: "--force" }, ctx(process.cwd()));
+  expect(r.isError).toBe(true);
+  expect(String(r.output)).toMatch(/must not start with/);
+});

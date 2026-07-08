@@ -64,7 +64,9 @@ export class CappedText {
       this.#headCap = 0;
       this.#tailCap = this.#cap;
     } else {
-      this.#headCap = Math.floor(this.#cap * (opts.headRatio ?? 0.3));
+      // BUG-069: clamp headRatio to (0,1] so headCap never exceeds cap.
+      const ratio = Math.min(1, Math.max(0, opts.headRatio ?? 0.3));
+      this.#headCap = Math.floor(this.#cap * ratio);
       this.#tailCap = this.#cap - this.#headCap;
     }
     this.#marker = opts.marker;

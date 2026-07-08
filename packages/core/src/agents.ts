@@ -90,25 +90,31 @@ export async function loadAgents(cwd: string): Promise<Map<string, NamedAgent>> 
   const dir = `${cwd}/.vibe/agents`;
   try {
     for await (const file of glob.scan({ cwd: dir, absolute: true })) {
-      const raw = await Bun.file(file).text();
-      const { frontmatter, body } = parseSkillMarkdown(raw);
-      const name = frontmatter.name ?? basename(file, ".md");
-      // Honor an explicit plan|execute; ignore (and don't crash on) anything else.
-      const mode =
-        frontmatter.mode === "plan" || frontmatter.mode === "execute"
-          ? frontmatter.mode
-          : undefined;
-      const tools = parseToolList(frontmatter.tools);
-      const denyTools = parseToolList(frontmatter.disallowed_tools ?? frontmatter.deny_tools);
-      agents.set(name, {
-        name,
-        description: frontmatter.description ?? name,
-        ...(frontmatter.model ? { model: frontmatter.model } : {}),
-        ...(mode ? { mode } : {}),
-        ...(tools ? { tools } : {}),
-        ...(denyTools ? { denyTools } : {}),
-        ...(body ? { system: body } : {}),
-      });
+      // BUG-072: per-file try/catch so one unreadable agent doesn't drop the rest.
+      try {
+        const raw = await Bun.file(file).text();
+        const { frontmatter, body } = parseSkillMarkdown(raw);
+        // BUG-073: empty `name:` must fall back to filename (skills/commands pattern).
+        const name = frontmatter.name?.trim() || basename(file, ".md");
+        // Honor an explicit plan|execute; ignore (and don't crash on) anything else.
+        const mode =
+          frontmatter.mode === "plan" || frontmatter.mode === "execute"
+            ? frontmatter.mode
+            : undefined;
+        const tools = parseToolList(frontmatter.tools);
+        const denyTools = parseToolList(frontmatter.disallowed_tools ?? frontmatter.deny_tools);
+        agents.set(name, {
+          name,
+          description: frontmatter.description ?? name,
+          ...(frontmatter.model ? { model: frontmatter.model } : {}),
+          ...(mode ? { mode } : {}),
+          ...(tools ? { tools } : {}),
+          ...(denyTools ? { denyTools } : {}),
+          ...(body ? { system: body } : {}),
+        });
+      } catch {
+        // Skip unreadable/corrupt agent file; continue scanning.
+      }
     }
   } catch {
     // No agents directory — that's fine.

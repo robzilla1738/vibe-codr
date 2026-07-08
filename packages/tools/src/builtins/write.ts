@@ -35,12 +35,12 @@ export const writeTool: ToolDefinition<z.infer<typeof Input>> = {
       // helper does ONE Bun.file().text() (Bun's native FD lifecycle is
       // already race-free against unlink), maps ENOENT → null, and propagates
       // every other error so a forbidden file is never silently overwritten.
-      const before = (await readTextIfExists(full)) ?? "";
-      // Stale-write guard: only for a file this session read earlier. The
-      // "" sentinel is "we just observed a fresh-create (or the file was
-      // concurrently deleted right before our read)"; either way, no prior
-      // mtime baseline to compare against, so the guard is a no-op.
-      if (before !== "" && freshness.assertFresh(ctx.sessionId, full).stale) {
+      const existing = await readTextIfExists(full);
+      const before = existing ?? "";
+      const existed = existing !== null;
+      // BUG-088: stale-write applies whenever the file exists and we have a
+      // prior read baseline — empty content is a real on-disk state, not "create".
+      if (existed && freshness.assertFresh(ctx.sessionId, full).stale) {
         return {
           output: `${path} changed on disk since you last read it (external edit?). Re-read it first, then re-apply your change.`,
           isError: true,
@@ -68,7 +68,7 @@ export const writeTool: ToolDefinition<z.infer<typeof Input>> = {
         added: diff.added,
         removed: diff.removed,
       });
-      const verb = before === "" ? "Created" : "Overwrote";
+      const verb = existed ? "Overwrote" : "Created";
       const diag = await ctx.diagnose?.(full).catch(() => undefined);
       return { output: `${verb} ${path} (+${diff.added} -${diff.removed})${diag ? `\n\n${diag}` : ""}` };
     });

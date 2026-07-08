@@ -1303,7 +1303,8 @@ export function App(props: { engine: EngineClient }) {
     new Promise((resolve, reject) => {
       try {
         const proc = Bun.spawn([command, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-        proc.exited.then(() => resolve()).catch(reject);
+        // BUG-080: surface exit code so a non-zero editor abort keeps the draft.
+        proc.exited.then((code) => resolve(code ?? 0)).catch(reject);
       } catch (err) {
         reject(err as Error);
       }

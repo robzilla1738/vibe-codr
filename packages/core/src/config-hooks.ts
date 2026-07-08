@@ -45,6 +45,8 @@ export interface ConfigHookRunners {
   /** Surface a misconfiguration (a hook with neither command nor url). Defaults
    * to `console.warn`; the engine wires it to its notice channel. */
   onWarn?: (message: string) => void;
+  /** Session/turn abort — hooks stop promptly on Esc (BUG-056). */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -68,7 +70,10 @@ export async function defaultExec(
   command: string,
   payloadJson: string,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<HookRunResult> {
+  // BUG-056: honor session abort in addition to the wall-clock timeout.
+  if (externalSignal?.aborted) return {};
   const proc = Bun.spawn(["sh", "-c", command], {
     stdin: new TextEncoder().encode(payloadJson),
     stdout: "pipe",
@@ -80,6 +85,11 @@ export async function defaultExec(
     killPromise ??= killTreeAndWait(proc.pid, 250);
     return killPromise;
   };
+  const onExternalAbort = () => {
+    void reap();
+    abort.abort();
+  };
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
   const timer = setTimeout(() => {
     void reap();
     abort.abort(); // cancel the read too, to unblock a read wedged on the pipe
@@ -93,19 +103,35 @@ export async function defaultExec(
     return parseHookOutput(text.trim());
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
     if (killPromise) await killPromise;
   }
 }
 
 /** Default HTTP runner: POST JSON, parse JSON response. */
-async function defaultPost(url: string, payload: unknown, timeoutMs: number): Promise<HookRunResult> {
+async function defaultPost(
+  url: string,
+  payload: unknown,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+  onWarn?: (msg: string) => void,
+): Promise<HookRunResult> {
+  if (externalSignal?.aborted) return {};
+  const signal =
+    externalSignal
+      ? AbortSignal.any([AbortSignal.timeout(timeoutMs), externalSignal])
+      : AbortSignal.timeout(timeoutMs);
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal,
   });
-  if (!res.ok) return {};
+  if (!res.ok) {
+    // BUG-060: non-2xx must not look like empty allow — surface to the operator.
+    onWarn?.(`HTTP hook ${url} returned HTTP ${res.status}`);
+    return {};
+  }
   // Cap the body a hook endpoint can return (the wall clock is already bounded by
   // the abort signal above; this bounds memory). A hook's directive is tiny JSON.
   const body = res.body
@@ -162,14 +188,29 @@ function matches(matcher: string | undefined, toolName: unknown): boolean {
  * Register every config hook as a HookBus handler. Returns nothing; handler
  * errors are isolated by the HookBus.
  */
+/** Events that never consume a hook response (observe-only). Default to async
+ * fire-and-forget so slow log hooks don't block turns (BUG-053).
+ * Note: `session.idle` is NOT here — it can return `{continue}`. */
+const OBSERVE_ONLY = new Set([
+  "session.start",
+  "session.end",
+  "step.finish",
+  "assistant.message",
+]);
+
 export function registerConfigHooks(
   hooks: HookConfig[],
   bus: HookBus,
   runners: ConfigHookRunners = {},
 ): void {
   const timeoutMs = runners.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const exec = runners.exec ?? ((cmd, json) => defaultExec(cmd, json, timeoutMs));
-  const post = runners.post ?? ((url, payload) => defaultPost(url, payload, timeoutMs));
+  const externalSignal = runners.signal;
+  const exec =
+    runners.exec ??
+    ((cmd, json) => defaultExec(cmd, json, timeoutMs, externalSignal));
+  const post =
+    runners.post ??
+    ((url, payload) => defaultPost(url, payload, timeoutMs, externalSignal, runners.onWarn));
   const onWarn = runners.onWarn ?? ((m: string) => console.warn(m));
 
   for (const hook of hooks) {
@@ -178,6 +219,12 @@ export function registerConfigHooks(
       // instead of dropping it silently, so a typo doesn't fail closed unseen.
       onWarn(`Ignoring "${hook.event}" hook: it has neither a command nor a url.`);
       continue;
+    }
+    // BUG-057: dual command+url silently dropped HTTP — warn so config is honest.
+    if (hook.command && hook.url) {
+      onWarn(
+        `"${hook.event}" hook has both command and url — only command runs; remove one to silence.`,
+      );
     }
     const handler = (async (payload: unknown) => {
       // Tool events: only fire when the matcher matches the tool name.
@@ -188,8 +235,9 @@ export function registerConfigHooks(
       const run = hook.command
         ? exec(hook.command, JSON.stringify(payload))
         : post(hook.url!, payload);
-      // Fire-and-forget hooks can't deny or rewrite; don't await them.
-      if (hook.async) {
+      // Fire-and-forget: explicit async OR observe-only events (BUG-053).
+      const fireAndForget = hook.async === true || (hook.async !== false && OBSERVE_ONLY.has(hook.event));
+      if (fireAndForget) {
         void run.catch(() => undefined);
         return undefined;
       }

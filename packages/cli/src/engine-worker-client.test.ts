@@ -140,6 +140,74 @@ parentPort.on("message", (m) => {
   await client.finalize();
 });
 
+test("mode-changed invalidates cache; snapshot() re-RPCs real commandNames (BUG-084)", async () => {
+  // After mode-changed clears #snapshotCache, a lazy re-RPC must refill it.
+  // Without that, refreshStatus would see PLACEHOLDER.commandNames=[] and wipe
+  // the slash-command cue; busy:false would also lie about mid-turn state.
+  const path = writeStubWorker(`
+let snaps = 0;
+parentPort.on("message", (m) => {
+  if (!m.__req) return;
+  if (m.op === "snapshot") {
+    snaps += 1;
+    const n = snaps;
+    parentPort.postMessage({
+      __resp: m.__req,
+      ok: true,
+      value: {
+        sessionId: "s",
+        model: "m",
+        mode: n === 1 ? "execute" : "plan",
+        approvalMode: "ask",
+        goal: null,
+        history: [],
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+        tasks: [],
+        busy: n > 1,
+        theme: "default",
+        accentColor: "",
+        commandNames: n === 1 ? ["help"] : ["help", "status", "diff"],
+      },
+    });
+    return;
+  }
+  parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
+});
+// After hydrate, simulate a live mode change (what set-mode emits).
+setTimeout(() => {
+  parentPort.postMessage({ type: "mode-changed", mode: "plan" });
+}, 30);
+`);
+  const client = await createWorkerEngineClient(makeOpts(path, {}));
+  // First paint is real (hydrate).
+  expect(client.snapshot().commandNames).toEqual(["help"]);
+  expect(client.snapshot().busy).toBe(false);
+
+  // Wait for the mode-changed event to land and invalidate the cache.
+  let sawMode = false;
+  for await (const e of client.events()) {
+    if (e.type === "mode-changed") {
+      sawMode = true;
+      break;
+    }
+  }
+  expect(sawMode).toBe(true);
+
+  // Cache miss → re-RPC fires; after the worker replies, snapshot is real again.
+  let snap = client.snapshot(); // triggers re-RPC (may still be placeholder briefly)
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 15));
+    snap = client.snapshot();
+    if (snap.commandNames?.includes("status") && snap.busy === true) break;
+  }
+  expect(snap.mode).toBe("plan");
+  expect(snap.busy).toBe(true);
+  expect(snap.commandNames).toEqual(["help", "status", "diff"]);
+  // Must NOT be stuck on the empty placeholder.
+  expect(snap.commandNames.length).toBeGreaterThan(0);
+  await client.finalize();
+});
+
 test("RPC error reply rejects the promise", async () => {
   const path = writeStubWorker(`
 parentPort.on("message", (m) => {

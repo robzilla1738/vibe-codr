@@ -103,6 +103,8 @@ export class WorkerEngineClient implements EngineClient {
   #closed = false;
   #onFatal?: (message: string) => void;
   #snapshotCache: EngineSnapshot | undefined;
+  /** True while a snapshot RPC is in flight (dedupes concurrent cache misses). */
+  #snapshotPending = false;
   /** Resolves once the first real snapshot is cached (BUG-084). */
   #ready: Promise<void>;
   #resolveReady!: () => void;
@@ -139,17 +141,27 @@ export class WorkerEngineClient implements EngineClient {
       const t = setTimeout(resolve, 15_000);
       (t as { unref?: () => void }).unref?.();
     });
-    void Promise.race([
-      this.#rpc<EngineSnapshot>("snapshot").then((s) => {
-        this.#snapshotCache = s;
-      }),
-      timeout,
-    ])
+    void Promise.race([this.#fetchSnapshot(), timeout])
       .catch(() => {
         // Worker died before first snapshot — still resolve ready.
       })
       .finally(() => {
         this.#resolveReady();
+      });
+  }
+
+  /** Fire a snapshot RPC and refresh `#snapshotCache` (shared by hydrate + miss). */
+  #fetchSnapshot(): Promise<EngineSnapshot | undefined> {
+    if (this.#closed) return Promise.resolve(undefined);
+    this.#snapshotPending = true;
+    return this.#rpc<EngineSnapshot>("snapshot")
+      .then((s) => {
+        this.#snapshotCache = s;
+        return s;
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.#snapshotPending = false;
       });
   }
 
@@ -171,10 +183,10 @@ export class WorkerEngineClient implements EngineClient {
       return;
     }
     if (isInboundEvent(msg)) {
-      // Invalidate the one-shot snapshot cache when live state changes so a
-      // later snapshot() re-RPCs (commandNames, approvalMode, etc. stay fresh).
-      // Mode/model/goal for the chip already ride events; this is for anything
-      // that still reads snapshot().
+      // Live state changed — refresh the snapshot cache via re-RPC so
+      // refreshStatus() still sees real commandNames/busy (not PLACEHOLDER).
+      // Keep the last-good cache until the new RPC lands so we never wipe the
+      // slash cue mid-event. Mode/model chips also ride the events themselves.
       if (
         msg.type === "mode-changed" ||
         msg.type === "approvals-changed" ||
@@ -182,7 +194,7 @@ export class WorkerEngineClient implements EngineClient {
         msg.type === "goal-changed" ||
         msg.type === "session-start"
       ) {
-        this.#snapshotCache = undefined;
+        if (!this.#snapshotPending) void this.#fetchSnapshot();
       }
       this.#events.push(msg);
     }
@@ -228,11 +240,14 @@ export class WorkerEngineClient implements EngineClient {
   }
 
   snapshot(): EngineSnapshot {
-    // After `ready()` the cache holds the real engine snapshot (BUG-084).
-    // A cold call before hydrate still returns a type-correct placeholder so
-    // unit tests that skip ready() don't throw on first paint fields.
-    if (this.#snapshotCache) return this.#snapshotCache;
-    return PLACEHOLDER_SNAPSHOT;
+    // Prefer the cached snapshot (kept warm across mode/model/goal events via
+    // re-RPC in #onMessage). Cache miss (pre-hydrate or after a failed RPC):
+    // fire a fetch so the next call is real — never permanently stuck on
+    // PLACEHOLDER after a state change (BUG-084 regression).
+    if (!this.#snapshotCache && !this.#closed && !this.#snapshotPending) {
+      void this.#fetchSnapshot();
+    }
+    return this.#snapshotCache ?? PLACEHOLDER_SNAPSHOT;
   }
 
   listModels = (): Promise<ModelSummary[]> => this.#rpc("listModels");

@@ -4,6 +4,15 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — worker snapshot re-RPC after mode/model changes (BUG-084)
+
+- **After `mode-changed` / `model-changed` / etc., `WorkerEngineClient.snapshot()`
+  no longer stuck on the empty placeholder.** Invalidation used to clear the
+  cache and never re-fetch, so `refreshStatus()` wiped slash `commandNames` and
+  mid-turn `busy` looked idle. State-change events now re-RPC; the last-good
+  cache is kept until the new snapshot lands. Regression covers mode-changed →
+  real `commandNames` + `busy`.
+
 ### Fixed — full inventory close-out (BUG-051–096, 43 defects)
 
 Closed the open bug ledger end-to-end with paired regressions. Root `bugs.md`

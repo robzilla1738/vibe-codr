@@ -67,6 +67,36 @@ export function commandsForUiMode(target: UiMode): EngineCommand[] {
 }
 
 /**
+ * Shift+Tab cycle action for the TUI. When a plan card is waiting, bare
+ * plan→execute/yolo is refused by the engine (no mode-changed, no approval).
+ * In that case we only ping set-mode (so the engine can notice) and return
+ * `optimistic: null` — the chip and approvals must NOT flip, or the chip lies
+ * and a YOLO cycle would set approvalMode=auto while still planning (so the
+ * next Enter would inherit unattended YOLO).
+ */
+export function cycleModeAction(
+  cur: UiMode,
+  opts: { planPending?: boolean } = {},
+): {
+  commands: EngineCommand[];
+  /** Apply to local mirrors when non-null; null = keep current chip/state. */
+  optimistic: { mode: "plan" | "execute"; approvals: "ask" | "auto"; uiMode: UiMode } | null;
+} {
+  const target = nextUiMode(cur);
+  if (opts.planPending && cur === "plan" && target !== "plan") {
+    return {
+      commands: [{ type: "set-mode", mode: "execute" }],
+      optimistic: null,
+    };
+  }
+  const state = engineStateForUiMode(target);
+  return {
+    commands: commandsForUiMode(target),
+    optimistic: { mode: state.mode, approvals: state.approvals, uiMode: target },
+  };
+}
+
+/**
  * The mode color — shown on the input's mode chip (the `ASK`/`PLAN`/`YOLO` title
  * on its top border), and the only mode-driven hue in the UI. Fixed (not
  * theme-derived) so the mode reads identically everywhere: ASK (execute, every

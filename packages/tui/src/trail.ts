@@ -1,16 +1,18 @@
 /**
- * The sidebar trail's pure core: one turn's reasoning stream + tool-activity
- * lines, appended INCREMENTALLY — only new bytes are ever split, never the
- * whole log (the per-token full-buffer re-split was a main-thread hot spot in
- * the freeze). Closed lines are trimmed; blank runs collapse to one "" spacer
- * (rendered as a paragraph break); `open` is the still-streaming line, shown
- * live and re-joined by the next chunk. Signal writes stay in app.tsx — this
- * holds only the line state, so it is directly unit-testable.
+ * The sidebar Thinking trail's pure core: one turn's **reasoning** stream,
+ * appended INCREMENTALLY — only new bytes are ever split, never the whole log
+ * (the per-token full-buffer re-split was a main-thread hot spot in the freeze).
+ * Tool activity lives only in the chat transcript (ToolBlockView), so this
+ * never mixes `toolLabel` lines — that dual channel was redundant clutter.
+ *
+ * Closed lines are trimmed; blank runs collapse to one "" spacer (rendered as
+ * a paragraph break); `open` is the still-streaming line, shown live and
+ * re-joined by the next chunk. Signal writes stay in app.tsx — this holds only
+ * the line state, so it is directly unit-testable.
  */
 export class Trail {
   #lines: string[] = [];
   #open = "";
-  #lastWasActivity = false;
   readonly #max: number;
 
   constructor(maxLines = 512) {
@@ -31,25 +33,12 @@ export class Trail {
 
   /** Append raw reasoning bytes — splits ONLY this chunk. */
   append(chunk: string): void {
-    if (chunk) this.#lastWasActivity = false;
     const segs = chunk.split("\n");
     this.#open += segs[0] ?? "";
     for (let i = 1; i < segs.length; i++) {
       this.#closeOpen();
       this.#open = segs[i] ?? "";
     }
-    this.#cap();
-  }
-
-  /** Record a whole line of its own (a tool-activity label). */
-  pushLine(line: string): void {
-    // Between consecutive activity lines there is no streamed blank to honor —
-    // an empty `open` there must not become a paragraph spacer (it double-spaced
-    // the whole trail for non-reasoning models, which emit only activity lines).
-    if (this.#lastWasActivity && !this.#open.trim()) this.#open = "";
-    else this.#closeOpen();
-    this.#lines.push(line);
-    this.#lastWasActivity = true;
     this.#cap();
   }
 
@@ -64,7 +53,6 @@ export class Trail {
   reset(): void {
     this.#lines = [];
     this.#open = "";
-    this.#lastWasActivity = false;
   }
 }
 

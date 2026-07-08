@@ -157,20 +157,16 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
   const planFile = await Bun.file(join(globalStateDir(cwd), "plans", `${sessionId}.md`)).text();
   expect(planFile).toContain("Refactor the loader");
 
-  // Approve: switch to execute, then run a turn — the model's prompt carries the
-  // handoff directive so it doesn't read its own present_plan "stop here" as halt.
-  engine.send({ type: "set-mode", mode: "execute" });
-  engine.send({ type: "submit-prompt", text: "go" });
+  // Approve: /execute-style start:true begins the handoff turn immediately.
+  engine.send({ type: "set-mode", mode: "execute", start: true });
   await engine.whenIdle();
   engine.send({ type: "shutdown" });
   await collector;
 
   expect(prompts.at(-1)).toContain("approved by the user");
-  // Approving by mode-switch is no longer silent: the user is told the plan is
-  // armed and that their NEXT message starts it (unlike the card's immediate run).
   expect(
     events.some(
-      (e) => e.type === "notice" && "message" in e && e.message.includes("Plan approved"),
+      (e) => e.type === "notice" && "message" in e && e.message.includes("Executing the approved plan"),
     ),
   ).toBe(true);
 

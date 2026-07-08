@@ -1144,7 +1144,10 @@ export class OrchestratorRunner {
     // Both `check:true` and `verify:true` run the real green-gate FIRST when a
     // profile exists — a red tree fails the attempt on machine truth without
     // spending an LLM review call. `verify` additionally gets the diff review.
-    const wantsGate = (spec.check || spec.verify) && !!profile;
+    // Explicit check/verify with NO recon profile is unsatisfiable — fail
+    // honestly (same message as empty-profile BUG-047) rather than completing
+    // with zero machine verification.
+    const wantsGate = !!(spec.check || spec.verify) && !!profile;
     const startedAt = Date.now();
     // Journal the task's start (best-effort — journaling never fails a run).
     this.#journal({
@@ -1175,6 +1178,21 @@ export class OrchestratorRunner {
       this.#recordFinished(spec, result);
       return result;
     };
+
+    // `check:true` without a profile used to fall through to `completed` with
+    // zero machine verification (wantsGate is false when !profile). Fail
+    // honestly. `verify:true` alone still runs the LLM review without a gate
+    // when recon hasn't landed yet.
+    if (spec.check && !profile) {
+      return settle({
+        id: spec.id,
+        objective: spec.objective,
+        outcome: "failed",
+        output:
+          "Repo profile unavailable — task not verified. Wait for recon or drop `check`.",
+        attempts: 0,
+      });
+    }
 
     while (attempts < maxAttempts) {
       attempts++;
@@ -1901,7 +1919,13 @@ function firstLine(text: string): string {
  * shipping rejected work (false positive).
  */
 export function isReviewClean(out: string): boolean {
-  return /(^|\n)\s*REVIEW-CLEAN\b/.test(out);
+  // Require REVIEW-CLEAN as a line-start token (not a bare substring — "NOT
+  // REVIEW-CLEAN" must fail). Also reject when any `path:line` issue line is
+  // present: a sloppy reviewer that lists findings then ends with REVIEW-CLEAN
+  // must not pass.
+  if (!/(^|\n)\s*REVIEW-CLEAN\b/.test(out)) return false;
+  if (/(^|\n)\s*\S[^:\n]*:\d+\s*[—\-–]/.test(out)) return false;
+  return true;
 }
 
 /** One best-of-N ensemble attempt's outcome (see #runEnsembleAttempt). */

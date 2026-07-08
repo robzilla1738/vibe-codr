@@ -28,30 +28,18 @@ test("incremental append equals the full rebuild for arbitrary delta splits", ()
   }
 });
 
-test("activity lines interleave chronologically and close a streaming line", () => {
+test("reasoning paragraphs keep a single blank spacer between blocks", () => {
   const t = new Trail();
-  t.append("thinking about the fetch");
-  t.pushLine('◈ search "World Cup"');
-  t.append("got results\n");
-  expect(t.snapshot()).toEqual(["thinking about the fetch", '◈ search "World Cup"', "got results"]);
+  t.append("first thought\n\n\nsecond thought\n");
+  expect(t.snapshot()).toEqual(["first thought", "", "second thought"]);
 });
 
-test("consecutive activity lines are single-spaced (non-reasoning model)", () => {
+test("open streaming line is visible in the snapshot until a newline closes it", () => {
   const t = new Trail();
-  t.pushLine("→ read a.ts");
-  t.pushLine("→ edit a.ts");
-  t.pushLine("$ bun test");
-  expect(t.snapshot()).toEqual(["→ read a.ts", "→ edit a.ts", "$ bun test"]);
-});
-
-test("a reasoning paragraph still gets its break before the next activity line", () => {
-  const t = new Trail();
-  t.append("thought about it\n");
-  t.pushLine("→ read a.ts");
-  t.pushLine("→ edit a.ts");
-  t.append("more thinking\n");
-  // The streamed newline's paragraph break survives; activity lines stay tight.
-  expect(t.snapshot()).toEqual(["thought about it", "", "→ read a.ts", "→ edit a.ts", "more thinking"]);
+  t.append("half a line");
+  expect(t.snapshot()).toEqual(["half a line"]);
+  t.append(" continues\n");
+  expect(t.snapshot()).toEqual(["half a line continues"]);
 });
 
 test("the trail is capped at maxLines, keeping the tail", () => {

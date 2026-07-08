@@ -181,7 +181,9 @@ export class PermissionChecker {
     action: PermissionRule["action"];
   }[];
   #resolve: PermissionResolver;
-  #defaultAction: PermissionRule["action"];
+  /** Static action, or a live getter so mid-turn `/approvals` / Shift+Tab
+   * YOLO↔ASK is honored for subsequent tools in the same turn. */
+  #defaultAction: () => PermissionRule["action"];
   #cwd: string;
   /** `#cwd` with its OWN symlinks resolved — the base for making a symlink-
    * dereferenced target relative. Using raw `#cwd` would leave `relative()` dirty
@@ -192,7 +194,7 @@ export class PermissionChecker {
   constructor(
     rules: PermissionRule[],
     resolver?: PermissionResolver,
-    defaultAction: PermissionRule["action"] = "allow",
+    defaultAction: PermissionRule["action"] | (() => PermissionRule["action"]) = "allow",
     // Base for canonicalizing path-scoped rules (the session cwd `edit`/`write`
     // resolve against); defaults to the process cwd for the common single-root run.
     cwd: string = process.cwd(),
@@ -209,7 +211,7 @@ export class PermissionChecker {
       action: r.action,
     }));
     this.#resolve = resolver ?? (() => true);
-    this.#defaultAction = defaultAction;
+    this.#defaultAction = typeof defaultAction === "function" ? defaultAction : () => defaultAction;
     this.#cwd = cwd;
     this.#realCwd = (() => {
       try {
@@ -297,7 +299,7 @@ export class PermissionChecker {
       : (decideAllowAsk(applicable.filter(isScoped)) ??
         decideAllowAsk(applicable.filter((r) => !isScoped(r))) ??
         opts.fallback ??
-        this.#defaultAction);
+        this.#defaultAction());
     // Whether the ask came from an EXPLICIT rule (a human-authored gate) vs the
     // default/fallback — the resolver treats the two differently when no human is
     // present (an explicit gate fails closed; a frictionless default auto-allows).

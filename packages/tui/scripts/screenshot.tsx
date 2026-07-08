@@ -465,8 +465,8 @@ const SCENES: SceneDef[] = [
     engine: { usage: U_CACHED, git: { branch: "main", dirty: 2, ahead: 0, behind: 0, worktree: false } },
     async setup({ push, waitFor }) {
       // The WIDE-terminal layout: Tasks, the live Subagents fan-out (each child
-      // with its activity line), and the Thinking trail move to the right
-      // sidebar, leaving the chat column to the conversation.
+      // with its activity line), and the reasoning-only Thinking panel move to
+      // the right sidebar; tool rows stay in the chat column.
       push({ type: "user-message", sessionId: "s", text: "Audit the error handling across the workspace and fix what you find." } as UIEvent);
       push({
         type: "tasks-updated",

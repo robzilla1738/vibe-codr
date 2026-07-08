@@ -359,7 +359,19 @@ test("groupIntoTurns puts a leading (pre-user) block in a node-less preamble tur
   expect(turns[1]!.user?.text).toBe("q1");
 });
 
-test("collapsedHint reads diffs, search results, and line counts", () => {
+test("collapsedHint reads errors, diffs, search results, and line counts", () => {
+  expect(
+    collapsedHint({
+      kind: "tool",
+      id: 0,
+      label: "$ bun test",
+      output: ["fail"],
+      collapsed: true,
+      isDiff: false,
+      isError: true,
+      done: true,
+    }),
+  ).toBe("error");
   expect(collapsedHint({ kind: "tool", id: 0, label: "x", output: [], collapsed: true, isDiff: true, isError: false, done: true })).toBe("diff");
   const search: Extract<Block, { kind: "tool" }> = {
     kind: "tool", id: 1, label: "◈ search foo", output: ["1. a", "2. b", "notes"], collapsed: true, isDiff: false, isError: false, done: true,

@@ -91,7 +91,7 @@ import {
 } from "./rich-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
 import { formatUsage, TASK_GLYPH, windowTasks } from "./headless.ts";
-import { commandsForUiMode, deriveUiMode, engineStateForUiMode, modeColor, nextUiMode } from "./modes.ts";
+import { cycleModeAction, deriveUiMode, modeColor } from "./modes.ts";
 import { cleanupClipboardTempDir, readClipboardImage } from "./clipboard-image.ts";
 import { composeInEditor, type EditorSpawn } from "./editor-compose.ts";
 import { brandSpans, rainbow } from "./gradient.ts";
@@ -271,17 +271,15 @@ export function App(props: { engine: EngineClient }) {
   // transcript row (the moment the model acts) and at turn end. Headless
   // parity: `-p` prints reasoning with --show-reasoning.
   const [reasoningLines, setReasoningLines] = createSignal<string[]>([]);
-  // The sidebar's TRAIL: the whole turn's reasoning AND tool activity as one
+  // The sidebar's Thinking trail: the whole turn's **reasoning** as one
   // continuous, persistent stream. Unlike `reasoningLines` (the transient
   // inline preview, cleared every time a burst lands as its `✻ thought` row),
   // this accumulates across bursts and survives past turn end — so the sidebar
   // shows the thought process, not a line that vanishes as each action starts.
-  // Reset only when the NEXT turn begins. Activity lines (tool icon + action)
-  // interleave chronologically, so a non-reasoning model still shows a live
-  // trail instead of an empty panel; `trailKind` picks the panel header
-  // ("Thinking" once any reasoning exists this turn, "Activity" otherwise).
+  // Reset only when the NEXT turn begins. Tool work lives ONLY in the chat
+  // transcript (ToolBlockView) — never mirrored here as an "Activity" feed
+  // (that dual channel was redundant clutter; OpenCode keeps tools in-thread).
   const [thoughtLog, setThoughtLog] = createSignal<string[]>([]);
-  const [trailKind, setTrailKind] = createSignal<"none" | "activity" | "reasoning">("none");
   // Trail backing state — component scope (not the event-loop closure) so the
   // /clear reset path can wipe it along with the signals. `Trail` (trail.ts)
   // owns the line state and appends incrementally — only NEW bytes are ever
@@ -1110,15 +1108,7 @@ export function App(props: { engine: EngineClient }) {
   // Toggle a tool/diff block's collapsed state (the click-to-expand handler).
   const toggle = (id: number) => apply({ type: "toggle", id });
 
-  // ── The sidebar trail + `✻ thought` burst plumbing ──────────────────────────
-  /** A tool fired — record `{icon} {action}` in the trail so a model that
-   * emits no reasoning still shows a live activity stream in the panel. */
-  const pushActivity = (label: string) => {
-    trail.pushLine(label);
-    if (trailKind() === "none") setTrailKind("activity");
-    trailDirty = true;
-    scheduleFlush();
-  };
+  // ── The sidebar Thinking trail + `✻ thought` burst plumbing ─────────────────
   /** Buffer a reasoning token — O(1); the trail/preview land once per frame. */
   const pushReasoning = (delta: string) => {
     if (!reasoningBuf && !pendingReasoning) thinkingStartedAt = Date.now();
@@ -1138,7 +1128,6 @@ export function App(props: { engine: EngineClient }) {
       reasoningTailBuf = (reasoningTailBuf + chunk).slice(-8000);
       trail.append(chunk);
       trailDirty = true;
-      if (trailKind() !== "reasoning") setTrailKind("reasoning");
       setReasoningLines(
         reasoningTailBuf
           .split("\n")
@@ -1178,7 +1167,6 @@ export function App(props: { engine: EngineClient }) {
     reasoningBuf = "";
     reasoningTailBuf = "";
     if (thoughtLog().length > 0) setThoughtLog([]);
-    if (trailKind() !== "none") setTrailKind("none");
   };
 
   // Refresh the header chrome + rail projections whenever live status changes.
@@ -1240,14 +1228,17 @@ export function App(props: { engine: EngineClient }) {
   // Shift+Tab cycles plan → execute → yolo. `useKeyboard` is a global handler,
   // so it fires even while the input is focused; Shift+Tab arrives as the key
   // name "tab" with `shift` set. The engine emits mode/approvals events back,
-  // which refresh the header.
+  // which refresh the header. With a live plan card, bare leave-plan is refused
+  // engine-side — do not optimistically flip the chip or set-approvals (that
+  // made the chip lie and could set YOLO approvals while still planning).
   const cycleMode = () => {
-    const target = nextUiMode(uiMode());
-    for (const cmd of commandsForUiMode(target)) props.engine.send(cmd);
-    const next = engineStateForUiMode(target);
-    mode = next.mode;
-    approvals = next.approvals;
-    setUiMode(target);
+    const action = cycleModeAction(uiMode(), { planPending: !!plan() });
+    for (const cmd of action.commands) props.engine.send(cmd);
+    if (action.optimistic) {
+      mode = action.optimistic.mode;
+      approvals = action.optimistic.approvals;
+      setUiMode(action.optimistic.uiMode);
+    }
   };
   // Graceful exit — the SAME teardown the `/exit` command runs (await finalize:
   // session digest, background-job reap, MCP close — then exit; OpenTUI's own
@@ -1595,11 +1586,10 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "tool-call-started":
             if (event.subagentId) break; // subagent tools don't enter the transcript
-            // The thinking that led to this call lands just above it.
+            // The thinking that led to this call lands just above it in the
+            // transcript. Tool rows themselves are the sole live work surface
+            // (no sidebar Activity mirror).
             commitThinking();
-            // And the action itself joins the sidebar trail, chronological with
-            // the reasoning around it — a non-reasoning model's whole trail.
-            pushActivity(toolLabel(event.toolName, event.input));
             enqueue({
               type: "tool-start",
               toolCallId: event.toolCallId,
@@ -2954,11 +2944,12 @@ export function App(props: { engine: EngineClient }) {
       </box>
       {/* Right sidebar (wide terminals) — a SESSION card on top (wordmark ·
           dir · model · git · ctx · goal), then Tasks, then the live Subagents
-          fan-out, then the turn's THOUGHT LOG filling the rest. Each section is
-          the SAME block language as the chat
-          column (filled panel surface + thin left rail + identical padding),
-          with the same uniform 1-row gap between blocks — the sidebar reads as
-          one more column of the same material, not different chrome. */}
+          fan-out, then the turn's reasoning-only Thinking panel filling the
+          rest when the model thinks. Tool activity stays in the chat column
+          only. Each section is the SAME block language as the chat column
+          (filled panel surface + thin left rail + identical padding), with
+          the same uniform 1-row gap between blocks — the sidebar reads as one
+          more column of the same material, not different chrome. */}
       <Show when={sidebarOn()}>
         <box flexDirection="column" width={SIDEBAR_W} flexShrink={0} padding={1}>
           {/* One reserved row mirrors the chat column's context line, so the
@@ -3007,10 +2998,19 @@ export function App(props: { engine: EngineClient }) {
             </box>
           </Rail>
           <Show when={tasks().length > 0}>
-            <Rail color={palette().gutter} marginTop={1}>
+            {/* Grow when this is the last content block (no Subagents, no
+                Thinking) so bottom still lands on the input without inventing
+                an empty Activity panel. */}
+            <Rail
+              color={palette().gutter}
+              marginTop={1}
+              grow={thoughtLog().length === 0 && subagents().length === 0}
+            >
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"
+                flexGrow={thoughtLog().length === 0 && subagents().length === 0 ? 1 : 0}
+                flexShrink={1}
                 paddingTop={1}
                 paddingBottom={1}
                 paddingLeft={2}
@@ -3056,10 +3056,13 @@ export function App(props: { engine: EngineClient }) {
               once finished — its one-line result glimpse. The inline chat-column
               panel hides while the sidebar hosts this (exactly like Tasks). */}
           <Show when={subagents().length > 0}>
-            <Rail color={palette().gutter} marginTop={1}>
+            {/* Grow when Thinking is absent so the fan-out is the stretch block. */}
+            <Rail color={palette().gutter} marginTop={1} grow={thoughtLog().length === 0}>
               <box
                 backgroundColor={palette().panel}
                 flexDirection="column"
+                flexGrow={thoughtLog().length === 0 ? 1 : 0}
+                flexShrink={1}
                 paddingTop={1}
                 paddingBottom={1}
                 paddingLeft={2}
@@ -3136,14 +3139,15 @@ export function App(props: { engine: EngineClient }) {
               </box>
             </Rail>
           </Show>
-          {/* The thought log — the whole turn's reasoning as one continuous,
-              word-wrapped stream in a bottom-sticky scrollbox (newest thought
-              always in view, history scrollable). It does NOT clear when a
-              burst lands as a transcript row, and it lingers after the turn
-              ends — the thought process stays readable until the next message
-              is sent. The block GROWS to fill the rows under the Tasks panel,
-              so the sidebar's bottom lines up with the chat column. */}
-          <Show when={working() || thoughtLog().length > 0}>
+          {/* Reasoning-only Thinking — the whole turn's chain-of-thought as one
+              continuous, word-wrapped stream in a bottom-sticky scrollbox
+              (newest thought always in view, history scrollable). Hidden when
+              the model emits no reasoning (tool work is already in the
+              transcript). Does NOT clear when a burst lands as a transcript
+              row; lingers until the next user message. GROWS to fill the rows
+              under Tasks/Subagents so the sidebar bottom lines up with the
+              chat column. */}
+          <Show when={thoughtLog().length > 0}>
             {/* The session card is always above, so this is never the first
                 block — the uniform 1-row inter-block gap applies. */}
             <Rail color={palette().gutter} marginTop={1} grow>
@@ -3160,9 +3164,7 @@ export function App(props: { engine: EngineClient }) {
                 <box flexDirection="row" flexShrink={0}>
                   <text flexShrink={0} fg={working() ? rainbow(tick()) : palette().gutter}>{"✻ "}</text>
                   <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                    {/* "Activity" when the trail is only tool actions (a
-                        non-reasoning model) — honest labelling either way. */}
-                    {trailKind() === "activity" ? "Activity" : "Thinking"}
+                    Thinking
                   </text>
                 </box>
                 <scrollbox
@@ -3190,9 +3192,17 @@ export function App(props: { engine: EngineClient }) {
               </box>
             </Rail>
           </Show>
+          {/* Session-only stretch: working turn with no Tasks/Subagents/
+              Thinking still needs a grow Rail so bottom alignment holds
+              without inventing an Activity feed. */}
+          <Show when={thoughtLog().length === 0 && tasks().length === 0 && subagents().length === 0}>
+            <Rail color={palette().gutter} marginTop={1} grow>
+              <box backgroundColor={palette().panel} flexGrow={1} flexShrink={1} />
+            </Rail>
+          </Show>
           {/* Reserve the chat column's under-input rows (the status bar's
               marginTop gap + the status row, +1 when the hints wrap to their
-              own line) so the growing Thinking block's BOTTOM edge lands
+              own line) so the growing last block's BOTTOM edge lands
               exactly on the input block's bottom edge — not on the terminal's
               bottom padding two rows below it. */}
           <box height={2 + (showHints() && !footerFits() ? 1 : 0)} flexShrink={0} />
@@ -3451,10 +3461,12 @@ function CodeBlock(props: {
     return l.length ? l : [""];
   };
   const w = () => Math.max(12, (props.width ?? 96) - 2);
+  // Inset elevated surface + quiet language tag (gutter tone — softer than
+  // body muted so the tag reads as chrome, not code).
   return (
     <box flexDirection="column" flexShrink={0} backgroundColor={p.elevated} paddingLeft={1} paddingRight={1}>
       <Show when={props.block().lang}>
-        <text fg={p.muted}>{props.block().lang}</text>
+        <text fg={p.gutter}>{props.block().lang}</text>
       </Show>
       <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{truncateWidth(l, w()) || " "}</text>}</For>
     </box>

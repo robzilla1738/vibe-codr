@@ -4,6 +4,45 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Changed — sidebar is reasoning-only; tool work stays in the chat
+
+- **No more redundant “Activity” trail in the wide-terminal sidebar.** Tool
+  steps already render as scannable rows in the transcript (icon + summary,
+  expand for output/diff/sources). Mirroring the same labels into a second
+  sidebar log was clutter. The sidebar now hosts session vitals, **Tasks**,
+  **Subagents**, and a **Thinking** panel only when the model emits
+  reasoning — never a duplicate tool-action feed.
+- **Bottom alignment is preserved without empty chrome:** when Thinking is
+  absent, the last real block (Tasks → Subagents → rare session filler)
+  grows so the sidebar still spans the chat column height.
+- **Tool rows are more scannable (opencode-style):** absolute paths collapse
+  to `~/…` and long paths prefer a readable tail (`…/pkg/src/file.ts`);
+  failed calls show a collapsed **`error`** meta instead of a line count;
+  fenced code language tags use the quieter gutter tone.
+
+### Fixed — plan approval, modes, and post-turn verify are contract-honest
+
+- **Bare mode switches no longer approve a waiting plan.** Shift+Tab /
+  `set-mode` without `start:true` stays in plan and notices how to approve
+  (plan-card Enter or `/execute`). Only an explicit start runs
+  `#approvePlan(true)` and begins implementation.
+- **Quiet YOLO is ignored while a plan is waiting** so cycling past YOLO
+  after a refused bare set-mode cannot accidentally leave unattended
+  approvals armed for the next accept.
+- **TUI mode chip stays honest with a live plan:** `cycleModeAction` does
+  not optimistically flip the chip or flip approvals when approval is
+  still required.
+- **Engine-owned fix turns (gate / dirty-review / verify) hold plan and
+  goal continuations** via `#fixPending` until the fix job starts —
+  a green parent cannot advance the chain while a fix is still queued,
+  and a held dirty-review no longer theater-continues before the fix
+  runs.
+- **User Esc/stop clears pending fix state** so a stopped turn does not
+  leave a zombie fix job that steals the next turn.
+- **Plan hard-deny in the toolset** remains absolute in live plan mode;
+  mutation recording and live approval checks stay aligned with the
+  permission engine.
+
 ### Fixed — file freshness is per-tree, no LRU cap, no module-level singleton
 
 - **The stale-write guard is now scoped to the session tree, not a global

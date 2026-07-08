@@ -143,7 +143,7 @@ and drills into rich submenus (a searchable model picker, clickable toggles).
 |---|---|
 | ![orange accent](docs/screenshots/18-orange.png) | ![accent swatches](docs/screenshots/17-accent.png) |
 
-| Wide terminal — a session card (the block wordmark over dir · model · git · usage), Tasks, the live Subagents fan-out, and the Thinking trail move to a right sidebar |
+| Wide terminal — a session card (the block wordmark over dir · model · git · usage), Tasks, Subagents, and reasoning-only Thinking move to a right sidebar (tool work stays in the chat) |
 |---|
 | ![sidebar](docs/screenshots/20-sidebar.png) |
 
@@ -416,13 +416,16 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   (spinner while it runs, ✓ when done, a right-aligned elapsed) with a live
   **activity line** under a running child ("· rg \"catch\" src/") that folds
   into its **result glimpse** ("↳ 3 swallowed errors") once it finishes — and a
-  persistent **Thinking block**: the whole turn's reasoning as one scrolling
-  stream (it survives past turn end instead of vanishing as each action
-  starts), with **tool actions interleaved** so a model that doesn't emit
-  reasoning still shows a live **Activity** trail while it searches and
-  fetches. All are drawn as the same filled panel blocks as the chat column,
-  spanning exactly its height (top block level with the transcript, bottom
-  edge level with the input); on narrow panes everything falls back inline. The transcript itself **stays fast at any length** — only
+  **reasoning-only Thinking block** when the model thinks: the whole turn's
+  chain-of-thought as one scrolling stream (it survives past turn end instead
+  of vanishing as each action starts). **Tool work is not mirrored in the
+  sidebar** — scannable tool rows (icon + short path/command, expand for
+  output/diff) live only in the chat transcript, so the sidebar stays
+  value-dense (session · tasks · subagents · thinking) without a second
+  activity log. All are drawn as the same filled panel blocks as the chat
+  column, spanning exactly its height (top block level with the transcript,
+  bottom edge level with the input); on narrow panes everything falls back
+  inline. The transcript itself **stays fast at any length** — only
   the newest turns are laid out, older ones fold behind a tappable
   **`▸ N earlier turns`** row (full history is always kept for `/export` and
   `--resume`), and heavy event bursts paint at most once per frame, so a
@@ -477,9 +480,10 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   plan's checklist — a plan longer than 12 steps seeds a catch-all tail task for
   the remainder rather than silently dropping steps), **Ctrl+Y** accepts and runs
   in **yolo** (unattended), **typing**
-  revises the plan, **Esc** keeps planning. Approving by mode-switch
-  (`/execute` or Shift+Tab) arms the same handoff — the transcript says so, and
-  your next message starts implementation. **Execute** allows
+  revises the plan, **Esc** keeps planning. **Only an explicit start approves** —
+  plan-card **Enter** or **`/execute`** begins implementation; **Shift+Tab** alone
+  does **not** silently accept a waiting plan (the chip stays honest and the
+  engine notices how to approve). **Execute** allows
   edits/commands, each gated by a glob-based allow/deny/ask **permission layer**
   that can also scope by CONTENT — `{"tool":"bash","match":"git push*",
   "action":"deny"}` — with deny-beats-allow semantics; network tools honor

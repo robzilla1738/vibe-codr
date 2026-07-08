@@ -62,6 +62,21 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
    * this side-channel to mark the call correctly in the UI.
    */
   recordToolResult?: (toolCallId: string, isError: boolean) => void;
+  /**
+   * Mark the current turn as having successfully mutated the workspace (or
+   * other non-readOnly side effects). Called only AFTER a non-readOnly tool
+   * executes successfully — not on tool-call intent, permission deny, or
+   * error — so green-gate / verify do not fire for denied-only turns. Also
+   * covers session-only tools (save_memory / run_check) that are not in the
+   * Toolset map.
+   */
+  recordMutation?: () => void;
+  /**
+   * Live agent mode (re-read every tool call). A mid-turn flip to plan must
+   * hard-deny non-readOnly tools even though the AI-SDK tool map was frozen
+   * at turn start with execute tools.
+   */
+  liveMode?: () => Mode;
   /** Per-tree stale-write guard (one instance shared across the Session
    * tree, set by core on the engine-owned `FreshnessRegistry`). Required:
    * the engine always provides one per Session tree, and unit tests must
@@ -324,6 +339,16 @@ export function toAISDKTool(
     }
     abortIfCancelled();
 
+    // Mid-turn flip to plan: the tool map is frozen at turn start, so write
+    // tools may still be registered — hard-deny them so the mode chip and
+    // behavior match (plan is read-only).
+    if (!def.readOnly && base.liveMode?.() === "plan") {
+      const reason = "session is in plan mode (read-only)";
+      base.emit({ type: "notice", level: "warn", message: `Blocked ${def.name}: ${reason}` });
+      base.recordToolResult?.(options.toolCallId, true);
+      return `ERROR: tool "${def.name}" was blocked (${reason}). Stay read-only while planning.`;
+    }
+
     // Gate side-effecting tools through the permission layer — and NETWORK
     // tools too, even when read-only: a read-only flag used to bypass the gate
     // entirely, so a deny/ask rule on webfetch/web_search could never fire and
@@ -381,6 +406,10 @@ export function toAISDKTool(
           : JSON.stringify(result.output);
       return `ERROR: ${text}`;
     }
+    // Successful non-readOnly execute → the workspace (or durable state) changed.
+    // Latch mutation HERE (not on tool-call intent) so denied/errored calls do
+    // not trip the green-gate / auto-verify.
+    if (!def.readOnly) base.recordMutation?.();
     // PostToolUse additionalContext: append the hook's note to the result, clearly
     // delimited so the model reads it as annotation (not tool output) next step.
     if (after?.additionalContext) {

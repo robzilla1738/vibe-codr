@@ -136,7 +136,22 @@ export class WorkerEngineClient implements EngineClient {
       else waiter.reject(new Error(msg.error));
       return;
     }
-    if (isInboundEvent(msg)) this.#events.push(msg);
+    if (isInboundEvent(msg)) {
+      // Invalidate the one-shot snapshot cache when live state changes so a
+      // later snapshot() re-RPCs (commandNames, approvalMode, etc. stay fresh).
+      // Mode/model/goal for the chip already ride events; this is for anything
+      // that still reads snapshot().
+      if (
+        msg.type === "mode-changed" ||
+        msg.type === "approvals-changed" ||
+        msg.type === "model-changed" ||
+        msg.type === "goal-changed" ||
+        msg.type === "session-start"
+      ) {
+        this.#snapshotCache = undefined;
+      }
+      this.#events.push(msg);
+    }
   }
 
   #onWorkerError(err: Error): void {

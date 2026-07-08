@@ -18,8 +18,12 @@ export function lineToCommands(line: string): EngineCommand[] {
   if (!/^[A-Za-z0-9_-]+$/.test(name)) return [{ type: "submit-prompt", text: trimmed }];
   if ((name === "plan" || name === "execute") && args) {
     // Switch mode, then run the request in it — `/plan add oauth` plans "add
-    // oauth" instead of dropping the description on the floor.
-    return [{ type: "set-mode", mode: name }, { type: "submit-prompt", text: args }];
+    // oauth" instead of dropping the description on the floor. `/execute …`
+    // is an explicit approve+start when a plan is waiting (start:true).
+    return [
+      { type: "set-mode", mode: name, ...(name === "execute" ? { start: true as const } : {}) },
+      { type: "submit-prompt", text: args },
+    ];
   }
   return [lineToCommand(line)];
 }
@@ -44,7 +48,8 @@ export function lineToCommand(line: string): EngineCommand {
     case "plan":
       return { type: "set-mode", mode: "plan" };
     case "execute":
-      return { type: "set-mode", mode: "execute" };
+      // Explicit /execute starts an approved plan immediately (not deferred).
+      return { type: "set-mode", mode: "execute", start: true };
     case "approvals":
       // Route a valid ask|auto straight to the immediate command (NOT quiet — a
       // typed switch deserves its one-line confirm, unlike the Shift+Tab cycle);

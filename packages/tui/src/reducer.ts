@@ -447,10 +447,13 @@ export function groupTurns(blocks: Block[]): { turnKey: Map<number, number>; cou
 }
 
 /**
- * Collapsed tool-row detail: "diff" for a diff, else the search-result count for
- * a web_search (reads far better than "33 lines" of payload), else the raw line count.
+ * Collapsed tool-row detail: "error" when the call failed (so a red row still
+ * scans without expanding), "diff" for a diff, else the search-result count
+ * for a web_search (reads far better than "33 lines" of payload), else the
+ * raw line count.
  */
 export function collapsedHint(t: Extract<Block, { kind: "tool" }>): string {
+  if (t.isError) return "error";
   if (t.isDiff) return "diff";
   if (t.label.startsWith("◈")) {
     const results = t.output.filter((l) => /^\d+\.\s/.test(l)).length;

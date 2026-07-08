@@ -358,22 +358,24 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       break;
     }
     case "plan":
-    case "execute":
       // Route through the engine's ONE canonical `set-mode` transition, which
       // owns the full invariant set: a real transition re-gates approvals to
-      // `ask` (leaving plan can never inherit a lingering YOLO `auto`), leaving
-      // plan right after a presented plan arms the execute handoff (so the
-      // documented "/execute to proceed" flow actually proceeds), and returning
-      // to plan disarms it. Duplicating half of that here is how the paths
-      // drifted apart before.
-      h.send({ type: "set-mode", mode: name });
+      // `ask` (leaving plan can never inherit a lingering YOLO `auto`), and
+      // returning to plan disarms a pending handoff / plan-execution chain.
+      h.send({ type: "set-mode", mode: "plan" });
+      break;
+    case "execute":
+      // Explicit /execute: if a plan is waiting, approve and START immediately
+      // (same as the plan card's Enter). Bare set-mode (Shift+Tab) does not
+      // auto-approve — see engine set-mode handler.
+      h.send({ type: "set-mode", mode: "execute", start: true });
       break;
     case "yolo":
-      // Explicit, deliberate YOLO: gated-execute transition first (arming a
-      // plan handoff if one was just presented), then approvals off. The warn
-      // notice is the transcript-side record of entering the no-prompts state —
-      // the red chip alone is easy to miss.
-      h.send({ type: "set-mode", mode: "execute" });
+      // Explicit, deliberate YOLO: execute transition first (start:true so a
+      // waiting plan is approved and begins immediately, same as /execute),
+      // then approvals off. The warn notice is the transcript-side record of
+      // entering the no-prompts state — the red chip alone is easy to miss.
+      h.send({ type: "set-mode", mode: "execute", start: true });
       handleApprovals(h, "auto", true);
       h.notice("YOLO — approvals off; tools run without prompting. /execute re-gates.", "warn");
       break;

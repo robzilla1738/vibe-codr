@@ -8,7 +8,13 @@ import type { UIEvent } from "./events.ts";
 export type EngineCommand =
   | { type: "submit-prompt"; text: string }
   | { type: "run-slash"; name: string; args: string }
-  | { type: "set-mode"; mode: Mode }
+  /**
+   * Switch agent mode. When leaving plan with a live presented plan, `start:
+   * true` (card Enter / `/execute`) approves and begins implementation;
+   * bare set-mode (Shift+Tab) does NOT auto-approve — the plan card stays the
+   * approval surface.
+   */
+  | { type: "set-mode"; mode: Mode; start?: boolean }
   // `quiet` suppresses the confirmation notice — the Shift+Tab mode cycle sets
   // it (the mode chip is the feedback there); a typed `/approvals <v>` doesn't,
   // so an explicit switch gets its one-line confirm in the transcript.

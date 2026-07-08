@@ -550,7 +550,12 @@ test("applyGateToVerdict: a met verdict requires a green gate", () => {
   const unverified = applyGateToVerdict(met, "unverified");
   expect(unverified.met).toBe(false);
   expect(unverified.gaps).toContain("project checks unverified");
+  // No checks available → undefined is a free pass (check-less workspace).
   expect(applyGateToVerdict(met, undefined)).toEqual(met);
+  // Checks available → undefined is unverified (cannot free-pass "met").
+  const missing = applyGateToVerdict(met, undefined, { checksAvailable: true });
+  expect(missing.met).toBe(false);
+  expect(missing.gaps).toContain("project checks unverified");
   const notMet = { met: false, gaps: ["x"], reason: "gaps" };
   expect(applyGateToVerdict(notMet, "red")).toEqual(notMet);
   expect(applyGateToVerdict(notMet, "unverified")).toEqual(notMet);

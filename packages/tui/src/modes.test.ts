@@ -3,6 +3,7 @@ import {
   deriveUiMode,
   nextUiMode,
   commandsForUiMode,
+  cycleModeAction,
   engineStateForUiMode,
   modeColor,
   MODE_COLORS,
@@ -88,13 +89,31 @@ test("optimistic mirrors let two rapid Shift+Tab presses advance two full steps"
   let mode = "plan";
   let approvals = "ask";
   const press = () => {
-    const target = nextUiMode(deriveUiMode(mode, approvals));
-    const next = engineStateForUiMode(target);
-    mode = next.mode;
-    approvals = next.approvals;
-    return target;
+    const action = cycleModeAction(deriveUiMode(mode, approvals));
+    if (action.optimistic) {
+      mode = action.optimistic.mode;
+      approvals = action.optimistic.approvals;
+      return action.optimistic.uiMode;
+    }
+    return deriveUiMode(mode, approvals);
   };
   expect(press()).toBe("execute");
   expect(press()).toBe("yolo");
   expect(press()).toBe("plan");
+});
+
+test("cycleModeAction with a live plan does not flip chip or set-approvals", () => {
+  // Engine refuses bare plan→execute when a plan is waiting. The TUI must not
+  // optimistically show ASK/YOLO or send set-approvals auto (YOLO would stick
+  // and the next Enter would inherit unattended approvals).
+  const action = cycleModeAction("plan", { planPending: true });
+  expect(action.optimistic).toBeNull();
+  expect(action.commands).toEqual([{ type: "set-mode", mode: "execute" }]);
+  // No set-approvals in the command list.
+  expect(action.commands.every((c) => c.type === "set-mode")).toBe(true);
+
+  // Without a pending plan, normal cycle still works.
+  const free = cycleModeAction("plan", { planPending: false });
+  expect(free.optimistic?.uiMode).toBe("execute");
+  expect(free.commands.some((c) => c.type === "set-approvals")).toBe(true);
 });

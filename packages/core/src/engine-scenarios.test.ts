@@ -205,8 +205,9 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
       engine.send({ type: "resolve-plan", decision: "accept" }); // runs immediately
       await engine.whenIdle();
     } else {
-      engine.send({ type: "set-mode", mode: "execute" }); // arms the handoff…
-      engine.send({ type: "submit-prompt", text: "go" }); // …consumed by the next message
+      // Explicit /execute-style approve+start (start:true). Bare set-mode
+      // (Shift+Tab) no longer auto-approves a waiting plan.
+      engine.send({ type: "set-mode", mode: "execute", start: true });
       await engine.whenIdle();
     }
     engine.send({ type: "shutdown" });
@@ -243,7 +244,7 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
   expect(cardAsk.execPrompt).toContain("approved by the user");
 });
 
-test("deferred plan approval is spent once — plan/execute toggles don't re-approve or re-seed", async () => {
+test("bare set-mode (Shift+Tab) does NOT auto-approve a waiting plan", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-defer-"));
   const config = { ...defaultConfig(), mode: "plan" as const };
   const { engine, events, collector } = mockEngine(
@@ -254,19 +255,25 @@ test("deferred plan approval is spent once — plan/execute toggles don't re-app
   await engine.bootstrap();
   engine.send({ type: "submit-prompt", text: "plan the work" });
   await engine.whenIdle();
-  engine.send({ type: "set-mode", mode: "execute" }); // deferred approval (arms the handoff)
-  engine.send({ type: "set-mode", mode: "plan" }); // return to planning (revokes it)
-  engine.send({ type: "set-mode", mode: "execute" }); // a plain transition, NOT a second approval
+  // Shift+Tab-style bare set-mode: stay in plan, no approval, no seed.
+  engine.send({ type: "set-mode", mode: "execute" });
   await engine.whenIdle();
   engine.send({ type: "shutdown" });
   await collector;
 
-  const approvals = events.filter(
-    (e) => e.type === "notice" && e.message.includes("Plan approved"),
+  expect(engine.snapshot().mode).toBe("plan");
+  expect(
+    events.some(
+      (e) =>
+        e.type === "notice" &&
+        typeof e.message === "string" &&
+        e.message.includes("waiting for approval"),
+    ),
+  ).toBe(true);
+  expect(events.filter((e) => e.type === "notice" && e.message.includes("Plan approved")).length).toBe(
+    0,
   );
-  expect(approvals.length).toBe(1);
-  const seeds = events.filter((e) => e.type === "tasks-updated");
-  expect(seeds.length).toBe(1);
+  expect(events.filter((e) => e.type === "tasks-updated").length).toBe(0);
 });
 
 test("a mid-turn mode flip cannot smuggle a mutating turn past the gate", async () => {
@@ -355,13 +362,20 @@ test("a denied handoff prompt re-arms the plan approval (the next message retrie
   const collector = (async () => {
     for await (const e of engine.events()) events.push(e);
   })();
-  // Deny the FIRST handoff attempt only (raw text "go"); allow the retry.
-  engine.hooks.on("user.prompt.submit", (p) => (p.text === "go" ? { ...p, deny: true } : p));
+  // Deny the FIRST handoff attempt only; allow the retry.
+  let handoffDenies = 0;
+  engine.hooks.on("user.prompt.submit", (p) => {
+    if (p.text.includes("Proceed with the approved plan") && handoffDenies === 0) {
+      handoffDenies += 1;
+      return { ...p, deny: true };
+    }
+    return p;
+  });
 
   engine.send({ type: "submit-prompt", text: "plan it" });
   await engine.whenIdle();
-  engine.send({ type: "set-mode", mode: "execute" }); // arms the deferred handoff
-  engine.send({ type: "submit-prompt", text: "go" }); // consumes it → DENIED → re-arm
+  // start:true begins the handoff immediately; the prompt-submit deny re-arms it.
+  engine.send({ type: "set-mode", mode: "execute", start: true });
   await engine.whenIdle();
   engine.send({ type: "submit-prompt", text: "go again" }); // retries the re-armed handoff
   await engine.whenIdle();

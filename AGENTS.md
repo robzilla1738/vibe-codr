@@ -459,19 +459,21 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   **right sidebar** (`SIDEBAR_W`=42: Tasks panel hugging the top, then the
   live **Subagents fan-out** — one row per child with a spinner/✓ glyph, a
   right-aligned elapsed, and a second muted line for its live activity while
-  running / result glimpse once done — then the turn's Thinking/Activity
-  trail in a `grow` Rail filling the rest so the sidebar spans the SAME
-  height as the chat column; the trail persists until the next user-message.
-  The inline chat-column Tasks/Subagents panels render ONLY when the sidebar
-  is off (`!sidebarOn()`) — never both. The rigid panels split a height
-  budget (`sidePanelBudget`/`sideTaskCap`/`sideSubCap`) so a long list can't
-  push the Thinking block off-screen). Sidebar alignment is EXACT and smoke-guarded
-  (`bun run smoke:sidebar`): first block on the viewport's first content row
-  (NO marginTop on the first sidebar block — the chat's first-block margin is
-  swallowed by its scrollbox), bottom edge on the input block's bottom (a
-  `height={2+…}` spacer reserves the under-input status rows). The trail
-  (`trail.ts`) interleaves reasoning with tool-activity lines (`toolLabel`) so
-  a non-reasoning model still shows live work; openai-compat providers get
+  running / result glimpse once done — then the turn's **reasoning-only
+  Thinking** panel in a `grow` Rail filling the rest when the model thinks
+  (so the sidebar spans the SAME height as the chat column); the trail
+  persists until the next user-message. Tool work is **not** mirrored in the
+  sidebar as an Activity feed — tools live only in the chat transcript
+  (ToolBlockView). When there is no reasoning, an invisible grow filler
+  keeps bottom alignment. The inline chat-column Tasks/Subagents panels
+  render ONLY when the sidebar is off (`!sidebarOn()`) — never both. The
+  rigid panels split a height budget (`sidePanelBudget`/`sideTaskCap`/
+  `sideSubCap`) so a long list can't push the Thinking block off-screen).
+  Sidebar alignment is EXACT and smoke-guarded (`bun run smoke:sidebar`):
+  first block on the viewport's first content row (NO marginTop on the first
+  sidebar block — the chat's first-block margin is swallowed by its
+  scrollbox), bottom edge on the input block's bottom (a `height={2+…}`
+  spacer reserves the under-input status rows). openai-compat providers get
   `extractReasoningMiddleware` in @vibe/providers so inline `<think>` streams
   as real reasoning parts instead of leaking into the reply. Then a `flexGrow`
   **right gutter**. **PERF INVARIANTS (the freeze fix — keep these):** engine

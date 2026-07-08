@@ -155,14 +155,21 @@ const GATE_MANIFEST_FILES = [
  */
 /** Deterministic override on the goal self-assessment: a model verdict of
  * "met" can never stand on a non-green gate verdict. Failing, missing, or
- * aborted checks are hard gaps, not judgment calls. Undefined means no gate has
- * reported for the turn and remains a no-op for non-mutating goal tests. Pure +
- * exported for unit testing. */
+ * aborted checks are hard gaps, not judgment calls.
+ *
+ * `opts.checksAvailable`: when true, a missing gate report (`undefined`) is
+ * treated like `unverified` — the repo has real checks, so "met" cannot pass
+ * without a green run. When false/omitted, `undefined` is a free pass (no
+ * checks to run; pure unit tests and check-less workspaces). Pure + exported
+ * for unit testing. */
 export function applyGateToVerdict(
   verdict: { met: boolean; gaps: string[]; reason: string },
   gate: "green" | "red" | "unverified" | "aborted" | undefined,
+  opts: { checksAvailable?: boolean } = {},
 ): { met: boolean; gaps: string[]; reason: string } {
-  if (!verdict.met || gate === "green" || gate === undefined) return verdict;
+  if (!verdict.met || gate === "green") return verdict;
+  // No gate report: free-pass only when there is nothing to check.
+  if (gate === undefined && !opts.checksAvailable) return verdict;
   const detail =
     gate === "red"
       ? "project checks failing (gate red)"
@@ -349,6 +356,21 @@ export class Engine implements EngineClient {
    * handoff turn starts, cleared by the next REAL user prompt (or when the
    * seeded list finishes/caps out). Scopes the completion check to plan runs. */
   #planExecutionActive = false;
+  /**
+   * True while an engine-owned fix turn (gate-fix / review-fix / verify-fix)
+   * is queued but not yet started. Set when the fix is enqueued; cleared when
+   * the job begins so THAT turn's own `#afterTurn` can re-drive task/goal
+   * continuations. Prevents a GREEN parent from advancing plan/goal chains
+   * alongside a still-pending review-fix (double-fire / premature "met").
+   */
+  #fixPending = false;
+  /**
+   * Durable stop latch: set by the engine `abort` command (Esc) so post-turn
+   * work (gate/review) and idle-continue hooks honor the interrupt even when
+   * `Session.run` has already returned (its own `interrupted` only covers the
+   * in-flight model turn). Cleared on the next real user prompt.
+   */
+  #userStop = false;
   /** True while a `/goal` autonomous run is live: armed by `set-goal` with
    * text, cleared on verified-met, round-exhaust, `/goal clear`, or abort.
    * Unlike #planExecutionActive it deliberately survives a mid-run typed
@@ -513,6 +535,14 @@ export class Engine implements EngineClient {
       goal: resume?.meta.goal ?? null,
       projectMemory: opts.projectMemory,
       permissionResolver: this.#permissionResolver,
+      onHardBudgetStop: () => {
+        this.#userStop = true;
+        this.#pauseGoalRun("spend limit reached", {
+          notice:
+            "Goal run paused — spend limit reached. Raise budget.limitUSD, then /goal resume.",
+          level: "warn",
+        });
+      },
       agents: this.#agents,
       fileLock: this.#fileLock,
       // Per-tree stale-write guard, threaded into every fork via
@@ -842,24 +872,35 @@ export class Engine implements EngineClient {
         this.#handlePrompt("Proceed with the approved plan.", { handoff: true }),
       );
     } else {
-      // Deferred approval (mode-switch): seed the task list NOW so the user sees
-      // it immediately and the handoff turn starts with ids in CURRENT TASKS —
-      // the deferred path used to skip seeding entirely, losing the list.
+      // Deferred approval (mode-switch with start:false): seed the task list NOW
+      // so the user sees it immediately and the handoff turn starts with ids in
+      // CURRENT TASKS. The approval SPENDS the plan — discard the persisted file
+      // too so --resume cannot re-arm a spent approval from the plan file alone.
       if (this.#lastPlan) this.#seedTasksFromPlan(this.#lastPlan);
-      // The approval SPENDS the plan, same as the immediate path — otherwise a
-      // later plan↔execute toggle re-enters the approval routine and re-seeds
-      // the task list (resetting statuses) with a duplicate "Plan approved"
-      // notice each cycle. Returning to plan mode after this revokes the
-      // handoff; continued planning simply presents a fresh plan.
       this.#lastPlan = undefined;
       this.#pendingHandoff = true;
-      void this.#persistEngineState();
+      void this.#discardPersistedPlan();
       this.#bus.emit({
         type: "notice",
         level: "info",
         message: "Plan approved — your next message starts implementation.",
       });
     }
+  }
+
+  /**
+   * Enqueue an engine-owned fix turn (gate-fix / review-fix / verify-fix).
+   * Marks `#fixPending` until the job *starts* so the parent turn's `#afterTurn`
+   * skips task/goal continuations (mirrors RED), while the fix turn itself can
+   * re-drive them once it settles.
+   */
+  #enqueueFix(label: string, run: () => Promise<unknown>): void {
+    this.#fixPending = true;
+    this.#enqueue(label, async () => {
+      // Clear before the fix runs so its own #afterTurn is not suppressed.
+      this.#fixPending = false;
+      await run();
+    });
   }
 
 
@@ -1248,15 +1289,23 @@ export class Engine implements EngineClient {
       }
       case "set-mode": {
         // Leaving plan mode for execute right after a presented plan = approval.
+        // Shift+Tab (and other bare set-mode clients) MUST NOT silently approve:
+        // only an explicit start (plan-card Enter / /execute slash) starts work.
+        // A bare set-mode with a live plan stays in plan and notices — the user
+        // must accept the card or type /execute.
         const approvingPlan =
           this.#session.mode === "plan" && command.mode === "execute" && this.#lastPlan !== undefined;
-        if (approvingPlan) {
-          // Route through the SHARED plan-approval so the mode-switch and
-          // card-accept surfaces can't drift: transition into gated execute
-          // (engine-owned) + arm the handoff. A mode switch DEFERS (`start:false`)
-          // — #pendingHandoff carries the approval into the user's next message,
-          // unlike the card, which starts implementation immediately.
-          this.#approvePlan(false);
+        if (approvingPlan && command.start) {
+          // Explicit approve+start (card Enter / /execute): run immediately.
+          this.#approvePlan(true);
+        } else if (approvingPlan) {
+          // Bare set-mode (Shift+Tab): do NOT auto-approve. Stay in plan so the
+          // card remains the approval surface; chip would otherwise dismiss it
+          // via mode-changed and leave a deferred "next message" trap.
+          this.#notice(
+            "A plan is waiting for approval — press Enter on the plan card (or type /execute) to start. Shift+Tab does not approve.",
+            "info",
+          );
         } else {
           // Requesting a mode ALWAYS lands in the gated baseline (approvals →
           // ask, `always` grants forgotten) — an ENGINE-owned invariant, not a UI
@@ -1274,13 +1323,22 @@ export class Engine implements EngineClient {
             this.#pendingHandoff = false;
             void this.#persistEngineState();
           }
-          if (command.mode === "plan" && this.#goalRunActive) {
-            // Switching to plan mode mid-run would make every goal continuation a
-            // read-only plan turn (#ensureExecuteModeForGoal only runs at
-            // start/resume) — tasks can't complete, so the run burns its whole
-            // round budget on deterministic not-met rounds. Honor the intent: pause
-            // the run (resume re-ensures execute mode).
-            this.#pauseGoalRun("switched to plan mode");
+          if (command.mode === "plan") {
+            // Plan-execution chains must stop when the user re-enters plan: the
+            // continuation would enqueue read-only "finish the tasks" turns that
+            // can't complete work. Goal runs already pause below.
+            if (this.#planExecutionActive) {
+              this.#planExecutionActive = false;
+              this.#notice("Plan execution paused — switched back to plan mode.", "info");
+            }
+            if (this.#goalRunActive) {
+              // Switching to plan mode mid-run would make every goal continuation a
+              // read-only plan turn (#ensureExecuteModeForGoal only runs at
+              // start/resume) — tasks can't complete, so the run burns its whole
+              // round budget on deterministic not-met rounds. Honor the intent: pause
+              // the run (resume re-ensures execute mode).
+              this.#pauseGoalRun("switched to plan mode");
+            }
           }
         }
         break;
@@ -1290,6 +1348,19 @@ export class Engine implements EngineClient {
         // take effect at once so the next turn sees the new approval policy.
         // Quiet only when the sender says so (the Shift+Tab cycle, where the
         // mode chip is the feedback); a typed `/approvals <v>` gets its confirm.
+        // Quiet YOLO while a plan is waiting is almost always the Shift+Tab
+        // cycle after a refused bare set-mode (engine stayed in plan). Ignore
+        // it so plan-card Enter does not inherit unattended YOLO by accident.
+        // Explicit `/approvals auto` (not quiet) and Ctrl+Y (approvals on accept)
+        // still work.
+        if (
+          command.quiet &&
+          command.mode === "auto" &&
+          this.#session.mode === "plan" &&
+          this.#lastPlan !== undefined
+        ) {
+          break;
+        }
         handleApprovals(this.#getCommandHandle(), command.mode, command.quiet ?? false);
         break;
       case "set-model":
@@ -1332,6 +1403,11 @@ export class Engine implements EngineClient {
         break;
       }
       case "abort":
+        // Durable stop: Session.interrupted only latches during Session.run, so
+        // Esc during post-turn gate/review would otherwise leave chains free to
+        // re-enqueue. #userStop is cleared on the next real user prompt.
+        this.#userStop = true;
+        this.#fixPending = false;
         // An abort also pauses a live goal run: the interrupted guard already
         // blocks the NEXT continuation, but the flag must drop too so a later
         // unrelated prompt can't resurrect the run. The ★ goal itself stays
@@ -2149,8 +2225,9 @@ export class Engine implements EngineClient {
     // resurrected by a `session.idle {continue:true}` hook — mirrors the
     // !interrupted guards guarding the task-continuation path in #afterTurn.
     // (session.run resets #interrupted on the injected turn, so this guard must
-    // read it BEFORE that turn is enqueued.)
-    if (this.#session.interrupted) return false;
+    // read it BEFORE that turn is enqueued.) #userStop covers Esc after run()
+    // returns (gate/review), which never latches session.interrupted.
+    if (this.#session.interrupted || this.#userStop) return false;
     const result = await this.hooks.run("session.idle", { sessionId: this.#session.id });
     if (!result.continue) return false;
     if (this.#idleContinueRounds >= MAX_IDLE_CONTINUES) {
@@ -2289,13 +2366,20 @@ export class Engine implements EngineClient {
    * the work (never silently green).
    */
   async #afterTurn(): Promise<void> {
+    // Esc (or a durable user-stop) after the model turn must not re-arm chains.
+    if (this.#userStop || this.#session.interrupted) return;
+
     const build = this.#config.build;
     if (!(build.enabled && build.gate.enabled)) {
-      // Build intelligence off (or gate disabled): legacy verify behavior verbatim.
-      await this.#maybeVerify();
-      // An active plan chain must still advance when the gate is off — otherwise
-      // it stalls silently with tasks pending (no green signal → green=false).
-      if (!this.#session.interrupted) this.#maybeContinueTasks(false);
+      // Build intelligence off (or gate disabled): legacy verify behavior.
+      const verify = await this.#maybeVerify();
+      // A verify-fix is already queued (or verify exhausted red) — don't also
+      // advance plan/goal chains; the fix turn re-enters #afterTurn when done.
+      if (verify.fixEnqueued || this.#fixPending) return;
+      if (verify.exhaustedFail) {
+        if (this.#lastGateOutcome !== "red") this.#lastGateOutcome = "red";
+      }
+      if (!this.#session.interrupted && !this.#userStop) this.#maybeContinueTasks(false);
       await this.#maybeContinueGoal();
       return;
     }
@@ -2308,7 +2392,7 @@ export class Engine implements EngineClient {
       // instead of working) must not silently strand the chain — nudge the
       // unfinished tasks. Skip when the user interrupted (Esc means stop), and
       // #maybeContinueTasks no-ops outside an active plan chain.
-      if (!this.#session.interrupted) this.#maybeContinueTasks(false);
+      if (!this.#session.interrupted && !this.#userStop) this.#maybeContinueTasks(false);
       await this.#maybeContinueGoal();
       return;
     }
@@ -2339,19 +2423,24 @@ export class Engine implements EngineClient {
       // No trustworthy check command for the gate. Fall back to a configured
       // legacy verify command if one exists (recon fills verify.command); only
       // when NOTHING machine-verified the work do we say so — never silently green.
-      const verified = await this.#maybeVerify();
-      if (!verified) {
+      const verify = await this.#maybeVerify();
+      if (verify.fixEnqueued || this.#fixPending) return;
+      if (verify.exhaustedFail) {
+        if (this.#lastGateOutcome !== "red") this.#lastGateOutcome = "red";
+      } else if (!verify.ran || !verify.ok) {
         // Don't let a later UNVERIFIED turn MASK an earlier RED within the same
         // prompt (e.g. a fix turn that deletes the build script): a red build must
         // keep reporting red at engine-idle so headless/CI still exits non-zero.
         // A genuine red→green fix DOES overwrite (handled in the gate branch).
         if (this.#lastGateOutcome !== "red") this.#lastGateOutcome = "unverified";
-        this.#notice(
-          "Gate: UNVERIFIED — no build/test/typecheck command was detected (even after re-scanning), " +
-            "so this turn's work was not machine-verified. Adding a build or test script to the " +
-            "project manifest makes future turns verifiable.",
-          "info",
-        );
+        if (!verify.ran) {
+          this.#notice(
+            "Gate: UNVERIFIED — no build/test/typecheck command was detected (even after re-scanning), " +
+              "so this turn's work was not machine-verified. Adding a build or test script to the " +
+              "project manifest makes future turns verifiable.",
+            "info",
+          );
+        }
       }
     } else {
       outcome = await this.#runGate(profile);
@@ -2359,13 +2448,14 @@ export class Engine implements EngineClient {
       // gate state — the terminal one after fix rounds is what engine-idle reports.
       this.#lastGateOutcome = outcome;
     }
-    // A RED gate already enqueued its own fix turn (which re-enters #afterTurn),
-    // and an aborted gate means the user interrupted — both skip the task check
-    // AND the goal check (the fix turn's own #afterTurn re-runs both).
-    if (outcome !== "red" && outcome !== "aborted") {
-      this.#maybeContinueTasks(outcome === "green");
-      await this.#maybeContinueGoal();
-    }
+    // RED already enqueued its own fix turn; aborted = user interrupt; a dirty
+    // review / verify-fix leaves #fixPending set — all skip task/goal continue
+    // so the fix turn's own #afterTurn re-runs both (no double-fire, no premature
+    // goal-met alongside an unfixed review).
+    if (outcome === "red" || outcome === "aborted" || this.#fixPending) return;
+    if (this.#userStop || this.#session.interrupted) return;
+    this.#maybeContinueTasks(outcome === "green");
+    await this.#maybeContinueGoal();
   }
 
   /**
@@ -2383,8 +2473,19 @@ export class Engine implements EngineClient {
    */
   #maybeContinueTasks(_green: boolean): void {
     if (!this.#planExecutionActive) return;
+    if (this.#userStop || this.#session.interrupted) return;
+    if (this.#session.mode === "plan") {
+      // Read-only plan can't finish mutating work — disarm rather than burn
+      // continuation rounds on impossible turns.
+      this.#planExecutionActive = false;
+      return;
+    }
     const tasks = this.#session.tasks;
-    if (!tasks.length) return;
+    if (!tasks.length) {
+      // Empty list = nothing to drive; clear so goal assessment isn't blocked.
+      this.#planExecutionActive = false;
+      return;
+    }
     const unfinished = tasks
       .map((t, i) => ({ ref: `t${i + 1}`, index: i + 1, title: t.title, status: t.status }))
       .filter((t) => t.status !== "completed");
@@ -2778,7 +2879,8 @@ export class Engine implements EngineClient {
   async #maybeContinueGoal(): Promise<void> {
     if (!this.#goalRunActive) return;
     if (this.#planExecutionActive) return;
-    if (this.#session.interrupted) return;
+    if (this.#fixPending) return;
+    if (this.#session.interrupted || this.#userStop) return;
     // A turn that ERRORED (provider down, missing key) must pause the run, not
     // burn the round budget on doomed retries — session.run swallows the error
     // into lastError and returns normally, so #afterTurn still lands here.
@@ -2829,13 +2931,23 @@ export class Engine implements EngineClient {
       .map((t, i) => ({ ref: `t${i + 1}`, title: t.title, status: t.status }))
       .filter((t) => t.status !== "completed");
     const epoch = this.#goalRunEpoch;
+    // When the repo has runnable checks (or the gate is on and recon found
+    // commands), a missing gate report is NOT a free pass for "met".
+    const profile = this.#session.repoProfile;
+    const checksAvailable =
+      this.#config.build.enabled &&
+      this.#config.build.gate.enabled &&
+      !!profile &&
+      pickChecks(profile, this.#config.build.gate.checks).length > 0;
     const verdict = unfinished.length
       ? {
           met: false,
           gaps: unfinished.map((t) => `${t.ref} (${t.status}): ${t.title}`),
           reason: "seeded tasks unfinished",
         }
-      : applyGateToVerdict(await this.#assessGoal(goal), this.#lastGateOutcome);
+      : applyGateToVerdict(await this.#assessGoal(goal), this.#lastGateOutcome, {
+          checksAvailable,
+        });
     // The assessment await is a window (up to its 90s deadline): an Esc, a
     // /goal clear, or any pause landing inside it disarms the run — acting on
     // the verdict would launch one more autonomous turn the user just stopped.
@@ -2876,7 +2988,9 @@ export class Engine implements EngineClient {
           // Each goal round is a fresh prompt-sized unit of work: it gets its own
           // gate/review/verify budgets (this is why the goal counters live OUTSIDE
           // #resetPromptBudgets — the reset must not zero the run's own bounds).
-          this.#resetPromptBudgets();
+          // Preserve the last gate verdict: verify turns are often non-mutating
+          // and would otherwise free-pass "met" via undefined gate.
+          this.#resetPromptBudgets({ preserveGate: true });
           if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
           return this.#runGoalTurn(
             `You reported the north-star goal met: "${goal}". Now verify it is TRULY met, adversarially — ` +
@@ -2903,7 +3017,7 @@ export class Engine implements EngineClient {
     this.#enqueue(
       `goal: ${queueLabel(goal)}`,
       () => {
-        this.#resetPromptBudgets();
+        this.#resetPromptBudgets({ preserveGate: true });
         // Re-arm task-driven continuation when the list still has work (a steer's
         // submit-prompt reset disarms it; this is how the chain resumes after).
         if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
@@ -2971,15 +3085,21 @@ export class Engine implements EngineClient {
    * at the start of a genuine user-initiated prompt (typed submit-prompt, or a
    * slash command that expands into a prompt) — NEVER by an engine-internal fix
    * turn (gate-fix / review-fix / verify-fix), so the "bounded per user prompt"
-   * invariant holds and a fix cycle can't reset its own budget mid-flight. */
-  #resetPromptBudgets(): void {
+   * invariant holds and a fix cycle can't reset its own budget mid-flight.
+   *
+   * Goal-round callers pass `{ preserveGate: true }` so an adversarial verify
+   * (non-mutating → not gateable) still sees the last green/red verdict instead
+   * of treating `undefined` as a free pass for "met". */
+  #resetPromptBudgets(opts: { preserveGate?: boolean } = {}): void {
     this.#verifyAttempts = 0;
     this.#gateRounds = 0;
     this.#reviewRounds = 0;
     this.#taskContinueRounds = 0;
     this.#idleContinueRounds = 0;
     this.#planExecutionActive = false;
-    this.#lastGateOutcome = undefined;
+    this.#fixPending = false;
+    this.#userStop = false;
+    if (!opts.preserveGate) this.#lastGateOutcome = undefined;
     this.#promptBaselineId = undefined;
   }
 
@@ -3050,7 +3170,7 @@ export class Engine implements EngineClient {
       }
       this.#gateRounds += 1;
       this.#notice(formatGateOutcome(summary), "warn");
-      this.#enqueue("gate-fix", () =>
+      this.#enqueueFix("gate-fix", () =>
         this.#runFixTurn(formatGateFailure(summary, gate.maxRounds)),
       );
       return summary.outcome;
@@ -3281,7 +3401,7 @@ export class Engine implements EngineClient {
           : "Visual check flagged issues; queuing a fix turn.",
       "warn",
     );
-    this.#enqueue("review-fix", () =>
+    this.#enqueueFix("review-fix", () =>
       this.#runFixTurn(buildReviewFixPrompt(reviewFlagged, visualFindings)),
     );
   }
@@ -3289,35 +3409,46 @@ export class Engine implements EngineClient {
   /**
    * Auto-verify (legacy path): after an edit turn, run the verify command; on
    * failure, feed the output back as a follow-up so the agent self-corrects
-   * (capped retries). Returns whether the command actually RAN — so the gate path
-   * can tell "machine-verified by a legacy command" from "nothing checked it".
+   * (capped retries).
+   *
+   * Return shape is intentionally rich so `#afterTurn` can:
+   * - tell "machine-verified" from "nothing checked" (`ran`/`ok`);
+   * - skip task/goal continuations while a verify-fix is queued (`fixEnqueued`);
+   * - mark exhausted failures as red (`exhaustedFail`) instead of pretending
+   *   verification succeeded.
    */
-  async #maybeVerify(): Promise<boolean> {
+  async #maybeVerify(): Promise<{
+    ran: boolean;
+    ok: boolean;
+    fixEnqueued: boolean;
+    exhaustedFail: boolean;
+  }> {
+    const none = { ran: false, ok: false, fixEnqueued: false, exhaustedFail: false };
     const { command, auto, maxRetries } = this.#config.verify;
-    if (!auto || !command) return false;
-    if (this.#session.turnMode !== "execute" || !this.#session.didMutate) return false;
+    if (!auto || !command) return none;
+    if (this.#session.turnMode !== "execute" || !this.#session.didMutate) return none;
     // The user interrupted this turn (Esc / steer) — don't run verify against a
     // half-applied edit and enqueue an unsolicited "verification failed, fix it"
     // turn behind whatever they steered to.
-    if (this.#session.interrupted) return false;
+    if (this.#session.interrupted || this.#userStop) return none;
 
     const result = await this.#runVerifyCommand(command);
-    if (result.ok) return true;
+    if (result.ok) return { ran: true, ok: true, fixEnqueued: false, exhaustedFail: false };
     if (this.#verifyAttempts >= maxRetries) {
       this.#notice(
         `Verification still failing after ${maxRetries} attempt(s); stopping auto-fix.`,
         "warn",
       );
-      return true;
+      return { ran: true, ok: false, fixEnqueued: false, exhaustedFail: true };
     }
     this.#verifyAttempts += 1;
-    this.#enqueue("verify-fix", () =>
+    this.#enqueueFix("verify-fix", () =>
       this.#runFixTurn(
         `The verification command \`${command}\` failed:\n\n${result.output}\n\n` +
           `Fix the cause and keep changes minimal.`,
       ),
     );
-    return true;
+    return { ran: true, ok: false, fixEnqueued: true, exhaustedFail: false };
   }
 
   /** Run the verify command, emitting start/finish events. Runs through

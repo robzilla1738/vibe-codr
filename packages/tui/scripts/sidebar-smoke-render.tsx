@@ -1,8 +1,8 @@
 /**
  * Wide-terminal (180×46) render smoke: drives the REAL App with a mock engine
  * and asserts, against the captured char frames —
- *  • the sidebar trail shows tool ACTIVITY for a non-reasoning model (header
- *    "Activity"), flipping to "Thinking" once reasoning arrives;
+ *  • tool-only turns do NOT put an "Activity" trail in the sidebar (tools
+ *    live only in the chat transcript); Thinking appears once reasoning does;
  *  • the sidebar's first block starts on the transcript viewport's first
  *    content row and its bottom lands on the input block's bottom row;
  *  • the sidebar hosts the SUBAGENTS fan-out (prompt + live activity line,
@@ -78,7 +78,7 @@ const check = (name: string, ok: boolean, detail = "") => {
   if (!ok) failures++;
 };
 
-// ── Scene 1: plan-mode turn on a NON-reasoning model — activity trail + alignment.
+// ── Scene 1: plan-mode turn on a NON-reasoning model — tools in chat only.
 push({ type: "user-message", text: "help me build a world cup site" });
 push({
   type: "tasks-updated",
@@ -106,11 +106,14 @@ await settle();
 const frame1 = t.captureCharFrame();
 const rows1 = frame1.split("\n");
 
-// Activity trail: header says Activity (no reasoning yet) and shows tool lines.
-check("panel header reads Activity for a non-reasoning model", frame1.includes("Activity"));
+// Contract: no redundant Activity panel. Tools stay in the chat transcript.
 const sidebarText = rows1.map((r) => r.slice(W - 44)).join("\n");
-check("activity trail lists the search", sidebarText.includes("search"), "sidebar shows tool actions");
-check("activity trail lists the fetch", sidebarText.includes("fetch"));
+const chatText1 = rows1.map((r) => r.slice(0, W - 46)).join("\n");
+check("sidebar has no Activity header without reasoning", !sidebarText.includes("Activity"));
+check("sidebar has no Thinking panel without reasoning", !sidebarText.includes("Thinking"));
+check("sidebar does not list tool search in the trail", !sidebarText.includes("World Cup match"));
+check("transcript still shows the search tool row", chatText1.includes("search"));
+check("transcript still shows the fetch tool row", chatText1.includes("fetch"));
 
 // Session card — the sidebar masthead: the tiny half-block wordmark (same
 // brand family as the splash, scaled down) + bare dir/model/git value lines.
@@ -121,7 +124,6 @@ check("session card shows the git branch", sidebarText.includes("on main"));
 // The card OWNS these facts while it's up — the chat column must not
 // double-print them (top-left context line blank, footer keeps only the
 // changed-files delta).
-const chatText1 = rows1.map((r) => r.slice(0, W - 46)).join("\n");
 check("chat top-left context line is blank while the card is up", !chatText1.includes("~/"));
 check("chat footer drops the model while the card is up", !chatText1.includes("ollama/gemma4:31b"));
 
@@ -129,7 +131,8 @@ check("chat footer drops the model while the card is up", !chatText1.includes("o
 // viewport's first content row (the row right under the context line) — that
 // is where scrolled content paints, which is the state the user sees
 // mid-session. BOTTOM: the sidebar's last rail row == the input block's
-// bottom rail row (the chat column's last ▎).
+// bottom rail row (the chat column's last ▎). With no Thinking panel, the
+// grow filler + under-input reserve still hold bottom alignment.
 const railRows = (lo: number, hi: number): number[] =>
   rows1.flatMap((r, i) => (r.slice(lo, hi).includes("▎") ? [i] : []));
 const chat = railRows(0, 60);
@@ -149,12 +152,14 @@ check(
   `chat bottom=${chat[chat.length - 1]} side bottom=${side[side.length - 1]}`,
 );
 
-// ── Scene 2: reasoning arrives — header flips to Thinking, trail interleaves.
+// ── Scene 2: reasoning arrives — Thinking panel appears (still no Activity).
 push({ type: "reasoning-delta", id: "r1", delta: "Now weighing the layout options.\n" } as UIEvent);
 await settle();
 const frame2 = t.captureCharFrame();
-check("header flips to Thinking once reasoning exists", frame2.includes("Thinking") && !frame2.includes("✻ Activity"));
-check("reasoning interleaves after activity", frame2.includes("weighing the layout options"));
+const side2 = frame2.split("\n").map((r) => r.slice(W - 44)).join("\n");
+check("Thinking panel appears once reasoning exists", side2.includes("Thinking"));
+check("sidebar still has no Activity header", !side2.includes("Activity"));
+check("reasoning text is in the Thinking panel", side2.includes("weighing the layout options"));
 
 // ── Scene 2b: a subagent fan-out — the sidebar hosts the Subagents panel
 // (child + live activity line), the inline chat-column panel stays hidden,

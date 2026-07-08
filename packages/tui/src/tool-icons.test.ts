@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { permissionPreview, toolIcon, toolSummary, toolLabel } from "./tool-icons.ts";
+import { displayPath, permissionPreview, toolIcon, toolSummary, toolLabel } from "./tool-icons.ts";
 
 test("known tools map to their distinct glyphs", () => {
   expect(toolIcon("bash")).toBe("$");
@@ -38,6 +38,22 @@ test("summaries read like actions, parsing object or JSON-string input", () => {
   expect(toolSummary("websearch", { query: "opentui solid" })).toBe('search "opentui solid"');
   // A long search query is truncated like other long args.
   expect(toolSummary("web_search", { query: "x".repeat(80) })).toMatch(/^search "x+…"$/);
+});
+
+test("displayPath shortens home + long absolute paths for scanable tool rows", () => {
+  expect(displayPath("src/app.tsx")).toBe("src/app.tsx");
+  expect(displayPath("/Users/robert/Code/vibe-codr/packages/tui/src/app.tsx")).toBe(
+    "~/Code/vibe-codr/packages/tui/src/app.tsx",
+  );
+  // Long paths prefer a readable tail over a hard mid-path clip.
+  const deep =
+    "/Users/robert/Code/very-long-project-name/packages/core/src/orchestration/runner.ts";
+  const short = displayPath(deep, 40);
+  expect(short.startsWith("…/") || short.startsWith("~/")).toBe(true);
+  expect(short.endsWith("runner.ts")).toBe(true);
+  expect(short.length).toBeLessThanOrEqual(40);
+  expect(toolSummary("read", { path: "/Users/me/proj/src/a.ts" })).toBe("read ~/proj/src/a.ts");
+  expect(toolSummary("edit", { path: "/home/me/app/file.ts" })).toBe("edit ~/app/file.ts");
 });
 
 test("a long bash command is truncated with an ellipsis", () => {

@@ -88,6 +88,33 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/**
+ * Shorten a filesystem path for a one-line tool summary (opencode-style
+ * scanability). Prefers a readable tail over a hard mid-path clip: long
+ * absolute paths become `…/pkg/src/file.ts` instead of
+ * `/Users/me/Code/very-long-pr…`. Leading home directories collapse to `~/`.
+ * Pure — no `process.cwd()` / `os.homedir()` — so unit tests stay hermetic.
+ */
+export function displayPath(path: string, max = 48): string {
+  if (!path) return "";
+  let norm = path.replace(/\\/g, "/");
+  // /Users/<name>/… or /home/<name>/… → ~/…
+  const home = norm.match(/^\/(?:Users|home)\/[^/]+(\/.*)?$/);
+  if (home) norm = `~${home[1] ?? ""}`;
+  if (norm.length <= max) return norm;
+  const parts = norm.split("/").filter((p) => p.length > 0);
+  if (parts.length < 2) return truncate(norm, max);
+  // Grow the tail until the next segment would overflow, then prefix `…/`.
+  let out = parts[parts.length - 1]!;
+  for (let i = parts.length - 2; i >= 0; i--) {
+    const next = `${parts[i]}/${out}`;
+    // +2 for the `…/` ellipsis prefix once we drop earlier segments.
+    if (next.length + 2 > max) return `…/${out}`;
+    out = next;
+  }
+  return truncate(out, max);
+}
+
 /** Compact `key=value` digest of remaining args, e.g. `[depth=2, all=true]`.
  * Objects/arrays digest as truncated JSON (a raw `String(v)` would print the
  * useless `[object Object]`). */
@@ -118,7 +145,7 @@ function safeJson(v: unknown): string {
 export function toolSummary(name: string, input: unknown): string {
   const a = asRecord(input);
   const key = name.toLowerCase();
-  const path = str(a.path || a.file || a.filePath || a.file_path);
+  const path = displayPath(str(a.path || a.file || a.filePath || a.file_path));
   switch (key) {
     case "bash":
     case "shell":
@@ -126,21 +153,21 @@ export function toolSummary(name: string, input: unknown): string {
       // the command (avoids a doubled `$ $`).
       return truncate(str(a.command || a.cmd), 72);
     case "read":
-      return `read ${path}`;
+      return path ? `read ${path}` : "read";
     case "write":
-      return `write ${path}`;
+      return path ? `write ${path}` : "write";
     case "edit":
     case "multiedit":
-      return `edit ${path}`;
+      return path ? `edit ${path}` : "edit";
     case "apply_patch":
-      return `patch ${path}`;
+      return path ? `patch ${path}` : "patch";
     case "glob":
-      return `glob ${quote(a.pattern || a.glob)}${a.cwd || a.path ? ` in ${str(a.cwd || a.path)}` : ""}`.trim();
+      return `glob ${quote(a.pattern || a.glob)}${a.cwd || a.path ? ` in ${displayPath(str(a.cwd || a.path), 32)}` : ""}`.trim();
     case "grep":
-      return `grep ${quote(a.pattern || a.query)}${a.path ? ` in ${str(a.path)}` : ""}`.trim();
+      return `grep ${quote(a.pattern || a.query)}${a.path ? ` in ${displayPath(str(a.path), 32)}` : ""}`.trim();
     case "list":
     case "ls":
-      return `list ${str(a.path) || "."}`;
+      return `list ${displayPath(str(a.path)) || "."}`;
     case "webfetch":
     case "web_fetch":
       return `fetch ${truncate(str(a.url), 64)}`;

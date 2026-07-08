@@ -38,7 +38,8 @@ test("/model with no argument falls through to run-slash", () => {
 
 test("/plan and /execute map to mode changes; /yolo routes to the engine handler", () => {
   expect(lineToCommand("/plan")).toEqual({ type: "set-mode", mode: "plan" });
-  expect(lineToCommand("/execute")).toEqual({ type: "set-mode", mode: "execute" });
+  // /execute is an explicit approve+start when a plan is waiting.
+  expect(lineToCommand("/execute")).toEqual({ type: "set-mode", mode: "execute", start: true });
   // /yolo needs BOTH settings (mode + approvals), so it runs engine-side.
   expect(lineToCommand("/yolo")).toEqual({ type: "run-slash", name: "yolo", args: "" });
 });
@@ -132,7 +133,7 @@ test("/plan <text> switches mode AND submits the text (not swallowed)", () => {
     { type: "submit-prompt", text: "add oauth to login" },
   ]);
   expect(lineToCommands("/execute run the migration")).toEqual([
-    { type: "set-mode", mode: "execute" },
+    { type: "set-mode", mode: "execute", start: true },
     { type: "submit-prompt", text: "run the migration" },
   ]);
   // Bare /plan is still a single mode switch.

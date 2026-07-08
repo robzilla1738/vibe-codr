@@ -119,6 +119,8 @@ export interface SessionDeps {
   goal?: string | null;
   projectMemory?: string;
   permissionResolver?: PermissionResolver;
+  /** Called when a hard spend-limit stop aborts the turn (engine pauses goal). */
+  onHardBudgetStop?: () => void;
   /** Extra system-prompt blocks (e.g. a named agent's instructions). */
   extraSystem?: string[];
   /** Restrict this (sub)agent's tools to an allowlist / minus a denylist (from a
@@ -456,7 +458,12 @@ export class Session {
     }
     // Only HARD-STOP on cost we actually know. Estimated/base-model fallback
     // spend still warns above, but cannot by itself abort or block a session.
-    if (budget.onExceed === "stop" && this.#actualCostUSD >= budget.limitUSD) this.#abort.abort();
+    if (budget.onExceed === "stop" && this.#actualCostUSD >= budget.limitUSD) {
+      this.#abort.abort();
+      // Notify the engine so a live goal run pauses (session abort alone does
+      // not go through engine `abort`, which is what pauses the goal flag).
+      this.#deps.onHardBudgetStop?.();
+    }
     return true;
   }
 
@@ -1006,10 +1013,13 @@ export class Session {
           ? { skillDescriptions: skills.descriptions() }
           : {}),
       });
+      // Live defaultAction: re-read approvalMode each check so mid-turn
+      // Shift+Tab YOLO↔ASK is honored for subsequent tools (the checker is
+      // built once per turn; a frozen "allow" used to ignore re-gating).
       const checker = new PermissionChecker(
         config.permissions,
         this.#deps.permissionResolver,
-        config.approvalMode === "auto" ? "allow" : "ask",
+        () => (config.approvalMode === "auto" ? "allow" : "ask"),
         // Canonicalize path-scoped rules against THIS session's cwd (which
         // edit/write resolve against), so an absolute deny can't be dodged by a
         // relative spelling — and vice-versa.
@@ -1022,6 +1032,14 @@ export class Session {
         emit: (e: UIEvent) => bus.emit(e),
         recordToolResult: (toolCallId: string, isError: boolean) =>
           this.#toolCallErrors.set(toolCallId, isError),
+        // Mutation latches only after a successful non-readOnly execute (adapter
+        // calls this) — not on tool-call intent, so denied writes don't trip the
+        // green-gate. Covers session-only tools outside the Toolset map too.
+        recordMutation: () => {
+          this.#turnMutated = true;
+        },
+        // Live mode for mid-turn plan hard-deny of write tools.
+        liveMode: () => this.mode,
         // Inject THIS session's id as the lock owner, so the claim registry can
         // tell same-agent re-entrant writes (serialize) from a different
         // subagent's concurrent write to the same file (hard-reject).
@@ -1879,14 +1897,10 @@ export class Session {
           break;
         }
         case "tool-call": {
-          // Track whether this turn changed the workspace (drives auto-verify).
-          // `spawn_subagent` is read-only here — it sets `#turnMutated` only if
-          // the *child* actually mutated (see `#spawnTool`), so a pure read-only
-          // investigation turn doesn't spuriously trigger auto-verify.
-          const def = this.#deps.toolset.get(part.toolName);
-          if (def && !def.readOnly) {
-            this.#turnMutated = true;
-          }
+          // Mutation is latched in the tool adapter AFTER a successful non-
+          // readOnly execute (recordMutation) — not here on tool-call intent —
+          // so a permission-denied write does not trip green-gate / auto-verify.
+          // Child mutations still fold in via onChildSettled.
           // Capture the URL webfetch was asked to fetch (its output is the page
           // body, not a URL list) so the ledger records the page actually pulled.
           if (part.toolName === "webfetch") {

@@ -1704,15 +1704,14 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "mode-changed":
             mode = event.mode;
-            // Leaving plan mode DISMISSES the plan card. Switching to
-            // execute/yolo already approved the plan engine-side (deferred
-            // handoff armed + "your next message starts implementation"
-            // notice); if the card survived, the next typed message would be
-            // captured as a plan REVISION (answerPlan "edit"), silently
-            // revoking the armed handoff and re-planning — the opposite of
-            // what the notice just promised. Its other affordances are stale
-            // too: Enter is a no-op (#lastPlan already spent) and Ctrl+Y's
-            // yolo intent is dropped by the double-accept guard.
+            // Leaving plan mode DISMISSES the plan card. Live approve (card
+            // Enter / /execute) already spent #lastPlan and enqueued the
+            // handoff turn engine-side; if the card survived, the next typed
+            // message would be captured as a plan REVISION (answerPlan "edit")
+            // and re-plan instead of letting execution proceed. Bare
+            // Shift+Tab never leaves plan while a plan is waiting (engine
+            // refuses silent approve), so this path is the post-approve /
+            // leave-plan case.
             if (event.mode !== "plan") setPlan(null);
             refreshStatus();
             break;

@@ -1135,8 +1135,8 @@ function blockedByDetached(h: EngineHandle): boolean {
   if (!live) return false;
   h.notice(
     `${live} background subagent(s) are still writing — restoring now would race them. ` +
-      "Wait for them (check_task) or stop them first (Esc aborts the turn; background children " +
-      "are reaped at exit), then retry.",
+      "Wait for them (check_task) or press Esc (aborts the foreground turn AND background " +
+      "children), then retry. Background children are also reaped at exit.",
     "warn",
   );
   return true;

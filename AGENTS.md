@@ -176,16 +176,24 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   coercing a writer to read-only would hand the child a write-oriented brief
   with no write tools and burn a turn; the error points at the read-only agents
   it can use (an explicit `mode:"execute"` *without* a named agent is still
-  safely coerced). `spawn_subagent` is `readOnly: true` so the orchestration itself never prompts
-  for permission — the child's own tools gate their side effects individually
-  (auto-verify still counts a spawn turn as mutating via a special-case). Three
-  coding agents ship by default (`agents.ts` `defaultAgents()`: `explore`/`review`
-  are plan-mode/read-only, `test` is execute); `loadAgents` layers
-  `.vibe/agents/*.md` over them so a user file overrides a default by name. The
-  roster is injected into the prompt for capability routing. Per-fan-out
-  concurrency is bounded by a **per-session** semaphore (`#childGate` =
-  `createSemaphore(subagent.maxParallel)`) — per-session on purpose: a tree-global
-  cap deadlocks a parent awaiting its own children.
+  safely coerced). **Plan-mode `spawn_tasks` is scout-only** — specs with
+  `worktree`/`hard`/`check`/`verify` are rejected (a plan-coerced child cannot
+  honestly green-check an implement task). `spawn_subagent` is `readOnly: true`
+  so the orchestration itself never prompts for permission — the child's own
+  tools gate their side effects individually (auto-verify still counts a spawn
+  turn as mutating via a special-case). Three coding agents ship by default
+  (`agents.ts` `defaultAgents()`: `explore`/`review` are plan-mode/read-only,
+  `test` is execute); `loadAgents` layers `.vibe/agents/*.md` over them so a
+  user file overrides a default by name. The roster is injected into the prompt
+  for capability routing. Per-fan-out concurrency is bounded by a **per-session**
+  semaphore (`#childGate` = `createSemaphore(subagent.maxParallel)`) — per-session
+  on purpose: a tree-global cap deadlocks a parent awaiting its own children.
+  **Child cost folds as a delta** (baseline snapshotted before each run) so
+  `continue_subagent` / structured-output retries never triangular-double-count
+  a retained Session's cumulative usage. **`continue_subagent` serializes per
+  child id** (parallel continues on different ids still fan out). **Esc aborts
+  detached children** as well as the foreground turn; a mutating detached child
+  sets sticky `backgroundDirty` so the next gateable afterTurn still verifies.
 - **Web context-gathering is adaptive, by prompt.** The "Gather web context in
   proportion to the question" block in `system-prompt.ts` (part of `BASE`)
   calibrates depth: quick facts answered from `web_search` snippets (one query, no
@@ -652,12 +660,13 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   the built-in handler exits WITHOUT finalize (the old leak).
 - **Plan-approval modal.** A presented plan (`plan-presented` event) is an
   interactive gate, not a static hint: with the input empty, **Enter accepts**
-  (`resolve-plan` → engine switches to execute, seeds the task list from the plan's
-  checklist, and runs a turn against the approved plan via the existing
-  `#pendingHandoff`), **typing a message revises** it (`resolve-plan` `edit` →
-  re-plan in plan mode), and **Esc keeps planning**. The binding is collision-free
-  on purpose — single letters go into the revision text, not a shortcut — mirroring
-  the permission card's `resolve-permission` pattern.
+  (`resolve-plan` → `#approvePlan` switches to execute, seeds the task list from
+  the plan's checklist, and enqueues the handoff turn **immediately** — same as
+  `/execute` with `start:true`), **typing a message revises** it (`resolve-plan`
+  `edit` → re-plan in plan mode), and **Esc keeps planning**. `#pendingHandoff`
+  is only for deny-rearm / `--resume`, not the live approve path. The binding is
+  collision-free on purpose — single letters go into the revision text, not a
+  shortcut — mirroring the permission card's `resolve-permission` pattern.
 - **Interactive submenus (the `/` menu):** one normalized `menuModel` memo in
   `app.tsx` drives five shapes — `command` (flat list), `value` (enum submenus like
   `/theme`/`/approvals`/`/reasoning`, current value marked `●`), `models` (the model

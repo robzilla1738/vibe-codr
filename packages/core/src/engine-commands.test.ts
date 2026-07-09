@@ -363,6 +363,7 @@ test("/undo refuses while a detached subagent is still writing, then succeeds on
   await handleSlash(h, "undo", "");
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
   expect(messages.some((m) => /background subagent/.test(m.message))).toBe(true);
+  expect(messages.some((m) => /Esc/.test(m.message) && /background/i.test(m.message))).toBe(true);
 
   // The child settles → the restore goes through.
   detached = 0;

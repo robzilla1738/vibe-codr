@@ -1389,3 +1389,164 @@ test("a mid-turn mode flip cannot un-coerce a child spawned later in the same pl
   // …but the child (3rd model call) still forked READ-ONLY: no mutating tools.
   expect(toolNames[2]).not.toContain("fake_write");
 });
+
+/** Text step with custom usage (for cost-fold delta tests). */
+function textStepWithUsage(delta: string, usage: { inputTokens: number; outputTokens: number }) {
+  return stream([
+    { type: "stream-start", warnings: [] },
+    { type: "text-start", id: "t" },
+    { type: "text-delta", id: "t", delta },
+    { type: "text-end", id: "t" },
+    {
+      type: "finish",
+      finishReason: "stop",
+      usage: { ...usage, totalTokens: usage.inputTokens + usage.outputTokens },
+    },
+  ]);
+}
+
+test("continue_subagent folds only THIS-run cost (no triangular double-count)", async () => {
+  // Child run 1: 100 in / 20 out. Child run 2: 50 in / 10 out.
+  // Child Session accumulates to 150/30; parent must fold +50/+10 on continue,
+  // not re-add the full cumulative 150/30 (the old triangular bug).
+  const childU1 = { inputTokens: 100, outputTokens: 20 };
+  const childU2 = { inputTokens: 50, outputTokens: 10 };
+  let call = 0;
+  let childId = "";
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const i = call++;
+      if (i === 0) return toolStep("spawn_subagent", { prompt: "remember X" }) as never;
+      if (i === 1) return textStepWithUsage("learned X", childU1) as never;
+      if (i === 2) return textStep("spawned") as never;
+      if (i === 3) return toolStep("continue_subagent", { id: childId, message: "recall X" }) as never;
+      if (i === 4) return textStepWithUsage("X is recalled", childU2) as never;
+      return textStep("done") as never;
+    },
+  });
+
+  const bus = new EventBus();
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) {
+      if (e.type === "subagent-started" && !childId) childId = e.subagentId;
+    }
+  })();
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    freshness: new FreshnessRegistry(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  await session.run("spawn");
+  await new Promise((r) => setTimeout(r, 10));
+  const afterSpawn = { in: session.usage.inputTokens, out: session.usage.outputTokens };
+  // Parent spawn+wrap steps use USAGE(1,1) each; child contributed 100/20.
+  expect(afterSpawn.in).toBeGreaterThanOrEqual(100);
+  expect(afterSpawn.out).toBeGreaterThanOrEqual(20);
+
+  await session.run("continue");
+  bus.close();
+  await collector;
+
+  const deltaIn = session.usage.inputTokens - afterSpawn.in;
+  const deltaOut = session.usage.outputTokens - afterSpawn.out;
+  // Continue turn: parent steps (continue tool + wrap) each USAGE(1,1) ≈ 2/2,
+  // plus child THIS-run 50/10. Must NOT include child's prior 100/20 again
+  // (that would make deltaIn ≥ 150).
+  expect(deltaIn).toBeGreaterThanOrEqual(50);
+  expect(deltaIn).toBeLessThan(100); // not triangular (would be ~152+)
+  expect(deltaOut).toBeGreaterThanOrEqual(10);
+  expect(deltaOut).toBeLessThan(40);
+});
+
+test("structured-output retry folds only per-attempt cost, not cumulative re-add", async () => {
+  const attempt1 = { inputTokens: 80, outputTokens: 15 };
+  const attempt2 = { inputTokens: 40, outputTokens: 8 };
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const i = call++;
+      if (i === 0) {
+        return toolStep("spawn_subagent", {
+          prompt: "report status",
+          outputSchema: OUTPUT_SCHEMA,
+        }) as never;
+      }
+      if (i === 1) return textStepWithUsage("not json yet", attempt1) as never;
+      if (i === 2) return textStepWithUsage('{"status":"ok","count":1}', attempt2) as never;
+      return textStep("done") as never;
+    },
+  });
+
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  await session.run("structured with retry");
+  // Parent: spawn step (1/1) + wrap (1/1) + child attempt1 (80/15) + attempt2 (40/8)
+  // = 122 in / 25 out if deltas only. Triangular would be 80+(80+40)=200 child in alone.
+  expect(session.usage.inputTokens).toBeLessThan(160);
+  expect(session.usage.inputTokens).toBeGreaterThanOrEqual(80 + 40);
+  expect(session.usage.outputTokens).toBeGreaterThanOrEqual(15 + 8);
+  expect(session.usage.outputTokens).toBeLessThan(50);
+});
+
+test("plan-mode spawn_tasks rejects check/verify/worktree/hard (scout-only)", async () => {
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => {
+      const i = call++;
+      if (i === 0) {
+        return toolStep("spawn_tasks", {
+          tasks: [{ id: "impl", objective: "implement the feature", check: true }],
+        }) as never;
+      }
+      return textStep("acknowledged") as never;
+    },
+  });
+
+  const bus = new EventBus();
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  const config = defaultConfig();
+  config.orchestration = { ...config.orchestration, enabled: true };
+  const session = new Session({
+    config,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    freshness: new FreshnessRegistry(),
+    cwd: process.cwd(),
+    model: "mock/test",
+    mode: "plan",
+  });
+  await session.run("plan with implement DAG");
+  bus.close();
+  await collector;
+
+  const done = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  expect(done && done.type === "tool-call-finished" && done.isError).toBe(true);
+  const out = done && done.type === "tool-call-finished" ? String(done.output) : "";
+  expect(out).toMatch(/read-only scouts only|while planning/i);
+  // No child was spawned.
+  expect(events.some((e) => e.type === "subagent-started")).toBe(false);
+  expect(call).toBe(2); // parent spawn_tasks + wrap only
+});

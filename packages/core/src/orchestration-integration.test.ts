@@ -457,10 +457,12 @@ test("a detached spawn_tasks batch runs in the background, journals, and honors 
   await collector;
 
   // Exactly ONE child was forked (the ceiling of one), so one task completed and
-  // the other failed on the budget.
+  // the other failed on the budget. Batch isError is true (partial failure is
+  // honest — not silently "completed").
   expect(events.filter((e) => e.type === "subagent-started").length).toBe(1);
   const rec = session.childRegistry?.getDetached(batchId);
-  expect(rec?.status).toBe("completed"); // the batch promise settled
+  expect(rec?.status).toBe("failed");
+  expect(rec?.isError).toBe(true);
   expect(rec?.report).toContain("budget exhausted"); // the ceiling-blocked task
   expect(rec?.report).toContain("1 completed");
 

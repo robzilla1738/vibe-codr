@@ -197,13 +197,13 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       );
       break;
     case "plan-presented": {
-      // The hint matches what /execute actually does now (arms the handoff; the
-      // NEXT message starts implementation) — and is suppressed in a one-shot
-      // run, where the process exits and nothing can act on it.
+      // /execute (and the plan card's Enter) approve AND start implementation
+      // immediately — not "next message". Suppressed in a one-shot run, where
+      // the process exits and nothing can act on it.
       const hint = opts.oneShot
         ? ""
         : `${ansi.dim(
-            "Approve with /execute — your next message starts implementation. Or reply to refine the plan.",
+            "Approve with /execute (starts immediately), or reply to refine the plan.",
           )}\n`;
       // Surface the v2 grounding metadata the TUI shows, so a headless/CI plan
       // run isn't blind to an UNGROUNDED plan or its sources/assumptions.

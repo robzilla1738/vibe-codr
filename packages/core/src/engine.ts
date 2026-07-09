@@ -336,9 +336,10 @@ export class Engine implements EngineClient {
   #shutdownRequested = false;
   /** The last plan the model presented via present_plan (for handoff on execute). */
   #lastPlan: string | undefined;
-  /** Set when plan→execute happens after a presented plan: the next prompt gets
-   * a "the user approved your plan; proceed" preamble so the model doesn't read
-   * its own "stop here" as an instruction to halt. */
+  /** Armed when a handoff directive must ride the next user prompt: deny-rearm
+   * after a vetoed plan-execute turn, and restore from engine state on --resume.
+   * Live approve surfaces (card Enter / /execute) do NOT use this — they enqueue
+   * the execute turn immediately with `{handoff:true}` bound to that job. */
   #pendingHandoff = false;
   #verifyAttempts = 0;
   /** Bounded red→fix→re-gate rounds for the green-gate, per user prompt (reset
@@ -784,7 +785,7 @@ export class Engine implements EngineClient {
     // resolve-plan{accept} fails this guard instead of seeding the task list twice
     // + firing two execute turns.
     if (!this.#lastPlan) return;
-    this.#approvePlan(true, approvals);
+    this.#approvePlan(approvals);
   }
 
   /**
@@ -835,20 +836,13 @@ export class Engine implements EngineClient {
   }
 
   /**
-   * The SINGLE plan-approval routine both approval surfaces route through — the
-   * plan card's accept (#resolvePlan) and a plan→execute mode switch (`set-mode`)
-   * — so the two can't drift apart on the approval invariant (the "paths drift
-   * apart" fragility 1f44d14 set out to kill). Approving a plan is a transition
-   * into gated EXECUTE via the engine-owned #setModeGated, then arming the
-   * plan→execute handoff. The caller picks HOW the handoff is consumed:
-   *   - `start` (card accept): run NOW — clear the plan synchronously
-   *     (double-accept guard), seed the task list, and enqueue the execute turn
-   *     with the handoff bound to THAT job (uncontendable by a queued prompt);
-   *   - `!start` (mode switch): DEFER — arm #pendingHandoff (persisted so a quit
-   *     between approval and the next prompt survives --resume) so the user's NEXT
-   *     message carries the approval, and notice that it's armed-not-running.
+   * The SINGLE plan-approval routine for live user surfaces (plan-card Enter,
+   * `/execute`, YOLO). Switches to gated EXECUTE, seeds the task list from the
+   * plan checklist, and enqueues the handoff turn NOW. Bare Shift+Tab deliberately
+   * does NOT call this (it refuses silent approve while a plan is waiting).
+   * `#pendingHandoff` is only for deny-rearm / --resume — not this path.
    */
-  #approvePlan(start: boolean, approvals?: "auto"): void {
+  #approvePlan(approvals?: "auto"): void {
     // Whether execution should run un-gated (YOLO): an explicit override from
     // the plan card's `Y`, or the user already being in auto-approvals when they
     // accepted (e.g. Shift+Tab'd to yolo while the card was up). Captured BEFORE
@@ -856,36 +850,20 @@ export class Engine implements EngineClient {
     const wantAuto = approvals === "auto" || this.#config.approvalMode === "auto";
     this.#setModeGated("execute");
     if (wantAuto) handleApprovals(this.#getCommandHandle(), "auto", true);
-    if (start) {
-      const plan = this.#lastPlan;
-      this.#lastPlan = undefined;
-      // An immediate accept supersedes any deferred approval a prior mode switch
-      // armed — otherwise the user's NEXT message would fire a second handoff.
-      if (this.#pendingHandoff) {
-        this.#pendingHandoff = false;
-        void this.#persistEngineState();
-      }
-      if (plan) this.#seedTasksFromPlan(plan);
-      // #handlePrompt's handoff directive names the seeded tasks by id and
-      // states the update contract, so the kickoff itself stays minimal.
-      this.#enqueue("execute plan", () =>
-        this.#handlePrompt("Proceed with the approved plan.", { handoff: true }),
-      );
-    } else {
-      // Deferred approval (mode-switch with start:false): seed the task list NOW
-      // so the user sees it immediately and the handoff turn starts with ids in
-      // CURRENT TASKS. The approval SPENDS the plan — discard the persisted file
-      // too so --resume cannot re-arm a spent approval from the plan file alone.
-      if (this.#lastPlan) this.#seedTasksFromPlan(this.#lastPlan);
-      this.#lastPlan = undefined;
-      this.#pendingHandoff = true;
-      void this.#discardPersistedPlan();
-      this.#bus.emit({
-        type: "notice",
-        level: "info",
-        message: "Plan approved — your next message starts implementation.",
-      });
+    const plan = this.#lastPlan;
+    this.#lastPlan = undefined;
+    // Immediate accept supersedes any deferred approval (deny-rearm / resume) —
+    // otherwise the user's NEXT message would fire a second handoff.
+    if (this.#pendingHandoff) {
+      this.#pendingHandoff = false;
+      void this.#persistEngineState();
     }
+    if (plan) this.#seedTasksFromPlan(plan);
+    // #handlePrompt's handoff directive names the seeded tasks by id and
+    // states the update contract, so the kickoff itself stays minimal.
+    this.#enqueue("execute plan", () =>
+      this.#handlePrompt("Proceed with the approved plan.", { handoff: true }),
+    );
   }
 
   /**
@@ -1297,7 +1275,7 @@ export class Engine implements EngineClient {
           this.#session.mode === "plan" && command.mode === "execute" && this.#lastPlan !== undefined;
         if (approvingPlan && command.start) {
           // Explicit approve+start (card Enter / /execute): run immediately.
-          this.#approvePlan(true);
+          this.#approvePlan();
         } else if (approvingPlan) {
           // Bare set-mode (Shift+Tab): do NOT auto-approve. Stay in plan so the
           // card remains the approval surface; chip would otherwise dismiss it
@@ -1436,6 +1414,10 @@ export class Engine implements EngineClient {
         // otherwise leave it lingering into the next turn.
         this.#settlePendingPermissions("aborted");
         (this.#loopSession ?? this.#session).abort();
+        // Also stop detached (background) children: Esc means stop the run, not
+        // only the foreground turn. Their private AbortControllers are not wired
+        // to the session abort — without this they'd keep writing until finalize.
+        this.#session.childRegistry?.abortAllDetached();
         break;
       case "dequeue": {
         // Remove one waiting prompt without running it (cancel a queued item).
@@ -2420,7 +2402,12 @@ export class Engine implements EngineClient {
     const build = this.#config.build;
     if (!(build.enabled && build.gate.enabled)) {
       // Build intelligence off (or gate disabled): legacy verify behavior.
+      const wasGateable = this.#turnIsGateable();
       const verify = await this.#maybeVerify();
+      // This pass considered the turn for verification — consume sticky dirt.
+      // Leave it set when not gateable so a later execute turn still verifies
+      // detached edits (e.g. dirt arrived while we were in plan mode).
+      if (wasGateable) this.#session.clearBackgroundDirty();
       // A verify-fix is already queued (or verify exhausted red) — don't also
       // advance plan/goal chains; the fix turn re-enters #afterTurn when done.
       if (verify.fixEnqueued || this.#fixPending) return;
@@ -2434,7 +2421,8 @@ export class Engine implements EngineClient {
     // The gate runs on the same terms the legacy verify did: only after a
     // mutating execute turn the user didn't interrupt. Loop iterations route
     // through #handlePrompt too, so a mutating loop tick is verified the same
-    // way as a typed prompt.
+    // way as a typed prompt. backgroundDirty covers detached children that
+    // mutated after the spawn turn already finished.
     if (!this.#turnIsGateable()) {
       // A plan-execution turn that produced no edit (the model narrated or asked
       // instead of working) must not silently strand the chain — nudge the
@@ -2444,6 +2432,8 @@ export class Engine implements EngineClient {
       await this.#maybeContinueGoal();
       return;
     }
+    // About to gate — sticky background dirt has been honored for this pass.
+    this.#session.clearBackgroundDirty();
 
     let profile = this.#session.repoProfile;
     let runnable = profile ? pickChecks(profile, build.gate.checks) : [];
@@ -3168,13 +3158,15 @@ export class Engine implements EngineClient {
   }
 
   /** The shared gating for post-turn verification: a mutating execute turn the
-   * user didn't interrupt (matches the legacy `#maybeVerify` guards). */
+   * user didn't interrupt (matches the legacy `#maybeVerify` guards). Also true
+   * when a DETACHED subagent dirtied the tree after the spawn turn finished
+   * (Session.backgroundDirty) so background edits are not skipped forever. */
   #turnIsGateable(): boolean {
     // turnMode, not mode: the turn is judged by the mode it STARTED in — a
     // mid-turn flip to plan must not smuggle a mutating turn past the gate.
     return (
       this.#session.turnMode === "execute" &&
-      this.#session.didMutate &&
+      (this.#session.didMutate || this.#session.backgroundDirty) &&
       !this.#session.interrupted
     );
   }
@@ -3490,7 +3482,12 @@ export class Engine implements EngineClient {
     const none = { ran: false, ok: false, fixEnqueued: false, exhaustedFail: false };
     const { command, auto, maxRetries } = this.#config.verify;
     if (!auto || !command) return none;
-    if (this.#session.turnMode !== "execute" || !this.#session.didMutate) return none;
+    if (
+      this.#session.turnMode !== "execute" ||
+      !(this.#session.didMutate || this.#session.backgroundDirty)
+    ) {
+      return none;
+    }
     // The user interrupted this turn (Esc / steer) — don't run verify against a
     // half-applied edit and enqueue an unsolicited "verification failed, fix it"
     // turn behind whatever they steered to.

@@ -620,14 +620,19 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   roster is injected into the prompt so the model can route by capability;
   `.vibe/agents/*.md` add or override them by name. Planning can fan out too —
   while in plan mode every subagent is coerced read-only, so you get parallel
-  codebase exploration before converging on a plan, with no risk of a write.
-  Fan-out is bounded by `subagent.maxParallel` (default 8) and recursion by
-  `subagent.maxDepth` (default 3). A tree-wide **exclusive-ownership** file lock
-  hard-rejects a concurrent write to a file another subagent owns (instead of
-  silently clobbering it); a shared **blackboard** (`post_note` / `read_notes`)
-  lets parallel agents coordinate; and a tree-global **adaptive concurrency
+  codebase exploration before converging on a plan, with no risk of a write
+  (`spawn_tasks` while planning is **scout-only** — `worktree` / `hard` /
+  `check` / `verify` are rejected until execute). Fan-out is bounded by
+  `subagent.maxParallel` (default 8) and recursion by `subagent.maxDepth`
+  (default 3). A tree-wide **exclusive-ownership** file lock hard-rejects a
+  concurrent write to a file another subagent owns (instead of silently
+  clobbering it); a shared **blackboard** (`post_note` / `read_notes`) lets
+  parallel agents coordinate; and a tree-global **adaptive concurrency
   limiter** keeps a wide fan-out from stampeding the provider. Set a default
-  subagent model with `subagent.model`.
+  subagent model with `subagent.model`. Resume a finished child with
+  `continue_subagent` (keeps full context; cost is folded honestly per run).
+  Background work: `detach:true` + `check_task` — **Esc stops background
+  children** as well as the foreground turn.
 - **Deterministic orchestration (default-on)** — `spawn_tasks([{objective,
   deps, files, verify, check, tier, worktree, hard, agent}])`: the model submits
   a whole dependency-ordered plan and the **engine** schedules it — independent

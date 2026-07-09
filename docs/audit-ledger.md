@@ -381,7 +381,10 @@ Three auditors (policy engine, mode transitions, plus direct reproduction).
   mode. Mitigation would need an independent side-effect classifier — recorded.
 - [LOW] `approvalMode` not persisted across resume (fail-safe: resumes as gated EXECUTE,
   never YOLO). Acceptable; documented as intentional fail-safe.
-- [LOW] `pendingHandoff` can linger if a plan is approved via Shift+Tab while the card is
+- [LOW, closed] `pendingHandoff` linger on Shift+Tab: bare `set-mode` no longer
+  approves a waiting plan (stays in plan + notice). Live approve is immediate
+  `#approvePlan` only; `#pendingHandoff` is deny-rearm / resume. Was:
+  `pendingHandoff` can linger if a plan is approved via Shift+Tab while the card is
   still visible (TUI dismissal gap). Recorded for the TUI pass (subsystem 11).
   *(Closed 2026-07-02, modes-flow pass: the TUI dismisses the plan card on any
   mode-changed away from plan — the double-accept affordance is gone — and the engine

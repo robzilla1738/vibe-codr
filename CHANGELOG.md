@@ -4,6 +4,27 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — plan mode + subagent orchestration honesty
+
+- **Subagent cost no longer double-counts on `continue_subagent` or structured-
+  output retries.** Parent `/cost` and budget accounting fold only the delta
+  of each child run (the same retained Session accumulates totals; re-adding
+  the cumulative figure was triangular).
+- **Plan-mode `spawn_tasks` is scout-only.** `worktree` / `hard` / `check` /
+  `verify` are rejected while planning — a read-only child cannot honestly
+  satisfy implement-and-verify flags (vacuous green on an unchanged tree).
+- **Detached (background) honesty:** a task batch that had any failed/skipped
+  task reports `isError` (not a silent success); a mutating background child
+  notices and sets sticky dirt so the next gateable turn still verifies;
+  **Esc aborts background children** as well as the foreground turn (and the
+  `/undo` notice says so).
+- **`continue_subagent` serializes per child id** so two parallel continues
+  cannot interleave `Session.run` on one retained child.
+- **Plan approve UX:** headless plan hint says `/execute` starts immediately
+  (not “next message”); dead deferred `#approvePlan(false)` path removed —
+  live surfaces always approve-and-run. `#pendingHandoff` remains for
+  deny-rearm / `--resume` only.
+
 ### Changed — goal / loop / plan thoroughness defaults
 
 - **`goal.maxRounds` default 25 → 10.** Autonomous goal runs stay thorough via
@@ -84,7 +105,7 @@ now reports **0 active** Critical/High/Medium/Low. Highlights:
 - **Bare mode switches no longer approve a waiting plan.** Shift+Tab /
   `set-mode` without `start:true` stays in plan and notices how to approve
   (plan-card Enter or `/execute`). Only an explicit start runs
-  `#approvePlan(true)` and begins implementation.
+  `#approvePlan` and begins implementation immediately.
 - **Quiet YOLO is ignored while a plan is waiting** so cycling past YOLO
   after a refused bare set-mode cannot accidentally leave unattended
   approvals armed for the next accept.

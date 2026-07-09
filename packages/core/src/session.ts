@@ -63,6 +63,7 @@ import type { Limiter } from "./limiter.ts";
 import type { Blackboard } from "./blackboard.ts";
 import {
   OrchestratorRunner,
+  type ChildUsageBaseline,
   type SessionHandle,
 } from "./orchestration/orchestrator-runner.ts";
 export { isReviewClean } from "./orchestration/orchestrator-runner.ts";
@@ -249,6 +250,10 @@ export class Session {
   #costEstimated = false;
   #price: (ModelPrice & { estimated?: boolean }) | undefined;
   #turnMutated = false;
+  /** Sticky: a DETACHED (background) subagent mutated the workspace after the
+   * spawning turn already evaluated didMutate for the green-gate. Survives
+   * until the next gateable after-turn clears it so the tree still gets verified. */
+  #backgroundDirty = false;
   /** Set once the session's cumulative cost crosses the configured budget. */
   #budgetTripped = false;
   #createdAt: number;
@@ -376,23 +381,43 @@ export class Session {
         return self.#deps;
       },
       fork: (overrides) => self.fork(overrides),
-      onChildSettled: (child) => self.#foldChildUsage(child),
+      onChildSettled: (child, baseline) => self.#foldChildUsage(child, baseline),
       suspendLimiterSlot: (fn) => self.suspendLimiterSlot(fn),
       setTasks: (incoming) => self.setTasks(incoming),
       patchTasks: (updates, add) => self.patchTasks(updates, add),
     };
   }
 
-  /** Fold a settled subagent's mutation flag + usage + cost up into this session
-   * (the child runs on an isolated bus), so auto-verify, `/cost`, and the spend
-   * guard all account for delegated work. */
-  #foldChildUsage(child: Session): void {
+  /** Fold a settled subagent's mutation flag + THIS-RUN usage/cost into this
+   * session (the child runs on an isolated bus), so auto-verify, `/cost`, and
+   * the spend guard all account for delegated work. Only the delta since
+   * `baseline` is folded — required so continue_subagent / structured retries
+   * (same Session, cumulative totals) never re-add prior turns. */
+  #foldChildUsage(child: Session, baseline: ChildUsageBaseline): void {
     // A child that actually mutated the workspace makes THIS turn a mutating one
     // (so auto-verify runs); a read-only investigation child does not.
-    if (child.didMutate) this.#turnMutated = true;
-    addUsage(this.#usage, child.usage);
-    this.#costUSD += child.costUSD;
-    this.#actualCostUSD += child.actualCostUSD;
+    // Also set sticky #backgroundDirty: a DETACHED child may settle after the
+    // parent turn already evaluated didMutate for the green-gate — the sticky
+    // flag makes the NEXT turn still gate. Harmless on sync children (cleared
+    // by the same afterTurn that honors didMutate).
+    if (child.didMutate) {
+      this.#turnMutated = true;
+      this.#backgroundDirty = true;
+    }
+    const cu = child.usage;
+    const dIn = Math.max(0, (cu.inputTokens ?? 0) - (baseline.usage.inputTokens ?? 0));
+    const dOut = Math.max(0, (cu.outputTokens ?? 0) - (baseline.usage.outputTokens ?? 0));
+    const dCached = Math.max(
+      0,
+      (cu.cachedInputTokens ?? 0) - (baseline.usage.cachedInputTokens ?? 0),
+    );
+    addUsage(this.#usage, {
+      inputTokens: dIn,
+      outputTokens: dOut,
+      ...(dCached ? { cachedInputTokens: dCached } : {}),
+    });
+    this.#costUSD += Math.max(0, child.costUSD - baseline.costUSD);
+    this.#actualCostUSD += Math.max(0, child.actualCostUSD - baseline.actualCostUSD);
     this.#costEstimated ||= child.costEstimated;
     this.#deps.bus.emit({ type: "usage-updated", sessionId: this.id, usage: this.#usageSnapshot() });
     this.#enforceBudget();
@@ -523,6 +548,18 @@ export class Session {
   /** Whether the most recent turn ran a side-effecting (non-read-only) tool. */
   get didMutate(): boolean {
     return this.#turnMutated;
+  }
+
+  /** True when a background subagent mutated the workspace after its parent
+   * turn already finished (see `#backgroundDirty`). The engine ORs this into
+   * the green-gate / auto-verify decision so detached edits are not skipped. */
+  get backgroundDirty(): boolean {
+    return this.#backgroundDirty;
+  }
+
+  /** Clear the sticky background-mutate flag after a post-turn gate has run. */
+  clearBackgroundDirty(): void {
+    this.#backgroundDirty = false;
   }
 
   /** The mode the most recent turn STARTED in. Post-turn gating must judge a

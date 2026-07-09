@@ -69,6 +69,15 @@ function capDiff(s: string): string {
     : s;
 }
 
+/** Snapshot of a child's cumulative usage/cost taken BEFORE a run, so the
+ * parent folds only the delta of THIS run (continue_subagent / structured
+ * retries re-use the same Session whose totals accumulate). */
+export interface ChildUsageBaseline {
+  usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  costUSD: number;
+  actualCostUSD: number;
+}
+
 /**
  * The slice of a `Session` the orchestrator machinery depends on. Keeping this
  * explicit (rather than reaching into the whole Session) keeps the runner's
@@ -89,8 +98,10 @@ export interface SessionHandle {
   readonly deps: SessionDeps;
   /** Fork a child session (a fresh subagent conversation). */
   fork(overrides: Partial<SessionDeps> & { model?: string }): Session;
-  /** Fold a settled child's mutation flag + usage + cost up into the parent. */
-  onChildSettled(child: Session): void;
+  /** Fold a settled child's mutation flag + THIS-RUN usage/cost into the parent.
+   * `baseline` is snapshotted before the run so multi-run children
+   * (continue_subagent, structured retries) don't double-count prior turns. */
+  onChildSettled(child: Session, baseline: ChildUsageBaseline): void;
   /** Release the parent's tree-global limiter slot for the span of `fn` (while a
    * spawn tool awaits its children the parent makes no provider call), so a queued
    * child can acquire it — breaking the fan-out hold-and-wait. Ref-counted in the
@@ -256,7 +267,21 @@ export class OrchestratorRunner {
         if (detach === true && this.#detachAllowed()) {
           const abort = new AbortController();
           const promise = this.#runSpawnedChild(child, prompt, outputSchema, abort.signal, false)
-            .then((r) => this.#childRegistry.markDetachedFinished(child.id, { report: r.text, isError: r.isError }))
+            .then((r) => {
+              this.#childRegistry.markDetachedFinished(child.id, { report: r.text, isError: r.isError });
+              // Detached mutations land after the parent turn may already have
+              // skipped the green-gate — surface that so the user (and the next
+              // turn's gate via Session.backgroundDirty) can react.
+              if (child.didMutate) {
+                this.#handle.deps.bus.emit({
+                  type: "notice",
+                  level: "info",
+                  message:
+                    `Background subagent \`${child.id}\` mutated the workspace — ` +
+                    "verification will run on your next turn (or /verify).",
+                });
+              }
+            })
             .catch((err) =>
               this.#childRegistry.markDetachedFinished(child.id, {
                 report: `Background subagent threw: ${(err as Error)?.message ?? String(err)}`,
@@ -308,58 +333,63 @@ export class OrchestratorRunner {
       readOnly: true,
       concurrencySafe: true,
       execute: async ({ id, message }, ctx) => {
-        const child = this.#childRegistry.lookup(id);
-        if (!child) {
-          const max = this.#handle.deps.config.subagent.retainCompleted;
-          return {
-            output:
-              `No retained subagent with id "${id}" — it was never spawned in this session tree, or ` +
-              `has been evicted (only the ${max} most recently used completed subagents are retained). ` +
-              "Spawn a fresh subagent instead.",
-            isError: true,
-          };
-        }
-        // Belt-and-braces beyond the retention guard: a retained child whose
-        // working directory has since vanished (a worktree it descended from was
-        // torn down) can't be resumed — running it would ENOENT. Evict it and
-        // report the expiry honestly rather than crash.
-        if (!existsSync(child.cwd)) {
-          this.#childRegistry.evict(id);
-          return {
-            output:
-              `Subagent "${id}" can no longer be resumed — its working directory was cleaned up ` +
-              "(it ran inside a worktree that has since been removed). Spawn a fresh subagent instead.",
-            isError: true,
-          };
-        }
-        // Re-gate mode like #forkChild: coerce the child to plan while the parent
-        // is planning (read-only). The coercion is REVERSIBLE — remember the
-        // child's pre-coercion mode so a later continuation, once the parent is
-        // executing again, can restore it. Never auto-PROMOTE a plan-native child:
-        // only a mode we ourselves coerced away is ever restored.
-        if (this.#parentPlanning()) {
-          if (child.mode !== "plan") {
-            this.#childRegistry.rememberCoercedMode(id, child.mode);
-            child.setMode("plan");
+        // Serialize continues of the SAME child: concurrencySafe allows parallel
+        // tool calls in one step, but two Session.run on one retained Session
+        // would interleave messages. Different ids stay free to overlap.
+        return this.#childRegistry.withContinueLock(id, async () => {
+          const child = this.#childRegistry.lookup(id);
+          if (!child) {
+            const max = this.#handle.deps.config.subagent.retainCompleted;
+            return {
+              output:
+                `No retained subagent with id "${id}" — it was never spawned in this session tree, or ` +
+                `has been evicted (only the ${max} most recently used completed subagents are retained). ` +
+                "Spawn a fresh subagent instead.",
+              isError: true,
+            };
           }
-        } else {
-          const restored = this.#childRegistry.takeCoercedMode(id);
-          if (restored) child.setMode(restored);
-        }
-        // The child's isolated bus was closed when its last run settled; give it a
-        // fresh one and re-tap so live activity surfaces during the continuation.
-        const childBus = new EventBusImpl();
-        child.rebindBus(childBus);
-        this.#tapChildActivity(child.id, childBus);
-        this.#emitStarted(child.id, message);
-        const { timedOut, aborted } = await this.#runChildToCompletion(child, message, ctx.abortSignal);
-        const outcome = this.#childOutcome(child, timedOut, aborted);
-        this.#emitFinished(child.id, outcome.event);
-        this.#childRegistry.retain(child); // bump LRU on reuse
-        return {
-          output: capSubagentOutput(outcome.text) + this.#handleSuffix(child.id),
-          ...(outcome.isError ? { isError: true } : {}),
-        };
+          // Belt-and-braces beyond the retention guard: a retained child whose
+          // working directory has since vanished (a worktree it descended from was
+          // torn down) can't be resumed — running it would ENOENT. Evict it and
+          // report the expiry honestly rather than crash.
+          if (!existsSync(child.cwd)) {
+            this.#childRegistry.evict(id);
+            return {
+              output:
+                `Subagent "${id}" can no longer be resumed — its working directory was cleaned up ` +
+                "(it ran inside a worktree that has since been removed). Spawn a fresh subagent instead.",
+              isError: true,
+            };
+          }
+          // Re-gate mode like #forkChild: coerce the child to plan while the parent
+          // is planning (read-only). The coercion is REVERSIBLE — remember the
+          // child's pre-coercion mode so a later continuation, once the parent is
+          // executing again, can restore it. Never auto-PROMOTE a plan-native child:
+          // only a mode we ourselves coerced away is ever restored.
+          if (this.#parentPlanning()) {
+            if (child.mode !== "plan") {
+              this.#childRegistry.rememberCoercedMode(id, child.mode);
+              child.setMode("plan");
+            }
+          } else {
+            const restored = this.#childRegistry.takeCoercedMode(id);
+            if (restored) child.setMode(restored);
+          }
+          // The child's isolated bus was closed when its last run settled; give it a
+          // fresh one and re-tap so live activity surfaces during the continuation.
+          const childBus = new EventBusImpl();
+          child.rebindBus(childBus);
+          this.#tapChildActivity(child.id, childBus);
+          this.#emitStarted(child.id, message);
+          const { timedOut, aborted } = await this.#runChildToCompletion(child, message, ctx.abortSignal);
+          const outcome = this.#childOutcome(child, timedOut, aborted);
+          this.#emitFinished(child.id, outcome.event);
+          this.#childRegistry.retain(child); // bump LRU on reuse
+          return {
+            output: capSubagentOutput(outcome.text) + this.#handleSuffix(child.id),
+            ...(outcome.isError ? { isError: true } : {}),
+          };
+        });
       },
     };
   }
@@ -451,13 +481,13 @@ export class OrchestratorRunner {
         .record(z.string(), z.unknown())
         .optional()
         .describe(
-          "Optional JSON Schema. When set, this (shared-tree) task's FINAL message must be exactly one JSON object matching it — validated and retried on mismatch; the validated JSON becomes the report.",
+          "Optional JSON Schema. When set, the task's FINAL message must be exactly one JSON object matching it — validated on shared-tree (with retry), worktree, and ensemble paths; the validated JSON becomes the report.",
         ),
     });
     return {
       name: "spawn_tasks",
       description:
-        "Submit a whole plan of subtasks as a dependency graph; the engine runs it deterministically — every task whose dependencies are done starts immediately (parallel where possible), dependents unlock as inputs complete, and a task whose dependency failed is skipped. Prefer this over many separate spawn_subagent calls for multi-step work: declare `deps` for ordering, disjoint `files` per task, and `verify:true` on a task to have it reviewed and retried. Pass `detach:true` to run the whole plan in the background and collect each task's report via read_report. Each task is a fresh subagent; it returns a consolidated report.",
+        "Submit a whole plan of subtasks as a dependency graph; the engine runs it deterministically — every task whose dependencies are done starts immediately (parallel where possible), dependents unlock as inputs complete, and a task whose dependency failed is skipped. Prefer this over many separate spawn_subagent calls for multi-step work: declare `deps` for ordering, disjoint `files` per task, and `verify:true` on a task to have it reviewed and retried. Pass `detach:true` to run the whole plan in the background and collect each task's report via read_report. Each task is a fresh subagent; it returns a consolidated report. While planning, only read-only scout tasks are allowed (no worktree/hard/check/verify).",
       inputSchema: z.object({
         tasks: z.array(TaskInput).min(1),
         detach: z
@@ -507,8 +537,28 @@ export class OrchestratorRunner {
           const err = this.#validateAgentForTask(s.agent);
           if (err) return { output: `Task "${s.id}": ${err}`, isError: true };
         }
+        // While planning, every child is coerced read-only. check/verify/worktree/
+        // hard imply implement-and-verify semantics that a plan-mode child cannot
+        // honestly satisfy (a green gate on an unchanged tree would vacuous-complete).
+        // Reject up front so the model fans out scouts instead of fake implement DAGs.
+        if (this.#parentPlanning()) {
+          for (const s of specs) {
+            if (s.worktree || s.hard || s.check || s.verify) {
+              return {
+                output:
+                  `Task "${s.id}": while planning, spawn_tasks is for read-only scouts only — ` +
+                  "drop `worktree`/`hard`/`check`/`verify` (or switch to execute mode before " +
+                  "submitting an implement DAG).",
+                isError: true,
+              };
+            }
+          }
+        }
 
-        const runPlan = (signal: AbortSignal | undefined, suspendParentSlot: boolean): Promise<string> => {
+        const runPlan = (
+          signal: AbortSignal | undefined,
+          suspendParentSlot: boolean,
+        ): Promise<{ report: string; isError: boolean }> => {
           // Resume seed: completed tasks from a prior run of THIS EXACT plan
           // (the journal on disk, filtered by plan identity — a different
           // same-session plan's completions are never a seed). runDag honors
@@ -532,7 +582,13 @@ export class OrchestratorRunner {
                 }),
               ...(seed.length ? { seed } : {}),
             },
-          ).then((results) => capSubagentOutput(formatTaskResults(results)));
+          ).then((results) => {
+            const report = capSubagentOutput(formatTaskResults(results));
+            // Honest batch error: any non-completed task (failed or skipped)
+            // marks the batch so check_task / the tool result surface it.
+            const isError = results.some((r) => r.outcome !== "completed");
+            return { report, isError };
+          });
         };
 
         // Background (detached) plan: same execution path, tracked/try-caught, so
@@ -541,7 +597,7 @@ export class OrchestratorRunner {
           const abort = new AbortController();
           const batchId = createId("bgtasks");
           const promise = runPlan(abort.signal, false)
-            .then((report) => this.#childRegistry.markDetachedFinished(batchId, { report, isError: false }))
+            .then((r) => this.#childRegistry.markDetachedFinished(batchId, { report: r.report, isError: r.isError }))
             .catch((err) =>
               this.#childRegistry.markDetachedFinished(batchId, {
                 report: `Background tasks threw: ${(err as Error)?.message ?? String(err)}`,
@@ -565,7 +621,8 @@ export class OrchestratorRunner {
         }
         if (detach === true) this.#warnDetachCoerced();
 
-        return { output: await runPlan(ctx.abortSignal, true) };
+        const r = await runPlan(ctx.abortSignal, true);
+        return { output: r.report, ...(r.isError ? { isError: true } : {}) };
       },
     };
   }
@@ -1787,6 +1844,13 @@ export class OrchestratorRunner {
     parentSignal: AbortSignal | undefined,
     suspendParentSlot = true,
   ): Promise<{ timedOut: boolean; aborted: boolean }> {
+    // Snapshot BEFORE the run: child Session usage/cost accumulate across
+    // continue_subagent and structured retries; we fold only the delta.
+    const baseline: ChildUsageBaseline = {
+      usage: child.usage,
+      costUSD: child.costUSD,
+      actualCostUSD: child.actualCostUSD,
+    };
     const onAbort = () => child.abort();
     parentSignal?.addEventListener("abort", onAbort, { once: true });
     let timedOut = false;
@@ -1822,10 +1886,10 @@ export class OrchestratorRunner {
     } finally {
       parentSignal?.removeEventListener("abort", onAbort);
     }
-    // Fold the child's mutation flag + tokens + cost into the parent (the child
-    // runs on an isolated bus), so auto-verify, `/cost`, and the spend guard all
-    // account for delegated work.
-    this.#handle.onChildSettled(child);
+    // Fold the child's mutation flag + THIS-RUN tokens/cost into the parent.
+    // Snapshot BEFORE the run so continue_subagent / structured retries (same
+    // Session, cumulative usage) don't re-add prior turns.
+    this.#handle.onChildSettled(child, baseline);
     // A parent abort that landed while this child was queued (the gate short-
     // circuit above) means the child never ran — surface it so #childOutcome
     // treats the task as interrupted, not a clean (empty) completion.

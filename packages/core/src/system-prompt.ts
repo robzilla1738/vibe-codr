@@ -67,12 +67,13 @@ const DELEGATION = `DELEGATING TO SUBAGENTS. You can spawn subagents with \`spaw
 - STRUCTURED RESULTS: when you need a subagent's answer as machine-consumable data, pass \`outputSchema\` (a JSON Schema) — its final message will be exactly that JSON, validated.
 - BACKGROUND WORK: for long, independent work you don't need to block on, spawn with \`detach: true\` and keep going; collect the result later with \`check_task\` (they're also summarized to you when they finish).`;
 
-const PLAN_DELEGATION = `DELEGATING TO SUBAGENTS (read-only). While planning you can fan out read-only subagents with \`spawn_subagent\` to investigate the codebase in parallel before you converge on a plan — each inherits plan mode (investigation only, no edits) and returns its findings.
+const PLAN_DELEGATION = `DELEGATING TO SUBAGENTS (read-only). While planning you can fan out read-only subagents with \`spawn_subagent\` (or a scout-only \`spawn_tasks\` DAG) to investigate the codebase in parallel before you converge on a plan — each inherits plan mode (investigation only, no edits) and returns its findings.
 
 - Issue multiple \`spawn_subagent\` calls in the SAME step to explore several areas at once, then synthesize their findings into your plan. Prefer the \`explore\` agent for codebase research and \`review\` for assessing existing code.
 - SIZE THE FAN-OUT to the question: a wide, multi-domain request deserves 2-4 parallel scouts, each owning ONE disjoint sub-question (one per subsystem, angle, or source type) — not one mega-scout, and not a dozen overlapping ones.
 - Give each scout a self-contained prompt and a focused, disjoint area to investigate — it sees none of this conversation.
-- Use this when the question is wide (many files/subsystems); for a quick, local lookup just read the files yourself.`;
+- Use this when the question is wide (many files/subsystems); for a quick, local lookup just read the files yourself.
+- Do NOT submit implement DAGs while planning: \`spawn_tasks\` with \`worktree\`/\`hard\`/\`check\`/\`verify\` is rejected in plan mode (those flags need execute mode after the user approves the plan).`;
 
 const DATA_VIEWS = `RICH DATA VIEWS. The terminal UI renders certain fenced code blocks as live, native visualizations. When the answer is data of a matching shape, emit the view INLINE with the real data you gathered — do NOT build an HTML page, screenshot, image, or external script/file for these, and do NOT hand-draw them, UNLESS the user explicitly asks for a standalone/exportable/HTML artifact.
 

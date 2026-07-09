@@ -1,4 +1,5 @@
 import type { Mode } from "@vibe/shared";
+import { createSerialLock } from "@vibe/tools";
 import type { Session } from "../session.ts";
 
 /**
@@ -51,10 +52,25 @@ export class ChildRegistry {
   readonly #detached = new Map<string, DetachedRecord>();
   /** Background completions not yet surfaced into a root turn's workspace state. */
   #pendingFinished: string[] = [];
+  /** Per-child serial locks for continue_subagent — two parallel continues on
+   * the same retained Session would interleave Session.run. Different ids
+   * keep independent locks so fan-out continues stay parallel. */
+  readonly #continueLocks = new Map<string, <T>(fn: () => Promise<T>) => Promise<T>>();
 
   constructor(retainMax: number, sharedCwd?: string) {
     this.#retainMax = Math.max(0, retainMax);
     this.#sharedCwd = sharedCwd;
+  }
+
+  /** Run `fn` under the serial lock for retained child `id` (one continue at a
+   * time per id). Creates the lock lazily. */
+  withContinueLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    let lock = this.#continueLocks.get(id);
+    if (!lock) {
+      lock = createSerialLock();
+      this.#continueLocks.set(id, lock);
+    }
+    return lock(fn);
   }
 
   // ── Continuation (LRU of completed spawn_subagent children) ────────────────
@@ -83,6 +99,7 @@ export class ChildRegistry {
   evict(id: string): void {
     this.#retained.delete(id);
     this.#coercedMode.delete(id);
+    this.#continueLocks.delete(id);
   }
 
   /** Remember a child's mode before continue_subagent coerces it to plan (while

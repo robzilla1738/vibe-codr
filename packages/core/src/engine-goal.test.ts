@@ -484,7 +484,7 @@ test("pipeline: unfinished tasks drive task continuations — no assessment unti
   expect(prompts[2]).toContain("these tasks remain");
   expect(prompts[2]).toContain("t1 (pending): the one thing");
   expect(
-    events.some((e) => e.type === "notice" && /Goal round 1\/25 — unfinished tasks: t1/.test(e.message)),
+    events.some((e) => e.type === "notice" && /Goal round 1\/10 — unfinished tasks: t1/.test(e.message)),
   ).toBe(true);
   // Assessments only began once the list was complete: met + met = done.
   expect(assess.calls()).toBe(2);

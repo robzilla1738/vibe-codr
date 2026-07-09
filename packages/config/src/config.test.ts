@@ -22,8 +22,15 @@ test("defaultConfig is valid and carries the documented defaults", () => {
   expect(c.retry.maxAttempts).toBe(2);
   expect(c.update.check).toBe(true);
   // /goal autonomous-run bound: generous (exhaustive by design) but hard-capped.
-  expect(c.goal.maxRounds).toBe(25);
+  expect(c.goal.maxRounds).toBe(10);
   expect(c.goal.planFirst).toBe(true);
+  expect(c.loop.defaultMax).toBe(12);
+  expect(c.loop.maxUntilEvalFailures).toBe(5);
+  expect(c.plan.minCodeTouches).toBe(3);
+  expect(c.plan.requireWebFetch).toBe(true);
+  expect(c.plan.requirePackageInfo).toBe(true);
+  expect(c.plan.allowUngrounded).toBe(true);
+  expect(c.plan.maxRejections).toBe(2);
   // Sandbox ships OFF (opt-in) this release; network on, no extra writable paths.
   expect(c.sandbox.mode).toBe("off");
   expect(c.sandbox.network).toBe("on");

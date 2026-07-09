@@ -58,9 +58,13 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       {
         name: "goal",
         description:
-          "Set a north-star goal and start an autonomous run toward it (/goal <text> · /goal resume · /goal clear · /goal to show)",
+          "North-star run (/goal <text> · resume · clear · max 15 · plan first off · settings)",
       },
-      { name: "loop", description: "Run a prompt on a loop (/loop [interval] <prompt> [--until <cond>] [--max N] · /loop stop)" },
+      {
+        name: "loop",
+        description:
+          "Recurring prompt (/loop [interval] <prompt> [--max N] · stop · default max 20 · defaults)",
+      },
       { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
     ],
   },
@@ -78,7 +82,11 @@ export const COMMAND_GROUPS: CommandGroup[] = [
   {
     title: "Extensions & config",
     commands: [
-      { name: "config", description: "Show the effective config (secrets masked)" },
+      {
+        name: "config",
+        description:
+          "Show or set config (natural language: /config goal max rounds 15 · loop default max 20)",
+      },
       { name: "memory", description: "Show loaded project/global memory files" },
       { name: "permissions", description: "Show the tool permission rules" },
       { name: "tools", description: "List tools available in the current mode" },

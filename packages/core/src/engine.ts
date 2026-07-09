@@ -1809,7 +1809,9 @@ export class Engine implements EngineClient {
   /** Evaluate a loop's --until condition with a cheap structured call. Rides
    * the same resilience rails as every other provider call — retry on
    * transients, the tree-global limiter, and a hard deadline so a wedged
-   * provider can't stall the loop forever (it used to have none of these). */
+   * provider can't stall the loop forever (it used to have none of these).
+   * Feeds gate + a short dirty-tree glimpse so "tests pass" / "clean tree"
+   * conditions are not judged from assistant prose alone. */
   async #evaluateCondition(
     result: string,
     condition: string,
@@ -1818,6 +1820,18 @@ export class Engine implements EngineClient {
       () => this.registry.resolveModel(this.#session.model, this.#config),
       { maxAttempts: this.#config.retry.maxAttempts, baseDelayMs: this.#config.retry.baseDelayMs },
     );
+    let workspace = "";
+    try {
+      const git = await this.#git(["status", "--porcelain", "-b"]);
+      if (git.ok && git.stdout.trim()) {
+        const text = git.stdout.trim();
+        const capped = text.length > 1_500 ? `${text.slice(0, 1_500)}\n…(truncated)` : text;
+        workspace = `\nWorkspace git status:\n${capped}\n`;
+      }
+    } catch {
+      /* not a repo / git unavailable */
+    }
+    const gateLine = `Last gate outcome: ${this.#lastGateOutcome ?? "none"}\n`;
     const { object } = await this.#limiter.run(
       () =>
         generateObject({
@@ -1827,8 +1841,11 @@ export class Engine implements EngineClient {
           maxRetries: this.#config.retry.maxAttempts,
           prompt:
             `You are checking whether a stop condition has been satisfied.\n` +
-            `Condition: ${condition}\n\nMost recent result:\n${result}\n\n` +
-            `Return done=true only if the condition is clearly satisfied.`,
+            `Condition: ${condition}\n\nMost recent agent result:\n${result}\n\n` +
+            `${gateLine}${workspace}` +
+            `Return done=true only if the condition is clearly satisfied by the evidence. ` +
+            `If the condition depends on tests/checks/git cleanliness, prefer the gate and ` +
+            `workspace signals over the agent's self-report. When unsure, done=false.`,
         }),
       AbortSignal.timeout(90_000),
     );
@@ -2094,10 +2111,11 @@ export class Engine implements EngineClient {
       this.#notice("A loop is already running. Run /loop stop first.", "warn");
       return;
     }
-    const parsed = parseLoopArgs(args);
+    const parsed = parseLoopArgs(args, { defaultMax: this.#config.loop.defaultMax });
     if (!parsed) {
       this.#notice(
-        "Usage: /loop [interval] <prompt|/command> [--until <condition>] [--max N]",
+        "Usage: /loop [interval] <prompt|/command> [--until <condition>] [--max N] [--unlimited]\n" +
+          "Defaults: /loop defaults · /loop default max 20 · /config loop default max unlimited",
         "warn",
       );
       return;
@@ -2109,22 +2127,29 @@ export class Engine implements EngineClient {
     const loop = new LoopController({
       id: createId("loop"),
       ...parsed,
+      maxUntilEvalFailures: this.#config.loop.maxUntilEvalFailures,
       run: (p) => this.#runLoopIteration(p),
       ...(parsed.until
         ? { evaluate: (r: string, c: string) => this.#evaluateCondition(r, c) }
         : {}),
       onStop: () => this.#loopSession?.abort(),
       emit: (e) => this.#bus.emit(e),
-    });
-    this.#loop = loop;
+    });    this.#loop = loop;
     void loop.whenDone().then(() => {
       if (this.#loop === loop) this.#loop = undefined;
     });
     loop.start();
+    const maxLabel = parsed.unlimited
+      ? parsed.maxDefaulted
+        ? "unlimited (default)"
+        : "unlimited"
+      : parsed.max != null
+        ? `max ${parsed.max}${parsed.maxDefaulted ? " (default)" : ""}`
+        : "unlimited";
     this.#notice(
       `Loop started (every ${Math.round(parsed.intervalMs / 1000)}s)` +
         (parsed.until ? `, until: ${parsed.until}` : "") +
-        (parsed.max ? `, max ${parsed.max}` : "") +
+        `, ${maxLabel}` +
         ". Run /loop stop to cancel.",
     );
   }
@@ -2858,11 +2883,17 @@ export class Engine implements EngineClient {
   #goalPlanPrompt(goal: string): string {
     return (
       `Your north-star goal is: ${goal}\n\n` +
-      "This turn is PLANNING ONLY. Investigate the repository first — read the relevant files, " +
-      "search for existing patterns, and ground every step in what the code actually does; never guess. " +
-      "Then produce a complete step-by-step plan as a markdown checklist (`- [ ] step`) covering the " +
-      "goal end to end, including verification steps, and seed it as the task list via update_tasks. " +
-      "Do NOT modify any files or start implementing in this turn."
+      "This turn is PLANNING ONLY — thorough investigation, zero implementation.\n" +
+      "1. INVESTIGATE: read the relevant files (several, not one), search for existing patterns, " +
+      "and ground every step in what the code actually does. For stack/version choices use " +
+      "package_info; for external facts use web_search + webfetch of authoritative pages. Never guess.\n" +
+      "2. SUCCESS CRITERIA: list 3–7 checkable criteria the goal is met only when ALL are true " +
+      "(commands that must pass, behaviors that must exist, files that must change, anti-slop: " +
+      "no stubs/placeholders/TODO left in touched code).\n" +
+      "3. PLAN: produce a complete step-by-step markdown checklist (`- [ ] step`) covering the " +
+      "goal end to end — concrete files/areas per step, key decisions with one-line rationales, " +
+      "and explicit verification steps (typecheck/tests/lint/manual). Seed it via update_tasks.\n" +
+      "4. Do NOT modify any files, run mutating commands, or start implementing in this turn."
     );
   }
 
@@ -2872,8 +2903,12 @@ export class Engine implements EngineClient {
     return (
       `The plan for your north-star goal ("${goal}") is seeded as the task list — execute it now, ` +
       `end to end.${this.#taskContractText()}\n` +
-      "Be exhaustive: cover edge cases, keep the project's checks green, and do not stop while any " +
-      "part of the goal is unmet."
+      "Quality bar (anti-slop):\n" +
+      "- Match existing project style, naming, and libraries — no speculative abstractions or drive-by refactors.\n" +
+      "- No stubs, placeholders, fake handlers, TODO/FIXME left in code you touched, or \"implement later\" gaps.\n" +
+      "- Mark a task completed only after you verified it (run checks or inspect the real result) — never on intent alone.\n" +
+      "- Keep typecheck/tests/lint green; re-run after changes. Be exhaustive on edge cases; do not stop while any " +
+      "part of the goal or success criteria is unmet."
     );
   }
 
@@ -2882,10 +2917,11 @@ export class Engine implements EngineClient {
   #goalDrivePrompt(goal: string): string {
     return (
       `Your north-star goal is: ${goal}\n\n` +
-      "Treat this as a complete engagement, not a single answer. Plan the work first, seed it as a " +
-      "task list (update_tasks) so progress is visible, then execute end to end — mark each task " +
-      "in_progress when you start it and completed the moment you verify it. Be exhaustive: cover " +
-      "edge cases, keep the project's checks green, and do not stop while any part of the goal is unmet."
+      "Treat this as a complete engagement, not a single answer. Plan the work first (investigate real " +
+      "code, list 3–7 checkable success criteria, seed a `- [ ]` task list via update_tasks), then " +
+      "execute end to end — mark each task in_progress when you start it and completed only when " +
+      "verified. Anti-slop: match project style, no stubs/placeholders/TODO in touched code, keep " +
+      "checks green, no drive-by refactors. Do not stop while any part of the goal is unmet."
     );
   }
 
@@ -3017,10 +3053,12 @@ export class Engine implements EngineClient {
           if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
           return this.#runGoalTurn(
             `You reported the north-star goal met: "${goal}". Now verify it is TRULY met, adversarially — ` +
-              "re-read the goal, re-check every part of the work against it, run or inspect the project's " +
-              "checks, and hunt for gaps, regressions, and unhandled edge cases. Any task still in_progress " +
-              "or pending is NOT done — finish it, or mark it completed only if verified. If ANY gap exists, " +
-              "fix it now. Only stop when nothing remains.",
+              "re-read the goal and every success criterion, re-check the work against them with evidence " +
+              "(run or inspect the project's checks; re-read the files you changed), and hunt for gaps, " +
+              "regressions, unhandled edge cases, and anti-slop failures: stubs, placeholders, TODO/FIXME " +
+              "in touched code, empty handlers, mismatched style, or claims without proof. Any task still " +
+              "in_progress or pending is NOT done — finish it, or mark it completed only if verified. If " +
+              "ANY gap exists, fix it now. Only stop when nothing remains.",
             `★ goal — adversarial verify (round ${this.#goalContinueRounds}/${max})`,
           );
         },
@@ -3088,12 +3126,15 @@ export class Engine implements EngineClient {
             abortSignal: AbortSignal.timeout(60_000),
             maxRetries: this.#config.retry.maxAttempts,
             prompt:
-              `You are strictly auditing whether a working goal has been FULLY achieved.\n` +
+              `You are a pessimistic auditor. Default to met=false unless the evidence is overwhelming.\n` +
               `Goal: ${goal}\n\nAgent's latest report:\n${this.#session.lastAssistantText()}\n` +
               `${taskBlock}\nGate: ${this.#lastGateOutcome ?? "unverified"}\n` +
               `${diff ? `\nWorking-tree diff (may be truncated):\n${diff}\n` : ""}\n` +
-              "Return met=true ONLY if every part of the goal is clearly, verifiably done. " +
-              "Never return met=true if the gate is red. " +
+              "Return met=true ONLY if every part of the goal is clearly, verifiably done with evidence " +
+              "in the report/diff/gate — not because the agent claimed it. If uncertain, incomplete, " +
+              "stubbed, untested, or only partially addressed → met=false. " +
+              "Never return met=true if the gate is red or unverified when checks should have run. " +
+              "Flag anti-slop gaps (stubs, placeholders, TODO left in changed code, missing verification). " +
               "List each concrete remaining gap in `gaps` (empty if none) and a one-sentence `reason`.",
           }),
         AbortSignal.timeout(90_000),

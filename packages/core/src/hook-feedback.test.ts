@@ -285,7 +285,13 @@ test("a handoff denied by a user.prompt.submit hook keeps the approved plan inta
   // consumes it exactly as before.
   async function run(denyHandoff: boolean): Promise<boolean> {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-hookplan-"));
-    const steps = [presentPlanStep("# Plan\n1. do the thing"), textStep("Plan ready."), textStep("Executing.")];
+    // Two steps + a verification cue so the plan-gate structure contract
+    // accepts the present (empty tmpdir is greenfield, so needsCode reads are waived).
+    const steps = [
+      presentPlanStep("# Plan\n1. do the thing\n2. verify with tests"),
+      textStep("Plan ready."),
+      textStep("Executing."),
+    ];
     let call = 0;
     const model = new MockLanguageModelV2({
       doStream: async () => (steps[call++] ?? textStep("done")) as never,

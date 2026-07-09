@@ -35,6 +35,13 @@ import type { McpServerStatus } from "./mcp.ts";
 import type { LspStatus } from "./diagnostics.ts";
 import { crashDoctorCheck, recentCrashes } from "./crash.ts";
 import { readUpdateCache, updateDoctorCheck } from "./update-check.ts";
+import {
+  applyConfigPatch,
+  formatConfigSection,
+  parseConfigNatural,
+  parseGoalSettings,
+  parseLoopSettings,
+} from "./config-nl.ts";
 
 /** Char cap for a diff embedded into a `/review` prompt — bounds the token cost
  * of reviewing a large working tree (the model reads specific files for more). */
@@ -125,6 +132,25 @@ export interface EngineHandle {
   /** Pause a live goal run (no-op when none) — the ★ goal stays set and
    * `/goal resume` re-arms it. `notice` overrides the default pause message. */
   pauseGoalRun(reason: string, notice?: string): void;
+}
+
+/** Apply a natural-language config parse result: show a section, set+persist, or error. */
+function applyNlConfig(
+  h: EngineHandle,
+  result: ReturnType<typeof parseConfigNatural> | NonNullable<ReturnType<typeof parseGoalSettings>>,
+): void {
+  if (!result) return;
+  if (result.kind === "error") {
+    h.notice(result.message, "warn");
+    return;
+  }
+  if (result.kind === "show") {
+    h.notice(formatConfigSection(h.config, result.section));
+    return;
+  }
+  applyConfigPatch(h.config as unknown as Record<string, unknown>, result.patch);
+  void h.persistConfig(result.patch);
+  h.notice(`Config updated: ${result.description}`);
 }
 
 /** Bare `/goal` output: the goal plus WHERE ITS RUN STANDS — active (phase /
@@ -382,10 +408,14 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "goal": {
       // Single authority for /goal verbs; the state changes (and the autonomous
       // run they start/stop/re-arm) live in the engine's `set-goal` /
-      // `resume-goal` handlers.
+      // `resume-goal` handlers. Settings phrases ("max 15", "plan first off")
+      // configure without starting a run — unambiguous patterns only.
       const goalArg = args.trim();
       if (!goalArg) {
-        h.notice(goalStatusText(h.session.goal, h.goalRun()));
+        h.notice(
+          `${goalStatusText(h.session.goal, h.goalRun())}\n\n` +
+            formatConfigSection(h.config, "goal"),
+        );
         break;
       }
       if (/^(clear|none|off|stop|reset)$/i.test(goalArg)) {
@@ -394,6 +424,11 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       }
       if (/^resume$/i.test(goalArg)) {
         h.send({ type: "resume-goal" });
+        break;
+      }
+      const goalCfg = parseGoalSettings(goalArg);
+      if (goalCfg) {
+        applyNlConfig(h, goalCfg);
         break;
       }
       h.send({ type: "set-goal", goal: goalArg });
@@ -464,9 +499,21 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
         ),
       );
       break;
-    case "config":
-      h.notice(formatConfig(h.config));
+    case "config": {
+      // Bare /config shows the full effective config. With args, natural-language
+      // or dotted-key set/show for goal · loop · plan thoroughness knobs.
+      const cfgArg = args.trim();
+      if (!cfgArg) {
+        h.notice(
+          `${formatConfig(h.config)}\n\n` +
+            "Set via natural language: /config goal max rounds 15 · /config loop default max 20 · /config plan min code touches 5\n" +
+            "Or: /config show goal · /goal max 15 · /loop defaults",
+        );
+        break;
+      }
+      applyNlConfig(h, parseConfigNatural(cfgArg) ?? { kind: "error", message: "Empty config args." });
       break;
+    }
     case "tools":
       h.notice(formatTools(h.toolset.forMode(h.session.mode), h.session.mode));
       break;
@@ -581,9 +628,17 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       }
       break;
     }
-    case "loop":
+    case "loop": {
+      // Defaults / settings first so `/loop default max 20` never starts a loop
+      // with prompt text "default max 20".
+      const loopCfg = parseLoopSettings(args.trim());
+      if (loopCfg) {
+        applyNlConfig(h, loopCfg);
+        break;
+      }
       h.handleLoop(args);
       break;
+    }
     case "undo":
       await handleUndo(h, args);
       break;

@@ -449,7 +449,9 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
     for await (const e of engine.events()) events.push(e);
   })();
 
-  engine.send({ type: "submit-prompt", text: "plan a refactor" });
+  // Self-contained prompt (no needsCode/web/versions) so a thin present_plan
+  // still presents — this test is about handoff BINDING, not the plan gate.
+  engine.send({ type: "submit-prompt", text: "plan a limerick about shipping" });
   await engine.whenIdle(); // plan presented, #lastPlan set
 
   engine.send({ type: "submit-prompt", text: "holder turn" }); // occupies the drain (blocks on gate)

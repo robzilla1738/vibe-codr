@@ -384,18 +384,56 @@ export const ConfigSchema = z.object({
   orchestration: z.object({ enabled: z.boolean().default(true) }).default({ enabled: true }),
   /** The `/goal` autonomous run: after each turn the engine self-assesses the
    * north-star goal and keeps enqueuing continuation turns until it verifies
-   * the goal met (two consecutive clean passes) or hits this round bound —
-   * larger than the gate's maxRounds because a goal run is meant to be
-   * exhaustive, but hard-capped so an unsatisfiable goal can't run forever. */
+   * the goal met (two consecutive clean passes) or hits this round bound.
+   * Depth is in the plan/execute/verify prompts; the bound is a cost ceiling
+   * (resume re-arms a fresh budget). Default 10 is enough for scoped goals;
+   * raise for large migrations. */
   goal: z
     .object({
-      maxRounds: z.number().int().min(1).max(100).default(25),
+      maxRounds: z.number().int().min(1).max(100).default(10),
       /** Run a dedicated read-only PLAN turn (investigate → checklist → seed
        * tasks) before execution starts. Off = the legacy single blended turn —
        * the kill-switch and the fast path for trivial goals. */
       planFirst: z.boolean().default(true),
     })
-    .default({ maxRounds: 25, planFirst: true }),
+    .default({ maxRounds: 10, planFirst: true }),
+  /**
+   * `/loop` defaults when flags are omitted. Per-invocation `--max` /
+   * `--unlimited` still win. Tunable via `/config loop default max 20` or
+   * natural phrases like "set loop max to 20".
+   */
+  loop: z
+    .object({
+      /** Default iteration cap when `/loop` omits `--max`. 0 = unlimited default. */
+      defaultMax: z.number().int().min(0).max(1000).default(12),
+      /** Consecutive `--until` evaluator failures before the loop stops. */
+      maxUntilEvalFailures: z.number().int().min(1).max(50).default(5),
+    })
+    .default({ defaultMax: 12, maxUntilEvalFailures: 5 }),
+  /**
+   * Plan-mode thoroughness (PlanGate floors + present_plan structure). Tunable
+   * via `/config plan …` natural language or dotted keys.
+   */
+  plan: z
+    .object({
+      /** Min read/grep/glob/repo_map calls when the request needs code (or 1 scout). */
+      minCodeTouches: z.number().int().min(1).max(20).default(3),
+      /** When needsWeb: require webfetch/crawl, not search-only. */
+      requireWebFetch: z.boolean().default(true),
+      /** When needsVersions: require package_info (not web_search alone). */
+      requirePackageInfo: z.boolean().default(true),
+      /** After maxRejections bounces, allow present with ungrounded warning. */
+      allowUngrounded: z.boolean().default(true),
+      /** PlanGate rejections before the ungrounded escape hatch (if allowed). */
+      maxRejections: z.number().int().min(0).max(10).default(2),
+    })
+    .default({
+      minCodeTouches: 3,
+      requireWebFetch: true,
+      requirePackageInfo: true,
+      allowUngrounded: true,
+      maxRejections: 2,
+    }),
   /**
    * Engine-owned build intelligence (all default-on, per-feature kill-switches):
    * deterministic repo recon injected into every agent's prompt, the `run_check`

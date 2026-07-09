@@ -342,14 +342,18 @@ Highlights:
   the input): **plan → execute → yolo → plan**.
 - **Steering** — `/goal <text>` (sets the north star **and starts an
   autonomous plan→execute→verify run** toward it; bare `/goal` shows the run's
-  live state, `/goal resume` re-arms a paused run, `/goal clear` stops it),
-  `/loop [interval] <prompt> [--until <cond>] [--max N]` (`/loop stop`),
+  live state, `/goal resume` re-arms a paused run, `/goal clear` stops it;
+  `/goal max 15` / `/goal plan first off` configure bounds in natural language),
+  `/loop [interval] <prompt> [--until <cond>] [--max N] [--unlimited]` (default
+  max 12; `/loop stop`; `/loop default max 20` sets the default),
   `/queue` (`/queue clear`).
 - **Code & safety** — `/diff`, `/review`, `/verify`, `/undo [index|id]`
   (rewind one step, or multiple by the index/id shown in `/checkpoints`),
   `/redo` (re-apply the last undo), `/checkpoints` (numbered, newest = 1, with
   relative age).
-- **Extensions & config** — `/config` (effective settings, secrets masked),
+- **Extensions & config** — `/config` (effective settings, secrets masked; or
+  natural language: `/config goal max rounds 15`, `/config loop default max 20`,
+  `/config plan min code touches 5`, `/config show goal`),
   `/memory` (loaded project/global notes), `/permissions`, `/tools`, `/agents`,
   `/skills` (searchable menu), `/skill <name> [task]` (run a skill by name —
   never shadowed by a built-in or custom command, and the only spelling that
@@ -648,21 +652,25 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   diff, and the gate outcome — a red gate can never pass), and only finishes
   after the model claims done **and** survives a dedicated adversarial verify
   turn (2 consecutive clean passes). One unified budget bounds everything
-  (`goal.maxRounds`, default 25; `goal.planFirst: false` restores the single
-  blended turn). The run is **legible while it works**: the ★ header carries a
-  live suffix (`· planning`, `· 7/25`, `· paused`, `· met`), each engine-driven
-  round renders as one compact `★ goal — …` line instead of a wall of repeated
-  directive text, and bare `/goal` reports exactly where the run stands.
-  Typing mid-run steers the run (the round budget refreshes — and says so);
-  Esc, an errored turn, a stuck-red gate, or exhausting the budget **pauses**
-  it with the reason (★ stays) and **`/goal resume`** re-arms it at the same
-  phase with fresh runway; `/goal clear` stops it; `/clear` pauses it and a
-  later resume re-plans on the clean slate; replacing the goal mid-run sweeps
-  the old run's queued turns first. A live run **survives `--resume`** — it
-  picks up at the same round and phase. `/goal` from plan mode auto-switches
-  to execute (approvals preserved). **`/loop`** reruns a prompt on an interval
-  until a `--until` condition (checked with a structured model call) or
-  `--max` is reached.
+  (`goal.maxRounds`, default 10; raise for large migrations; `goal.planFirst:
+  false` restores the single blended turn). The run is **legible while it
+  works**: the ★ header carries a live suffix (`· planning`, `· 3/10`,
+  `· paused`, `· met`), each engine-driven round renders as one compact
+  `★ goal — …` line instead of a wall of repeated directive text, and bare
+  `/goal` reports exactly where the run stands. Typing mid-run steers the run
+  (the round budget refreshes — and says so); Esc, an errored turn, a stuck-red
+  gate, or exhausting the budget **pauses** it with the reason (★ stays) and
+  **`/goal resume`** re-arms it at the same phase with fresh runway; `/goal
+  clear` stops it; `/clear` pauses it and a later resume re-plans on the clean
+  slate; replacing the goal mid-run sweeps the old run's queued turns first. A
+  live run **survives `--resume`** — it picks up at the same round and phase.
+  `/goal` from plan mode auto-switches to execute (approvals preserved).
+  **`/loop`** reruns a prompt on an interval until a `--until` condition
+  (checked with a structured model call), `--max` (default 12), or
+  `--unlimited` is reached. Goal / loop / plan bounds are also tunable in
+  **natural language**: `/config goal max rounds 15`, `/goal max 15`,
+  `/goal plan first off`, `/loop default max 20`, `/config plan min code
+  touches 5`, `/config show goal` (persisted to the user-global config).
 - **Persistence & compaction** — every turn is saved under the project's
   global state dir (`~/.vibe/state/<cwd-hash>/sessions/<id>/`; a legacy
   in-project `.vibe/sessions/` is still read); long conversations auto-compact against the active
@@ -801,6 +809,12 @@ plugins, provider overrides, and MCP servers. Beyond `model`, `mode`,
     "providerConcurrency": 16, "timeoutMs": 300000, "verifyMaxAttempts": 2
   },
   "orchestration": { "enabled": true },                 // spawn_tasks DAG (default on)
+  "goal": { "maxRounds": 10, "planFirst": true },       // /goal bound + plan-first pipeline
+  "loop": { "defaultMax": 12, "maxUntilEvalFailures": 5 }, // /loop default --max (0 = unlimited)
+  "plan": {                                             // plan-mode PlanGate thoroughness
+    "minCodeTouches": 3, "requireWebFetch": true, "requirePackageInfo": true,
+    "allowUngrounded": true, "maxRejections": 2
+  },
   "build": {                                            // engine-owned build intelligence
     "gate": { "maxRounds": 5, "checks": ["typecheck", "test", "build"] },
     "commit": { "mode": "checkpoint" },                 // green checkpoints | "branch" | "off"

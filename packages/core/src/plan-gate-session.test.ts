@@ -37,9 +37,37 @@ const fakeSearch: ToolDefinition<{ query: string }> = {
   }),
 };
 
+const fakeFetch: ToolDefinition<{ url: string }> = {
+  name: "webfetch",
+  description: "fake",
+  inputSchema: z.object({ url: z.string() }),
+  readOnly: true,
+  concurrencySafe: true,
+  execute: async () => ({ output: "Match details: Morocco vs Spain tonight at 20:00." }),
+};
+
+const fakePkg: ToolDefinition<{ name: string }> = {
+  name: "package_info",
+  description: "fake",
+  inputSchema: z.object({ name: z.string() }),
+  readOnly: true,
+  concurrencySafe: true,
+  execute: async () => ({ output: "next@15.0.0\ntailwindcss@3.4.0" }),
+};
+
+const groundedPlan = {
+  plan:
+    "- [ ] Scaffold a next.js site for tonight's Morocco vs Spain match\n" +
+    "- [ ] Verify with a production build\n",
+  sources: [{ url: "https://fifa.com/todays-match", title: "Match page" }],
+  assumptions: ["exact lineup unknown until kickoff"],
+  verification: "next build",
+  decisions: ["next.js — matches the request's stack"],
+};
+
 // The full code-enforced grounding loop, end to end through a REAL Session in
 // plan mode: an ungrounded present_plan on a time-sensitive request is
-// REJECTED with instructions; after a real web_search the same call passes and
+// REJECTED with instructions; after real research the same call passes and
 // the plan-presented event carries the sources.
 test("plan gate: ungrounded present_plan is rejected, research + sources make it pass", async () => {
   const steps = [
@@ -54,7 +82,7 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
       },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
-    // Step 2: bounced — so it actually searches.
+    // Step 2: bounced — so it actually researches (search + fetch + package).
     stream([
       { type: "stream-start", warnings: [] },
       {
@@ -65,18 +93,34 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
       },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
-    // Step 3: presents again, grounded and citing its source.
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "f1",
+        toolName: "webfetch",
+        input: JSON.stringify({ url: "https://fifa.com/todays-match" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "k1",
+        toolName: "package_info",
+        input: JSON.stringify({ name: "next" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    // Step 5: presents again, grounded and citing its source.
     stream([
       { type: "stream-start", warnings: [] },
       {
         type: "tool-call",
         toolCallId: "p2",
         toolName: "present_plan",
-        input: JSON.stringify({
-          plan: "Build a site about tonight's Morocco vs Spain match.",
-          sources: [{ url: "https://fifa.com/todays-match", title: "Match page" }],
-          assumptions: ["exact lineup unknown until kickoff"],
-        }),
+        input: JSON.stringify(groundedPlan),
       },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
@@ -96,7 +140,7 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
     registry: new ProviderRegistry([
       { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
     ]),
-    toolset: new Toolset([presentPlanTool, fakeSearch]),
+    toolset: new Toolset([presentPlanTool, fakeSearch, fakeFetch, fakePkg]),
     bus,
     freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-")),
@@ -152,12 +196,29 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
       { type: "stream-start", warnings: [] },
       {
         type: "tool-call",
+        toolCallId: "f1",
+        toolName: "webfetch",
+        input: JSON.stringify({ url: "https://fifa.com/todays-match" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "k1",
+        toolName: "package_info",
+        input: JSON.stringify({ name: "next" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
         toolCallId: "p1",
         toolName: "present_plan",
-        input: JSON.stringify({
-          plan: "Build a site about tonight's match.",
-          sources: [{ url: "https://fifa.com/todays-match" }],
-        }),
+        input: JSON.stringify(groundedPlan),
       },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
@@ -185,7 +246,7 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
     registry: new ProviderRegistry([
       { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
     ]),
-    toolset: new Toolset([presentPlanTool, flippingSearch]),
+    toolset: new Toolset([presentPlanTool, flippingSearch, fakeFetch, fakePkg]),
     bus,
     freshness: new FreshnessRegistry(),
     cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-flip-")),
@@ -206,7 +267,7 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
     (e): e is Extract<UIEvent, { type: "tool-call-finished" }> =>
       e.type === "tool-call-finished" && e.toolCallId === "p1",
   );
-  // Grounded (one search happened), so the present must succeed — not throw on
+  // Grounded research happened, so the present must succeed — not throw on
   // a retired gate.
   expect(present?.isError).toBeFalsy();
   expect(events.some((e) => e.type === "plan-presented")).toBe(true);
@@ -273,7 +334,7 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
     (e): e is Extract<UIEvent, { type: "tool-call-finished" }> =>
       e.type === "tool-call-finished" && e.toolCallId === "p1",
   );
-  // The zero-result search didn't count → the gate still demands a real search.
+  // The zero-result search didn't count → the gate still demands real research.
   expect(present?.isError).toBe(true);
-  expect(String(present?.output)).toContain("web_search");
+  expect(String(present?.output)).toMatch(/web_search|webfetch/i);
 });

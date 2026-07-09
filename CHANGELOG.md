@@ -4,6 +4,27 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Changed — goal / loop / plan thoroughness defaults
+
+- **`goal.maxRounds` default 25 → 10.** Autonomous goal runs stay thorough via
+  stronger plan/execute/verify prompts (success criteria, anti-slop, pessimistic
+  assess); the bound is a cost ceiling — `/goal resume` re-arms a fresh budget.
+  Raise in config for large migrations.
+- **`/loop` defaults to max 12 iterations** when `--max` is omitted. Use
+  `--unlimited` for intentional forever; `--max 0` remains a usage error.
+  Persistent `--until` evaluator failures stop after 5 in a row. The until
+  judge now sees gate outcome + git status, not only the last assistant text.
+- **PlanGate evidence floors raised:** `needsWeb` requires webfetch (not
+  search-only) + harvested sources; `needsVersions` requires `package_info`;
+  `needsCode` requires ≥3 code-touch tools or a scout. Non-trivial plans must
+  include checklist steps and verification (and decisions for version choices).
+  `present_plan` accepts optional `verification` / `decisions` / `files`.
+- **Natural-language config** for these knobs (live + persisted):
+  `/config goal max rounds 15`, `/goal max 15`, `/goal plan first off`,
+  `/loop default max 20`, `/config plan min code touches 5`,
+  `/config plan require webfetch on`, `/config show goal`. New schema blocks
+  `loop.*` and `plan.*` back the phrases.
+
 ### Fixed — worker snapshot re-RPC after mode/model changes (BUG-084)
 
 - **After `mode-changed` / `model-changed` / etc., `WorkerEngineClient.snapshot()`
@@ -369,7 +390,7 @@ now reports **0 active** Critical/High/Medium/Low. Highlights:
 - **Honest verdicts.** Unfinished tasks are a deterministic "not met" (no model
   call spent), and a red gate hard-overrides a "met" verdict — the model can't
   talk its way past failing checks.
-- **Bounded and steerable.** `goal.maxRounds` (default 25) caps the run on a
+- **Bounded and steerable.** `goal.maxRounds` (default 10) caps the run on a
   unified budget shared with task continuations; typing mid-run steers it (the
   round budget re-grants); Esc pauses it (the ★ goal stays); `/goal clear`
   stops it and sweeps queued goal turns; a provider error pauses the run

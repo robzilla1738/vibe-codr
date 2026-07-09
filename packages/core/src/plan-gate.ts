@@ -11,12 +11,12 @@ import type { PlanGateVerdict } from "@vibe/shared";
  * presenting get bounced back into GATHER instead of shipping a 20-second
  * hallucinated plan.
  *
- * Evidence, not effort: a fast plan grounded in six fetched sources passes; a
- * slow plan grounded in nothing doesn't. Self-contained requests ("rename this
- * function") triage to no requirements and are never taxed with research
- * theater. After {@link MAX_REJECTIONS} bounces the plan is allowed through
- * with `ungrounded: true` so a model that genuinely can't drive the research
- * tools (or an offline session) is warned about, never deadlocked.
+ * Evidence, not effort: a fast plan grounded in real sources passes; a slow
+ * plan grounded in nothing doesn't. Self-contained requests ("rename this
+ * function") triage lightly and are never taxed with research theater. After
+ * {@link MAX_REJECTIONS} bounces the plan is allowed through with
+ * `ungrounded: true` so a model that genuinely can't drive the research tools
+ * (or an offline session) is warned about, never deadlocked.
  */
 
 /** What a plan request must be grounded in, per deterministic triage. */
@@ -40,8 +40,34 @@ export interface ResearchTelemetry {
   scoutSpawns: number;
 }
 
+/** Payload shape `present_plan` may pass into the gate (beyond sources). */
+export interface PlanPresentPayload {
+  plan?: string;
+  sources?: { url: string }[];
+  assumptions?: string[];
+  /** Areas/files the plan will touch (or "greenfield"). */
+  files?: string[];
+  /** How success will be verified (checks, manual steps). */
+  verification?: string;
+  /** Key decisions with one-line rationales. */
+  decisions?: string[];
+}
+
 /** Rejections allowed before an ungrounded plan is let through with a warning. */
 const MAX_REJECTIONS = 2;
+
+/** Minimum distinct code-touch tool calls when `needsCode` (or one scout). */
+export const MIN_CODE_TOUCHES = 3;
+
+/** Options that tune thoroughness floors (from config.plan, overridable in tests). */
+export interface PlanGateOptions {
+  greenfield?: boolean;
+  minCodeTouches?: number;
+  requireWebFetch?: boolean;
+  requirePackageInfo?: boolean;
+  allowUngrounded?: boolean;
+  maxRejections?: number;
+}
 
 /** Relative-date / currency words: the request is anchored to the real clock.
  * Deliberately excludes bare `breaking`/`ongoing` (code words: "breaking change",
@@ -153,9 +179,19 @@ export class PlanGate {
   /** True in a workspace with no real code yet — a code-read requirement would
    * be unsatisfiable, so it's waived. */
   #greenfield: boolean;
+  #minCodeTouches: number;
+  #requireWebFetch: boolean;
+  #requirePackageInfo: boolean;
+  #allowUngrounded: boolean;
+  #maxRejections: number;
 
-  constructor(opts: { greenfield?: boolean } = {}) {
+  constructor(opts: PlanGateOptions = {}) {
     this.#greenfield = opts.greenfield ?? false;
+    this.#minCodeTouches = opts.minCodeTouches ?? MIN_CODE_TOUCHES;
+    this.#requireWebFetch = opts.requireWebFetch ?? true;
+    this.#requirePackageInfo = opts.requirePackageInfo ?? true;
+    this.#allowUngrounded = opts.allowUngrounded ?? true;
+    this.#maxRejections = opts.maxRejections ?? MAX_REJECTIONS;
   }
 
   /** Fold a plan-mode user prompt into the (union) triage. */
@@ -191,12 +227,18 @@ export class PlanGate {
     return { ...this.#telemetry };
   }
 
+  /** True when any triage requirement is active (structure checks apply). */
+  get nonTrivial(): boolean {
+    const t = this.#triage;
+    return t.needsWeb || t.needsVersions || t.needsCode;
+  }
+
   /**
    * Gate a `present_plan` call. Missing evidence → reject with instructions
    * (bounded by {@link MAX_REJECTIONS}, then allow with `ungrounded: true`).
    */
   evaluate(
-    plan: { sources?: { url: string }[] },
+    plan: PlanPresentPayload = {},
     opts: { isHarvested?: (url: string) => boolean } = {},
   ): PlanGateVerdict {
     const missing: string[] = [];
@@ -211,14 +253,15 @@ export class PlanGate {
       ? shapedSources.filter((s) => opts.isHarvested!(s.url))
       : shapedSources;
     if (this.#triage.needsWeb) {
-      // A direct webfetch of an authoritative page harvests a citable source
-      // into the ledger just as a web_search does — either satisfies the "did
-      // any web research happen" gate; `validSources` below is the real
-      // evidence check. Gating on webSearches alone bounced webfetch-grounded
-      // plans until MAX_REJECTIONS mislabeled them ungrounded.
+      // Thorough web grounding: search OR fetch must happen, and (when configured)
+      // at least one webfetch/crawl of an authoritative page, plus cited sources.
       if (t.webSearches === 0 && t.webFetches === 0) {
         missing.push(
           "run web_search or webfetch now (use recencyDays for anything time-sensitive) and read the results — this request depends on current real-world facts your training data cannot know",
+        );
+      } else if (this.#requireWebFetch && t.webFetches === 0) {
+        missing.push(
+          "webfetch (or crawl_docs) at least one authoritative page from your search results — snippet-only research is not enough for a thorough plan",
         );
       } else if (!validSources.length) {
         missing.push(
@@ -228,29 +271,100 @@ export class PlanGate {
         );
       }
     }
-    if (this.#triage.needsVersions && t.packageLookups === 0 && t.webSearches === 0) {
-      missing.push(
-        "look up the real latest versions with package_info (npm/PyPI) before naming any framework or dependency version",
-      );
+    if (this.#triage.needsVersions) {
+      // package_info is the authoritative path; bare web_search is not enough
+      // when requirePackageInfo is on (default).
+      if (this.#requirePackageInfo && t.packageLookups === 0) {
+        missing.push(
+          t.webSearches > 0 || t.webFetches > 0
+            ? "look up the real latest versions with package_info (npm/PyPI) — a web search alone is not authoritative for package versions"
+            : "look up the real latest versions with package_info (npm/PyPI) before naming any framework or dependency version",
+        );
+      } else if (!this.#requirePackageInfo && t.packageLookups === 0 && t.webSearches === 0) {
+        missing.push(
+          "look up the real latest versions with package_info (npm/PyPI) or a web search before naming any framework or dependency version",
+        );
+      }
     }
-    if (this.#triage.needsCode && !this.#greenfield && t.fileReads === 0 && t.scoutSpawns === 0) {
-      missing.push(
-        "read the relevant files (read/grep/glob/repo_map) — this plan is about the existing codebase and must be grounded in what's actually there",
-      );
+    if (this.#triage.needsCode && !this.#greenfield) {
+      // Thorough code grounding: one accidental `ls` is not enough. Either fan
+      // out a scout or touch the tree enough times to have actually looked.
+      if (t.scoutSpawns === 0 && t.fileReads < this.#minCodeTouches) {
+        missing.push(
+          `read the relevant code thoroughly (at least ${this.#minCodeTouches} read/grep/glob/repo_map calls, or spawn an explore scout) — this plan is about the existing codebase and must be grounded in what's actually there`,
+        );
+      }
     }
+
+    // Structure contract for non-trivial plans: checklist steps + verification
+    // path so approval has something executable, not a vague essay.
+    if (this.nonTrivial) {
+      const body = plan.plan ?? "";
+      const checklist =
+        (body.match(/^[ \t]{0,3}[-*]\s+\[ ?\]\s+\S+/gm) ?? []).length +
+        (body.match(/^[ \t]{0,3}\d+\.\s+\S+/gm) ?? []).length;
+      if (checklist < 2) {
+        missing.push(
+          "format the plan as at least two concrete ordered steps (`- [ ] step` checklist preferred, or `1. step`) so execution can seed a task list",
+        );
+      }
+      const hasVerification =
+        !!plan.verification?.trim() ||
+        /\b(verif|test|typecheck|lint|check|acceptance|done when|success crit)/i.test(body);
+      if (!hasVerification) {
+        missing.push(
+          "state how the result will be verified — pass present_plan's `verification` field, or include a verification/success-criteria section in the plan body",
+        );
+      }
+      if (this.#triage.needsVersions) {
+        const hasDecisions =
+          (plan.decisions?.length ?? 0) > 0 ||
+          /\b(decision|chose|choose|rationale|because|instead of|over )\b/i.test(body);
+        if (!hasDecisions) {
+          missing.push(
+            "name key stack/version decisions with a one-line rationale each (present_plan `decisions` array, or a Decisions section in the plan)",
+          );
+        }
+      }
+      // If web/version facts are claimed without cited sources, assumptions
+      // must be explicit so the user can see what is unverified.
+      if ((this.#triage.needsWeb || this.#triage.needsVersions) && !validSources.length) {
+        if (!(plan.assumptions && plan.assumptions.length > 0)) {
+          missing.push(
+            "pass non-empty `assumptions` for anything not backed by a harvested source URL — do not present unverified claims with the same confidence as researched fact",
+          );
+        }
+      }
+    }
+
     if (!missing.length) return { allow: true };
-    if (this.#rejections >= MAX_REJECTIONS) {
-      return { allow: true, ungrounded: true };
+    if (this.#rejections >= this.#maxRejections) {
+      if (this.#allowUngrounded) return { allow: true, ungrounded: true };
+      // Hard block: keep rejecting with the same instructions (no silent pass).
+      return {
+        allow: false,
+        reason:
+          `Plan NOT presented — required grounding is still missing (ungrounded plans are disabled).\n` +
+          missing.map((m) => `- ${m}`).join("\n") +
+          `\n(Why: ${this.#triage.reasons.join("; ") || "the request needs real evidence"}. ` +
+          `Enable plan.allowUngrounded via /config if you need the escape hatch.)`,
+      };
     }
     this.#rejections++;
-    const attemptsLeft = MAX_REJECTIONS - this.#rejections + 1;
+    const attemptsLeft = this.#maxRejections - this.#rejections + 1;
+    const budgetHint =
+      this.#allowUngrounded && attemptsLeft > 0
+        ? ` ${attemptsLeft} attempt${attemptsLeft === 1 ? "" : "s"} left before the plan is shown with an "ungrounded" warning.`
+        : this.#allowUngrounded
+          ? " Next present will be shown with an \"ungrounded\" warning."
+          : " Ungrounded plans are disabled — keep gathering evidence.";
     return {
       allow: false,
       reason:
         `Plan NOT presented — required grounding is missing. Do the following, then call present_plan again:\n` +
         missing.map((m) => `- ${m}`).join("\n") +
         `\n(Why: ${this.#triage.reasons.join("; ") || "the request needs real evidence"}.` +
-        ` ${attemptsLeft} attempt${attemptsLeft === 1 ? "" : "s"} left before the plan is shown with an "ungrounded" warning.)`,
+        `${budgetHint})`,
     };
   }
 }

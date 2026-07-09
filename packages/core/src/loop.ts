@@ -5,12 +5,25 @@ export interface ParsedLoop {
   prompt: string;
   until?: string;
   max?: number;
+  /** True when the user opted into an unbounded loop (`--unlimited`). */
+  unlimited?: boolean;
+  /** True when `max` was filled from {@link DEFAULT_LOOP_MAX} (not user `--max`). */
+  maxDefaulted?: boolean;
   /** Non-fatal usage warnings (a mistyped flag/interval token kept as prompt
    * text) for the caller to surface — the loop still starts. */
   warnings?: string[];
 }
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+
+/** Safety default when `--max` / `--unlimited` is omitted. Prevents an
+ * interval loop from running forever on a flaky `--until` or forgotten stop.
+ * Explicit `--unlimited` (or a positive `--max`) overrides. */
+export const DEFAULT_LOOP_MAX = 12;
+
+/** Consecutive `--until` evaluation failures before the loop stops (instead of
+ * treating a dead evaluator as "never done" forever). */
+export const MAX_UNTIL_EVAL_FAILURES = 5;
 
 /** A queued loop iteration was removed from the work queue before it ran
  * (abort / dequeue / queue clear). Distinguished from a real iteration failure
@@ -28,21 +41,41 @@ export function parseDuration(token: string): number | null {
   return unit === "s" ? n * 1000 : unit === "m" ? n * 60_000 : n * 3_600_000;
 }
 
+export interface ParseLoopOpts {
+  /**
+   * Default max when `--max` / `--unlimited` omitted. From config.loop.defaultMax
+   * (0 = unlimited default). Falls back to {@link DEFAULT_LOOP_MAX}.
+   */
+  defaultMax?: number;
+}
+
 /**
  * Parse `/loop` arguments:
- *   [interval] <prompt or /command> [--until <condition>] [--max <N>]
+ *   [interval] <prompt or /command> [--until <condition>] [--max <N>] [--unlimited]
  * Returns null if no prompt is present.
+ *
+ * When neither `--max` nor `--unlimited` is set, the configured default max
+ * (or {@link DEFAULT_LOOP_MAX}) is applied so a forgotten bound can't burn
+ * forever. `--max 0` is rejected (usage error) — use `--unlimited` for that.
  */
-export function parseLoopArgs(args: string): ParsedLoop | null {
+export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoop | null {
   let rest = args.trim();
   const warnings: string[] = [];
+  const configuredDefault =
+    opts.defaultMax !== undefined ? opts.defaultMax : DEFAULT_LOOP_MAX;
+
+  let unlimited = false;
+  if (/(?:^|\s)--unlimited(?:\s|$)/.test(rest)) {
+    unlimited = true;
+    rest = rest.replace(/(?:^|\s)--unlimited(?=\s|$)/g, " ").replace(/\s+/g, " ").trim();
+  }
 
   let max: number | undefined;
   const maxMatch = rest.match(/--max\s+(\d+)/);
   if (maxMatch) {
     // `--max 0` is rejected (returns null → usage message) rather than being
     // silently dropped, which would turn "run at most zero times" into an
-    // UNBOUNDED loop.
+    // UNBOUNDED loop. Use `--unlimited` for intentional forever.
     max = Number(maxMatch[1]);
     if (max < 1) return null;
     rest = rest.replace(maxMatch[0], "").trim();
@@ -98,14 +131,33 @@ export function parseLoopArgs(args: string): ParsedLoop | null {
     const token = rest.match(/--(max|until)\s*$/i)?.[0] ?? "--until";
     warnings.push(
       `"${token}" was not applied (missing or invalid value) and was kept as prompt text — ` +
-        "usage: --until <condition>, --max <N>.",
+        "usage: --until <condition>, --max <N>, --unlimited.",
     );
   } else if (/\s--max\s+\S+/i.test(rest) && max === undefined) {
     // e.g. `--max ten` — present but not applied as a number.
     warnings.push(
       `"--max" was not applied (missing or invalid value) and was kept as prompt text — ` +
-        "usage: --until <condition>, --max <N>.",
+        "usage: --until <condition>, --max <N>, --unlimited.",
     );
+  }
+
+  let maxDefaulted = false;
+  if (unlimited && max !== undefined) {
+    warnings.push(
+      "both --max and --unlimited were set; --unlimited wins (no iteration cap).",
+    );
+    max = undefined;
+  } else if (unlimited) {
+    max = undefined;
+  } else if (max === undefined) {
+    // Safety default from config (0 = user opted into unlimited-by-default).
+    if (configuredDefault > 0) {
+      max = configuredDefault;
+      maxDefaulted = true;
+    } else {
+      unlimited = true;
+      maxDefaulted = true;
+    }
   }
 
   return {
@@ -113,6 +165,8 @@ export function parseLoopArgs(args: string): ParsedLoop | null {
     prompt: rest,
     ...(until ? { until } : {}),
     ...(max !== undefined ? { max } : {}),
+    ...(unlimited ? { unlimited: true } : {}),
+    ...(maxDefaulted ? { maxDefaulted: true } : {}),
     ...(warnings.length ? { warnings } : {}),
   };
 }
@@ -129,6 +183,8 @@ export interface LoopOptions extends ParsedLoop {
   /** Called when the loop is stopped — lets the host abort an in-flight turn. */
   onStop?: () => void;
   emit: (event: UIEvent) => void;
+  /** Override {@link MAX_UNTIL_EVAL_FAILURES} (from config.loop.maxUntilEvalFailures). */
+  maxUntilEvalFailures?: number;
 }
 
 /**
@@ -142,7 +198,7 @@ export class LoopController {
   #timer: ReturnType<typeof setTimeout> | undefined;
   /** Consecutive `--until` evaluation failures — a persistently failing check
    * (bad model id, dead key) would otherwise silently make the condition inert
-   * and, with no `--max`, loop forever. Warned on the 1st and every 5th. */
+   * and, with no `--max`, loop forever. Stops after {@link MAX_UNTIL_EVAL_FAILURES}. */
   #evalFailStreak = 0;
   #resolveDone!: () => void;
   #done: Promise<void>;
@@ -208,15 +264,24 @@ export class LoopController {
       } catch {
         // Treat evaluation failure as "not yet" and keep looping — but a
         // PERSISTENTLY failing check (model unreachable / bad id) silently turns
-        // `--until` into "never", so surface it instead of looping mutely.
+        // `--until` into "never", so stop after a short streak instead of
+        // burning iterations forever.
         this.#evalFailStreak += 1;
+        const failCap = this.#opts.maxUntilEvalFailures ?? MAX_UNTIL_EVAL_FAILURES;
+        if (this.#evalFailStreak >= failCap) {
+          this.stop(
+            `--until check failed ${this.#evalFailStreak}× in a row (model unreachable or the ` +
+              "condition can't be evaluated) — stopping. /loop with a fixed evaluator or --max.",
+          );
+          return;
+        }
         if (this.#evalFailStreak === 1 || this.#evalFailStreak % 5 === 0) {
           this.#opts.emit({
             type: "notice",
             level: "warn",
             message:
               `Loop --until check failed ${this.#evalFailStreak}× (model unreachable or the ` +
-              "condition can't be evaluated); the loop continues. /loop stop to cancel.",
+              `condition can't be evaluated); continues (stops after ${failCap}). /loop stop to cancel.`,
           });
         }
       }

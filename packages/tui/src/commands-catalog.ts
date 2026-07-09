@@ -45,10 +45,14 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   // Steering
   {
     name: "goal",
-    description: "Set a north-star goal + start an autonomous run (resume re-arms · clear stops)",
-    arg: "[text|resume|clear]",
+    description: "North-star run (text · resume · clear · max 15 · plan first off · settings)",
+    arg: "[text|resume|clear|max N|settings]",
   },
-  { name: "loop", description: "Run a prompt on a loop (/loop stop ends it)", arg: "[interval] <prompt> [--until <cond>] [--max N]" },
+  {
+    name: "loop",
+    description: "Recurring prompt (stop · defaults · default max 20)",
+    arg: "[interval] <prompt> [--max N] | defaults | default max N",
+  },
   { name: "queue", description: "Show the prompt queue" },
   // Code & safety
   { name: "diff", description: "Show the working-tree diff" },
@@ -58,7 +62,11 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "redo", description: "Re-apply the most recently undone checkpoint" },
   { name: "checkpoints", description: "List workspace checkpoints" },
   // Extensions & config
-  { name: "config", description: "Show the effective config" },
+  {
+    name: "config",
+    description: "Show or set config (goal max rounds 15 · loop default max 20 · plan …)",
+    arg: "[phrase|show goal|loop|plan]",
+  },
   { name: "memory", description: "Show loaded memory files" },
   { name: "permissions", description: "Show tool permission rules" },
   { name: "tools", description: "List tools in the current mode" },

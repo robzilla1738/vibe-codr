@@ -953,6 +953,11 @@ export class Session {
       if (this.mode === "plan") {
         this.#planGate ??= new PlanGate({
           greenfield: this.#deps.repoProfile?.greenfield === true,
+          minCodeTouches: config.plan.minCodeTouches,
+          requireWebFetch: config.plan.requireWebFetch,
+          requirePackageInfo: config.plan.requirePackageInfo,
+          allowUngrounded: config.plan.allowUngrounded,
+          maxRejections: config.plan.maxRejections,
         });
         this.#planGate.noteRequest(input);
       }
@@ -1083,7 +1088,7 @@ export class Session {
               // Citations are verified against the session's harvested source
               // ledger: a URL the research never surfaced can't ground a plan.
               return {
-                planGate: (plan: { sources?: { url: string }[] }) =>
+                planGate: (plan) =>
                   gate.evaluate(plan, { isHarvested: (url) => this.#sources.has(url) }),
               };
             })()

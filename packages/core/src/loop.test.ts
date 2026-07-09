@@ -1,6 +1,12 @@
 import { test, expect } from "bun:test";
 import type { UIEvent } from "@vibe/shared";
-import { LoopCancelledError, LoopController, parseLoopArgs, parseDuration } from "./loop.ts";
+import {
+  LoopCancelledError,
+  LoopController,
+  parseLoopArgs,
+  parseDuration,
+  MAX_UNTIL_EVAL_FAILURES,
+} from "./loop.ts";
 
 test("parseDuration handles s/m/h", () => {
   expect(parseDuration("30s")).toBe(30_000);
@@ -32,11 +38,28 @@ test("parseLoopArgs extracts interval, prompt, --until, --max", () => {
   expect(p!.max).toBe(5);
 });
 
-test("parseLoopArgs defaults interval and allows bare prompt", () => {
+test("parseLoopArgs defaults interval, max, and allows bare prompt", () => {
   const p = parseLoopArgs("keep polling status");
   expect(p!.intervalMs).toBe(600_000);
   expect(p!.prompt).toBe("keep polling status");
   expect(p!.until).toBeUndefined();
+  expect(p!.max).toBe(12);
+  expect(p!.maxDefaulted).toBe(true);
+  expect(p!.unlimited).toBeUndefined();
+});
+
+test("parseLoopArgs --unlimited clears the default max cap", () => {
+  const p = parseLoopArgs("5m poll forever --unlimited");
+  expect(p!.max).toBeUndefined();
+  expect(p!.unlimited).toBe(true);
+  expect(p!.maxDefaulted).toBeUndefined();
+  expect(p!.prompt).toBe("poll forever");
+});
+
+test("parseLoopArgs explicit --max wins over the default", () => {
+  const p = parseLoopArgs("30s check --max 3");
+  expect(p!.max).toBe(3);
+  expect(p!.maxDefaulted).toBeUndefined();
 });
 
 test("parseLoopArgs returns null with no prompt", () => {
@@ -64,7 +87,9 @@ test("parseLoopArgs warns when --max/--until is typed but not applied", () => {
   // believes is capped. Same for a value-less trailing `--until`.
   const badMax = parseLoopArgs("5m deploy --max ten");
   expect(badMax).not.toBeNull();
-  expect(badMax!.max).toBeUndefined();
+  // Mistyped max is not applied; the safety default still caps the loop.
+  expect(badMax!.max).toBe(12);
+  expect(badMax!.maxDefaulted).toBe(true);
   expect(badMax!.warnings?.some((w) => w.includes('"--max"'))).toBe(true);
 
   const badUntil = parseLoopArgs("deploy --until");
@@ -207,4 +232,31 @@ test("parseLoopArgs does not steal prose --until (BUG-076)", () => {
   expect(p).not.toBeNull();
   expect(p!.until).toBeUndefined();
   expect(p!.prompt).toContain("--until loops work");
+});
+
+test("LoopController stops after consecutive --until eval failures", async () => {
+  let runs = 0;
+  const events: UIEvent[] = [];
+  const loop = new LoopController({
+    id: "L-evalfail",
+    intervalMs: 1,
+    prompt: "x",
+    until: "done",
+    max: 100,
+    run: async () => {
+      runs += 1;
+      return "not yet";
+    },
+    evaluate: async () => {
+      throw new Error("model down");
+    },
+    emit: (e) => events.push(e),
+  });
+  loop.start();
+  await loop.whenDone();
+  expect(runs).toBe(MAX_UNTIL_EVAL_FAILURES);
+  const stopped = events.find((e) => e.type === "loop-stopped");
+  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toContain(
+    "--until check failed",
+  );
 });

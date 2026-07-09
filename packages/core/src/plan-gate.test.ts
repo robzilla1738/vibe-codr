@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { PlanGate, triagePlanRequest } from "./plan-gate.ts";
+import { PlanGate, triagePlanRequest, MIN_CODE_TOUCHES } from "./plan-gate.ts";
 import { SourceLedger } from "./source-ledger.ts";
 
 test("triage: time-sensitive / current-events requests need web research", () => {
@@ -41,19 +41,34 @@ test("gate: rejects an ungrounded present twice with instructions, then allows w
   expect(third.ungrounded).toBe(true);
 });
 
-test("gate: research telemetry + sources satisfy the requirements", () => {
+test("gate: needsWeb requires webfetch + harvested sources (search alone is not enough)", () => {
   const gate = new PlanGate();
   gate.noteRequest("build a next.js site about today's world cup match");
   gate.recordToolUse("web_search");
-  gate.recordToolUse("webfetch");
   gate.recordToolUse("package_info");
 
-  // Searched but presented without citing sources → still bounced.
-  const noSources = gate.evaluate({});
-  expect(noSources.allow).toBe(false);
-  expect(noSources.reason).toContain("sources");
+  // Search without webfetch → bounced for deep-read.
+  const noFetch = gate.evaluate({
+    plan: "- [ ] a\n- [ ] b\nVerification: tests\nDecision: next because X",
+    sources: [{ url: "https://fifa.com/match" }],
+  });
+  expect(noFetch.allow).toBe(false);
+  expect(noFetch.reason).toContain("webfetch");
 
-  const grounded = gate.evaluate({ sources: [{ url: "https://fifa.com/match" }] });
+  gate.recordToolUse("webfetch");
+  // Fetched but presented without citing sources → still bounced.
+  const noSources = gate.evaluate({
+    plan: "- [ ] a\n- [ ] b\nVerification: tests\nDecision: next because X",
+  });
+  expect(noSources.allow).toBe(false);
+  expect(noSources.reason).toMatch(/sources|assumptions/i);
+
+  const grounded = gate.evaluate({
+    plan: "- [ ] scaffold\n- [ ] verify with tests\n",
+    sources: [{ url: "https://fifa.com/match" }],
+    verification: "bun test",
+    decisions: ["next.js — matches existing stack"],
+  });
   expect(grounded.allow).toBe(true);
   expect(grounded.ungrounded).toBeUndefined();
 });
@@ -62,51 +77,66 @@ test("gate: a webfetch-grounded plan with a cited source satisfies needsWeb — 
   const harvested = new Set(["https://fifa.com/match"]);
   const isHarvested = (url: string) => harvested.has(url);
 
-  // A direct webfetch (no web_search) that harvested a citable source grounds the plan.
+  // A direct webfetch that harvested a citable source grounds the plan when
+  // structure is complete.
   const grounded = new PlanGate();
   grounded.noteRequest("plan a page about today's world cup match");
   grounded.recordToolUse("webfetch");
-  const verdict = grounded.evaluate({ sources: [{ url: "https://fifa.com/match" }] }, { isHarvested });
+  const verdict = grounded.evaluate(
+    {
+      plan: "- [ ] page\n- [ ] ship\n",
+      sources: [{ url: "https://fifa.com/match" }],
+      verification: "manual check of the page",
+    },
+    { isHarvested },
+  );
   expect(verdict.allow).toBe(true);
   expect(verdict.ungrounded).toBeUndefined();
 
-  // A bare webfetch with no cited source is still bounced on the evidence gate,
-  // not the "did any web research happen" gate.
+  // A bare webfetch with no cited source is still bounced on the evidence gate.
   const bare = new PlanGate();
   bare.noteRequest("plan a page about today's world cup match");
   bare.recordToolUse("webfetch");
-  const bounced = bare.evaluate({}, { isHarvested });
+  const bounced = bare.evaluate(
+    { plan: "- [ ] a\n- [ ] b\n", verification: "tests" },
+    { isHarvested },
+  );
   expect(bounced.allow).toBe(false);
-  expect(bounced.reason).toContain("sources");
+  expect(bounced.reason).toMatch(/sources|assumptions/i);
 });
 
 test("gate: a fabricated citation is refused when the ledger can verify — only harvested URLs ground a plan", () => {
   const gate = new PlanGate();
-  gate.noteRequest("build a site about today's world cup match"); // web-bound
-  gate.recordToolUse("web_search"); // one real (but unrelated) search happened
+  // Web-only request (no BUILD_REQUEST / stack → no package_info tax).
+  gate.noteRequest("summarize today's world cup match");
+  gate.recordToolUse("web_search");
+  gate.recordToolUse("webfetch");
   const harvested = new Set(["https://fifa.com/match"]);
   const isHarvested = (url: string) => harvested.has(url);
 
-  // A well-shaped URL the research never surfaced must NOT present as grounded.
   const fabricated = gate.evaluate(
-    { sources: [{ url: "https://fabricated-i-never-visited.example/x" }] },
+    {
+      plan: "- [ ] a\n- [ ] b\n",
+      sources: [{ url: "https://fabricated-i-never-visited.example/x" }],
+      verification: "tests",
+    },
     { isHarvested },
   );
   expect(fabricated.allow).toBe(false);
   expect(fabricated.reason).toContain("never surfaced");
 
-  // A genuinely-harvested citation passes; fabricated extras alongside don't block it.
   const grounded = gate.evaluate(
     {
+      plan: "- [ ] a\n- [ ] b\n",
       sources: [
         { url: "https://fabricated-i-never-visited.example/x" },
         { url: "https://fifa.com/match" },
       ],
+      verification: "tests",
     },
     { isHarvested },
   );
   expect(grounded.allow).toBe(true);
-  expect(grounded.ungrounded).toBeUndefined();
 });
 
 test("gate: ledger verification tolerates equivalent URL spellings (SourceLedger.has)", () => {
@@ -115,9 +145,13 @@ test("gate: ledger verification tolerates equivalent URL spellings (SourceLedger
   const gate = new PlanGate();
   gate.noteRequest("plan a page about today's match");
   gate.recordToolUse("web_search");
-  // The model cites a different but equivalent spelling of the harvested page.
+  gate.recordToolUse("webfetch");
   const verdict = gate.evaluate(
-    { sources: [{ url: "https://fifa.com/match" }] },
+    {
+      plan: "- [ ] a\n- [ ] b\n",
+      sources: [{ url: "https://fifa.com/match" }],
+      verification: "tests",
+    },
     { isHarvested: (url) => ledger.has(url) },
   );
   expect(verdict.allow).toBe(true);
@@ -126,18 +160,85 @@ test("gate: ledger verification tolerates equivalent URL spellings (SourceLedger
 test("gate: self-contained requests pass immediately — no research theater", () => {
   const gate = new PlanGate();
   gate.noteRequest("rename parseCfg to parseConfig across the repo");
-  gate.recordToolUse("grep"); // the code requirement is satisfied by one read
-  expect(gate.evaluate({}).allow).toBe(true);
+  // needsCode: one touch is not enough — need MIN_CODE_TOUCHES or a scout.
+  for (let i = 0; i < MIN_CODE_TOUCHES; i++) gate.recordToolUse("grep");
+  expect(
+    gate.evaluate({
+      plan: "- [ ] rename\n- [ ] verify callers\n",
+      verification: "typecheck + tests",
+    }).allow,
+  ).toBe(true);
 
   const pure = new PlanGate();
   pure.noteRequest("write a limerick about rust");
-  expect(pure.evaluate({}).allow).toBe(true);
+  expect(pure.evaluate({ plan: "just a poem" }).allow).toBe(true);
+});
+
+test("gate: needsCode requires thorough reads or a scout (not one ls)", () => {
+  const gate = new PlanGate();
+  gate.noteRequest("refactor the loader in this codebase");
+  gate.recordToolUse("ls");
+  const thin = gate.evaluate({
+    plan: "- [ ] refactor\n- [ ] test\n",
+    verification: "bun test",
+  });
+  expect(thin.allow).toBe(false);
+  expect(thin.reason).toContain(String(MIN_CODE_TOUCHES));
+
+  // A scout alone is enough.
+  const scouted = new PlanGate();
+  scouted.noteRequest("refactor the loader in this codebase");
+  scouted.recordToolUse("spawn_subagent");
+  expect(
+    scouted.evaluate({
+      plan: "- [ ] refactor\n- [ ] test\n",
+      verification: "bun test",
+    }).allow,
+  ).toBe(true);
+});
+
+test("gate: needsVersions requires package_info (web_search alone is not enough)", () => {
+  const gate = new PlanGate();
+  gate.noteRequest("build a next.js site with tailwind");
+  gate.recordToolUse("web_search");
+  const noPkg = gate.evaluate({
+    plan: "- [ ] scaffold\n- [ ] style\nDecision: next because X",
+    verification: "build",
+    assumptions: ["versions from search"],
+  });
+  expect(noPkg.allow).toBe(false);
+  expect(noPkg.reason).toContain("package_info");
+
+  gate.recordToolUse("package_info");
+  expect(
+    gate.evaluate({
+      plan: "- [ ] scaffold\n- [ ] style\n",
+      verification: "build",
+      decisions: ["next.js + tailwind — standard"],
+      assumptions: ["hosting TBD"],
+    }).allow,
+  ).toBe(true);
+});
+
+test("gate: non-trivial plans need checklist steps + verification", () => {
+  const gate = new PlanGate();
+  gate.noteRequest("refactor the loader in this codebase");
+  for (let i = 0; i < MIN_CODE_TOUCHES; i++) gate.recordToolUse("read");
+  const essay = gate.evaluate({ plan: "We should probably refactor the loader somehow." });
+  expect(essay.allow).toBe(false);
+  expect(essay.reason).toMatch(/step|checklist|verif/i);
 });
 
 test("gate: code requirement is waived in a greenfield workspace", () => {
   const gate = new PlanGate({ greenfield: true });
   gate.noteRequest("refactor the loader in this codebase"); // needsCode, but nothing to read
-  expect(gate.evaluate({}).allow).toBe(true);
+  // Still non-trivial structure applies (needsCode triage flag).
+  expect(
+    gate.evaluate({
+      plan: "- [ ] invent loader\n- [ ] test it\n",
+      verification: "manual",
+    }).allow,
+  ).toBe(true);
 });
 
 test("gate: revision prompts UNION into the triage; telemetry accumulates", () => {
@@ -146,7 +247,14 @@ test("gate: revision prompts UNION into the triage; telemetry accumulates", () =
   gate.noteRequest("actually make it about today's match"); // now web-bound
   expect(gate.evaluate({}).allow).toBe(false);
   gate.recordToolUse("web_search");
-  expect(gate.evaluate({ sources: [{ url: "https://example.com" }] }).allow).toBe(true);
+  gate.recordToolUse("webfetch");
+  expect(
+    gate.evaluate({
+      plan: "- [ ] page\n- [ ] publish\n",
+      sources: [{ url: "https://example.com" }],
+      verification: "look at it",
+    }).allow,
+  ).toBe(true);
 });
 
 test("gate: a new prompt re-arms the rejection budget — one exhausted plan can't disarm the next", () => {
@@ -233,10 +341,29 @@ test("triage: UNAMBIGUOUS stack spellings still force versions (Node.js over-cor
 test("gate: junk/non-URL sources do NOT satisfy the web-evidence requirement", () => {
   const gate = new PlanGate();
   gate.noteRequest("plan a page about today's match");
-  gate.recordToolUse("web_search"); // a search happened…
+  gate.recordToolUse("web_search");
+  gate.recordToolUse("webfetch");
   // …but the cited "sources" are not real URLs — the gate still demands evidence.
-  expect(gate.evaluate({ sources: [{ url: "appease" }] }).allow).toBe(false);
-  expect(gate.evaluate({ sources: [{ url: "data:text/plain,x" }] }).allow).toBe(false);
+  expect(
+    gate.evaluate({
+      plan: "- [ ] a\n- [ ] b\n",
+      sources: [{ url: "appease" }],
+      verification: "x",
+    }).allow,
+  ).toBe(false);
+  expect(
+    gate.evaluate({
+      plan: "- [ ] a\n- [ ] b\n",
+      sources: [{ url: "data:text/plain,x" }],
+      verification: "x",
+    }).allow,
+  ).toBe(false);
   // A real http(s) URL passes.
-  expect(gate.evaluate({ sources: [{ url: "https://fifa.com/match" }] }).allow).toBe(true);
+  expect(
+    gate.evaluate({
+      plan: "- [ ] a\n- [ ] b\n",
+      sources: [{ url: "https://fifa.com/match" }],
+      verification: "x",
+    }).allow,
+  ).toBe(true);
 });

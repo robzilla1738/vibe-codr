@@ -9,7 +9,11 @@ const Source = z.object({
 const Input = z.object({
   plan: z
     .string()
-    .describe("The complete implementation plan, formatted as markdown."),
+    .describe(
+      "The complete implementation plan as markdown. Prefer a `- [ ] step` checklist " +
+        "so execution can seed tasks. Non-trivial plans must include concrete steps, " +
+        "key decisions with rationales, and how success will be verified.",
+    ),
   sources: z
     .array(Source)
     .optional()
@@ -23,7 +27,28 @@ const Input = z.object({
     .optional()
     .describe(
       "Anything the plan needs that you could NOT verify (marked 'inferred — " +
-        "verify' in the plan). Surfaced to the user distinctly from researched fact.",
+        "verify' in the plan). Surfaced to the user distinctly from researched fact. " +
+        "Required when web/version research is incomplete.",
+    ),
+  files: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Files, directories, or areas the plan will touch (or a single 'greenfield' entry).",
+    ),
+  verification: z
+    .string()
+    .optional()
+    .describe(
+      "How success will be proven (commands to run, acceptance checks). Required " +
+        "for non-trivial plans unless the plan body already has a verification section.",
+    ),
+  decisions: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Key decisions with a one-line rationale each (stack, API shape, trade-offs). " +
+        "Required when the plan chooses frameworks or package versions.",
     ),
 });
 
@@ -40,15 +65,23 @@ export const presentPlanTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "present_plan",
   description:
     "Present your finished plan for the user to review. Call this once your plan is complete " +
-    "AND grounded — the engine rejects a plan whose required research (web_search / package_info " +
-    "/ file reads) never happened. Pass the web pages the plan rests on in `sources` and any " +
-    "unverified items in `assumptions`. Do not modify any files — switching to execute mode is " +
-    "the user's decision.",
+    "AND grounded — the engine rejects a plan whose required research (web_search / webfetch / " +
+    "package_info / thorough file reads) never happened, or that lacks steps and verification. " +
+    "Pass harvested page URLs in `sources`, unverified items in `assumptions`, and prefer " +
+    "`verification` / `decisions` / `files` for non-trivial work. Do not modify any files — " +
+    "switching to execute mode is the user's decision.",
   inputSchema: Input,
   readOnly: true,
   modes: ["plan"],
-  async execute({ plan, sources, assumptions }, ctx) {
-    const verdict = ctx.planGate?.({ ...(sources ? { sources } : {}) });
+  async execute({ plan, sources, assumptions, files, verification, decisions }, ctx) {
+    const verdict = ctx.planGate?.({
+      plan,
+      ...(sources ? { sources } : {}),
+      ...(assumptions ? { assumptions } : {}),
+      ...(files ? { files } : {}),
+      ...(verification ? { verification } : {}),
+      ...(decisions ? { decisions } : {}),
+    });
     if (verdict && !verdict.allow) {
       return { output: verdict.reason ?? "Plan rejected — required grounding is missing.", isError: true };
     }

@@ -63,7 +63,14 @@ export interface ToolContext {
    * allowed through with `ungrounded: true` so the UI can warn instead of the
    * model deadlocking.
    */
-  planGate?: (plan: { sources?: { url: string }[] }) => PlanGateVerdict;
+  planGate?: (plan: {
+    plan?: string;
+    sources?: { url: string }[];
+    assumptions?: string[];
+    files?: string[];
+    verification?: string;
+    decisions?: string[];
+  }) => PlanGateVerdict;
   /**
    * Tree-global stale-write guard (one per Session tree, set by core on the
    * engine-owned instance). Used by `read`/`edit`/`write` to record the

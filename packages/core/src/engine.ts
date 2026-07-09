@@ -2,8 +2,18 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { mkdir, rm } from "node:fs/promises";
 import { mkdirSync, statSync, readdirSync } from "node:fs";
-import { generateObject, generateText } from "ai";
+import { generateText } from "ai";
 import { z } from "zod";
+import { generateStructuredObject } from "./structured-object.ts";
+
+// Quiet the AI SDK's console.warn "responseFormat is not supported" spam in
+// the TUI (it paints over the input footer). We handle unsupported structured
+// outputs ourselves via generateStructuredObject's prompt-JSON fallback.
+// Callers that want the SDK's warnings can set AI_SDK_LOG_WARNINGS back to a
+// function before constructing an Engine. The global is typed by the AI SDK.
+if ((globalThis as { AI_SDK_LOG_WARNINGS?: unknown }).AI_SDK_LOG_WARNINGS === undefined) {
+  (globalThis as { AI_SDK_LOG_WARNINGS?: false }).AI_SDK_LOG_WARNINGS = false;
+}
 import {
   createId,
   createLogger,
@@ -1838,13 +1848,18 @@ export class Engine implements EngineClient {
       /* not a repo / git unavailable */
     }
     const gateLine = `Last gate outcome: ${this.#lastGateOutcome ?? "none"}\n`;
-    const { object } = await this.#limiter.run(
+    // generateStructuredObject: native generateObject when the model supports
+    // response_format JSON, prompt-JSON fallback otherwise — so /loop --until
+    // does not die on ollama/local models that reject structured outputs.
+    const supportsStructuredOutput = await this.#supportsStructuredOutput(this.#session.model);
+    return await this.#limiter.run(
       () =>
-        generateObject({
+        generateStructuredObject({
           model,
           schema: z.object({ done: z.boolean(), reason: z.string() }),
           abortSignal: AbortSignal.timeout(60_000),
           maxRetries: this.#config.retry.maxAttempts,
+          supportsStructuredOutput,
           prompt:
             `You are checking whether a stop condition has been satisfied.\n` +
             `Condition: ${condition}\n\nMost recent agent result:\n${result}\n\n` +
@@ -1855,7 +1870,26 @@ export class Engine implements EngineClient {
         }),
       AbortSignal.timeout(90_000),
     );
-    return object;
+  }
+
+  /**
+   * Best-effort catalog probe: does this model support native structured JSON
+   * response format? Undefined until the catalog loads (treat as "try native").
+   * Local ollama tags without a catalog hit default false — they almost never
+   * support response_format and would only emit AI SDK warnings + fail assess.
+   */
+  async #supportsStructuredOutput(model: string): Promise<boolean | undefined> {
+    try {
+      const cap = await this.catalog.supportsStructuredOutput(model);
+      if (cap !== undefined) return cap;
+    } catch {
+      /* catalog optional */
+    }
+    // Local ollama without cloud signal: skip native generateObject (avoids the
+    // AI SDK "responseFormat is not supported" warning flooding the TUI and the
+    // "assessment unavailable" path on models that return free-form text).
+    if (model.startsWith("ollama/") && !model.includes("cloud")) return false;
+    return undefined;
   }
 
   /**
@@ -3175,13 +3209,18 @@ export class Engine implements EngineClient {
         () => this.registry.resolveModel(this.#session.model, this.#config),
         { maxAttempts: this.#config.retry.maxAttempts, baseDelayMs: this.#config.retry.baseDelayMs },
       );
-      const { object } = await this.#limiter.run(
+      // Same structured-object path as #evaluateCondition: ollama/local models
+      // that lack response_format JSON must not brick /goal assessment (the
+      // "assessment unavailable — continuing" + AI SDK warning data point).
+      const supportsStructuredOutput = await this.#supportsStructuredOutput(this.#session.model);
+      return await this.#limiter.run(
         () =>
-          generateObject({
+          generateStructuredObject({
             model,
             schema: z.object({ met: z.boolean(), gaps: z.array(z.string()), reason: z.string() }),
             abortSignal: AbortSignal.timeout(60_000),
             maxRetries: this.#config.retry.maxAttempts,
+            supportsStructuredOutput,
             prompt:
               `You are a pessimistic auditor. Default to met=false unless the evidence is overwhelming.\n` +
               `Goal: ${goal}\n\nAgent's latest report:\n${this.#session.lastAssistantText()}\n` +
@@ -3196,7 +3235,6 @@ export class Engine implements EngineClient {
           }),
         AbortSignal.timeout(90_000),
       );
-      return object;
     } catch {
       return { met: false, gaps: [], reason: "assessment unavailable — continuing" };
     }

@@ -6,13 +6,16 @@ import { unifiedDiff } from "../diff.ts";
 import { withFileLock } from "../toolset.ts";
 import { atomicReplace } from "../fs/atomic.ts";
 import { readTextIfExists } from "../fs/safe-read.ts";
+import { withPathAliases } from "../path-input.ts";
 
-const Input = z.object({
+const Input = withPathAliases({
   path: z.string().describe("File path to write, relative to cwd."),
   content: z.string().describe("Full file contents."),
 });
 
-export const writeTool: ToolDefinition<z.infer<typeof Input>> = {
+type WriteInput = z.output<typeof Input>;
+
+export const writeTool: ToolDefinition<WriteInput> = {
   name: "write",
   description:
     "Create or overwrite a file with the given contents. Parent directories are created automatically.",

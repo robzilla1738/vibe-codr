@@ -8,6 +8,7 @@ import type {
   ToolDefinition,
 } from "@vibe/shared";
 import { canonicalLockKey } from "./fs/canonical-key.ts";
+import { normalizePathAliases } from "./path-input.ts";
 
 /**
  * Run a file mutation under the session-tree's per-path write lock when one is
@@ -342,18 +343,24 @@ export function toAISDKTool(
     }
     abortIfCancelled();
 
+    // Canonicalize path aliases (file_path / filePath / file → path) BEFORE
+    // permission checks and execute so a model that only supplied an alias
+    // still matches path-scoped rules and the tool's execute sees `path`.
+    // Schema preprocess already accepts aliases at AI-SDK validation; this
+    // keeps direct execute / pre-validated paths honest too.
+    let effectiveInput = normalizePathAliases(input);
     // Plugin/hook veto (runs before the permission gate so a policy hook can
     // block a tool outright) — and may rewrite the tool's input.
-    let effectiveInput = input;
     if (base.beforeTool) {
-      const verdict = await base.beforeTool(def.name, input);
+      const verdict = await base.beforeTool(def.name, effectiveInput);
       if (verdict.deny) {
         const reason = verdict.reason ?? "denied by a plugin";
         base.emit({ type: "notice", level: "warn", message: `Blocked ${def.name}: ${reason}` });
         base.recordToolResult?.(options.toolCallId, true);
         return `ERROR: tool "${def.name}" was blocked (${reason}). Choose a different approach.`;
       }
-      if (verdict.input !== undefined) effectiveInput = verdict.input;
+      // Re-normalize after a hook rewrite so a hook that only set file_path still works.
+      if (verdict.input !== undefined) effectiveInput = normalizePathAliases(verdict.input);
     }
     abortIfCancelled();
 

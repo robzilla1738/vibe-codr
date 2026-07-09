@@ -2,8 +2,9 @@ import { readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
+import { withPathAliases } from "../path-input.ts";
 
-const Input = z.object({
+const Input = withPathAliases({
   path: z.string().optional().describe("Directory to list (default: cwd)."),
 });
 
@@ -12,7 +13,7 @@ const Input = z.object({
  * otherwise flood the whole list into the context window in one shot. */
 const LIMIT = 1000;
 
-export const lsTool: ToolDefinition<z.infer<typeof Input>> = {
+export const lsTool: ToolDefinition<z.output<typeof Input>> = {
   name: "ls",
   description: "List the entries of a directory (files and subdirectories).",
   inputSchema: Input,

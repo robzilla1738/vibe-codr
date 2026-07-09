@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import type { PermissionResult } from "@vibe/shared";
 import type { PermissionRule } from "@vibe/config";
+import { pickPathField } from "@vibe/tools";
 
 /** A resolver's verdict: plain boolean, or a denial carrying the user's typed
  * feedback — which becomes part of the deny reason the MODEL sees, so "no, use
@@ -86,7 +87,11 @@ export function scopeString(toolName: string, input: unknown): string | undefine
   if (toolName === "git_commit") {
     return `git commit${o.all ? " -a" : ""} -m ${typeof o.message === "string" ? o.message : ""}`;
   }
-  if (typeof o.path === "string") return o.path;
+  // Path under the documented name OR common model aliases (file_path /
+  // filePath / file) — pickPathField is the single source of truth with the
+  // tool schemas so a deny/ask still fires when the model only supplied an alias.
+  const pathField = pickPathField(o);
+  if (pathField !== undefined) return pathField;
   if (typeof o.url === "string") return o.url;
   // BUG-051: expose glob search root so path-scoped deny/ask rules can govern it.
   if (toolName === "glob") {
@@ -108,8 +113,12 @@ function resolvedPathScope(toolName: string, input: unknown, cwd: string): strin
   if (!input || typeof input !== "object") return undefined;
   const o = input as Record<string, unknown>;
   if (toolName === "bash" || typeof o.command === "string") return undefined;
-  if (typeof o.path !== "string") return undefined;
-  return resolve(cwd, o.path);
+  // Same alias set as scopeString / tool schemas — normalize before permission
+  // matching so an allow/deny cannot be dodged (or missed) by a model that only
+  // emitted file_path/filePath/file.
+  const pathField = pickPathField(o);
+  if (pathField === undefined) return undefined;
+  return resolve(cwd, pathField);
 }
 
 /**

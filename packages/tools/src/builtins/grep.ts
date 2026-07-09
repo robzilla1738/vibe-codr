@@ -3,8 +3,9 @@ import { Glob } from "bun";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import type { ToolContext, ToolDefinition, ToolResult } from "@vibe/shared";
+import { withPathAliases } from "../path-input.ts";
 
-const Input = z.object({
+const Input = withPathAliases({
   pattern: z.string().describe("Regex pattern to search for."),
   path: z.string().optional().describe("Directory or file to search."),
   glob: z.string().optional().describe('Filter files by glob, e.g. "*.ts".'),
@@ -22,7 +23,7 @@ const Input = z.object({
     .describe('Restrict to a file type by extension, e.g. "ts" or "py".'),
 });
 
-type GrepInput = z.infer<typeof Input>;
+type GrepInput = z.output<typeof Input>;
 
 /** Cap on returned match lines, so a broad pattern can't flood the context. */
 const LIMIT = 500;

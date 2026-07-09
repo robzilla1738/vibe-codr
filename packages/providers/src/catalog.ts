@@ -217,6 +217,21 @@ export class CatalogService {
     return undefined;
   }
 
+  /**
+   * Whether a model supports native structured JSON (`response_format` /
+   * `structuredOutputs`). NON-BLOCKING like {@link supportsImages}: undefined
+   * until the catalog has loaded. Callers that need a reliable JSON object
+   * (goal assess, loop --until) should fall back to prompt-JSON when this is
+   * false or when the native path fails.
+   */
+  async supportsStructuredOutput(modelString: string): Promise<boolean | undefined> {
+    if (this.#metadata) {
+      return this.#metadata.get(aliasModelKey(modelString))?.capabilities?.structuredOutput;
+    }
+    void this.#load();
+    return undefined;
+  }
+
   /** Enrich live models with models.dev metadata (best-effort, awaits load). */
   async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
     const meta = await this.#load();

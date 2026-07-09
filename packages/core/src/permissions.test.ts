@@ -511,6 +511,31 @@ test("a matchExact path rule compares each normalized spelling of the target", a
   expect((await checker.check("edit", { path: "src/other.ts" })).allowed).toBe(false);
 });
 
+test("path-scoped deny still fires when the model only supplied a path alias", async () => {
+  // Models often emit file_path/filePath/file instead of path — permission
+  // matching must see the same target so a deny cannot be skipped by an alias.
+  const proj = realpathSync(mkdtempSync(join(tmpdir(), "vibe-perm-alias-")));
+  const checker = new PermissionChecker(
+    [{ tool: "write", match: "secrets/*", action: "deny" }],
+    () => true,
+    "allow",
+    proj,
+  );
+  for (const input of [
+    { path: "secrets/key.pem", content: "x" },
+    { file_path: "secrets/key.pem", content: "x" },
+    { filePath: "secrets/key.pem", content: "x" },
+    { file: "secrets/key.pem", content: "x" },
+  ]) {
+    const r = await checker.check("write", input);
+    expect(r.allowed).toBe(false);
+  }
+  // Unrelated path still allowed.
+  expect((await checker.check("write", { file_path: "src/ok.ts", content: "x" })).allowed).toBe(
+    true,
+  );
+});
+
 test("a matchExact realpath grant re-matches under a symlinked-ancestor cwd (audit-backlog regression)", async () => {
   // The persisted-grant defect: with cwd spelled THROUGH a symlink (link -> real,
   // the macOS /var→/private/var shape) the old lexical `match` rule never

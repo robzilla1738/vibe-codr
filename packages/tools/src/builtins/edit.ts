@@ -5,6 +5,7 @@ import { unifiedDiff } from "../diff.ts";
 import { withFileLock } from "../toolset.ts";
 import { atomicReplace } from "../fs/atomic.ts";
 import { readBytesIfExists } from "../fs/safe-read.ts";
+import { withPathAliases } from "../path-input.ts";
 
 const SingleEdit = z.object({
   oldString: z.string().describe("Exact text to replace."),
@@ -15,7 +16,7 @@ const SingleEdit = z.object({
     .describe("Replace every occurrence instead of requiring a unique match."),
 });
 
-const Input = z.object({
+const Input = withPathAliases({
   path: z.string().describe("File to edit, relative to cwd."),
   oldString: z
     .string()
@@ -80,7 +81,9 @@ function capDiff(s: string, max = 20_000): string {
     : s;
 }
 
-export const editTool: ToolDefinition<z.infer<typeof Input>> = {
+type EditInput = z.output<typeof Input>;
+
+export const editTool: ToolDefinition<EditInput> = {
   name: "edit",
   description:
     "Edit a file by replacing exact text. Single edit: pass oldString/newString (add replaceAll for non-unique matches). Multiple edits: pass an `edits` array, applied atomically (all-or-nothing). Returns a unified diff of the change.",

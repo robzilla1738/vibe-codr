@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { capText, omittedMarker, readCappedText } from "@vibe/shared";
 import type { ToolContext, ToolDefinition } from "@vibe/shared";
+import { withPathAliases } from "../path-input.ts";
 
 /** Ceiling on chars read from each git stream, well above the 20k display cap so
  * nothing legitimate is lost — but bounded so a pathological `git diff` of a
@@ -55,7 +56,7 @@ export const gitStatusTool: ToolDefinition<Record<string, never>> = {
   },
 };
 
-const DiffInput = z.object({
+const DiffInput = withPathAliases({
   staged: z.boolean().optional().describe("Show staged (index) changes instead of unstaged."),
   ref: z
     .string()
@@ -68,7 +69,7 @@ const DiffInput = z.object({
   path: z.string().optional().describe("Limit the diff to this path."),
 });
 
-export const gitDiffTool: ToolDefinition<z.infer<typeof DiffInput>> = {
+export const gitDiffTool: ToolDefinition<z.output<typeof DiffInput>> = {
   name: "git_diff",
   description:
     "Show a git diff. Defaults to unstaged changes; staged:true shows the index, " +
@@ -116,12 +117,12 @@ export const gitCommitTool: ToolDefinition<z.infer<typeof CommitInput>> = {
   },
 };
 
-const LogInput = z.object({
+const LogInput = withPathAliases({
   max: z.number().int().positive().max(100).optional().describe("Number of commits to show (default 10)."),
   path: z.string().optional().describe("Limit history to this path."),
 });
 
-export const gitLogTool: ToolDefinition<z.infer<typeof LogInput>> = {
+export const gitLogTool: ToolDefinition<z.output<typeof LogInput>> = {
   name: "git_log",
   description: "Show recent commit history (hash, author, date, subject).",
   inputSchema: LogInput,

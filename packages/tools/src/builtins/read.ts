@@ -2,8 +2,9 @@ import { resolve } from "node:path";
 import { statSync } from "node:fs";
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
+import { withPathAliases } from "../path-input.ts";
 
-const Input = z.object({
+const Input = withPathAliases({
   path: z.string().describe("File path, absolute or relative to the cwd."),
   offset: z
     .number()
@@ -13,6 +14,8 @@ const Input = z.object({
     .describe("1-based start line (matches the line numbers in the output)."),
   limit: z.number().int().positive().optional().describe("Max lines to read."),
 });
+
+type ReadInput = z.output<typeof Input>;
 
 /** Cap on the returned content. Like grep/git/webfetch, read never dumps an
  * unbounded blob into the context window — a minified bundle or a file with a
@@ -27,7 +30,7 @@ function mtimeOf(path: string): number | undefined {
   }
 }
 
-export const readTool: ToolDefinition<z.infer<typeof Input>> = {
+export const readTool: ToolDefinition<ReadInput> = {
   name: "read",
   description:
     "Read a text file from the local filesystem. Returns line-numbered content. Supports optional line offset/limit for large files.",

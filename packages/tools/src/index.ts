@@ -9,6 +9,12 @@ export {
   type SerialLock,
   type ToolRuntimeBase,
 } from "./toolset.ts";
+export {
+  PATH_FIELD_ALIASES,
+  pickPathField,
+  normalizePathAliases,
+  withPathAliases,
+} from "./path-input.ts";
 export { FreshnessRegistry } from "./builtins/freshness.ts";
 export { buildRepoMap, type RepoMapResult } from "./builtins/repo-map.ts";
 export {

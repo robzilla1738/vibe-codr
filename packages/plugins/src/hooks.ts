@@ -72,6 +72,21 @@ export class HookBus {
     else this.#handlers.clear();
   }
 
+  /**
+   * Truncate a hook's handler list to the first `count` entries (BUG-100).
+   * Used to roll back only the handlers a failed plugin added, without wiping
+   * earlier plugins in the same load batch.
+   */
+  trimTo(name: HookName, count: number): void {
+    const list = this.#handlers.get(name);
+    if (!list) return;
+    if (count <= 0) {
+      this.#handlers.delete(name);
+      return;
+    }
+    if (list.length > count) list.length = count;
+  }
+
   /** Snapshot of handler counts (tests / diagnostics). */
   handlerCount(name: HookName): number {
     return this.#handlers.get(name)?.length ?? 0;

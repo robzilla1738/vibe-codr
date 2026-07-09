@@ -1373,3 +1373,93 @@ test("orphan rollback after emergency compaction re-binds userMsgRef (BUG-087)",
   // the post-compact (re-bound) message object.
   expect(JSON.stringify(sentPrompt)).not.toContain("ORPHAN-AFTER-COMPACT");
 });
+
+test("resume does not promote estimated spend into actual hard-stop (BUG-103)", async () => {
+  // Live path: estimated spend over the limit must not hard-stop.
+  // Resume used to seed actualCostUSD from costUSD, so the NEXT turn blocked.
+  const reply = (delta: string) =>
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+    ]);
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () => [reply("first"), reply("AFTER-RESUME")][call++] as never,
+  });
+  const bus = new EventBus();
+  const live = new Session({
+    config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/estimated",
+    mode: "execute",
+    getPricing: async () => ({ input: 1000, output: 1000, estimated: true }),
+  });
+  await collect(bus, () => live.run("turn one"));
+  expect(live.costUSD).toBeGreaterThan(0.0001);
+  expect(live.actualCostUSD).toBe(0);
+  expect(live.costEstimated).toBe(true);
+
+  // Simulate --resume with the fields a real persist writes (and the legacy
+  // costUSD-only meta: actualCostUSD omitted + costEstimated true).
+  const resumed = new Session({
+    config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/estimated",
+    mode: "execute",
+    initialCostUSD: live.costUSD,
+    initialActualCostUSD: live.actualCostUSD,
+    initialCostEstimated: live.costEstimated,
+    getPricing: async () => ({ input: 1000, output: 1000, estimated: true }),
+  });
+  expect(resumed.actualCostUSD).toBe(0);
+  expect(resumed.costEstimated).toBe(true);
+  const events = await collect(bus, () => resumed.run("turn two"));
+  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  expect(blocked).toBe(false);
+  const text = events
+    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .map((e) => e.delta)
+    .join("");
+  expect(text).toContain("AFTER-RESUME");
+});
+
+test("resume with costEstimated flag alone keeps actual at 0 (BUG-103 legacy meta)", () => {
+  // Meta that has costUSD + costEstimated but no actualCostUSD (forward-compat).
+  const s = new Session({
+    config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
+    registry: mockRegistry(
+      new MockLanguageModelV2({
+        doStream: async () =>
+          stream([
+            { type: "stream-start", warnings: [] },
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: "x" },
+            { type: "text-end", id: "t" },
+            { type: "finish", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+          ]) as never,
+      }),
+    ),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/x",
+    mode: "execute",
+    initialCostUSD: 5,
+    initialCostEstimated: true,
+  });
+  expect(s.costUSD).toBe(5);
+  expect(s.actualCostUSD).toBe(0);
+  expect(s.costEstimated).toBe(true);
+});

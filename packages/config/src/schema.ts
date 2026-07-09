@@ -328,6 +328,19 @@ export const ConfigSchema = z.object({
    * Empty by default so the theme's own brand (`#8b5cf6` on the default theme)
    * shows through; set a hex via config or `/accent <hex>` to override. */
   accentColor: z.string().default(""),
+  /**
+   * Transcript density — how much tool/thinking detail the TUI shows by default.
+   * `quiet` collapses tools and hides thinking rows; `normal` expands on click;
+   * `verbose` opens diffs/errors/subagent replies and thinking. Never hides that
+   * a tool ran. `/details` and Ctrl+D cycle this; persisted globally.
+   */
+  details: z.enum(["quiet", "normal", "verbose"]).default("normal"),
+  /**
+   * Capture mouse in the OpenTUI app (click-to-expand, select-to-copy).
+   * Set false (`/mouse off`) to preserve the terminal's native selection and
+   * scroll — useful in tmux or when OSC52 copy fights the host. Default on.
+   */
+  mouse: z.boolean().default(true),
   /** Plugin module specifiers (npm names or local paths). */
   plugins: z.array(z.string()).default([]),
   /** Declarative lifecycle hooks (shell/HTTP) layered onto the in-process HookBus. */

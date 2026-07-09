@@ -109,3 +109,14 @@ test("a headless prompt with no provider key fails cleanly with exit 1", async (
     if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved;
   }
 });
+
+test("resolveEngineWorkerPath finds Windows .exe sibling (BUG-106)", async () => {
+  const { resolveEngineWorkerPath } = await import("./index.ts");
+  const dir = mkdtempSync(join(tmpdir(), "vibe-worker-exe-"));
+  const exe = join(dir, "vibecodr.exe");
+  const worker = join(dir, "vibecodr-engine-worker.exe");
+  await Bun.write(exe, "fake");
+  await Bun.write(worker, "fake-worker");
+  const found = resolveEngineWorkerPath({ execPath: exe, moduleDir: join(dir, "no-npm") });
+  expect(found).toBe(worker);
+});

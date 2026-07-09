@@ -116,6 +116,55 @@ test("/accent resolves each shared preset NAME to its hex on accent-changed", as
   }
 });
 
+test("/details sets quiet|normal|verbose and emits details-changed; bare cycles", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  expect(engine.snapshot().details).toBe("normal");
+
+  engine.send({ type: "run-slash", name: "details", args: "quiet" });
+  await engine.whenIdle();
+  expect(engine.snapshot().details).toBe("quiet");
+  expect(
+    events.some((e) => e.type === "details-changed" && e.details === "quiet"),
+  ).toBe(true);
+
+  // Bare /details cycles quiet → normal.
+  engine.send({ type: "run-slash", name: "details", args: "" });
+  await engine.whenIdle();
+  expect(engine.snapshot().details).toBe("normal");
+
+  engine.send({ type: "run-slash", name: "details", args: "nope" });
+  await engine.whenIdle();
+  expect(notices(events).at(-1)?.level).toBe("warn");
+  expect(engine.snapshot().details).toBe("normal");
+});
+
+test("/mouse on|off emits mouse-changed and updates snapshot", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  expect(engine.snapshot().mouse).toBe(true);
+
+  engine.send({ type: "run-slash", name: "mouse", args: "off" });
+  await engine.whenIdle();
+  expect(engine.snapshot().mouse).toBe(false);
+  expect(events.some((e) => e.type === "mouse-changed" && e.mouse === false)).toBe(true);
+
+  engine.send({ type: "run-slash", name: "mouse", args: "on" });
+  await engine.whenIdle();
+  expect(engine.snapshot().mouse).toBe(true);
+});
+
+test("/keys surfaces essential chords", async () => {
+  const engine = new Engine({ config: defaultConfig() });
+  const events = collect(engine);
+  engine.send({ type: "run-slash", name: "keys", args: "" });
+  await engine.whenIdle();
+  const msg = notices(events).at(-1)?.message ?? "";
+  expect(msg).toContain("Shift+Tab");
+  expect(msg).toContain("Ctrl+D");
+  expect(msg).toContain("/mouse");
+});
+
 // `/model refresh` must be a catalog refresh, NOT a model switch: the TUI's
 // /model picker advertises this spelling, and before the explicit verb it fell
 // through to setMainModel — persisting the literal id "refresh" to the global

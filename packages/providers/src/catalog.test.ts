@@ -15,14 +15,36 @@ test("resolveCatalogPrice: exact match is real, base-model match is estimated", 
   });
   // Exact provider/model hit → real price (no estimated flag).
   expect(resolveCatalogPrice(meta, "zhipuai/glm-5.2")).toEqual({ input: 0.6, output: 2.2 });
-  // A different provider's tag for the same base model → estimated fallback.
-  expect(resolveCatalogPrice(meta, "ollama/glm-5.2")).toEqual({
+  // A non-local provider's tag for the same base model → estimated fallback.
+  expect(resolveCatalogPrice(meta, "openrouter/glm-5.2")).toEqual({
     input: 0.6,
     output: 2.2,
     estimated: true,
   });
   // Truly unknown model → undefined.
-  expect(resolveCatalogPrice(meta, "ollama/nonesuch")).toBeUndefined();
+  expect(resolveCatalogPrice(meta, "openrouter/nonesuch")).toBeUndefined();
+});
+
+test("resolveCatalogPrice: local ollama/lmstudio never inherit cloud rates as real (BUG-102)", () => {
+  const meta = parseModelsDev({
+    zhipuai: { models: { "glm-5.2": { cost: { input: 0.6, output: 2.2 } } } },
+    "ollama-cloud": { models: { "glm-5.2": { cost: { input: 1.0, output: 3.0 } } } },
+  });
+  const hadKey = process.env.OLLAMA_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
+  try {
+    // No cloud signal: free local tags must not get ollama-cloud rates (real)
+    // nor a fuzzy base-model match (estimated) — either path can hard-stop
+    // a free session under budget.onExceed=stop.
+    expect(resolveCatalogPrice(meta, "ollama/glm-5.2")).toBeUndefined();
+    expect(resolveCatalogPrice(meta, "lmstudio/glm-5.2")).toBeUndefined();
+    // With the cloud signal, ollama aliases to ollama-cloud for real prices.
+    process.env.OLLAMA_API_KEY = "test-key";
+    expect(resolveCatalogPrice(meta, "ollama/glm-5.2")).toEqual({ input: 1.0, output: 3.0 });
+  } finally {
+    if (hadKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = hadKey;
+  }
 });
 
 test("parseModelsDev flattens provider/model metadata", () => {

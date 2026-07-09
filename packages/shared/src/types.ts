@@ -185,6 +185,10 @@ export interface EngineSnapshot {
   theme: string;
   /** Accent hue (hex) for UI chrome. */
   accentColor: string;
+  /** Transcript density (quiet | normal | verbose). */
+  details: "quiet" | "normal" | "verbose";
+  /** Whether the TUI captures the mouse (false = native terminal selection). */
+  mouse: boolean;
   /** Default approval handling for side-effecting tools. */
   approvalMode: "ask" | "auto";
   /** All invocable slash names (built-in + custom commands + skills), for the

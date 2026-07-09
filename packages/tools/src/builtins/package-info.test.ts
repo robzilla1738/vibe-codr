@@ -137,3 +137,48 @@ test("package_info is read-only (usable while planning) and concurrency-safe", (
   expect(packageInfoTool.readOnly).toBe(true);
   expect(packageInfoTool.concurrencySafe).toBe(true);
 });
+
+test("package_info stream-caps registry bodies (BUG-105)", async () => {
+  // BUG-105: must use stream-capped read, not full res.json() / res.text().
+  // Mirror web-search BUG-104: pull-based stream + cancel + bytes bound.
+  let cancelled = false;
+  let bytesPulled = 0;
+  const huge = JSON.stringify({ version: "1.0.0", description: "x".repeat(700_000) });
+  globalThis.fetch = (async (input: unknown) => {
+    const url = String(input);
+    // dist-tags can be small; the /latest body is the hostile multi-MB payload.
+    if (url.includes("dist-tags")) {
+      return new Response(JSON.stringify({ latest: "1.0.0" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    const enc = new TextEncoder();
+    let offset = 0;
+    const chunk = 16_384;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (cancelled) return;
+        if (offset >= huge.length) {
+          controller.close();
+          return;
+        }
+        const slice = huge.slice(offset, Math.min(offset + chunk, huge.length));
+        controller.enqueue(enc.encode(slice));
+        bytesPulled += slice.length;
+        offset += chunk;
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+
+  const res = await packageInfoTool.execute({ name: "react" }, ctx());
+  expect(res).toBeDefined();
+  // Stream path must cancel well under the full body (cap is 512k chars).
+  expect(cancelled).toBe(true);
+  expect(bytesPulled).toBeLessThan(huge.length);
+  expect(bytesPulled).toBeLessThan(600_000);
+});

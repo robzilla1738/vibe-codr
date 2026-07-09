@@ -99,7 +99,7 @@ rail**, the active task/step, and the input caret all read in the body white,
 while a **royal violet (`#8b5cf6`)** is saved for the few emphasis moments —
 the selected menu row's solid band (dark text on it), menu section headers, and
 markdown headings. The input's **mode
-label, rail + caret** (`ASK ❯` in the accent · `PLAN ❯` green · `YOLO ❯` red)
+label, rail + caret** (`AGENT ❯` in the accent · `PLAN ❯` green · `YOLO ❯` red)
 make switching mode unmistakable without repainting the screen. Swap the accent
 in one word — **`/accent blue`**, or `purple`, `orange`, `ember`, `amber`,
 `green`, `teal`, `violet`, `rose`, `white`, or any `/accent <hex>` — the swatch
@@ -335,6 +335,8 @@ Highlights:
   `/model sub <id>` for a dedicated subagent model, `/model key <provider> <key>` —
   all persisted), `/models` (`/models refresh` force-pulls the latest), `/plan`,
   `/execute`, `/yolo`, `/approvals <ask|auto>`, `/reasoning <low|medium|high|off>`,
+  `/details quiet|normal|verbose` (Ctrl+D) for transcript density, `/keys` for
+  the shortcut card, `/mouse on|off` to toggle mouse capture, and
   `/theme <name>` (default, light, contrast, opencode, tokyonight, catppuccin,
   gruvbox, nord, one-dark, dracula, rosepine, kanagawa, everforest, flexoki,
   vesper), `/accent <name|hex>` (a live swatch submenu — orange, blue, ember, …).
@@ -373,7 +375,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   menu section headers, and markdown headings — around the wordmark, panel titles,
   the **user-message rail**, the active task/step, the selected menu row, and the
   caret; the input's **mode label, rail + caret**
-  (`ASK ❯` in the accent / `PLAN ❯` green / `YOLO ❯` red) carry the mode;
+  (`AGENT ❯` in the accent / `PLAN ❯` green / `YOLO ❯` red) carry the mode;
   green/red/amber stay reserved for diffs and warnings, and one **calm muted
   tone** carries the tool-step / subagent rails. Swap the accent in one word —
   `/accent blue` (or purple, ember, amber, green, teal, violet, rose, white,
@@ -501,7 +503,7 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   plan can never silently inherit a lingering YOLO — YOLO is always an explicit
   choice, and entering it via `/yolo` leaves a warn notice in the transcript.
   The mode chip on the
-  input's top border is color-coded (ASK white / PLAN green / YOLO red) so the
+  input's top border is color-coded (AGENT white / PLAN green / YOLO red) so the
   active mode is unmistakable, while the rest of the chrome stays neutral.
 - **Resilience & git/process tools** — provider calls retry transient failures
   (network / 429 / 5xx) with exponential backoff (`retry` config) and surface a

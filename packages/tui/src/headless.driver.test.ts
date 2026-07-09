@@ -27,6 +27,8 @@ class MockEngine implements Partial<EngineClient> {
       busy: false,
       theme: "default",
       accentColor: "#bb9af7",
+      details: "normal",
+      mouse: true,
       approvalMode: "ask",
       commandNames: [],
     };

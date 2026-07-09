@@ -309,9 +309,10 @@ async function tinyFishSearch(
     const detail = res.status === 401 || res.status === 403 ? " (check your TinyFish API key)" : "";
     throw new Error(`HTTP ${res.status}${detail}`);
   }
-  // BUG-095: cap TinyFish body before JSON.parse (same class as search HTML).
-  const rawText = await res.text();
-  const capped = rawText.length > 512_000 ? rawText.slice(0, 512_000) : rawText;
+  // BUG-095 / BUG-104: stream-cap TinyFish body before JSON.parse (same class
+  // as search HTML) — never fully buffer a hostile multi-MB body first.
+  const { readCappedResponseText } = await import("./search-engines.ts");
+  const capped = await readCappedResponseText(res, 512_000);
   const data = JSON.parse(capped) as { results?: unknown };
   // TinyFish is an external, unvalidated engine, so sanitize FULLY — both the
   // container and every element. `?? []` only catches null/undefined; a truthy

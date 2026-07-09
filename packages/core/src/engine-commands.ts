@@ -592,6 +592,15 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "accent":
       handleAccent(h, args);
       break;
+    case "details":
+      handleDetails(h, args);
+      break;
+    case "mouse":
+      handleMouse(h, args);
+      break;
+    case "keys":
+      handleKeys(h);
+      break;
     case "diff":
       await handleDiff(h);
       break;
@@ -805,6 +814,93 @@ function handleReasoning(h: EngineHandle, args: string): void {
 /** The `/theme` help list, derived from the known set (never drifts from it). */
 function themeList(): string {
   return [...KNOWN_THEMES].filter((n) => n !== "dark").join(", ");
+}
+
+const DETAILS_LEVELS = ["quiet", "normal", "verbose"] as const;
+type DetailsLevel = (typeof DETAILS_LEVELS)[number];
+
+function isDetailsLevel(v: string): v is DetailsLevel {
+  return (DETAILS_LEVELS as readonly string[]).includes(v);
+}
+
+function nextDetailsLevel(cur: DetailsLevel): DetailsLevel {
+  const i = DETAILS_LEVELS.indexOf(cur);
+  return DETAILS_LEVELS[(i + 1) % DETAILS_LEVELS.length]!;
+}
+
+/** `/details [quiet|normal|verbose]` — transcript density. No arg cycles. */
+function handleDetails(h: EngineHandle, args: string): void {
+  const raw = args.trim().toLowerCase();
+  const cur = (h.config.details ?? "normal") as DetailsLevel;
+  if (!raw) {
+    const next = nextDetailsLevel(cur);
+    h.config.details = next;
+    void h.persistConfig({ details: next });
+    h.emit({ type: "details-changed", details: next });
+    h.notice(`Details: ${next} (was ${cur}). /details quiet|normal|verbose to set.`);
+    return;
+  }
+  if (!isDetailsLevel(raw)) {
+    h.notice("Usage: /details [quiet|normal|verbose] (no arg cycles).", "warn");
+    return;
+  }
+  if (raw === cur) {
+    h.notice(`Details: ${raw}.`);
+    return;
+  }
+  h.config.details = raw;
+  void h.persistConfig({ details: raw });
+  h.emit({ type: "details-changed", details: raw });
+  h.notice(`Details: ${raw}.`);
+}
+
+/** `/mouse [on|off]` — TUI mouse capture for native selection escape. */
+function handleMouse(h: EngineHandle, args: string): void {
+  const raw = args.trim().toLowerCase();
+  const cur = h.config.mouse ?? true;
+  if (!raw) {
+    h.notice(`Mouse: ${cur ? "on" : "off"}. Use /mouse on|off (off keeps native terminal selection).`);
+    return;
+  }
+  if (raw !== "on" && raw !== "off" && raw !== "true" && raw !== "false" && raw !== "1" && raw !== "0") {
+    h.notice("Usage: /mouse on|off", "warn");
+    return;
+  }
+  const next = raw === "on" || raw === "true" || raw === "1";
+  if (next === cur) {
+    h.notice(`Mouse: ${next ? "on" : "off"}.`);
+    return;
+  }
+  h.config.mouse = next;
+  void h.persistConfig({ mouse: next });
+  h.emit({ type: "mouse-changed", mouse: next });
+  h.notice(`Mouse: ${next ? "on" : "off"}${next ? "" : " — native terminal selection restored"}.`);
+}
+
+/** `/keys` — essential keyboard chords (not the full slash list). */
+function handleKeys(h: EngineHandle): void {
+  // Inline the surface so core does not depend on @vibe/tui. Keep in sync with
+  // packages/tui/src/keys-help.ts ESSENTIAL_KEYS (tests assert both exist).
+  h.notice(
+    [
+      "Keyboard",
+      "",
+      "  Shift+Tab              Cycle mode (PLAN → AGENT → YOLO)",
+      "  Esc                    Interrupt turn · deny permission · dismiss menu",
+      "  Ctrl+O                 Fold / unfold all turns",
+      "  Ctrl+T                 Expand / collapse all thinking rows",
+      "  Ctrl+D                 Cycle transcript density (quiet → normal → verbose)",
+      "  Ctrl+G                 Compose draft in $VISUAL / $EDITOR",
+      "  Ctrl+V                 Paste clipboard image as @file",
+      "  y / a / Ctrl+P / n     Permission: once · session · project · deny",
+      "  Enter / type / Esc     Plan: accept · revise · keep planning",
+      "  /                      Slash commands (type to filter)",
+      "  @                      Attach a file (fuzzy path picker)",
+      "  click                  Expand tool / fold turn / select-to-copy",
+      "",
+      "Also: /details quiet|normal|verbose · /mouse on|off · /help for all slash commands.",
+    ].join("\n"),
+  );
 }
 
 /** `/theme [name]` — show or set the UI theme. */

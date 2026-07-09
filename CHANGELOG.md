@@ -4,6 +4,55 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — adversarial audit (BUG-097–107)
+
+Fresh multi-package adversarial re-sweep against `AGENTS.md` invariants. **0 active**
+Critical/High/Medium in `bugs.md`. Ship-path regressions for every item:
+
+- **BUG-097 (High):** untrusted project-config security notices survive
+  structured-clone into the engine worker (`SECURITY_NOTICES_KEY`) so the default
+  interactive TUI path actually warns about stripped hooks/plugins/providers.
+- **BUG-098/099/100 (High/Medium):** plugin load seals the API after timeout/fail,
+  rolls back tools/providers/skill dirs, and trims hooks to pre-plugin counts
+  (no wiping earlier plugins in the same batch).
+- **BUG-101 (Medium):** untrusted bare `allow` rules on scoped tools (`bash` /
+  `edit` / `write` / …) are dropped; name-only always-project grants keep only for
+  no-scope tools (`todo_write`, `save_memory`).
+- **BUG-102 (Medium):** local `ollama` / `lmstudio` pricing mirrors the window
+  guard — no cloud-slug rates or fuzzy local prices without a cloud signal.
+- **BUG-103 (Medium):** sessions persist `actualCostUSD` + `costEstimated`;
+  `--resume` never promotes estimated spend into the hard budget stop.
+- **BUG-104/105 (Medium):** TinyFish + `package_info` stream-cap registry bodies
+  during read (not full-buffer then slice); regressions assert cancel + byte bounds.
+- **BUG-106 (Medium):** `resolveEngineWorkerPath` finds Windows
+  `vibecodr-engine-worker.exe` siblings.
+- **BUG-107 (Medium):** hydrate waits for the snapshot RPC (not an early race to
+  PLACEHOLDER); `session-start` settles ready and re-seeds chrome via
+  `seedChromeFromSessionStart` (unit-tested).
+
+### Changed — TUI UX polish
+
+- **Mode chip:** execute mode reads **`AGENT`** (not `ASK`) — permission-gated
+  agent work vs YOLO unattended.
+- **Transcript density:** `/details quiet|normal|verbose` (and `details` config /
+  Ctrl+D) control tool verbosity; verbose force-opens spawn markdown.
+- **Width-safe hints:** `fitHintSegs` priority-drops footer/plan/permission hints
+  on narrow terminals (deny-with-feedback wraps instead of clipping).
+- **`@` file picker:** fuzzy path attach menu when the draft ends with `@…`.
+- **`/keys` + `/mouse`:** keys help card; mouse capture toggle (persisted).
+- **Sidebar status-first:** session card (`◆ session`) owns vitals; context ≥80%
+  paints amber via `sessionMetricsTone` on the card and footer.
+- **Spawn collapse:** `spawn_subagent` / `spawn_tasks` start collapsed (panel owns
+  fan-out); tool icons cover the full built-in roster with long-output fail meta.
+- **Working spinner:** monochrome brand braille (no rainbow).
+
+### Docs
+
+- README + AGENTS.md updated for AGENT mode, spawn collapse, density, and audit
+  inventory; `bugs.md` closed at 0 active C/H/M through BUG-107.
+
+## 0.4.17 — 2026-07-09
+
 ### Fixed — plan mode + subagent orchestration honesty
 
 - **Subagent cost no longer double-counts on `continue_subagent` or structured-

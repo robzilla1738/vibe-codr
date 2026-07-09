@@ -578,6 +578,15 @@ export class Engine implements EngineClient {
                   ...(resume.meta.usage.costUSD !== undefined
                     ? { initialCostUSD: resume.meta.usage.costUSD }
                     : {}),
+                  // BUG-103: seed actual vs total separately so estimated spend
+                  // never hard-stops after --resume. Pre-fix metas lack
+                  // actualCostUSD — treat missing as 0 (re-accumulate actual).
+                  ...(resume.meta.usage.actualCostUSD !== undefined
+                    ? { initialActualCostUSD: resume.meta.usage.actualCostUSD }
+                    : {}),
+                  ...(resume.meta.usage.costEstimated
+                    ? { initialCostEstimated: true }
+                    : {}),
                 }
               : {}),
             ...(resume.meta.lastInputTokens
@@ -958,8 +967,14 @@ export class Engine implements EngineClient {
       commands: this.commands,
       skills: this.skills,
       registerTool: (def) => this.toolset.register(def),
+      unregisterTool: (name) => this.toolset.unregister(name),
       registerProvider: (def) => this.registry.register(def),
+      unregisterProvider: (id) => this.registry.unregister(id),
       addSkillDir: (path) => extraSkillDirs.push(path),
+      removeSkillDir: (path) => {
+        const i = extraSkillDirs.indexOf(path);
+        if (i >= 0) extraSkillDirs.splice(i, 1);
+      },
       logger: this.#log,
     });
     await host.load(this.#config.plugins);

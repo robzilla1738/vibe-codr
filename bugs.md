@@ -1,23 +1,58 @@
 # vibe-codr — Bug & Weakness Audit
 
-**Status:** Remediation complete (2026-07-08) — **0 active** Critical/High/Medium/Low from the open inventory  
-**HEAD:** post-fix (all BUG-051–096 actives closed); shipping as **v0.4.14**  
-**Method:** Full inventory close-out with behavior changes + regressions where unit-testable.  
-**Gate at close:** `bun run typecheck` 8/8 · `bun test` green · `bun run lint` clean · `bun run smoke:tui` SMOKE OK  
+**Status:** Fresh adversarial re-sweep complete (2026-07-09) — **0 active** Critical/High/Medium  
+**HEAD:** post-fix BUG-097–107 + prior BUG-051–096  
+**Method:** Multi-package adversarial audit (shared/config/providers/plugins/tools/core/cli/tui/release) against AGENTS.md invariants; shipped-path regressions for every C/H/M.  
+**Gate at close:** `bun run typecheck` 8/8 · `bun test` 1683 pass · `bun run lint` clean · `bun run smoke:tui` SMOKE OK  
 
 ---
 
 ## Summary
 
-| Severity | Active | Fixed this pass | Notes |
-|----------|--------|-----------------|-------|
-| Critical | **0** | 1 | BUG-084 |
-| High | **0** | 6 | BUG-085, 086, 087, 054, 061, 075 |
-| Medium | **0** | 22 | BUG-051, 053, 055–057, 060, 062–064, 066, 070, 072–074, 076, 080, 088–093 |
-| Low | **0** | 14 | BUG-058, 059, 065, 067–069, 071, 077–079, 081, 094–096 |
-| **Total active** | **0** | **43** | |
-| Prior fixed catalog | — | 53 | BUG-001–050, 052, 082, 083 |
+| Severity | Active | Fixed 2026-07-09 | Prior closed |
+|----------|--------|------------------|--------------|
+| Critical | **0** | 0 | 1 (BUG-084) |
+| High | **0** | 3 | 6 |
+| Medium | **0** | 8 | 22 |
+| Low | **0** | 0 (deferred with rationale) | 14 |
+| **Total active** | **0** | **11** | — |
+| Prior fixed catalog | — | — | BUG-001–096 |
 | Refuted | 2 | — | BUG-033, 035 |
+
+---
+
+## Fixed this remediation (2026-07-09) — BUG-097+
+
+| ID | Sev | Fix |
+|----|-----|-----|
+| **BUG-097** | High | Security notices survive structuredClone into the engine worker (`SECURITY_NOTICES_KEY` on config + WeakMap); TUI warns about stripped untrusted project config |
+| **BUG-098** | High | Plugin API seals after timeout/fail so late-settling `register()` cannot re-mutate registries |
+| **BUG-099** | High | Plugin rollback unregisters tools/providers/skill dirs (`unregisterTool`/`unregisterProvider`/`removeSkillDir`) |
+| **BUG-100** | Medium | Failed plugin trims hooks to pre-plugin counts (`HookBus.trimTo`) — does not wipe earlier plugins in the batch |
+| **BUG-101** | Medium | Untrusted filter keeps name-only always-project grants only for no-scope tools (`todo_write`/`save_memory`); bare allows on bash/edit/write/… still dropped; still drops `tool:"*"` and `match` |
+| **BUG-102** | Medium | Local ollama/lmstudio pricing mirrors window guard — no cloud-slug real rates / no fuzzy local prices without cloud signal |
+| **BUG-103** | Medium | Persist `actualCostUSD` + `costEstimated`; resume never promotes estimated total into hard-stop actual |
+| **BUG-104** | Medium | TinyFish uses `readCappedResponseText` stream path (not full `res.text()` then slice) |
+| **BUG-105** | Medium | `package_info` stream-caps registry JSON; regression asserts cancel + bytes bound (not theater) |
+| **BUG-106** | Medium | `resolveEngineWorkerPath` probes `vibecodr-engine-worker.exe` (Windows release sibling) |
+| **BUG-107** | Medium | Hydrate waits for snapshot RPC; `session-start` settles ready; App uses `seedChromeFromSessionStart` (unit-tested) |
+
+### Deferred Low / accepted-risk (2026-07-09)
+
+| Item | Rationale |
+|------|-----------|
+| `cachedInputTokens` contract comment (shared) | Doc-only; live cost path folds Anthropic correctly |
+| AsyncQueue post-close drop | Intentional SPSC design |
+| Config atomic tmp pid+time naming | writeChain serializes writers |
+| Misleading `verify.command` notice label | Diagnostics only |
+| `parseTiers` non-finite size | Edge upstream; prices already finiteNum-guarded |
+| RESERVED_SLASH accepted at register | Dispatch already refuses shadow |
+| grep `git ls-files` / ls full readdir | Output caps exist; network stream caps prioritized |
+| npm worker missingInlinedSymbols | Defense-in-depth; main bundle already guarded |
+
+---
+
+## Fixed prior remediation (2026-07-08)
 
 ---
 

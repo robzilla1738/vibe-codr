@@ -21,6 +21,11 @@ export class ProviderRegistry {
     this.#providers.set(def.id, def);
   }
 
+  /** Remove a previously-registered provider (plugin load rollback — BUG-099). */
+  unregister(id: string): void {
+    this.#providers.delete(id);
+  }
+
   has(id: string): boolean {
     return this.#providers.has(id);
   }

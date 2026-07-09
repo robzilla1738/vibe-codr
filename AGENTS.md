@@ -556,10 +556,11 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   row and expands in place. Consecutive **tool** rows stack flush (chained — the
   follower drops its top margin when the prior visible block is also a tool), so a
   search→fetch→fetch sequence reads as one group instead of separated fragments;
-  the gap is kept only at a boundary with prose, a notice, or a folded turn. A **`spawn_subagent` block is flagged `isMarkdown`** —
-  it opens expanded and renders its reply through `<markdown>` (headers, bold,
-  lists, code, and **tables**, which OpenTUI renders natively) instead of raw text
-  lines; `ToolBlockView` takes the `SyntaxStyle` for this. Expand/collapse goes
+  the gap is kept only at a boundary with prose, a notice, or a folded turn. A **`spawn_subagent` block is flagged `isMarkdown`** and
+  **starts collapsed** (the Subagents panel owns fan-out status; verbose density
+  force-opens markdown). When expanded it renders through `<markdown>` (headers,
+  bold, lists, code, and **tables**, which OpenTUI renders natively) instead of
+  raw text lines; `ToolBlockView` takes the `SyntaxStyle` for this. Expand/collapse goes
   through `anchoredToggle`: when the
   turn is **idle** it disengages the scrollbox's `stickyScroll` and freezes
   `scrollTop` so the clicked row stays put; while **streaming** it leaves sticky
@@ -576,10 +577,10 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   **The input is a filled block on the mode Rail**: an `elevated`-bg padded box
   (vertical padding 1 — the user explicitly wants the thick padded strip, don't
   slim it) on a thin `Rail` in the mode hue, whose prompt row reads
-  **`MODE ❯ …`** — `modeWord()` (`ASK`/`PLAN`/`YOLO` — **execute reads "ASK"**
-  because every action is gated by an approval prompt, vs YOLO = no prompts) in
-  `accent()` = `modeColor(uiMode())` (ASK blue · PLAN green · YOLO red, fixed
-  constants in `modes.ts`), then a `brand()` `❯` caret glyph. The `<input>`'s own
+  **`MODE ❯ …`** — `modeWord()` (`AGENT`/`PLAN`/`YOLO` — **execute reads "AGENT"**
+  because tools are permission-gated, vs YOLO = no prompts) in
+  `accent()` = `modeColor(uiMode())` (AGENT follows brand · PLAN green · YOLO red;
+  `modes.ts` holds the fixed PLAN/YOLO hues), then a `brand()` `❯` caret glyph. The `<input>`'s own
   `backgroundColor`/`focusedBackgroundColor` are **`"transparent"`** (an OpenTUI
   Textarea otherwise paints its whole row a different shade past the block's
   fill). The placeholder is "Send a message or type / to start". **All status
@@ -622,7 +623,7 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   2. **Markers** — panel titles, the `❯` user marker + heavy left gutter, the active
      task/step, and the input caret (all `brand()`); the selected menu row uses the
      violet `selBg` band.
-  3. **Mode chip** — the input's mode label + rail. ASK (execute) FOLLOWS the live
+  3. **Mode chip** — the input's mode label + rail. AGENT (execute) FOLLOWS the live
      brand accent (`accent()` in app.tsx returns `brand()` for execute — so
      `/accent orange` recolors the whole input control coherently instead of
      clashing with a fixed hue); PLAN green `#9ece6a` · YOLO red `#f7768e` stay

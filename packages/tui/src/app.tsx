@@ -90,16 +90,41 @@ import {
   weatherIcon,
 } from "./rich-blocks.ts";
 import { GLYPH } from "./glyphs.ts";
-import { formatUsage, TASK_GLYPH, windowTasks } from "./headless.ts";
-import { cycleModeAction, deriveUiMode, modeColor } from "./modes.ts";
+import {
+  contextFillPct,
+  formatUsage,
+  isHotContext,
+  sessionMetricsTone,
+  TASK_GLYPH,
+  windowTasks,
+} from "./headless.ts";
+import { cycleModeAction, deriveUiMode, modeColor, modeWord as modeWordOf } from "./modes.ts";
 import { cleanupClipboardTempDir, readClipboardImage } from "./clipboard-image.ts";
 import { composeInEditor, type EditorSpawn } from "./editor-compose.ts";
-import { brandSpans, rainbow } from "./gradient.ts";
+import {
+  isTranscriptDensity,
+  nextDensity,
+  showThinkingRows,
+  thinkingCollapsed,
+  toolCollapsed,
+  type TranscriptDensity,
+} from "./density.ts";
+import {
+  applyAtMention,
+  atMentionState,
+  listProjectFiles,
+  rankPaths,
+} from "./file-fuzzy.ts";
+import { fitHintSegs, type HintSeg } from "./hints.ts";
+import { seedChromeFromSessionStart } from "./chrome-seed.ts";
+import { brandSpans } from "./gradient.ts";
 import { lineToCommands, routePendingPermLine } from "./slash.ts";
 import { spinnerFrame, workingLabel } from "./spinner.ts";
 import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
 import { Trail, turnWindowStart, windowStartIndex } from "./trail.ts";
+import { readdirSync, statSync } from "node:fs";
+import { join as pathJoin } from "node:path";
 import {
   initialTranscript,
   reduceTranscript,
@@ -396,14 +421,45 @@ export function App(props: { engine: EngineClient }) {
   // stay neutral grey (`palette().border`).
   const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
   const brand = () => accentColor() || palette().primary;
-  // The mode chip + input rail hue — the one mode-driven color in the UI. ASK
+  // The mode chip + input rail hue — the one mode-driven color in the UI. AGENT
   // (execute, the everyday state) FOLLOWS the brand accent so `/accent orange`
   // recolors the whole input control coherently (a fixed hue chip would clash
   // with a warm accent); PLAN green and YOLO red stay fixed alert hues.
   const accent = () => (uiMode() === "execute" ? brand() : modeColor(uiMode()));
-  // The mode word shown on the input's top border. "execute" means "every action
-  // is gated by an approval prompt", so it reads as ASK (vs YOLO = no prompts).
-  const modeWord = () => (uiMode() === "execute" ? "ASK" : uiMode().toUpperCase());
+  // AGENT / PLAN / YOLO — execute reads AGENT (permission-gated coding agent).
+  const modeWord = () => modeWordOf(uiMode());
+  // Transcript density (quiet | normal | verbose) — from config, cycled by
+  // Ctrl+D / `/details`. Overlay on tool/thinking collapse at render time.
+  const [details, setDetails] = createSignal<TranscriptDensity>(
+    isTranscriptDensity(snap.details) ? snap.details : "normal",
+  );
+  // Mouse capture — false restores native terminal selection (tmux-friendly).
+  const [mouseOn, setMouseOn] = createSignal(snap.mouse !== false);
+  // Lazy file index for the `@` picker (refreshed on first open / when empty).
+  let fileIndex: string[] | null = null;
+  const ensureFileIndex = (): string[] => {
+    if (fileIndex) return fileIndex;
+    fileIndex = listProjectFiles(process.cwd(), {
+      maxFiles: 2000,
+      maxDepth: 6,
+      readdir: (dir) => {
+        try {
+          return readdirSync(dir).map((name) => {
+            let isDirectory = false;
+            try {
+              isDirectory = statSync(pathJoin(dir, name)).isDirectory();
+            } catch {
+              /* skip unreadable */
+            }
+            return { name, isDirectory };
+          });
+        } catch {
+          return [];
+        }
+      },
+    });
+    return fileIndex;
+  };
 
   // ── Interactive submenu state ──────────────────────────────────────────────
   // The live model list for the `/model` picker (fetched lazily on first open,
@@ -435,6 +491,8 @@ export function App(props: { engine: EngineClient }) {
     if (name === "theme") return themeName();
     if (name === "approvals") return uiMode() === "yolo" ? "auto" : "ask";
     if (name === "reasoning") return reasoningSig() ?? "off";
+    if (name === "details") return details();
+    if (name === "mouse") return mouseOn() ? "on" : "off";
     // The live accent maps back to its preset name (custom hexes match nothing).
     if (name === "accent") return accentNameOf(accentColor() || palette().primary);
     return undefined;
@@ -479,6 +537,8 @@ export function App(props: { engine: EngineClient }) {
   // `/skills [filter]` → the searchable skills menu (Enter prefills
   // `/skill <name> `). See skillsPickerFilter for why it is plural-only.
   const skillsPickerQuery = (): string | null => skillsPickerFilter(draft());
+  // Trailing `@path` mention → fuzzy file picker (OpenCode-style attach).
+  const atPicker = (): { query: string; atIndex: number } | null => atMentionState(draft());
 
   // Native markdown rendering needs a SyntaxStyle (for fenced code highlighting).
   // Created once; if the native lib can't build one we fall back to plain text.
@@ -841,6 +901,27 @@ export function App(props: { engine: EngineClient }) {
         });
       }
       return { open: true, loading: false, kind: "skills" as const, title, hint, rows };
+    }
+    // `@path` fuzzy file attach — opens when the draft ends with a mention token.
+    const at = atPicker();
+    if (at) {
+      const title = "attach file";
+      const hint = "↑↓ · Tab/Enter insert @path · Esc dismiss";
+      const ranked = rankPaths(ensureFileIndex(), at.query, 40);
+      const rows: MenuRow[] = ranked.map((path) => ({
+        label: path,
+        choose: (run: boolean) => {
+          setDraft(applyAtMention(draft(), at.atIndex, path, run));
+        },
+      }));
+      if (rows.length === 0) {
+        rows.push({
+          label: ensureFileIndex().length === 0 ? "No files found" : "No matching paths",
+          desc: "backspace to widen · type a relative path",
+          choose: () => {},
+        });
+      }
+      return { open: true, loading: false, kind: "files" as const, title, hint, rows };
     }
     const st = paletteState(draft());
     if (!st.open) return { open: false, loading: false, kind: "command" as const, title: "", hint: "", rows: [] as MenuRow[] };
@@ -1238,7 +1319,19 @@ export function App(props: { engine: EngineClient }) {
       mode = action.optimistic.mode;
       approvals = action.optimistic.approvals;
       setUiMode(action.optimistic.uiMode);
+    } else if (plan()) {
+      // Silent no-op felt broken — surface why the chip didn't move.
+      apply({
+        type: "notice",
+        text: "Approve or revise the plan first (Enter / type / Esc) — mode stays PLAN.",
+        level: "info",
+      });
     }
+  };
+  // Ctrl+D / /details — cycle transcript density (quiet → normal → verbose).
+  const cycleDetails = () => {
+    const next = nextDensity(details());
+    props.engine.send({ type: "run-slash", name: "details", args: next });
   };
   // Graceful exit — the SAME teardown the `/exit` command runs (await finalize:
   // session digest, background-job reap, MCP close — then exit; OpenTUI's own
@@ -1367,11 +1460,17 @@ export function App(props: { engine: EngineClient }) {
       toggleAllTurns();
       return;
     }
-    // Ctrl+T expands every `✻ thought` row at once (collapses them again if all
+    // Ctrl+T expands every `✻ thinking` row at once (collapses them again if all
     // are open) — the keyboard route to the reasoning, beside click-per-row.
     if (key.ctrl && key.name === "t") {
       key.preventDefault?.();
       apply({ type: "toggle-thinking-all" });
+      return;
+    }
+    // Ctrl+D cycles transcript density (quiet → normal → verbose).
+    if (key.ctrl && key.name === "d") {
+      key.preventDefault?.();
+      cycleDetails();
       return;
     }
     // Ctrl+V: paste a clipboard IMAGE as an `@<tmpfile>` mention. Only fires when
@@ -1702,6 +1801,24 @@ export function App(props: { engine: EngineClient }) {
               ),
             );
             break;
+          case "session-start": {
+            // Re-seed chrome when bootstrap finished after ready()'s soft
+            // deadline left App on PLACEHOLDER model/mode (BUG-107). AGENTS
+            // keeps session-start silent in the transcript; pure merge lives
+            // in chrome-seed.ts so the shipped path is unit-tested.
+            const seeded = seedChromeFromSessionStart(event, props.engine.snapshot());
+            model = seeded.model;
+            mode = seeded.mode;
+            approvals = seeded.approvalMode;
+            goal = seeded.goal;
+            setPalette(getTheme(seeded.theme));
+            setThemeName(seeded.theme);
+            setAccentColor(seeded.accentColor);
+            if (isTranscriptDensity(seeded.details)) setDetails(seeded.details);
+            setMouseOn(seeded.mouse);
+            refreshStatus();
+            break;
+          }
           case "mode-changed":
             mode = event.mode;
             // Leaving plan mode DISMISSES the plan card. Live approve (card
@@ -1736,6 +1853,18 @@ export function App(props: { engine: EngineClient }) {
             break;
           case "accent-changed":
             setAccentColor(event.accent);
+            break;
+          case "details-changed":
+            if (isTranscriptDensity(event.details)) setDetails(event.details);
+            break;
+          case "mouse-changed":
+            setMouseOn(event.mouse);
+            try {
+              // Toggle capture live so /mouse off restores native selection mid-session.
+              (renderer as { useMouse?: boolean }).useMouse = event.mouse;
+            } catch {
+              /* optional on older OpenTUI */
+            }
             break;
           case "git-updated":
             setGit(event.git);
@@ -1954,27 +2083,47 @@ export function App(props: { engine: EngineClient }) {
   // tail pieces individually (queued/cost/tokens) instead of the whole group.
   // With the session card up, model + usage live THERE — the footer keeps only
   // what the card doesn't show (the changed-files delta).
-  const detailsRight = () =>
+  const detailsParts = () =>
     fitParts(
       sidebarOn()
         ? [changedSummary()]
         : [headModel(), changedSummary(), ...metrics().split(/\s+·\s+/)],
       contentWidth() - 2,
-    );
+    )
+      .split(/\s+·\s+/)
+      .filter(Boolean);
+  const detailsRight = () => detailsParts().join("  ·  ");
+  /** Status as coloured segs — ctx ≥80% paints notice (amber) as a fill warning. */
+  const statusSegs = (): Seg[] => {
+    const dim = palette().muted;
+    const warn = palette().notice;
+    const parts = detailsParts();
+    const segs: Seg[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) segs.push({ t: "  ·  ", fg: dim });
+      const p = parts[i]!;
+      const m = /^ctx\s+(\d+)%$/.exec(p);
+      const hot = m ? isHotContext(Number(m[1])) : false;
+      segs.push({ t: p, fg: hot ? warn : dim });
+    }
+    return segs;
+  };
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
   // The sidebar session card's value lines (no label words — the values are
   // self-evident). One line per row, pre-truncated to the card's inner width
   // (a `wrapMode:none` overflow would hard-clip mid-glyph, eating the `…`).
   // The dir keeps its TAIL — in a deep path the trailing segments are the
-  // ones that identify where you are. `dim` mutes the secondary rows.
-  const sessionRows = (): { value: string; dim?: boolean }[] => {
+  // ones that identify where you are. `dim` mutes secondary rows; `warn` paints
+  // notice amber (ctx ≥80% on the metrics row — the under-input strip drops
+  // metrics while the card owns them, so the warning MUST live here too).
+  const sessionRows = (): { value: string; dim?: boolean; warn?: boolean }[] => {
     // 42 (sidebar) − 2 (column padding) − 4 (panel padding), minus 2 more so
     // the `…` lands INSIDE the box (the render clips at the edge otherwise).
     const valW = SIDEBAR_W - 8;
     // Display-cell tail keep (the old `.slice(-(valW - 1))` counted UTF-16 units
     // and could open on half a surrogate pair in a CJK/emoji path).
     const tail = (s: string) => tailWidth(s, valW);
-    const rows: { value: string; dim?: boolean }[] = [
+    const rows: { value: string; dim?: boolean; warn?: boolean }[] = [
       { value: tail(cwd) },
       { value: tail(headModel()) },
     ];
@@ -1982,8 +2131,14 @@ export function App(props: { engine: EngineClient }) {
     if (g) rows.push({ value: truncate(g, valW), dim: true });
     // metricsLine's separator is wide ("  ·  "); tighten it for the narrow
     // card. Its parts self-label (ctx % / tokens / cost / queued).
+    // Subscribe to metrics() so this re-runs when context-updated fires.
     const m = metrics().replaceAll("  ·  ", " · ");
-    if (m) rows.push({ value: truncate(m, valW), dim: true });
+    if (m) {
+      // Hot ctx → notice amber on the session card (footer drops metrics when
+      // sidebarOn; see sessionMetricsTone — unit-tested pure helper).
+      const tone = sessionMetricsTone(m);
+      rows.push({ value: truncate(m, valW), dim: tone.dim, warn: tone.warn });
+    }
     const goal = goalInfo();
     // The run suffix survives truncation — on a long goal it's the suffix
     // (planning / 7/25 / paused / met) that carries the information.
@@ -1997,30 +2152,33 @@ export function App(props: { engine: EngineClient }) {
   // the bright foreground; descriptors + separators stay muted. Shown on the empty
   // splash (where discovery matters) and whenever a job is running; the working
   // footer otherwise stays a single status line. `/jobs` is advertised only while
-  // background jobs are actually running.
+  // background jobs are actually running. Fitted to the column so we never clip
+  // mid-token ("scro").
   const hintSegs = (): Seg[] => {
     const dim = palette().muted;
     const lit = palette().assistant;
-    const segs: Seg[] = [
-      { t: "shift+tab", fg: lit },
-      { t: " mode", fg: dim },
-      { t: "  ·  ", fg: dim },
-      { t: "/", fg: lit },
-      { t: " commands", fg: dim },
-      { t: "  ·  ", fg: dim },
-      { t: "click", fg: lit },
-      { t: " ▸ expand", fg: dim },
+    const segs: HintSeg[] = [
+      { t: "shift+tab", fg: lit, priority: 0 },
+      { t: " mode", fg: dim, priority: 0 },
+      { t: "  ·  ", fg: dim, priority: 1 },
+      { t: "/", fg: lit, priority: 1 },
+      { t: " commands", fg: dim, priority: 1 },
+      { t: "  ·  ", fg: dim, priority: 2 },
+      { t: "click", fg: lit, priority: 2 },
+      { t: " ▸ expand", fg: dim, priority: 2 },
     ];
     const n = runningJobs();
     if (n > 0) {
       segs.push(
-        { t: "  ·  ", fg: dim },
-        { t: `${n} job${n === 1 ? "" : "s"}`, fg: palette().notice },
-        { t: " running ", fg: dim },
-        { t: "(/jobs)", fg: lit },
+        { t: "  ·  ", fg: dim, priority: 0 },
+        { t: `${n} job${n === 1 ? "" : "s"}`, fg: palette().notice, priority: 0 },
+        { t: " running ", fg: dim, priority: 0 },
+        { t: "(/jobs)", fg: lit, priority: 0 },
       );
     }
-    return segs;
+    // Budget: full content width when alone; half when sharing the status row.
+    const budget = Math.max(12, contentWidth() - 4);
+    return fitHintSegs(segs, budget);
   };
   // Hints belong under the input on the empty splash, and any time a background
   // job is running (so the `/jobs` pointer is reachable) — otherwise the working
@@ -2364,6 +2522,7 @@ export function App(props: { engine: EngineClient }) {
                                     block={blk as () => Extract<Block, { kind: "tool" }>}
                                     palette={palette()}
                                     style={mdStyle}
+                                    density={details()}
                                     chained={sourceIndex() > 0 && chained()}
                                     first={sourceIndex() === 0}
                                     width={blockInner()}
@@ -2371,10 +2530,11 @@ export function App(props: { engine: EngineClient }) {
                                     onToggle={(id) => anchoredToggle(() => toggle(id))}
                                   />
                                 </Show>
-                                <Show when={blk().kind === "thinking"}>
+                                <Show when={blk().kind === "thinking" && showThinkingRows(details())}>
                                   <ThinkingBlockView
                                     block={blk as () => Extract<Block, { kind: "thinking" }>}
                                     palette={palette()}
+                                    density={details()}
                                     chained={sourceIndex() > 0 && chained()}
                                     first={sourceIndex() === 0}
                                     width={blockInner()}
@@ -2422,15 +2582,13 @@ export function App(props: { engine: EngineClient }) {
         </Show>
       </box>
 
-      {/* Live working indicator — the braille spinner glyph animates via `tick`
-          (which only advances while a turn runs) in a hue-cycling rainbow so
-          "the model is thinking" has its own signature; the elapsed/interrupt
-          label stays muted for readability. Hidden while a permission card is
-          up (the card is the active affordance then). */}
+      {/* Live working indicator — braille spinner in the brand accent (monochrome
+          discipline: motion means "alive", not a rainbow carnival). Hidden while
+          a permission card is up (the card is the active affordance then). */}
       <Show when={working() && perms().length === 0 && !plan()}>
         <box flexDirection="column" flexShrink={0} marginTop={1}>
           <box flexDirection="row" flexShrink={0}>
-            <text fg={rainbow(tick())}>
+            <text fg={brand()}>
               {spinnerFrame(tick())}
             </text>
             <text fg={palette().muted}>
@@ -2440,7 +2598,7 @@ export function App(props: { engine: EngineClient }) {
           {/* Live thinking stack — the model's last few reasoning lines stream
               under the spinner while it thinks (older lines recede to the
               dimmer gutter tone, the newest reads in muted). The stack clears
-              when the burst lands as its `✻ thought` transcript row. */}
+              when the burst lands as its `✻ thinking` transcript row. */}
           <Show when={!sidebarOn() && reasoningLines().length > 0}>
             <box flexDirection="column" flexShrink={0}>
               {/* Inline view: just the last 3 lines, clipped to the column (the
@@ -2448,7 +2606,7 @@ export function App(props: { engine: EngineClient }) {
               <Index each={reasoningLines().slice(-3)}>
                 {(line, i) => (
                   <box flexDirection="row" flexShrink={0}>
-                    <text flexShrink={0} fg={i === 0 ? rainbow(tick()) : palette().gutter}>{i === 0 ? "  ✻ " : "    "}</text>
+                    <text flexShrink={0} fg={i === 0 ? brand() : palette().gutter}>{i === 0 ? "  ✻ " : "    "}</text>
                     <text
                       flexShrink={1}
                       wrapMode="none"
@@ -2513,27 +2671,35 @@ export function App(props: { engine: EngineClient }) {
                 width={contentWidth() - 7}
               />
             </scrollbox>
-            {/* Approval hint — actionable keys pop bright, descriptors stay muted. */}
-            <box flexDirection="row" flexShrink={0} marginTop={1}>
+            {/* Approval hint — fitted by priority so a narrow card never clips
+                mid-token ("scro"). Primary: Enter/Esc; secondary: revise/yolo; tertiary: scroll. */}
+            <box flexDirection="row" flexShrink={0} marginTop={1} flexWrap="wrap">
               <For
                 each={(() => {
                   const lit = palette().assistant;
                   const dim = palette().muted;
-                  const segs: Seg[] = [
-                    { t: "Enter", fg: lit },
-                    { t: " accept & run", fg: dim },
-                    { t: "  ·  ", fg: dim },
-                    { t: "^Y", fg: lit },
-                    { t: " run in yolo", fg: dim },
-                    { t: "  ·  ", fg: dim },
-                    { t: "type", fg: lit },
-                    { t: " to revise", fg: dim },
-                    { t: "  ·  ", fg: dim },
-                    { t: "Esc", fg: lit },
-                    { t: " keep planning", fg: dim },
+                  const segs: HintSeg[] = [
+                    { t: "Enter", fg: lit, priority: 0 },
+                    { t: " accept & run", fg: dim, priority: 0 },
+                    { t: "  ·  ", fg: dim, priority: 0 },
+                    { t: "Esc", fg: lit, priority: 0 },
+                    { t: " keep planning", fg: dim, priority: 0 },
+                    { t: "  ·  ", fg: dim, priority: 1 },
+                    { t: "type", fg: lit, priority: 1 },
+                    { t: " to revise", fg: dim, priority: 1 },
+                    { t: "  ·  ", fg: dim, priority: 1 },
+                    { t: "^Y", fg: lit, priority: 1 },
+                    { t: " run in yolo", fg: dim, priority: 1 },
                   ];
-                  if (planOverflows()) segs.push({ t: "  ·  ", fg: dim }, { t: "scroll", fg: lit }, { t: " to read", fg: dim });
-                  return segs;
+                  if (planOverflows()) {
+                    segs.push(
+                      { t: "  ·  ", fg: dim, priority: 2 },
+                      { t: "scroll", fg: lit, priority: 2 },
+                      { t: " to read", fg: dim, priority: 2 },
+                    );
+                  }
+                  // Card padding + rail ≈ 9 cols of chrome.
+                  return fitHintSegs(segs, Math.max(20, contentWidth() - 9));
                 })()}
               >
                 {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
@@ -2722,7 +2888,9 @@ export function App(props: { engine: EngineClient }) {
                 paddingRight={2}
               >
                 <text fg={palette().notice} attributes={TextAttributes.BOLD}>
-                  {`${GLYPH.warn} Permission required · ${p().toolName}`}
+                  {`${GLYPH.warn} Permission required · ${p().toolName}${
+                    perms().length > 1 ? ` · 1/${perms().length}` : ""
+                  }`}
                 </text>
                 <text fg={palette().assistant} wrapMode="word">{toolLabel(p().toolName, p().input)}</text>
                 <Show when={preview()}>
@@ -2742,39 +2910,40 @@ export function App(props: { engine: EngineClient }) {
                     </For>
                   </box>
                 </Show>
-                {/* The answer hints flow-WRAP: this concatenated row (y once · a
-                    session · ^P project · n/esc deny · type → deny with feedback)
-                    is ~110 cols and clipped its tail (the deny-with-feedback
-                    affordance) at 80. flexWrap lets it stack onto extra rows at any
-                    width instead of hard-clipping — the footer's own overflow policy,
-                    applied here. ^P (Ctrl-chorded) grants always-for-this-project so
-                    the first keystroke of a typed deny can't fire a durable ALLOW. */}
+                {/* Answer hints: priority-fitted so narrow terminals never mid-token
+                    clip; also flexWrap as a second line of defense. ^P is Ctrl-chorded
+                    so the first keystroke of a typed deny can't fire a durable ALLOW. */}
                 <box flexDirection="row" flexWrap="wrap" flexShrink={0} marginTop={1}>
                   <For
-                    each={[
-                      { t: "y", fg: palette().assistant },
-                      { t: " allow once", fg: palette().muted },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "a", fg: palette().assistant },
-                      { t: " always (session)", fg: palette().muted },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "^P", fg: palette().assistant },
-                      { t: " always (project)", fg: palette().muted },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "n", fg: palette().assistant },
-                      { t: "/", fg: palette().muted },
-                      { t: "esc", fg: palette().assistant },
-                      { t: " deny", fg: palette().muted },
-                      { t: "  ·  ", fg: palette().muted },
-                      { t: "type", fg: palette().assistant },
-                      { t: " why → deny with feedback", fg: palette().muted },
-                    ] satisfies Seg[]}
+                    each={(() => {
+                      const lit = palette().assistant;
+                      const dim = palette().muted;
+                      // All answers stay present; flexWrap stacks on narrow
+                      // terminals so nothing mid-token clips (smoke at 80 cols
+                      // asserts allow once + ^P + deny with feedback).
+                      const segs: Seg[] = [
+                        { t: "y", fg: lit },
+                        { t: " allow once", fg: dim },
+                        { t: "  ·  ", fg: dim },
+                        { t: "a", fg: lit },
+                        { t: " always (session)", fg: dim },
+                        { t: "  ·  ", fg: dim },
+                        { t: "^P", fg: lit },
+                        { t: " always (project)", fg: dim },
+                        { t: "  ·  ", fg: dim },
+                        { t: "n", fg: lit },
+                        { t: "/", fg: dim },
+                        { t: "esc", fg: lit },
+                        { t: " deny", fg: dim },
+                        { t: "  ·  ", fg: dim },
+                        { t: "type", fg: lit },
+                        { t: " why → deny with feedback", fg: dim },
+                      ];
+                      return segs;
+                    })()}
                   >
                     {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
                   </For>
-                  <Show when={perms().length > 1}>
-                    <text flexShrink={0} fg={palette().muted}>{`  ·  +${perms().length - 1} more pending`}</text>
-                  </Show>
                 </box>
               </box>
             </Rail>
@@ -2784,10 +2953,10 @@ export function App(props: { engine: EngineClient }) {
       {/* The input — a UNIFORM filled block (same language as the message blocks):
           a raised ELEVATED surface (a shade above the panel blocks, so the active
           field stands out) with padding and a thin left rail in the MODE hue
-          (ASK peach / PLAN green / YOLO red). The prompt reads `MODE ❯ …`; typing
-          `/` opens the command menu as rows inside the SAME block above the prompt
-          — one connected control. A background fill (not a line frame) stays a
-          clean solid box on any terminal. */}
+          (AGENT follows brand · PLAN green · YOLO red). The prompt reads
+          `MODE ❯ …`; typing `/` opens the command menu as rows inside the SAME
+          block above the prompt — one connected control. A background fill (not a
+          line frame) stays a clean solid box on any terminal. */}
       <Rail color={accent()} marginTop={1}>
         <box
           backgroundColor={palette().elevated}
@@ -2928,7 +3097,9 @@ export function App(props: { engine: EngineClient }) {
           (model/usage live in the card), and a collapsed row would pull the
           sidebar's bottom-alignment reserve off by one. */}
       <box flexDirection="row" flexShrink={0} height={1} marginTop={1}>
-        <text flexShrink={0} fg={palette().muted} wrapMode="none">{detailsRight()}</text>
+        <box flexDirection="row" flexShrink={1}>
+          <For each={statusSegs()}>{(s) => <text flexShrink={0} wrapMode="none" fg={s.fg}>{s.t}</text>}</For>
+        </box>
         <box flexGrow={1} />
         <Show when={showHints() && footerFits()}>
           <box flexDirection="row" flexShrink={0}>
@@ -2942,14 +3113,10 @@ export function App(props: { engine: EngineClient }) {
         </box>
       </Show>
       </box>
-      {/* Right sidebar (wide terminals) — a SESSION card on top (wordmark ·
-          dir · model · git · ctx · goal), then Tasks, then the live Subagents
-          fan-out, then the turn's reasoning-only Thinking panel filling the
-          rest when the model thinks. Tool activity stays in the chat column
-          only. Each section is the SAME block language as the chat column
-          (filled panel surface + thin left rail + identical padding), with
-          the same uniform 1-row gap between blocks — the sidebar reads as one
-          more column of the same material, not different chrome. */}
+      {/* Right sidebar (wide terminals) — status-first SESSION card (cwd · model
+          · git · ctx · goal — no large wordmark; branding lives on the empty
+          splash only), then Tasks, Subagents, Thinking. Tool activity stays in
+          the chat column only. Same Rail + panel language as the chat column. */}
       <Show when={sidebarOn()}>
         <box flexDirection="column" width={SIDEBAR_W} flexShrink={0} padding={1}>
           {/* One reserved row mirrors the chat column's context line, so the
@@ -2958,16 +3125,8 @@ export function App(props: { engine: EngineClient }) {
               margin is swallowed by its scrollbox, so a sidebar margin here
               would land the block one row too low. */}
           <box height={1} flexShrink={0} />
-          {/* Session card — the sidebar's masthead. The SAME brand treatment as
-              the main splash, scaled down: the ascii-font wordmark (the `tiny`
-              half-block face, 31×2) in the chrome accent, then the session's
-              vitals as bare value lines — no `dir`/`model` label words, the
-              values are self-evident. Bright lines carry the two facts you
-              glance for (where am I, which model); git/usage/goal stay muted.
-              One line each, pre-truncated (the DIR keeps its TAIL — the deep
-              segments are the informative ones). Empty rows don't render, and
-              the chat column's top context line + footer drop their copies
-              while this card is up (the sidebar owns them; no double-print). */}
+          {/* Session card — status-first masthead. Optional tiny ◆ brand mark
+              only; vitals as bare value lines (no label words). */}
           <Rail color={palette().gutter} marginTop={0}>
             <box
               backgroundColor={palette().panel}
@@ -2977,19 +3136,21 @@ export function App(props: { engine: EngineClient }) {
               paddingLeft={2}
               paddingRight={2}
             >
-              <ascii_font
-                text="VIBE CODR"
-                font="tiny"
-                color={brand()}
-                backgroundColor={palette().panel}
-              />
-              <box height={1} flexShrink={0} />
+              <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                {"◆ session"}
+              </text>
               <For each={sessionRows()}>
                 {(row) => (
                   <text
                     flexShrink={0}
                     wrapMode="none"
-                    fg={row.dim ? palette().muted : palette().assistant}
+                    fg={
+                      row.warn
+                        ? palette().notice
+                        : row.dim
+                          ? palette().muted
+                          : palette().assistant
+                    }
                   >
                     {row.value}
                   </text>
@@ -3162,7 +3323,7 @@ export function App(props: { engine: EngineClient }) {
                 paddingRight={2}
               >
                 <box flexDirection="row" flexShrink={0}>
-                  <text flexShrink={0} fg={working() ? rainbow(tick()) : palette().gutter}>{"✻ "}</text>
+                  <text flexShrink={0} fg={working() ? brand() : palette().gutter}>{"✻ "}</text>
                   <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
                     Thinking
                   </text>
@@ -3982,6 +4143,8 @@ function ToolBlockView(props: {
   block: () => Extract<Block, { kind: "tool" }>;
   palette: Palette;
   style: SyntaxStyle | undefined;
+  /** Transcript density overlay (quiet forces collapse; verbose opens diffs/errors). */
+  density?: TranscriptDensity;
   /** This row follows another visible step row → stack flush (no top gap). */
   chained?: boolean;
   /** First item in the turn's output block → no top gap (the block padding spaces it). */
@@ -3994,7 +4157,10 @@ function ToolBlockView(props: {
 }) {
   const b = props.block;
   const p = props.palette;
+  const dens = () => props.density ?? "normal";
   const expandable = () => b().output.length > 0;
+  // Density overlay: quiet always collapses; verbose force-opens error/diff/markdown.
+  const collapsed = () => toolCollapsed(dens(), b());
   // Split the stored label into its leading glyph + the summary so the icon can
   // carry the tool tone while the summary stays calm — `"→ read x"` → `→`, `read x`.
   const icon = () => {
@@ -4009,7 +4175,7 @@ function ToolBlockView(props: {
   // alive, not just the bottom working line), then the expand state (`▸`/`▾`),
   // or `·` for a row with nothing to expand.
   const chevron = () =>
-    !b().done && props.spin ? props.spin() : expandable() ? (b().collapsed ? "▸" : "▾") : "·";
+    !b().done && props.spin ? props.spin() : expandable() ? (collapsed() ? "▸" : "▾") : "·";
   // Right-aligned meta: the collapsed hint (`5 results` / `12 lines` / `diff`),
   // prefixed with the call's duration when it was slow (≥2s) — a scannable
   // "what cost time" column down a run of steps.
@@ -4022,7 +4188,7 @@ function ToolBlockView(props: {
     return toolDurationLabel(b(), Date.now());
   };
   const meta = () =>
-    b().collapsed && expandable() ? [duration(), collapsedHint(b())].filter(Boolean).join(" · ") : duration();
+    collapsed() && expandable() ? [duration(), collapsedHint(b())].filter(Boolean).join(" · ") : duration();
   const visible = () => b().output.slice(0, MAX_OUTPUT_LINES);
   const overflow = () => Math.max(0, b().output.length - MAX_OUTPUT_LINES);
   // Live output preview while the call runs: the last couple of streamed lines,
@@ -4071,7 +4237,7 @@ function ToolBlockView(props: {
           </text>
         )}
       </For>
-      <Show when={!b().collapsed && expandable()}>
+      <Show when={!collapsed() && expandable()}>
         <Switch
           fallback={
             <box flexDirection="column">
@@ -4132,7 +4298,7 @@ function ToolBlockView(props: {
 }
 
 /**
- * A landed reasoning burst — one quiet step row (`✻ thought · 8s`) in the turn
+ * A landed reasoning burst — one quiet step row (`✻ thinking · 8s`) in the turn
  * thread, expandable to the full reasoning text in muted italic. The live
  * preview under the spinner shows thinking as it happens; this keeps it
  * reviewable afterwards instead of evaporating when the answer starts.
@@ -4140,6 +4306,7 @@ function ToolBlockView(props: {
 function ThinkingBlockView(props: {
   block: () => Extract<Block, { kind: "thinking" }>;
   palette: Palette;
+  density?: TranscriptDensity;
   chained?: boolean;
   first?: boolean;
   width?: number;
@@ -4147,9 +4314,11 @@ function ThinkingBlockView(props: {
 }) {
   const b = props.block;
   const p = props.palette;
+  const dens = () => props.density ?? "normal";
+  const collapsed = () => thinkingCollapsed(dens(), b().collapsed);
   const header = () => {
     const s = b().seconds ?? 0;
-    return s >= 1 ? `thought · ${s}s` : "thought";
+    return s >= 1 ? `thinking · ${s}s` : "thinking";
   };
   const lines = () => b().text.split("\n").slice(0, MAX_OUTPUT_LINES);
   const overflow = () => Math.max(0, b().text.split("\n").length - MAX_OUTPUT_LINES);
@@ -4162,14 +4331,14 @@ function ThinkingBlockView(props: {
       onMouseDown={() => props.onToggle(b().id)}
     >
       <box flexDirection="row" flexShrink={0}>
-        <text flexShrink={0} fg={p.muted}>{`${b().collapsed ? "▸" : "▾"} `}</text>
+        <text flexShrink={0} fg={p.muted}>{`${collapsed() ? "▸" : "▾"} `}</text>
         <text flexShrink={0} fg={p.gutter}>{"✻"}</text>
         <text flexShrink={1} wrapMode="none" fg={p.muted} attributes={TextAttributes.ITALIC}>
           {` ${header()}`}
         </text>
         <box flexGrow={1} />
       </box>
-      <Show when={!b().collapsed}>
+      <Show when={!collapsed()}>
         <box flexDirection="column" flexShrink={0}>
           <For each={lines()}>
             {(line) => (
@@ -4212,10 +4381,7 @@ function metricsLine(
   ctx: { usedTokens: number; contextWindow: number } | null,
 ): string {
   const parts: string[] = [];
-  const pct =
-    ctx && ctx.contextWindow > 0
-      ? Math.min(100, Math.round((ctx.usedTokens / ctx.contextWindow) * 100))
-      : 0;
+  const pct = contextFillPct(ctx);
   // Only surface context fill once it's meaningful (≥1%); avoids "ctx 0%" noise.
   if (pct >= 1) parts.push(`ctx ${pct}%`);
   if (usage.totalTokens > 0) parts.push(formatUsage(usage));
@@ -4246,7 +4412,12 @@ export async function mountApp(engine: EngineClient): Promise<void> {
   // engine.finalize() (no session digest, orphaned background jobs, unclosed
   // MCP). Ctrl+C is handled in App's useKeyboard instead, which routes through
   // the same finalize-then-exit path as /exit.
-  render(() => <App engine={engine} />, { exitOnCtrlC: false });
+  // useMouse from config (`/mouse off`) preserves native terminal selection.
+  const snap = engine.snapshot();
+  render(() => <App engine={engine} />, {
+    exitOnCtrlC: false,
+    useMouse: snap.mouse !== false,
+  });
   // Keep the process alive while the TUI runs.
   await new Promise<void>(() => {});
 }

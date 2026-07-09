@@ -62,19 +62,42 @@ test("tool-start creates a block; tool-finish fills its output by call id", () =
   expect(s.toolByCallId).toEqual({}); // call id consumed
 });
 
-test("a subagent tool opens expanded and renders as markdown", () => {
+test("a subagent tool is markdown but starts collapsed (panel owns fan-out)", () => {
   const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "spawn_subagent", input: {} }]);
   const t = tool(s.blocks[0]!);
-  expect(t.collapsed).toBe(false);
+  expect(t.collapsed).toBe(true);
+  expect(t.isMarkdown).toBe(true);
+  expect(t.toolName).toBe("spawn_subagent");
+});
+
+test("a spawn_tasks fan-out is markdown and starts collapsed", () => {
+  const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "spawn_tasks", input: { tasks: [] } }]);
+  const t = tool(s.blocks[0]!);
+  expect(t.collapsed).toBe(true);
   expect(t.isMarkdown).toBe(true);
 });
 
-test("a spawn_tasks fan-out report opens expanded and renders as markdown", () => {
-  // The consolidated DAG report IS the answer — same treatment as spawn_subagent.
-  const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "spawn_tasks", input: { tasks: [] } }]);
+test("long successful bash stays collapsed with line-count meta", () => {
+  const lines = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n");
+  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "bun test" } }]);
+  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: lines, isError: false });
+  const t = tool(s.blocks[0]!);
+  expect(t.collapsed).toBe(true);
+  expect(t.output).toHaveLength(20);
+  expect(collapsedHint(t)).toBe("20 lines");
+});
+
+test("failed tools expand and collapsedHint carries fail meta", () => {
+  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "false" } }]);
+  s = reduceTranscript(s, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: "Command failed with exit code 1\nmore",
+    isError: true,
+  });
   const t = tool(s.blocks[0]!);
   expect(t.collapsed).toBe(false);
-  expect(t.isMarkdown).toBe(true);
+  expect(collapsedHint({ ...t, collapsed: true })).toBe("fail · exit 1");
 });
 
 test("tool-finish output objects are JSON-stringified", () => {
@@ -366,6 +389,18 @@ test("collapsedHint reads errors, diffs, search results, and line counts", () =>
       id: 0,
       label: "$ bun test",
       output: ["fail"],
+      collapsed: true,
+      isDiff: false,
+      isError: true,
+      done: true,
+    }),
+  ).toBe("fail · fail");
+  expect(
+    collapsedHint({
+      kind: "tool",
+      id: 0,
+      label: "$ x",
+      output: [],
       collapsed: true,
       isDiff: false,
       isError: true,

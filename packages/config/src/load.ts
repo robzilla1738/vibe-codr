@@ -256,7 +256,12 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
   await mkdir(dir, { recursive: true });
   const tmp = join(dir, `.config.${process.pid}.${Date.now()}.tmp`);
   try {
-    await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    // Never persist the in-memory security-notices bag (BUG-097 clone carrier).
+    const payload =
+      value && typeof value === "object"
+        ? stripSecurityNotices(value as Record<string, unknown>)
+        : value;
+    await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     await rename(tmp, path);
   } catch (err) {
     await rm(tmp, { force: true }).catch(() => {});
@@ -453,15 +458,48 @@ function sanitizeUntrustedProjectConfig(project: Record<string, unknown>): {
   return { clean, dropped };
 }
 
+/**
+ * Built-in tools that have NO natural command/path/url scope for always-project
+ * grants. The engine persists name-only `{tool, action:"allow"}` for these
+ * (see `Engine.#persistProjectGrant`). Untrusted project config may keep those
+ * bare allows; bare allows on scoped tools (bash/edit/write/…) are dropped so a
+ * hostile `.vibe/config.json` cannot inject blanket tool access (BUG-101).
+ */
+export const BARE_PROJECT_ALLOW_TOOLS = new Set(["todo_write", "save_memory"]);
+
 /** Security notices (dropped untrusted project-config fields) attached to a
  * loaded config, surfaced by the engine at bootstrap. Keyed by the returned
  * object so there is no signature change and no global mutable state. */
 const securityNotices = new WeakMap<object, string[]>();
 
+/**
+ * Enumerable own-property key that also carries the notices on the config
+ * object itself. The WeakMap alone is lost when the CLI structured-clones
+ * `config` into the engine worker (`workerData`); this key survives clone so
+ * the default interactive TUI path still surfaces the warn (BUG-097).
+ * Writers strip it before disk so it never pollutes user config files.
+ */
+export const SECURITY_NOTICES_KEY = "__vibeSecurityNotices";
+
 /** The security notices recorded for a config loaded by {@link loadConfig}
- * (empty when the project layer was trusted or set nothing sensitive). */
+ * (empty when the project layer was trusted or set nothing sensitive).
+ * Reads both the same-process WeakMap and the clone-surviving property. */
 export function configSecurityNotices(config: object): string[] {
-  return securityNotices.get(config) ?? [];
+  const fromMap = securityNotices.get(config);
+  if (fromMap) return fromMap;
+  const bag = (config as Record<string, unknown>)[SECURITY_NOTICES_KEY];
+  return Array.isArray(bag)
+    ? bag.filter((x): x is string => typeof x === "string")
+    : [];
+}
+
+/** Drop the clone-surviving notices bag before writing config to disk. */
+export function stripSecurityNotices<T extends object>(value: T): T {
+  if (!value || typeof value !== "object") return value;
+  if (!(SECURITY_NOTICES_KEY in (value as object))) return value;
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy[SECURITY_NOTICES_KEY];
+  return copy as T;
 }
 
 export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
@@ -503,14 +541,16 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
     if (fileConfig) {
       const untrustedProject = path === projectPath && !trustProject;
       // The union merge already stops a project from STRIPPING a global deny.
-      // A project ADDING a BROAD allow — `tool:"*"` or an unscoped name-only
-      // rule — silently widens access like `approvalMode:auto` (which the
-      // sanitizer drops), so those are dropped from an untrusted project. A
-      // glob-scoped allow (`match`) can be just as broad (`match:"*"`) and is
-      // repo-authored, so keep only literal `matchExact` allows: that is exactly
-      // the shape the app's own "always-allow (this project)" grant persists via
-      // appendProjectPermission. The raw array is removed from the merged
-      // fileConfig so deepMerge can't carry a dropped rule past the rebuild below.
+      // A project ADDING a BROAD allow silently widens access like
+      // `approvalMode:auto`, so those are dropped from an untrusted project:
+      //   - `tool:"*"` / glob `match` — always dropped
+      //   - name-only allow on a SCOPED tool (bash/edit/write/…) — dropped
+      //     (hostile `.vibe/config.json` must not inject `{tool:"bash",action:"allow"}`)
+      //   - `matchExact` allows — kept (app always-project with a concrete scope)
+      //   - name-only allow on a NO-SCOPE tool (todo_write/save_memory) — kept
+      //     (BUG-101: that is the only always-project shape those tools can persist)
+      // The raw array is removed from the merged fileConfig so deepMerge can't
+      // carry a dropped rule past the rebuild below.
       if (untrustedProject && Array.isArray(fileConfig.permissions)) {
         sawPermissions = true;
         const raw = fileConfig.permissions as {
@@ -524,11 +564,15 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
           tool?: string;
           match?: string;
           matchExact?: string;
-        }): boolean =>
-          r?.action === "allow" &&
-          (r.tool === "*" ||
-            r.match !== undefined ||
-            r.matchExact === undefined);
+        }): boolean => {
+          if (r?.action !== "allow") return false;
+          if (r.tool === "*" || r.match !== undefined) return true;
+          // Bare name-only: only tools with no natural content scope may keep it.
+          if (r.matchExact === undefined) {
+            return !BARE_PROJECT_ALLOW_TOOLS.has(r.tool ?? "");
+          }
+          return false;
+        };
         const kept = raw.filter((r) => !isUntrustedAllow(r));
         if (kept.length !== raw.length) droppedProjectFields.push("permissions (untrusted allow rules)");
         permissionLayers.push(...kept);
@@ -578,11 +622,14 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   // `providers[id]`), which would then leak across configs (and pollute tests).
   const config = structuredClone(result.data);
   if (droppedProjectFields.length) {
-    securityNotices.set(config, [
+    const notices = [
       `Ignored untrusted project config (${cwd}/.vibe/config.json): ${droppedProjectFields.join(", ")}. ` +
         "These can execute code or redirect credentialed traffic. Set security.trustProjectConfig:true " +
         "in your global config to honor them.",
-    ]);
+    ];
+    securityNotices.set(config, notices);
+    // Survive structuredClone into the engine worker (WeakMap does not) — BUG-097.
+    (config as Record<string, unknown>)[SECURITY_NOTICES_KEY] = notices;
   }
   return config;
 }

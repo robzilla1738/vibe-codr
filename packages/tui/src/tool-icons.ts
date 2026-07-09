@@ -5,51 +5,104 @@
  *
  * Pure presentation logic with no OpenTUI/Solid dependency, so it's unit-tested
  * directly and reused by both the OpenTUI app and the headless renderer.
+ *
+ * Icon rules: family → shape, action → stroke. Prefer widely-supported glyphs
+ * (avoid rare emoji that mojibake on Windows Terminal). Color stays semantic in
+ * ToolBlockView (error / live / done) — never rainbow-per-tool.
  */
 
 /** Exact-match icon table. Unknown tools fall back via {@link toolIcon}. */
 const ICONS: Record<string, string> = {
+  // Shell
   bash: "$",
   shell: "$",
+  // Files — direction for read/write; pencil for edit; patch for apply_patch
   read: "→",
   write: "←",
-  edit: "←",
-  multiedit: "←",
-  apply_patch: "%",
-  glob: "✱",
-  grep: "✱",
+  edit: "✎",
+  multiedit: "✎",
+  apply_patch: "▤",
+  // Search / listing
+  glob: "∗",
+  grep: "#",
   repo_map: "⌗",
   list: "☰",
   ls: "☰",
-  webfetch: "%",
-  web_fetch: "%",
+  // Web
+  webfetch: "◎",
+  web_fetch: "◎",
+  crawl_docs: "◎",
   websearch: "◈",
   web_search: "◈",
+  // Orchestration
   task: "✦",
   subagent: "✦",
   spawn_subagent: "✦",
   spawn_tasks: "✦",
-  read_report: "→",
+  continue_subagent: "↻",
+  check_task: "✓",
+  read_report: "↩",
+  // Session / planning
   update_tasks: "☑",
   todowrite: "☑",
   todo_write: "☑",
   present_plan: "◑",
-  recall: "❖",
-  memory: "❖",
-  recall_memory: "❖",
-  save_memory: "❖",
-  post_note: "❖",
-  read_notes: "❖",
+  // Memory / notes
+  recall: "◇",
+  memory: "◇",
+  recall_memory: "◇",
+  save_memory: "◇",
+  post_note: "◇",
+  read_notes: "◇",
+  // Skills / checks / packages / jobs
   use_skill: "❋",
   run_check: "✓",
-  crawl_docs: "%",
   package_info: "⊙",
-  job_status: "☰",
+  job_status: "◷",
   job_kill: "■",
+  // MCP
   read_mcp_resource: "⊕",
   get_mcp_prompt: "⊕",
   think: "✎",
 };
+
+/** Every built-in tool name we expect to have a non-fallback glyph (for tests). */
+export const BUILTIN_TOOL_NAMES = [
+  "bash",
+  "read",
+  "write",
+  "edit",
+  "glob",
+  "grep",
+  "ls",
+  "repo_map",
+  "webfetch",
+  "web_search",
+  "crawl_docs",
+  "package_info",
+  "git_status",
+  "git_diff",
+  "git_commit",
+  "git_log",
+  "git_push",
+  "job_status",
+  "job_kill",
+  "present_plan",
+  "spawn_subagent",
+  "spawn_tasks",
+  "continue_subagent",
+  "check_task",
+  "read_report",
+  "update_tasks",
+  "recall_memory",
+  "save_memory",
+  "post_note",
+  "read_notes",
+  "use_skill",
+  "run_check",
+  "read_mcp_resource",
+  "get_mcp_prompt",
+] as const;
 
 /** Resolve a tool name to its glyph, with sensible prefixes for families. */
 export function toolIcon(name: string): string {
@@ -168,6 +221,8 @@ export function toolSummary(name: string, input: unknown): string {
     case "list":
     case "ls":
       return `list ${displayPath(str(a.path)) || "."}`;
+    case "repo_map":
+      return a.path || a.cwd ? `map ${displayPath(str(a.path || a.cwd), 40)}` : "map repo";
     case "webfetch":
     case "web_fetch":
       return `fetch ${truncate(str(a.url), 64)}`;
@@ -178,6 +233,10 @@ export function toolSummary(name: string, input: unknown): string {
     case "subagent":
     case "spawn_subagent":
       return `subagent ${quote(truncate(str(a.description || a.title || a.prompt), 56))}`.trim();
+    case "continue_subagent":
+      return `continue ${str(a.id || a.subagent_id || a.subagentId || a.task_id)}`.trim();
+    case "check_task":
+      return `check ${str(a.id || a.task_id || a.taskId)}`.trim();
     case "spawn_tasks": {
       // A task-DAG fan-out: show the shape (`3 tasks: recon → impl → verify`),
       // not the raw objects (which would stringify uselessly).
@@ -222,6 +281,18 @@ export function toolSummary(name: string, input: unknown): string {
       return "update tasks";
     case "present_plan":
       return "present plan";
+    case "git_status":
+      return "git status";
+    case "git_diff":
+      return a.path || a.file ? `git diff ${displayPath(str(a.path || a.file), 40)}` : "git diff";
+    case "git_commit":
+      return `git commit ${quote(truncate(str(a.message || a.msg), 48))}`.trim();
+    case "git_log":
+      return a.n || a.count ? `git log -${str(a.n || a.count)}` : "git log";
+    case "git_push":
+      return a.remote || a.branch
+        ? `git push ${[str(a.remote), str(a.branch)].filter(Boolean).join(" ")}`.trim()
+        : "git push";
     default:
       if (key.startsWith("git_") || key.startsWith("git")) {
         return `${humanize(name)}${kv(a, 2)}`;
@@ -309,4 +380,13 @@ export function permissionPreview(
     default:
       return null;
   }
+}
+
+/** Long successful shell dumps stay collapsed after land (line-count meta). */
+export const LONG_OUTPUT_COLLAPSE_LINES = 12;
+
+/** Tools whose long success output should force-collapse when landing. */
+export function isLongOutputTool(toolName: string): boolean {
+  const k = toolName.toLowerCase();
+  return k === "bash" || k === "shell" || k.startsWith("git_");
 }

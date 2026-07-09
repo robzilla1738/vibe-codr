@@ -25,23 +25,33 @@ export { VERSION };
 
 /**
  * Locate the engine worker entry. Order:
- *   1. Sibling of this executable named `vibecodr-engine-worker` — the
- *      second `bun build --compile` target shipped alongside the main binary.
- *   2. The in-repo source entry `packages/cli/src/engine-worker-entry.ts`
- *      discoverable relative to this file (dev / `bun packages/cli/bin/vibecodr.ts`).
- * Returns null when neither exists — the host then falls back to an in-process
+ *   1. Sibling of this executable named `vibecodr-engine-worker` (and
+ *      `vibecodr-engine-worker.exe` on Windows — BUG-106) — the second
+ *      `bun build --compile` target shipped alongside the main binary.
+ *   2. The npm-bundle sibling `vibecodr-engine-worker.js`.
+ *   3. The in-repo source entry `packages/cli/src/engine-worker-entry.ts`
+ *      (dev / `bun packages/cli/bin/vibecodr.ts`).
+ * Returns null when none exist — the host then falls back to an in-process
  * `Engine` (no worker-host isolation; the cooperative-yield gate alone bounds
  * the freeze). `VIBE_NO_WORKER=1` short-circuits to that fallback too.
+ *
+ * `opts` is for tests (inject execPath / moduleDir without mocking process).
  */
-function resolveEngineWorkerPath(): string | null {
-  // (1) Compiled binary: the worker build target shipped as a sibling of the
-  //     main executable. `process.execPath` is the binary itself.
-  const binarySibling = join(dirname(process.execPath), "vibecodr-engine-worker");
-  if (existsSync(binarySibling)) return binarySibling;
+export function resolveEngineWorkerPath(opts?: {
+  execPath?: string;
+  moduleDir?: string;
+}): string | null {
+  // (1) Compiled binary: worker build target as a sibling of the main executable.
+  //     Windows release ships `vibecodr-engine-worker.exe` — probe both names.
+  const execDir = dirname(opts?.execPath ?? process.execPath);
+  for (const name of ["vibecodr-engine-worker", "vibecodr-engine-worker.exe"]) {
+    const binarySibling = join(execDir, name);
+    if (existsSync(binarySibling)) return binarySibling;
+  }
   // (2) npm install: the worker entry shipped next to `vibecodr.js` as a
   //     `--target=bun` bundle. `import.meta.dir` is the JS file's directory
   //     (the bundling inlines everything so no sibling imports dangle).
-  const here = import.meta.dir;
+  const here = opts?.moduleDir ?? import.meta.dir;
   const npmSibling = join(here, "vibecodr-engine-worker.js");
   if (existsSync(npmSibling)) return npmSibling;
   // (3) Source/dev: the in-repo TS entry discoverable next to this file.

@@ -122,6 +122,8 @@ parentPort.on("message", (m) => {
           busy: false,
           theme: "tokyonight",
           accentColor: "#ff0000",
+          details: "normal",
+      mouse: true,
           commandNames: ["help"],
         },
       });
@@ -166,6 +168,8 @@ parentPort.on("message", (m) => {
         busy: n > 1,
         theme: "default",
         accentColor: "",
+        details: "normal",
+      mouse: true,
         commandNames: n === 1 ? ["help"] : ["help", "status", "diff"],
       },
     });
@@ -313,6 +317,8 @@ parentPort.on("message", (m) => {
         busy: false,
         theme: "default",
         accentColor: "",
+        details: "normal",
+      mouse: true,
         commandNames: [],
       },
     });
@@ -328,4 +334,113 @@ parentPort.on("message", (m) => {
   for await (const _e of client.events()) count++;
   // Finalize closed the AsyncQueue — the for-await terminates with no events.
   expect(count).toBe(0);
+});
+test("ready() waits for a delayed snapshot RPC (BUG-107 — not PLACEHOLDER)", async () => {
+  // beginHydrate must await the snapshot RPC itself (worker queues until after
+  // bootstrap). A delayed real snapshot must still land before ready() returns
+  // with a non-empty model — not an early PLACEHOLDER seed.
+  const path = writeStubWorker(`
+parentPort.on("message", (m) => {
+  if (!m.__req) return;
+  if (m.op === "snapshot") {
+    setTimeout(() => {
+      parentPort.postMessage({
+        __resp: m.__req,
+        ok: true,
+        value: {
+          sessionId: "s-delay",
+          model: "delayed/real-model",
+          mode: "execute",
+          approvalMode: "ask",
+          goal: null,
+          history: [],
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+          tasks: [],
+          busy: false,
+          theme: "default",
+          accentColor: "",
+          details: "normal",
+          mouse: true,
+          commandNames: ["help"],
+        },
+      });
+    }, 200);
+    return;
+  }
+  parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
+});
+`);
+  const t0 = performance.now();
+  const client = await createWorkerEngineClient(makeOpts(path, {}));
+  const elapsed = performance.now() - t0;
+  // Waited for the delayed snapshot (≈200ms), not an instant PLACEHOLDER ready.
+  expect(elapsed).toBeGreaterThan(150);
+  expect(client.snapshot().model).toBe("delayed/real-model");
+  expect(client.snapshot().sessionId).toBe("s-delay");
+  await client.finalize();
+});
+
+test("session-start settles ready even when snapshot RPC is still pending (BUG-107)", async () => {
+  // Soft-deadline path: session-start unblocks ready so the TUI can re-seed
+  // chrome from the event while the snapshot RPC is still queued.
+  const path = writeStubWorker(`
+let snapReq = null;
+parentPort.on("message", (m) => {
+  if (!m.__req) return;
+  if (m.op === "snapshot") {
+    snapReq = m.__req;
+    // Answer snapshot only much later — session-start should still settle ready.
+    setTimeout(() => {
+      if (snapReq == null) return;
+      parentPort.postMessage({
+        __resp: snapReq,
+        ok: true,
+        value: {
+          sessionId: "late",
+          model: "late/snap",
+          mode: "execute",
+          approvalMode: "ask",
+          goal: null,
+          history: [],
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+          tasks: [],
+          busy: false,
+          theme: "default",
+          accentColor: "",
+          details: "normal",
+          mouse: true,
+          commandNames: [],
+        },
+      });
+    }, 500);
+    return;
+  }
+  parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
+});
+// Emit session-start soon after boot so ready can settle via the event path.
+setTimeout(() => {
+  parentPort.postMessage({
+    type: "session-start",
+    sessionId: "early",
+    model: "from/session-start",
+    mode: "plan",
+  });
+}, 30);
+`);
+  const t0 = performance.now();
+  const client = await createWorkerEngineClient(makeOpts(path, {}));
+  const elapsed = performance.now() - t0;
+  // Must not wait the full 500ms snapshot — session-start settles ready early.
+  expect(elapsed).toBeLessThan(400);
+  // Drain session-start from the events queue.
+  let sawStart = false;
+  for await (const e of client.events()) {
+    if (e.type === "session-start") {
+      sawStart = true;
+      expect((e as { model: string }).model).toBe("from/session-start");
+      break;
+    }
+  }
+  expect(sawStart).toBe(true);
+  await client.finalize();
 });

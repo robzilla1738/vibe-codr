@@ -73,17 +73,27 @@ function baseModelId(modelString: string): string {
 /**
  * Resolve a model's price from a loaded catalog map: an exact `provider/model`
  * hit (real), else a base-model match across providers flagged `estimated`.
+ *
+ * Local providers (`ollama` without `OLLAMA_API_KEY`, `lmstudio`) mirror the
+ * window-resolution guard: no cloud-slug alias and no fuzzy fallback — a free
+ * local tag must not inherit a cloud namesake's non-estimated rates (BUG-102).
  */
 export function resolveCatalogPrice(
   metadata: Map<string, Partial<ModelInfo>>,
   modelString: string,
 ): PricingResult | undefined {
-  const exact = metadata.get(modelString)?.cost;
+  const provider = providerOf(modelString);
+  const cloudPlausible = provider !== "ollama" || Boolean(process.env.OLLAMA_API_KEY);
+  const key = cloudPlausible ? aliasModelKey(modelString) : modelString;
+  const exact = metadata.get(key)?.cost;
   if (hasPrice(exact)) return exact;
+  // Locally-probed providers: no fuzzy price (same hazard class as windows —
+  // wrong non-estimated rates hard-stop free local sessions on budget).
+  if (LOCALLY_PROBED_PROVIDERS.has(provider)) return undefined;
   const bare = baseModelId(modelString);
   if (bare) {
-    for (const [key, meta] of metadata) {
-      if (hasPrice(meta.cost) && baseModelId(key) === bare) {
+    for (const [k, meta] of metadata) {
+      if (hasPrice(meta.cost) && baseModelId(k) === bare) {
         return { ...meta.cost, estimated: true };
       }
     }
@@ -109,14 +119,14 @@ function providerOf(modelString: string): string {
  * wins; a miss falls back to a base-model match across providers — the same
  * fallback `resolveCatalogPrice` has, because an ESTIMATED window for a known
  * base model beats the session's blanket 128k default in both directions
- * (a fine-tune/variant id inherits its family's real window). Two asymmetries
- * a price lookup doesn't need:
+ * (a fine-tune/variant id inherits its family's real window). Shared guards
+ * with price resolution:
  *   - locally-probed providers get NO fuzzy fallback (see
- *     {@link LOCALLY_PROBED_PROVIDERS} — a wrong price warns, a wrong window
- *     truncates turns);
+ *     {@link LOCALLY_PROBED_PROVIDERS} — a wrong window truncates turns; a
+ *     wrong non-estimated price hard-stops free local sessions);
  *   - the `ollama`→`ollama-cloud` slug alias is honored only when cloud is
  *     plausibly in play (`OLLAMA_API_KEY`, the probe's own routing signal) —
- *     otherwise a purely local tag would read its cloud namesake's window.
+ *     otherwise a purely local tag would read its cloud namesake's metadata.
  */
 export function resolveCatalogWindow(
   metadata: Map<string, Partial<ModelInfo>>,
@@ -191,7 +201,10 @@ export class CatalogService {
       void this.#load();
       return undefined;
     }
-    return resolveCatalogPrice(this.#metadata, aliasModelKey(modelString));
+    // Mirror resolveCatalogWindow's local-provider guard: without a cloud
+    // signal, ollama/* must not inherit ollama-cloud rates as "real" prices
+    // (BUG-102) — free local sessions would accrue cloud spend and trip budgets.
+    return resolveCatalogPrice(this.#metadata, modelString);
   }
 
   /**

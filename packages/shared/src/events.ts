@@ -62,6 +62,8 @@ export type UIEvent =
   | { type: "goal-run"; sessionId: string; run: GoalRunInfo }
   | { type: "theme-changed"; theme: string }
   | { type: "accent-changed"; accent: string }
+  | { type: "details-changed"; details: "quiet" | "normal" | "verbose" }
+  | { type: "mouse-changed"; mouse: boolean }
   | { type: "git-updated"; sessionId: string; git: GitInfo }
   | {
       /** Background shell jobs (and any localhost servers detected in their

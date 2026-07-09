@@ -26,6 +26,8 @@ const engine: EngineClient = {
     tasks: [],
     theme: "default",
     accentColor: "",
+    details: "normal",
+      mouse: true,
     commandNames: ["help", "cost", "model", "theme", "approvals"],
     git: { branch: "main", dirty: 2, ahead: 0, behind: 0, worktree: false },
   }),

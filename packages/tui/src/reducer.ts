@@ -8,7 +8,7 @@
 
 import { GLYPH } from "./glyphs.ts";
 import { truncateWidth } from "./markdown-blocks.ts";
-import { toolLabel } from "./tool-icons.ts";
+import { isLongOutputTool, LONG_OUTPUT_COLLAPSE_LINES, toolLabel } from "./tool-icons.ts";
 
 /**
  * One block in the transcript. The transcript is append-only: positions never
@@ -21,6 +21,8 @@ export type Block =
   | {
       kind: "tool";
       id: number;
+      /** Tool name (for collapse policy / fail meta), when known. */
+      toolName?: string;
       /** Header label ("→ read x" or, after a file change, "✎ edited x +n -m"). */
       label: string;
       /** Full captured output / diff hunk, shown only when expanded. */
@@ -199,6 +201,9 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       const label = toolLabel(a.toolName, a.input);
       // A subagent reply / task-DAG report is markdown prose; a web-search result
       // list renders as clean source cards — both instead of raw dumped lines.
+      // Spawn tools stay collapsed by default (the Subagents panel owns fan-out
+      // awareness; opening five full replies floods the transcript). Verbose
+      // density force-opens them at render time.
       const isMarkdown = a.toolName === "spawn_subagent" || a.toolName === "spawn_tasks";
       const isSources = a.toolName === "web_search";
       const blocks = [
@@ -206,11 +211,10 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
         {
           kind: "tool" as const,
           id: f.nextId,
+          toolName: a.toolName,
           label,
           output: [] as string[],
-          // A subagent's reply (or a fan-out's consolidated report) opens expanded
-          // — it IS the answer; other tools stay condensed until clicked.
-          collapsed: !isMarkdown,
+          collapsed: true,
           isDiff: false,
           isMarkdown,
           isSources,
@@ -254,13 +258,17 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       if (b?.kind !== "tool") return { ...s, toolByCallId };
       const blocks = s.blocks.slice();
       const { tail: _tail, ...rest } = b;
+      // Failed calls open expanded (errors are the next action). Long successful
+      // bash/git dumps stay collapsed with a line-count meta — expanding is a click.
+      const longOk =
+        !a.isError &&
+        lines.length >= LONG_OUTPUT_COLLAPSE_LINES &&
+        isLongOutputTool(b.toolName ?? "");
       blocks[idx] = {
         ...rest,
         output: lines,
         isError: a.isError,
-        // A failed call opens EXPANDED: the error text is exactly what the user
-        // needs next — hiding it behind a click is friction at the worst moment.
-        collapsed: a.isError ? false : b.collapsed,
+        collapsed: a.isError ? false : longOk ? true : b.collapsed,
         done: true,
         ...(a.at !== undefined && b.startedAt !== undefined
           ? { elapsedMs: Math.max(0, a.at - b.startedAt) }
@@ -447,19 +455,32 @@ export function groupTurns(blocks: Block[]): { turnKey: Map<number, number>; cou
 }
 
 /**
- * Collapsed tool-row detail: "error" when the call failed (so a red row still
- * scans without expanding), "diff" for a diff, else the search-result count
- * for a web_search (reads far better than "33 lines" of payload), else the
- * raw line count.
+ * Collapsed tool-row detail: short fail meta when the call failed (so a red row
+ * still scans under quiet density without expanding), "diff" for a diff, else
+ * the search-result count for a web_search, else the raw line count.
  */
 export function collapsedHint(t: Extract<Block, { kind: "tool" }>): string {
-  if (t.isError) return "error";
+  if (t.isError) return failMeta(t.output);
   if (t.isDiff) return "diff";
-  if (t.label.startsWith("◈")) {
+  // Web search icon is ◈ — count numbered result lines.
+  if (t.label.startsWith("◈") || t.toolName === "web_search" || t.toolName === "websearch") {
     const results = t.output.filter((l) => /^\d+\.\s/.test(l)).length;
     if (results > 0) return `${results} result${results === 1 ? "" : "s"}`;
   }
   return `${t.output.length} line${t.output.length === 1 ? "" : "s"}`;
+}
+
+/** First-line fail summary for a collapsed error tool: `fail · exit 1` or truncated. */
+export function failMeta(output: readonly string[]): string {
+  const first = output.find((l) => l.trim().length > 0)?.trim() ?? "";
+  if (!first) return "error";
+  const exit =
+    first.match(/\bexit(?:ed)?(?:\s+code)?[:\s]+(\d+)\b/i) ??
+    first.match(/\bstatus[:\s]+(\d+)\b/i) ??
+    first.match(/\bcode[:\s]+(\d+)\b/i);
+  if (exit) return `fail · exit ${exit[1]}`;
+  const clipped = first.length > 36 ? `${first.slice(0, 35)}…` : first;
+  return `fail · ${clipped}`;
 }
 
 /**

@@ -34,10 +34,17 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "models", description: "List available models (/models refresh to force-pull)" },
   { name: "providers", description: "Providers + keys (Enter to configure)", arg: "[filter]" },
   { name: "plan", description: "Read-only plan mode — present a plan for approval" },
-  { name: "execute", description: "Gated execute — every action asks (ASK)" },
+  { name: "execute", description: "Gated execute — every action asks (AGENT chip)" },
   { name: "yolo", description: "Execute with approvals off — no prompts" },
   { name: "approvals", description: "Set approval mode", values: ["ask", "auto"] },
   { name: "reasoning", description: "Set reasoning effort", values: ["low", "medium", "high", "off"] },
+  {
+    name: "details",
+    description: "Transcript density (quiet · normal · verbose)",
+    values: ["quiet", "normal", "verbose"],
+  },
+  { name: "mouse", description: "Mouse capture (off = native terminal selection)", values: ["on", "off"] },
+  { name: "keys", description: "Essential keyboard shortcuts" },
   // Values derive from the palette registry so a new theme/accent shows up here
   // automatically ("dark" is an alias of default — hidden to keep the menu tight).
   { name: "theme", description: "Set the UI theme", values: THEME_NAMES.filter((n) => n !== "dark") },

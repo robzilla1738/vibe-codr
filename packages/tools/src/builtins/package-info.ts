@@ -13,10 +13,19 @@ const Input = z.object({
 });
 
 const TIMEOUT_MS = 8_000;
+/** Cap registry wire bodies during stream (BUG-105) — field clip is not enough. */
+const MAX_REGISTRY_CHARS = 512_000;
 
 /** Abort on either the turn's signal or an 8s timeout, whichever fires first. */
 function withTimeout(signal: AbortSignal): AbortSignal {
   return AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]);
+}
+
+/** Stream-cap a registry response then JSON.parse (never fully buffer first). */
+async function readJsonCapped(res: Response): Promise<unknown> {
+  const { readCappedResponseText } = await import("./search-engines.ts");
+  const text = await readCappedResponseText(res, MAX_REGISTRY_CHARS);
+  return JSON.parse(text) as unknown;
 }
 
 interface NpmLatest {
@@ -52,8 +61,8 @@ async function npmInfo(name: string, signal: AbortSignal): Promise<{ output: str
   if (!latestRes.ok) {
     return { output: `npm lookup failed: HTTP ${latestRes.status}.`, isError: true };
   }
-  const latest = (await latestRes.json()) as NpmLatest;
-  const tags = tagsRes.ok ? ((await tagsRes.json()) as Record<string, string>) : {};
+  const latest = (await readJsonCapped(latestRes)) as NpmLatest;
+  const tags = tagsRes.ok ? ((await readJsonCapped(tagsRes)) as Record<string, string>) : {};
   const license =
     typeof latest.license === "string" ? latest.license : latest.license?.type;
   const lines = [`npm · ${name}`, `latest: ${latest.version ?? "unknown"}`];
@@ -98,7 +107,7 @@ async function pypiInfo(name: string, signal: AbortSignal): Promise<{ output: st
   if (!res.ok) {
     return { output: `PyPI lookup failed: HTTP ${res.status}.`, isError: true };
   }
-  const info = ((await res.json()) as PypiJson).info ?? {};
+  const info = ((await readJsonCapped(res)) as PypiJson).info ?? {};
   const lines = [`pypi · ${name}`, `latest: ${info.version ?? "unknown"}`];
   if (info.summary) lines.push(`summary: ${clip(info.summary.trim(), 500)}`);
   if (info.license) lines.push(`license: ${clip(info.license, 80)}`);

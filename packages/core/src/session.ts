@@ -209,6 +209,12 @@ export interface SessionDeps {
   initialLastInputTokens?: number;
   /** Seed accrued cost (USD) when resuming a persisted session. */
   initialCostUSD?: number;
+  /** Seed the non-estimated portion of accrued cost (BUG-103). When omitted on
+   * resume, actual spend is treated as 0 so estimated-only history never
+   * hard-stops the budget after `--resume`. */
+  initialActualCostUSD?: number;
+  /** Seed the `~$` estimated-cost flag when resuming a persisted session. */
+  initialCostEstimated?: boolean;
   /** Seed the recalled-context block when resuming a persisted session. */
   initialRecalledContext?: string;
   /** Seed the web-source ledger when resuming, so `[n]` citations still resolve. */
@@ -345,7 +351,19 @@ export class Session {
         : {}),
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
-    this.#actualCostUSD = deps.initialCostUSD ?? 0;
+    // BUG-103: never blindly promote costUSD → actualCostUSD.
+    // - Explicit initialActualCostUSD wins (new meta).
+    // - Estimated-only history (initialCostEstimated) keeps actual at 0 so
+    //   free/local sessions never hard-stop after --resume.
+    // - Legacy meta (neither field) keeps prior behavior: treat costUSD as
+    //   actual so paid hard-stops still resume correctly.
+    this.#actualCostUSD =
+      deps.initialActualCostUSD !== undefined
+        ? deps.initialActualCostUSD
+        : deps.initialCostEstimated
+          ? 0
+          : (deps.initialCostUSD ?? 0);
+    this.#costEstimated = deps.initialCostEstimated ?? false;
     this.#lastInputTokens = deps.initialLastInputTokens ?? 0;
     this.#recalledContext = deps.initialRecalledContext;
     if (deps.initialSources?.length) this.#sources.hydrate(deps.initialSources);
@@ -443,6 +461,8 @@ export class Session {
       busy: this.busy,
       theme: this.#deps.config.theme,
       accentColor: this.#deps.config.accentColor,
+      details: this.#deps.config.details ?? "normal",
+      mouse: this.#deps.config.mouse ?? true,
       approvalMode: this.#deps.config.approvalMode,
       // Filled by the engine, which owns the command/skill registries + git.
       commandNames: [],
@@ -1780,7 +1800,12 @@ export class Session {
           mode: this.mode,
           goal: this.goal,
           tasks: this.#tasks,
-          usage: { ...this.#usage, costUSD: this.#costUSD },
+          usage: {
+            ...this.#usage,
+            costUSD: this.#costUSD,
+            actualCostUSD: this.#actualCostUSD,
+            ...(this.#costEstimated && this.#costUSD > 0 ? { costEstimated: true } : {}),
+          },
           ...(this.#lastInputTokens > 0 ? { lastInputTokens: this.#lastInputTokens } : {}),
           ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
           ...(this.#sources.size ? { sources: [...this.#sources.list()] } : {}),

@@ -1,6 +1,38 @@
 import { test, expect } from "bun:test";
 import type { Task } from "@vibe/shared";
-import { formatDiff, formatUsage, formatJsonResult, windowTasks } from "./headless.ts";
+import {
+  contextFillPct,
+  CTX_WARN_PCT,
+  formatDiff,
+  formatUsage,
+  formatJsonResult,
+  isHotContext,
+  sessionMetricsTone,
+  windowTasks,
+} from "./headless.ts";
+
+test("contextFillPct is 0 when unknown; clamps 0–100", () => {
+  expect(contextFillPct(null)).toBe(0);
+  expect(contextFillPct({ usedTokens: 0, contextWindow: 0 })).toBe(0);
+  expect(contextFillPct({ usedTokens: 80_000, contextWindow: 100_000 })).toBe(80);
+  expect(contextFillPct({ usedTokens: 200_000, contextWindow: 100_000 })).toBe(100);
+});
+
+test("isHotContext warns at CTX_WARN_PCT (80%) — used by footer AND session card", () => {
+  expect(CTX_WARN_PCT).toBe(80);
+  expect(isHotContext(79)).toBe(false);
+  expect(isHotContext(80)).toBe(true);
+  expect(isHotContext(100)).toBe(true);
+});
+
+test("sessionMetricsTone paints warn on hot ctx (sidebar owns metrics when wide)", () => {
+  // Wide terminals drop metrics from the under-input strip — the session card
+  // is the only place that shows ctx%, so hot fill must warn there.
+  expect(sessionMetricsTone("ctx 42% · 1.5k tok · $0.01")).toEqual({ dim: true, warn: false });
+  expect(sessionMetricsTone("ctx 80% · 1.5k tok · $0.01")).toEqual({ dim: false, warn: true });
+  expect(sessionMetricsTone("ctx 95% · 12.3k tok")).toEqual({ dim: false, warn: true });
+  expect(sessionMetricsTone("1.5k tok · $0.01")).toEqual({ dim: true, warn: false });
+});
 
 test("formatDiff prefixes additions, deletions, and context distinctly", () => {
   // ansi colors are disabled when stdout is not a TTY (test env), so the

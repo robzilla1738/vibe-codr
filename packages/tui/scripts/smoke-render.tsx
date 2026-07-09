@@ -42,6 +42,8 @@ const engine: EngineClient = {
     // No /accent override → brand() falls back to the theme's Blue 300 primary, so
     // the smoke exercises the real default chrome (peach wordmark/markers/spinner).
     accentColor: "",
+    details: "normal",
+      mouse: true,
     commandNames: ["help", "cost", "model", "myskill"],
     git: { branch: "main", dirty: 3, ahead: 1, behind: 0, worktree: false },
   }),
@@ -114,7 +116,7 @@ let frame = t.captureCharFrame();
 // (no tagline, no key cheatsheet — those moved to the under-input status).
 check("splash renders (wordmark + try line)", frame.includes("░") && frame.includes("explain this codebase"));
 check("input shows the placeholder", frame.includes("Send a message"));
-check("input border shows the ASK mode", frame.includes("ASK"));
+check("input border shows the AGENT mode", frame.includes("AGENT"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));
 
 // Shift+Tab cycles optimistically from the local mirror, so two rapid presses
@@ -192,15 +194,12 @@ check("streamed assistant reply renders", frame.includes("42"));
 check("assistant bold markers are concealed (no raw **)", !frame.includes("**"));
 // A turn is in flight (no turn-finished yet) → the working spinner shows.
 check("working indicator renders while a turn runs", frame.includes("Working"));
-// The spinner glyph hue-cycles (the rainbow thinking signature) — assert the
-// braille glyph span carries a SATURATED fg (not the muted/white default). The
-// exact hue depends on the animation tick, so only saturation is pinned.
-const saturated = (fg: { r: number; g: number; b: number }) =>
-  Math.max(fg.r, fg.g, fg.b) - Math.min(fg.r, fg.g, fg.b) > 0.2;
-const spinnerColored = t
+// Working spinner is monochrome brand-hued (not rainbow) — assert a braille
+// glyph is present while working. Hue may be white chrome on the default theme.
+const spinnerPresent = t
   .captureSpans()
-  .lines.some((l) => l.spans.some((s) => /[⠀-⣿]/.test(s.text) && saturated(s.fg)));
-check("working spinner glyph is rainbow-saturated", spinnerColored);
+  .lines.some((l) => l.spans.some((s) => /[⠀-⣿]/.test(s.text)));
+check("working spinner glyph is present (monochrome brand)", spinnerPresent);
 
 // 4) A tool call renders with its icon + summary, and its output is condensed.
 push({ type: "tool-call-started", toolCallId: "t1", toolName: "read", input: { path: "x" } } as UIEvent);
@@ -399,12 +398,12 @@ await settle();
 frame = t.captureCharFrame();
 check("menu opens on slash", frame.includes("approvals"));
 // The menu is a FLAT extension of the input: the command list sits directly above
-// the prompt row (`ASK ❯ /appr`), which sits above the under-input status line —
+// the prompt row (`AGENT ❯ /appr`), which sits above the under-input status line —
 // one connected control, no popup box, no filled frame. Guards a regression back to
 // a separate floating box.
 {
   const fl = frame.split("\n");
-  const promptRow = fl.findIndex((l) => l.includes("ASK") && l.includes("❯"));
+  const promptRow = fl.findIndex((l) => l.includes("AGENT") && l.includes("❯"));
   const menuRow = fl.findIndex((l) => l.includes("approvals"));
   const statusRow = fl.findIndex((l) => l.includes("ollama/glm-5.2"));
   check("menu renders directly above the prompt (one flat control)", menuRow >= 0 && promptRow > menuRow);

@@ -274,3 +274,56 @@ test("a dead page in deep mode degrades to its snippet instead of failing the se
   expect(res.isError).toBeUndefined();
   expect(String(res.output)).toContain("still-useful snippet");
 });
+
+test("TinyFish response body is stream-capped (BUG-104)", async () => {
+  // BUG-104: TinyFish must use readCappedResponseText (stream) not res.text()
+  // then slice — a hostile multi-MB body must cancel mid-stream under backpressure.
+  let cancelled = false;
+  let textCalled = false;
+  let bytesPulled = 0;
+  const pad = "x".repeat(700_000);
+  const body = `{"results":[{"url":"https://example.com","title":"t","snippet":"${pad}"}]}`;
+  const customFetch: FetchLike = async (url) => {
+    if (url.includes("tinyfish") || url.includes("agent.tinyfish")) {
+      const enc = new TextEncoder();
+      let offset = 0;
+      const chunk = 16_384;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (cancelled) return;
+          if (offset >= body.length) {
+            controller.close();
+            return;
+          }
+          const slice = body.slice(offset, Math.min(offset + chunk, body.length));
+          controller.enqueue(enc.encode(slice));
+          bytesPulled += slice.length;
+          offset += chunk;
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return {
+        ok: true,
+        status: 200,
+        body: stream,
+        text: async () => {
+          textCalled = true;
+          return body;
+        },
+      };
+    }
+    return { ok: true, status: 200, text: async () => "" };
+  };
+  const res = await webSearchTool({ apiKey: "tf-test-key", fetchImpl: customFetch }).execute(
+    { query: "test" },
+    ctx(),
+  );
+  expect(res).toBeDefined();
+  expect(textCalled).toBe(false); // body path used, not full buffer via text()
+  expect(cancelled).toBe(true);
+  // Cap is 512k chars — pull-based stream must stop well under the full body.
+  expect(bytesPulled).toBeLessThan(body.length);
+  expect(bytesPulled).toBeLessThan(600_000);
+});

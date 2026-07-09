@@ -66,6 +66,8 @@ function makeEngine(o: EngineOpts) {
       tasks: [],
       theme: o.theme ?? "default",
       accentColor: o.accent ?? "",
+      details: "normal",
+      mouse: true,
       commandNames: ["help", "cost", "model", "theme", "approvals"],
       git: o.git,
     }),

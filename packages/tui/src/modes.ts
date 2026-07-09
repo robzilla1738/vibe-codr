@@ -97,18 +97,29 @@ export function cycleModeAction(
 }
 
 /**
- * The mode color — shown on the input's mode chip (the `ASK`/`PLAN`/`YOLO` title
- * on its top border), and the only mode-driven hue in the UI. Fixed (not
- * theme-derived) so the mode reads identically everywhere: ASK (execute, every
- * action gated by a prompt) = Blue 300, PLAN (read-only) = green, YOLO (no
- * prompts) = red. Sits cleanly on the neutral chrome.
+ * The mode color — shown on the input's mode chip (the `AGENT`/`PLAN`/`YOLO`
+ * title), and the only mode-driven hue in the UI. Fixed (not theme-derived) so
+ * the mode reads identically everywhere: execute's chip **follows the brand
+ * accent in the app** (see `accent()` in app.tsx); PLAN green and YOLO red stay
+ * fixed alert hues. `MODE_COLORS.execute` is the fallback blue when no brand
+ * override is applied.
  */
 export const MODE_COLORS: Record<UiMode, string> = {
-  execute: "#70cbf4", // ASK — Blue 300
+  execute: "#70cbf4", // AGENT fallback — Blue 300
   plan: "#9ece6a", // PLAN — green
   yolo: "#f7768e", // YOLO — red
 };
 
 export function modeColor(m: UiMode): string {
   return MODE_COLORS[m];
+}
+
+/**
+ * User-facing mode chip label. Execute reads **AGENT** (permission-gated coding
+ * agent) — not "ASK", which collides with read-only Q&A modes in other tools
+ * and reads as "ask the model" rather than "tools ask before running."
+ */
+export function modeWord(m: UiMode): string {
+  if (m === "execute") return "AGENT";
+  return m.toUpperCase();
 }

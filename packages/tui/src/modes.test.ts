@@ -6,6 +6,7 @@ import {
   cycleModeAction,
   engineStateForUiMode,
   modeColor,
+  modeWord,
   MODE_COLORS,
   type UiMode,
 } from "./modes.ts";
@@ -66,13 +67,19 @@ test("a full Shift+Tab cycle visits every mode and returns to start", () => {
   expect(seen).toEqual(["execute", "yolo", "plan", "execute"]);
 });
 
-test("modeColor maps ASK→blue, PLAN→green, YOLO→red (distinct hexes)", () => {
-  expect(modeColor("execute")).toBe(MODE_COLORS.execute); // ASK
+test("modeColor maps execute→blue, PLAN→green, YOLO→red (distinct hexes)", () => {
+  expect(modeColor("execute")).toBe(MODE_COLORS.execute); // AGENT fallback
   expect(modeColor("plan")).toBe(MODE_COLORS.plan);
   expect(modeColor("yolo")).toBe(MODE_COLORS.yolo);
   const hexes = new Set([modeColor("execute"), modeColor("plan"), modeColor("yolo")]);
   expect(hexes.size).toBe(3);
   for (const h of hexes) expect(h).toMatch(/^#[0-9a-f]{6}$/);
+});
+
+test("modeWord labels execute as AGENT (not ASK)", () => {
+  expect(modeWord("execute")).toBe("AGENT");
+  expect(modeWord("plan")).toBe("PLAN");
+  expect(modeWord("yolo")).toBe("YOLO");
 });
 
 test("engineStateForUiMode round-trips through deriveUiMode for every mode", () => {
@@ -104,7 +111,7 @@ test("optimistic mirrors let two rapid Shift+Tab presses advance two full steps"
 
 test("cycleModeAction with a live plan does not flip chip or set-approvals", () => {
   // Engine refuses bare plan→execute when a plan is waiting. The TUI must not
-  // optimistically show ASK/YOLO or send set-approvals auto (YOLO would stick
+  // optimistically show AGENT/YOLO or send set-approvals auto (YOLO would stick
   // and the next Enter would inherit unattended approvals).
   const action = cycleModeAction("plan", { planPending: true });
   expect(action.optimistic).toBeNull();

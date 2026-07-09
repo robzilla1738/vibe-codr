@@ -108,6 +108,7 @@ export class WorkerEngineClient implements EngineClient {
   /** Resolves once the first real snapshot is cached (BUG-084). */
   #ready: Promise<void>;
   #resolveReady!: () => void;
+  #readySettled = false;
 
   /** Internal — use `createWorkerEngineClient` (resolves `Worker` ctor lazily). */
   constructor(worker: WorkerType, opts: WorkerEngineOptions) {
@@ -126,6 +127,13 @@ export class WorkerEngineClient implements EngineClient {
     }
   }
 
+  /** Resolve ready() exactly once (snapshot land OR soft deadline). */
+  #settleReady(): void {
+    if (this.#readySettled) return;
+    this.#readySettled = true;
+    this.#resolveReady();
+  }
+
   /**
    * Await until the first real engine snapshot is cached. The CLI must call
    * this before `startTui` so `App` seeds model/approvalMode/theme from truth
@@ -135,19 +143,21 @@ export class WorkerEngineClient implements EngineClient {
     return this.#ready;
   }
 
-  /** Kick the initial snapshot RPC. Called once from `createWorkerEngineClient`. */
+  /**
+   * Kick the initial snapshot RPC. Called once from `createWorkerEngineClient`.
+   *
+   * Unlike a Promise.race that could open the TUI at 15s with PLACEHOLDER while
+   * bootstrap was still running (BUG-107), we wait for the snapshot RPC itself
+   * to settle — the worker queues RPCs until after bootstrap, so a late reply
+   * is the real engine state. A 15s soft deadline only covers a wedged worker
+   * (or a test stub that never answers); session-start still re-seeds App chrome.
+   */
   beginHydrate(): void {
-    const timeout = new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, 15_000);
-      (t as { unref?: () => void }).unref?.();
-    });
-    void Promise.race([this.#fetchSnapshot(), timeout])
-      .catch(() => {
-        // Worker died before first snapshot — still resolve ready.
-      })
-      .finally(() => {
-        this.#resolveReady();
-      });
+    void this.#fetchSnapshot()
+      .catch(() => undefined)
+      .finally(() => this.#settleReady());
+    const soft = setTimeout(() => this.#settleReady(), 15_000);
+    (soft as { unref?: () => void }).unref?.();
   }
 
   /** Fire a snapshot RPC and refresh `#snapshotCache` (shared by hydrate + miss). */
@@ -194,7 +204,16 @@ export class WorkerEngineClient implements EngineClient {
         msg.type === "goal-changed" ||
         msg.type === "session-start"
       ) {
-        if (!this.#snapshotPending) void this.#fetchSnapshot();
+        if (!this.#snapshotPending) {
+          void this.#fetchSnapshot().then((s) => {
+            // Bootstrap finished after ready()'s soft deadline — mark ready and
+            // land the real snapshot so App can re-seed chrome (BUG-107).
+            if (s?.model) this.#settleReady();
+          });
+        }
+        // session-start always carries model/mode — unblock ready immediately
+        // even if the snapshot RPC is still queued behind bootstrap.
+        if (msg.type === "session-start") this.#settleReady();
       }
       this.#events.push(msg);
     }
@@ -328,6 +347,8 @@ const PLACEHOLDER_SNAPSHOT: EngineSnapshot = {
   busy: false,
   theme: "default",
   accentColor: "",
+  details: "normal",
+      mouse: true,
   commandNames: [],
 };
 

@@ -22,7 +22,16 @@ export interface SessionMeta {
   /** Cumulative token usage + accrued cost at the time of the last save. The
    * cache-read total is persisted too, so `--resume` keeps a truthful running
    * usage/cost instead of silently zeroing the cached slice. */
-  usage?: { inputTokens: number; outputTokens: number; costUSD?: number; cachedInputTokens?: number };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    costUSD?: number;
+    /** Non-estimated portion of costUSD (BUG-103). Absent on pre-fix saves. */
+    actualCostUSD?: number;
+    /** True when any accrued cost came from estimated/base-model pricing. */
+    costEstimated?: boolean;
+    cachedInputTokens?: number;
+  };
   /** The last turn's REAL provider input-token count (context fill), so a resumed
    * session's first compaction check uses the true prior prompt size instead of
    * the overhead-blind estimate. */

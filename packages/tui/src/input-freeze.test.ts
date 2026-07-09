@@ -32,6 +32,8 @@ function makeEngine() {
     busy: false,
     theme: "default",
     accentColor: "",
+    details: "normal",
+      mouse: true,
     commandNames: ["help"],
     git: { branch: "main", dirty: 0, ahead: 0, behind: 0, worktree: false },
   });

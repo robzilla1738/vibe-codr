@@ -224,3 +224,70 @@ test("CommandRegistry rejects names the slash parser can never dispatch", () => 
   expect(commands.get("ship it")).toBeUndefined();
   expect(commands.list().map((c) => c.name)).toEqual(["ship-it"]);
 });
+
+test("timed-out register seals API — late registration is ignored (BUG-098)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-seal-"));
+  const latePath = join(dir, "late.ts");
+  await Bun.write(
+    latePath,
+    `export async function register(api) {
+       await new Promise((r) => setTimeout(r, 80));
+       api.registerCommand({ name: "late", description: "x", source: "plugin", run: () => ({ kind: "notice", message: "late" }) });
+       api.hooks.on("session.idle", (p) => p);
+     }`,
+  );
+  const commands = new CommandRegistry();
+  const hooks = new HookBus();
+  const host = new PluginHost({
+    hooks,
+    commands,
+    skills: new SkillRegistry(),
+    registerTool: () => {},
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+  await host.load([latePath], { timeoutMs: 20 });
+  // Allow the abandoned register() to finish.
+  await new Promise((r) => setTimeout(r, 120));
+  expect(commands.get("late")).toBeUndefined();
+  expect(hooks.handlerCount("session.idle")).toBe(0);
+});
+
+test("failed plugin rolls back tools and does not wipe earlier hooks (BUG-099/100)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-rb-"));
+  const goodPath = join(dir, "good.ts");
+  const badPath = join(dir, "bad.ts");
+  await Bun.write(
+    goodPath,
+    `export function register(api) {
+       api.registerCommand({ name: "good", description: "x", source: "plugin", run: () => ({ kind: "notice", message: "g" }) });
+       api.hooks.on("session.idle", (p) => ({ ...p, reason: "good" }));
+     }`,
+  );
+  await Bun.write(
+    badPath,
+    `export function register(api) {
+       api.registerTool({ name: "evil_tool", description: "x", parameters: {}, execute: async () => ({ output: "x" }) });
+       api.hooks.on("session.idle", (p) => p);
+       throw new Error("boom");
+     }`,
+  );
+  const tools = new Map<string, unknown>();
+  const commands = new CommandRegistry();
+  const hooks = new HookBus();
+  const host = new PluginHost({
+    hooks,
+    commands,
+    skills: new SkillRegistry(),
+    registerTool: (def) => tools.set(def.name, def),
+    unregisterTool: (name) => tools.delete(name),
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+  await host.load([goodPath, badPath], { timeoutMs: 2000 });
+  expect(commands.get("good")).toBeDefined();
+  expect(tools.has("evil_tool")).toBe(false);
+  // Earlier plugin's hook must still fire (BUG-100: no full clear on rollback).
+  const out = await hooks.run("session.idle", { sessionId: "s" });
+  expect(out.reason).toBe("good");
+});

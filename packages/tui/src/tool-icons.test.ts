@@ -1,16 +1,44 @@
 import { test, expect } from "bun:test";
-import { displayPath, permissionPreview, toolIcon, toolSummary, toolLabel } from "./tool-icons.ts";
+import {
+  BUILTIN_TOOL_NAMES,
+  displayPath,
+  permissionPreview,
+  toolIcon,
+  toolSummary,
+  toolLabel,
+  isLongOutputTool,
+} from "./tool-icons.ts";
 
 test("known tools map to their distinct glyphs", () => {
   expect(toolIcon("bash")).toBe("$");
   expect(toolIcon("read")).toBe("→");
-  expect(toolIcon("edit")).toBe("←");
+  expect(toolIcon("edit")).toBe("✎");
   expect(toolIcon("write")).toBe("←");
-  expect(toolIcon("glob")).toBe("✱");
-  expect(toolIcon("grep")).toBe("✱");
+  expect(toolIcon("glob")).toBe("∗");
+  expect(toolIcon("grep")).toBe("#");
   expect(toolIcon("websearch")).toBe("◈");
+  expect(toolIcon("webfetch")).toBe("◎");
+  expect(toolIcon("recall_memory")).toBe("◇");
   expect(toolIcon("task")).toBe("✦");
   expect(toolIcon("update_tasks")).toBe("☑");
+  // Write vs edit must not share a glyph.
+  expect(toolIcon("write")).not.toBe(toolIcon("edit"));
+  // Glob vs grep must not share a glyph.
+  expect(toolIcon("glob")).not.toBe(toolIcon("grep"));
+  // Fetch vs search must not share a glyph.
+  expect(toolIcon("webfetch")).not.toBe(toolIcon("web_search"));
+});
+
+test("every built-in tool has a non-fallback glyph", () => {
+  for (const name of BUILTIN_TOOL_NAMES) {
+    expect(toolIcon(name)).not.toBe("⚒");
+  }
+});
+
+test("isLongOutputTool covers bash and git family", () => {
+  expect(isLongOutputTool("bash")).toBe(true);
+  expect(isLongOutputTool("git_status")).toBe(true);
+  expect(isLongOutputTool("read")).toBe(false);
 });
 
 test("tool families and unknowns fall back sensibly", () => {
@@ -102,7 +130,7 @@ test("spawn_tasks summarizes the DAG shape, never [object Object]", () => {
     ],
   };
   expect(toolSummary("spawn_tasks", input)).toBe("3 tasks: recon → impl → verify");
-  expect(toolLabel("spawn_tasks", input).startsWith("✦ ")).toBe(true);
+  expect(toolLabel("spawn_tasks", input).startsWith("✦")).toBe(true);
   expect(toolSummary("spawn_tasks", {})).toBe("spawn tasks");
 });
 

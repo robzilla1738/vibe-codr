@@ -29,6 +29,8 @@ export {
   configLocations,
   configUnknownKeys,
   configSecurityNotices,
+  SECURITY_NOTICES_KEY,
+  stripSecurityNotices,
   writeGlobalConfig,
   appendProjectPermission,
   globalConfigPath,

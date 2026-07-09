@@ -28,6 +28,34 @@ function fmtCount(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
 }
 
+/** Context fill threshold at which the UI paints an amber warning (footer + session card). */
+export const CTX_WARN_PCT = 80;
+
+/** 0–100 context fill percent; 0 when unknown / no window. */
+export function contextFillPct(
+  ctx: { usedTokens: number; contextWindow: number } | null | undefined,
+): number {
+  if (!ctx || ctx.contextWindow <= 0) return 0;
+  return Math.min(100, Math.round((ctx.usedTokens / ctx.contextWindow) * 100));
+}
+
+/** True when fill should be painted as a warning (notice amber). */
+export function isHotContext(pct: number): boolean {
+  return pct >= CTX_WARN_PCT;
+}
+
+/**
+ * Presentation flags for the session-card metrics row (and any surface that
+ * owns the metrics string when the under-input footer drops it).
+ * Parses `ctx N%` from a metricsLine() string — warn paints notice amber.
+ */
+export function sessionMetricsTone(metricsText: string): { dim: boolean; warn: boolean } {
+  const pctMatch = /ctx\s+(\d+)%/.exec(metricsText);
+  if (!pctMatch) return { dim: true, warn: false };
+  const hot = isHotContext(Number(pctMatch[1]));
+  return { dim: !hot, warn: hot };
+}
+
 /** Status → checklist glyph, shared by the headless printer and the OpenTUI app. */
 export const TASK_GLYPH: Record<Task["status"], string> = {
   completed: "✔",

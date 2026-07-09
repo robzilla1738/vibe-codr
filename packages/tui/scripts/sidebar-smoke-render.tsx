@@ -36,6 +36,8 @@ const engine: EngineClient = {
     tasks: [],
     theme: "default",
     accentColor: "",
+    details: "normal",
+      mouse: true,
     commandNames: ["help"],
     git: { branch: "main", dirty: 0, ahead: 0, behind: 0, worktree: false },
   }),
@@ -117,7 +119,8 @@ check("transcript still shows the fetch tool row", chatText1.includes("fetch"));
 
 // Session card — the sidebar masthead: the tiny half-block wordmark (same
 // brand family as the splash, scaled down) + bare dir/model/git value lines.
-check("session card shows the tiny block wordmark", sidebarText.includes("█▄▄ █▀▀"));
+// Status-first session card: no large wordmark (splash owns branding); tiny ◆ mark.
+check("session card is status-first (no large wordmark)", sidebarText.includes("◆ session") && !sidebarText.includes("█▄▄ █▀▀"));
 check("session card shows the working dir", sidebarText.includes("~/"));
 check("session card shows the model", sidebarText.includes("ollama/gemma4:31b"));
 check("session card shows the git branch", sidebarText.includes("on main"));

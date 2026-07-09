@@ -138,9 +138,13 @@ test("buildOnboardingPatch persists a base URL for a custom OpenAI-compatible en
 
 test("the new providers + custom endpoint appear in the onboarding menu", () => {
   const keys = new Set(PROVIDER_CHOICES.map((c) => c.key));
-  for (const k of ["google", "groq", "mistral", "together", "cerebras", "perplexity", "codex", "minimax", "fireworks", "zai", "moonshot", "alibaba", "huggingface", "custom-endpoint"]) {
+  for (const k of ["google", "groq", "mistral", "together", "cerebras", "perplexity", "codex", "minimax", "fireworks", "zai", "moonshot", "alibaba", "huggingface", "meta", "custom-endpoint"]) {
     expect(keys.has(k)).toBe(true);
   }
+  const meta = PROVIDER_CHOICES.find((c) => c.key === "meta");
+  expect(meta?.registryId).toBe("meta");
+  expect(meta?.env).toBe("MODEL_API_KEY");
+  expect(meta?.defaultModel).toBe("meta/muse-spark-1.1");
   // The custom endpoint maps to the real `custom` provider and is flagged.
   const custom = PROVIDER_CHOICES.find((c) => c.key === "custom-endpoint");
   expect(custom?.registryId).toBe("custom");

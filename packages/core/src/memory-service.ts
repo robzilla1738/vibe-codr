@@ -3,13 +3,27 @@ import type { ProviderRegistry } from "@vibe/providers";
 import type { Logger } from "@vibe/shared";
 import { resolveEmbedder } from "./embeddings.ts";
 import { openSemanticMemory, type SemanticMemory, type MemoryDoc } from "./semantic-memory.ts";
-import { searchMemory, type MemoryHit } from "./memory-search.ts";
+import {
+  searchMemory,
+  type MemoryHit,
+  type MemorySearchMode,
+} from "./memory-search.ts";
 import {
   gatherMemoryDocs,
   appendMemory,
   type SaveMemoryInput,
   type SaveMemoryResult,
 } from "./memory-store.ts";
+
+/** Options for {@link MemoryService.search}. */
+export interface MemorySearchServiceOptions {
+  /** Default `explicit` (`/recall` / tool). Use `proactive` for session-start injection. */
+  mode?: MemorySearchMode;
+  /** Min cosine for dense exemption under proactive mode. */
+  minDenseCosine?: number;
+  /** Override session-transcript fusion (proactive defaults this off). */
+  includeSessions?: boolean;
+}
 
 /**
  * The long-term memory façade the engine owns and shares with the session tree.
@@ -45,7 +59,11 @@ export class MemoryService {
 
   /** Hybrid recall over saved memory + past sessions. Reconciles the index on
    * read (cheap when unchanged), so a just-saved fact is searchable immediately. */
-  async search(query: string, limit = 8): Promise<MemoryHit[]> {
+  async search(
+    query: string,
+    limit = 8,
+    opts: MemorySearchServiceOptions = {},
+  ): Promise<MemoryHit[]> {
     // A transient corpus-read failure must NOT reach the semantic layer: indexing
     // a partial/empty corpus would prune every vector for the scope (reconcile-on-
     // read treats "not in this corpus" as "deleted"). On such a failure, degrade to
@@ -55,7 +73,15 @@ export class MemoryService {
     try {
       sources = await gatherMemoryDocs(this.#cwd);
     } catch {
-      return searchMemory({ cwd: this.#cwd, query, sources: [], limit });
+      return searchMemory({
+        cwd: this.#cwd,
+        query,
+        sources: [],
+        limit,
+        ...(opts.mode ? { mode: opts.mode } : {}),
+        ...(opts.minDenseCosine !== undefined ? { minDenseCosine: opts.minDenseCosine } : {}),
+        ...(opts.includeSessions !== undefined ? { includeSessions: opts.includeSessions } : {}),
+      });
     }
     return searchMemory({
       cwd: this.#cwd,
@@ -63,6 +89,9 @@ export class MemoryService {
       sources,
       ...(this.#semantic ? { semantic: this.#semantic } : {}),
       limit,
+      ...(opts.mode ? { mode: opts.mode } : {}),
+      ...(opts.minDenseCosine !== undefined ? { minDenseCosine: opts.minDenseCosine } : {}),
+      ...(opts.includeSessions !== undefined ? { includeSessions: opts.includeSessions } : {}),
     });
   }
 

@@ -16,6 +16,12 @@ export {
   resolveCatalogWindow,
   type PricingResult,
 } from "./catalog.ts";
+export {
+  KNOWN_MODEL_DEFAULTS,
+  knownModelDefaults,
+  knownModelInfo,
+  type KnownModelDefaults,
+} from "./known-models.ts";
 export { probeOllamaContextWindow, extractContextLength } from "./ollama-probe.ts";
 export { probeLmStudioContextWindow, extractLmStudioContext } from "./lmstudio-probe.ts";
 export { listOpenAICompatibleModels } from "./openai-compat.ts";

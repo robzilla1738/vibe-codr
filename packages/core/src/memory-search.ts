@@ -15,6 +15,16 @@ export interface MemoryHit {
   score: number;
 }
 
+/**
+ * Search mode:
+ * - `explicit` (default): `/recall` + `recall_memory` — permissive, includes
+ *   past-session transcripts, dense hits exempt from the lexical floor.
+ * - `proactive`: session-start injection into the system prompt — stricter
+ *   floors, no session-transcript fusion, dense hits need a min cosine so a
+ *   weak nearest-neighbour cannot hijack the live turn.
+ */
+export type MemorySearchMode = "explicit" | "proactive";
+
 export interface SearchMemoryOptions {
   cwd: string;
   query: string;
@@ -22,9 +32,19 @@ export interface SearchMemoryOptions {
   sources: MemoryDoc[];
   /** Dense (semantic) layer; omitted when no embedder is available → lexical only. */
   semantic?: SemanticMemory;
-  /** Also fuse lexical recall over past sessions (default true). */
+  /** Also fuse lexical recall over past sessions (default true for explicit;
+   * forced off for proactive — raw transcript snippets are too noisy to inject
+   * into every turn's system prompt). */
   includeSessions?: boolean;
   limit?: number;
+  /** Default `explicit`. Proactive uses a higher relevance bar. */
+  mode?: MemorySearchMode;
+  /**
+   * Min cosine similarity for a dense hit to bypass the lexical floor under
+   * proactive mode. Explicit mode ignores this (dense always exempt). Default
+   * 0.38 — low enough for real paraphrases, high enough to drop weak neighbors.
+   */
+  minDenseCosine?: number;
 }
 
 /** Keep a hit only if its per-hit relevance is at least this fraction of the top
@@ -32,6 +52,11 @@ export interface SearchMemoryOptions {
  * purpose: the overlap floor below does the junk-rejection; this only trims the
  * long tail. */
 const FRACTION_OF_TOP = 0.25;
+/** Proactive: require a stronger relative BM25 so a mediocre best-of-junk set
+ * does not inject its own top hit. */
+const PROACTIVE_FRACTION_OF_TOP = 0.4;
+/** Default min cosine for proactive dense exemption (see SearchMemoryOptions). */
+export const DEFAULT_PROACTIVE_MIN_DENSE_COSINE = 0.38;
 
 /**
  * Relevance floor for the fused hit list. Proactive recall injects the top-k hits
@@ -47,32 +72,40 @@ const FRACTION_OF_TOP = 0.25;
  * here. Applied as a post-fusion FILTER, so the RRF ordering of the survivors is
  * preserved (the normal path is unaffected when every hit is genuinely relevant).
  *
- * The floor governs LEXICAL hits only. A dense (semantic) hit — one the embedding
- * branch surfaced — is exempt: semantic search exists to match paraphrases that
- * share ZERO surface terms with the query, so a lexical-overlap gate would drop
- * exactly the recall it provides. `denseIds` carries the ids the dense branch
- * ranked (the RRF fusion already knows them); anything else is judged lexically.
+ * Dense (semantic) hits:
+ * - **explicit**: exempt from the lexical floor (paraphrase recall).
+ * - **proactive**: exempt only when cosine ≥ `minDenseCosine`. A bare top-k
+ *   nearest neighbour with score 0.1 is noise, not a paraphrase.
  *
  * Two criteria, both required (for a lexical hit):
  *  - ABSOLUTE overlap: the hit must contain at least `minOverlap` DISTINCT query
- *    terms. This is what rejects an ALL-junk set even when its own best hit
- *    defines the top (a relative-only floor can't). `minOverlap` scales with
- *    query specificity: a query with ≥ 4 meaningful terms (proactive seeds —
- *    goal + first prompt — are always this long) demands ≥ 2 overlaps, so a
- *    single shared token can't qualify; a short 1–3 term query stays at ≥ 1 so a
- *    legitimately terse explicit `/recall` isn't over-filtered.
+ *    terms. Explicit: ≥2 for ≥4-term queries, ≥1 otherwise. Proactive: ≥3 for
+ *    ≥4-term queries (so `make`+`website` alone cannot qualify a world-cup
+ *    digest), ≥2 for 2–3 term, ≥1 for a single term.
  *  - RELATIVE score: the hit's corpus-relative BM25 across the candidate set must
- *    be at least `FRACTION_OF_TOP` of the best hit's.
+ *    be at least `FRACTION_OF_TOP` (or the proactive fraction) of the best hit's.
  */
 function applyRelevanceFloor(
   query: string,
   hits: MemoryHit[],
-  denseIds: ReadonlySet<string>,
+  denseCosine: ReadonlyMap<string, number>,
+  mode: MemorySearchMode,
+  minDenseCosine: number,
 ): MemoryHit[] {
   if (hits.length === 0) return hits;
   const qterms = queryTerms(query);
   if (!qterms.length) return hits; // no meaningful terms → nothing to floor against
-  const minOverlap = qterms.length >= 4 ? 2 : 1;
+  const minOverlap =
+    mode === "proactive"
+      ? qterms.length >= 4
+        ? 3
+        : qterms.length >= 2
+          ? 2
+          : 1
+      : qterms.length >= 4
+        ? 2
+        : 1;
+  const fraction = mode === "proactive" ? PROACTIVE_FRACTION_OF_TOP : FRACTION_OF_TOP;
   // Corpus-relative BM25 across the candidate hits — a real relevance measure,
   // unlike the rank-based RRF score. Zero-overlap hits are absent from `rel`.
   const rel = rankBm25(query, hits.map((h) => h.text), qterms);
@@ -80,16 +113,19 @@ function applyRelevanceFloor(
   for (const h of rel) scoreByIndex.set(h.index, h.score);
   const top = rel[0]?.score ?? 0;
   return hits.filter((h, i) => {
-    // A dense (semantic) hit bypasses the lexical floor entirely: a paraphrase
-    // match legitimately shares no surface terms, so both the overlap gate and
-    // the (necessarily zero) BM25 fraction would wrongly drop it.
-    if (denseIds.has(h.id)) return true;
+    const cos = denseCosine.get(h.id);
+    if (cos !== undefined) {
+      // Explicit: any dense-ranked id bypasses the lexical floor (paraphrase
+      // recall). Proactive: only a strong cosine does — weak top-k neighbors
+      // must still pass the lexical gate (and usually fail it).
+      if (mode !== "proactive" || cos >= minDenseCosine) return true;
+    }
     const tokens = new Set(tokenize(h.text));
     let overlap = 0;
     for (const t of qterms) if (tokens.has(t)) overlap++;
     if (overlap < minOverlap) return false;
     const score = scoreByIndex.get(i) ?? 0;
-    return top === 0 || score >= FRACTION_OF_TOP * top;
+    return top === 0 || score >= fraction * top;
   });
 }
 
@@ -104,12 +140,24 @@ function applyRelevanceFloor(
  * memory files it's just session recall — a strict superset of the old behavior.
  */
 export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit[]> {
-  const { cwd, query, sources, semantic, limit = 8, includeSessions = true } = opts;
+  const {
+    cwd,
+    query,
+    sources,
+    semantic,
+    limit = 8,
+    mode = "explicit",
+    minDenseCosine = DEFAULT_PROACTIVE_MIN_DENSE_COSINE,
+  } = opts;
+  // Proactive injection must not fuse raw past-session transcripts — those are
+  // the noisiest source of "make a website" false positives. Explicit `/recall`
+  // keeps sessions on by default.
+  const includeSessions = opts.includeSessions ?? mode !== "proactive";
   const rankings: string[][] = [];
   const byId = new Map<string, MemoryHit>();
-  // Ids the dense branch ranked — exempt from the lexical relevance floor so a
-  // zero-surface-overlap paraphrase match survives (semantic recall's whole point).
-  const denseIds = new Set<string>();
+  // Dense ids → cosine score. Used by the relevance floor: explicit exempts any
+  // dense-ranked id; proactive requires cosine ≥ minDenseCosine.
+  const denseCosine = new Map<string, number>();
 
   // Chunk the corpus once (shared by the lexical pass and as hit metadata).
   const chunks = sources.flatMap((s) => chunkMarkdown(s.source, s.text));
@@ -135,7 +183,7 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
       const dense = await semantic.search(query, limit * 3);
       rankings.push(dense.map((h) => h.id));
       for (const h of dense) {
-        denseIds.add(h.id);
+        denseCosine.set(h.id, h.score);
         if (!byId.has(h.id)) {
           byId.set(h.id, { id: h.id, source: h.source, heading: h.heading, text: h.text, kind: "memory", score: 0 });
         }
@@ -173,7 +221,7 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
   // Apply the relevance floor BEFORE the limit cut: a weak hit near the top must
   // not shadow a stronger one below it, and a junk-only set must return empty
   // rather than a `limit`-length list of noise.
-  return applyRelevanceFloor(query, fused, denseIds).slice(0, limit);
+  return applyRelevanceFloor(query, fused, denseCosine, mode, minDenseCosine).slice(0, limit);
 }
 
 /** Render hybrid memory hits as a compact block for the model / `/recall`. */

@@ -100,6 +100,19 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
+    // Meta Model API — Muse Spark via OpenAI-compatible Chat Completions.
+    // Official env is MODEL_API_KEY (key shape LLM|…); META_API_KEY is a
+    // discoverable alias. Docs: https://dev.meta.ai/docs/getting-started/overview
+    // Tool names stay [A-Za-z0-9_-] (our MCP sanitizer); Meta allows at most one
+    // dot. Never send reasoning_effort:"none" (400) — see model-tuning.ts.
+    id: "meta",
+    env: ["MODEL_API_KEY", "META_API_KEY"],
+    baseURL: "https://api.meta.ai/v1",
+    baseURLEnv: "META_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
     // MiniMax: OpenAI-compatible API, token (subscription) auth.
     id: "minimax",
     env: ["MINIMAX_API_KEY"],

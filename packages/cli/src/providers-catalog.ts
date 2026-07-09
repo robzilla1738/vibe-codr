@@ -201,6 +201,16 @@ export const PROVIDER_CHOICES: ProviderChoice[] = [
     keyUrl: "https://console.x.ai",
   },
   {
+    key: "meta",
+    registryId: "meta",
+    label: "Meta · Muse Spark",
+    blurb: "Muse Spark 1.1 — agentic coding via Meta Model API.",
+    defaultModel: "meta/muse-spark-1.1",
+    env: "MODEL_API_KEY",
+    keyUrl: "https://dev.meta.ai/",
+    note: "create a key in the Model API dashboard (export MODEL_API_KEY)",
+  },
+  {
     key: "openrouter",
     registryId: "openrouter",
     label: "OpenRouter",

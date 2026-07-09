@@ -38,7 +38,7 @@ function providerOf(modelString: string): string {
  * the provider's native reasoning control (Anthropic thinking budget, OpenAI
  * `reasoningEffort`). Only these can honestly confirm `/reasoning <tier>` took.
  */
-const REASONING_FORWARDED = new Set(["anthropic", "openai"]);
+const REASONING_FORWARDED = new Set(["anthropic", "openai", "meta"]);
 
 /**
  * Providers whose models reason NATIVELY but whose transport carries no forwarded
@@ -47,6 +47,9 @@ const REASONING_FORWARDED = new Set(["anthropic", "openai"]);
  * accept the native reasoning options. `/reasoning` changes nothing on the wire
  * for these; the model reasons at its own default, so we must caveat rather than
  * confirm.
+ *
+ * Note: `meta` is in REASONING_FORWARDED — openai-compatible forwards
+ * `reasoningEffort` as top-level `reasoning_effort` for Muse Spark.
  */
 const REASONING_NATIVE = new Set(["codex", "deepseek", "xai", "openrouter"]);
 
@@ -119,6 +122,13 @@ export function buildModelTuning(modelString: string, config: Config): ModelTuni
     // native reasoning options — so for those the model reasons at its default.)
     case "openai": {
       if (effort) opts[provider] = { reasoningEffort: effort };
+      break;
+    }
+    // Meta Model API (Muse Spark): openai-compatible maps providerOptions.meta
+    // .reasoningEffort → top-level reasoning_effort. Muse Spark ALWAYS reasons;
+    // sending "none" is HTTP 400 — only forward when a real tier is set.
+    case "meta": {
+      if (effort) opts.meta = { reasoningEffort: effort };
       break;
     }
     default:

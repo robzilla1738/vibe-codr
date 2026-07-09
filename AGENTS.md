@@ -99,12 +99,13 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   `"v2"`). Only providers with a v2-compatible dedicated SDK use it directly
   (anthropic `^2`, openai `^2`, deepseek `^1`, codex via openai); **every other
   provider routes through `@ai-sdk/openai-compatible` (`^1`, spec v2)** —
-  minimax, ollama, lmstudio, baseten, xai, openrouter, fireworks, google, groq,
-  mistral, together, cerebras, perplexity, custom. Their dedicated packages have
-  moved to AI SDK v6/v7 (spec v3/v4) and `ai@5` rejects those with "unsupported
-  model version". Don't wire a provider to a dedicated SDK unless you confirm it
-  resolves `@ai-sdk/provider@^2`; otherwise use openai-compatible with its base
-  URL. `registry.test.ts` asserts the rerouted providers stay spec-`v2`.
+  meta, minimax, ollama, lmstudio, baseten, xai, openrouter, fireworks, google,
+  groq, mistral, together, cerebras, perplexity, custom. Their dedicated packages
+  have moved to AI SDK v6/v7 (spec v3/v4) and `ai@5` rejects those with
+  "unsupported model version". Don't wire a provider to a dedicated SDK unless
+  you confirm it resolves `@ai-sdk/provider@^2`; otherwise use openai-compatible
+  with its base URL. `registry.test.ts` asserts the rerouted providers stay
+  spec-`v2`.
 - **Adding a provider = one `BuiltinSpec`** in `packages/providers/src/defs.ts`
   (`id`, `env`, `baseURL`, optional `baseURLEnv`/`keyless`/`tokenFile`,
   `module:"@ai-sdk/openai-compatible"`, `factory:"createOpenAICompatible"`). No new
@@ -112,12 +113,16 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   `packages/cli/src/providers-catalog.ts` (onboarding). **Match the `id` to its
   models.dev slug** so `CatalogService.enrich` lands metadata; where they differ,
   add the exception to `PROVIDER_SLUG_ALIASES` in `catalog.ts` (e.g. `together →
-  togetherai`, `fireworks → fireworks-ai`, `codex → openai`). The generic `custom`
-  provider has no default base URL — it requires `config.providers.custom.baseURL`
-  (or `$CUSTOM_BASE_URL`) and errors clearly otherwise.
+  togetherai`, `fireworks → fireworks-ai`, `codex → openai`). Brand-new APIs not
+  yet on models.dev get published facts in `known-models.ts` (context / price /
+  vision) as a last-chance fallback — e.g. `meta/muse-spark-1.1`. The generic
+  `custom` provider has no default base URL — it requires
+  `config.providers.custom.baseURL` (or `$CUSTOM_BASE_URL`) and errors clearly
+  otherwise.
 - **Model freshness is automatic:** metadata is a live `models.dev/api.json` fetch
   with a 24h disk cache (no vendored snapshot to go stale); availability is each
   provider's live `/v1/models`. `/models refresh` force-pulls past the cache.
+  Known-model defaults fill gaps until the catalog lists the model.
 - **"Via auth" = token reuse, no OAuth in-repo.** `resolveAuth`→`#resolveKey`
   resolves env → config `apiKey` → token file (`tokenFile`/`tokenPath`, default
   e.g. codex's `~/.codex/auth.json`) → keyless, **re-read every turn** so a token
@@ -293,14 +298,22 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
     let an extension tool shadow a built-in.
   - **Cost/context are real for any model.** `Engine.#resolveContextWindow` tries
     `config.contextWindow[model]` → an Ollama `/api/show` probe (local + cloud) →
-    the models.dev catalog → the 128k default. `#resolvePricing` tries a full
-    `config.pricing` pin → `CatalogService.pricing`, which falls back to a
-    **base-model match** (`ollama/glm-5.2` inherits a `glm-5.2` price) flagged
-    `estimated`. The flag rides `SessionUsage.costEstimated` so `formatUsage` shows
+    the models.dev catalog → **known-model defaults** (`known-models.ts`) → the
+    128k default. `#resolvePricing` tries a full `config.pricing` pin →
+    `CatalogService.pricing` (base-model match flagged `estimated`, then known
+    defaults). The flag rides `SessionUsage.costEstimated` so `formatUsage` shows
     `~$` for estimates, `$0.00` for genuinely free/local — cost is never hidden.
     Anthropic reports `cache_read` tokens **disjoint** from `input_tokens`, so
     `onStepFinish` folds them into a superset (`cacheTokensDisjointFromInput`)
     before cost/context/compaction accounting, else cost + `ctx %` under-report.
+  - **Proactive recall prefers empty over wrong.** Session-start injection uses a
+    path-cleaned seed + `mode:"proactive"` (stricter overlap/BM25 floor, min dense
+    cosine, no session-transcript fusion). Framed as optional PRIOR NOTES, never
+    "relevant". Explicit `/recall` stays permissive. Bare image paths in the
+    prompt auto-attach (not only `@path`).
+  - **Meta Model API harness edges:** `/reasoning` forwards `reasoningEffort` and
+    never sends `"none"`; after `present_plan`, Meta uses `activeTools:[]` without
+    `tool_choice:"none"` (Meta only allows `"auto"`).
   - **A turn that ends before any assistant reply rolls back its user message.**
     `Session.run`'s `finally` identity-matches the just-pushed user turn and pops it
     (with its `#history` echo) when a pre-stream abort/error left it as the last
@@ -389,9 +402,10 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
     "do not run init/setup" banner. Don't auto-load conversation-taking skills.
   - **Terminal present_plan:** free-form chat is not approval. After a successful
     `present_plan`, `PlanGate.presented` is true and (1) `prepareStep` forces
-    `toolChoice: "none"` / empty `activeTools`, (2) `toolsDisabled` on the tool
-    adapter hard-refuses every further tool execute that turn. Non-trivial plan
-    cycles that research without presenting get one bounded engine present-nudge.
+    `toolChoice: "none"` / empty `activeTools` (Meta: empty `activeTools` only —
+    Meta rejects non-`auto` tool_choice), (2) `toolsDisabled` on the tool adapter
+    hard-refuses every further tool execute that turn. Non-trivial plan cycles
+    that research without presenting get one bounded engine present-nudge.
     Revision prompts re-arm present via `PlanGate.noteRequest`.
   - **Path field aliases:** file-bearing built-ins accept `path` under the
     documented name and the common model aliases (`file_path` / `filePath` /

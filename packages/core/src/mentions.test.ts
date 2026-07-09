@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseMentions, expandMentions } from "./mentions.ts";
+import { parseMentions, parseBareImagePaths, expandMentions } from "./mentions.ts";
 
 test("parseMentions extracts @tokens and trims trailing punctuation", () => {
   expect(parseMentions("look at @src/a.ts and @b.md.")).toEqual(["src/a.ts", "b.md"]);
@@ -100,4 +100,47 @@ test("an over-cap image is skipped by the bounded read, not slurped whole", asyn
   const r = await expandMentions("@big.png", cwd);
   expect(r.images.length).toBe(0);
   expect(r.notices.some((n) => /big\.png.*(exceeds|skipped|max)/i.test(n))).toBe(true);
+});
+
+test("parseBareImagePaths handles shell-escaped multi-word screenshot names", () => {
+  const prompt =
+    "/Users/robert/Desktop/Screenshot\\ 2026-07-09\\ at\\ 5.04.46\\ PM.png " +
+    "make a website that looks like these images";
+  const paths = parseBareImagePaths(prompt);
+  expect(paths).toHaveLength(1);
+  expect(paths[0]).toContain("Screenshot 2026-07-09");
+  expect(paths[0]!.endsWith(".png")).toBe(true);
+  expect(paths[0]).not.toContain("\\");
+});
+
+test("bare image paths (no @) become vision attachments when the file exists", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-bare-"));
+  const a = join(cwd, "ref-a.png");
+  const b = join(cwd, "ref-b.png");
+  await Bun.write(a, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x01]));
+  await Bun.write(b, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x02]));
+  const r = await expandMentions(
+    `${a} ${b} make a website that looks like these images`,
+    cwd,
+  );
+  expect(r.images).toHaveLength(2);
+  expect(r.images.every((img) => img.mediaType === "image/png")).toBe(true);
+  expect(r.notices.some((n) => /Attached 2 image/i.test(n))).toBe(true);
+});
+
+test("bare image paths do not double-attach an @mention of the same file", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-dedup-"));
+  await Bun.write(join(cwd, "pic.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+  const r = await expandMentions("describe @pic.png and also pic.png", cwd);
+  expect(r.images).toHaveLength(1);
+});
+
+test("non-existent bare image paths are ignored (no attach, no error)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-miss-"));
+  const r = await expandMentions(
+    "/tmp/definitely-missing-vibe-test-xyz.png make a site",
+    cwd,
+  );
+  expect(r.images).toHaveLength(0);
+  expect(r.notices.every((n) => !/Attached/i.test(n))).toBe(true);
 });

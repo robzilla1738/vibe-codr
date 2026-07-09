@@ -9,13 +9,14 @@ A **model-agnostic** CLI coding agent for the terminal — in the
 class of Claude Code / Codex / opencode, but able to drive coding and agentic
 tasks on *any* model: local models via **Ollama** and **LM Studio**, aggregators
 (**OpenRouter, Fireworks, Together, Baseten, Hugging Face**), and first-party
-providers (**OpenAI, Anthropic, Google Gemini, Z.ai/GLM, Moonshot/Kimi,
+providers (**OpenAI, Anthropic, Google Gemini, Meta Muse Spark, Z.ai/GLM, Moonshot/Kimi,
 Alibaba/Qwen, DeepSeek, xAI/Grok, Groq, Mistral, Cerebras, Perplexity,
 MiniMax**) — plus **OpenAI Codex via your `codex login` session** and a
 generic **custom** provider for any OpenAI-compatible endpoint (your own base URL +
 key). Model context windows, pricing, and capabilities come live from
 [models.dev](https://models.dev) (24h cache; `/models refresh` to force the
-latest) — never hardcoded.
+latest), with a small published fallback for brand-new APIs not yet in the
+catalog (e.g. Meta Muse Spark 1.1).
 
 > Status: **feature-complete.** Multi-provider agent loop, live model catalog,
 > **plan / execute / yolo** modes (Shift+Tab to cycle) with a permission layer, a
@@ -713,10 +714,13 @@ the user accepts (plan card Enter or `/execute`) or revises.
   offline with zero setup; add on-device embeddings
   (`bun add @huggingface/transformers`, `memory.semantic.model: "local"`) or a
   cloud embedder for **semantic** recall on top — it degrades cleanly to lexical
-  when no embedder is present. `memory.proactiveRecall` (on by default) injects relevant
-  past context at session start; `memory.sessionDigest` (also on by default) distills each
-  interactive session (goal, outcomes, decisions + reasons, user corrections)
-  into a recallable note at the end.
+  when no embedder is present. `memory.proactiveRecall` (on by default) injects
+  optional prior notes at session start (strict relevance floor + path-cleaned
+  seed; framed as ignore-if-unrelated — empty recall preferred over wrong
+  recall); `memory.sessionDigest` (also on by default) distills each interactive
+  session (goal, outcomes, decisions + reasons, user corrections) into a
+  recallable note at the end. Paste bare image paths (or `@path`) so vision
+  models receive the pixels without shell `ls` workarounds.
 - **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` are
   injected into every system prompt, so the agent follows your stack and
   conventions out of the box. Discovery **walks up from the working directory to
@@ -753,26 +757,27 @@ the user accepts (plan card Enter or `/execute`) or revises.
   schema.
 
 Model strings are `<provider>/<model-id>` (split on the first slash):
-`anthropic/claude-opus-4-8`, `openai/gpt-...`, `zai/glm-...`, `moonshot/kimi-...`,
-`alibaba/qwen...`, `deepseek/...`, `xai/grok-...`, `minimax/MiniMax-M3`,
-`codex/gpt-...`, `openrouter/anthropic/claude-...`, `fireworks/...`,
-`baseten/...`, `huggingface/...`, `lmstudio/<id>`, `ollama/glm-5.2`.
+`anthropic/claude-opus-4-8`, `openai/gpt-...`, `meta/muse-spark-1.1`, `zai/glm-...`,
+`moonshot/kimi-...`, `alibaba/qwen...`, `deepseek/...`, `xai/grok-...`,
+`minimax/MiniMax-M3`, `codex/gpt-...`, `openrouter/anthropic/claude-...`,
+`fireworks/...`, `baseten/...`, `huggingface/...`, `lmstudio/<id>`, `ollama/glm-5.2`.
 
 #### Providers & subscription auth
 
 All providers run on **AI SDK v5**. anthropic/openai/deepseek use their dedicated
-v5 SDKs; every other provider (google, zai, moonshot, alibaba, xai, groq, mistral,
-cerebras, together, fireworks, baseten, huggingface, openrouter, perplexity,
-minimax, ollama, lmstudio, custom) is driven through `@ai-sdk/openai-compatible`
-so it works out of the box without chasing incompatible SDK majors. Open
-reasoning models served this way (a `deepseek-r1` or `qwen` on Ollama, say)
-emit their chain-of-thought inline as `<think>…</think>` — vibe-codr extracts
-it into real reasoning, so it streams to the Thinking panel instead of leaking
-into the visible reply.
+v5 SDKs; every other provider (meta, google, zai, moonshot, alibaba, xai, groq,
+mistral, cerebras, together, fireworks, baseten, huggingface, openrouter,
+perplexity, minimax, ollama, lmstudio, custom) is driven through
+`@ai-sdk/openai-compatible` so it works out of the box without chasing
+incompatible SDK majors. Open reasoning models served this way (a `deepseek-r1`
+or `qwen` on Ollama, say) emit their chain-of-thought inline as `<think>…</think>`
+— vibe-codr extracts it into real reasoning, so it streams to the Thinking panel
+instead of leaking into the visible reply.
 
 | Provider | Auth | Notes |
 |---|---|---|
 | `anthropic` `openai` `deepseek` `fireworks` `baseten` `openrouter` | `*_API_KEY` env or `providers.<id>.apiKey` | first-party + aggregators (the OpenAI-compatible ones via the shared compat driver) |
+| `meta` (**Muse Spark**) | `MODEL_API_KEY` (or `META_API_KEY`) | Meta Model API (`https://api.meta.ai/v1`); model `meta/muse-spark-1.1` (1M context). Create a key at [dev.meta.ai](https://dev.meta.ai/). `/reasoning low\|medium\|high` maps to `reasoning_effort` (never `"none"` — Muse Spark rejects it). Persist with `/model key meta <key>` or `providers.meta.apiKey`. Optional `META_BASE_URL`. |
 | `zai` (**Z.ai / GLM**) | `ZAI_API_KEY` (or `ZHIPU_API_KEY`) | OpenAI-compatible; coding-plan subscribers set `ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4` |
 | `moonshot` (**Kimi**) | `MOONSHOT_API_KEY` | OpenAI-compatible, international endpoint (`api.moonshot.ai`); `MOONSHOT_BASE_URL` overrides (e.g. `api.moonshot.cn`) |
 | `alibaba` (**Qwen**) | `DASHSCOPE_API_KEY` | Model Studio's OpenAI-compatible "compatible-mode" endpoint, intl region; `DASHSCOPE_BASE_URL` overrides |

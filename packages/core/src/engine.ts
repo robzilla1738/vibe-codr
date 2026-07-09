@@ -105,6 +105,7 @@ import { McpHub, type McpConnect } from "./mcp.ts";
 import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
 import { withRetry } from "./retry.ts";
 import { expandMentions } from "./mentions.ts";
+import { cleanProactiveRecallSeed } from "./proactive-recall.ts";
 import {
   handleSlash,
   handleApprovals,
@@ -1720,21 +1721,30 @@ export class Engine implements EngineClient {
 
   /** Once per session (when `memory.proactiveRecall` is on), search long-term
    * memory seeded by the first prompt + goal and inject the top hits as a
-   * "relevant past context" block. Best-effort and bounded; never throws. */
+   * prior-notes block. Uses a cleaned seed + strict relevance floor so path
+   * tokens and weak website digests cannot hijack the live turn. Best-effort;
+   * never throws. */
   async #maybeProactiveRecall(prompt: string): Promise<void> {
     if (this.#proactiveRecallDone) return;
     if (!this.#config.memory.proactiveRecall || !this.#memory) return;
     this.#proactiveRecallDone = true;
     try {
-      const seed = [this.#session.goal, prompt].filter(Boolean).join(" ").slice(0, 500);
+      const seed = cleanProactiveRecallSeed(this.#session.goal, prompt);
       if (!seed.trim()) return;
-      const hits = await this.#memory.search(seed, 3);
+      const hits = await this.#memory.search(seed, 3, { mode: "proactive" });
       if (!hits.length) return;
       const block = hits
         .map((h) => `- ${h.text.replace(/\s+/g, " ").trim().slice(0, 300)}`)
         .join("\n");
       this.#session.setRecalledContext(block);
-      this.#notice(`Recalled ${hits.length} relevant note(s) from long-term memory.`, "info");
+      // Do not claim "relevant" — the floor is heuristic; the model must still
+      // prefer the live user request (and any attached images) over these notes.
+      const snippets = hits.map((h) => h.text.replace(/\s+/g, " ").trim().slice(0, 60));
+      const preview = snippets.join(" · ");
+      this.#notice(
+        `Recalled ${hits.length} prior note(s) (ignore if unrelated to this request): ${preview}${snippets.some((s) => s.length >= 60) ? "…" : ""}`,
+        "info",
+      );
     } catch {
       // Recall is a best-effort enhancement; never let it block the turn.
     }

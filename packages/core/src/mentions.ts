@@ -1,4 +1,5 @@
 import { resolve, extname } from "node:path";
+import { homedir } from "node:os";
 import { readdir, stat } from "node:fs/promises";
 
 /** Image extensions that become multimodal attachments rather than text. */
@@ -16,6 +17,12 @@ const MAX_TEXT_BYTES = 64_000;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 /** Max entries listed for an `@dir/` mention. */
 const MAX_DIR_ENTRIES = 200;
+/**
+ * Cap bare (non-@) image paths auto-attached from the prompt. Users often paste
+ * absolute screenshot paths without `@`; attaching a handful is enough for a
+ * visual rebuild and avoids slurping a long dump of image paths.
+ */
+const MAX_BARE_IMAGES = 4;
 
 /** Truncate `text` to at most `maxBytes` UTF-8 bytes (not UTF-16 code units). */
 function capBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
@@ -54,9 +61,123 @@ export function parseMentions(prompt: string): string[] {
   return out;
 }
 
+/** Shell `\ ` → space; other `\.` escapes drop the backslash. */
+function unescapeShellPath(raw: string): string {
+  return raw.replace(/\\(.)/g, "$1");
+}
+
+/** Expand `~` / `~/…` against the real home directory. */
+function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/")) return homedir() + path.slice(1);
+  return path;
+}
+
+/**
+ * Extract bare (non-@) image paths from a prompt. Users paste absolute screenshot
+ * paths without the `@` prefix; without this, vision never receives the bytes
+ * and the model invents content from memory.
+ *
+ * Handles shell-escaped spaces (`Screenshot\ 2026…png`), quoted paths, absolute
+ * `/…` and `~/…` paths, and relative paths that exist under `cwd`. Walks left
+ * from each image extension so multi-word macOS screenshot names are kept whole.
+ */
+export function parseBareImagePaths(prompt: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const re = /\.(png|jpe?g|gif|webp)\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(prompt)) !== null) {
+    const end = m.index + m[0].length;
+    // Skip if this extension sits inside an @mention token (handled separately).
+    let at = m.index - 1;
+    while (at >= 0 && !/\s/.test(prompt[at]!)) {
+      if (prompt[at] === "@") break;
+      at--;
+    }
+    if (at >= 0 && prompt[at] === "@") continue;
+
+    let i = m.index - 1;
+    while (i >= 0) {
+      const ch = prompt[i]!;
+      if (ch === "\n" || ch === "\r" || ch === '"' || ch === "'" || ch === "`") break;
+      if (ch === "@") break;
+      if (ch === " " || ch === "\t") {
+        // Shell-escaped space (`\ `) is part of the path.
+        if (i > 0 && prompt[i - 1] === "\\") {
+          i -= 2;
+          continue;
+        }
+        // Unescaped space: allow only inside the FINAL path segment (filename),
+        // e.g. macOS "Screenshot 2026-… PM.png". If `soFar` already contains
+        // `/` or `\`, the space is a separator between two paths
+        // (`/a/ref-a.png /b/ref-b.png`) — stop so we don't glue them.
+        const soFar = prompt.slice(i + 1, end);
+        if (!/[/\\]/.test(soFar)) {
+          i--;
+          continue;
+        }
+        break;
+      }
+      // Path-ish characters (incl. backslash for escapes / Windows drives).
+      if (/[a-zA-Z0-9_./~:+%,@()[\]-]/.test(ch) || ch === "\\") {
+        i--;
+        continue;
+      }
+      break;
+    }
+    let raw = prompt.slice(i + 1, end).replace(/^[("'[`]+/, "").replace(/[)"'\]]+$/, "");
+    raw = unescapeShellPath(raw).trim();
+    if (!raw || seen.has(raw)) continue;
+    // Require a real path signal: absolute, home, relative with slash, or a
+    // plain filename with an image ext (resolved against cwd later).
+    const looksPath =
+      raw.startsWith("/") ||
+      raw.startsWith("~/") ||
+      raw.startsWith("./") ||
+      raw.startsWith("../") ||
+      /^[A-Za-z]:[\\/]/.test(raw) ||
+      raw.includes("/") ||
+      Boolean(IMAGE_MEDIA[extname(raw).toLowerCase()]);
+    if (!looksPath) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
+  return out;
+}
+
+/** Read an image file into an attachment, or return a skip notice. */
+async function readImageAttachment(
+  token: string,
+  full: string,
+  size: number,
+): Promise<{ image?: ImageAttachment; notice?: string }> {
+  const ext = extname(token).toLowerCase() || extname(full).toLowerCase();
+  const mediaType = IMAGE_MEDIA[ext];
+  if (!mediaType) return {};
+  if (size > MAX_IMAGE_BYTES) {
+    return {
+      notice: `${token} skipped: image is ${(size / 1024 / 1024).toFixed(1)}MB (max ${MAX_IMAGE_BYTES / 1024 / 1024}MB)`,
+    };
+  }
+  const file = Bun.file(full);
+  // Bound the actual read too (not just the stat check above): read one byte
+  // past the cap and reject if the file grew past it since the stat (TOCTOU) —
+  // a partial image is useless, so oversize skips rather than truncates.
+  const buf = await file.slice(0, MAX_IMAGE_BYTES + 1).arrayBuffer();
+  if (buf.byteLength > MAX_IMAGE_BYTES) {
+    return {
+      notice: `${token} skipped: image exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB`,
+    };
+  }
+  return { image: { path: token, mediaType, data: new Uint8Array(buf) } };
+}
+
 /**
  * Expand `@file` mentions in a prompt: text files are read and appended as
  * fenced context blocks; image files become attachments for vision models.
+ * Bare (non-@) image paths that exist on disk are also attached — users paste
+ * absolute screenshot paths without `@`, and without this vision never fires.
  * Unresolvable mentions are left untouched (and noted). Pure I/O — no events.
  */
 export async function expandMentions(prompt: string, cwd: string): Promise<ExpandedPrompt> {
@@ -64,9 +185,11 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
   const blocks: string[] = [];
   const images: ImageAttachment[] = [];
   const notices: string[] = [];
+  /** Canonical absolute paths already attached, so bare-path scan won't double. */
+  const attachedAbs = new Set<string>();
 
   for (const token of tokens) {
-    const full = resolve(cwd, token);
+    const full = resolve(cwd, expandHome(token));
     // A directory mention (@src/ or @src) expands to a capped listing.
     const info = await stat(full).catch(() => null);
     if (info?.isDirectory()) {
@@ -86,21 +209,12 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
     if (mediaType) {
       // Check the size BEFORE reading, so a huge image isn't slurped into memory
       // just to be rejected (a partial image is useless, so oversize → skip).
-      if (size > MAX_IMAGE_BYTES) {
-        notices.push(
-          `${token} skipped: image is ${(size / 1024 / 1024).toFixed(1)}MB (max ${MAX_IMAGE_BYTES / 1024 / 1024}MB)`,
-        );
-        continue;
+      const got = await readImageAttachment(token, full, size);
+      if (got.notice) notices.push(got.notice);
+      if (got.image) {
+        images.push(got.image);
+        attachedAbs.add(full);
       }
-      // Bound the actual read too (not just the stat check above): read one byte
-      // past the cap and reject if the file grew past it since the stat (TOCTOU) —
-      // a partial image is useless, so oversize skips rather than truncates.
-      const buf = await file.slice(0, MAX_IMAGE_BYTES + 1).arrayBuffer();
-      if (buf.byteLength > MAX_IMAGE_BYTES) {
-        notices.push(`${token} skipped: image exceeds ${MAX_IMAGE_BYTES / 1024 / 1024}MB`);
-        continue;
-      }
-      images.push({ path: token, mediaType, data: new Uint8Array(buf) });
       continue;
     }
     // Bound the READ to the byte budget, not just the output, and do it off the
@@ -126,6 +240,29 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
     const text = wasTruncated ? `${capped}\n… (truncated)` : capped;
     if (wasTruncated) notices.push(`${token} truncated to ${MAX_TEXT_BYTES} bytes`);
     blocks.push(`--- ${token} ---\n\`\`\`\n${text}\n\`\`\``);
+  }
+
+  // Bare image paths (no `@`): attach existing files so "looks like these images"
+  // with pasted absolute paths still reaches vision models.
+  let bareAttached = 0;
+  for (const token of parseBareImagePaths(prompt)) {
+    if (bareAttached >= MAX_BARE_IMAGES) break;
+    const full = resolve(cwd, expandHome(token));
+    if (attachedAbs.has(full)) continue;
+    const info = await stat(full).catch(() => null);
+    if (!info?.isFile()) continue;
+    const got = await readImageAttachment(token, full, info.size);
+    if (got.notice) notices.push(got.notice);
+    if (got.image) {
+      images.push(got.image);
+      attachedAbs.add(full);
+      bareAttached++;
+    }
+  }
+  if (bareAttached > 0) {
+    notices.push(
+      `Attached ${bareAttached} image${bareAttached === 1 ? "" : "s"} from path${bareAttached === 1 ? "" : "s"} in the prompt.`,
+    );
   }
 
   const text = blocks.length

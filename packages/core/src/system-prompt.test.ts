@@ -195,6 +195,18 @@ test("project memory is included when present", () => {
   expect(out).toContain("This is a Bun monorepo.");
 });
 
+test("recalled context is framed as optional prior notes, not asserted relevance", () => {
+  const out = composeSystemPrompt({
+    mode: "execute",
+    goal: null,
+    recalledContext: "- we chose Neon Postgres",
+  });
+  expect(out).toContain("PRIOR NOTES");
+  expect(out).toContain("we chose Neon Postgres");
+  expect(out).toMatch(/ignore.*unrelated|UNRELATED/i);
+  expect(out).not.toContain("RELEVANT PAST CONTEXT");
+});
+
 test("memory doctrine: full save guidance in execute, recall-only in plan, absent without memory", () => {
   // Execute with a wired MemoryService → recall + proactive-save doctrine.
   const full = composeSystemPrompt({ mode: "execute", goal: null, memory: { save: true } });

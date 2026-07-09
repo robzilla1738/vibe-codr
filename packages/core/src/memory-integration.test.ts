@@ -120,7 +120,9 @@ test("setRecalledContext is injected into the system prompt", async () => {
   session.setRecalledContext("RECALL-MARKER-123 we chose Postgres");
   await session.run("hi");
   expect(systems[0]).toContain("RECALL-MARKER-123");
-  expect(systems[0]).toContain("RELEVANT PAST CONTEXT");
+  expect(systems[0]).toContain("PRIOR NOTES");
+  // Must not overclaim relevance — prior notes can be unrelated to the live ask.
+  expect(systems[0]).not.toContain("RELEVANT PAST CONTEXT");
 });
 
 test("buildDigest summarizes a worked session and skips an empty one", async () => {

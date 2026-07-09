@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLogger, type Logger } from "@vibe/shared";
 import type { ModelInfo, PricingTier } from "./types.ts";
+import { knownModelDefaults } from "./known-models.ts";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -181,9 +182,14 @@ export class CatalogService {
    * asymmetries.
    */
   async contextWindow(modelString: string): Promise<number | undefined> {
-    if (this.#metadata) return resolveCatalogWindow(this.#metadata, modelString);
-    void this.#load(); // warm the cache for next time, but don't wait on it
-    return undefined;
+    if (this.#metadata) {
+      const fromCatalog = resolveCatalogWindow(this.#metadata, modelString);
+      if (fromCatalog !== undefined) return fromCatalog;
+    } else {
+      void this.#load(); // warm the cache for next time, but don't wait on it
+    }
+    // Vendor-published defaults when models.dev has no entry yet (e.g. Meta Muse).
+    return knownModelDefaults(modelString)?.contextWindow;
   }
 
   /**
@@ -199,12 +205,16 @@ export class CatalogService {
   async pricing(modelString: string): Promise<PricingResult | undefined> {
     if (!this.#metadata) {
       void this.#load();
-      return undefined;
+      // Still return published known rates immediately so a brand-new model
+      // doesn't show $0 until models.dev is fetched (or forever if unlisted).
+      return knownModelDefaults(modelString)?.pricing;
     }
     // Mirror resolveCatalogWindow's local-provider guard: without a cloud
     // signal, ollama/* must not inherit ollama-cloud rates as "real" prices
     // (BUG-102) — free local sessions would accrue cloud spend and trip budgets.
-    return resolveCatalogPrice(this.#metadata, modelString);
+    const fromCatalog = resolveCatalogPrice(this.#metadata, modelString);
+    if (fromCatalog) return fromCatalog;
+    return knownModelDefaults(modelString)?.pricing;
   }
 
   /**
@@ -212,9 +222,13 @@ export class CatalogService {
    * the catalog has loaded (and for models it doesn't know about).
    */
   async supportsImages(modelString: string): Promise<boolean | undefined> {
-    if (this.#metadata) return this.#metadata.get(aliasModelKey(modelString))?.capabilities?.vision;
-    void this.#load();
-    return undefined;
+    if (this.#metadata) {
+      const fromCatalog = this.#metadata.get(aliasModelKey(modelString))?.capabilities?.vision;
+      if (fromCatalog !== undefined) return fromCatalog;
+    } else {
+      void this.#load();
+    }
+    return knownModelDefaults(modelString)?.vision;
   }
 
   /**
@@ -236,8 +250,37 @@ export class CatalogService {
   async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
     const meta = await this.#load();
     return live.map((m) => {
-      const extra = meta.get(aliasModelKey(`${m.providerId}/${m.id}`));
-      return extra ? { ...extra, ...m } : m;
+      const key = `${m.providerId}/${m.id}`;
+      const extra = meta.get(aliasModelKey(key));
+      const known = knownModelDefaults(key);
+      // Live listing wins id/provider; layer catalog then known-model defaults
+      // for fields the live `/v1/models` response doesn't carry.
+      const base: Partial<ModelInfo> = {};
+      if (known) {
+        base.contextWindow = known.contextWindow;
+        base.maxOutput = known.maxOutput;
+        base.cost = {
+          input: known.pricing.input,
+          output: known.pricing.output,
+          cacheRead: known.pricing.cacheRead,
+          cacheWrite: known.pricing.cacheWrite,
+        };
+        base.capabilities = {
+          toolCall: true,
+          reasoning: true,
+          ...(known.vision !== undefined ? { vision: known.vision } : {}),
+        };
+      }
+      if (extra) {
+        return {
+          ...base,
+          ...extra,
+          ...m,
+          cost: { ...base.cost, ...extra.cost, ...m.cost },
+          capabilities: { ...base.capabilities, ...extra.capabilities, ...m.capabilities },
+        };
+      }
+      return Object.keys(base).length ? { ...base, ...m } : m;
     });
   }
 

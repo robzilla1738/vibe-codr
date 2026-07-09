@@ -4,6 +4,50 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — Meta Model API (Muse Spark 1.1)
+
+First-class provider for Meta's hosted Muse Spark coding model:
+
+- **Provider `meta`:** OpenAI-compatible Chat Completions at `https://api.meta.ai/v1`
+  (AI SDK v5 / `@ai-sdk/openai-compatible`). Auth via `MODEL_API_KEY` (official)
+  or `META_API_KEY`; optional `META_BASE_URL`. Persist with `/model key meta <key>`
+  or `providers.meta.apiKey`.
+- **Model `meta/muse-spark-1.1`:** onboarding choice **Meta · Muse Spark**; default
+  model string for the provider.
+- **Published known-model defaults** (`known-models.ts`): 1,048,576 context,
+  pricing $1.25 / $0.15 cache-read / $4.25 output per 1M tokens, vision on —
+  so cost and `ctx %` work before models.dev lists Meta.
+- **`/reasoning`:** forwards `reasoning_effort` (`low` | `medium` | `high`); never
+  sends `"none"` (Muse Spark returns HTTP 400).
+- **Plan gate:** after `present_plan`, Meta sessions strip tools with `activeTools: []`
+  only — Meta rejects `tool_choice` values other than `"auto"`. `toolsDisabled`
+  still hard-refuses execute.
+
+### Fixed — proactive memory hijacks + bare image attach
+
+Stops unrelated long-term notes (e.g. a prior website digest) from derailing a
+"clone these screenshots" session, and makes vision work without `@`:
+
+- **Bare image paths:** absolute / relative `.png`/`.jpg`/… paths in the prompt
+  (including shell-escaped multi-word screenshot names) auto-attach as vision
+  attachments (max 4), deduped with `@` mentions.
+- **Clean proactive seed:** strips filesystem paths, URLs, and date/screenshot
+  noise before hybrid search so path tokens don't pollute BM25.
+- **Strict proactive mode:** higher token-overlap floor, stronger BM25 fraction,
+  min dense cosine, no past-session-transcript fusion. Explicit `/recall` stays
+  permissive.
+- **Framing:** system prompt says **PRIOR NOTES** (ignore if unrelated) instead of
+  asserting "RELEVANT PAST CONTEXT"; the TUI notice no longer claims relevance.
+
+### Docs
+
+- README: Meta provider table, model string, known-model fallback note; memory
+  proactive-recall wording.
+- AGENTS.md: `meta` in openai-compatible list, known-model fallback, proactive
+  recall + bare-image invariants.
+
+## 0.4.20 — 2026-07-09
+
 ### Fixed — path aliases + structured goal/loop assessment
 
 Hardening for weaker / local models that miss tool-schema field names or lack

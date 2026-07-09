@@ -48,6 +48,13 @@ test("OpenAI effort maps to reasoningEffort", () => {
   expect(t.providerOptions?.openai).toEqual({ reasoningEffort: "high" });
 });
 
+test("Meta Muse Spark forwards reasoningEffort (never none)", () => {
+  const t = buildModelTuning("meta/muse-spark-1.1", cfg({ reasoning: { effort: "high" } }));
+  expect(t.providerOptions?.meta).toEqual({ reasoningEffort: "high" });
+  // Cleared effort must NOT send reasoning_effort:"none" (Meta HTTP 400).
+  expect(buildModelTuning("meta/muse-spark-1.1", cfg()).providerOptions).toBeUndefined();
+});
+
 test("OpenRouter routes via openai-compatible, so it forwards no native reasoning block", () => {
   // openrouter is driven through @ai-sdk/openai-compatible (it doesn't accept the
   // native unified reasoning options); the model reasons at its default effort.
@@ -87,6 +94,7 @@ test("reasoningCategory splits forwarded, native, and none per provider", () => 
   // Forwarded: the effort hint is actually sent (buildModelTuning emits options).
   expect(reasoningCategory("anthropic/claude-opus-4-8")).toBe("forwarded");
   expect(reasoningCategory("openai/gpt-5.5")).toBe("forwarded");
+  expect(reasoningCategory("meta/muse-spark-1.1")).toBe("forwarded");
   // Native: reasons on its own, but the transport drops the hint — no affirmation.
   expect(reasoningCategory("xai/grok-4")).toBe("native");
   expect(reasoningCategory("openrouter/anthropic/claude")).toBe("native");
@@ -106,6 +114,9 @@ test("only forwarded providers emit reasoning providerOptions (native ones stay 
   expect(buildModelTuning("xai/grok-4", c).providerOptions).toBeUndefined();
   expect(reasoningCategory("openrouter/x")).toBe("native");
   expect(buildModelTuning("openrouter/x", c).providerOptions).toBeUndefined();
+  expect(buildModelTuning("meta/muse-spark-1.1", c).providerOptions?.meta).toEqual({
+    reasoningEffort: "high",
+  });
 });
 
 test("cache breakpoints: tools + conversation markers are Anthropic-only and config-gated", () => {

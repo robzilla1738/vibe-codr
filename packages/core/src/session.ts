@@ -1370,6 +1370,14 @@ export class Session {
           const base =
             next === stepMessages ? ({} as { messages?: typeof next }) : { messages: next };
           if (this.#turnGate?.presented) {
+            // Strip tools so the model cannot keep researching after the card is
+            // armed. Most providers accept tool_choice:"none"; Meta Model API
+            // only allows "auto" (anything else is HTTP 400). For meta, empty
+            // activeTools is enough — toolsDisabled still hard-refuses execute.
+            const isMeta = this.model.startsWith("meta/");
+            if (isMeta) {
+              return { ...base, activeTools: [] as string[] };
+            }
             return { ...base, toolChoice: "none" as const, activeTools: [] as string[] };
           }
           return next === stepMessages ? undefined : { messages: next };

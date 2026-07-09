@@ -51,9 +51,11 @@ export { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 export {
   expandMentions,
   parseMentions,
+  parseBareImagePaths,
   type ImageAttachment,
   type ExpandedPrompt,
 } from "./mentions.ts";
+export { cleanProactiveRecallSeed } from "./proactive-recall.ts";
 export { withRetry, isTransientError, type RetryOptions } from "./retry.ts";
 export { CheckpointManager, type Checkpoint } from "./checkpoints.ts";
 export { runVerify, type VerifyResult } from "./verify.ts";

@@ -17,8 +17,9 @@ export interface SystemPromptInputs {
   repoFacts?: string;
   /** Project memory (VIBE.md / AGENTS.md / CLAUDE.md) contents, if present. */
   projectMemory?: string;
-  /** Proactively-recalled relevant past context (saved memory / prior sessions),
-   * injected at session start when `memory.proactiveRecall` is enabled. */
+  /** Proactively-recalled prior notes (saved memory), injected at session start
+   * when `memory.proactiveRecall` is enabled. Framed as optional — may be
+   * unrelated to the live ask. */
   recalledContext?: string;
   /** Skill name/description lines for progressive disclosure. */
   skillDescriptions?: string[];
@@ -199,7 +200,7 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   }
   if (inputs.recalledContext) {
     sections.push(
-      `RELEVANT PAST CONTEXT (recalled from long-term memory — may be incomplete or stale; verify against the current workspace before relying on it):\n${inputs.recalledContext}`,
+      `PRIOR NOTES (optional background from long-term memory — may be incomplete, stale, or UNRELATED to the current request. Ignore them entirely when they do not match the user's latest ask. Never let these override attached images, referenced files, or explicit instructions):\n${inputs.recalledContext}`,
     );
   }
   if (inputs.memory) {

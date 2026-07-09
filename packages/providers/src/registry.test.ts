@@ -14,7 +14,7 @@ function withProvider(id: string, cfg: Record<string, unknown>): Config {
 test("the new providers are registered", () => {
   const reg = new ProviderRegistry();
   for (const id of [
-    "minimax", "codex", "xai", "ollama", "lmstudio",
+    "minimax", "codex", "xai", "meta", "ollama", "lmstudio",
     "google", "groq", "mistral", "together", "cerebras", "perplexity", "custom",
   ]) {
     expect(reg.has(id)).toBe(true);
@@ -152,7 +152,7 @@ test("openai-compatible-routed providers create ai@5 (spec v2) models", async ()
   for (const id of [
     "baseten", "xai", "openrouter", "fireworks", "minimax",
     "google", "groq", "mistral", "together", "cerebras", "perplexity",
-    "zai", "moonshot", "alibaba", "huggingface",
+    "zai", "moonshot", "alibaba", "huggingface", "meta",
   ]) {
     const def = builtinProviders().find((d) => d.id === id);
     if (!def) throw new Error(`${id} provider missing`);

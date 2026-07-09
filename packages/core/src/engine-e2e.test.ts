@@ -2,10 +2,12 @@ import { test, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
-import type { UIEvent } from "@vibe/shared";
+import type { ToolDefinition, UIEvent } from "@vibe/shared";
+import { Toolset, presentPlanTool } from "@vibe/tools";
 import { Engine } from "./engine.ts";
 import { globalStateDir } from "./state-dir.ts";
 
@@ -799,4 +801,193 @@ test("/skill invokes a skill even when a built-in shadows its bare name", async 
       (e) => e.type === "notice" && e.level === "warn" && e.message.includes('No skill named "nonexistent"'),
     ),
   ).toBe(true);
+});
+
+/** Fake keyless research tools for plan-presentation nudge tests. */
+function planResearchToolset(): Toolset {
+  const fakeSearch: ToolDefinition<{ query: string }> = {
+    name: "web_search",
+    description: "fake",
+    inputSchema: z.object({ query: z.string() }),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({
+      output: "1. Argentina vs Egypt\n   https://fifa.com/match-report\n   Argentina 3-2.",
+    }),
+  };
+  const fakeFetch: ToolDefinition<{ url: string }> = {
+    name: "webfetch",
+    description: "fake",
+    inputSchema: z.object({ url: z.string() }),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({ output: "Argentina came back 3-2 vs Egypt in Atlanta." }),
+  };
+  const fakePkg: ToolDefinition<{ name: string }> = {
+    name: "package_info",
+    description: "fake",
+    inputSchema: z.object({ name: z.string() }),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({ output: "next@15.0.0\ntailwindcss@3.4.0" }),
+  };
+  return new Toolset([presentPlanTool, fakeSearch, fakeFetch, fakePkg]);
+}
+
+// Free-form chat plans skip the approval card. After research without
+// present_plan, the engine must inject a bounded present nudge — not settle idle.
+test("Engine plan mode: free-form plan without present_plan gets a present nudge", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-present-nudge-"));
+  const prompts: string[] = [];
+  const grounded = {
+    plan:
+      "- [ ] Scaffold a Next.js match story site\n" +
+      "- [ ] Verify with a production build\n",
+    sources: [{ url: "https://fifa.com/match-report", title: "Match report" }],
+    assumptions: ["exact lineup TBD"],
+    verification: "next build",
+    decisions: ["next.js — requested stack"],
+  };
+  const steps = [
+    // Turn 1: research then free-form "plan" (the failure mode).
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "web_search",
+        input: JSON.stringify({ query: "world cup yesterday" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "f1",
+        toolName: "webfetch",
+        input: JSON.stringify({ url: "https://fifa.com/match-report" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "k1",
+        toolName: "package_info",
+        input: JSON.stringify({ name: "next" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "a" },
+      {
+        type: "text-delta",
+        id: "a",
+        delta: "The Plan\n- [ ] Build the site\nNext Step: I'm starting svvarm init.",
+      },
+      { type: "text-end", id: "a" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+    // Turn 2: engine present-plan nudge — model finally calls present_plan.
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify(grounded),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "b" },
+      { type: "text-delta", id: "b", delta: "Plan presented." },
+      { type: "text-end", id: "b" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return steps[call++] as never;
+    },
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
+    cwd,
+    registry: mockRegistry(model),
+    toolset: planResearchToolset(),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const sub = engine.events();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  engine.send({
+    type: "submit-prompt",
+    text: "build a beautiful next.js/tailwind site about yesterday's world cup match",
+  });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  // Nudge turn ran: a later prompt carries the present_plan instruction.
+  expect(prompts.some((p) => p.includes("never called present_plan"))).toBe(true);
+  // And the model eventually presented — approval card path is live.
+  const presented = events.filter((e) => e.type === "plan-presented");
+  expect(presented.length).toBe(1);
+  // Research turn (4 model steps) + nudge present turn (2) — no second nudge loop.
+  expect(call).toBe(6);
+});
+
+// Self-contained plans don't tax the present nudge (no non-trivial triage).
+test("Engine plan mode: trivial self-contained plan does not get a present nudge", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-no-nudge-"));
+  const prompts: string[] = [];
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "a" },
+      { type: "text-delta", id: "a", delta: "Write a haiku about rain." },
+      { type: "text-end", id: "a" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return steps[call++] as never;
+    },
+  });
+  const engine = new Engine({
+    config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
+    cwd,
+    registry: mockRegistry(model),
+    toolset: planResearchToolset(),
+    interactive: false,
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  const sub = engine.events();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+
+  engine.send({ type: "submit-prompt", text: "write a haiku about rain" });
+  await engine.whenIdle();
+  engine.send({ type: "shutdown" });
+  await collector;
+
+  expect(prompts.some((p) => p.includes("never called present_plan"))).toBe(false);
+  expect(events.some((e) => e.type === "plan-presented")).toBe(false);
+  expect(call).toBe(1);
 });

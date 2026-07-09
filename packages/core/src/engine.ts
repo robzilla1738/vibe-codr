@@ -109,6 +109,11 @@ import {
  * open indefinitely by a buggy hook. */
 const MAX_IDLE_CONTINUES = 3;
 
+/** Bounded end-of-turn nudges when plan mode researched but never called
+ * present_plan (free-form chat plans skip the approval card). One is enough to
+ * re-steer; a second would just burn tokens if the model still won't present. */
+const MAX_PLAN_PRESENT_NUDGES = 1;
+
 /** Consecutive clean self-assessments a /goal run needs before it may finish.
  * The first "met" verdict buys a dedicated adversarial verify turn, not the
  * finish line — only a clean assessment AFTER that verify turn ends the run
@@ -353,6 +358,9 @@ export class Engine implements EngineClient {
    * before the engine warns and settles idle regardless (a buggy always-continue
    * hook can never loop forever). Reset on each real user prompt. */
   #idleContinueRounds = 0;
+  /** Bounded present_plan nudges per plan cycle when non-trivial research
+   * happened but the model ended on free-form chat without present_plan. */
+  #planPresentNudgeRounds = 0;
   /** True while a plan-execution chain is live: armed when the plan→execute
    * handoff turn starts, cleared by the next REAL user prompt (or when the
    * seeded list finishes/caps out). Scopes the completion check to plan runs. */
@@ -1112,12 +1120,13 @@ export class Engine implements EngineClient {
   }
 
   /** Every invocable slash name — built-ins, custom/plugin commands, and skills
-   * (which run as `/skillname`) — for the input's "recognized command" cue. */
+   * (which run as `/skillname`) — for the input's "recognized command" cue.
+   * Skills with `userInvocable: false` stay off the palette (background only). */
   #commandNames(): string[] {
     return [
       ...BUILTIN_COMMANDS.map((c) => c.name),
       ...this.commands.list().map((c) => c.name),
-      ...this.skills.list().map((s) => s.name),
+      ...this.skills.userVisible().map((s) => s.name),
     ];
   }
 
@@ -1938,9 +1947,16 @@ export class Engine implements EngineClient {
     }));
   }
 
-  /** Available skills (name + description), for the `/skills` menu. */
+  /** Available skills (name + description), for the `/skills` menu.
+   * Hides `userInvocable: false` background skills; marks user-only
+   * (`disableModelInvocation`) skills so the menu can still slash-invoke them. */
   listSkills(): SkillInfo[] {
-    return this.skills.list().map((s) => ({ name: s.name, description: s.description }));
+    return this.skills.userVisible().map((s) => ({
+      name: s.name,
+      description: s.disableModelInvocation
+        ? `[user-only] ${s.description}`
+        : s.description,
+    }));
   }
 
   /** Reload `.vibe/agents/*.md` into `#agents` after a write. */
@@ -2429,7 +2445,10 @@ export class Engine implements EngineClient {
       if (verify.exhaustedFail) {
         if (this.#lastGateOutcome !== "red") this.#lastGateOutcome = "red";
       }
-      if (!this.#session.interrupted && !this.#userStop) this.#maybeContinueTasks(false);
+      if (!this.#session.interrupted && !this.#userStop) {
+        this.#maybeNudgePresentPlan();
+        this.#maybeContinueTasks(false);
+      }
       await this.#maybeContinueGoal();
       return;
     }
@@ -2443,7 +2462,10 @@ export class Engine implements EngineClient {
       // instead of working) must not silently strand the chain — nudge the
       // unfinished tasks. Skip when the user interrupted (Esc means stop), and
       // #maybeContinueTasks no-ops outside an active plan chain.
-      if (!this.#session.interrupted && !this.#userStop) this.#maybeContinueTasks(false);
+      if (!this.#session.interrupted && !this.#userStop) {
+        this.#maybeNudgePresentPlan();
+        this.#maybeContinueTasks(false);
+      }
       await this.#maybeContinueGoal();
       return;
     }
@@ -2509,6 +2531,36 @@ export class Engine implements EngineClient {
     if (this.#userStop || this.#session.interrupted) return;
     this.#maybeContinueTasks(outcome === "green");
     await this.#maybeContinueGoal();
+  }
+
+  /**
+   * Hard plan-presentation contract: a non-trivial plan cycle (web/versions/code
+   * triage) that ends without a successful present_plan never arms the approval
+   * card — free-form chat plans are soft and models often announce "next I'll
+   * start…". One bounded engine follow-up forces present_plan; after that we
+   * stop nagging (weak models that can't drive the tool still won't loop).
+   */
+  #maybeNudgePresentPlan(): void {
+    if (this.#session.mode !== "plan") {
+      this.#planPresentNudgeRounds = 0;
+      return;
+    }
+    if (this.#userStop || this.#session.interrupted) return;
+    if (!this.#session.needsPresentPlan) {
+      // Presented (or trivial) — clear so a later revision cycle can nudge again.
+      this.#planPresentNudgeRounds = 0;
+      return;
+    }
+    if (this.#planPresentNudgeRounds >= MAX_PLAN_PRESENT_NUDGES) return;
+    this.#planPresentNudgeRounds += 1;
+    const prompt =
+      "You researched or drafted a multi-step plan but never called present_plan — " +
+      "free-form chat does not open the approval card. " +
+      "Call present_plan NOW with a concrete `- [ ]` checklist, verification, " +
+      "and harvested sources (when the request needed web/version research). " +
+      "Do NOT implement, load skill init/setup workflows, or announce \"next steps\" work. " +
+      "After present_plan succeeds, STOP and wait for the user to approve.";
+    this.#enqueue("present plan", () => this.#handlePrompt(prompt));
   }
 
   /**

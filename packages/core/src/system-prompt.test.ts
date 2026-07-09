@@ -112,6 +112,32 @@ test("skill descriptions are surfaced for progressive disclosure", () => {
   });
   expect(out).toContain("AVAILABLE SKILLS");
   expect(out).toContain("- pdf: Work with PDFs");
+  expect(out).toMatch(/not "just in case"/i);
+  expect(out).toMatch(/user-only/i);
+  // Execute doctrine is not the plan-only informational framing.
+  expect(out).not.toMatch(/informational only while planning/i);
+});
+
+test("plan mode skills doctrine is informational, not workflow-running", () => {
+  const out = composeSystemPrompt({
+    mode: "plan",
+    goal: null,
+    skillDescriptions: ["- pdf: Work with PDFs"],
+  });
+  expect(out).toMatch(/informational only while planning/i);
+  expect(out).toMatch(/post-approval steps/i);
+  expect(out).toMatch(/not running it/i);
+  expect(out).toContain("- pdf: Work with PDFs");
+});
+
+test("plan mode requires present_plan and hard-stop after it", () => {
+  const out = composeSystemPrompt({ mode: "plan", goal: null });
+  expect(out).toMatch(/HARD RULES/i);
+  expect(out).toMatch(/ONLY way to ship a plan/i);
+  expect(out).toMatch(/Free-form chat plans do not open the approval card/i);
+  expect(out).toMatch(/After `present_plan` succeeds: STOP/i);
+  expect(out).toMatch(/disables further tools this turn/i);
+  expect(out).toMatch(/THE GATE IS REAL/);
 });
 
 test("the delegation doctrine appears only when subagents are available", () => {

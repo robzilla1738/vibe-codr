@@ -1,17 +1,41 @@
 import { test, expect } from "bun:test";
 import type { ToolContext } from "@vibe/shared";
-import { buildUseSkillTool, type SessionToolsHandle } from "./session-tools.ts";
+import {
+  buildUseSkillTool,
+  PLAN_MODE_SKILL_PREFIX,
+  type SessionToolsHandle,
+} from "./session-tools.ts";
+import type { Skill } from "@vibe/plugins";
 
-// A minimal handle exposing one skill whose body we control. Only `deps.skills`
-// is exercised by use_skill, so the rest is cast away.
-function handleWithSkill(body: string, dir = "/tmp/skills/big"): SessionToolsHandle {
-  const skill = { name: "big", description: "d", dir, load: async () => body };
+// A minimal handle exposing skills whose bodies we control.
+function handleWithSkills(
+  skills: Skill[],
+  opts: { mode?: "plan" | "execute" | "yolo" } = {},
+): SessionToolsHandle {
+  const map = new Map(skills.map((s) => [s.name, s]));
   return {
     id: "s",
     depth: 0,
-    deps: { skills: { get: (n: string) => (n === "big" ? skill : undefined) } },
+    mode: opts.mode,
+    deps: { skills: { get: (n: string) => map.get(n) } },
     setTasks: () => [],
   } as unknown as SessionToolsHandle;
+}
+
+function handleWithSkill(
+  body: string,
+  dir = "/tmp/skills/big",
+  extra: Partial<Skill> = {},
+  opts: { mode?: "plan" | "execute" | "yolo" } = {},
+): SessionToolsHandle {
+  const skill: Skill = {
+    name: "big",
+    description: "d",
+    dir,
+    load: async () => body,
+    ...extra,
+  };
+  return handleWithSkills([skill], opts);
 }
 
 const ctx = {} as ToolContext;
@@ -47,4 +71,32 @@ test("use_skill omits the directory line when a skill has no dir", async () => {
   const out = String(res.output);
   expect(out).toContain("short body");
   expect(out).not.toContain("Skill directory:");
+});
+
+test("use_skill rejects disable-model-invocation skills", async () => {
+  const res = await buildUseSkillTool(
+    handleWithSkill("body", "/tmp/s", { disableModelInvocation: true }),
+  ).execute({ name: "big" }, ctx);
+  expect(res.isError).toBe(true);
+  expect(String(res.output)).toMatch(/user-invoked only|disable-model-invocation/i);
+  expect(String(res.output)).not.toContain("body");
+});
+
+test("use_skill in plan mode prefixes the body with plan discipline", async () => {
+  const res = await buildUseSkillTool(
+    handleWithSkill("skill body here", "/tmp/s", {}, { mode: "plan" }),
+  ).execute({ name: "big" }, ctx);
+  const out = String(res.output);
+  expect(out.startsWith(PLAN_MODE_SKILL_PREFIX)).toBe(true);
+  expect(out).toContain("skill body here");
+  expect(out).toMatch(/present_plan/i);
+});
+
+test("use_skill in execute mode does not add the plan prefix", async () => {
+  const res = await buildUseSkillTool(
+    handleWithSkill("skill body here", "/tmp/s", {}, { mode: "execute" }),
+  ).execute({ name: "big" }, ctx);
+  const out = String(res.output);
+  expect(out).not.toContain("PLAN MODE:");
+  expect(out).toContain("skill body here");
 });

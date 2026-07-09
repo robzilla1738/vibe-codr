@@ -10,6 +10,7 @@ export {
 export {
   SkillRegistry,
   parseSkillMarkdown,
+  parseFrontmatterBool,
   type Skill,
 } from "./skills.ts";
 export {

@@ -520,8 +520,15 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "skills": {
       // The palette advertises `/skills [filter]`; honor it here too so the
       // readline REPL and headless get the same narrowing as the TUI picker.
+      // userInvocable:false skills stay hidden (background knowledge); user-only
+      // (disable-model-invocation) skills are listed with a [user-only] marker.
       const filter = args.trim().toLowerCase();
-      const all = h.skills.list().map((s) => ({ name: s.name, description: s.description }));
+      const all = h.skills.userVisible().map((s) => ({
+        name: s.name,
+        description: s.disableModelInvocation
+          ? `[user-only] ${s.description}`
+          : s.description,
+      }));
       const shown = filter
         ? all.filter(
             (s) =>
@@ -530,7 +537,7 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
         : all;
       h.notice(
         formatNamedList(
-          "Skills (call /<name> or /skill <name>, or the model uses use_skill):",
+          "Skills (call /<name> or /skill <name>; [user-only] = no model auto-load):",
           shown,
           filter
             ? `No skill matches "${args.trim()}". Run /skills for the full list.`

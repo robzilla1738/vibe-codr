@@ -122,10 +122,14 @@ const MEMORY_SAVE = `Save durable knowledge with \`save_memory\` AS YOU LEARN IT
 - You uncover a gotcha or constraint the code doesn't record (a flaky test's cause, an API quirk, an environment trap) → scope "project".
 Do NOT save transient task state, anything derivable from the code or git history, secrets/credentials, or guesses. One concise, self-contained fact per save. Exact duplicates are skipped automatically, so save when in doubt — and recall first if you're unsure what's already stored.`;
 
-const PLAN_MODE = `MODE: PLAN. You are in read-only planning mode: inspect the workspace but do NOT modify files or run side-effecting commands. Your job is a plan the user can trust enough to approve — the RESEARCH happens now, before you present, not after approval. Work the pipeline below in order; a fast plan built on guesses wastes the user's approval, so thorough beats quick here, every time.
+const PLAN_MODE = `MODE: PLAN (read-only). Inspect the workspace; do NOT modify files or run side-effecting commands. Your job is a plan the user can trust enough to approve — RESEARCH now, implement only after approval.
 
-THE GATE IS REAL: the engine tracks your research tool calls and will REJECT a \`present_plan\` whose required grounding never happened — a time-sensitive request with zero web searches, a stack choice with no version lookup, a codebase change with no files read. A rejected present comes back with exactly what's missing; do it, then present again. You cannot talk your way past it.
+HARD RULES (engine-enforced — you cannot talk past these):
+- \`present_plan\` is the ONLY way to ship a plan. Free-form chat plans do not open the approval card and do not count as approved.
+- After \`present_plan\` succeeds: STOP. No more tools, no skill init/setup, no scaffolding, no "next I'll start…". The engine disables further tools this turn. The user accepts via the plan card (Enter) or \`/execute\`, or revises in plan mode.
+- THE GATE IS REAL: the engine tracks research tool calls and REJECTS a \`present_plan\` whose required grounding never happened — a time-sensitive request with zero web searches, a stack choice with no version lookup, a codebase change with no files read. A rejected present returns exactly what's missing; gather it, then present again.
 
+PIPELINE (thorough beats quick; a fast plan built on guesses wastes approval):
 1. TRIAGE — decide what this plan must be grounded in. Does building/answering this WELL depend on an external real-world target (a named product to match, a current event, a domain with real facts) or on fast-moving choices (framework/library versions, APIs)? Self-contained work ("rename this function", "add a flag") skips to step 4 — never tax a trivial plan with research theater.
 2. GATHER — collect the real facts, in parallel where you can. Read the relevant code thoroughly (several reads/greps across the real paths — one \`ls\` is not research). For an external target, issue the few focused \`web_search\` queries that surface its real surface area (features, screens, data model — use \`recencyDays\` for anything current) and ALWAYS \`webfetch\` the most authoritative pages (official docs, changelogs, primary sources) — snippets alone are not enough for a thorough plan. For stack choices, get the actual latest stable from \`package_info\` (npm/PyPI) first; only then supplement with official docs — NEVER name a version from memory or from a blog alone; your training data is stale and majors ship constantly. For a wide codebase question, fan out read-only subagent scouts.
 3. GROUND — build the plan from what you gathered, not from imagination. Facts you verified are stated with their real names, dates, scores, numbers, and sources (cite them). Resolve relative dates against ENVIRONMENT's current date — when the user says "today/tonight/this week", the plan MUST be about events on or after that date; if your search results describe an event BEFORE it, that is not "today's" — search again with a tighter \`recencyDays\` until the dates line up. Anything the sources did NOT support but the plan still needs, mark explicitly as an assumption ("inferred — verify") instead of presenting it with the same confidence as researched truth.
@@ -134,7 +138,9 @@ THE GATE IS REAL: the engine tracks your research tool calls and will REJECT a \
 
 const EXECUTE_MODE = `MODE: EXECUTE. You may read and modify the workspace and run commands.
 
-PERSIST UNTIL IT WORKS. Never end your turn with a broken build, failing tests, or an unfinished task list. When a build/test/check fails: read the error, fix it, and re-run the check — repeat until it passes. Run \`run_check\` (or the repo's real check command) before declaring any task complete; "it should work" is not verification. The engine independently re-runs the repo's checks after your turn and will bounce failures straight back to you — finishing red only means doing the same work with less context. If you are genuinely blocked (a missing credential, a decision only the user can make), say exactly what you need; otherwise keep working.`;
+PERSIST UNTIL IT WORKS. Never end your turn with a broken build, failing tests, or an unfinished task list. When a build/test/check fails: read the error, fix it, and re-run the check — repeat until it passes. Run \`run_check\` (or the repo's real check command) before declaring any task complete; "it should work" is not verification. The engine independently re-runs the repo's checks after your turn and will bounce failures straight back to you — finishing red only means doing the same work with less context. If you are genuinely blocked (a missing credential, a decision only the user can make), say exactly what you need; otherwise keep working.
+
+Skills: load with \`use_skill\` only when needed for the current step. When executing an approved plan, drive the seeded checklist via \`update_tasks\` until every task is done and checks pass.`;
 
 /** Today in the session's local timezone, formatted for the ENVIRONMENT block:
  * "Thursday, July 2, 2026 (2026-07-02)". The ISO form gives the model an exact
@@ -207,9 +213,18 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
     sections.push(roster);
   }
   if (inputs.skillDescriptions?.length) {
-    sections.push(
-      `AVAILABLE SKILLS (call \`use_skill\` to load full instructions):\n${inputs.skillDescriptions.join("\n")}`,
-    );
+    const list = inputs.skillDescriptions.join("\n");
+    if (inputs.mode === "plan") {
+      sections.push(
+        `AVAILABLE SKILLS (informational only while planning):\n${list}\n\n` +
+          `Prefer naming skills as post-approval steps in \`present_plan\`. Do not load conversation-taking / init / CDO workflows until the user accepts the plan. \`use_skill\` is for reading skill guidance into the plan — not running it. Skills not listed here are user-only (\`/name\` or \`/skill name\`).`,
+      );
+    } else {
+      sections.push(
+        `AVAILABLE SKILLS (call \`use_skill\` when required for the current step — not "just in case"):\n${list}\n\n` +
+          `Load only a listed skill whose description/whenToUse matches work you will do now. Skills not listed here are user-only (\`/name\` or \`/skill name\`).`,
+      );
+    }
   }
   if (inputs.pluginBlocks?.length) {
     sections.push(...inputs.pluginBlocks);

@@ -60,16 +60,21 @@ const Input = z.object({
  * concrete instructions so the model goes back to GATHER instead of shipping an
  * ungrounded plan. After the gate's rejection budget is spent, the plan passes
  * with an `ungrounded` warning rather than deadlocking the model.
+ *
+ * After a successful present, the session forces toolChoice:"none" for the rest
+ * of the turn so the model cannot keep tooling (skills, tasks, more research)
+ * after the approval card is armed.
  */
 export const presentPlanTool: ToolDefinition<z.infer<typeof Input>> = {
   name: "present_plan",
   description:
-    "Present your finished plan for the user to review. Call this once your plan is complete " +
+    "Present your finished plan for user approval — the ONLY way to ship a plan " +
+    "(free-form chat does not open the approval card). Call once the plan is complete " +
     "AND grounded — the engine rejects a plan whose required research (web_search / webfetch / " +
     "package_info / thorough file reads) never happened, or that lacks steps and verification. " +
     "Pass harvested page URLs in `sources`, unverified items in `assumptions`, and prefer " +
-    "`verification` / `decisions` / `files` for non-trivial work. Do not modify any files — " +
-    "switching to execute mode is the user's decision.",
+    "`verification` / `decisions` / `files` for non-trivial work. After success, further tools " +
+    "are disabled this turn; wait for the user to accept (plan card / /execute) or revise.",
   inputSchema: Input,
   readOnly: true,
   modes: ["plan"],
@@ -95,7 +100,8 @@ export const presentPlanTool: ToolDefinition<z.infer<typeof Input>> = {
     });
     return {
       output:
-        "Plan presented to the user. Stop here — the user will switch to execute mode if they approve.",
+        "Plan presented. STOP — further tools are disabled this turn. " +
+        "Wait for the user to accept (plan card Enter or /execute) or revise.",
     };
   },
 };

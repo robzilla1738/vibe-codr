@@ -338,3 +338,116 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
   expect(present?.isError).toBe(true);
   expect(String(present?.output)).toMatch(/web_search|webfetch/i);
 });
+
+// After a successful present_plan, the session forces toolChoice:"none" so a
+// follow-up tool call in the next step cannot run (terminal plan action).
+test("successful present_plan disables further tools this turn", async () => {
+  let postPresentSearchRuns = 0;
+  const countingSearch: ToolDefinition<{ query: string }> = {
+    ...fakeSearch,
+    execute: async (input) => {
+      // First research pass vs post-present attempt — count only the post-present.
+      if ((input as { query?: string }).query === "should-not-run") {
+        postPresentSearchRuns += 1;
+        return { output: "should not have run" };
+      }
+      return fakeSearch.execute(input as { query: string }, {} as never);
+    },
+  };
+  const steps = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "web_search",
+        input: JSON.stringify({ query: "world cup match today" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "f1",
+        toolName: "webfetch",
+        input: JSON.stringify({ url: "https://fifa.com/todays-match" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "k1",
+        toolName: "package_info",
+        input: JSON.stringify({ name: "next" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify(groundedPlan),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    // Post-present: model tries another tool (the failure mode we hard-stop).
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "s2",
+        toolName: "web_search",
+        input: JSON.stringify({ query: "should-not-run" }),
+      },
+      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: "Waiting for approval." },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: "stop", usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: new ProviderRegistry([
+      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    ]),
+    toolset: new Toolset([presentPlanTool, countingSearch, fakeFetch, fakePkg]),
+    bus,
+    freshness: new FreshnessRegistry(),
+    cwd: mkdtempSync(join(tmpdir(), "vibe-plangate-terminal-")),
+    model: "mock/test",
+    mode: "plan",
+  });
+  const events: UIEvent[] = [];
+  const sub = bus.subscribe();
+  const collector = (async () => {
+    for await (const e of sub) events.push(e);
+  })();
+  await session.run("build a next.js site about today's world cup match");
+  bus.close();
+  await collector;
+
+  expect(events.some((e) => e.type === "plan-presented")).toBe(true);
+  // Terminal: the post-present search must not execute (toolsDisabled hard gate).
+  expect(postPresentSearchRuns).toBe(0);
+  // The forbidden follow-up is either never finished or finished as an error.
+  const s2 = events.find(
+    (e): e is Extract<UIEvent, { type: "tool-call-finished" }> =>
+      e.type === "tool-call-finished" && e.toolCallId === "s2",
+  );
+  if (s2) {
+    expect(s2.isError).toBe(true);
+    expect(String(s2.output)).toMatch(/plan already presented|disabled this turn/i);
+  }
+});

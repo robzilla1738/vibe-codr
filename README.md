@@ -365,6 +365,16 @@ Highlights:
 Custom commands live in `.vibe/commands/*.md`, skills in `.vibe/skills/*/SKILL.md`,
 named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 
+Skill frontmatter supports **invocation control** (Claude Code / VS Code Agent Skills
+parity): `disable-model-invocation: true` makes a skill **user-only** (`/name` or
+`/skill name` — the model cannot auto-load it via `use_skill`; use this for
+conversation-taking workflows like a design director); `user-invocable: false` hides
+a skill from the `/` menu while still allowing the model to load it as background
+knowledge. In plan mode, `present_plan` is the **only** approval path: free-form chat
+plans do not arm the approval card; the engine nudges once if research ran without a
+present; after a successful present, **further tools are disabled that turn** until
+the user accepts (plan card Enter or `/execute`) or revises.
+
 ### Features
 
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
@@ -486,7 +496,11 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
   plan's checklist — a plan longer than 12 steps seeds a catch-all tail task for
   the remainder rather than silently dropping steps), **Ctrl+Y** accepts and runs
   in **yolo** (unattended), **typing**
-  revises the plan, **Esc** keeps planning. **Only an explicit start approves** —
+  revises the plan, **Esc** keeps planning. **`present_plan` is terminal:** free-form
+  chat plans do not open the card; non-trivial research without a present gets one
+  engine nudge to call the tool; after a successful present, **further tools are
+  disabled that turn** (`toolChoice: "none"` + execute hard-gate) until the user
+  accepts or revises. **Only an explicit start approves** —
   plan-card **Enter** or **`/execute`** begins implementation; **Shift+Tab** alone
   does **not** silently accept a waiting plan (the chip stays honest and the
   engine notices how to approve). **Execute** allows
@@ -718,7 +732,9 @@ named subagents in `.vibe/agents/*.md`, and plugins are listed in config.
 - **Hooks, skills & commands (project + global)** — skills and slash-commands
   load from the project's `.vibe/{skills,commands}`, user-global
   `~/.config/vibe-codr/{skills,commands}`, and plugins, most-local-wins:
-  a project file overrides both a plugin's and a global one. Declarative
+  a project file overrides both a plugin's and a global one. Skills honor
+  `disable-model-invocation` / `user-invocable` frontmatter (see Extensions above).
+  Declarative
   `hooks` in config run a shell command (JSON payload on stdin) or POST a URL on
   lifecycle events and get a real feedback channel per event (JSON out), layered
   onto the in-process plugin hook bus:

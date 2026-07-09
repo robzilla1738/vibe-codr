@@ -1,7 +1,13 @@
 import { Glob } from "bun";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { isSlashCommandName, parseSkillMarkdown, type SlashCommand, type Skill } from "@vibe/plugins";
+import {
+  isSlashCommandName,
+  parseFrontmatterBool,
+  parseSkillMarkdown,
+  type SlashCommand,
+  type Skill,
+} from "@vibe/plugins";
 import { vibeConfigDir } from "./memory.ts";
 
 /** Char cap on a loaded command/skill body. Same head-cap discipline as
@@ -124,10 +130,22 @@ export async function loadSkillsFrom(root: string): Promise<Skill[]> {
         // `- : …` line into the system prompt's skills block.
         const name = frontmatter.name?.trim() || basename(dir);
         const whenToUse = frontmatter.when_to_use?.trim() || frontmatter.whenToUse?.trim();
+        // Claude Code / VS Code Agent Skills invocation flags (both kebab and
+        // camel spellings). Default: model + user can invoke.
+        const disableModelInvocation =
+          parseFrontmatterBool(
+            frontmatter["disable-model-invocation"] ?? frontmatter.disableModelInvocation,
+          ) === true;
+        const userInvocable =
+          parseFrontmatterBool(frontmatter["user-invocable"] ?? frontmatter.userInvocable) !==
+          false;
         skills.push({
           name,
           description: frontmatter.description?.trim() || name,
           ...(whenToUse ? { whenToUse } : {}),
+          ...(disableModelInvocation ? { disableModelInvocation: true } : {}),
+          // Only store the non-default so most skills stay a thin shape.
+          ...(userInvocable ? {} : { userInvocable: false }),
           dir,
           load: async () => {
             try {

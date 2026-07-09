@@ -17,6 +17,8 @@ import type { SessionDeps } from "./session.ts";
 export interface SessionToolsHandle {
   readonly id: string;
   readonly depth: number;
+  /** Live session mode — used by use_skill for plan-mode load discipline. */
+  readonly mode?: "plan" | "execute" | "yolo";
   readonly deps: SessionDeps;
   /** Replace the working task list (emits `tasks-updated`). */
   setTasks(incoming: { title: string; status: TaskStatus }[]): Task[];
@@ -33,13 +35,23 @@ export interface SessionToolsHandle {
  * the memory-injection cap). The model gets the head + a pointer to the full file. */
 export const MAX_SKILL_BODY = 32 * 1024;
 
+/** Prefix injected when a skill is loaded during plan mode — skills inform the
+ * plan; they must not start interactive/init workflows until present_plan is
+ * approved. */
+export const PLAN_MODE_SKILL_PREFIX =
+  "PLAN MODE: use this skill only to inform your plan. Do not run init/setup, " +
+  "ask multi-step skill questionnaires, write skill artifacts (e.g. `.svvarm/`), " +
+  "or begin implementation until the user approves via present_plan.\n\n";
+
 /** Build the `use_skill` tool that loads a skill's full body into context. */
 export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ name: string }> {
   const skills = handle.deps.skills;
   return {
     name: "use_skill",
     description:
-      "Load the full instructions for a named skill before performing a task it applies to. Call this when a listed skill is relevant.",
+      "Load the full instructions for a listed skill when required for the current step. " +
+      "Do not load skills just in case. User-only skills (not listed under AVAILABLE SKILLS) " +
+      "cannot be loaded — the user must run /name or /skill name.",
     inputSchema: z.object({
       name: z.string().describe("The skill name to load."),
     }),
@@ -48,6 +60,16 @@ export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ 
       const skill = skills?.get(name);
       if (!skill) {
         return { output: `Unknown skill "${name}".`, isError: true };
+      }
+      // Hard gate: disable-model-invocation skills are user-slash only
+      // (Claude Code / VS Code Agent Skills parity).
+      if (skill.disableModelInvocation) {
+        return {
+          output:
+            `Skill "${name}" is user-invoked only (disable-model-invocation). ` +
+            `Run /${name} or /skill ${name} — the model cannot auto-load it.`,
+          isError: true,
+        };
       }
       const body = await skill.load();
       const capped =
@@ -60,7 +82,8 @@ export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ 
       const locator = skill.dir
         ? `Skill directory: ${skill.dir} — resolve any files the skill references relative to this path.\n\n`
         : "";
-      return { output: `# Skill: ${skill.name}\n\n${locator}${capped}` };
+      const planPrefix = handle.mode === "plan" ? PLAN_MODE_SKILL_PREFIX : "";
+      return { output: `${planPrefix}# Skill: ${skill.name}\n\n${locator}${capped}` };
     },
   };
 }

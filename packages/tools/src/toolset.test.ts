@@ -550,3 +550,29 @@ test("a tool whose signal is already aborted never gates or executes (Esc'd batc
   expect(gateCalls).toHaveLength(0); // permission gate never consulted
   expect(ran).toBe(false); // execute never reached
 });
+
+test("toolsDisabled hard-refuses every tool after terminal present_plan", async () => {
+  let ran = false;
+  const tool: ToolDefinition = {
+    name: "web_search",
+    description: "search",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => {
+      ran = true;
+      return { output: "hits" };
+    },
+  };
+  const out = await (
+    toAISDKTool(tool, {
+      cwd: "/",
+      sessionId: "s",
+      emit: () => {},
+      freshness,
+      toolsDisabled: () => true,
+    }) as unknown as { execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown> }
+  ).execute({}, { toolCallId: "t1" });
+  expect(ran).toBe(false);
+  expect(String(out)).toMatch(/ERROR:.*plan already presented|disabled this turn/i);
+});

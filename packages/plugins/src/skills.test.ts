@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseSkillMarkdown, SkillRegistry } from "./skills.ts";
+import { parseFrontmatterBool, parseSkillMarkdown, SkillRegistry } from "./skills.ts";
 
 test("parses frontmatter and body from a LF document", () => {
   const { frontmatter, body } = parseSkillMarkdown(
@@ -45,6 +45,60 @@ test("registry exposes whenToUse in progressive-disclosure descriptions", () => 
   expect(reg.descriptions()).toEqual([
     "- deploy: Ship the app (use when: when the user asks to deploy)",
   ]);
+});
+
+test("disable-model-invocation skills are omitted from progressive disclosure", () => {
+  const reg = new SkillRegistry();
+  reg.register({
+    name: "svvarm",
+    description: "Design director",
+    disableModelInvocation: true,
+    dir: "/x",
+    load: async () => "body",
+  });
+  reg.register({
+    name: "pdf",
+    description: "Work with PDFs",
+    dir: "/y",
+    load: async () => "body",
+  });
+  // Model must not discover user-only skills; they stay slash-invocable.
+  expect(reg.descriptions()).toEqual(["- pdf: Work with PDFs"]);
+  expect(reg.modelVisible().map((s) => s.name)).toEqual(["pdf"]);
+  expect(reg.list().map((s) => s.name).sort()).toEqual(["pdf", "svvarm"]);
+});
+
+test("user-invocable:false skills stay model-visible but leave the user menu", () => {
+  const reg = new SkillRegistry();
+  reg.register({
+    name: "background",
+    description: "Internal knowledge",
+    userInvocable: false,
+    dir: "/x",
+    load: async () => "body",
+  });
+  reg.register({
+    name: "public",
+    description: "User-facing skill",
+    dir: "/y",
+    load: async () => "body",
+  });
+  expect(reg.descriptions()).toEqual([
+    "- background: Internal knowledge",
+    "- public: User-facing skill",
+  ]);
+  expect(reg.userVisible().map((s) => s.name)).toEqual(["public"]);
+});
+
+test("parseFrontmatterBool accepts common truthy/falsey spellings", () => {
+  expect(parseFrontmatterBool("true")).toBe(true);
+  expect(parseFrontmatterBool("yes")).toBe(true);
+  expect(parseFrontmatterBool("1")).toBe(true);
+  expect(parseFrontmatterBool("false")).toBe(false);
+  expect(parseFrontmatterBool("no")).toBe(false);
+  expect(parseFrontmatterBool("0")).toBe(false);
+  expect(parseFrontmatterBool("maybe")).toBeUndefined();
+  expect(parseFrontmatterBool(undefined)).toBeUndefined();
 });
 
 test("folded block scalar (`>-`): description folds to one spaced string", () => {

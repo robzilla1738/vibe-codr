@@ -329,7 +329,10 @@ export class Session {
   /** The gate the CURRENT turn started with. A mid-turn mode switch retires
    * #planGate, but the in-flight plan turn must keep counting telemetry and
    * evaluating present_plan against the gate it began under — not silently
-   * lose both to the live field going undefined. Reassigned at every run(). */
+   * lose both to the live field going undefined. Reassigned at every run().
+   * After a successful present_plan, `#turnGate.presented` is set synchronously
+   * inside the gate (during tool execute) so prepareStep can force toolChoice
+   * none on the *next* step without racing the fullStream consumer. */
   #turnGate: PlanGate | undefined;
 
   constructor(deps: SessionDeps) {
@@ -568,6 +571,16 @@ export class Session {
   /** Whether the most recent turn ran a side-effecting (non-read-only) tool. */
   get didMutate(): boolean {
     return this.#turnMutated;
+  }
+
+  /**
+   * True when plan mode needs a present_plan nudge: the cycle is non-trivial
+   * (web/versions/code triage) and no successful present_plan has landed yet.
+   * The engine uses this after a plan turn so free-form chat plans cannot
+   * bypass the approval card.
+   */
+  get needsPresentPlan(): boolean {
+    return this.#planGate?.needsPresentNudge() ?? false;
   }
 
   /** True when a background subagent mutated the workspace after its parent
@@ -1081,9 +1094,13 @@ export class Session {
         pluginBlocks: this.#deps.extraSystem,
         subagentsAvailable,
         ...(rosterLines.length ? { agentRoster: rosterLines } : {}),
-        ...(skills?.list().length
-          ? { skillDescriptions: skills.descriptions() }
-          : {}),
+        // Only model-visible skills land in the prompt (disable-model-invocation
+        // skills are omitted by descriptions()). Skip the block entirely when
+        // nothing is model-loadable — an empty AVAILABLE SKILLS header is noise.
+        ...(() => {
+          const skillDescriptions = skills?.descriptions() ?? [];
+          return skillDescriptions.length ? { skillDescriptions } : {};
+        })(),
       });
       // Live defaultAction: re-read approvalMode each check so mid-turn
       // Shift+Tab YOLO↔ASK is honored for subsequent tools (the checker is
@@ -1139,6 +1156,9 @@ export class Session {
         // Wired off the turn-scoped gate — a mid-turn mode switch retires
         // this.#planGate, and the in-flight turn must keep evaluating against
         // the gate it started with instead of dereferencing undefined.
+        // toolsDisabled: after a successful present, refuse every further tool
+        // execute (hard stop — AI SDK still runs mock tool-calls against the
+        // full map even when prepareStep sets toolChoice:"none").
         ...(this.#turnGate
           ? (() => {
               const gate = this.#turnGate;
@@ -1147,6 +1167,7 @@ export class Session {
               return {
                 planGate: (plan) =>
                   gate.evaluate(plan, { isHarvested: (url) => this.#sources.has(url) }),
+                toolsDisabled: () => gate.presented,
               };
             })()
           : {}),
@@ -1342,6 +1363,15 @@ export class Session {
           if (tuning.cacheConversation) next = markConversationTail(next);
           // Anchor next step's overhead calc on exactly what we send this step.
           this.#lastSentEstimate = estimateTokens(next);
+          // Terminal present_plan: PlanGate.presented flips synchronously inside
+          // present_plan.execute (before this next prepareStep), so we never race
+          // the fullStream consumer. Strip tools so the model cannot keep
+          // research/skills/scaffolding after the approval card is armed.
+          const base =
+            next === stepMessages ? ({} as { messages?: typeof next }) : { messages: next };
+          if (this.#turnGate?.presented) {
+            return { ...base, toolChoice: "none" as const, activeTools: [] as string[] };
+          }
           return next === stepMessages ? undefined : { messages: next };
         },
         onError: ({ error }) => {

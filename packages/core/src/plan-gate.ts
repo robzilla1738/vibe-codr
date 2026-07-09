@@ -176,6 +176,11 @@ export class PlanGate {
     scoutSpawns: 0,
   };
   #rejections = 0;
+  /** True once a present_plan call was allowed this plan cycle (grounded or
+   * ungrounded escape). The engine uses this for the end-of-turn present nudge:
+   * a non-trivial cycle that never successfully presented gets a bounded push
+   * to call present_plan instead of ending on free-form chat. */
+  #presented = false;
   /** True in a workspace with no real code yet — a code-read requirement would
    * be unsatisfiable, so it's waived. */
   #greenfield: boolean;
@@ -208,6 +213,9 @@ export class PlanGate {
     // later request in the same plan-mode stay — grounding enforcement would
     // silently degrade to prompt-only exactly where it's needed most.
     this.#rejections = 0;
+    // A revision / new request must present again — a prior present_plan does
+    // not cover the revised plan.
+    this.#presented = false;
   }
 
   /** Count one successful tool call toward the research telemetry. */
@@ -231,6 +239,19 @@ export class PlanGate {
   get nonTrivial(): boolean {
     const t = this.#triage;
     return t.needsWeb || t.needsVersions || t.needsCode;
+  }
+
+  /** True when a present_plan call was allowed this cycle. */
+  get presented(): boolean {
+    return this.#presented;
+  }
+
+  /**
+   * True when the engine should nudge the model to call present_plan: the
+   * request needs grounding AND no successful present has landed yet.
+   */
+  needsPresentNudge(): boolean {
+    return this.nonTrivial && !this.#presented;
   }
 
   /**
@@ -337,9 +358,15 @@ export class PlanGate {
       }
     }
 
-    if (!missing.length) return { allow: true };
+    if (!missing.length) {
+      this.#presented = true;
+      return { allow: true };
+    }
     if (this.#rejections >= this.#maxRejections) {
-      if (this.#allowUngrounded) return { allow: true, ungrounded: true };
+      if (this.#allowUngrounded) {
+        this.#presented = true;
+        return { allow: true, ungrounded: true };
+      }
       // Hard block: keep rejecting with the same instructions (no silent pass).
       return {
         allow: false,

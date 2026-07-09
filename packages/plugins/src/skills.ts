@@ -2,11 +2,28 @@
  * A skill = a folder with a SKILL.md (frontmatter + body). Only the name and
  * description are injected into the system prompt; the body is loaded on
  * demand (progressive disclosure) when the model calls `use_skill`.
+ *
+ * Invocation control (Claude Code / VS Code Agent Skills parity):
+ * - `disableModelInvocation` — user-only (`/name` or `/skill name`); omitted
+ *   from progressive disclosure and rejected by `use_skill`.
+ * - `userInvocable === false` — model-loadable background knowledge; hidden
+ *   from the `/` menu (still loadable via `use_skill` / `/skill`).
  */
 export interface Skill {
   name: string;
   description: string;
   whenToUse?: string;
+  /**
+   * When true, the model must not auto-load this skill via `use_skill` — only
+   * the user may invoke it (`/name` or `/skill name`). Industry standard name:
+   * `disable-model-invocation` in SKILL.md frontmatter.
+   */
+  disableModelInvocation?: boolean;
+  /**
+   * When false, hide from the `/` skills menu (background knowledge the model
+   * may still load). Default true. Frontmatter: `user-invocable`.
+   */
+  userInvocable?: boolean;
   dir: string;
   /** Load the full SKILL.md body (everything after frontmatter). */
   load(): Promise<string>;
@@ -14,6 +31,15 @@ export interface Skill {
 
 /** Char cap for one skill's prompt-resident summary line (see descriptions()). */
 const MAX_PROMPT_LINE = 500;
+
+/** Parse a YAML-ish truthy/falsey scalar from skill frontmatter. */
+export function parseFrontmatterBool(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const t = value.trim().toLowerCase();
+  if (t === "true" || t === "yes" || t === "1") return true;
+  if (t === "false" || t === "no" || t === "0") return false;
+  return undefined;
+}
 
 export class SkillRegistry {
   #skills = new Map<string, Skill>();
@@ -30,11 +56,24 @@ export class SkillRegistry {
     return [...this.#skills.values()];
   }
 
+  /** Skills the model may discover via progressive disclosure (`use_skill`).
+   * Excludes `disableModelInvocation` skills (user-only). */
+  modelVisible(): Skill[] {
+    return this.list().filter((s) => !s.disableModelInvocation);
+  }
+
+  /** Skills shown in the `/` menu / slash autocomplete. Excludes
+   * `userInvocable === false` background-knowledge skills. */
+  userVisible(): Skill[] {
+    return this.list().filter((s) => s.userInvocable !== false);
+  }
+
   /** One-line summaries for the system prompt (progressive disclosure). The
    * `whenToUse` trigger guidance (if the author provided it) is included so the
-   * model knows when to reach for the skill. */
+   * model knows when to reach for the skill. User-only skills
+   * (`disableModelInvocation`) are omitted so the model cannot discover them. */
   descriptions(): string[] {
-    return this.list().map((s) => {
+    return this.modelVisible().map((s) => {
       const line = s.whenToUse
         ? `- ${s.name}: ${s.description} (use when: ${s.whenToUse})`
         : `- ${s.name}: ${s.description}`;

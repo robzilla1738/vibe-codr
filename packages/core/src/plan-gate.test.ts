@@ -26,11 +26,15 @@ test("triage: codebase references need file reads; self-contained work needs not
 test("gate: rejects an ungrounded present twice with instructions, then allows with a warning", () => {
   const gate = new PlanGate();
   gate.noteRequest("build a next.js site about today's world cup match");
+  expect(gate.needsPresentNudge()).toBe(true);
+  expect(gate.presented).toBe(false);
 
   // No research at all → rejected with concrete instructions.
   const first = gate.evaluate({});
   expect(first.allow).toBe(false);
   expect(first.reason).toContain("web_search");
+  expect(gate.presented).toBe(false);
+  expect(gate.needsPresentNudge()).toBe(true);
 
   const second = gate.evaluate({});
   expect(second.allow).toBe(false);
@@ -39,6 +43,38 @@ test("gate: rejects an ungrounded present twice with instructions, then allows w
   const third = gate.evaluate({});
   expect(third.allow).toBe(true);
   expect(third.ungrounded).toBe(true);
+  expect(gate.presented).toBe(true);
+  expect(gate.needsPresentNudge()).toBe(false);
+});
+
+test("gate: a successful present clears the present nudge; a new request re-arms it", () => {
+  const gate = new PlanGate();
+  gate.noteRequest("write a haiku about rain");
+  // Self-contained → nonTrivial false → no nudge even without present.
+  expect(gate.nonTrivial).toBe(false);
+  expect(gate.needsPresentNudge()).toBe(false);
+
+  gate.noteRequest("build a next.js site about today's world cup match");
+  expect(gate.needsPresentNudge()).toBe(true);
+
+  gate.recordToolUse("web_search");
+  gate.recordToolUse("webfetch");
+  gate.recordToolUse("package_info");
+  const ok = gate.evaluate({
+    plan: "- [ ] scaffold\n- [ ] verify build\n",
+    sources: [{ url: "https://example.com/match" }],
+    verification: "next build",
+    decisions: ["next.js — requested stack"],
+  });
+  // Without a harvested-source checker, any http(s) URL counts as shaped.
+  expect(ok.allow).toBe(true);
+  expect(gate.presented).toBe(true);
+  expect(gate.needsPresentNudge()).toBe(false);
+
+  // Revision prompt re-arms present requirement.
+  gate.noteRequest("also add player photos");
+  expect(gate.presented).toBe(false);
+  expect(gate.needsPresentNudge()).toBe(true);
 });
 
 test("gate: needsWeb requires webfetch + harvested sources (search alone is not enough)", () => {

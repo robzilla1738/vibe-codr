@@ -72,6 +72,27 @@ test("loadSkills surfaces name/description and lazily loads the body", async () 
   expect(skills.find((s) => s.name === "both")?.whenToUse).toBe("snake");
 });
 
+test("loadSkills parses disable-model-invocation and user-invocable flags", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-skill-inv-"));
+  await Bun.write(
+    join(dir, ".vibe", "skills", "manual", "SKILL.md"),
+    `---\nname: manual\ndescription: User only\ndisable-model-invocation: true\n---\nBody.`,
+  );
+  await Bun.write(
+    join(dir, ".vibe", "skills", "bg", "SKILL.md"),
+    `---\nname: bg\ndescription: Background\nuser-invocable: false\n---\nBody.`,
+  );
+  await Bun.write(
+    join(dir, ".vibe", "skills", "normal", "SKILL.md"),
+    `---\nname: normal\ndescription: Default\n---\nBody.`,
+  );
+  const skills = await loadSkills(dir);
+  expect(skills.find((s) => s.name === "manual")?.disableModelInvocation).toBe(true);
+  expect(skills.find((s) => s.name === "bg")?.userInvocable).toBe(false);
+  expect(skills.find((s) => s.name === "normal")?.disableModelInvocation).toBeUndefined();
+  expect(skills.find((s) => s.name === "normal")?.userInvocable).toBeUndefined();
+});
+
 test("command and skill bodies are read lazily at invocation, not retained from startup", async () => {
   // The body used to be captured eagerly in the run/load closure — an edit
   // after startup was invisible, and a huge file sat in memory for the whole

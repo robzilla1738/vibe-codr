@@ -4,6 +4,38 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — skill invocation control + terminal plan approval
+
+Industry-standard agent governance so free-form plans and unsolicited skill
+hijacks cannot bypass the human gate:
+
+- **Skill frontmatter (Claude Code / VS Code Agent Skills parity):**
+  `disable-model-invocation: true` makes a skill **user-only** (`/name` or
+  `/skill name`) — omitted from progressive disclosure and rejected by
+  `use_skill`. `user-invocable: false` hides a skill from the `/` menu while
+  still allowing model load (background knowledge). `/skills` marks user-only
+  skills; slash autocomplete excludes non-user-invocable ones.
+- **Mode-aware skill doctrine** in the system prompt: plan mode treats skills as
+  informational (name as post-approval steps); execute loads only when needed.
+  Plan-mode `use_skill` prefixes bodies with a hard "do not run init/setup"
+  banner.
+- **Terminal `present_plan`:** free-form chat is not approval. After a successful
+  present, `prepareStep` sets `toolChoice: "none"` and the tool adapter's
+  `toolsDisabled` gate **hard-refuses every further tool execute** that turn
+  (covers models/mocks that ignore toolChoice). Success copy and plan HARD RULES
+  say STOP and wait for the plan card / `/execute`.
+- **Present nudge:** non-trivial plan cycles that research but never call
+  `present_plan` get one bounded engine follow-up to present (not implement).
+- **PlanGate** tracks `presented` / `needsPresentNudge` across the plan cycle
+  (revision prompts re-arm present).
+
+### Docs
+
+- README skills + plan sections document invocation flags and terminal present.
+- AGENTS.md subsystem invariants for skill invocation and present-plan hard stop.
+
+## 0.4.18 — 2026-07-09
+
 ### Fixed — adversarial audit (BUG-097–107)
 
 Fresh multi-package adversarial re-sweep against `AGENTS.md` invariants. **0 active**

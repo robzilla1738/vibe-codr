@@ -56,6 +56,12 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
   /** Plan-readiness gate consulted by present_plan (see ToolContext.planGate). */
   planGate?: ToolContext["planGate"];
   /**
+   * When true, every tool execute is refused (terminal present_plan). prepareStep
+   * also strips tools for real models; this is the hard backstop for mocks and
+   * models that ignore toolChoice:"none".
+   */
+  toolsDisabled?: () => boolean;
+  /**
    * Record whether a tool call ended in a (handled) error, keyed by toolCallId.
    * Handled errors are returned to the model as ordinary string results, so the
    * AI-SDK `tool-result` stream part carries no error flag; the consumer reads
@@ -322,6 +328,18 @@ export function toAISDKTool(
         throw Object.assign(new Error("aborted before the tool ran"), { name: "AbortError" });
       }
     };
+    abortIfCancelled();
+
+    // Terminal present_plan: further tools this turn are hard-refused so free-form
+    // "next I'll start" / skill init cannot run after the approval card is armed.
+    // prepareStep strips tools for compliant models; this gate covers everything else.
+    if (base.toolsDisabled?.()) {
+      const reason =
+        "plan already presented — further tools are disabled this turn; wait for the user to accept or revise";
+      base.emit({ type: "notice", level: "info", message: `Blocked ${def.name}: ${reason}` });
+      base.recordToolResult?.(options.toolCallId, true);
+      return `ERROR: tool "${def.name}" was blocked (${reason}).`;
+    }
     abortIfCancelled();
 
     // Plugin/hook veto (runs before the permission gate so a policy hook can

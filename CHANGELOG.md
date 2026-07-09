@@ -4,6 +4,32 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — path aliases + structured goal/loop assessment
+
+Hardening for weaker / local models that miss tool-schema field names or lack
+native JSON `response_format`:
+
+- **Path field aliases:** file tools (`read` / `write` / `edit` / `grep` / `ls` /
+  `git_diff` / `git_log`) accept `path` under the documented name **and** common
+  model aliases (`file_path`, `filePath`, `file`). Normalization runs at schema
+  validation and **before** permission matching so path-scoped deny/allow still
+  fires. Empty-string `path` no longer blocks a usable alias. Content-only
+  writes (no path under any name) still fail honestly.
+- **`generateStructuredObject`:** `/goal` self-assess and `/loop --until` try
+  native `generateObject` when the model supports structured outputs, else
+  prompt-JSON + extract + Zod parse. Local `ollama/*` and `lmstudio/*` skip
+  native structured mode up front (avoids AI SDK `responseFormat` warning spam
+  and "assessment unavailable — continuing"). **Abort/Esc is not converted into
+  a second model call.**
+- **AI SDK warnings:** default-off in-process so residual SDK warnings do not
+  paint over the TUI footer.
+
+### Docs
+
+- AGENTS.md notes path-alias + structured-assess invariants.
+
+## 0.4.19 — 2026-07-09
+
 ### Added — skill invocation control + terminal plan approval
 
 Industry-standard agent governance so free-form plans and unsolicited skill

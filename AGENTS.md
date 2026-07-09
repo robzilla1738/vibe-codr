@@ -393,6 +393,17 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
     adapter hard-refuses every further tool execute that turn. Non-trivial plan
     cycles that research without presenting get one bounded engine present-nudge.
     Revision prompts re-arm present via `PlanGate.noteRequest`.
+  - **Path field aliases:** file-bearing built-ins accept `path` under the
+    documented name and the common model aliases (`file_path` / `filePath` /
+    `file`) via shared `path-input` normalize — at schema validation and again
+    before permission matching so a path-scoped deny/allow cannot be skipped by
+    an alias. Empty-string `path` does not block a usable alias; content-only
+    (no path under any name) still fails schema.
+  - **Structured goal/loop assess:** `/goal` self-assess and `/loop --until` use
+    `generateStructuredObject` — native `generateObject` when the model supports
+    structured outputs, else prompt-JSON + extract + Zod. Local `ollama/*` /
+    `lmstudio/*` skip native structured mode; AbortError must never fall through
+    into a second model call.
   - **Wayback recovery fires ONLY on HTTP-status failures** — an SSRF-guard
     rejection must propagate untouched (asking archive.org about a blocked
     internal URL would leak it).

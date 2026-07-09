@@ -118,3 +118,50 @@ test("generateStructuredObject falls back when native generateObject fails", asy
   expect(object).toEqual({ done: true, reason: "recovered" });
   expect(n).toBe(2);
 });
+
+test("generateStructuredObject does not fall through to a second call on AbortError", async () => {
+  let n = 0;
+  const model = new MockLanguageModelV2({
+    doGenerate: async () => {
+      n++;
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    },
+  });
+  await expect(
+    generateStructuredObject({
+      model,
+      schema: z.object({ done: z.boolean(), reason: z.string() }),
+      prompt: "check",
+      supportsStructuredOutput: true,
+    }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  // Native threw AbortError — must NOT spend a second generateText call.
+  expect(n).toBe(1);
+});
+
+test("generateStructuredObject respects a pre-aborted signal without calling the model", async () => {
+  let n = 0;
+  const model = new MockLanguageModelV2({
+    doGenerate: async () => {
+      n++;
+      return {
+        content: [{ type: "text" as const, text: "{}" }],
+        finishReason: "stop" as const,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        warnings: [],
+      };
+    },
+  });
+  const ac = new AbortController();
+  ac.abort();
+  await expect(
+    generateStructuredObject({
+      model,
+      schema: z.object({ done: z.boolean(), reason: z.string() }),
+      prompt: "check",
+      supportsStructuredOutput: false,
+      abortSignal: ac.signal,
+    }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(n).toBe(0);
+});

@@ -1885,10 +1885,15 @@ export class Engine implements EngineClient {
     } catch {
       /* catalog optional */
     }
-    // Local ollama without cloud signal: skip native generateObject (avoids the
-    // AI SDK "responseFormat is not supported" warning flooding the TUI and the
-    // "assessment unavailable" path on models that return free-form text).
-    if (model.startsWith("ollama/") && !model.includes("cloud")) return false;
+    // Local Ollama / LM Studio without a catalog hit: skip native generateObject
+    // (avoids the AI SDK "responseFormat is not supported" warning flooding the
+    // TUI and the "assessment unavailable" path on free-form local models).
+    if (
+      (model.startsWith("ollama/") && !model.includes("cloud")) ||
+      model.startsWith("lmstudio/")
+    ) {
+      return false;
+    }
     return undefined;
   }
 

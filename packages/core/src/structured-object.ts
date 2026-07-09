@@ -37,11 +37,20 @@ export async function generateStructuredObject<SCHEMA extends z.ZodType>(opts: {
         maxRetries,
       });
       return object as z.infer<SCHEMA>;
-    } catch {
+    } catch (err) {
+      // Never convert cancellation into a second model call — Esc / deadline
+      // must stop assessment, not spend another turn on the text fallback.
+      if (isAbortLike(err, abortSignal)) throw err;
       // Fall through to prompt-JSON. Native may fail because the provider
       // rejects response_format, the model returns non-JSON, or the schema
       // validation failed on a soft JSON attempt.
     }
+  }
+
+  // If the native path aborted mid-flight we rethrew; still re-check so a
+  // supportsStructuredOutput:false path also respects a pre-aborted signal.
+  if (abortSignal?.aborted) {
+    throw Object.assign(new Error("aborted"), { name: "AbortError" });
   }
 
   const { text } = await generateText({
@@ -61,6 +70,12 @@ export async function generateStructuredObject<SCHEMA extends z.ZodType>(opts: {
     );
   }
   return schema.parse(parsed) as z.infer<SCHEMA>;
+}
+
+function isAbortLike(err: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return true;
+  const name = (err as { name?: string } | null)?.name;
+  return name === "AbortError" || name === "TimeoutError";
 }
 
 /**

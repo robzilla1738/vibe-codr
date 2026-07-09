@@ -61,6 +61,12 @@ test("normalizePathAliases copies the first alias into path", () => {
     file_path: "b.ts",
   });
   expect(normalizePathAliases({ content: "only" })).toEqual({ content: "only" });
+  // Empty path does not block a usable alias.
+  expect(normalizePathAliases({ path: "", file_path: "real.ts" })).toEqual({
+    path: "real.ts",
+    file_path: "real.ts",
+  });
+  expect(pickPathField({ path: "", file: "via-file.ts" })).toBe("via-file.ts");
 });
 
 test("write/edit/read schemas accept path under each alias", () => {

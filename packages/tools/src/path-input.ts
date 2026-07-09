@@ -17,7 +17,9 @@ export function pickPathField(input: unknown): string | undefined {
   const o = input as Record<string, unknown>;
   for (const key of PATH_FIELD_ALIASES) {
     const v = o[key];
-    if (typeof v === "string") return v;
+    // Empty string is not a usable path — keep scanning aliases so a model
+    // that sent `path:""` + `file_path:"real.ts"` still resolves.
+    if (typeof v === "string" && v.length > 0) return v;
   }
   return undefined;
 }
@@ -25,16 +27,17 @@ export function pickPathField(input: unknown): string | undefined {
 /**
  * Ensure a tool-input object carries the canonical `path` field when the model
  * only supplied an alias (`file_path` / `filePath` / `file`). Leaves input
- * untouched when `path` is already a string or no alias is present. Pure.
+ * untouched when `path` is already a non-empty string or no alias is present.
+ * Pure.
  */
 export function normalizePathAliases(input: unknown): unknown {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
   const o = input as Record<string, unknown>;
-  if (typeof o.path === "string") return input;
+  if (typeof o.path === "string" && o.path.length > 0) return input;
   for (const key of PATH_FIELD_ALIASES) {
     if (key === "path") continue;
     const v = o[key];
-    if (typeof v === "string") return { ...o, path: v };
+    if (typeof v === "string" && v.length > 0) return { ...o, path: v };
   }
   return input;
 }

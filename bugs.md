@@ -1,23 +1,35 @@
 # vibe-codr — Bug & Weakness Audit
 
-**Status:** Fresh adversarial re-sweep complete (2026-07-09) — **0 active** Critical/High/Medium  
-**HEAD:** post-fix BUG-097–107 + prior BUG-051–096  
-**Method:** Multi-package adversarial audit (shared/config/providers/plugins/tools/core/cli/tui/release) against AGENTS.md invariants; shipped-path regressions for every C/H/M.  
-**Gate at close:** `bun run typecheck` 8/8 · `bun test` 1683 pass · `bun run lint` clean · `bun run smoke:tui` SMOKE OK  
+**Status:** Fresh full-codebase audit complete (2026-07-11) — **0 active** Critical/High/Medium  
+**HEAD:** post-fix BUG-108–109 + prior BUG-097–107 + BUG-051–096  
+**Method:** Full-codebase adversarial audit (shared/config/providers/plugins/tools/core/cli/tui/release/macos-bridge) against AGENTS.md invariants; every source file reviewed; 5× consecutive full-suite runs.  
+**Gate at close:** `bun run typecheck` 9/9 · `bun test` 1746 pass · `bun run lint` clean · `bun run format` idempotent · `bun run smoke:tui` SMOKE OK  
 
 ---
 
 ## Summary
 
-| Severity | Active | Fixed 2026-07-09 | Prior closed |
-|----------|--------|------------------|--------------|
-| Critical | **0** | 0 | 1 (BUG-084) |
-| High | **0** | 3 | 6 |
-| Medium | **0** | 8 | 22 |
-| Low | **0** | 0 (deferred with rationale) | 14 |
-| **Total active** | **0** | **11** | — |
-| Prior fixed catalog | — | — | BUG-001–096 |
-| Refuted | 2 | — | BUG-033, 035 |
+| Severity | Active | Fixed 2026-07-11 | Fixed 2026-07-09 | Prior closed |
+|----------|--------|-------------------|-------------------|--------------|
+| Critical | **0** | 0 | 0 | 1 (BUG-084) |
+| High | **0** | 0 | 3 | 6 |
+| Medium | **0** | 2 | 8 | 22 |
+| Low | **0** | 0 (deferred with rationale) | 0 (deferred with rationale) | 14 |
+| **Total active** | **0** | **2** | **11** | — |
+| Prior fixed catalog | — | — | — | BUG-001–096 |
+| Refuted | 2 | — | — | BUG-033, 035 |
+
+---
+
+
+---
+
+## Fixed this remediation (2026-07-11) — BUG-108+
+
+| ID | Sev | Fix |
+|----|-----|-----|
+| **BUG-108** | Medium | Browser-verify internal wall-clock timeout returned `null` (silent skip) instead of `couldNotRun` — a timeout is NOT a user cancellation (the check was attempted). Track `externallyAborted` vs internal timer; only external abort → null. Fixed flaky test (~20% failure under load). |
+| **BUG-109** | Medium | Codebase formatting not idempotent — 204 files didn't match `bun run format` with biome 2.5.1 (one-element-per-line arrays vs committed fill style). Applied formatter output so `bun run format` is a no-op. |
 
 ---
 

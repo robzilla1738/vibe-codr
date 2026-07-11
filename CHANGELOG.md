@@ -4,6 +4,35 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.4.26 — 2026-07-11
+
+### Fixed — flaky browser-verify test (internal timeout vs external abort)
+
+The browser-verify wall-clock timeout and the external (Esc) signal both
+aborted the same `AbortController`, so the catch block returned `null` (silent
+skip) for both. But a timeout is NOT a user cancellation — the check was
+attempted and just didn't finish. Under system load (when browser launch was
+slow), the 8s timeout fired during `page.goto` against a dead port, making
+the test flaky (~20% failure rate).
+
+- **Fix:** track whether the abort came from the external signal
+  (`externallyAborted`) vs the internal timer. Only the external abort maps to
+  `null` (silent skip — the user cancelled); the internal timeout maps to
+  `couldNotRun` (honest — the check was attempted). All signal-aborted
+  checkpoints in the function now distinguish the two paths consistently.
+
+### Fixed — codebase formatting (biome 2.5.1 idempotency)
+
+The repo was committed with multi-element-per-line arrays (fill style from an
+earlier biome version), but `bun run format` with biome 2.5.1 (the declared
+version in `package.json`) expands arrays to one element per line. Running
+`bun run format` produced a 204-file diff — the codebase wasn't consistently
+formatted with its own formatter.
+
+- **Fix:** applied the formatter output so `bun run format` is now a no-op
+  (idempotent). All 1746 tests, typecheck, lint, and smoke TUI still pass
+  after the reformat.
+
 ### Fixed — npm TUI fallback to REPL + peer dep warning
 
 The npm package was falling back to the basic readline REPL instead of the

@@ -1,6 +1,6 @@
 {
   "name": "@vibe/shared",
-  "version": "0.0.0",
+  "version": "0.4.26",
   "private": true,
   "type": "module",
   "exports": {

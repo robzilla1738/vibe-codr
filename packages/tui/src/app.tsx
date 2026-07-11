@@ -2903,6 +2903,7 @@ export function App(props: { engine: EngineClient }) {
                           flexShrink={0}
                           wrapMode="none"
                           fg={preview()!.diff ? diffColor(line, palette()) : palette().muted}
+                          bg={preview()!.diff ? diffBg(line, palette()) : undefined}
                         >
                           {`  ${truncate(preview()!.diff ? diffPad(line) : line, Math.max(20, contentWidth() - 9)) || " "}`}
                         </text>
@@ -3622,12 +3623,15 @@ function CodeBlock(props: {
     return l.length ? l : [""];
   };
   const w = () => Math.max(12, (props.width ?? 96) - 2);
-  // Inset elevated surface + quiet language tag (gutter tone — softer than
-  // body muted so the tag reads as chrome, not code).
+  // Inset elevated surface + refined language tag. The tag sits in the muted
+  // tone with a thin border-tone separator under it, so it reads as a labeled
+  // block header (opencode-style) rather than a line of code. Vertical padding
+  // gives the code breathing room inside the raised surface.
   return (
-    <box flexDirection="column" flexShrink={0} backgroundColor={p.elevated} paddingLeft={1} paddingRight={1}>
+    <box flexDirection="column" flexShrink={0} backgroundColor={p.elevated} paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
       <Show when={props.block().lang}>
-        <text fg={p.gutter}>{props.block().lang}</text>
+        <text fg={p.muted} attributes={TextAttributes.BOLD}>{props.block().lang}</text>
+        <text fg={p.border} wrapMode="none">{"─".repeat(Math.max(4, Math.min(w(), 72)))}</text>
       </Show>
       <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{truncateWidth(l, w()) || " "}</text>}</For>
     </box>
@@ -4212,11 +4216,11 @@ function ToolBlockView(props: {
       {/* Header: chevron/spinner · icon · summary … right-aligned meta. */}
       <box flexDirection="row" flexShrink={0}>
         <text flexShrink={0} fg={!b().done ? p.tool : p.muted}>{`${chevron()} `}</text>
-        <text flexShrink={0} fg={b().isError ? p.del : p.tool}>{icon()}</text>
+        <text flexShrink={0} fg={b().isError ? p.del : !b().done ? p.tool : p.muted}>{icon()}</text>
         {/* The summary is PRE-truncated with an ellipsis to the width left after
             the meta column — flexShrink alone hard-clips it mid-word straight
             into the meta ("…comparison 202  2.1s · 5 results"), reading as broken. */}
-        <text flexShrink={1} wrapMode="none" fg={b().isError ? p.del : p.muted}>
+        <text flexShrink={1} wrapMode="none" fg={b().isError ? p.del : !b().done ? p.assistant : p.muted}>
           {` ${truncate(
             summary(),
             Math.max(
@@ -4248,9 +4252,15 @@ function ToolBlockView(props: {
               <For each={visible()}>
                 {(line) =>
                   b().isDiff ? (
-                    // Fg-only diff: green additions, red deletions, dim context — no
-                    // background band (flat stays uniform on any terminal).
-                    <text fg={diffColor(line, p)} wrapMode="none">
+                    // Diff with background tints: green additions on addBg, red
+                    // deletions on delBg, dim context on the panel surface —
+                    // matching opencode's diff rendering (the palette ships
+                    // addBg/delBg per theme for exactly this).
+                    <text
+                      fg={diffColor(line, p)}
+                      bg={diffBg(line, p)}
+                      wrapMode="none"
+                    >
                       {`  ${truncate(diffPad(line), Math.max(20, (props.width ?? 80) - 2)) || " "}`}
                     </text>
                   ) : (
@@ -4361,6 +4371,15 @@ function diffColor(line: string, p: Palette): string {
   if (line.startsWith("+")) return p.add;
   if (line.startsWith("-")) return p.del;
   return p.muted;
+}
+
+/** The background tint for a diff line: addBg for additions, delBg for
+ *  deletions, transparent for context/hunk headers — so a diff reads as
+ *  colored bands (opencode-style), not just colored text on flat black. */
+function diffBg(line: string, p: Palette): string | undefined {
+  if (line.startsWith("+")) return p.addBg;
+  if (line.startsWith("-")) return p.delBg;
+  return undefined;
 }
 
 /** Open the diff's sign column out to `± content`: one space after the +/-/context

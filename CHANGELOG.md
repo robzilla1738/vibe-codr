@@ -4,6 +4,26 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Improved — TUI visual polish (opencode-parity diff bands, tool hierarchy, code blocks)
+
+A focused pass on the TUI's rendering to match opencode's visual quality:
+
+- **Diff background tints:** additions and deletions now render on subtle
+  `addBg` / `delBg` colored bands (the palette already defined these per theme
+  but they were unused). Diffs read as colored bands like opencode's, not just
+  colored text on flat black. Applied to both the transcript's tool-step diff
+  expansion and the permission card's edit preview.
+- **Tool step visual hierarchy:** running tool steps now show their icon in the
+  vivid tool (teal) tone and their summary in the body white — they read as
+  "alive." Completed steps dim both to muted so a long run of finished tool
+  calls scans as quiet chrome instead of a wall of teal. Matches opencode's
+  `textMuted`-when-complete vs `text`-when-running approach.
+- **Code block polish:** the language label is now bold muted with a thin
+  border-tone separator line beneath it, and the block has vertical padding —
+  so a fenced code block reads as a labeled, structured header (opencode-style)
+  rather than a faint line of text followed immediately by code.
+- Regenerated all 21 README screenshots to reflect the new styling.
+
 ### Added — macOS bridge + session management
 
 A new `@vibe/macos-bridge` package powers the SwiftUI and Electron desktop

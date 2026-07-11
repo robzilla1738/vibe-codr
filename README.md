@@ -106,7 +106,7 @@ in one word — **`/accent blue`**, or `purple`, `orange`, `ember`, `amber`,
 `green`, `teal`, `violet`, `rose`, `white`, or any `/accent <hex>` — the swatch
 submenu previews each hue live, and the wordmark fade, markers, and input rail
 all follow it (`/theme opencode` keeps the classic peach look). The other colors are purely
-functional — green/red on diffs, amber on warnings, and one **calm muted tone**
+functional — green/red on diffs with subtle background tints, amber on warnings, and one **calm muted tone**
 for the tool-step / subagent rails. The layout is a **single, centered chat
 column** (ChatGPT-style): it fills a narrow terminal and centers on a wide one,
 with **no sidebar and no top header**. A fresh screen shows a **centered VIBE

@@ -21,10 +21,7 @@ import {
 import { guardedFetchText } from "./webfetch.ts";
 
 const Input = z.object({
-  query: z
-    .string()
-    .min(1)
-    .describe("Search query. Supports operators like `site:domain.com`."),
+  query: z.string().min(1).describe("Search query. Supports operators like `site:domain.com`."),
   recencyDays: z
     .number()
     .int()
@@ -120,7 +117,10 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
         { name: "bing", run: (q) => bingSearch(q, engineOpts, fetchImpl, signal) },
       ];
       if (apiKey) {
-        engines.unshift({ name: "tinyfish", run: (q) => tinyFishSearch(q, recencyDays, apiKey, fetchImpl, signal) });
+        engines.unshift({
+          name: "tinyfish",
+          run: (q) => tinyFishSearch(q, recencyDays, apiKey, fetchImpl, signal),
+        });
       }
 
       // Fan out every (query × engine) pair concurrently; each settles to a
@@ -149,13 +149,14 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
           if (s.results) {
             anyAnswered = true;
             for (const [i, r] of s.results.entries()) {
+              const date = detectDate(r.snippet);
               candidates.push({
                 title: r.title,
                 url: r.url,
                 snippet: r.snippet,
                 rank: r.position || i + 1,
                 engine: s.engine,
-                ...(detectDate(r.snippet) ? { date: detectDate(r.snippet) } : {}),
+                ...(date ? { date } : {}),
               });
             }
           } else if (s.error) {
@@ -171,7 +172,8 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
       );
       if (!candidates.length && !errors.length && !anyAnswered) {
         return {
-          output: "Search failed: all configured search engines are temporarily cooling down after recent failures.",
+          output:
+            "Search failed: all configured search engines are temporarily cooling down after recent failures.",
           isError: true,
         };
       }
@@ -187,7 +189,8 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
           const second = collect(await runFanout([alt]));
           if (!second.candidates.length && !second.errors.length && !second.anyAnswered) {
             return {
-              output: "Search failed: all configured search engines are temporarily cooling down after recent failures.",
+              output:
+                "Search failed: all configured search engines are temporarily cooling down after recent failures.",
               isError: true,
             };
           }
@@ -198,7 +201,9 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
       }
 
       const merged = mergeCandidates(candidates, maxResults ?? DEFAULT_MAX);
-      const note = reformulatedTo ? `(no results for the original phrasing — reformulated to "${reformulatedTo}")\n` : "";
+      const note = reformulatedTo
+        ? `(no results for the original phrasing — reformulated to "${reformulatedTo}")\n`
+        : "";
       if (merged.length && deep) {
         const enriched = await deepEnrich(query, merged, signal, opts.enrichFetch);
         if (ctx.abortSignal.aborted) return { output: "Search aborted." };
@@ -210,7 +215,9 @@ export function webSearchTool(opts: WebSearchOptions = {}): ToolDefinition<z.inf
       if (!anyAnswered && errors.length) {
         return { output: `Search failed (${errors.join("; ")}).`, isError: true };
       }
-      return { output: `No results for "${query}"${reformulatedTo ? ` (also tried "${reformulatedTo}")` : ""}.` };
+      return {
+        output: `No results for "${query}"${reformulatedTo ? ` (also tried "${reformulatedTo}")` : ""}.`,
+      };
     },
   };
 }
@@ -245,24 +252,34 @@ async function deepEnrich(
   enrichFetch?: (url: string, signal: AbortSignal) => Promise<string>,
 ): Promise<EnrichedCandidate[]> {
   const fetchPage =
-    enrichFetch ?? ((url: string, s: AbortSignal) => guardedFetchText(url, { signal: s, maxBytes: DEEP_FETCH_BYTES }));
+    enrichFetch ??
+    ((url: string, s: AbortSignal) =>
+      guardedFetchText(url, { signal: s, maxBytes: DEEP_FETCH_BYTES }));
   const terms = queryTerms(query);
   const enriched = await Promise.all(
-    merged.slice(0, DEEP_FETCH_PAGES).map(async (c): Promise<EnrichedCandidate & { score: number }> => {
-      try {
-        const text = await fetchPage(enrichmentUrl(c.url), signal);
-        const passages = selectPassages(text, query, 2).map((p) => p.text);
-        const date = detectDate(text.slice(0, 4_000)) ?? c.date;
-        const score =
-          scorePage(
-            { url: c.url, domain: safeHost(c.url), title: c.title, text, ...(date ? { date } : {}) },
-            terms,
-          ) + passageBonus(selectPassages(text, query, 1));
-        return { ...c, ...(date ? { date } : {}), passages, score };
-      } catch {
-        return { ...c, score: 0 }; // page dead/blocked — keep the snippet-only entry
-      }
-    }),
+    merged
+      .slice(0, DEEP_FETCH_PAGES)
+      .map(async (c): Promise<EnrichedCandidate & { score: number }> => {
+        try {
+          const text = await fetchPage(enrichmentUrl(c.url), signal);
+          const passages = selectPassages(text, query, 2).map((p) => p.text);
+          const date = detectDate(text.slice(0, 4_000)) ?? c.date;
+          const score =
+            scorePage(
+              {
+                url: c.url,
+                domain: safeHost(c.url),
+                title: c.title,
+                text,
+                ...(date ? { date } : {}),
+              },
+              terms,
+            ) + passageBonus(selectPassages(text, query, 1));
+          return { ...c, ...(date ? { date } : {}), passages, score };
+        } catch {
+          return { ...c, score: 0 }; // page dead/blocked — keep the snippet-only entry
+        }
+      }),
   );
   const rest: (EnrichedCandidate & { score: number })[] = merged
     .slice(DEEP_FETCH_PAGES)

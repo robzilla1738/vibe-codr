@@ -31,7 +31,17 @@
  * passthrough with no marshalling.
  */
 import type { Worker as WorkerType } from "node:worker_threads";
-import { AsyncQueue, type EngineClient, type EngineCommand, type EngineSnapshot, type ModelSummary, type AgentInfo, type ProviderInfo, type SkillInfo, type UIEvent } from "@vibe/shared";
+import {
+  AsyncQueue,
+  type EngineClient,
+  type EngineCommand,
+  type EngineSnapshot,
+  type ModelSummary,
+  type AgentInfo,
+  type ProviderInfo,
+  type SkillInfo,
+  type UIEvent,
+} from "@vibe/shared";
 
 /** Wire messages (UI → core). Commands are forwarded raw; RPC calls carry
  * their own envelope so the worker can correlate the reply. */
@@ -49,8 +59,7 @@ const hasKey = (m: unknown, k: string): m is Record<string, unknown> =>
   m !== null && typeof m === "object" && k in (m as Record<string, unknown>);
 const isResp = (m: Inbound): m is Extract<Inbound, { __resp: number }> => hasKey(m, "__resp");
 const isFatal = (m: Inbound): m is Extract<Inbound, { __fatal__: true }> => hasKey(m, "__fatal__");
-const isInboundEvent = (m: Inbound): m is UIEvent =>
-  !isResp(m) && !isFatal(m) && hasKey(m, "type");
+const isInboundEvent = (m: Inbound): m is UIEvent => !isResp(m) && !isFatal(m) && hasKey(m, "type");
 
 export interface WorkerEngineOptions {
   /** Absolute path to the worker entry script. In source: the in-repo
@@ -98,7 +107,10 @@ export interface WorkerEngineOptions {
 export class WorkerEngineClient implements EngineClient {
   readonly #worker: WorkerType;
   readonly #events = new AsyncQueue<UIEvent>();
-  readonly #pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  readonly #pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
   #nextReq = 1;
   #closed = false;
   #onFatal?: (message: string) => void;
@@ -244,7 +256,8 @@ export class WorkerEngineClient implements EngineClient {
   #close(reason: string): void {
     if (this.#closed) return;
     this.#closed = true;
-    for (const waiter of this.#pending.values()) waiter.reject(new Error(`engine worker closed (${reason})`));
+    for (const waiter of this.#pending.values())
+      waiter.reject(new Error(`engine worker closed (${reason})`));
     this.#pending.clear();
     this.#events.close();
   }
@@ -316,7 +329,9 @@ export class WorkerEngineClient implements EngineClient {
  * stays in-process in source anyway) doesn't statically pull worker_threads
  * into bundles that disable the worker. Optional-peer invariant preserved.
  */
-export async function createWorkerEngineClient(opts: WorkerEngineOptions): Promise<WorkerEngineClient> {
+export async function createWorkerEngineClient(
+  opts: WorkerEngineOptions,
+): Promise<WorkerEngineClient> {
   const mod = "node:worker_threads";
   const { Worker } = await import(mod);
   const worker = new Worker(opts.workerPath, {
@@ -335,7 +350,7 @@ export async function createWorkerEngineClient(opts: WorkerEngineOptions): Promi
  * Type-correct empty snapshot used only before `ready()` resolves (or if
  * hydrate fails). Production CLI always awaits ready before startTui.
  */
-const PLACEHOLDER_SNAPSHOT: EngineSnapshot = {
+const PLACEHOLDER_SNAPSHOT: EngineSnapshot = Object.freeze({
   sessionId: "",
   model: "",
   mode: "execute",
@@ -348,7 +363,6 @@ const PLACEHOLDER_SNAPSHOT: EngineSnapshot = {
   theme: "default",
   accentColor: "",
   details: "normal",
-      mouse: true,
+  mouse: true,
   commandNames: [],
-};
-
+}) as EngineSnapshot;

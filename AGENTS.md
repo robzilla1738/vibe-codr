@@ -20,6 +20,7 @@ memory; `CLAUDE.md` exists as the Claude Code bridge and points back here.
 | `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD limiter (`limiter.ts`), the default-ON task-DAG scheduler (`orchestrator.ts` + `orchestration/orchestrator-runner.ts`: structured handoffs, `read_report`, model tiers, executable verify, worktree isolation, ensemble, journal resume), continuation + background spawns (`continue_subagent`/`check_task` over a bounded-LRU `orchestration/child-registry.ts`; `detach:true`), schema-validated child output (`orchestration/structured-output.ts` — a real JSON-Schema validator, since ai@5's `jsonSchema()` doesn't validate — `outputSchema` enforced on the inline, worktree, AND ensemble/`hard` paths: validated JSON or an honest failure, never silently dropped; a `continue_subagent` that coerced a child to plan mode restores its registry-remembered original mode when continued in execute), and a typed coordination blackboard (`blackboard.ts`); (2b) **build intelligence** (`build/` — deterministic recon → `RepoProfile`, `run_check` parsing, the green-gate, green checkpoints, stub scan, gitops/worktrees, browser verify); (2c) **diagnostics** — the `diagnose()` seam behind a composite of the in-process TS fast path and a multi-language `lsp/` client (stdio JSON-RPC, lazy per-language spawn, deadline-bounded, advisory-only); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`) — both network-flagged so permission rules govern them — `${VAR}`/`${VAR:-default}` expansion over connect-time config, OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/`/`resources/`/`prompts/list_changed` live re-registration; (4) **production** — crash handlers + redacted crash log (`crash.ts`), a keyless update check (`update-check.ts`) |
 | `@vibe/plugins` | `HookBus`, slash-command + skill runtimes (`SkillRegistry`: progressive disclosure, `disable-model-invocation` / `user-invocable` frontmatter), `PluginHost`; declarative shell/HTTP hooks are layered on via `core/config-hooks.ts` from the config `hooks` block |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers, themes, tool icons, spinner |
+| `@vibe/macos-bridge` | Runtime-validated NDJSON stdio host for the SwiftUI and Electron desktop shells (siblings `vbcodrmacos` / `vbcode-electron`): in-process `Engine`, same `EngineCommand`/`UIEvent` contracts as the TUI. Run `bun run macos-bridge`; compile with `bun run build:macos-bridge` → `dist/vibecodr-engine-host` |
 | `@vibe/cli` | `bin/vibecodr` entrypoint (argv, config, headless `-p` vs TUI); the `VERSION` sentinel (`version.ts`, stamped at release) and `vibe upgrade` channel detection (`upgrade.ts`). Release tooling (binary + npm-bundle builds, version stamping) lives in `scripts/release/` |
 
 ## Commands
@@ -44,6 +45,10 @@ bun run smoke:tui
 # pixel what the live app paints (no HTML mirror to keep in sync). Re-run after any
 # visible TUI change.
 bun packages/tui/scripts/screenshot.ts docs/screenshots
+
+# macOS SwiftUI shell (sibling checkout) — engine host for NDJSON bridge
+bun run macos-bridge              # dev: Bun source host on stdio
+bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Release prefer this)
 ```
 
 ## Conventions
@@ -237,7 +242,15 @@ bun packages/tui/scripts/screenshot.ts docs/screenshots
   - Project memory (`memory.ts`) walks `cwd`→git-root (only with a `.git`
     ancestor), `cwd` highest precedence, each file byte-capped (`MAX_MEMORY_BYTES`).
   - `SessionStore` writes are atomic (temp + `rename`) and reads tolerate a
-    corrupt `meta.json` / truncated jsonl line (skip, never throw).
+    corrupt `meta.json` / truncated jsonl line (skip, never throw). Every
+    `SessionStore` path is gated through `isSafeSessionId` (directory-name-only
+    ids — rejects `..`, `.`, path separators, NUL, > 200 chars) so a malformed or
+    hostile id can never escape the session directory. New lifecycle methods:
+    `setTitle` (user-facing display title override, 120-char cap in `meta.json`),
+    `delete` (permanent remove of global + legacy dirs + plan sidecar), `archive`
+    (soft-delete to `sessions-archive/` with EXDEV-safe cross-device fallback).
+    `Engine.listMcp()` exposes the MCP server roster (name, connected, counts,
+    configured, error) for the macOS bridge `/mcp` picker and bridge RPC.
   - `/loop` iterations run **through the engine queue** (`#enqueue`) so they
     serialize with user turns; `LoopController.stop()` aborts the in-flight turn
     via `onStop`.

@@ -4,6 +4,50 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — macOS bridge + session management
+
+A new `@vibe/macos-bridge` package powers the SwiftUI and Electron desktop
+shells with an embedded in-process `Engine`, plus session lifecycle APIs the
+desktop clients need:
+
+- **`@vibe/macos-bridge`:** NDJSON stdio host (`bun run macos-bridge` /
+  `build:macos-bridge` → `dist/vibecodr-engine-host`). Same `EngineCommand` /
+  `UIEvent` contracts as the TUI; in-process `Engine` (no worker thread — the
+  desktop UI already runs in a separate process, so the TUI freeze class does
+  not apply). Runtime-validated protocol: malformed inbound produces a `fatal`
+  response, never a TypeScript cast.
+- **Engine `listMcp()`:** MCP server roster (name, connected, tool/resource/
+  prompt counts, configured flag, error) for the macOS `/mcp` picker and bridge
+  RPC.
+- **`SessionStore` session lifecycle:** `setTitle` (user-facing display title
+  override, 120-char cap, persisted in `meta.json`), `delete` (permanent remove
+  of global + legacy session dirs + plan sidecar), and `archive` (soft-delete to
+  `sessions-archive/` with EXDEV-safe cross-device fallback). All gated through
+  `isSafeSessionId` — directory-name-only ids; traversal segments and path
+  separators are rejected before any filesystem access.
+- **`isSafeSessionId`:** format-agnostic validation (rejects `..`, `.`,
+  separators, NUL, > 200 chars) on every `SessionStore` path — `save`, `load`,
+  `setTitle`, `delete`, `archive` — so a malformed or hostile id can never
+  escape the session directory.
+- **Core export:** `globalStateDir` / `stateRoot` now exported from
+  `@vibe/core` so the bridge can locate the state registry without re-deriving
+  paths.
+
+### Fixed
+
+- **Worker placeholder snapshot frozen** to prevent accidental mutation before
+  `ready()` resolves (also fixed a stray indentation in the literal).
+- **`web_search`:** `detectDate(r.snippet)` called once (was called twice per
+  result row — same value, minor waste).
+
+### Docs
+
+- AGENTS.md: `@vibe/macos-bridge` package table row + commands; store
+  invariants (safe session id, title/delete/archive).
+- README.md: `@vibe/macos-bridge` package table row.
+
+## 0.4.21 — 2026-07-11
+
 ### Added — Meta Model API (Muse Spark 1.1)
 
 First-class provider for Meta's hosted Muse Spark coding model:

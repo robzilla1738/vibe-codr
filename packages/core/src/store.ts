@@ -45,6 +45,8 @@ export interface SessionMeta {
   sources?: SourceEntry[];
   createdAt: number;
   updatedAt: number;
+  /** Optional user-set display title; overrides derived history/goal labels. */
+  title?: string;
 }
 
 export interface PersistedSession {
@@ -58,6 +60,12 @@ export interface PersistedSession {
  * long + namespaced so a model-generated object can't collide with it and be
  * wrongly revived into a Uint8Array. */
 const U8_TAG = "__vibecodr_binary_base64__";
+
+/** Session ids are directory names, never paths. Keep this deliberately
+ * format-agnostic for old ids while rejecting traversal and path separators. */
+export function isSafeSessionId(id: string): boolean {
+  return id.length > 0 && id.length <= 200 && id !== "." && id !== ".." && !/[\\/\0]/.test(id);
+}
 
 /**
  * JSON replacer that encodes a `Uint8Array` (an `@image`/file part's bytes) as a
@@ -104,14 +112,12 @@ export class SessionStore {
   }
 
   #dir(id: string): string {
+    if (!isSafeSessionId(id)) throw new Error("invalid session id");
     return join(this.#base, id);
   }
 
-  async save(
-    meta: SessionMeta,
-    modelMessages: ModelMessage[],
-    history: Message[],
-  ): Promise<void> {
+  async save(meta: SessionMeta, modelMessages: ModelMessage[], history: Message[]): Promise<void> {
+    if (!isSafeSessionId(meta.id)) throw new Error("invalid session id");
     if (!this.#ensured) {
       this.#ensured = true;
       await ensureStateDir(this.#cwd);
@@ -129,8 +135,16 @@ export class SessionStore {
     const tmp = (name: string) => join(dir, `${name}.${stamp}.tmp`);
     const targets: [string, string, string][] = [
       [tmp("meta.json"), join(dir, "meta.json"), JSON.stringify(meta, null, 2)],
-      [tmp("messages.jsonl"), join(dir, "messages.jsonl"), modelMessages.map((m) => JSON.stringify(m, u8Replacer)).join("\n")],
-      [tmp("history.jsonl"), join(dir, "history.jsonl"), history.map((m) => JSON.stringify(m, u8Replacer)).join("\n")],
+      [
+        tmp("messages.jsonl"),
+        join(dir, "messages.jsonl"),
+        modelMessages.map((m) => JSON.stringify(m, u8Replacer)).join("\n"),
+      ],
+      [
+        tmp("history.jsonl"),
+        join(dir, "history.jsonl"),
+        history.map((m) => JSON.stringify(m, u8Replacer)).join("\n"),
+      ],
     ];
     // Atomic save with ORDERED renames: write all temp files first, then rename
     // (atomic on POSIX) in a deliberate sequence — messages.jsonl (the
@@ -153,12 +167,15 @@ export class SessionStore {
     } catch (err) {
       // Best-effort: remove any of our unrenamed temps, then re-throw so the
       // caller still learns the save failed.
-      await Promise.all(targets.map(([tmpPath]) => rm(tmpPath, { force: true }).catch(() => undefined)));
+      await Promise.all(
+        targets.map(([tmpPath]) => rm(tmpPath, { force: true }).catch(() => undefined)),
+      );
       throw err;
     }
   }
 
   async load(id: string): Promise<PersistedSession | null> {
+    if (!isSafeSessionId(id)) return null;
     // Global dir first; sessions persisted by older versions fall back to the
     // legacy in-project dir (read-only — the next save writes globally).
     for (const dir of [this.#dir(id), join(this.#legacy, id)]) {
@@ -175,9 +192,7 @@ export class SessionStore {
         // session truly absent.
         continue;
       }
-      const modelRead = await this.#readJsonl<ModelMessage>(
-        join(dir, "messages.jsonl"),
-      );
+      const modelRead = await this.#readJsonl<ModelMessage>(join(dir, "messages.jsonl"));
       const historyRead = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
       const warnings = [...modelRead.warnings, ...historyRead.warnings];
       return {
@@ -212,7 +227,9 @@ export class SessionStore {
       try {
         out.push(JSON.parse(line, u8Reviver) as T);
       } catch {
-        warnings.push(`${path}:${lineNo}: corrupt JSONL line; transcript truncated at the last valid entry`);
+        warnings.push(
+          `${path}:${lineNo}: corrupt JSONL line; transcript truncated at the last valid entry`,
+        );
         break;
       }
     }
@@ -247,5 +264,80 @@ export class SessionStore {
   /** Id of the most recently updated session, if any. */
   async latestId(): Promise<string | undefined> {
     return (await this.list())[0]?.id;
+  }
+
+  /** Persist a user-facing title override on an existing session. */
+  async setTitle(id: string, title: string): Promise<boolean> {
+    if (!isSafeSessionId(id)) return false;
+    const clean = title.replace(/\s+/g, " ").trim();
+    if (!clean) return false;
+    const loaded = await this.load(id);
+    if (!loaded) return false;
+    const meta: SessionMeta = {
+      ...loaded.meta,
+      title: clean.slice(0, 120),
+      updatedAt: Date.now(),
+      version: SESSION_META_VERSION,
+    };
+    await this.save(meta, loaded.modelMessages, loaded.history);
+    return true;
+  }
+
+  /** Permanently remove a session directory (global + legacy). */
+  async delete(id: string): Promise<boolean> {
+    if (!isSafeSessionId(id)) return false;
+    let removed = false;
+    for (const dir of [this.#dir(id), join(this.#legacy, id)]) {
+      if (!(await Bun.file(join(dir, "meta.json")).exists())) continue;
+      await rm(dir, { recursive: true, force: true });
+      removed = true;
+    }
+    // Best-effort: drop the matching saved plan sidecar.
+    try {
+      await rm(join(globalStateDir(this.#cwd), "plans", `${id}.md`), { force: true });
+    } catch {
+      /* ignore */
+    }
+    return removed;
+  }
+
+  /** Soft-delete: move the session under `sessions-archive/` (global root). */
+  async archive(id: string): Promise<boolean> {
+    if (!isSafeSessionId(id)) return false;
+    const src = this.#dir(id);
+    const legacy = join(this.#legacy, id);
+    let from: string | null = null;
+    for (const candidate of [src, legacy]) {
+      try {
+        const file = Bun.file(join(candidate, "meta.json"));
+        if (await file.exists()) {
+          from = candidate;
+          break;
+        }
+      } catch {
+        /* try next */
+      }
+    }
+    if (!from) return false;
+    const archiveRoot = join(globalStateDir(this.#cwd), "sessions-archive");
+    await mkdir(archiveRoot, { recursive: true });
+    const dest = join(archiveRoot, id);
+    await rm(dest, { recursive: true, force: true }).catch(() => undefined);
+    // rename is atomic on the same filesystem; fall back to copy+rm for a
+    // cross-device archive (a legacy in-project session under a different
+    // mount than ~/.vibe/state on Linux) so EXDEV never breaks the move.
+    try {
+      await rename(from, dest);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EXDEV") throw err;
+      const { cp } = await import("node:fs/promises");
+      await cp(from, dest, { recursive: true });
+      await rm(from, { recursive: true, force: true });
+    }
+    // If we archived the global copy, also drop a legacy twin so list() stays clean.
+    if (from === src) {
+      await rm(legacy, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return true;
   }
 }

@@ -104,7 +104,10 @@ test("concurrent saves to the same session never produce a torn transcript", asy
   const { meta, history } = fixture();
   // Two large, distinct transcripts so a torn interleave would be detectable.
   const big = (tag: string): ModelMessage[] =>
-    Array.from({ length: 200 }, (_, i) => ({ role: i % 2 === 0 ? ("user" as const) : ("assistant" as const), content: `${tag}-msg-${i}-${"x".repeat(50)}` }));
+    Array.from({ length: 200 }, (_, i) => ({
+      role: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `${tag}-msg-${i}-${"x".repeat(50)}`,
+    }));
   await Promise.all([
     store.save(meta, big("A"), history),
     store.save(meta, big("B"), history),
@@ -115,7 +118,9 @@ test("concurrent saves to the same session never produce a torn transcript", asy
   // Whichever writer won, the transcript is COMPLETE (200 messages) and internally
   // consistent (all from ONE writer) — not a truncated/mixed file.
   expect(loaded!.modelMessages).toHaveLength(200);
-  const tags = new Set(loaded!.modelMessages.map((m) => String((m as { content: string }).content).split("-")[0]));
+  const tags = new Set(
+    loaded!.modelMessages.map((m) => String((m as { content: string }).content).split("-")[0]),
+  );
   expect(tags.size).toBe(1); // every line came from the same writer — no interleave
 });
 
@@ -127,7 +132,13 @@ test("an @image message's Uint8Array bytes round-trip through save/load (resumab
   const { meta, history } = fixture();
   const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
   const model: ModelMessage[] = [
-    { role: "user", content: [{ type: "text", text: "look" }, { type: "image", image: bytes, mediaType: "image/png" }] },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "look" },
+        { type: "image", image: bytes, mediaType: "image/png" },
+      ],
+    },
   ];
   await store.save(meta, model, history);
   const loaded = await store.load(meta.id);
@@ -140,6 +151,43 @@ test("an @image message's Uint8Array bytes round-trip through save/load (resumab
 test("load returns null for an unknown session", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-"));
   expect(await new SessionStore(cwd).load("missing")).toBeNull();
+});
+
+test("session ids cannot escape their project state directories", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-safe-id-"));
+  const store = new SessionStore(cwd);
+  const a = fixture();
+  await expect(store.save({ ...a.meta, id: "../escape" }, a.model, a.history)).rejects.toThrow(
+    "invalid session id",
+  );
+  expect(await store.load("../escape")).toBeNull();
+  expect(await store.setTitle("../escape", "bad")).toBe(false);
+  expect(await store.delete("../escape")).toBe(false);
+  expect(await store.archive("../escape")).toBe(false);
+});
+
+test("session mutations distinguish missing records and cover global plus legacy stores", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-mutations-"));
+  const store = new SessionStore(cwd);
+  const a = fixture();
+
+  expect(await store.delete("missing")).toBe(false);
+  expect(await store.archive("missing")).toBe(false);
+  expect(await store.setTitle("missing", "Title")).toBe(false);
+
+  await store.save(a.meta, a.model, a.history);
+  expect(await store.setTitle(a.meta.id, "  Renamed   session  ")).toBe(true);
+  expect((await store.load(a.meta.id))?.meta.title).toBe("Renamed session");
+  expect(await store.delete(a.meta.id)).toBe(true);
+  expect(await store.load(a.meta.id)).toBeNull();
+
+  const legacyId = "legacy-mutation";
+  const legacy = join(cwd, ".vibe", "sessions", legacyId);
+  await Bun.write(join(legacy, "meta.json"), JSON.stringify({ ...a.meta, id: legacyId }));
+  await Bun.write(join(legacy, "messages.jsonl"), "");
+  await Bun.write(join(legacy, "history.jsonl"), "");
+  expect(await store.archive(legacyId)).toBe(true);
+  expect(await store.load(legacyId)).toBeNull();
 });
 
 test("a corrupt meta.json yields null on load and is skipped by list", async () => {
@@ -165,9 +213,18 @@ test("a corrupt GLOBAL meta.json falls back to an intact LEGACY copy (load agree
   const legacyDir = join(cwd, ".vibe", "sessions", id);
   const { mkdirSync } = await import("node:fs");
   mkdirSync(legacyDir, { recursive: true });
-  await Bun.write(join(legacyDir, "meta.json"), JSON.stringify({ ...a.meta, id, goal: "from-legacy" }));
-  await Bun.write(join(legacyDir, "messages.jsonl"), a.model.map((m) => JSON.stringify(m)).join("\n"));
-  await Bun.write(join(legacyDir, "history.jsonl"), a.history.map((m) => JSON.stringify(m)).join("\n"));
+  await Bun.write(
+    join(legacyDir, "meta.json"),
+    JSON.stringify({ ...a.meta, id, goal: "from-legacy" }),
+  );
+  await Bun.write(
+    join(legacyDir, "messages.jsonl"),
+    a.model.map((m) => JSON.stringify(m)).join("\n"),
+  );
+  await Bun.write(
+    join(legacyDir, "history.jsonl"),
+    a.history.map((m) => JSON.stringify(m)).join("\n"),
+  );
   // Corrupt the GLOBAL meta.json for the same id (power-loss torn write).
   await Bun.write(join(sessionDir(cwd, id), "meta.json"), "{ truncated");
 
@@ -187,7 +244,10 @@ test("load warns and truncates at a corrupt messages.jsonl line", async () => {
   // must stop at the corrupt line rather than skipping it and accepting later
   // lines that may have lost their matching tool-call context.
   const path = join(sessionDir(cwd, a.meta.id), "messages.jsonl");
-  await Bun.write(path, `${await Bun.file(path).text()}\n{"role":"assistant","cont\n{"role":"user","content":"after corrupt"}`);
+  await Bun.write(
+    path,
+    `${await Bun.file(path).text()}\n{"role":"assistant","cont\n{"role":"user","content":"after corrupt"}`,
+  );
   const loaded = await store.load(a.meta.id);
   expect(loaded!.modelMessages).toEqual(a.model); // the good lines survive
   expect(loaded!.warnings?.[0]).toContain("corrupt JSONL line");

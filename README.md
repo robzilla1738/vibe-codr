@@ -181,6 +181,7 @@ the engine is fully testable headless.
 | `@vibe/core` | Agent loop (`Session.run`), mode gating, subagent fork, event bus, `Engine` |
 | `@vibe/plugins` | `HookBus`, `PluginApi`, slash-command + skill runtimes; config hooks accept stdout logs only before a final-line JSON directive |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers |
+| `@vibe/macos-bridge` | Runtime-validated NDJSON stdio host for the SwiftUI and Electron desktop shells (`bun run macos-bridge` / `build:macos-bridge`) |
 | `@vibe/cli` | `bin/vibe` entrypoint (argv, config, headless `-p` vs TUI) |
 
 ## Install

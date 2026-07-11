@@ -52,13 +52,7 @@ import {
   resolveSandboxPolicy,
   type SandboxPolicy,
 } from "@vibe/tools";
-import {
-  HookBus,
-  CommandRegistry,
-  SkillRegistry,
-  PluginHost,
-  parseSlash,
-} from "@vibe/plugins";
+import { HookBus, CommandRegistry, SkillRegistry, PluginHost, parseSlash } from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
 import { BUILTIN_COMMANDS } from "./commands.ts";
@@ -72,12 +66,7 @@ import { loadAgents, scaffoldAgent, setAgentModel, type NamedAgent } from "./age
 import { resolveRepoProfile } from "./build/profile.ts";
 import { bunExec } from "./build/exec.ts";
 import { appendLedger, manifestHash, commandsHash } from "./build/ledger.ts";
-import {
-  runGate,
-  pickChecks,
-  formatGateFailure,
-  formatGateOutcome,
-} from "./build/gate.ts";
+import { runGate, pickChecks, formatGateFailure, formatGateOutcome } from "./build/gate.ts";
 import { scanStubs, formatStubFindings } from "./build/stubscan.ts";
 import { isWebApp } from "./build/codeintel.ts";
 import { browserVerify, formatBrowserVerify } from "./build/browser-verify.ts";
@@ -486,8 +475,7 @@ export class Engine implements EngineClient {
     this.#interactive = opts.interactive ?? false;
     // Use the caller's resolver if given (tests); otherwise bridge `ask`
     // decisions to the UI via permission-request / resolve-permission.
-    this.#permissionResolver =
-      opts.permissionResolver ?? ((req) => this.#askPermission(req));
+    this.#permissionResolver = opts.permissionResolver ?? ((req) => this.#askPermission(req));
     this.#store = new SessionStore(this.#cwd);
     // Lazy getter: #session is assigned below, but a checkpoint is only ever
     // taken later (during a turn), so the id is available by then. Scopes /undo
@@ -507,9 +495,7 @@ export class Engine implements EngineClient {
         builtinTools({
           search: {
             enabled: opts.config.search.enabled,
-            ...(opts.config.search.apiKey
-              ? { apiKey: opts.config.search.apiKey }
-              : {}),
+            ...(opts.config.search.apiKey ? { apiKey: opts.config.search.apiKey } : {}),
           },
           webfetch: {
             allowPrivateHosts: opts.config.webfetch.allowPrivateHosts,
@@ -603,9 +589,7 @@ export class Engine implements EngineClient {
                   ...(resume.meta.usage.actualCostUSD !== undefined
                     ? { initialActualCostUSD: resume.meta.usage.actualCostUSD }
                     : {}),
-                  ...(resume.meta.usage.costEstimated
-                    ? { initialCostEstimated: true }
-                    : {}),
+                  ...(resume.meta.usage.costEstimated ? { initialCostEstimated: true } : {}),
                 }
               : {}),
             ...(resume.meta.lastInputTokens
@@ -698,7 +682,10 @@ export class Engine implements EngineClient {
       /* absent/corrupt → nothing to restore */
     }
     // Global path first, then the pre-relocation in-project path.
-    for (const path of [this.#planPath(), join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`)]) {
+    for (const path of [
+      this.#planPath(),
+      join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`),
+    ]) {
       try {
         const plan = await Bun.file(path).text();
         // Strip the "# Plan — <id>" header the writer prepends.
@@ -748,7 +735,11 @@ export class Engine implements EngineClient {
         this.#planPath(),
         `# Plan — ${this.#session.id}\n${banner}\n${event.plan}${sourceBlock}\n`,
       );
-      this.#bus.emit({ type: "notice", level: "info", message: `Plan saved to ${this.#planPath()}` });
+      this.#bus.emit({
+        type: "notice",
+        level: "info",
+        message: `Plan saved to ${this.#planPath()}`,
+      });
     } catch {
       // Best-effort persistence — never let it disrupt the turn.
     }
@@ -796,7 +787,11 @@ export class Engine implements EngineClient {
       // message would run an execute turn is a lie (the TUI dismisses the card
       // on mode change, but a scripted resolve-plan can still land here).
       if (this.#session.mode !== "plan") this.#setModeGated("plan");
-      this.#bus.emit({ type: "notice", level: "info", message: "Kept planning — the plan wasn't started." });
+      this.#bus.emit({
+        type: "notice",
+        level: "info",
+        message: "Kept planning — the plan wasn't started.",
+      });
       return;
     }
     // accept — the plan card's immediate-run surface.
@@ -909,7 +904,6 @@ export class Engine implements EngineClient {
     });
   }
 
-
   /** Seed the task list from a plan's checklist (`- [ ] step`) or numbered steps.
    * The indent is bounded ({0,3} spaces) so deeply nested sub-bullets don't
    * register as top-level steps and evict real ones when the list is capped.
@@ -1021,12 +1015,7 @@ export class Engine implements EngineClient {
     // Long-term memory: resolve the (optional) embedder and attach the service
     // to the live session. Degrades to lexical recall when no embedder is
     // available, so this never blocks or fails startup.
-    this.#memory = await MemoryService.create(
-      this.#cwd,
-      this.#config,
-      this.registry,
-      this.#log,
-    );
+    this.#memory = await MemoryService.create(this.#cwd, this.#config, this.registry, this.#log);
     this.#session.setMemory(this.#memory);
 
     // Deterministic repo recon: ONE batched probe (ledger-bootstrapped) whose
@@ -1098,7 +1087,9 @@ export class Engine implements EngineClient {
       // on the next session is incremental) and injected into subagent kickoffs.
       // The profile itself lives on the session (session.repoProfile) — the one
       // place the whole tree, run_check, and the green-gate read it from.
-      const map = profile.greenfield ? undefined : await buildRepoMap(this.#cwd).catch(() => undefined);
+      const map = profile.greenfield
+        ? undefined
+        : await buildRepoMap(this.#cwd).catch(() => undefined);
       this.#session.setRepoProfile(profile, map?.text || undefined);
       if (!this.#config.verify.command) {
         const detected = [profile.commands.typecheck, profile.commands.test].filter(Boolean);
@@ -1307,7 +1298,9 @@ export class Engine implements EngineClient {
         // A bare set-mode with a live plan stays in plan and notices — the user
         // must accept the card or type /execute.
         const approvingPlan =
-          this.#session.mode === "plan" && command.mode === "execute" && this.#lastPlan !== undefined;
+          this.#session.mode === "plan" &&
+          command.mode === "execute" &&
+          this.#lastPlan !== undefined;
         if (approvingPlan && command.start) {
           // Explicit approve+start (card Enter / /execute): run immediately.
           this.#approvePlan();
@@ -1430,7 +1423,8 @@ export class Engine implements EngineClient {
         // "typing steers it", so a silent state flip here would leave the
         // user steering a run that no longer exists.
         this.#pauseGoalRun("interrupted (Esc)", {
-          notice: "Goal run paused by the interrupt — the ★ goal stays set. /goal resume re-arms it; /goal clear drops it.",
+          notice:
+            "Goal run paused by the interrupt — the ★ goal stays set. /goal resume re-arms it; /goal clear drops it.",
         });
         // Drop everything still waiting, then cancel the in-flight turn — which
         // may be a loop iteration running on an ephemeral session (`#loopSession`
@@ -1494,11 +1488,9 @@ export class Engine implements EngineClient {
         // only mutates loop/queue state (never the conversation), so running it
         // at dispatch is safe.
         if (command.name === "queue") this.#handleQueueCommand(command.args);
-        else if (command.name === "loop" && command.args.trim() === "stop") this.#handleLoop(command.args);
-        else
-          this.#enqueue(`/${command.name}`, () =>
-            this.#handleSlash(command.name, command.args),
-          );
+        else if (command.name === "loop" && command.args.trim() === "stop")
+          this.#handleLoop(command.args);
+        else this.#enqueue(`/${command.name}`, () => this.#handleSlash(command.name, command.args));
         break;
       case "compact":
         this.#enqueue("/compact", () => this.#session.compact());
@@ -2002,10 +1994,35 @@ export class Engine implements EngineClient {
   listSkills(): SkillInfo[] {
     return this.skills.userVisible().map((s) => ({
       name: s.name,
-      description: s.disableModelInvocation
-        ? `[user-only] ${s.description}`
-        : s.description,
+      description: s.disableModelInvocation ? `[user-only] ${s.description}` : s.description,
     }));
+  }
+
+  /** MCP server roster for the macOS bridge / `/mcp` picker. */
+  listMcp(): Array<{
+    name: string;
+    connected: boolean;
+    toolCount: number;
+    resourceCount: number;
+    promptCount: number;
+    error?: string;
+    configured: boolean;
+  }> {
+    const configured = Object.keys(this.#config.mcp.servers);
+    const byName = new Map(this.#mcp.status().map((s) => [s.name, s]));
+    const names = [...new Set([...configured, ...byName.keys()])].sort();
+    return names.map((name) => {
+      const s = byName.get(name);
+      return {
+        name,
+        configured: configured.includes(name),
+        connected: s?.connected ?? false,
+        toolCount: s?.toolCount ?? 0,
+        resourceCount: s?.resourceCount ?? 0,
+        promptCount: s?.promptCount ?? 0,
+        ...(s?.error ? { error: s.error } : {}),
+      };
+    });
   }
 
   /** Reload `.vibe/agents/*.md` into `#agents` after a write. */
@@ -2035,7 +2052,11 @@ export class Engine implements EngineClient {
 
   /** Scaffold a new named-agent file and reload the roster. */
   async #createAgent(name: string): Promise<void> {
-    const clean = name.trim().replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase();
+    const clean = name
+      .trim()
+      .replace(/[^a-z0-9_-]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .toLowerCase();
     if (!clean) {
       this.#notice("Usage: /agents new <name>", "warn");
       return;
@@ -2134,8 +2155,7 @@ export class Engine implements EngineClient {
       jobsStatus: () => engine.#jobs.snapshot(),
       git: (args) => engine.#git(args),
       goalRun: () => engine.#goalRunInfo(),
-      pauseGoalRun: (reason, notice) =>
-        engine.#pauseGoalRun(reason, notice ? { notice } : {}),
+      pauseGoalRun: (reason, notice) => engine.#pauseGoalRun(reason, notice ? { notice } : {}),
     };
   }
 
@@ -2196,7 +2216,8 @@ export class Engine implements EngineClient {
         : {}),
       onStop: () => this.#loopSession?.abort(),
       emit: (e) => this.#bus.emit(e),
-    });    this.#loop = loop;
+    });
+    this.#loop = loop;
     void loop.whenDone().then(() => {
       if (this.#loop === loop) this.#loop = undefined;
     });
@@ -2282,16 +2303,16 @@ export class Engine implements EngineClient {
           // (New work may also have been queued during this gap; the loop re-checks.)
           await new Promise((resolve) => setTimeout(resolve, 0));
         } while (this.#pending.length);
-      // A prompt may have been enqueued DURING the session.idle hook's async
-      // await (an HTTP/shell config hook, or any async in-process handler): the
-      // inner loop already exited (it saw #pending empty before the idle
-      // consultation started), so #enqueue's void #drain() was a no-op against
-      // #draining still true, and a {continue:false} hook would strand the
-      // queued item forever — the finally would clear #draining and emit
-      // engine-idle with the prompt still sitting in #pending. Re-check #pending
-      // AFTER the idle consultation: if items arrived during its await, loop back
-      // and drain them instead of settling idle. The session.idle hook re-fires
-      // on the next pass (correctly — the queue was never truly idle).
+        // A prompt may have been enqueued DURING the session.idle hook's async
+        // await (an HTTP/shell config hook, or any async in-process handler): the
+        // inner loop already exited (it saw #pending empty before the idle
+        // consultation started), so #enqueue's void #drain() was a no-op against
+        // #draining still true, and a {continue:false} hook would strand the
+        // queued item forever — the finally would clear #draining and emit
+        // engine-idle with the prompt still sitting in #pending. Re-check #pending
+        // AFTER the idle consultation: if items arrived during its await, loop back
+        // and drain them instead of settling idle. The session.idle hook re-fires
+        // on the next pass (correctly — the queue was never truly idle).
       } while ((await this.#maybeContinueOnIdle()) || this.#pending.length);
     } catch (err) {
       // A throw outside the per-item catch (e.g. a bus subscriber or session.idle
@@ -2383,10 +2404,7 @@ export class Engine implements EngineClient {
       if (opts.handoff) {
         this.#pendingHandoff = true;
         void this.#persistEngineState();
-        this.#notice(
-          "Plan approval preserved — your next message will retry the handoff.",
-          "info",
-        );
+        this.#notice("Plan approval preserved — your next message will retry the handoff.", "info");
       }
       // Callers that must know no turn ran (the goal run's closures — a vetoed
       // turn would otherwise leave the run armed with nothing queued and skip
@@ -2449,10 +2467,7 @@ export class Engine implements EngineClient {
     if (expanded.images.length) {
       const ok = await this.#supportsImages(this.#session.model);
       if (ok === false) {
-        this.#notice(
-          `${this.#session.model} may not accept image input; sending anyway.`,
-          "warn",
-        );
+        this.#notice(`${this.#session.model} may not accept image input; sending anyway.`, "warn");
       }
     }
     await this.#session.run(
@@ -2607,7 +2622,7 @@ export class Engine implements EngineClient {
       "free-form chat does not open the approval card. " +
       "Call present_plan NOW with a concrete `- [ ]` checklist, verification, " +
       "and harvested sources (when the request needed web/version research). " +
-      "Do NOT implement, load skill init/setup workflows, or announce \"next steps\" work. " +
+      'Do NOT implement, load skill init/setup workflows, or announce "next steps" work. ' +
       "After present_plan succeeds, STOP and wait for the user to approve.";
     this.#enqueue("present plan", () => this.#handlePrompt(prompt));
   }
@@ -2746,7 +2761,10 @@ export class Engine implements EngineClient {
     // would drive deterministic not-met rounds toward abandoned work.
     if (this.#session.tasks.length) {
       this.#session.setTasks([]);
-      this.#notice("Cleared the pre-existing task list — the goal run seeds and owns its own.", "info");
+      this.#notice(
+        "Cleared the pre-existing task list — the goal run seeds and owns its own.",
+        "info",
+      );
     }
     this.#goalRunActive = true;
     this.#goalRunEpoch += 1;
@@ -2831,7 +2849,10 @@ export class Engine implements EngineClient {
     this.#enqueue(
       `goal: plan ${queueLabel(goal)}`,
       async () => {
-        const result = await this.#runGoalTurn(this.#goalPlanPrompt(goal), `★ goal — planning: ${goal}`);
+        const result = await this.#runGoalTurn(
+          this.#goalPlanPrompt(goal),
+          `★ goal — planning: ${goal}`,
+        );
         if (result !== "denied") this.#beginGoalExecution(goal);
       },
       { origin: "goal" },
@@ -2855,8 +2876,10 @@ export class Engine implements EngineClient {
     this.#goalContinueRounds = 0;
     this.#goalCleanPasses = 0;
     if (this.#config.goal.planFirst) {
-      if (this.#goalPhase === undefined) this.#goalPhase = this.#session.tasks.length ? "execute" : "plan";
-      else if (this.#goalPhase === "execute" && !this.#session.tasks.length) this.#goalPhase = "plan";
+      if (this.#goalPhase === undefined)
+        this.#goalPhase = this.#session.tasks.length ? "execute" : "plan";
+      else if (this.#goalPhase === "execute" && !this.#session.tasks.length)
+        this.#goalPhase = "plan";
     }
     // Re-entering PLAN with a leftover partial seed (an Esc landed mid-plan-turn
     // after some update_tasks calls): clear it — #beginGoalExecution reads any
@@ -2927,7 +2950,10 @@ export class Engine implements EngineClient {
       this.#seedTasksFromPlan(this.#session.lastAssistantText());
       if (!this.#session.tasks.length) {
         this.#session.setTasks([{ title: goal, status: "pending" }]);
-        this.#notice("Plan turn produced no checklist — tracking the goal as a single task.", "info");
+        this.#notice(
+          "Plan turn produced no checklist — tracking the goal as a single task.",
+          "info",
+        );
       }
     }
     this.#goalPhase = "execute";
@@ -2975,7 +3001,8 @@ export class Engine implements EngineClient {
     void this.#persistEngineState();
     this.#sweepQueuedGoalTurns(reason);
     this.#emitGoalRun();
-    if (reason === "cleared by user") this.#notice(was ? "Goal cleared — run stopped." : "Goal cleared.");
+    if (reason === "cleared by user")
+      this.#notice(was ? "Goal cleared — run stopped." : "Goal cleared.");
     else if (was) this.#notice(`Goal run stopped — ${reason}.`);
   }
 
@@ -3011,7 +3038,7 @@ export class Engine implements EngineClient {
       `end to end.${this.#taskContractText()}\n` +
       "Quality bar (anti-slop):\n" +
       "- Match existing project style, naming, and libraries — no speculative abstractions or drive-by refactors.\n" +
-      "- No stubs, placeholders, fake handlers, TODO/FIXME left in code you touched, or \"implement later\" gaps.\n" +
+      '- No stubs, placeholders, fake handlers, TODO/FIXME left in code you touched, or "implement later" gaps.\n' +
       "- Mark a task completed only after you verified it (run checks or inspect the real result) — never on intent alone.\n" +
       "- Keep typecheck/tests/lint green; re-run after changes. Be exhaustive on edge cases; do not stop while any " +
       "part of the goal or success criteria is unmet."
@@ -3146,7 +3173,9 @@ export class Engine implements EngineClient {
       this.#goalContinueRounds += 1;
       void this.#persistEngineState();
       this.#emitGoalRun();
-      this.#notice(`Goal round ${this.#goalContinueRounds}/${max} — verifying the claimed completion.`);
+      this.#notice(
+        `Goal round ${this.#goalContinueRounds}/${max} — verifying the claimed completion.`,
+      );
       this.#enqueue(
         `goal: verify ${queueLabel(goal)}`,
         () => {
@@ -3156,7 +3185,8 @@ export class Engine implements EngineClient {
           // Preserve the last gate verdict: verify turns are often non-mutating
           // and would otherwise free-pass "met" via undefined gate.
           this.#resetPromptBudgets({ preserveGate: true });
-          if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
+          if (this.#session.tasks.some((t) => t.status !== "completed"))
+            this.#planExecutionActive = true;
           return this.#runGoalTurn(
             `You reported the north-star goal met: "${goal}". Now verify it is TRULY met, adversarially — ` +
               "re-read the goal and every success criterion, re-check the work against them with evidence " +
@@ -3187,7 +3217,8 @@ export class Engine implements EngineClient {
         this.#resetPromptBudgets({ preserveGate: true });
         // Re-arm task-driven continuation when the list still has work (a steer's
         // submit-prompt reset disarms it; this is how the chain resumes after).
-        if (this.#session.tasks.some((t) => t.status !== "completed")) this.#planExecutionActive = true;
+        if (this.#session.tasks.some((t) => t.status !== "completed"))
+          this.#planExecutionActive = true;
         return this.#runGoalTurn(
           `The north-star goal is not yet met: "${goal}".${gaps}\n` +
             "Continue the work — address the gaps, keep the task list current, and do not stop while " +
@@ -3222,7 +3253,10 @@ export class Engine implements EngineClient {
       }
       const model = await withRetry(
         () => this.registry.resolveModel(this.#session.model, this.#config),
-        { maxAttempts: this.#config.retry.maxAttempts, baseDelayMs: this.#config.retry.baseDelayMs },
+        {
+          maxAttempts: this.#config.retry.maxAttempts,
+          baseDelayMs: this.#config.retry.baseDelayMs,
+        },
       );
       // Same structured-object path as #evaluateCondition: ollama/local models
       // that lack response_format JSON must not brick /goal assessment (the
@@ -3423,7 +3457,8 @@ export class Engine implements EngineClient {
     }
     if (!result) return undefined; // silently skipped (not applicable / unavailable)
     const block = formatBrowserVerify(result);
-    const hasFindings = result.ran && (result.consoleErrors.length > 0 || result.deadControls.length > 0);
+    const hasFindings =
+      result.ran && (result.consoleErrors.length > 0 || result.deadControls.length > 0);
     this.#notice(block, hasFindings ? "warn" : "info");
     return hasFindings ? block : undefined;
   }
@@ -3484,7 +3519,10 @@ export class Engine implements EngineClient {
     let diff = tracked.ok ? tracked.stdout : (await spawnGit(this.#cwd, ["diff"])).stdout;
     const listed = await spawnGit(this.#cwd, ["ls-files", "--others", "--exclude-standard"]);
     if (listed.ok && listed.stdout.trim()) {
-      for (const file of listed.stdout.split("\n").map((s) => s.trim()).filter(Boolean)) {
+      for (const file of listed.stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)) {
         // `git diff --no-index` exits 1 when the files differ, so read stdout
         // regardless of `ok`. `--` guards a filename that looks like a flag.
         const d = await spawnGit(this.#cwd, ["diff", "--no-index", "--", "/dev/null", file]);

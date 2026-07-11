@@ -47,6 +47,7 @@ export {
   type SessionMeta,
   type PersistedSession,
 } from "./store.ts";
+export { globalStateDir, stateRoot } from "./state-dir.ts";
 export { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 export {
   expandMentions,

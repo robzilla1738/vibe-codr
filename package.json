@@ -37,6 +37,8 @@
     "smoke:tui": "bun packages/tui/scripts/smoke.ts",
     "smoke:sidebar": "bun packages/tui/scripts/sidebar-smoke.ts",
     "inspect:tui": "bun packages/tui/scripts/inspect.ts",
+    "macos-bridge": "bun packages/macos-bridge/bin/engine-host.ts",
+    "build:macos-bridge": "bun build packages/macos-bridge/bin/engine-host.ts --compile --outfile dist/vibecodr-engine-host",
     "lint": "biome lint packages",
     "format": "biome format --write packages",
     "clean": "turbo run clean && rm -rf node_modules dist"

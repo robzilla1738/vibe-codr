@@ -58,6 +58,19 @@
         "zod": "^4.0.0",
       },
     },
+    "packages/macos-bridge": {
+      "name": "@vibe/macos-bridge",
+      "version": "0.0.0",
+      "bin": {
+        "vibecodr-engine-host": "./bin/engine-host.ts",
+      },
+      "dependencies": {
+        "@vibe/config": "workspace:*",
+        "@vibe/core": "workspace:*",
+        "@vibe/providers": "workspace:*",
+        "@vibe/shared": "workspace:*",
+      },
+    },
     "packages/plugins": {
       "name": "@vibe/plugins",
       "version": "0.0.0",
@@ -294,6 +307,8 @@
     "@vibe/config": ["@vibe/config@workspace:packages/config"],
 
     "@vibe/core": ["@vibe/core@workspace:packages/core"],
+
+    "@vibe/macos-bridge": ["@vibe/macos-bridge@workspace:packages/macos-bridge"],
 
     "@vibe/plugins": ["@vibe/plugins@workspace:packages/plugins"],
 

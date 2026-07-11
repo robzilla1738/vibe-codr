@@ -170,12 +170,22 @@ export async function browserVerify(
   }
 
   // Combine the external signal with an overall wall-clock deadline so every
-  // step aborts on either. Both routes tear down; only the external/timeout
-  // abort maps to a null (silent) return.
+  // step aborts on either. Both routes tear down. Only the EXTERNAL abort
+  // (the caller's signal — e.g. Esc) maps to a null (silent skip); the internal
+  // wall-clock timeout is NOT a user cancellation — the check was attempted and
+  // just didn't finish, so it maps to an honest "could not run" (BUG: flaky
+  // browser-verify test when system load delays browser launch past the timeout).
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 90_000);
+
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, opts.timeoutMs ?? 90_000);
   timer.unref?.();
-  const onExternalAbort = () => controller.abort();
+  let externallyAborted = false;
+  const onExternalAbort = () => {
+    externallyAborted = true;
+    controller.abort();
+  };
   opts.signal?.addEventListener("abort", onExternalAbort, { once: true });
   const signal = controller.signal;
 
@@ -197,7 +207,8 @@ export async function browserVerify(
         const exec = opts.exec ?? bunExec();
         await exec(profile.commands.build, { cwd, timeoutSec: BUILD_TIMEOUT_SEC, signal });
       }
-      if (signal.aborted) return null;
+      if (signal.aborted)
+        return externallyAborted ? null : couldNotRun("timed out before server boot");
       proc = Bun.spawn(["bash", "-lc", serve.cmd], {
         cwd,
         stdout: "ignore",
@@ -207,13 +218,15 @@ export async function browserVerify(
       url = `http://127.0.0.1:${port}/`;
       const up = await waitForServer(url, SERVER_DEADLINE_MS, signal);
       if (!up) {
-        if (signal.aborted) return null;
+        if (signal.aborted)
+          return externallyAborted ? null : couldNotRun("timed out waiting for server");
         return couldNotRun(
           `dev server did not respond at ${url} within ${SERVER_DEADLINE_MS / 1000}s`,
         );
       }
     }
-    if (signal.aborted) return null;
+    if (signal.aborted)
+      return externallyAborted ? null : couldNotRun("timed out before browser launch");
 
     // 2. Render + inspect.
     browser = await pw.chromium.launch({ headless: true });
@@ -221,8 +234,10 @@ export async function browserVerify(
   } catch (err) {
     const message = (err as Error)?.message ?? String(err);
     opts.log?.debug(`browser-verify failed: ${message}`);
-    // An abort is a silent skip; a genuine failure is an honest "could not run".
-    return signal.aborted ? null : couldNotRun(message);
+    // An external (Esc) abort is a silent skip; a genuine failure OR an internal
+    // wall-clock timeout (the check was attempted, just didn't finish) is an
+    // honest "could not run".
+    return externallyAborted ? null : couldNotRun(message);
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onExternalAbort);

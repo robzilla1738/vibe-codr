@@ -49,10 +49,17 @@ jobs:
           bun build --compile --target=${{ matrix.target }} \
             packages/cli/src/engine-worker-entry.ts \
             --outfile vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+      # Pre-compiled TUI app (Solid JSX -> JS bundle). The non-literal dynamic
+      # import in tui.ts keeps app.tsx out of the compiled binary; this ships
+      # a sibling the binary can import at runtime.
+      - name: Build TUI app bundle
+        run: |
+          bun scripts/release/build-app.ts vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js
       - name: Per-file checksum
         run: |
           sha256sum vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
           sha256sum vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} > vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
+          sha256sum vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js > vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js.sha256
       - uses: actions/upload-artifact@v7
         with:
           name: binary-${{ matrix.os }}-${{ matrix.arch }}
@@ -61,6 +68,8 @@ jobs:
             vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
             vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
             vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}.sha256
+            vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js
+            vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js.sha256
 
   # Build + publish the npm/bun package. A tag containing `-rc` publishes NOTHING
   # (dry-run only), so a release candidate can exercise the whole path safely.

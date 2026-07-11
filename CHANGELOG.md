@@ -4,6 +4,28 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — npm TUI fallback to REPL + peer dep warning
+
+The npm package was falling back to the basic readline REPL instead of the
+rich OpenTUI TUI, and showed a `solid-js` peer dependency warning:
+
+- **Root cause:** `app.tsx` (the Solid JSX TUI app) uses a non-literal dynamic
+  import in `tui.ts` (to keep OpenTUI / solid-js as optional peer deps), so
+  `bun build` couldn't resolve it into the npm bundle. The `.tsx` file wasn't
+  shipped, and the runtime `import("./app.tsx")` failed — degrading to REPL.
+  The compiled binary had the same issue.
+- **Fix:** (1) `build-app.ts` — a new build script that passes
+  `@opentui/solid`'s Solid transform plugin directly to `Bun.build()` (the
+  preload's `Bun.plugin()` registration doesn't propagate to `Bun.build()`),
+  producing a pre-compiled `app.js` bundle with properly transpiled JSX. (2)
+  `build-npm.ts` — builds `app.js` into `dist/npm/` and ships it in the
+  package's `files` list. (3) `build:binary` — builds `vibecodr-app.js` as a
+  sibling of the compiled binary. (4) `tui.ts` — `resolveAppPath()` finds the
+  app module at runtime (npm `app.js` → binary `vibecodr-app.js` → source
+  `app.tsx`), mirroring `resolveEngineWorkerPath`.
+- **Peer dep:** widened `solid-js` from `^1.9.13` to `^1.9.12` to satisfy
+  `@opentui/solid@0.4.3`'s peer dependency.
+
 ### Fixed — TUI "TextBuffer is destroyed" crash
 
 An OpenTUI/Solid timing race that crashed the TUI mid-session:

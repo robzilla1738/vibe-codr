@@ -31,7 +31,7 @@
   "scripts": {
     "vibecodr": "bun packages/cli/bin/vibecodr.ts",
     "build": "turbo run build",
-    "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr && bun build packages/cli/src/engine-worker-entry.ts --compile --outfile dist/vibecodr-engine-worker",
+    "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr && bun build packages/cli/src/engine-worker-entry.ts --compile --outfile dist/vibecodr-engine-worker && bun scripts/release/build-app.ts dist/vibecodr-app.js",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "smoke:tui": "bun packages/tui/scripts/smoke.ts",
@@ -55,7 +55,7 @@
     "@types/node": "^22.20.0",
     "msw": "^2.14.6",
     "playwright": "^1.61.1",
-    "solid-js": "^1.9.13",
+    "solid-js": "^1.9.12",
     "turbo": "^2.10.0",
     "typescript": "^5.9.3",
     "web-tree-sitter": "0.25.10"

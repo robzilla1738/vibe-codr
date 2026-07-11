@@ -139,7 +139,7 @@ export function generateNpmPackageJson(opts: {
     type: "module",
     bin: { vibecodr: "vibecodr.js", vibe: "vibecodr.js" },
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },
-    files: ["vibecodr.js", "vibecodr-engine-worker.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
+    files: ["vibecodr.js", "vibecodr-engine-worker.js", "app.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
     optionalDependencies: opts.optionalDependencies,
     ...(hasOptionalPeers
       ? {
@@ -222,6 +222,35 @@ async function main(): Promise<void> {
   if (buildWorker.exitCode !== 0) {
     process.stderr.write(buildWorker.stderr.toString());
     throw new Error("bun build (engine worker) failed");
+  }
+
+  // 1c. build the OpenTUI Solid JSX app (app.tsx) as a separate bundle
+  // (`app.js`) so the npm package ships a pre-compiled TUI the runtime can
+  // dynamic-import. `app.tsx` uses a non-literal specifier in `tui.ts` (to
+  // keep the optional peer deps out of the main bundle), so `bun build` on
+  // the CLI entry can't resolve it. We build it here with the Solid transform
+  // plugin passed directly to Bun.build() — `@opentui/solid/preload`'s
+  // `Bun.plugin()` registration doesn't propagate to `Bun.build()`.
+  // Without this, npm users get the basic REPL instead of the rich TUI.
+  const solidPkgDir = join(outDir, "..", "..", "node_modules", "@opentui", "solid");
+  const solidResolved = Bun.resolveSync("@opentui/solid", root);
+  const solidDir = solidResolved.replace(/\/[^\/]+$/, "");
+  const solidPluginPath = join(solidDir, "scripts", "solid-plugin.js");
+  const { createSolidTransformPlugin: createSolidPlugin } = await import(solidPluginPath);
+  const appFile = join(outDir, "app.js");
+  const appBuild = await Bun.build({
+    entrypoints: [join(root, "packages", "tui", "src", "app.tsx")],
+    target: "bun",
+    outdir: outDir,
+    naming: "app.js",
+    plugins: [createSolidPlugin()],
+    // External: the optional peer deps are installed by the package's
+    // optionalDependencies and resolved at runtime — don't inline them.
+    external: ["@opentui/core", "@opentui/solid", "solid-js", "web-tree-sitter"],
+  });
+  if (!appBuild.success) {
+    const logs = appBuild.logs.map((l) => l.message).join("\n");
+    throw new Error(`bun build (app.tsx) failed: ${logs}`);
   }
 
   // 2. shebang + executable bit on the main bundle.

@@ -1,10 +1,40 @@
 import * as readline from "node:readline";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { EngineClient } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
 import { renderHeadless } from "./headless.ts";
 import { lineToCommands, routePendingPermLine } from "./slash.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
+
+/**
+ * Resolve the OpenTUI app module to import at runtime, mirroring
+ * `resolveEngineWorkerPath` in the CLI:
+ *   (1) npm bundle: a pre-built `app.js` sibling of the bundled `vibecodr.js`
+ *       (shipped in the npm package — `app.tsx` isn't included because it's a
+ *       non-literal dynamic import that `bun build` can't resolve).
+ *   (2) compiled binary: a pre-built `vibecodr-app.js` sibling of the binary.
+ *   (3) source/dev: the in-repo `app.tsx` (transpiled on the fly by Bun's
+ *       runtime after the Solid transform plugin is registered).
+ * Returns the module specifier to dynamic-import, or null when none exists.
+ */
+function resolveAppPath(): string | null {
+  const here = import.meta.dir;
+  // (1) npm bundle — app.js shipped next to vibecodr.js
+  const npmApp = join(here, "app.js");
+  if (existsSync(npmApp)) return npmApp;
+  // (2) compiled binary — vibecodr-app.js sibling of the executable
+  const execDir = dirname(process.execPath);
+  for (const name of ["vibecodr-app.js", "vibecodr-app"]) {
+    const binarySibling = join(execDir, name);
+    if (existsSync(binarySibling)) return binarySibling;
+  }
+  // (3) source/dev — app.tsx in the same package
+  const src = join(here, "app.tsx");
+  if (existsSync(src)) return src;
+  return null;
+}
 
 /**
  * Start the interactive UI. Tries the OpenTUI app first; if OpenTUI isn't
@@ -17,12 +47,15 @@ export async function startTui(engine: EngineClient): Promise<void> {
     // importing it, otherwise Bun compiles the JSX with its default (React)
     // runtime — which isn't installed — and the import throws. Registering at
     // runtime (rather than via bunfig `preload`) keeps the rich UI working no
-    // matter which directory `vibecodr` is launched from. Non-literal
-    // specifiers keep these optional native peer deps out of the tsc program.
+    // matter which directory `vibecodr` is launched from.
     const preloadModule = "@opentui/solid/preload";
     await import(preloadModule);
-    const appModule = "./app.tsx";
-    const mod = (await import(appModule)) as {
+    // Resolve the app module: a pre-built bundle (npm/binary) or the source
+    // .tsx (dev). Non-literal specifiers keep these optional native peer deps
+    // out of the tsc program and out of the main bundle.
+    const appPath = resolveAppPath();
+    if (!appPath) throw new Error("OpenTUI app module not found (app.js / app.tsx)");
+    const mod = (await import(appPath)) as {
       mountApp: (engine: EngineClient) => Promise<void>;
     };
     await mod.mountApp(engine);

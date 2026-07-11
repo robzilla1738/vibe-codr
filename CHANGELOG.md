@@ -4,6 +4,23 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — TUI "TextBuffer is destroyed" crash
+
+An OpenTUI/Solid timing race that crashed the TUI mid-session:
+
+- **Root cause:** a `tick()`-driven spinner computation (the animated braille
+  spinner on running tool steps / subagents) could fire as an
+  `unhandledRejection` AFTER the text element it targeted was destroyed by a
+  `setBlocks` batch (e.g. on `/clear`, turn transitions, or transcript
+  windowing). The process-level crash handler treated this non-fatal render
+  race as a fatal crash and exited.
+- **Fix:** (1) `commit()` now wraps its `batch()` in a try/catch that discards
+  the "TextBuffer is destroyed" error (the element is being removed — the
+  failed property update is harmless, and the next render cycle is correct).
+  (2) `installCrashHandlers` now ignores "TextBuffer is destroyed" errors in
+  both `uncaughtException` and `unhandledRejection` paths, so the microtask
+  rejection variant doesn't exit either.
+
 ### Improved — TUI visual polish (opencode-parity diff bands, tool hierarchy, code blocks)
 
 A focused pass on the TUI's rendering to match opencode's visual quality:

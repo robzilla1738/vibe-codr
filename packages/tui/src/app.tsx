@@ -1077,10 +1077,23 @@ export function App(props: { engine: EngineClient }) {
   const commit = () => {
     // One batched write: without batch(), the two signal writes trigger two
     // separate downstream recomputes (turns() + full yoga relayout each).
-    batch(() => {
-      setBlocks(ts.blocks);
-      setChangedFiles(ts.changedFiles);
-    });
+    //
+    // The batch is wrapped in a guard against the OpenTUI "TextBuffer is
+    // destroyed" race: a tick()-driven spinner computation can be pending when
+    // setBlocks removes the element it targets. Solid processes the dirty
+    // computation AFTER disposal, hitting a destroyed TextBuffer. The failed
+    // property update is harmless (the element is being removed anyway), so we
+    // discard it — the next render cycle carries the correct state.
+    try {
+      batch(() => {
+        setBlocks(ts.blocks);
+        setChangedFiles(ts.changedFiles);
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("TextBuffer is destroyed")) return;
+      throw err;
+    }
   };
   const resetTranscript = () => {
     ts = initialTranscript();

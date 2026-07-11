@@ -200,8 +200,21 @@ export function handleFatalSignal(
  * (kill, terminal close) ARE bound: without a handler the default action skips
  * OpenTUI's exit hook and leaves the terminal in raw/alt-screen. */
 export function installCrashHandlers(deps: { version: string }): void {
-  process.on("uncaughtException", (err) => handleCrash("uncaughtException", err, deps));
-  process.on("unhandledRejection", (reason) => handleCrash("unhandledRejection", reason, deps));
+  process.on("uncaughtException", (err) => {
+    // The OpenTUI "TextBuffer is destroyed" race: a tick()-driven spinner
+    // computation fires after the text element it targets was destroyed by a
+    // setBlocks batch. Non-fatal — the element is being removed and the next
+    // render cycle is correct. Swallow it so the TUI keeps running instead of
+    // crashing on a harmless render race.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("TextBuffer is destroyed")) return;
+    handleCrash("uncaughtException", err, deps);
+  });
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    if (msg.includes("TextBuffer is destroyed")) return;
+    handleCrash("unhandledRejection", reason, deps);
+  });
   process.on("SIGTERM", () => handleFatalSignal("SIGTERM"));
   process.on("SIGHUP", () => handleFatalSignal("SIGHUP"));
 }

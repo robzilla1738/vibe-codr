@@ -63,16 +63,12 @@ test("/help lists commands, /model switches, /clear clears", async () => {
   await engine.whenIdle();
   stop();
 
-  const help = events.find(
-    (e) => e.type === "notice" && e.message.includes("/help"),
-  );
+  const help = events.find((e) => e.type === "notice" && e.message.includes("/help"));
   expect(help).toBeDefined();
 
   expect(engine.snapshot().model).toBe("openai/gpt-x");
   expect(events.some((e) => e.type === "model-changed")).toBe(true);
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("cleared")),
-  ).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("cleared"))).toBe(true);
 });
 
 test("snapshot.commandNames exposes built-ins, custom commands, and skills", async () => {
@@ -118,7 +114,9 @@ test("/accent accepts named presets (orange → its hex) and rejects unknown nam
   // Unknown name: warned, unchanged.
   expect(engine.snapshot().accentColor).toBe("#fab283");
   expect(
-    events.some((e) => e.type === "notice" && e.level === "warn" && /Unknown accent/.test(e.message)),
+    events.some(
+      (e) => e.type === "notice" && e.level === "warn" && /Unknown accent/.test(e.message),
+    ),
   ).toBe(true);
 });
 
@@ -307,12 +305,12 @@ test("a custom /redo command is usable (redo is not a phantom reserved built-in)
   stop();
 
   expect(events.some((e) => e.type === "notice" && e.message === "custom redo ran")).toBe(true);
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("shadows a protected")),
-  ).toBe(false);
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("Unknown command")),
-  ).toBe(false);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("shadows a protected"))).toBe(
+    false,
+  );
+  expect(events.some((e) => e.type === "notice" && e.message.includes("Unknown command"))).toBe(
+    false,
+  );
 });
 
 test("planModel restore never clobbers an explicit model choice (stale planModelPrev)", async () => {
@@ -343,7 +341,14 @@ test("resuming mid-plan does not strand execution on the planModel", async () =>
     config: { ...defaultConfig(), model: "prov/A", planModel: "prov/P" },
     cwd: mkdtempSync(join(tmpdir(), "vibe-engine-resume-plan-")),
     resume: {
-      meta: { id: "s-plan-resume", model: "prov/P", mode: "plan", goal: null, createdAt: now, updatedAt: now },
+      meta: {
+        id: "s-plan-resume",
+        model: "prov/P",
+        mode: "plan",
+        goal: null,
+        createdAt: now,
+        updatedAt: now,
+      },
       modelMessages: [],
       history: [],
     },

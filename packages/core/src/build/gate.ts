@@ -19,7 +19,10 @@ const CHECK_ORDER: CheckName[] = ["typecheck", "test", "build", "lint"];
 
 /** The checks this gate can actually run: configured set ∩ detected commands,
  * in fail-fast order. */
-export function pickChecks(profile: RepoProfile, wanted: CheckName[]): { check: CheckName; command: string }[] {
+export function pickChecks(
+  profile: RepoProfile,
+  wanted: CheckName[],
+): { check: CheckName; command: string }[] {
   const want = new Set(wanted);
   const out: { check: CheckName; command: string }[] = [];
   for (const check of CHECK_ORDER) {
@@ -93,7 +96,10 @@ export function formatGateFailure(summary: GateSummary, maxRounds: number): stri
     "",
     "Fix the failures above, then re-verify with `run_check`. Do not re-run the same approach verbatim if it already failed — diagnose first. Do not claim done while any check is red.",
   ];
-  if (!failing.length) lines.push("(no per-check detail was parseable — run the commands yourself to see the failures)");
+  if (!failing.length)
+    lines.push(
+      "(no per-check detail was parseable — run the commands yourself to see the failures)",
+    );
   return lines.join("\n");
 }
 
@@ -109,7 +115,9 @@ export function formatGateOutcome(summary: GateSummary): string {
     return "Gate: ABORTED — interrupted before a verdict; work not machine-verified.";
   }
   const parts = summary.checks.map((c) =>
-    c.pass ? `${c.check} ✓${c.total ? ` ${c.total - c.failed}/${c.total}` : ""}` : `${c.check} ✗ ${c.failed} failing`,
+    c.pass
+      ? `${c.check} ✓${c.total ? ` ${c.total - c.failed}/${c.total}` : ""}`
+      : `${c.check} ✗ ${c.failed} failing`,
   );
   return `Gate: ${summary.outcome.toUpperCase()} — ${parts.join(" · ")}`;
 }

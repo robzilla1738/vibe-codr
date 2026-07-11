@@ -48,10 +48,7 @@ function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
   ]);
 }
 
-async function collect(
-  bus: EventBus,
-  run: () => Promise<void>,
-): Promise<UIEvent[]> {
+async function collect(bus: EventBus, run: () => Promise<void>): Promise<UIEvent[]> {
   const events: UIEvent[] = [];
   const sub = bus.subscribe();
   const collector = (async () => {
@@ -123,8 +120,9 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
   );
 
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
-      e.type === "assistant-text-delta",
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
     )
     .map((e) => e.delta)
     .join("");
@@ -206,7 +204,11 @@ test("resume seeds the real prior prompt size so the first turn's compaction che
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
         // A big REAL input count — the true context fill the estimate can't see.
-        { type: "finish", finishReason: "stop", usage: { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 } },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 },
+        },
       ]),
   });
   const first = new Session({
@@ -255,7 +257,12 @@ test("accumulates per-step usage and prices it (no double-counting)", async () =
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "c1", toolName: "echo", input: JSON.stringify({ text: "x" }) },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "echo",
+        input: JSON.stringify({ text: "x" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -317,7 +324,12 @@ test("Anthropic's disjoint cache-read tokens are folded into input for cost + co
     config: defaultConfig(),
     // Provider id must be "anthropic" for the disjoint-cache fold to engage.
     registry: new ProviderRegistry([
-      { id: "anthropic", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+      {
+        id: "anthropic",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
     ]),
     toolset: new Toolset([]),
     bus,
@@ -492,7 +504,12 @@ test("spend guard with onExceed=stop aborts after the budget is crossed", async 
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "c1", toolName: "echo", input: JSON.stringify({ text: "x" }) },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "echo",
+        input: JSON.stringify({ text: "x" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -524,12 +541,11 @@ test("spend guard with onExceed=stop aborts after the budget is crossed", async 
   });
 
   const events = await collect(bus, () => session.run("go"));
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("Spend limit")),
-  ).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("Spend limit"))).toBe(true);
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
-      e.type === "assistant-text-delta",
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
     )
     .map((e) => e.delta)
     .join("");
@@ -546,7 +562,11 @@ test("spend guard with onExceed=stop does NOT block the next turn on ESTIMATED s
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+      {
+        type: "finish",
+        finishReason: "stop",
+        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+      },
     ]);
   const replies = [reply("first"), reply("SECOND-RAN")];
   let call = 0;
@@ -567,10 +587,15 @@ test("spend guard with onExceed=stop does NOT block the next turn on ESTIMATED s
 
   await collect(bus, () => session.run("turn one")); // crosses the (estimated) budget
   const events = await collect(bus, () => session.run("turn two")); // must NOT be refused
-  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  const blocked = events.some(
+    (e) => e.type === "notice" && e.message.includes("new turns are blocked"),
+  );
   expect(blocked).toBe(false);
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
+    )
     .map((e) => e.delta)
     .join("");
   expect(text).toContain("SECOND-RAN");
@@ -583,10 +608,16 @@ test("pre-turn spend guard blocks on prior actual spend even after switching to 
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+      {
+        type: "finish",
+        finishReason: "stop",
+        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+      },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => [reply("first"), reply("SHOULD-NOT-RUN")][call++] as never });
+  const model = new MockLanguageModelV2({
+    doStream: async () => [reply("first"), reply("SHOULD-NOT-RUN")][call++] as never,
+  });
   const bus = new EventBus();
   const session = new Session({
     config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
@@ -606,7 +637,9 @@ test("pre-turn spend guard blocks on prior actual spend even after switching to 
   await collect(bus, () => session.run("turn one"));
   session.setModel("mock/estimated");
   const events = await collect(bus, () => session.run("turn two"));
-  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  const blocked = events.some(
+    (e) => e.type === "notice" && e.message.includes("new turns are blocked"),
+  );
   expect(blocked).toBe(true);
   expect(call).toBe(1);
 });
@@ -618,10 +651,16 @@ test("pre-turn spend guard does not block estimated prior spend after switching 
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+      {
+        type: "finish",
+        finishReason: "stop",
+        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+      },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => [reply("first"), reply("SECOND-RAN")][call++] as never });
+  const model = new MockLanguageModelV2({
+    doStream: async () => [reply("first"), reply("SECOND-RAN")][call++] as never,
+  });
   const bus = new EventBus();
   const session = new Session({
     config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
@@ -641,10 +680,15 @@ test("pre-turn spend guard does not block estimated prior spend after switching 
   await collect(bus, () => session.run("turn one"));
   session.setModel("mock/actual");
   const events = await collect(bus, () => session.run("turn two"));
-  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  const blocked = events.some(
+    (e) => e.type === "notice" && e.message.includes("new turns are blocked"),
+  );
   expect(blocked).toBe(false);
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
+    )
     .map((e) => e.delta)
     .join("");
   expect(text).toContain("SECOND-RAN");
@@ -681,13 +725,12 @@ test("spend guard with onExceed=warn notifies once but completes the turn", asyn
   });
 
   const events = await collect(bus, () => session.run("go"));
-  const notices = events.filter(
-    (e) => e.type === "notice" && e.message.includes("Spend limit"),
-  );
+  const notices = events.filter((e) => e.type === "notice" && e.message.includes("Spend limit"));
   expect(notices.length).toBe(1); // warned exactly once
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
-      e.type === "assistant-text-delta",
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
     )
     .map((e) => e.delta)
     .join("");
@@ -743,9 +786,9 @@ test("a deny permission rule blocks a side-effecting tool", async () => {
   });
 
   const events = await collect(bus, () => session.run("do the dangerous thing"));
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("Blocked danger")),
-  ).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("Blocked danger"))).toBe(
+    true,
+  );
   expect(events.some((e) => e.type === "engine-error")).toBe(false);
 });
 
@@ -971,7 +1014,13 @@ test("the compaction summarizer uses the sectioned contract and caps its input",
   expect(prompts).toHaveLength(1);
   const prompt = prompts[0]!;
   // Sectioned contract present.
-  for (const section of ["## STATE", "## DECISIONS", "## FILES TOUCHED", "## VERIFIED FACTS", "## OPEN THREADS"]) {
+  for (const section of [
+    "## STATE",
+    "## DECISIONS",
+    "## FILES TOUCHED",
+    "## VERIFIED FACTS",
+    "## OPEN THREADS",
+  ]) {
     expect(prompt).toContain(section);
   }
   // Input capped: the omission marker is present and the prompt is bounded well
@@ -1052,7 +1101,12 @@ test("an interrupted turn keeps completed tool steps in the transcript (a resume
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "c1", toolName: "echo", input: JSON.stringify({ text: "remember-this" }) },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "echo",
+        input: JSON.stringify({ text: "remember-this" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -1383,7 +1437,11 @@ test("resume does not promote estimated spend into actual hard-stop (BUG-103)", 
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 } },
+      {
+        type: "finish",
+        finishReason: "stop",
+        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+      },
     ]);
   let call = 0;
   const model = new MockLanguageModelV2({
@@ -1425,10 +1483,15 @@ test("resume does not promote estimated spend into actual hard-stop (BUG-103)", 
   expect(resumed.actualCostUSD).toBe(0);
   expect(resumed.costEstimated).toBe(true);
   const events = await collect(bus, () => resumed.run("turn two"));
-  const blocked = events.some((e) => e.type === "notice" && e.message.includes("new turns are blocked"));
+  const blocked = events.some(
+    (e) => e.type === "notice" && e.message.includes("new turns are blocked"),
+  );
   expect(blocked).toBe(false);
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
+    )
     .map((e) => e.delta)
     .join("");
   expect(text).toContain("AFTER-RESUME");
@@ -1446,7 +1509,11 @@ test("resume with costEstimated flag alone keeps actual at 0 (BUG-103 legacy met
             { type: "text-start", id: "t" },
             { type: "text-delta", id: "t", delta: "x" },
             { type: "text-end", id: "t" },
-            { type: "finish", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+            {
+              type: "finish",
+              finishReason: "stop",
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            },
           ]) as never,
       }),
     ),

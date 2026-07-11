@@ -16,7 +16,13 @@ import { Session } from "./session.ts";
  */
 
 function stream(chunks: unknown[]) {
-  return { stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }) };
+  return {
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
 }
 const USAGE = { inputTokens: 100, outputTokens: 5, totalTokens: 105 };
 const reply = () =>
@@ -32,7 +38,12 @@ const reply = () =>
  * Anthropic-gated caching path (cacheSystem / cacheConversation) actually runs. */
 function anthropicRegistry(model: MockLanguageModelV2): ProviderRegistry {
   return new ProviderRegistry([
-    { id: "anthropic", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "anthropic",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 

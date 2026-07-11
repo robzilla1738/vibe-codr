@@ -69,7 +69,12 @@ export function atMentionState(draft: string): { query: string; atIndex: number 
 }
 
 /** Replace the trailing `@query` with `@path` (space-terminated when run completes). */
-export function applyAtMention(draft: string, atIndex: number, path: string, done: boolean): string {
+export function applyAtMention(
+  draft: string,
+  atIndex: number,
+  path: string,
+  done: boolean,
+): string {
   const prefix = draft.slice(0, atIndex);
   const mention = `@${path}${done ? " " : ""}`;
   return prefix + mention;

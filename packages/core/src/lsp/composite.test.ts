@@ -88,7 +88,9 @@ test("status aggregates both layers; dispose tears both down", async () => {
   });
 
   const status = composite.status();
-  expect(status).toEqual([{ language: "py", command: "basedpyright-langserver", state: "running" }]);
+  expect(status).toEqual([
+    { language: "py", command: "basedpyright-langserver", state: "running" },
+  ]);
 
   composite.dispose();
   expect(ts.rec.disposeCalls).toBe(1);

@@ -9,9 +9,39 @@
  * deweights them, but dropping avoids noisy snippet centering). Kept only when a
  * query is ALL stopwords, so a literal phrase still matches something. */
 const STOPWORDS = new Set([
-  "the", "a", "an", "and", "or", "but", "of", "to", "in", "on", "for", "is",
-  "are", "was", "were", "be", "been", "with", "that", "this", "it", "as", "at",
-  "by", "from", "we", "you", "do", "did", "does", "how", "what", "when",
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "but",
+  "of",
+  "to",
+  "in",
+  "on",
+  "for",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "with",
+  "that",
+  "this",
+  "it",
+  "as",
+  "at",
+  "by",
+  "from",
+  "we",
+  "you",
+  "do",
+  "did",
+  "does",
+  "how",
+  "what",
+  "when",
 ]);
 
 /** BM25 term-frequency saturation (k1) and length-normalization (b). */
@@ -100,7 +130,10 @@ export function rankBm25(
  * RRF is rank-based, so it fuses scorers on incomparable scales (BM25 vs cosine)
  * without normalization.
  */
-export function reciprocalRankFusion(rankings: string[][], k = 60): { id: string; score: number }[] {
+export function reciprocalRankFusion(
+  rankings: string[][],
+  k = 60,
+): { id: string; score: number }[] {
   const fused = new Map<string, number>();
   for (const ranking of rankings) {
     for (let rank = 0; rank < ranking.length; rank++) {

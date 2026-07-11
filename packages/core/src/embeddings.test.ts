@@ -39,7 +39,10 @@ test("aiSdkEmbedder wraps an embedding model and returns one vector per input", 
 });
 
 test("resolveEmbedder returns undefined when semantic memory is disabled", async () => {
-  const config = { ...defaultConfig(), memory: { ...defaultConfig().memory, semantic: { enabled: false, model: "local" } } };
+  const config = {
+    ...defaultConfig(),
+    memory: { ...defaultConfig().memory, semantic: { enabled: false, model: "local" } },
+  };
   expect(await resolveEmbedder(config, new ProviderRegistry())).toBeUndefined();
 });
 

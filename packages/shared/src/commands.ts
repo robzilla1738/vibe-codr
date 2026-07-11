@@ -1,4 +1,11 @@
-import type { Mode, EngineSnapshot, ModelSummary, ProviderInfo, AgentInfo, SkillInfo } from "./types.ts";
+import type {
+  Mode,
+  EngineSnapshot,
+  ModelSummary,
+  ProviderInfo,
+  AgentInfo,
+  SkillInfo,
+} from "./types.ts";
 import type { UIEvent } from "./events.ts";
 
 /**

@@ -176,9 +176,7 @@ test("an external stop reports 'stopped by user' and fires no iteration after th
   await loop.whenDone();
   // The stop is reported with the caller's reason, not silently swallowed.
   const stopped = events.find((e) => e.type === "loop-stopped");
-  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toBe(
-    "stopped by user",
-  );
+  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toBe("stopped by user");
   // No iteration runs after the stop: the in-flight tick's re-schedule is
   // suppressed and the interval timer is cleared, so exactly one tick fired.
   expect(runs).toBe(runsAtStop);

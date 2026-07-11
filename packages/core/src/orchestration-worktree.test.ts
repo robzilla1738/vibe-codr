@@ -39,7 +39,13 @@ afterAll(() => {
 
 const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 function stream(chunks: unknown[]) {
-  return { stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }) };
+  return {
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
 }
 function textStep(delta: string) {
   return stream([
@@ -53,7 +59,12 @@ function textStep(delta: string) {
 function spawnTasksStep(tasks: unknown[]) {
   return stream([
     { type: "stream-start", warnings: [] },
-    { type: "tool-call", toolCallId: "p1", toolName: "spawn_tasks", input: JSON.stringify({ tasks }) },
+    {
+      type: "tool-call",
+      toolCallId: "p1",
+      toolName: "spawn_tasks",
+      input: JSON.stringify({ tasks }),
+    },
     { type: "finish", finishReason: "tool-calls", usage: USAGE },
   ]);
 }
@@ -67,7 +78,12 @@ function toolCallStep(toolName: string, input: unknown, id = "c1") {
 
 function mockRegistry(model: MockLanguageModelV2) {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -114,7 +130,8 @@ const applyTool: ToolDefinition<{ path?: string; content: string }> = {
  * interleaving of PARALLEL children (a global step counter would break). */
 function routedModel(route: (promptJson: string) => unknown): MockLanguageModelV2 {
   return new MockLanguageModelV2({
-    doStream: async (options) => route(JSON.stringify((options as { prompt?: unknown }).prompt ?? "")) as never,
+    doStream: async (options) =>
+      route(JSON.stringify((options as { prompt?: unknown }).prompt ?? "")) as never,
   });
 }
 
@@ -218,7 +235,9 @@ test("two parallel worktree tasks on the SAME path: one merges, the other fails 
   bus.close();
   await done;
 
-  const orch = events.filter((e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task");
+  const orch = events.filter(
+    (e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task",
+  );
   const completed = orch.filter((e) => e.status === "completed").map((e) => e.taskId);
   const failed = orch.filter((e) => e.status === "failed").map((e) => e.taskId);
   expect(completed.length).toBe(1);
@@ -339,7 +358,10 @@ test("ensemble (n=2, hard): the attempt that passes the in-worktree gate wins; l
         : spawnTasksStep([{ id: "hard", objective: "solve the hard task", hard: true }]);
     }
     if (p.includes("APPLIED")) return textStep("attempt report");
-    return toolCallStep("apply", { path: "result.txt", content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD" });
+    return toolCallStep("apply", {
+      path: "result.txt",
+      content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD",
+    });
   });
 
   const bus = new EventBus();
@@ -395,7 +417,9 @@ test("an interrupted worktree child fails the task and does NOT merge its partia
     if (p.includes("INTERRUPT-RUN")) {
       return p.includes("Orchestrated")
         ? textStep("wrapped")
-        : spawnTasksStep([{ id: "t", objective: "task-x: write then get interrupted", worktree: true }]);
+        : spawnTasksStep([
+            { id: "t", objective: "task-x: write then get interrupted", worktree: true },
+          ]);
     }
     if (p.includes("APPLIED")) return textStep("should never finish"); // aborted before this lands
     return toolCallStep("apply", { path: "leak.txt", content: "PARTIAL" });
@@ -418,7 +442,9 @@ test("an interrupted worktree child fails the task and does NOT merge its partia
   bus.close();
   await done;
 
-  const orch = events.filter((e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task");
+  const orch = events.filter(
+    (e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task",
+  );
   expect(orch.some((e) => e.status === "failed" && e.taskId === "t")).toBe(true);
   expect(orch.some((e) => e.status === "completed")).toBe(false);
   // The child's PARTIAL edit must NOT have been committed + merged into the main tree.
@@ -449,7 +475,10 @@ test("ensemble re-gates the merged tree — a winner green in isolation but red 
         : spawnTasksStep([{ id: "hard", objective: "solve", hard: true, check: true }]);
     }
     if (p.includes("APPLIED")) return textStep("attempt report");
-    return toolCallStep("apply", { path: "result.txt", content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD" });
+    return toolCallStep("apply", {
+      path: "result.txt",
+      content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD",
+    });
   });
 
   const bus = new EventBus();
@@ -469,7 +498,9 @@ test("ensemble re-gates the merged tree — a winner green in isolation but red 
   bus.close();
   await done;
 
-  const orch = events.filter((e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task");
+  const orch = events.filter(
+    (e): e is Extract<UIEvent, { type: "orchestration-task" }> => e.type === "orchestration-task",
+  );
   // The winner passed in isolation but the merged tree is red → the task FAILS,
   // instead of the old silent "completed" on a red main tree.
   expect(orch.some((e) => e.status === "failed" && e.taskId === "hard")).toBe(true);
@@ -561,7 +592,9 @@ test("a hard/ensemble task in a repo with no commits falls back to the shared tr
   // It ran in the shared tree (its write landed there) rather than failing every
   // 'worktree-unavailable' ensemble attempt.
   expect(readFileSync(join(cwd, "made.txt"), "utf8").trim()).toBe("shared");
-  const notice = events.find((e) => e.type === "notice" && e.message.includes("worktrees unavailable"));
+  const notice = events.find(
+    (e) => e.type === "notice" && e.message.includes("worktrees unavailable"),
+  );
   expect(notice).toBeDefined();
 });
 
@@ -573,7 +606,9 @@ test("a worktree task with check:true fails when the merged tree is red", async 
     if (p.includes("GATE-RUN")) {
       return p.includes("Orchestrated")
         ? textStep("wrapped")
-        : spawnTasksStep([{ id: "g", objective: "task-g: write BAD", worktree: true, check: true }]);
+        : spawnTasksStep([
+            { id: "g", objective: "task-g: write BAD", worktree: true, check: true },
+          ]);
     }
     if (p.includes("APPLIED")) return textStep("child report");
     return toolCallStep("apply", { path: "result.txt", content: "BAD" });
@@ -650,11 +685,15 @@ test("a running child's tool calls surface as subagent-activity on the PARENT bu
   bus.close();
   await done;
 
-  const started = events.find((e): e is Extract<UIEvent, { type: "subagent-started" }> => e.type === "subagent-started");
+  const started = events.find(
+    (e): e is Extract<UIEvent, { type: "subagent-started" }> => e.type === "subagent-started",
+  );
   expect(started).toBeDefined();
   const childId = started!.subagentId;
 
-  const activity = events.filter((e): e is Extract<UIEvent, { type: "subagent-activity" }> => e.type === "subagent-activity");
+  const activity = events.filter(
+    (e): e is Extract<UIEvent, { type: "subagent-activity" }> => e.type === "subagent-activity",
+  );
   expect(activity.length).toBeGreaterThanOrEqual(1);
   // Attributed to the CHILD, re-emitted under the PARENT's sessionId, with the
   // bash-specific "$ <command head>" label.
@@ -687,7 +726,14 @@ test("a worktree task with outputSchema settles completed with the VALIDATED jso
     if (p.includes("WT-SCHEMA-OK")) {
       return p.includes("Orchestrated")
         ? textStep("wrapped")
-        : spawnTasksStep([{ id: "t", objective: "task-wtok: write then report json", worktree: true, outputSchema: STATUS_SCHEMA }]);
+        : spawnTasksStep([
+            {
+              id: "t",
+              objective: "task-wtok: write then report json",
+              worktree: true,
+              outputSchema: STATUS_SCHEMA,
+            },
+          ]);
     }
     // After the write lands, the FINAL message is exactly the required JSON.
     if (p.includes("APPLIED")) return textStep(JSON.stringify({ status: "done" }));
@@ -724,7 +770,14 @@ test("a worktree task whose final message violates outputSchema fails (not silen
     if (p.includes("WT-SCHEMA-BAD")) {
       return p.includes("Orchestrated")
         ? textStep("wrapped")
-        : spawnTasksStep([{ id: "t", objective: "task-wtbad: write then report prose", worktree: true, outputSchema: STATUS_SCHEMA }]);
+        : spawnTasksStep([
+            {
+              id: "t",
+              objective: "task-wtbad: write then report prose",
+              worktree: true,
+              outputSchema: STATUS_SCHEMA,
+            },
+          ]);
     }
     // FINAL message is prose, not JSON — the schema contract is violated.
     if (p.includes("APPLIED")) return textStep("I could not produce the JSON you asked for.");
@@ -762,12 +815,22 @@ test("an ensemble winner whose final message violates outputSchema fails; unvali
     if (p.includes("ENS-SCHEMA-BAD")) {
       return p.includes("Orchestrated")
         ? textStep("wrapped")
-        : spawnTasksStep([{ id: "hard", objective: "solve the hard task", hard: true, outputSchema: STATUS_SCHEMA }]);
+        : spawnTasksStep([
+            {
+              id: "hard",
+              objective: "solve the hard task",
+              hard: true,
+              outputSchema: STATUS_SCHEMA,
+            },
+          ]);
     }
     // The gate greps for GOOD → the MINIMAL-DIFF attempt wins on score, but its
     // FINAL message is prose, so the winner fails schema enforcement.
     if (p.includes("APPLIED")) return textStep("prose, not the required JSON");
-    return toolCallStep("apply", { path: "result.txt", content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD" });
+    return toolCallStep("apply", {
+      path: "result.txt",
+      content: p.includes("MINIMAL-DIFF") ? "GOOD" : "BAD",
+    });
   });
 
   const bus = new EventBus();
@@ -808,7 +871,10 @@ function spawnTasksOutput(events: UIEvent[]): string {
 
 async function worktreeBranches(cwd: string): Promise<string[]> {
   const r = await spawnGit(cwd, ["branch", "--list", "vibe-wt/*"]);
-  return r.stdout.split("\n").map((l) => l.replace(/^[*+]?\s*/, "").trim()).filter(Boolean);
+  return r.stdout
+    .split("\n")
+    .map((l) => l.replace(/^[*+]?\s*/, "").trim())
+    .filter(Boolean);
 }
 
 // ── BUG-086: dirty post-merge review must restore squash-merge on main ────────

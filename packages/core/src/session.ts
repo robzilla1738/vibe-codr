@@ -1,10 +1,4 @@
-import {
-  streamText,
-  generateText,
-  stepCountIs,
-  type ModelMessage,
-  type LanguageModel,
-} from "ai";
+import { streamText, generateText, stepCountIs, type ModelMessage, type LanguageModel } from "ai";
 import {
   createId,
   makeYieldGate,
@@ -37,7 +31,12 @@ import { composeSystemPrompt, formatToday, formatWorkspaceState } from "./system
 import { PermissionChecker, type PermissionResolver } from "./permissions.ts";
 import type { NamedAgent } from "./agents.ts";
 import { compactMessages, estimateTokens } from "./compaction.ts";
-import { SourceLedger, harvestUrls, RESEARCH_TOOL_NAMES, type SourceEntry } from "./source-ledger.ts";
+import {
+  SourceLedger,
+  harvestUrls,
+  RESEARCH_TOOL_NAMES,
+  type SourceEntry,
+} from "./source-ledger.ts";
 import { PlanGate } from "./plan-gate.ts";
 import { globalStateDir } from "./state-dir.ts";
 import {
@@ -440,7 +439,11 @@ export class Session {
     this.#costUSD += Math.max(0, child.costUSD - baseline.costUSD);
     this.#actualCostUSD += Math.max(0, child.actualCostUSD - baseline.actualCostUSD);
     this.#costEstimated ||= child.costEstimated;
-    this.#deps.bus.emit({ type: "usage-updated", sessionId: this.id, usage: this.#usageSnapshot() });
+    this.#deps.bus.emit({
+      type: "usage-updated",
+      sessionId: this.id,
+      usage: this.#usageSnapshot(),
+    });
     this.#enforceBudget();
     // Drop the child's per-session freshness tracking now that it's done. The
     // child read files under its own sessionId; its entries would otherwise
@@ -517,7 +520,9 @@ export class Session {
 
   #hardBudgetExceeded(): boolean {
     const budget = this.#deps.config.budget;
-    return !!budget.limitUSD && budget.onExceed === "stop" && this.#actualCostUSD >= budget.limitUSD;
+    return (
+      !!budget.limitUSD && budget.onExceed === "stop" && this.#actualCostUSD >= budget.limitUSD
+    );
   }
 
   /** Cumulative token totals for this session (for persistence/diagnostics). */
@@ -763,10 +768,7 @@ export class Session {
    * silent per-turn substitution would misreport cost/context and surprise the
    * user harder than an explicit switch.
    */
-  async #resolveWithFallback(
-    registry: ProviderRegistry,
-    config: Config,
-  ): Promise<LanguageModel> {
+  async #resolveWithFallback(registry: ProviderRegistry, config: Config): Promise<LanguageModel> {
     const retryOpts = {
       maxAttempts: config.retry.maxAttempts,
       baseDelayMs: config.retry.baseDelayMs,
@@ -777,7 +779,10 @@ export class Session {
       for (const fallback of config.modelFallbacks) {
         if (fallback === this.model) continue;
         try {
-          const resolved = await withRetry(() => registry.resolveModel(fallback, config), retryOpts);
+          const resolved = await withRetry(
+            () => registry.resolveModel(fallback, config),
+            retryOpts,
+          );
           this.#deps.bus.emit({
             type: "notice",
             level: "warn",
@@ -1074,7 +1079,9 @@ export class Session {
               .filter((a) => this.mode !== "plan" || a.mode === "plan")
               .map((a) => `${a.name} — ${a.description}`)
           : [];
-      const repoFacts = this.#deps.repoProfile ? formatRepoFacts(this.#deps.repoProfile) : undefined;
+      const repoFacts = this.#deps.repoProfile
+        ? formatRepoFacts(this.#deps.repoProfile)
+        : undefined;
       // The system prompt holds ONLY session-stable content, so its cache prefix
       // (and the whole conversation cached behind it) survives every turn. The
       // volatile working state — the live task list and gathered sources — rides
@@ -1149,8 +1156,11 @@ export class Session {
         // the tree shares one registry — a read by a subagent is visible to
         // the parent's stale check, and vice versa.
         freshness: this.#deps.freshness,
-        checkPermission: (name: string, input: unknown, opts?: { fallback?: "allow" | "deny" | "ask" }) =>
-          checker.check(name, input, opts),
+        checkPermission: (
+          name: string,
+          input: unknown,
+          opts?: { fallback?: "allow" | "deny" | "ask" },
+        ) => checker.check(name, input, opts),
         // Plan-readiness gate for present_plan (plan mode only): rejects a plan
         // whose triage-required research never happened, bounded, then warns.
         // Wired off the turn-scoped gate — a mid-turn mode switch retires
@@ -1231,7 +1241,11 @@ export class Session {
         this.#deps.reportStore &&
         (subagentsAvailable || this.depth > 0)
       ) {
-        tools.read_report = toAISDKTool(buildReadReportTool(this.#deps.reportStore), base, serialize);
+        tools.read_report = toAISDKTool(
+          buildReadReportTool(this.#deps.reportStore),
+          base,
+          serialize,
+        );
       }
       // Progressive disclosure: expose use_skill when skills are available.
       if (skills?.list().length) {
@@ -1298,229 +1312,233 @@ export class Session {
         const names = Object.keys(tools);
         const lastTool = names[names.length - 1];
         if (lastTool && tools[lastTool]) {
-          (tools[lastTool] as { providerOptions?: unknown }).providerOptions = ANTHROPIC_CACHE_CONTROL;
+          (tools[lastTool] as { providerOptions?: unknown }).providerOptions =
+            ANTHROPIC_CACHE_CONTROL;
         }
       }
 
       await this.#withLimiter(async () => {
-      const result = streamText({
-        model,
-        // When caching, the system prompt rides in `messages` with a cache
-        // marker; otherwise it's passed plainly.
-        ...(tuning.cacheSystem ? {} : { system }),
-        messages,
-        tools,
-        toolChoice: "auto",
-        stopWhen: stepCountIs(config.maxSteps),
-        abortSignal: this.#abort.signal,
-        maxRetries: config.retry.maxAttempts,
-        // Mid-turn microcompaction: before each step, project the fill and
-        // offload bulky/superseded tool results (full text → session artifact,
-        // preview + path stays in the prompt). prepareStep edits are EPHEMERAL
-        // (never written back into response.messages), so a durable pass runs
-        // again at end-of-turn — this hook just keeps a long turn under the
-        // window RIGHT NOW. Failures degrade to the untrimmed prompt; a throw
-        // here would fail the whole turn.
-        prepareStep: async ({ messages: stepMessages }) => {
-          const offload = config.compaction.offload;
-          let next = stepMessages;
-          try {
-            if (offload.enabled && !this.#aborted()) {
-              // Project this step's fill against the window. `#overheadTokens` is
-              // the provider's real prompt size minus the estimate of what we
-              // actually SENT last step (system + tools), so adding it to the
-              // current stepMessages estimate does NOT double-count the within-turn
-              // tail (that tail is already inside stepMessages).
-              const projected = estimateTokens(stepMessages) + this.#overheadTokens;
-              const limit = offload.threshold * this.#contextWindow;
-              if (projected >= limit) {
-                const plan = planOffloads(stepMessages, {
-                  maxResultBytes: offload.maxResultBytes,
-                  keepLiveResults: offload.keepLiveResults,
-                  // Free enough to land comfortably under the threshold (chars ≈ 4/token).
-                  targetChars: Math.max(0, (projected - limit * 0.85) * 4),
-                  existing: new Set(this.#offloaded.keys()),
-                  // Match superseded reads across abs/relative spellings of a file.
-                  canonicalize: (p) => resolve(this.#deps.cwd, p),
-                  // A preview stays inline, so credit only the net reduction.
-                  previewChars: offload.previewBytes,
-                });
-                for (const ref of plan) await this.#writeOffload(ref, stepMessages);
+        const result = streamText({
+          model,
+          // When caching, the system prompt rides in `messages` with a cache
+          // marker; otherwise it's passed plainly.
+          ...(tuning.cacheSystem ? {} : { system }),
+          messages,
+          tools,
+          toolChoice: "auto",
+          stopWhen: stepCountIs(config.maxSteps),
+          abortSignal: this.#abort.signal,
+          maxRetries: config.retry.maxAttempts,
+          // Mid-turn microcompaction: before each step, project the fill and
+          // offload bulky/superseded tool results (full text → session artifact,
+          // preview + path stays in the prompt). prepareStep edits are EPHEMERAL
+          // (never written back into response.messages), so a durable pass runs
+          // again at end-of-turn — this hook just keeps a long turn under the
+          // window RIGHT NOW. Failures degrade to the untrimmed prompt; a throw
+          // here would fail the whole turn.
+          prepareStep: async ({ messages: stepMessages }) => {
+            const offload = config.compaction.offload;
+            let next = stepMessages;
+            try {
+              if (offload.enabled && !this.#aborted()) {
+                // Project this step's fill against the window. `#overheadTokens` is
+                // the provider's real prompt size minus the estimate of what we
+                // actually SENT last step (system + tools), so adding it to the
+                // current stepMessages estimate does NOT double-count the within-turn
+                // tail (that tail is already inside stepMessages).
+                const projected = estimateTokens(stepMessages) + this.#overheadTokens;
+                const limit = offload.threshold * this.#contextWindow;
+                if (projected >= limit) {
+                  const plan = planOffloads(stepMessages, {
+                    maxResultBytes: offload.maxResultBytes,
+                    keepLiveResults: offload.keepLiveResults,
+                    // Free enough to land comfortably under the threshold (chars ≈ 4/token).
+                    targetChars: Math.max(0, (projected - limit * 0.85) * 4),
+                    existing: new Set(this.#offloaded.keys()),
+                    // Match superseded reads across abs/relative spellings of a file.
+                    canonicalize: (p) => resolve(this.#deps.cwd, p),
+                    // A preview stays inline, so credit only the net reduction.
+                    previewChars: offload.previewBytes,
+                  });
+                  for (const ref of plan) await this.#writeOffload(ref, stepMessages);
+                }
               }
+              if (this.#offloaded.size) {
+                next = applyOffloads(stepMessages, this.#offloaded, offload.previewBytes);
+              }
+            } catch (err) {
+              bus.emit({
+                type: "notice",
+                level: "warn",
+                message: `context offload skipped: ${(err as Error).message}`,
+              });
+              next = stepMessages; // degrade to the untrimmed prompt — never fail the turn
             }
-            if (this.#offloaded.size) {
-              next = applyOffloads(stepMessages, this.#offloaded, offload.previewBytes);
+            // Conversation cache breakpoint on the current tail, every step.
+            if (tuning.cacheConversation) next = markConversationTail(next);
+            // Anchor next step's overhead calc on exactly what we send this step.
+            this.#lastSentEstimate = estimateTokens(next);
+            // Terminal present_plan: PlanGate.presented flips synchronously inside
+            // present_plan.execute (before this next prepareStep), so we never race
+            // the fullStream consumer. Strip tools so the model cannot keep
+            // research/skills/scaffolding after the approval card is armed.
+            const base =
+              next === stepMessages ? ({} as { messages?: typeof next }) : { messages: next };
+            if (this.#turnGate?.presented) {
+              // Strip tools so the model cannot keep researching after the card is
+              // armed. Most providers accept tool_choice:"none"; Meta Model API
+              // only allows "auto" (anything else is HTTP 400). For meta, empty
+              // activeTools is enough — toolsDisabled still hard-refuses execute.
+              const isMeta = this.model.startsWith("meta/");
+              if (isMeta) {
+                return { ...base, activeTools: [] as string[] };
+              }
+              return { ...base, toolChoice: "none" as const, activeTools: [] as string[] };
             }
-          } catch (err) {
+            return next === stepMessages ? undefined : { messages: next };
+          },
+          onError: ({ error }) => {
             bus.emit({
               type: "notice",
               level: "warn",
-              message: `context offload skipped: ${(err as Error).message}`,
+              message: `provider error: ${(error as Error)?.message ?? String(error)}`,
             });
-            next = stepMessages; // degrade to the untrimmed prompt — never fail the turn
-          }
-          // Conversation cache breakpoint on the current tail, every step.
-          if (tuning.cacheConversation) next = markConversationTail(next);
-          // Anchor next step's overhead calc on exactly what we send this step.
-          this.#lastSentEstimate = estimateTokens(next);
-          // Terminal present_plan: PlanGate.presented flips synchronously inside
-          // present_plan.execute (before this next prepareStep), so we never race
-          // the fullStream consumer. Strip tools so the model cannot keep
-          // research/skills/scaffolding after the approval card is armed.
-          const base =
-            next === stepMessages ? ({} as { messages?: typeof next }) : { messages: next };
-          if (this.#turnGate?.presented) {
-            // Strip tools so the model cannot keep researching after the card is
-            // armed. Most providers accept tool_choice:"none"; Meta Model API
-            // only allows "auto" (anything else is HTTP 400). For meta, empty
-            // activeTools is enough — toolsDisabled still hard-refuses execute.
-            const isMeta = this.model.startsWith("meta/");
-            if (isMeta) {
-              return { ...base, activeTools: [] as string[] };
+          },
+          ...(tuning.providerOptions
+            ? {
+                providerOptions: tuning.providerOptions as NonNullable<
+                  Parameters<typeof streamText>[0]["providerOptions"]
+                >,
+              }
+            : {}),
+          onStepFinish: async ({ usage, providerMetadata, response }) => {
+            // Buffer this completed step's messages (assistant tool_use + its tool
+            // results — matched pairs, since the step FINISHED). response.messages
+            // is cumulative across the turn, so REPLACE rather than append: the last
+            // onStepFinish before an abort holds every completed step. On success
+            // we use result.response.messages instead and ignore this buffer.
+            if (response?.messages) this.#committedSteps = [...response.messages];
+            const stepUsage = normalizeUsage(usage);
+            // Cache WRITES are a third disjoint slice on Anthropic — invisible in
+            // normalized usage, only in providerMetadata. Without folding them the
+            // first (cache-creating) step under-reports both context fill and cost.
+            const cacheWrites = foldCachedIntoInput
+              ? Number(
+                  (
+                    providerMetadata as
+                      | { anthropic?: { cacheCreationInputTokens?: unknown } }
+                      | undefined
+                  )?.anthropic?.cacheCreationInputTokens ?? 0,
+                ) || 0
+              : 0;
+            // Restore the `cached ⊆ input` invariant for providers (Anthropic) that
+            // report the two disjoint, so the accounting below (cost, context fill,
+            // compaction) sees the full prompt size instead of only the new tokens.
+            if (foldCachedIntoInput && stepUsage && (stepUsage.cachedInputTokens || cacheWrites)) {
+              stepUsage.inputTokens =
+                (stepUsage.inputTokens ?? 0) + (stepUsage.cachedInputTokens ?? 0) + cacheWrites;
             }
-            return { ...base, toolChoice: "none" as const, activeTools: [] as string[] };
-          }
-          return next === stepMessages ? undefined : { messages: next };
-        },
-        onError: ({ error }) => {
-          bus.emit({
-            type: "notice",
-            level: "warn",
-            message: `provider error: ${(error as Error)?.message ?? String(error)}`,
-          });
-        },
-        ...(tuning.providerOptions
-          ? {
-              providerOptions: tuning.providerOptions as NonNullable<
-                Parameters<typeof streamText>[0]["providerOptions"]
-              >,
-            }
-          : {}),
-        onStepFinish: async ({ usage, providerMetadata, response }) => {
-          // Buffer this completed step's messages (assistant tool_use + its tool
-          // results — matched pairs, since the step FINISHED). response.messages
-          // is cumulative across the turn, so REPLACE rather than append: the last
-          // onStepFinish before an abort holds every completed step. On success
-          // we use result.response.messages instead and ignore this buffer.
-          if (response?.messages) this.#committedSteps = [...response.messages];
-          const stepUsage = normalizeUsage(usage);
-          // Cache WRITES are a third disjoint slice on Anthropic — invisible in
-          // normalized usage, only in providerMetadata. Without folding them the
-          // first (cache-creating) step under-reports both context fill and cost.
-          const cacheWrites = foldCachedIntoInput
-            ? Number(
-                (providerMetadata as { anthropic?: { cacheCreationInputTokens?: unknown } } | undefined)
-                  ?.anthropic?.cacheCreationInputTokens ?? 0,
-              ) || 0
-            : 0;
-          // Restore the `cached ⊆ input` invariant for providers (Anthropic) that
-          // report the two disjoint, so the accounting below (cost, context fill,
-          // compaction) sees the full prompt size instead of only the new tokens.
-          if (foldCachedIntoInput && stepUsage && (stepUsage.cachedInputTokens || cacheWrites)) {
-            stepUsage.inputTokens =
-              (stepUsage.inputTokens ?? 0) + (stepUsage.cachedInputTokens ?? 0) + cacheWrites;
-          }
-          bus.emit({
-            type: "step-finished",
-            sessionId: this.id,
-            usage: stepUsage,
-          });
-          // Fire the plugin step boundary hook (was declared but never dispatched,
-          // so registered handlers silently never ran). Awaited for symmetry with
-          // the other lifecycle dispatches; response fields are unused for now.
-          // Best-effort, errors isolated by the HookBus.
-          await this.#deps.hooks?.run("step.finish", { sessionId: this.id });
-          addUsage(this.#usage, stepUsage);
-          // Track the provider's real prompt size (the true context fill) and
-          // surface it live — the JSON estimate omitted the system prompt + tool
-          // schemas, so it read far too low.
-          if (stepUsage?.inputTokens) {
-            this.#lastInputTokens = stepUsage.inputTokens;
-            // Anchor the mid-turn fill projection on the delta between the real
-            // prompt size and the estimate of exactly what we SENT this step
-            // (#lastSentEstimate). That isolates the system+tools scaffolding the
-            // estimate can't see; measuring against #modelMessages instead folded
-            // the within-turn tool-result tail into "overhead" and then
-            // double-counted it in prepareStep, firing offloads far too early.
-            const sentEstimate = this.#lastSentEstimate || estimateTokens(this.#modelMessages);
-            this.#overheadTokens = Math.max(0, stepUsage.inputTokens - sentEstimate);
             bus.emit({
-              type: "context-updated",
+              type: "step-finished",
               sessionId: this.id,
-              usedTokens: this.#lastInputTokens,
-              contextWindow: this.#contextWindow,
+              usage: stepUsage,
             });
-          }
-          // Accrue cost at the price in effect for this step, so a mid-session
-          // model/price change doesn't retroactively reprice earlier tokens.
-          const stepCostUSD = computeCost(
-            stepUsage?.inputTokens ?? 0,
-            stepUsage?.outputTokens ?? 0,
-            this.#price,
-            stepUsage?.cachedInputTokens ?? 0,
-            cacheWrites,
-          );
-          this.#costUSD += stepCostUSD;
-          if (this.#price?.estimated) this.#costEstimated = true;
-          else this.#actualCostUSD += stepCostUSD;
-          bus.emit({
-            type: "usage-updated",
-            sessionId: this.id,
-            usage: this.#usageSnapshot(),
-          });
-          this.#enforceBudget();
-        },
-      });
+            // Fire the plugin step boundary hook (was declared but never dispatched,
+            // so registered handlers silently never ran). Awaited for symmetry with
+            // the other lifecycle dispatches; response fields are unused for now.
+            // Best-effort, errors isolated by the HookBus.
+            await this.#deps.hooks?.run("step.finish", { sessionId: this.id });
+            addUsage(this.#usage, stepUsage);
+            // Track the provider's real prompt size (the true context fill) and
+            // surface it live — the JSON estimate omitted the system prompt + tool
+            // schemas, so it read far too low.
+            if (stepUsage?.inputTokens) {
+              this.#lastInputTokens = stepUsage.inputTokens;
+              // Anchor the mid-turn fill projection on the delta between the real
+              // prompt size and the estimate of exactly what we SENT this step
+              // (#lastSentEstimate). That isolates the system+tools scaffolding the
+              // estimate can't see; measuring against #modelMessages instead folded
+              // the within-turn tool-result tail into "overhead" and then
+              // double-counted it in prepareStep, firing offloads far too early.
+              const sentEstimate = this.#lastSentEstimate || estimateTokens(this.#modelMessages);
+              this.#overheadTokens = Math.max(0, stepUsage.inputTokens - sentEstimate);
+              bus.emit({
+                type: "context-updated",
+                sessionId: this.id,
+                usedTokens: this.#lastInputTokens,
+                contextWindow: this.#contextWindow,
+              });
+            }
+            // Accrue cost at the price in effect for this step, so a mid-session
+            // model/price change doesn't retroactively reprice earlier tokens.
+            const stepCostUSD = computeCost(
+              stepUsage?.inputTokens ?? 0,
+              stepUsage?.outputTokens ?? 0,
+              this.#price,
+              stepUsage?.cachedInputTokens ?? 0,
+              cacheWrites,
+            );
+            this.#costUSD += stepCostUSD;
+            if (this.#price?.estimated) this.#costEstimated = true;
+            else this.#actualCostUSD += stepCostUSD;
+            bus.emit({
+              type: "usage-updated",
+              sessionId: this.id,
+              usage: this.#usageSnapshot(),
+            });
+            this.#enforceBudget();
+          },
+        });
 
-      // Build the assistant message from the stream, then commit it to BOTH the
-      // model context and the UI history together. On abort/error mid-turn,
-      // `result.response` rejects, so we record the partial assistant text in
-      // the model context too — keeping `#history` and `#modelMessages` in
-      // lockstep (otherwise the next turn's context would be missing this turn).
-      const assistant = await this.#consume(result);
-      let responseOk = false;
-      try {
-        const response = await result.response;
-        this.#modelMessages.push(...response.messages);
-        // prepareStep's offloads were ephemeral (the SDK re-records full tool
-        // results in response.messages) — make them durable so the persisted
-        // session and the NEXT turn's prompt carry the previews, not the blobs.
-        this.#applyDurableOffloads();
-        responseOk = true;
-      } finally {
-        if (responseOk) {
-          // Success: the authoritative model messages already landed; record the
-          // UI reply too.
-          if (assistant) this.#history.push(assistant);
-        } else {
-          // Abort/error mid-turn: result.response rejected, so the COMPLETED
-          // steps' messages (matched tool_use/tool_result pairs) were never
-          // committed. Commit them first — a resumed session must KNOW about work
-          // already done (e.g. a completed edit), not just see partial text. A
-          // step that ends a turn has no next step, so a buffered step always ends
-          // on a tool result, keeping alternation valid before the partial text.
-          if (this.#committedSteps.length) {
-            this.#modelMessages.push(...this.#committedSteps);
-            this.#applyDurableOffloads();
-          }
-          if (assistant) {
-            // Record the partial assistant tail to BOTH lists or NEITHER, so they
-            // stay consistent for the orphan-rollback below. An EMPTY partial (an
-            // empty text-delta before abort makes `assistant` truthy while its
-            // text is "") goes to neither.
-            const text = messageText(assistant);
-            if (text) {
-              this.#history.push(assistant);
-              this.#modelMessages.push({ role: "assistant", content: text });
+        // Build the assistant message from the stream, then commit it to BOTH the
+        // model context and the UI history together. On abort/error mid-turn,
+        // `result.response` rejects, so we record the partial assistant text in
+        // the model context too — keeping `#history` and `#modelMessages` in
+        // lockstep (otherwise the next turn's context would be missing this turn).
+        const assistant = await this.#consume(result);
+        let responseOk = false;
+        try {
+          const response = await result.response;
+          this.#modelMessages.push(...response.messages);
+          // prepareStep's offloads were ephemeral (the SDK re-records full tool
+          // results in response.messages) — make them durable so the persisted
+          // session and the NEXT turn's prompt carry the previews, not the blobs.
+          this.#applyDurableOffloads();
+          responseOk = true;
+        } finally {
+          if (responseOk) {
+            // Success: the authoritative model messages already landed; record the
+            // UI reply too.
+            if (assistant) this.#history.push(assistant);
+          } else {
+            // Abort/error mid-turn: result.response rejected, so the COMPLETED
+            // steps' messages (matched tool_use/tool_result pairs) were never
+            // committed. Commit them first — a resumed session must KNOW about work
+            // already done (e.g. a completed edit), not just see partial text. A
+            // step that ends a turn has no next step, so a buffered step always ends
+            // on a tool result, keeping alternation valid before the partial text.
+            if (this.#committedSteps.length) {
+              this.#modelMessages.push(...this.#committedSteps);
+              this.#applyDurableOffloads();
+            }
+            if (assistant) {
+              // Record the partial assistant tail to BOTH lists or NEITHER, so they
+              // stay consistent for the orphan-rollback below. An EMPTY partial (an
+              // empty text-delta before abort makes `assistant` truthy while its
+              // text is "") goes to neither.
+              const text = messageText(assistant);
+              if (text) {
+                this.#history.push(assistant);
+                this.#modelMessages.push({ role: "assistant", content: text });
+              }
             }
           }
         }
-      }
-      // Notify plugins of the completed assistant message (best-effort).
-      if (this.#deps.hooks && assistant) {
-        const text = messageText(assistant);
-        if (text) await this.#deps.hooks.run("assistant.message", { sessionId: this.id, text });
-      }
+        // Notify plugins of the completed assistant message (best-effort).
+        if (this.#deps.hooks && assistant) {
+          const text = messageText(assistant);
+          if (text) await this.#deps.hooks.run("assistant.message", { sessionId: this.id, text });
+        }
       });
     } catch (err) {
       // A stalled provider stream (the headless watchdog aborted us) LOOKS like a
@@ -1571,10 +1589,7 @@ export class Session {
     // the same sub-tick between dequeue and this line that run() documents as
     // accepted — pre-cancel is unnecessary.
     this.#abort = new AbortController();
-    const model = await this.#deps.registry.resolveModel(
-      this.model,
-      this.#deps.config,
-    );
+    const model = await this.#deps.registry.resolveModel(this.model, this.#deps.config);
     await this.#maybeCompact(model, true);
   }
 
@@ -1611,7 +1626,10 @@ export class Session {
             transcript,
           // Bounded: this runs at finalize; a stalled provider must not hang
           // shutdown. Esc still propagates through #abort.
-          abortSignal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(AUX_CALL_TIMEOUT_MS)]),
+          abortSignal: AbortSignal.any([
+            this.#abort.signal,
+            AbortSignal.timeout(AUX_CALL_TIMEOUT_MS),
+          ]),
         }),
       );
       const digest = text.trim().replace(/\s+/g, " ");
@@ -1619,7 +1637,12 @@ export class Session {
       // changes." / "Nothing to note." would be saved as a durable memory and
       // later recalled as noise. Require some substance (a handful of words) and
       // drop obvious no-op replies.
-      if (digest.length < 24 || /^(no (significant )?(changes|updates|actions)|nothing (to note|happened|significant))\b/i.test(digest)) {
+      if (
+        digest.length < 24 ||
+        /^(no (significant )?(changes|updates|actions)|nothing (to note|happened|significant))\b/i.test(
+          digest,
+        )
+      ) {
         return undefined;
       }
       return digest;
@@ -1637,9 +1660,13 @@ export class Session {
     if (this.#offloaded.has(ref.callId)) return;
     const msg = messages[ref.messageIndex];
     if (msg?.role !== "tool" || !Array.isArray(msg.content)) return;
-    const part = (msg.content as { type?: string; toolCallId?: string; output?: { type?: string; value?: unknown } }[]).find(
-      (p) => p?.type === "tool-result" && p.toolCallId === ref.callId,
-    );
+    const part = (
+      msg.content as {
+        type?: string;
+        toolCallId?: string;
+        output?: { type?: string; value?: unknown };
+      }[]
+    ).find((p) => p?.type === "tool-result" && p.toolCallId === ref.callId);
     if (!part) return;
     const full = offloadResultText(part.output);
     if (!full) return;
@@ -1657,7 +1684,11 @@ export class Session {
       );
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, full, "utf8");
-      this.#offloaded.set(ref.callId, { path: abs, toolName: ref.toolName, fullChars: full.length });
+      this.#offloaded.set(ref.callId, {
+        path: abs,
+        toolName: ref.toolName,
+        fullChars: full.length,
+      });
       this.#pruneOffloadArtifacts(dirname(abs));
     } catch {
       /* offloading is an enhancement — a failed write must never fail the turn */
@@ -1692,8 +1723,7 @@ export class Session {
   async #maybeCompact(model: LanguageModel, force: boolean): Promise<void> {
     this.#applyDurableOffloads();
     const contextWindow =
-      (await this.#deps.getContextWindow?.(this.model)) ??
-      DEFAULT_CONTEXT_WINDOW;
+      (await this.#deps.getContextWindow?.(this.model)) ?? DEFAULT_CONTEXT_WINDOW;
     this.#contextWindow = contextWindow;
     // Surface live context-window fill so the UI can show how close we are to the
     // limit (and when auto-compaction is about to kick in). Prefer the provider's
@@ -1750,7 +1780,8 @@ export class Session {
         this.#deps.bus.emit({
           type: "notice",
           level: "info",
-          message: "Nothing to compact — too few distinct messages or the summary was empty. If the prompt still exceeds the window, try /clear.",
+          message:
+            "Nothing to compact — too few distinct messages or the summary was empty. If the prompt still exceeds the window, try /clear.",
         });
       }
       return;
@@ -1779,15 +1810,14 @@ export class Session {
       this.#deps.bus.emit({
         type: "notice",
         level: "warn",
-        message: "Compaction ran in emergency mode — the context may still be near the window limit. If the prompt is still too large, try /clear.",
+        message:
+          "Compaction ran in emergency mode — the context may still be near the window limit. If the prompt is still too large, try /clear.",
       });
     }
   }
 
   async #summarize(model: LanguageModel, messages: ModelMessage[]): Promise<string> {
-    const raw = messages
-      .map((m) => `${m.role}: ${contentToText(m.content)}`)
-      .join("\n");
+    const raw = messages.map((m) => `${m.role}: ${contentToText(m.content)}`).join("\n");
     // Cap the summarizer's own input: compaction fires when the context is
     // near-full, so the uncapped transcript WAS the overflowing history — the
     // summarize call itself could blow the window. Keep head + tail (the
@@ -1820,7 +1850,10 @@ export class Session {
         // triggered it. The timeout aborts only the combined signal (not #abort),
         // so #maybeCompact's catch degrades to "Compaction skipped" while a real
         // Esc (which flips #abort.signal.aborted) still propagates.
-        abortSignal: AbortSignal.any([this.#abort.signal, AbortSignal.timeout(AUX_CALL_TIMEOUT_MS)]),
+        abortSignal: AbortSignal.any([
+          this.#abort.signal,
+          AbortSignal.timeout(AUX_CALL_TIMEOUT_MS),
+        ]),
       }),
     );
     return text;
@@ -1940,9 +1973,7 @@ export class Session {
   }
 
   /** Translate AI-SDK stream parts into UIEvents and accumulate the message. */
-  async #consume(
-    result: { fullStream: AsyncIterable<unknown> },
-  ): Promise<Message | null> {
+  async #consume(result: { fullStream: AsyncIterable<unknown> }): Promise<Message | null> {
     const bus = this.#deps.bus;
     let assistant: Message | null = null;
     const ensure = (): Message => {
@@ -1976,140 +2007,142 @@ export class Session {
     // WHOLE parts so event order is untouched.
     const partGate = makeYieldGate(CONSUME_YIELD_PARTS);
     try {
-    while (true) {
-      let next: IteratorResult<unknown>;
-      if (idleMs) {
-        let idleTimer: ReturnType<typeof setTimeout> | undefined;
-        const stalled = new Promise<"stall">((resolve) => {
-          idleTimer = setTimeout(() => resolve("stall"), idleMs);
-        });
-        const raced = await Promise.race([iterator.next(), stalled]);
-        if (idleTimer) clearTimeout(idleTimer);
-        if (raced === "stall") {
-          this.#streamStalled = true;
-          this.#abort.abort();
-          void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
-          throw Object.assign(new Error("provider stream stalled"), { name: "AbortError" });
-        }
-        next = raced as IteratorResult<unknown>;
-      } else {
-        next = await iterator.next();
-      }
-      if (next.done) break;
-      const raw = next.value;
-      if (partGate(1)) await new Promise((r) => setTimeout(r, 0));
-      const part = raw as Record<string, any>;
-      switch (part.type) {
-        case "text-delta": {
-          const delta: string = part.text ?? part.textDelta ?? "";
-          appendText(ensure(), delta);
-          bus.emit({ type: "assistant-text-delta", sessionId: this.id, delta });
-          break;
-        }
-        case "reasoning-delta": {
-          const delta: string = part.text ?? part.textDelta ?? "";
-          bus.emit({ type: "reasoning-delta", sessionId: this.id, delta });
-          break;
-        }
-        case "tool-call": {
-          // Mutation is latched in the tool adapter AFTER a successful non-
-          // readOnly execute (recordMutation) — not here on tool-call intent —
-          // so a permission-denied write does not trip green-gate / auto-verify.
-          // Child mutations still fold in via onChildSettled.
-          // Capture the URL webfetch was asked to fetch (its output is the page
-          // body, not a URL list) so the ledger records the page actually pulled.
-          if (part.toolName === "webfetch") {
-            const inp = (part.input ?? part.args) as { url?: unknown } | undefined;
-            if (inp && typeof inp.url === "string") this.#fetchInputUrls.set(part.toolCallId, inp.url);
-          }
-          bus.emit({
-            type: "tool-call-started",
-            sessionId: this.id,
-            toolCallId: part.toolCallId,
-            toolName: part.toolName,
-            input: part.input ?? part.args,
+      while (true) {
+        let next: IteratorResult<unknown>;
+        if (idleMs) {
+          let idleTimer: ReturnType<typeof setTimeout> | undefined;
+          const stalled = new Promise<"stall">((resolve) => {
+            idleTimer = setTimeout(() => resolve("stall"), idleMs);
           });
-          break;
-        }
-        case "tool-result": {
-          // A handled error (permission deny, plugin veto, `isError` execute
-          // result) comes back as an ordinary string result, so the SDK reports
-          // it here, not as `tool-error`. Recover the real status from the
-          // adapter's side-channel so the UI doesn't render a denied write as a
-          // successful tool call.
-          const isError = this.#toolCallErrors.get(part.toolCallId) ?? false;
-          const resultText = isError
-            ? ""
-            : typeof part.output === "string"
-              ? part.output
-              : offloadResultText(part.output as { type?: string; value?: unknown });
-          // Count successful research/exploration toward the plan-readiness
-          // gate's telemetry — the evidence trail present_plan is judged against.
-          // A web_search that surfaced NOTHING isn't grounding, so a junk query
-          // (zero results) can't satisfy the gate's "you researched" requirement.
-          if (!isError) {
-            const unproductive = part.toolName === "web_search" && /^No results for /.test(resultText.trim());
-            if (!unproductive) this.#turnGate?.recordToolUse(part.toolName);
+          const raced = await Promise.race([iterator.next(), stalled]);
+          if (idleTimer) clearTimeout(idleTimer);
+          if (raced === "stall") {
+            this.#streamStalled = true;
+            this.#abort.abort();
+            void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
+            throw Object.assign(new Error("provider stream stalled"), { name: "AbortError" });
           }
-          // Harvest sources: on a SUCCESSFUL research-tool result, extract the
-          // URLs it surfaced and record them in the session's source ledger
-          // (deduped + stably numbered), so later turns can cite them by [n].
-          if (!isError && RESEARCH_TOOL_NAMES.has(part.toolName)) {
+          next = raced as IteratorResult<unknown>;
+        } else {
+          next = await iterator.next();
+        }
+        if (next.done) break;
+        const raw = next.value;
+        if (partGate(1)) await new Promise((r) => setTimeout(r, 0));
+        const part = raw as Record<string, any>;
+        switch (part.type) {
+          case "text-delta": {
+            const delta: string = part.text ?? part.textDelta ?? "";
+            appendText(ensure(), delta);
+            bus.emit({ type: "assistant-text-delta", sessionId: this.id, delta });
+            break;
+          }
+          case "reasoning-delta": {
+            const delta: string = part.text ?? part.textDelta ?? "";
+            bus.emit({ type: "reasoning-delta", sessionId: this.id, delta });
+            break;
+          }
+          case "tool-call": {
+            // Mutation is latched in the tool adapter AFTER a successful non-
+            // readOnly execute (recordMutation) — not here on tool-call intent —
+            // so a permission-denied write does not trip green-gate / auto-verify.
+            // Child mutations still fold in via onChildSettled.
+            // Capture the URL webfetch was asked to fetch (its output is the page
+            // body, not a URL list) so the ledger records the page actually pulled.
             if (part.toolName === "webfetch") {
-              // Record the URL actually fetched (the tool INPUT), not links
-              // harvested from the page body — those weren't pulled by the agent.
-              const fetched = this.#fetchInputUrls.get(part.toolCallId);
-              if (fetched) this.#sources.record({ url: fetched, via: part.toolName });
-            } else {
-              // web_search / crawl_docs OUTPUT is a list of result/page URLs — those
-              // ARE the sources surfaced, so harvest them from the rendered text.
-              for (const url of harvestUrls(resultText)) {
-                this.#sources.record({ url, via: part.toolName });
+              const inp = (part.input ?? part.args) as { url?: unknown } | undefined;
+              if (inp && typeof inp.url === "string")
+                this.#fetchInputUrls.set(part.toolCallId, inp.url);
+            }
+            bus.emit({
+              type: "tool-call-started",
+              sessionId: this.id,
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              input: part.input ?? part.args,
+            });
+            break;
+          }
+          case "tool-result": {
+            // A handled error (permission deny, plugin veto, `isError` execute
+            // result) comes back as an ordinary string result, so the SDK reports
+            // it here, not as `tool-error`. Recover the real status from the
+            // adapter's side-channel so the UI doesn't render a denied write as a
+            // successful tool call.
+            const isError = this.#toolCallErrors.get(part.toolCallId) ?? false;
+            const resultText = isError
+              ? ""
+              : typeof part.output === "string"
+                ? part.output
+                : offloadResultText(part.output as { type?: string; value?: unknown });
+            // Count successful research/exploration toward the plan-readiness
+            // gate's telemetry — the evidence trail present_plan is judged against.
+            // A web_search that surfaced NOTHING isn't grounding, so a junk query
+            // (zero results) can't satisfy the gate's "you researched" requirement.
+            if (!isError) {
+              const unproductive =
+                part.toolName === "web_search" && /^No results for /.test(resultText.trim());
+              if (!unproductive) this.#turnGate?.recordToolUse(part.toolName);
+            }
+            // Harvest sources: on a SUCCESSFUL research-tool result, extract the
+            // URLs it surfaced and record them in the session's source ledger
+            // (deduped + stably numbered), so later turns can cite them by [n].
+            if (!isError && RESEARCH_TOOL_NAMES.has(part.toolName)) {
+              if (part.toolName === "webfetch") {
+                // Record the URL actually fetched (the tool INPUT), not links
+                // harvested from the page body — those weren't pulled by the agent.
+                const fetched = this.#fetchInputUrls.get(part.toolCallId);
+                if (fetched) this.#sources.record({ url: fetched, via: part.toolName });
+              } else {
+                // web_search / crawl_docs OUTPUT is a list of result/page URLs — those
+                // ARE the sources surfaced, so harvest them from the rendered text.
+                for (const url of harvestUrls(resultText)) {
+                  this.#sources.record({ url, via: part.toolName });
+                }
               }
             }
+            this.#fetchInputUrls.delete(part.toolCallId);
+            bus.emit({
+              type: "tool-call-finished",
+              sessionId: this.id,
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              output: part.output,
+              isError,
+            });
+            break;
           }
-          this.#fetchInputUrls.delete(part.toolCallId);
-          bus.emit({
-            type: "tool-call-finished",
-            sessionId: this.id,
-            toolCallId: part.toolCallId,
-            toolName: part.toolName,
-            output: part.output,
-            isError,
-          });
-          break;
+          case "tool-error": {
+            bus.emit({
+              type: "tool-call-finished",
+              sessionId: this.id,
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              output: String((part.error as Error)?.message ?? part.error),
+              isError: true,
+            });
+            break;
+          }
+          case "abort": {
+            bus.emit({
+              type: "notice",
+              level: "warn",
+              message: "Turn aborted.",
+            });
+            break;
+          }
+          case "error": {
+            bus.emit({
+              type: "engine-error",
+              sessionId: this.id,
+              message: String(part.error?.message ?? part.error),
+            });
+            break;
+          }
+          default:
+            break;
         }
-        case "tool-error": {
-          bus.emit({
-            type: "tool-call-finished",
-            sessionId: this.id,
-            toolCallId: part.toolCallId,
-            toolName: part.toolName,
-            output: String((part.error as Error)?.message ?? part.error),
-            isError: true,
-          });
-          break;
-        }
-        case "abort": {
-          bus.emit({
-            type: "notice",
-            level: "warn",
-            message: "Turn aborted.",
-          });
-          break;
-        }
-        case "error": {
-          bus.emit({
-            type: "engine-error",
-            sessionId: this.id,
-            message: String(part.error?.message ?? part.error),
-          });
-          break;
-        }
-        default:
-          break;
       }
-    }
     } finally {
       // Release the iterator on every exit (normal end, stall, or a throw while
       // processing a part) so a partially-consumed SDK stream is cleaned up.
@@ -2196,7 +2229,10 @@ function markConversationTail(messages: ModelMessage[]): ModelMessage[] {
   const last = messages[lastIdx]!;
   return [
     ...messages.slice(0, lastIdx),
-    { ...last, providerOptions: { ...last.providerOptions, ...ANTHROPIC_CACHE_CONTROL } } as ModelMessage,
+    {
+      ...last,
+      providerOptions: { ...last.providerOptions, ...ANTHROPIC_CACHE_CONTROL },
+    } as ModelMessage,
   ];
 }
 

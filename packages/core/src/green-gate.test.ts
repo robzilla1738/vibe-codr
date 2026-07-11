@@ -14,12 +14,23 @@ import { ledgerPath } from "./build/ledger.ts";
 const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
 function stream(chunks: unknown[]) {
-  return { stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }) };
+  return {
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
 }
 const writeStep = (id: string, path: string, content: string) =>
   stream([
     { type: "stream-start", warnings: [] },
-    { type: "tool-call", toolCallId: id, toolName: "write", input: JSON.stringify({ path, content }) },
+    {
+      type: "tool-call",
+      toolCallId: id,
+      toolName: "write",
+      input: JSON.stringify({ path, content }),
+    },
     { type: "finish", finishReason: "tool-calls", usage: USAGE },
   ]);
 const textStep = (text: string) =>
@@ -33,7 +44,12 @@ const textStep = (text: string) =>
 
 function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -49,7 +65,9 @@ function mutatingModel(reviewVerdict: string, opts: { reviewThrows?: boolean } =
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       const i = stream++;
-      return (i % 2 === 0 ? writeStep(`w${i}`, "out.txt", `generated ${i}\n`) : textStep("done")) as never;
+      return (
+        i % 2 === 0 ? writeStep(`w${i}`, "out.txt", `generated ${i}\n`) : textStep("done")
+      ) as never;
     },
     // The adversarial diff review is a single-shot generateText → doGenerate.
     doGenerate: async () => {
@@ -72,7 +90,8 @@ function mutatingModel(reviewVerdict: string, opts: { reviewThrows?: boolean } =
 function initGitRepo(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "vibe-gate-"));
   for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
-  const g = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "ignore", stderr: "ignore" });
+  const g = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "ignore", stderr: "ignore" });
   g(["init", "-q"]);
   g(["config", "user.email", "t@t.dev"]);
   g(["config", "user.name", "t"]);
@@ -89,7 +108,12 @@ async function runEngine(
   const config = defaultConfig();
   config.model = "mock/test";
   patch(config);
-  const engine = new Engine({ config, cwd: dir, registry: mockRegistry(model), interactive: false });
+  const engine = new Engine({
+    config,
+    cwd: dir,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
   await engine.bootstrap();
   const events: UIEvent[] = [];
   const collector = (async () => {
@@ -108,7 +132,11 @@ const notices = (events: UIEvent[]) =>
 test("green gate: passing checks → GREEN notice + green checkpoint + review runs", async () => {
   // scripts.test echoes a passing count; recon detects it as `bun run test`.
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '3 pass'" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });
@@ -116,7 +144,9 @@ test("green gate: passing checks → GREEN notice + green checkpoint + review ru
   const events = await runEngine(dir, model, () => {});
 
   // Machine-verified green, surfaced as an info notice.
-  expect(notices(events).some((n) => n.level === "info" && n.message.includes("Gate: GREEN"))).toBe(true);
+  expect(notices(events).some((n) => n.level === "info" && n.message.includes("Gate: GREEN"))).toBe(
+    true,
+  );
 
   // A GREEN checkpoint was committed (fresh manager reads the persisted meta).
   const cps = await new CheckpointManager(dir).list();
@@ -149,7 +179,11 @@ test("green gate: passing checks → GREEN notice + green checkpoint + review ru
 
 test("ledger writeback respects the build.recon.ledger kill-switch (no file when off)", async () => {
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '3 pass'" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });
@@ -165,7 +199,11 @@ test("ledger writeback respects the build.recon.ledger kill-switch (no file when
 
 test("red gate: failing checks enqueue a bounded fix turn, then stop with a warn", async () => {
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '2 failed'; exit 1" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '2 failed'; exit 1" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });
@@ -177,7 +215,9 @@ test("red gate: failing checks enqueue a bounded fix turn, then stop with a warn
   // A fix turn was enqueued carrying the structured, actionable gate failure.
   expect(prompts.some((p) => p.includes("FAIL") && p.includes("RED"))).toBe(true);
   // After the round budget it stops with a warn — never a false green.
-  expect(notices(events).some((n) => n.level === "warn" && /still red/i.test(n.message))).toBe(true);
+  expect(notices(events).some((n) => n.level === "warn" && /still red/i.test(n.message))).toBe(
+    true,
+  );
   // Red never triggers commit-on-green or a diff review.
   expect(reviewCalls()).toBe(0);
   const cps = await new CheckpointManager(dir).list();
@@ -210,7 +250,11 @@ test("scaffold refresh: a greenfield session that CREATES a manifest re-derives 
   const dir = initGitRepo({ ".keep": "" }); // greenfield: dotfiles only
   const prompts: string[] = [];
   let i = 0;
-  const failing = JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '2 failed'; exit 1" } });
+  const failing = JSON.stringify({
+    name: "fx",
+    version: "1.0.0",
+    scripts: { test: "echo '2 failed'; exit 1" },
+  });
   const steps = [
     // Turn 1: the "scaffold" — writes a manifest whose test script FAILS.
     writeStep("w0", "package.json", failing),
@@ -239,12 +283,18 @@ test("scaffold refresh: a greenfield session that CREATES a manifest re-derives 
   // NOT the old silent "UNVERIFIED" path.
   expect(notices(events).some((n) => n.message.includes("not machine-verified"))).toBe(false);
   expect(prompts.some((p) => p.includes("FAIL") && p.includes("RED"))).toBe(true);
-  expect(notices(events).some((n) => n.level === "warn" && /still red/i.test(n.message))).toBe(true);
+  expect(notices(events).some((n) => n.level === "warn" && /still red/i.test(n.message))).toBe(
+    true,
+  );
 });
 
 test("dirty review: NOT REVIEW-CLEAN enqueues one fix; a 2nd review is bounded by maxRounds", async () => {
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '3 pass'" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });
@@ -268,7 +318,11 @@ test("branch mode + checkpoints disabled: the review sees the turn's diff BEFORE
   // landed. The review must run against the pre-commit diff; it stays advisory
   // (the green tree is still committed once the bounded review call returns).
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '3 pass'" },
+    }),
     "bun.lock": "",
     "out.txt": "same\n",
   });
@@ -302,7 +356,12 @@ test("branch mode + checkpoints disabled: the review sees the turn's diff BEFORE
   // tree BEFORE the first gitPrepare, whose dirty check would then refuse the
   // work branch — keep the tree clean so branch commits actually engage.
   config.build.recon.ledger = false;
-  const engine = new Engine({ config, cwd: dir, registry: mockRegistry(model), interactive: false });
+  const engine = new Engine({
+    config,
+    cwd: dir,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
   await engine.bootstrap();
   const events: UIEvent[] = [];
   const collector = (async () => {
@@ -338,7 +397,9 @@ test("aborted gate: an Esc mid-gate is a terminal non-verdict — no fix, no gre
     "package.json": JSON.stringify({
       name: "fx",
       version: "1.0.0",
-      scripts: { test: "echo started > gate-started; until [ -f release ]; do sleep 0.05; done; echo '3 pass'" },
+      scripts: {
+        test: "echo started > gate-started; until [ -f release ]; do sleep 0.05; done; echo '3 pass'",
+      },
     }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
@@ -346,7 +407,12 @@ test("aborted gate: an Esc mid-gate is a terminal non-verdict — no fix, no gre
   const { model, prompts, reviewCalls } = mutatingModel("REVIEW-CLEAN");
   const config = defaultConfig();
   config.model = "mock/test";
-  const engine = new Engine({ config, cwd: dir, registry: mockRegistry(model), interactive: false });
+  const engine = new Engine({
+    config,
+    cwd: dir,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
   await engine.bootstrap();
   const events: UIEvent[] = [];
   const collector = (async () => {
@@ -365,7 +431,9 @@ test("aborted gate: an Esc mid-gate is a terminal non-verdict — no fix, no gre
   await collector;
 
   // ABORTED is a non-verdict: an honest info notice, and NONE of the green path.
-  expect(notices(events).some((n) => n.level === "info" && n.message.includes("Gate: ABORTED"))).toBe(true);
+  expect(
+    notices(events).some((n) => n.level === "info" && n.message.includes("Gate: ABORTED")),
+  ).toBe(true);
   // No gate-fix turn enqueued (no RED fix prompt) and no adversarial review ran.
   expect(prompts.some((p) => p.includes("RED (fix round"))).toBe(false);
   expect(reviewCalls()).toBe(0);
@@ -378,7 +446,11 @@ test("review failure: a rejected diff-review call degrades — turn completes, n
   // (simulating a hung/aborted or transient failure). It must skip with a calm
   // notice and let the turn finish, never wedge `vibe -p` or enqueue a fix.
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '3 pass'" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });
@@ -408,7 +480,12 @@ async function runPlanChain(
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: planChecklist }) },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify({ plan: planChecklist }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     textStep("Plan presented."),
@@ -444,13 +521,22 @@ async function runPlanChain(
 const updateTasksStep = (id: string, updates: { id: string; status: string }[]) =>
   stream([
     { type: "stream-start", warnings: [] },
-    { type: "tool-call", toolCallId: id, toolName: "update_tasks", input: JSON.stringify({ updates }) },
+    {
+      type: "tool-call",
+      toolCallId: id,
+      toolName: "update_tasks",
+      input: JSON.stringify({ updates }),
+    },
     { type: "finish", finishReason: "tool-calls", usage: USAGE },
   ]);
 
 test("plan chain: a GREEN gate does NOT auto-complete an in-progress task the model never finished", async () => {
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '3 pass'" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });
@@ -466,7 +552,11 @@ test("plan chain: a GREEN gate does NOT auto-complete an in-progress task the mo
     updateTasksStep("u2", [{ id: "t2", status: "completed" }]),
     textStep("t2 done."),
   ];
-  const { events, prompts } = await runPlanChain(dir, "## Steps\n- [ ] Do t1\n- [ ] Do t2", handoff);
+  const { events, prompts } = await runPlanChain(
+    dir,
+    "## Steps\n- [ ] Do t1\n- [ ] Do t2",
+    handoff,
+  );
 
   // The old false-complete notice must NOT appear.
   expect(notices(events).some((n) => /marked .*in-progress task/i.test(n.message))).toBe(false);
@@ -476,7 +566,11 @@ test("plan chain: a GREEN gate does NOT auto-complete an in-progress task the mo
 
 test("plan chain: a non-mutating handoff turn still nudges unfinished tasks (no silent stall)", async () => {
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "echo '3 pass'" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "echo '3 pass'" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });
@@ -516,7 +610,10 @@ test("manifestSignature: stable when unchanged, flips when a build manifest appe
   // refresh skips the repeat recon instead of thrashing.
   expect(manifestSignature(dir)).toBe(empty);
   // A scaffolder writing package.json flips the signature → refresh re-scans.
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", scripts: { build: "tsc" } }));
+  writeFileSync(
+    join(dir, "package.json"),
+    JSON.stringify({ name: "x", scripts: { build: "tsc" } }),
+  );
   const scaffolded = manifestSignature(dir);
   expect(scaffolded).not.toBe(empty);
   expect(scaffolded).toBe(manifestSignature(dir)); // stable again until it changes
@@ -527,7 +624,11 @@ test("engine-idle reports GREEN when a RED gate is fixed to green (guard doesn't
   // fix turn writes pass.txt → GREEN. engine-idle must report the FIXED green
   // outcome, not stay pinned red — a genuine red→green fix DOES overwrite.
   const dir = initGitRepo({
-    "package.json": JSON.stringify({ name: "fx", version: "1.0.0", scripts: { test: "test -f pass.txt" } }),
+    "package.json": JSON.stringify({
+      name: "fx",
+      version: "1.0.0",
+      scripts: { test: "test -f pass.txt" },
+    }),
     "bun.lock": "",
     "src.ts": "export const x = 1;\n",
   });

@@ -61,13 +61,15 @@ export interface ParseLoopOpts {
 export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoop | null {
   let rest = args.trim();
   const warnings: string[] = [];
-  const configuredDefault =
-    opts.defaultMax !== undefined ? opts.defaultMax : DEFAULT_LOOP_MAX;
+  const configuredDefault = opts.defaultMax !== undefined ? opts.defaultMax : DEFAULT_LOOP_MAX;
 
   let unlimited = false;
   if (/(?:^|\s)--unlimited(?:\s|$)/.test(rest)) {
     unlimited = true;
-    rest = rest.replace(/(?:^|\s)--unlimited(?=\s|$)/g, " ").replace(/\s+/g, " ").trim();
+    rest = rest
+      .replace(/(?:^|\s)--unlimited(?=\s|$)/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   let max: number | undefined;
@@ -143,9 +145,7 @@ export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoo
 
   let maxDefaulted = false;
   if (unlimited && max !== undefined) {
-    warnings.push(
-      "both --max and --unlimited were set; --unlimited wins (no iteration cap).",
-    );
+    warnings.push("both --max and --unlimited were set; --unlimited wins (no iteration cap).");
     max = undefined;
   } else if (unlimited) {
     max = undefined;
@@ -176,10 +176,7 @@ export interface LoopOptions extends ParsedLoop {
   /** Run one iteration and return the result text. */
   run: (prompt: string) => Promise<string>;
   /** Evaluate whether `until` has been satisfied by `result`. */
-  evaluate?: (
-    result: string,
-    condition: string,
-  ) => Promise<{ done: boolean; reason: string }>;
+  evaluate?: (result: string, condition: string) => Promise<{ done: boolean; reason: string }>;
   /** Called when the loop is stopped — lets the host abort an in-flight turn. */
   onStop?: () => void;
   emit: (event: UIEvent) => void;

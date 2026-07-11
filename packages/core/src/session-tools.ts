@@ -90,7 +90,9 @@ export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ 
 
 /** Build the read-only `recall_memory` tool: hybrid search over saved memory +
  * past sessions when a MemoryService is wired; lexical session search otherwise. */
-export function buildRecallTool(handle: SessionToolsHandle): ToolDefinition<{ query: string; limit?: number }> {
+export function buildRecallTool(
+  handle: SessionToolsHandle,
+): ToolDefinition<{ query: string; limit?: number }> {
   const cwd = handle.deps.cwd;
   const selfId = handle.id;
   const memory = handle.deps.memory;
@@ -135,7 +137,12 @@ export function buildSaveMemoryTool(handle: SessionToolsHandle): ToolDefinition<
     description:
       "Persist a durable fact to long-term memory so future sessions know it. Save the moment you learn something durable: a decision AND its rationale ('chose X over Y because …'), a hard-won gotcha the code doesn't record, a stable user preference or correction. NOT for transient task state (the task list tracks it), facts derivable from the code or git history, or secrets/credentials. One concise, self-contained fact per call; an equivalent already-saved fact is detected and skipped, so saving when unsure is safe.",
     inputSchema: z.object({
-      fact: z.string().min(1).describe("The fact to remember, as one concise self-contained statement (include the why for decisions)."),
+      fact: z
+        .string()
+        .min(1)
+        .describe(
+          "The fact to remember, as one concise self-contained statement (include the why for decisions).",
+        ),
       scope: z
         .enum(["project", "global", "user"])
         .optional()
@@ -150,9 +157,15 @@ export function buildSaveMemoryTool(handle: SessionToolsHandle): ToolDefinition<
       if (!memory) {
         return { output: "Memory is not available in this session.", isError: true };
       }
-      const saved = await memory.save({ fact, ...(scope ? { scope } : {}), ...(tags ? { tags } : {}) });
+      const saved = await memory.save({
+        fact,
+        ...(scope ? { scope } : {}),
+        ...(tags ? { tags } : {}),
+      });
       if (saved.deduped) {
-        return { output: `Already known — an equivalent memory exists in ${saved.path}; skipped the duplicate.` };
+        return {
+          output: `Already known — an equivalent memory exists in ${saved.path}; skipped the duplicate.`,
+        };
       }
       if (scope === "user") {
         const base = `Saved to ${saved.path} — loaded into every future session automatically.`;
@@ -212,11 +225,19 @@ export function buildReadNotesTool(
     description:
       "Read the coordination notes other parallel agents have shared (decisions, claimed files, conflicts). Check this before and during delegated work to avoid duplicating or contradicting a sibling.",
     inputSchema: z.object({
-      limit: z.number().int().positive().max(100).optional().describe("Max recent notes (default all)."),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(100)
+        .optional()
+        .describe("Max recent notes (default all)."),
       kind: z
         .enum(NOTE_KINDS)
         .optional()
-        .describe("Only notes of this kind (claim / decision / conflict / info). Default: all kinds."),
+        .describe(
+          "Only notes of this kind (claim / decision / conflict / info). Default: all kinds.",
+        ),
     }),
     readOnly: true,
     concurrencySafe: true,
@@ -264,7 +285,9 @@ export function buildRunCheckTool(handle: SessionToolsHandle): ToolDefinition<{
         return {
           output:
             `No ${check} command was detected for this repo` +
-            (known.length ? ` (detected: ${known.join(", ")}).` : " (no commands detected at all)."),
+            (known.length
+              ? ` (detected: ${known.join(", ")}).`
+              : " (no commands detected at all)."),
           isError: true,
         };
       }
@@ -278,7 +301,12 @@ export function buildRunCheckTool(handle: SessionToolsHandle): ToolDefinition<{
       });
       const parsed = parseCheckOutput(check, r.out, r.code);
       return {
-        output: formatCheckResult(check, command, parsed, ((Date.now() - started) / 1000).toFixed(1)),
+        output: formatCheckResult(
+          check,
+          command,
+          parsed,
+          ((Date.now() - started) / 1000).toFixed(1),
+        ),
         ...(parsed.pass ? {} : { isError: true }),
       };
     },

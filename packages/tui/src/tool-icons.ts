@@ -243,9 +243,7 @@ export function toolSummary(name: string, input: unknown): string {
       const tasks = Array.isArray(a.tasks) ? (a.tasks as Record<string, unknown>[]) : [];
       const ids = tasks.map((t) => str(t?.id)).filter(Boolean);
       const n = tasks.length;
-      return n
-        ? `${n} task${n === 1 ? "" : "s"}: ${truncate(ids.join(" → "), 56)}`
-        : "spawn tasks";
+      return n ? `${n} task${n === 1 ? "" : "s"}: ${truncate(ids.join(" → "), 56)}` : "spawn tasks";
     }
     case "read_report":
       return `read report ${str(a.task_id || a.taskId)}`.trim();
@@ -274,7 +272,9 @@ export function toolSummary(name: string, input: unknown): string {
     case "read_mcp_resource":
       return a.uri ? `mcp resource ${truncate(str(a.uri), 56)}` : "list mcp resources";
     case "get_mcp_prompt":
-      return a.name ? `mcp prompt ${[str(a.server), str(a.name)].filter(Boolean).join("/")}` : "list mcp prompts";
+      return a.name
+        ? `mcp prompt ${[str(a.server), str(a.name)].filter(Boolean).join("/")}`
+        : "list mcp prompts";
     case "update_tasks":
     case "todowrite":
     case "todo_write":
@@ -306,7 +306,10 @@ export function toolSummary(name: string, input: unknown): string {
  * so `mcp__linear__create_issue` → "linear create issue" and `recall_memory` →
  * "recall memory". Keeps the fallback line readable instead of code-y. */
 function humanize(name: string): string {
-  return name.replace(/^mcp__/i, "").replace(/[_-]+/g, " ").trim();
+  return name
+    .replace(/^mcp__/i, "")
+    .replace(/[_-]+/g, " ")
+    .trim();
 }
 
 /** The full transcript label: `{icon} {summary}`. */

@@ -42,9 +42,7 @@ test("loadCommandFiles builds a prompt command from a markdown file", async () =
   expect(review.description).toBe("Review a file");
   const result = review.run("src/index.ts");
   expect(result.kind).toBe("prompt");
-  expect(result.kind === "prompt" && result.text).toBe(
-    "Review the file src/index.ts carefully.",
-  );
+  expect(result.kind === "prompt" && result.text).toBe("Review the file src/index.ts carefully.");
 });
 
 test("loadSkills surfaces name/description and lazily loads the body", async () => {
@@ -118,7 +116,10 @@ test("an oversized command/skill body is capped with an honest truncation marker
   const dir = mkdtempSync(join(tmpdir(), "vibe-cap-"));
   const huge = "x".repeat(MAX_BODY_CHARS + 5_000);
   await Bun.write(join(dir, ".vibe", "commands", "big.md"), huge);
-  await Bun.write(join(dir, ".vibe", "skills", "big", "SKILL.md"), `---\ndescription: big\n---\n${huge}`);
+  await Bun.write(
+    join(dir, ".vibe", "skills", "big", "SKILL.md"),
+    `---\ndescription: big\n---\n${huge}`,
+  );
 
   const cmd = (await loadCommandFiles(dir))[0]!;
   const result = cmd.run("");
@@ -192,7 +193,10 @@ test("loaders skip markdown files with unclosed frontmatter fences", async () =>
     join(dir, ".vibe", "commands", "broken.md"),
     "---\nname: broken-command\ndescription: missing close\nPrompt.",
   );
-  await Bun.write(join(dir, ".vibe", "commands", "valid.md"), "---\nname: valid-command\n---\nPrompt.");
+  await Bun.write(
+    join(dir, ".vibe", "commands", "valid.md"),
+    "---\nname: valid-command\n---\nPrompt.",
+  );
 
   expect((await loadSkills(dir)).map((s) => s.name)).toEqual(["valid"]);
   expect((await loadCommandFiles(dir)).map((c) => c.name)).toEqual(["valid-command"]);

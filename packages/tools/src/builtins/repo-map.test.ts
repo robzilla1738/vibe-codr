@@ -19,7 +19,14 @@ import {
 beforeEach(() => _resetRepoMapCache());
 
 function ctx(cwd: string): ToolContext {
-  return { cwd, sessionId: "s", emit: () => {}, toolCallId: "t", abortSignal: new AbortController().signal, freshness };
+  return {
+    cwd,
+    sessionId: "s",
+    emit: () => {},
+    toolCallId: "t",
+    abortSignal: new AbortController().signal,
+    freshness,
+  };
 }
 
 test("extractSymbols pulls top-level TS declarations, skipping nested members", () => {
@@ -43,12 +50,22 @@ test("extractSymbols pulls top-level TS declarations, skipping nested members", 
 });
 
 test("extractSymbols handles Python and Go", () => {
-  expect(extractSymbols("def foo():\n    pass\nclass Bar:\n    pass", ".py")).toEqual(["def foo():", "class Bar:"]);
-  expect(extractSymbols("func Handle() {}\ntype Server struct {", ".go")).toContain("func Handle()");
+  expect(extractSymbols("def foo():\n    pass\nclass Bar:\n    pass", ".py")).toEqual([
+    "def foo():",
+    "class Bar:",
+  ]);
+  expect(extractSymbols("func Handle() {}\ntype Server struct {", ".go")).toContain(
+    "func Handle()",
+  );
 });
 
 test("rankFiles puts entrypoints first and tests last", () => {
-  const ranked = rankFiles(["src/util/helpers.ts", "src/index.ts", "src/util/helpers.test.ts", "main.go"]);
+  const ranked = rankFiles([
+    "src/util/helpers.ts",
+    "src/index.ts",
+    "src/util/helpers.test.ts",
+    "main.go",
+  ]);
   expect(ranked[0]).toMatch(/index\.ts|main\.go/);
   expect(ranked.at(-1)).toBe("src/util/helpers.test.ts");
 });
@@ -86,8 +103,14 @@ test("buildRepoMap ranks referenced files up and serves unchanged files from cac
   mkdirSync(join(dir, "src", "lib"), { recursive: true });
   // hub.ts is imported by two files → should outrank its siblings.
   writeFileSync(join(dir, "src", "lib", "hub.ts"), "export function hub() {}\n");
-  writeFileSync(join(dir, "src", "a.ts"), "import { hub } from './lib/hub.ts';\nexport function a() {}\n");
-  writeFileSync(join(dir, "src", "b.ts"), "import { hub } from './lib/hub';\nexport function b() {}\n");
+  writeFileSync(
+    join(dir, "src", "a.ts"),
+    "import { hub } from './lib/hub.ts';\nexport function a() {}\n",
+  );
+  writeFileSync(
+    join(dir, "src", "b.ts"),
+    "import { hub } from './lib/hub';\nexport function b() {}\n",
+  );
 
   const first = await buildRepoMap(dir);
   const hubIdx = first.text.indexOf("src/lib/hub.ts");
@@ -106,7 +129,10 @@ test("buildRepoMap respects the char budget with an explicit truncated flag", as
   const dir = mkdtempSync(join(tmpdir(), "vibe-repomap-budget-"));
   mkdirSync(join(dir, "src"), { recursive: true });
   for (let i = 0; i < 20; i++) {
-    writeFileSync(join(dir, "src", `f${i}.ts`), `export function fn${i}() {}\nexport const V${i} = ${i};\n`);
+    writeFileSync(
+      join(dir, "src", `f${i}.ts`),
+      `export function fn${i}() {}\nexport const V${i} = ${i};\n`,
+    );
   }
   const res = await buildRepoMap(dir, { charBudget: 200 });
   expect(res.truncated).toBe(true);
@@ -135,7 +161,10 @@ test("buildRepoMap caps the number of files it READS, not just the count it rend
 test("repo_map produces a declaration map for a directory (no git)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-repomap-"));
   mkdirSync(join(dir, "src"), { recursive: true });
-  writeFileSync(join(dir, "src", "index.ts"), "export function main() {}\nexport const VERSION = '1';\n");
+  writeFileSync(
+    join(dir, "src", "index.ts"),
+    "export function main() {}\nexport const VERSION = '1';\n",
+  );
   writeFileSync(join(dir, "src", "util.ts"), "export class Helper {}\n");
   writeFileSync(join(dir, "README.md"), "# not code");
 

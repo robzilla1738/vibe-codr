@@ -21,7 +21,10 @@ test("cleanProactiveRecallSeed includes the goal when present", () => {
 });
 
 test("cleanProactiveRecallSeed strips URLs", () => {
-  const seed = cleanProactiveRecallSeed(null, "see https://example.com/docs and use the neon pooler");
+  const seed = cleanProactiveRecallSeed(
+    null,
+    "see https://example.com/docs and use the neon pooler",
+  );
   expect(seed).not.toContain("https://");
   expect(seed).not.toContain("example.com");
   expect(seed.toLowerCase()).toContain("neon");

@@ -91,11 +91,7 @@ test("update_tasks records the task list and emits tasks-updated", async () => {
   expect(update && update.type === "tasks-updated" && update.tasks.length).toBe(3);
 
   const snap = session.snapshot();
-  expect(snap.tasks.map((t) => t.status)).toEqual([
-    "completed",
-    "in_progress",
-    "pending",
-  ]);
+  expect(snap.tasks.map((t) => t.status)).toEqual(["completed", "in_progress", "pending"]);
   // Every task gets a stable id.
   expect(snap.tasks.every((t) => t.id.length > 0)).toBe(true);
 });

@@ -26,7 +26,10 @@ const registry = new ProviderRegistry([
   stub("anthropic", ["ANTHROPIC_API_KEY"]),
   stub("lmstudio", [], true),
   stub("ollama", ["OLLAMA_API_KEY"], true),
-  stub("custom", ["CUSTOM_API_KEY"], true, { baseURLEnv: "CUSTOM_BASE_URL", requiresBaseURL: true }),
+  stub("custom", ["CUSTOM_API_KEY"], true, {
+    baseURLEnv: "CUSTOM_BASE_URL",
+    requiresBaseURL: true,
+  }),
 ]);
 
 const realKey = process.env.ANTHROPIC_API_KEY;
@@ -67,7 +70,11 @@ test("custom endpoint needs onboarding until a base URL is configured", () => {
   expect(needsOnboarding({ ...defaultConfig(), model: "custom/foo" }, registry)).toBe(true);
   expect(
     needsOnboarding(
-      { ...defaultConfig(), model: "custom/foo", providers: { custom: { baseURL: "https://endpoint.example.com/v1" } } },
+      {
+        ...defaultConfig(),
+        model: "custom/foo",
+        providers: { custom: { baseURL: "https://endpoint.example.com/v1" } },
+      },
       registry,
     ),
   ).toBe(false);
@@ -106,9 +113,9 @@ test("buildOnboardingPatch includes keys only when provided", () => {
     search: { apiKey: "tf" },
   });
 
-  expect(
-    buildOnboardingPatch({ model: "lmstudio/x", providerId: "lmstudio" }),
-  ).toEqual({ model: "lmstudio/x" });
+  expect(buildOnboardingPatch({ model: "lmstudio/x", providerId: "lmstudio" })).toEqual({
+    model: "lmstudio/x",
+  });
 });
 
 test("buildOnboardingPatch persists a base URL for a custom OpenAI-compatible endpoint", () => {
@@ -138,7 +145,23 @@ test("buildOnboardingPatch persists a base URL for a custom OpenAI-compatible en
 
 test("the new providers + custom endpoint appear in the onboarding menu", () => {
   const keys = new Set(PROVIDER_CHOICES.map((c) => c.key));
-  for (const k of ["google", "groq", "mistral", "together", "cerebras", "perplexity", "codex", "minimax", "fireworks", "zai", "moonshot", "alibaba", "huggingface", "meta", "custom-endpoint"]) {
+  for (const k of [
+    "google",
+    "groq",
+    "mistral",
+    "together",
+    "cerebras",
+    "perplexity",
+    "codex",
+    "minimax",
+    "fireworks",
+    "zai",
+    "moonshot",
+    "alibaba",
+    "huggingface",
+    "meta",
+    "custom-endpoint",
+  ]) {
     expect(keys.has(k)).toBe(true);
   }
   const meta = PROVIDER_CHOICES.find((c) => c.key === "meta");
@@ -170,11 +193,13 @@ test("Ollama Cloud choice requires an actual key despite the local keyless provi
   const local = PROVIDER_CHOICES.find((c) => c.key === "ollama-local")!;
   expect(choiceIsConfigured(cloud, defaultConfig(), registry)).toBe(false);
   expect(choiceIsConfigured(local, defaultConfig(), registry)).toBe(true);
-  expect(choiceIsConfigured(
-    cloud,
-    { ...defaultConfig(), providers: { ollama: { apiKey: "ol-saved" } } },
-    registry,
-  )).toBe(true);
+  expect(
+    choiceIsConfigured(
+      cloud,
+      { ...defaultConfig(), providers: { ollama: { apiKey: "ol-saved" } } },
+      registry,
+    ),
+  ).toBe(true);
   process.env.OLLAMA_API_KEY = "ol-env";
   expect(choiceIsConfigured(cloud, defaultConfig(), registry)).toBe(true);
 });
@@ -212,13 +237,9 @@ test("Ollama local model listing does not inherit cloud credentials", () => {
 
 test("initialChoiceIndex preselects the provider whose key is in the env", () => {
   const ollamaCloud = PROVIDER_CHOICES.findIndex((c) => c.key === "ollama-cloud");
-  expect(initialChoiceIndex(PROVIDER_CHOICES, { OLLAMA_API_KEY: "x" })).toBe(
-    ollamaCloud,
-  );
+  expect(initialChoiceIndex(PROVIDER_CHOICES, { OLLAMA_API_KEY: "x" })).toBe(ollamaCloud);
   // Local-keyless providers never auto-win (their env var is just a base URL).
-  expect(
-    initialChoiceIndex(PROVIDER_CHOICES, { OLLAMA_BASE_URL: "http://x" }),
-  ).toBe(0);
+  expect(initialChoiceIndex(PROVIDER_CHOICES, { OLLAMA_BASE_URL: "http://x" })).toBe(0);
   expect(initialChoiceIndex(PROVIDER_CHOICES, {})).toBe(0);
 });
 

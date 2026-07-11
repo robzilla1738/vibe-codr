@@ -39,10 +39,7 @@ test("a non-zero exit is reported as an error", async () => {
 test("multibyte UTF-8 output is preserved intact (streaming decode)", async () => {
   // Guards the per-stream streaming TextDecoder: a multibyte char must never
   // be corrupted into a replacement char.
-  const r = await bashTool().execute(
-    { command: "printf 'café — déjà vu 🚀\\n'" },
-    ctx(cwd()),
-  );
+  const r = await bashTool().execute({ command: "printf 'café — déjà vu 🚀\\n'" }, ctx(cwd()));
   expect(String(r.output)).toContain("café — déjà vu 🚀");
 });
 

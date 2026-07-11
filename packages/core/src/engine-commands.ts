@@ -157,13 +157,15 @@ function applyNlConfig(
  * round), paused (why + how to re-arm), met, or never-started — so the ★
  * header's static text never leaves the user guessing what's happening. */
 export function goalStatusText(goal: string | null, run: GoalRunInfo): string {
-  if (!goal) return "No goal set. /goal <text> sets a north-star goal and starts an autonomous run.";
+  if (!goal)
+    return "No goal set. /goal <text> sets a north-star goal and starts an autonomous run.";
   const head = `Goal: ${goal}`;
   if (run.active) {
     const where = run.phase === "plan" ? "planning" : `round ${run.round}/${run.max}`;
     return `${head}\nRun active (${where}) — typing steers it · Esc pauses it · /goal clear stops it.`;
   }
-  if (run.met) return `${head}\nRun finished — verified met. /goal <text> starts a new run · /goal clear drops the ★.`;
+  if (run.met)
+    return `${head}\nRun finished — verified met. /goal <text> starts a new run · /goal clear drops the ★.`;
   if (run.pausedReason) {
     return `${head}\nRun paused — ${run.pausedReason}. /goal resume re-arms it · /goal clear drops it.`;
   }
@@ -511,7 +513,10 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
         );
         break;
       }
-      applyNlConfig(h, parseConfigNatural(cfgArg) ?? { kind: "error", message: "Empty config args." });
+      applyNlConfig(
+        h,
+        parseConfigNatural(cfgArg) ?? { kind: "error", message: "Empty config args." },
+      );
       break;
     }
     case "tools":
@@ -525,9 +530,7 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       const filter = args.trim().toLowerCase();
       const all = h.skills.userVisible().map((s) => ({
         name: s.name,
-        description: s.disableModelInvocation
-          ? `[user-only] ${s.description}`
-          : s.description,
+        description: s.disableModelInvocation ? `[user-only] ${s.description}` : s.description,
       }));
       const shown = filter
         ? all.filter(
@@ -866,10 +869,19 @@ function handleMouse(h: EngineHandle, args: string): void {
   const raw = args.trim().toLowerCase();
   const cur = h.config.mouse ?? true;
   if (!raw) {
-    h.notice(`Mouse: ${cur ? "on" : "off"}. Use /mouse on|off (off keeps native terminal selection).`);
+    h.notice(
+      `Mouse: ${cur ? "on" : "off"}. Use /mouse on|off (off keeps native terminal selection).`,
+    );
     return;
   }
-  if (raw !== "on" && raw !== "off" && raw !== "true" && raw !== "false" && raw !== "1" && raw !== "0") {
+  if (
+    raw !== "on" &&
+    raw !== "off" &&
+    raw !== "true" &&
+    raw !== "false" &&
+    raw !== "1" &&
+    raw !== "0"
+  ) {
     h.notice("Usage: /mouse on|off", "warn");
     return;
   }
@@ -944,7 +956,10 @@ function handleAccent(h: EngineHandle, args: string): void {
   }
   const preset = ACCENT_PRESETS[next.toLowerCase()];
   if (!preset && !/^#?[0-9a-fA-F]{6}$/.test(next)) {
-    h.notice(`Unknown accent "${next}". Use one of ${names}, or a 6-digit hex like #fab283.`, "warn");
+    h.notice(
+      `Unknown accent "${next}". Use one of ${names}, or a 6-digit hex like #fab283.`,
+      "warn",
+    );
     return;
   }
   const hex = preset ?? (next.startsWith("#") ? next : `#${next}`);
@@ -1111,7 +1126,12 @@ async function handleDoctor(h: EngineHandle): Promise<void> {
     detail: h.config.verify.command ?? "no verify command set",
   });
 
-  checks.push(searchDoctorCheck(h.config.search.enabled, h.config.search.apiKey || process.env.TINYFISH_API_KEY));
+  checks.push(
+    searchDoctorCheck(
+      h.config.search.enabled,
+      h.config.search.apiKey || process.env.TINYFISH_API_KEY,
+    ),
+  );
   checks.push(lspDoctorCheck(h.config.lsp.enabled, h.lspStatus()));
   checks.push(sandboxDoctorCheck(h.sandbox));
 
@@ -1128,9 +1148,7 @@ async function handleDoctor(h: EngineHandle): Promise<void> {
     checks.push({
       label: "config keys",
       ok: null,
-      detail: unknown
-        .map((u) => `unknown in ${u.path}: ${u.keys.join(", ")}`)
-        .join("; "),
+      detail: unknown.map((u) => `unknown in ${u.path}: ${u.keys.join(", ")}`).join("; "),
     });
   }
 
@@ -1165,14 +1183,24 @@ export function searchDoctorCheck(enabled: boolean, key: string | undefined): Do
  */
 export function lspDoctorCheck(enabled: boolean, servers: LspStatus[]): DoctorCheck {
   if (!enabled) {
-    return { label: "lsp", ok: null, detail: "off (set lsp.enabled to use multi-language diagnostics)" };
+    return {
+      label: "lsp",
+      ok: null,
+      detail: "off (set lsp.enabled to use multi-language diagnostics)",
+    };
   }
   if (servers.length === 0) {
-    return { label: "lsp", ok: null, detail: "no language servers active (no non-TS files diagnosed)" };
+    return {
+      label: "lsp",
+      ok: null,
+      detail: "no language servers active (no non-TS files diagnosed)",
+    };
   }
   const crashed = servers.filter((s) => s.state === "crashed");
   const missing = servers.filter((s) => s.state === "missing");
-  const live = servers.filter((s) => s.state === "running" || s.state === "starting" || s.state === "idle");
+  const live = servers.filter(
+    (s) => s.state === "running" || s.state === "starting" || s.state === "idle",
+  );
   const parts: string[] = [];
   if (live.length) {
     parts.push(live.map((s) => `${s.language}→${s.command ?? "?"}`).join(", "));
@@ -1316,7 +1344,10 @@ interface RedoConversationStash {
 /** Shared tail for /undo: roll the conversation back to match the restored files
  * (so the model no longer believes the undone edits exist), stash the discarded
  * tail on the redo step for a later /redo, notify, confirm. */
-function finishRestore(h: EngineHandle, cp: { id: string; label: string; conversation?: { messages: number; history: number } }): void {
+function finishRestore(
+  h: EngineHandle,
+  cp: { id: string; label: string; conversation?: { messages: number; history: number } },
+): void {
   if (cp.conversation) {
     const tail = h.session.rewindConversation(cp.conversation);
     if (tail) {

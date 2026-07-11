@@ -126,7 +126,10 @@ export function parseBareImagePaths(prompt: string): string[] {
       }
       break;
     }
-    let raw = prompt.slice(i + 1, end).replace(/^[("'[`]+/, "").replace(/[)"'\]]+$/, "");
+    let raw = prompt
+      .slice(i + 1, end)
+      .replace(/^[("'[`]+/, "")
+      .replace(/[)"'\]]+$/, "");
     raw = unescapeShellPath(raw).trim();
     if (!raw || seen.has(raw)) continue;
     // Require a real path signal: absolute, home, relative with slash, or a
@@ -193,9 +196,7 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
     // A directory mention (@src/ or @src) expands to a capped listing.
     const info = await stat(full).catch(() => null);
     if (info?.isDirectory()) {
-      const entries = (await readdir(full).catch(() => []))
-        .sort()
-        .slice(0, MAX_DIR_ENTRIES);
+      const entries = (await readdir(full).catch(() => [])).sort().slice(0, MAX_DIR_ENTRIES);
       if (entries.length) {
         blocks.push(`--- ${token}/ (directory) ---\n${entries.join("\n")}`);
       }
@@ -265,8 +266,6 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
     );
   }
 
-  const text = blocks.length
-    ? `${prompt}\n\nReferenced files:\n\n${blocks.join("\n\n")}`
-    : prompt;
+  const text = blocks.length ? `${prompt}\n\nReferenced files:\n\n${blocks.join("\n\n")}` : prompt;
   return { text, images, notices };
 }

@@ -125,7 +125,10 @@ export function parseSkillMarkdown(rawInput: string): {
     const scalar = /^([|>])(?:[1-9][+-]?|[+-][1-9]?)?$/.exec(inline);
     if (scalar) {
       const block: string[] = [];
-      while (i + 1 < lines.length && (/^\s/.test(lines[i + 1] ?? "") || (lines[i + 1] ?? "") === "")) {
+      while (
+        i + 1 < lines.length &&
+        (/^\s/.test(lines[i + 1] ?? "") || (lines[i + 1] ?? "") === "")
+      ) {
         block.push((lines[++i] ?? "").trim());
       }
       // Trim trailing blank lines; join folded (`>`) with spaces, literal

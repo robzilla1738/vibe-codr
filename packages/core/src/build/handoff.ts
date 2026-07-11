@@ -76,7 +76,8 @@ export function formatHandoffForKickoff(taskId: string, handoff: Handoff): strin
     lines.push("  key facts:");
     for (const f of handoff.keyFacts) lines.push(`  - ${f}`);
   }
-  if (handoff.filesTouched.length) lines.push(`  files touched: ${handoff.filesTouched.join(", ")}`);
+  if (handoff.filesTouched.length)
+    lines.push(`  files touched: ${handoff.filesTouched.join(", ")}`);
   if (handoff.openQuestions.length) {
     lines.push("  open questions:");
     for (const q of handoff.openQuestions) lines.push(`  - ${q}`);

@@ -73,7 +73,9 @@ export const writeTool: ToolDefinition<WriteInput> = {
       });
       const verb = existed ? "Overwrote" : "Created";
       const diag = await ctx.diagnose?.(full).catch(() => undefined);
-      return { output: `${verb} ${path} (+${diff.added} -${diff.removed})${diag ? `\n\n${diag}` : ""}` };
+      return {
+        output: `${verb} ${path} (+${diff.added} -${diff.removed})${diag ? `\n\n${diag}` : ""}`,
+      };
     });
   },
 };

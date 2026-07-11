@@ -12,10 +12,7 @@ export function parseModelString(modelString: string): ModelRef {
   const trimmed = modelString.trim();
   const slash = trimmed.indexOf("/");
   if (slash <= 0 || slash === trimmed.length - 1) {
-    throw new ModelResolutionError(
-      modelString,
-      'expected "<provider>/<model-id>"',
-    );
+    throw new ModelResolutionError(modelString, 'expected "<provider>/<model-id>"');
   }
   return {
     providerId: trimmed.slice(0, slash),

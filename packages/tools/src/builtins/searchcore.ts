@@ -134,8 +134,15 @@ export function classifySource(domain: string): SourceType {
   if (GOV_SUFFIXES.some((s) => d.endsWith(s))) return "government";
   if (d.endsWith(".edu")) return "academic";
   if (ACADEMIC_HOSTS.some((h) => d === h || d.endsWith(`.${h}`))) return "academic";
-  if (["twitter.com", "x.com", "reddit.com", "facebook.com"].some((s) => d.includes(s))) return "social";
-  if (d.includes("news") || d.includes("reuters.com") || d.includes("apnews.com") || d.includes("bbc.")) return "news";
+  if (["twitter.com", "x.com", "reddit.com", "facebook.com"].some((s) => d.includes(s)))
+    return "social";
+  if (
+    d.includes("news") ||
+    d.includes("reuters.com") ||
+    d.includes("apnews.com") ||
+    d.includes("bbc.")
+  )
+    return "news";
   return "secondary";
 }
 
@@ -243,7 +250,8 @@ export function scorePage(page: PageSignal, terms: string[]): number {
   const title = page.title.toLowerCase();
   const type = classifySource(domain);
   if (type === "primary" || type === "government" || type === "academic") score += 5;
-  if (domain.includes("docs") || url.includes("docs") || title.includes("documentation")) score += 5;
+  if (domain.includes("docs") || url.includes("docs") || title.includes("documentation"))
+    score += 5;
   if (domain === "github.com" || domain === "gitlab.com") score += 4;
   if (["pypi.org", "npmjs.com", "rubygems.org"].includes(domain)) score -= 2;
   score += freshnessBoost(page.date);
@@ -272,7 +280,8 @@ export function resultQualityScore(c: Candidate): number {
   const snippet = c.snippet.toLowerCase();
   let score = Math.max(0, 20 - c.rank);
   if (title.includes("official") || snippet.includes("official")) score += 4;
-  if (title.includes("documentation") || snippet.includes("documentation") || url.includes("docs")) score += 4;
+  if (title.includes("documentation") || snippet.includes("documentation") || url.includes("docs"))
+    score += 4;
   if (url.includes("github.com") || url.includes("gitlab.com")) score += 3;
   if (c.engine === "arxiv" || c.engine === "crossref") score += 3;
   score += Math.min(2, freshnessBoost(c.date));

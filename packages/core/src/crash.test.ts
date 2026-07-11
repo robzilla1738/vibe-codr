@@ -31,7 +31,11 @@ test("redactCrash masks secret-bearing keys", () => {
 });
 
 test("redactCrash masks secrets embedded in free strings (argv-style)", () => {
-  const out = redactCrash(["--api-key=sk-live-123", "Authorization: Bearer xyz", "--model=openai/gpt"]) as string[];
+  const out = redactCrash([
+    "--api-key=sk-live-123",
+    "Authorization: Bearer xyz",
+    "--model=openai/gpt",
+  ]) as string[];
   expect(out[0]).toBe("--api-key=***");
   expect(out[1]).toContain("***");
   expect(out[1]).not.toContain("xyz");

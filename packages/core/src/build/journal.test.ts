@@ -1,5 +1,13 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, appendFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "node:fs";
+import {
+  mkdtempSync,
+  appendFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,16 +24,33 @@ const tmp = () => mkdtempSync(join(tmpdir(), "vibe-journal-"));
 test("completed tasks replay with their persisted reports; in-flight tasks re-run", async () => {
   const cwd = tmp();
   const ses = "ses_1";
-  appendOrchestrationEvent(cwd, ses, { type: "task-started", at: 1, id: "t1", objective: "build a", deps: [] });
+  appendOrchestrationEvent(cwd, ses, {
+    type: "task-started",
+    at: 1,
+    id: "t1",
+    objective: "build a",
+    deps: [],
+  });
   const reportPath = persistTaskReport(cwd, ses, "t1", "full report of t1");
   expect(reportPath).toBeDefined();
   appendOrchestrationEvent(cwd, ses, {
-    type: "task-finished", at: 2, id: "t1", objective: "build a", outcome: "completed", attempts: 1,
+    type: "task-finished",
+    at: 2,
+    id: "t1",
+    objective: "build a",
+    outcome: "completed",
+    attempts: 1,
     handoff: { keyFacts: ["a done"], filesTouched: ["a.ts"], openQuestions: [] },
     ...(reportPath ? { reportPath } : {}),
   });
   // t2 started but never finished — must NOT be seeded.
-  appendOrchestrationEvent(cwd, ses, { type: "task-started", at: 3, id: "t2", objective: "build b", deps: ["t1"] });
+  appendOrchestrationEvent(cwd, ses, {
+    type: "task-started",
+    at: 3,
+    id: "t2",
+    objective: "build b",
+    deps: ["t1"],
+  });
 
   const seeded = loadCompletedTasks(cwd, ses);
   expect(seeded).toHaveLength(1);
@@ -38,7 +63,12 @@ test("failed tasks are not seeded; torn/malformed lines tolerated", () => {
   const cwd = tmp();
   const ses = "ses_2";
   appendOrchestrationEvent(cwd, ses, {
-    type: "task-finished", at: 1, id: "bad", objective: "x", outcome: "failed", attempts: 2,
+    type: "task-finished",
+    at: 1,
+    id: "bad",
+    objective: "x",
+    outcome: "failed",
+    attempts: 2,
   });
   // Append a torn line to the ACTUAL (global) journal the writer used.
   appendFileSync(join(globalStateDir(cwd), "orchestration", `${ses}.jsonl`), '{"type":"task-fin');
@@ -49,7 +79,12 @@ test("completed tasks replay from atomic event files without a jsonl journal", (
   const cwd = tmp();
   const ses = "ses_atomic";
   appendOrchestrationEvent(cwd, ses, {
-    type: "task-finished", at: 1, id: "done", objective: "x", outcome: "completed", attempts: 1,
+    type: "task-finished",
+    at: 1,
+    id: "done",
+    objective: "x",
+    outcome: "completed",
+    attempts: 1,
   });
   const orchDir = join(globalStateDir(cwd), "orchestration");
   expect(existsSync(join(orchDir, `${ses}.jsonl`))).toBe(false);
@@ -69,7 +104,13 @@ test("orchestration state is written OUT of the project cwd (global state dir)",
   // global state dir, never inside the project's .vibe/.
   const cwd = tmp();
   const ses = "ses_reloc";
-  appendOrchestrationEvent(cwd, ses, { type: "task-started", at: 1, id: "t", objective: "o", deps: [] });
+  appendOrchestrationEvent(cwd, ses, {
+    type: "task-started",
+    at: 1,
+    id: "t",
+    objective: "o",
+    deps: [],
+  });
   const reportPath = persistTaskReport(cwd, ses, "t", "report body")!;
   expect(reportPath.startsWith(globalStateDir(cwd))).toBe(true);
   expect(reportPath).not.toContain(join(cwd, ".vibe"));
@@ -99,7 +140,12 @@ test("missing journal loads empty; missing report degrades to a placeholder", ()
   expect(loadCompletedTasks(cwd, "nope")).toEqual([]);
   const ses = "ses_3";
   appendOrchestrationEvent(cwd, ses, {
-    type: "task-finished", at: 1, id: "t", objective: "x", outcome: "completed", attempts: 1,
+    type: "task-finished",
+    at: 1,
+    id: "t",
+    objective: "x",
+    outcome: "completed",
+    attempts: 1,
     reportPath: ".vibe/orchestration/reports/deleted.md",
   });
   const [seeded] = loadCompletedTasks(cwd, ses);
@@ -124,7 +170,12 @@ test("a task seeds only from its OWN plan's prior run (plan identity, same sessi
   const ses = "ses_plan";
   const planA = planIdentity([{ id: "impl", objective: "Implement X", deps: [] }]);
   appendOrchestrationEvent(cwd, ses, {
-    type: "task-finished", at: 1, id: "impl", objective: "Implement X", outcome: "completed", attempts: 1,
+    type: "task-finished",
+    at: 1,
+    id: "impl",
+    objective: "Implement X",
+    outcome: "completed",
+    attempts: 1,
     plan: planA,
   });
   // A resume that re-submits the SAME plan seeds its completed task.
@@ -146,7 +197,12 @@ test("unstamped (pre-upgrade) journal events never seed a plan-filtered load", (
   const cwd = tmp();
   const ses = "ses_plan_legacy";
   appendOrchestrationEvent(cwd, ses, {
-    type: "task-finished", at: 1, id: "impl", objective: "Implement X", outcome: "completed", attempts: 1,
+    type: "task-finished",
+    at: 1,
+    id: "impl",
+    objective: "Implement X",
+    outcome: "completed",
+    attempts: 1,
   });
   const plan = planIdentity([{ id: "impl", objective: "Implement X", deps: [] }]);
   expect(loadCompletedTasks(cwd, ses, plan)).toEqual([]);
@@ -163,29 +219,43 @@ test("planIdentity is stable for the same plan and distinct across plan shapes",
   // Any structural difference — extra task, changed objective, changed deps —
   // is a different plan.
   expect(planIdentity(specs.slice(0, 1))).not.toBe(planIdentity(specs));
-  expect(planIdentity([{ ...specs[0]!, objective: "do a differently" }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, objective: "do a differently" }, specs[1]!])).not.toBe(
+    planIdentity(specs),
+  );
   expect(planIdentity([specs[0]!, { ...specs[1]!, deps: [] }])).not.toBe(planIdentity(specs));
   // Behavior-bearing flags are identity too: a re-plan that flips verification,
   // checks, ownership, or tier must re-run — never inherit a completion produced
   // under weaker rules (verify-pass regression).
   expect(planIdentity([{ ...specs[0]!, verify: true }, specs[1]!])).not.toBe(planIdentity(specs));
   expect(planIdentity([{ ...specs[0]!, check: true }, specs[1]!])).not.toBe(planIdentity(specs));
-  expect(planIdentity([{ ...specs[0]!, files: ["src/a.ts"] }, specs[1]!])).not.toBe(planIdentity(specs));
-  expect(planIdentity([{ ...specs[0]!, tier: "cheap" as const }, specs[1]!])).not.toBe(planIdentity(specs));
+  expect(planIdentity([{ ...specs[0]!, files: ["src/a.ts"] }, specs[1]!])).not.toBe(
+    planIdentity(specs),
+  );
+  expect(planIdentity([{ ...specs[0]!, tier: "cheap" as const }, specs[1]!])).not.toBe(
+    planIdentity(specs),
+  );
   expect(planIdentity([{ ...specs[0]!, worktree: true }, specs[1]!])).not.toBe(planIdentity(specs));
   expect(planIdentity([{ ...specs[0]!, hard: true }, specs[1]!])).not.toBe(planIdentity(specs));
-  expect(planIdentity([{ ...specs[0]!, agent: "review" }, specs[1]!])).not.toBe(planIdentity(specs));
-  expect(planIdentity([
-    { ...specs[0]!, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
-    specs[1]!,
-  ])).not.toBe(planIdentity(specs));
-  expect(planIdentity([
-    { ...specs[0]!, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
-    specs[1]!,
-  ])).toBe(planIdentity([
-    { ...specs[0]!, outputSchema: { properties: { ok: { type: "boolean" } }, type: "object" } },
-    specs[1]!,
-  ]));
+  expect(planIdentity([{ ...specs[0]!, agent: "review" }, specs[1]!])).not.toBe(
+    planIdentity(specs),
+  );
+  expect(
+    planIdentity([
+      { ...specs[0]!, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
+      specs[1]!,
+    ]),
+  ).not.toBe(planIdentity(specs));
+  expect(
+    planIdentity([
+      { ...specs[0]!, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
+      specs[1]!,
+    ]),
+  ).toBe(
+    planIdentity([
+      { ...specs[0]!, outputSchema: { properties: { ok: { type: "boolean" } }, type: "object" } },
+      specs[1]!,
+    ]),
+  );
 });
 
 test("ids that sanitize-equal get distinct report files (no overwrite/mixup)", () => {

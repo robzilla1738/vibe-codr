@@ -6,7 +6,13 @@ import type { ToolContext, UIEvent } from "@vibe/shared";
 import { FreshnessRegistry } from "./freshness.ts";
 
 const freshness = new FreshnessRegistry();
-import { grepTool, builtinGrep, readCappedLines, ripgrepFileTypeArgs, _resetRipgrepTypeCache } from "./grep.ts";
+import {
+  grepTool,
+  builtinGrep,
+  readCappedLines,
+  ripgrepFileTypeArgs,
+  _resetRipgrepTypeCache,
+} from "./grep.ts";
 
 beforeEach(() => _resetRipgrepTypeCache());
 
@@ -70,7 +76,10 @@ test("built-in fallback grep matches lines, filters by glob, caps at 500", async
 
   // 500-match cap + marker.
   const big = mkdtempSync(join(tmpdir(), "vibe-grep-js-cap-"));
-  await Bun.write(join(big, "big.txt"), `${Array.from({ length: 600 }, (_, i) => `match ${i}`).join("\n")}\n`);
+  await Bun.write(
+    join(big, "big.txt"),
+    `${Array.from({ length: 600 }, (_, i) => `match ${i}`).join("\n")}\n`,
+  );
   const capped = await builtinGrep({ pattern: "match" }, ctx(big));
   const lines = (capped.output as string).split("\n");
   expect(lines.length).toBe(501);
@@ -99,7 +108,10 @@ test("builtinGrep skips pathologically long lines (no catastrophic-backtracking 
 test("builtinGrep still finds a literal match on a very long single line", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-grep-long-"));
   // A 200k-char minified-style single line that contains a real symbol.
-  await Bun.write(join(dir, "bundle.min.js"), `${"x".repeat(120_000)}getUserById${"y".repeat(120_000)}`);
+  await Bun.write(
+    join(dir, "bundle.min.js"),
+    `${"x".repeat(120_000)}getUserById${"y".repeat(120_000)}`,
+  );
   const r = await builtinGrep({ pattern: "getUserById" }, ctx(dir));
   // The literal symbol must be found (a substring scan, no ReDoS risk), not dropped
   // by the long-line guard (which only applies to true regex patterns).
@@ -217,12 +229,7 @@ test("fileType with an rg-unknown extension still filters via a glob fallback", 
 });
 
 test("ripgrep fileType aliases fall back to real extension globs when unknown", () => {
-  expect(ripgrepFileTypeArgs("python", new Set())).toEqual([
-    "--glob",
-    "*.py",
-    "--glob",
-    "*.pyi",
-  ]);
+  expect(ripgrepFileTypeArgs("python", new Set())).toEqual(["--glob", "*.py", "--glob", "*.pyi"]);
   expect(ripgrepFileTypeArgs("typescript", new Set())).toEqual([
     "--glob",
     "*.ts",

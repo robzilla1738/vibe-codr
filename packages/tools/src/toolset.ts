@@ -116,14 +116,10 @@ export class Toolset {
     if (builtin) {
       this.#builtins.add(def.name);
     } else if (this.#builtins.has(def.name)) {
-      this.onConflict?.(
-        `Ignored extension tool "${def.name}": it collides with a built-in tool.`,
-      );
+      this.onConflict?.(`Ignored extension tool "${def.name}": it collides with a built-in tool.`);
       return;
     } else if (this.#tools.has(def.name)) {
-      this.onConflict?.(
-        `Tool "${def.name}" is registered more than once; the later one wins.`,
-      );
+      this.onConflict?.(`Tool "${def.name}" is registered more than once; the later one wins.`);
     }
     this.#tools.set(def.name, def);
   }
@@ -249,11 +245,7 @@ export class FileOwnedError extends Error {
 }
 
 /** A file-lock function: claims `absPath` for the optional `ownerId` while `fn` runs. */
-export type FileLock = <T>(
-  absPath: string,
-  fn: () => Promise<T>,
-  ownerId?: string,
-) => Promise<T>;
+export type FileLock = <T>(absPath: string, fn: () => Promise<T>, ownerId?: string) => Promise<T>;
 
 /**
  * Per-path write CLAIM registry, shared across the whole session tree. A file is
@@ -426,9 +418,7 @@ export function toAISDKTool(
     base.recordToolResult?.(options.toolCallId, result.isError === true);
     if (result.isError) {
       const text =
-        typeof result.output === "string"
-          ? result.output
-          : JSON.stringify(result.output);
+        typeof result.output === "string" ? result.output : JSON.stringify(result.output);
       return `ERROR: ${text}`;
     }
     // Successful non-readOnly execute → the workspace (or durable state) changed.
@@ -439,9 +429,7 @@ export function toAISDKTool(
     // delimited so the model reads it as annotation (not tool output) next step.
     if (after?.additionalContext) {
       const text =
-        typeof result.output === "string"
-          ? result.output
-          : JSON.stringify(result.output);
+        typeof result.output === "string" ? result.output : JSON.stringify(result.output);
       return `${text}\n\n[hook: tool.after.execute] ${after.additionalContext}`;
     }
     return result.output;

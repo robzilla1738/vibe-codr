@@ -40,11 +40,28 @@ const sid = "ses_mock";
 function happyPath(): UIEvent[] {
   return [
     { type: "user-message", sessionId: sid, text: "hi" },
-    { type: "tool-call-started", sessionId: sid, toolCallId: "c1", toolName: "read", input: { path: "x" } },
-    { type: "tool-call-finished", sessionId: sid, toolCallId: "c1", toolName: "read", output: "ok", isError: false },
+    {
+      type: "tool-call-started",
+      sessionId: sid,
+      toolCallId: "c1",
+      toolName: "read",
+      input: { path: "x" },
+    },
+    {
+      type: "tool-call-finished",
+      sessionId: sid,
+      toolCallId: "c1",
+      toolName: "read",
+      output: "ok",
+      isError: false,
+    },
     { type: "assistant-text-delta", sessionId: sid, delta: "All " },
     { type: "assistant-text-delta", sessionId: sid, delta: "done." },
-    { type: "usage-updated", sessionId: sid, usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUSD: 0.01 } },
+    {
+      type: "usage-updated",
+      sessionId: sid,
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUSD: 0.01 },
+    },
     { type: "turn-finished", sessionId: sid },
     { type: "session-idle", sessionId: sid },
     { type: "engine-idle", sessionId: sid },
@@ -202,14 +219,23 @@ test("runOneShot JSON carries gate outcome + tasks (TUI parity)", async () => {
   const script: UIEvent[] = [
     { type: "user-message", sessionId: sid, text: "go" },
     { type: "assistant-text-delta", sessionId: sid, delta: "done" },
-    { type: "tasks-updated", sessionId: sid, tasks: [{ id: "t1", title: "step one", status: "completed" }] },
+    {
+      type: "tasks-updated",
+      sessionId: sid,
+      tasks: [{ id: "t1", title: "step one", status: "completed" }],
+    },
     { type: "engine-idle", sessionId: sid, gate: "green" },
   ];
   const cap = captureStdout();
   try {
-    const ok = await runOneShot(new MockEngine(script) as unknown as EngineClient, "go", { outputFormat: "json" });
+    const ok = await runOneShot(new MockEngine(script) as unknown as EngineClient, "go", {
+      outputFormat: "json",
+    });
     expect(ok).toBe(true);
-    const parsed = JSON.parse(cap.get()) as { gate: string; tasks: { title: string; status: string }[] };
+    const parsed = JSON.parse(cap.get()) as {
+      gate: string;
+      tasks: { title: string; status: string }[];
+    };
     expect(parsed.gate).toBe("green");
     expect(parsed.tasks).toEqual([{ title: "step one", status: "completed" }]);
   } finally {
@@ -232,7 +258,9 @@ test("runOneShot surfaces plan grounding metadata (sources/assumptions/ungrounde
   ];
   const cap = captureStdout();
   try {
-    await runOneShot(new MockEngine(script) as unknown as EngineClient, "plan it", { outputFormat: "json" });
+    await runOneShot(new MockEngine(script) as unknown as EngineClient, "plan it", {
+      outputFormat: "json",
+    });
     const parsed = JSON.parse(cap.get()) as {
       ungrounded: boolean;
       sources: { url: string }[];

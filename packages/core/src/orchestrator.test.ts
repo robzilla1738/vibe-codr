@@ -132,7 +132,13 @@ test("a seed for a REUSED id whose objective changed is ignored (task re-runs)",
     [{ id: "impl", objective: "add logout", deps: [] }],
     async (s) => {
       ran.push(s.id);
-      return { id: s.id, objective: s.objective, outcome: "completed", output: "logout done", attempts: 1 };
+      return {
+        id: s.id,
+        objective: s.objective,
+        outcome: "completed",
+        output: "logout done",
+        attempts: 1,
+      };
     },
     { seed: [staleSeed] },
   );
@@ -147,14 +153,23 @@ test("a re-run task (objective drift) also re-runs its already-seeded dependents
   const ran: string[] = [];
   const runTask = async (s: TaskSpec): Promise<TaskResult> => {
     ran.push(s.id);
-    return { id: s.id, objective: s.objective, outcome: "completed", output: `${s.id} fresh`, attempts: 1 };
+    return {
+      id: s.id,
+      objective: s.objective,
+      outcome: "completed",
+      output: `${s.id} fresh`,
+      attempts: 1,
+    };
   };
   const seed: TaskResult[] = [
     { id: "a", objective: "old A", outcome: "completed", output: "a stale", attempts: 1 },
     { id: "b", objective: "do b", outcome: "completed", output: "b stale", attempts: 1 },
   ];
   const results = await runDag(
-    [{ id: "a", objective: "new A", deps: [] }, { id: "b", objective: "do b", deps: ["a"] }],
+    [
+      { id: "a", objective: "new A", deps: [] },
+      { id: "b", objective: "do b", deps: ["a"] },
+    ],
     runTask,
     { seed },
   );

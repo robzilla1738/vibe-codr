@@ -11,7 +11,10 @@ import { openSemanticMemory, semanticIndexPath } from "./semantic-memory.ts";
 function spyEmbedder(dim = 64): Embedder & { texts: number } {
   const one = (text: string): number[] => {
     const v = new Array(dim).fill(0);
-    for (const tok of text.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 2)) {
+    for (const tok of text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 2)) {
       let h = 0;
       for (const ch of tok) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
       v[h % dim] += 1;
@@ -40,7 +43,10 @@ test("indexes a corpus and finds the semantically nearest chunk", async () => {
   const embedder = spyEmbedder();
   const mem = openSemanticMemory(".", embedder, ":memory:");
   await mem.index([
-    { source: "notes.md", text: "# Config\nthe config loader parses JSONC\n\n# Auth\nOAuth redirect flow" },
+    {
+      source: "notes.md",
+      text: "# Config\nthe config loader parses JSONC\n\n# Auth\nOAuth redirect flow",
+    },
   ]);
   expect(mem.count()).toBe(2);
   const hits = await mem.search("config loader JSONC", 2);

@@ -33,7 +33,11 @@ test("validateJsonSchema recurses into array items", () => {
 });
 
 test("validateJsonSchema honors additionalProperties:false", () => {
-  const strict = { type: "object", properties: { a: { type: "string" } }, additionalProperties: false };
+  const strict = {
+    type: "object",
+    properties: { a: { type: "string" } },
+    additionalProperties: false,
+  };
   expect(validateJsonSchema(strict, { a: "x" }, "")).toEqual([]);
   expect(validateJsonSchema(strict, { a: "x", b: 1 }, "").some((e) => e.includes("b"))).toBe(true);
 });
@@ -42,7 +46,11 @@ test("additionalProperties:false rejects a prototype-named key (no `in` false-pa
   // `"constructor" in props` is true via Object.prototype, so a naive `in` check
   // would let this extra key slip past additionalProperties:false. It must be
   // flagged like any other unexpected property.
-  const strict = { type: "object", properties: { answer: { type: "string" } }, additionalProperties: false };
+  const strict = {
+    type: "object",
+    properties: { answer: { type: "string" } },
+    additionalProperties: false,
+  };
   const errors = validateJsonSchema(strict, { answer: "x", constructor: "y" }, "");
   expect(errors.some((e) => e.includes("constructor"))).toBe(true);
 });
@@ -57,13 +65,19 @@ test("required honors a prototype-named key as genuinely missing", () => {
 
 test("validateJsonSchema is lenient about unknown keywords (no false reject)", () => {
   // A schema this validator doesn't fully model must never reject conforming data.
-  const exotic = { type: "object", properties: { a: { type: "string", format: "email", pattern: ".*" } } };
+  const exotic = {
+    type: "object",
+    properties: { a: { type: "string", format: "email", pattern: ".*" } },
+  };
   expect(validateJsonSchema(exotic, { a: "anything" }, "")).toEqual([]);
 });
 
 test("extractLastJson prefers the whole message, then fences, then a trailing object", () => {
   expect(extractLastJson('{"a":1}')).toEqual({ ok: true, value: { a: 1 } });
-  expect(extractLastJson('here you go:\n```json\n{"a":2}\n```')).toEqual({ ok: true, value: { a: 2 } });
+  expect(extractLastJson('here you go:\n```json\n{"a":2}\n```')).toEqual({
+    ok: true,
+    value: { a: 2 },
+  });
   expect(extractLastJson('prose then {"a":3} trailing')).toEqual({ ok: true, value: { a: 3 } });
 });
 

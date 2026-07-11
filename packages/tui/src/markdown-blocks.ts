@@ -177,26 +177,28 @@ export function tailWidth(s: string, n: number): string {
  * italic so `**x**` doesn't leave a stray `*`.
  */
 export function stripInline(s: string): string {
-  return s
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // image ![alt](url) → alt
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // link [text](url) → text
-    .replace(/\*\*(.+?)\*\*/g, "$1") // bold **
-    // `_`-emphasis must be flanked by non-word chars, or an identifier like
-    // `max_retry_count` / `get_user_by_id` in a table cell/heading/blockquote gets
-    // its underscores eaten (→ `maxretrycount`).
-    .replace(/(?<![\p{L}\p{N}_])__(.+?)__(?![\p{L}\p{N}_])/gu, "$1") // bold __
-    // Italic `*` needs CommonMark's flanking rule (content starts AND ends on a
-    // non-space) or literal asterisk pairs get eaten: `*.ts and *.js` (globs) and
-    // `2 * 3 and 4 * 5` (math) must survive — only real `*emphasis*` is stripped.
-    // The body is `[^*]`-bounded (never `.*?`, which backtracks O(n²) on `*`-dense
-    // text and froze the TUI render thread ~1.8s on a 96KB line — this pass re-runs
-    // per streamed markdown chunk): `[^*]*` can't scan past the next `*`, so it's
-    // linear, and it still honors flanking (leading/trailing char is `\S`).
-    .replace(/\*(\S[^*]*\S|\S)\*/g, "$1") // italic *
-    .replace(/(?<![\p{L}\p{N}_])_(.+?)_(?![\p{L}\p{N}_])/gu, "$1") // italic _
-    .replace(/~~(.+?)~~/g, "$1") // strikethrough
-    .replace(/`([^`]+)`/g, "$1") // inline code
-    .trim();
+  return (
+    s
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1") // image ![alt](url) → alt
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // link [text](url) → text
+      .replace(/\*\*(.+?)\*\*/g, "$1") // bold **
+      // `_`-emphasis must be flanked by non-word chars, or an identifier like
+      // `max_retry_count` / `get_user_by_id` in a table cell/heading/blockquote gets
+      // its underscores eaten (→ `maxretrycount`).
+      .replace(/(?<![\p{L}\p{N}_])__(.+?)__(?![\p{L}\p{N}_])/gu, "$1") // bold __
+      // Italic `*` needs CommonMark's flanking rule (content starts AND ends on a
+      // non-space) or literal asterisk pairs get eaten: `*.ts and *.js` (globs) and
+      // `2 * 3 and 4 * 5` (math) must survive — only real `*emphasis*` is stripped.
+      // The body is `[^*]`-bounded (never `.*?`, which backtracks O(n²) on `*`-dense
+      // text and froze the TUI render thread ~1.8s on a 96KB line — this pass re-runs
+      // per streamed markdown chunk): `[^*]*` can't scan past the next `*`, so it's
+      // linear, and it still honors flanking (leading/trailing char is `\S`).
+      .replace(/\*(\S[^*]*\S|\S)\*/g, "$1") // italic *
+      .replace(/(?<![\p{L}\p{N}_])_(.+?)_(?![\p{L}\p{N}_])/gu, "$1") // italic _
+      .replace(/~~(.+?)~~/g, "$1") // strikethrough
+      .replace(/`([^`]+)`/g, "$1") // inline code
+      .trim()
+  );
 }
 
 /** A GFM delimiter row: `| --- | :--: |` (only `|`, `-`, `:`, spaces; has a `-`). */
@@ -471,7 +473,9 @@ function normCell(s: string): string {
  */
 export function renderTable(rows: string[][], align: Align[], maxWidth: number): TableLine[] {
   const cols = Math.max(1, ...rows.map((r) => r.length));
-  const norm = rows.map((r) => Array.from({ length: cols }, (_, c) => normCell((r[c] ?? "").trim())));
+  const norm = rows.map((r) =>
+    Array.from({ length: cols }, (_, c) => normCell((r[c] ?? "").trim())),
+  );
   // A cell's width is its widest line (cells may now hold `<br>`-driven newlines).
   const cellW = (s: string): number => Math.max(1, ...s.split("\n").map(displayWidth));
   const w = Array.from({ length: cols }, (_, c) => Math.max(1, ...norm.map((r) => cellW(r[c]!))));
@@ -515,7 +519,10 @@ export function renderTable(rows: string[][], align: Align[], maxWidth: number):
   out.push({ role: "rule", text: rule("┌", "┬", "┐") });
   for (const cells of rowLines(norm[0]!)) out.push({ role: "header", cells });
   const data = norm.slice(1);
-  out.push({ role: "rule", text: rule(data.length ? "├" : "└", data.length ? "┼" : "┴", data.length ? "┤" : "┘") });
+  out.push({
+    role: "rule",
+    text: rule(data.length ? "├" : "└", data.length ? "┼" : "┴", data.length ? "┤" : "┘"),
+  });
   data.forEach((r, i) => {
     for (const cells of rowLines(r)) out.push({ role: "row", cells });
     const last = i === data.length - 1;

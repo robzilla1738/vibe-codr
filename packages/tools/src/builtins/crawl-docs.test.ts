@@ -75,7 +75,9 @@ test("crawls breadth-first, ranks by query relevance, quotes excerpts", async ()
   expect(res.isError).toBeUndefined();
   const out = String(res.output);
   // The config page (relevant) ranks first and carries a quoted excerpt.
-  expect(out.indexOf("/config")).toBeLessThan(out.indexOf("/about") === -1 ? out.length : out.indexOf("/about"));
+  expect(out.indexOf("/config")).toBeLessThan(
+    out.indexOf("/about") === -1 ? out.length : out.indexOf("/about"),
+  );
   expect(out).toContain("> ");
   expect(out).toContain("retry backoff");
   expect(fetched[0]).toBe("https://docs.example.com/");
@@ -111,7 +113,10 @@ test("a server-side redirect off the crawl origin is refused, never stored", asy
       );
     }
     if (s.includes("/r")) {
-      return new Response(null, { status: 302, headers: { location: "https://tracker.evil.com/spy" } });
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://tracker.evil.com/spy" },
+      });
     }
     return new Response("ATTACKER CONTENT", { headers: { "content-type": "text/html" } });
   }) as unknown as typeof fetch;

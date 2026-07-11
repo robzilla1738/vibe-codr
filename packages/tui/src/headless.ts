@@ -78,7 +78,10 @@ export function windowTasks(
   const firstActive = tasks.findIndex((t) => t.status !== "completed");
   // Start at the first unfinished task, backing off so the window stays full
   // when the tail is short (all-completed lists show their last `max`).
-  const start = Math.max(0, Math.min(firstActive === -1 ? tasks.length : firstActive, tasks.length - max));
+  const start = Math.max(
+    0,
+    Math.min(firstActive === -1 ? tasks.length : firstActive, tasks.length - max),
+  );
   return {
     lead: start,
     visible: tasks.slice(start, start + max),
@@ -92,11 +95,7 @@ export function formatTasks(tasks: Task[]): string {
   const lines = tasks.map((t) => {
     const glyph = TASK_GLYPH[t.status];
     const color =
-      t.status === "completed"
-        ? ansi.green
-        : t.status === "in_progress"
-          ? ansi.cyan
-          : ansi.dim;
+      t.status === "completed" ? ansi.green : t.status === "in_progress" ? ansi.cyan : ansi.dim;
     const title = t.status === "completed" ? ansi.dim(t.title) : t.title;
     return `  ${color(glyph)} ${title}`;
   });
@@ -190,9 +189,7 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       );
       break;
     case "checkpoint-restored":
-      process.stderr.write(
-        `${ansi.green(GLYPH.revert)} ${ansi.dim(`reverted: ${event.label}`)}\n`,
-      );
+      process.stderr.write(`${ansi.green(GLYPH.revert)} ${ansi.dim(`reverted: ${event.label}`)}\n`);
       break;
     case "verify-started":
       process.stderr.write(
@@ -267,9 +264,7 @@ function render(event: UIEvent, opts: HeadlessOptions): void {
       }
       break;
     case "notice":
-      process.stderr.write(
-        `${noticeColor(event.level)(`[${event.level}] ${event.message}`)}\n`,
-      );
+      process.stderr.write(`${noticeColor(event.level)(`[${event.level}] ${event.message}`)}\n`);
       break;
     case "engine-error":
       process.stderr.write(`${ansi.red(`error: ${event.message}`)}\n`);
@@ -330,7 +325,8 @@ export async function runOneShot(
       if (event.assumptions?.length) assumptions = event.assumptions;
       if (event.ungrounded) ungrounded = true;
     }
-    if (event.type === "tasks-updated") tasks = event.tasks.map((t) => ({ title: t.title, status: t.status }));
+    if (event.type === "tasks-updated")
+      tasks = event.tasks.map((t) => ({ title: t.title, status: t.status }));
     if (event.type === "engine-idle" && event.gate) gate = event.gate;
     if (event.type === "engine-error") error = event.message;
     if (!json) render(event, opts);

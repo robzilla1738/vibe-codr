@@ -23,9 +23,7 @@ export const lsTool: ToolDefinition<z.output<typeof Input>> = {
     const dir = resolve(ctx.cwd, path ?? ".");
     try {
       const entries = await readdir(dir, { withFileTypes: true });
-      const lines = entries
-        .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
-        .sort();
+      const lines = entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).sort();
       if (!lines.length) return { output: "(empty directory)" };
       if (lines.length > LIMIT) {
         const shown = lines.slice(0, LIMIT);

@@ -17,7 +17,13 @@ process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
 const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
 function stream(chunks: unknown[]) {
-  return { stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }) };
+  return {
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
 }
 const textStep = (text: string) =>
   stream([
@@ -43,7 +49,12 @@ function textModel() {
 
 function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -56,7 +67,12 @@ async function makeEngine(
   // checkpoints avoids a git snapshot on the throwaway temp dir.
   config.checkpoints.enabled = false;
   const dir = mkdtempSync(join(tmpdir(), "vibe-hookfb-"));
-  const engine = new Engine({ config, cwd: dir, registry: mockRegistry(model), interactive: false });
+  const engine = new Engine({
+    config,
+    cwd: dir,
+    registry: mockRegistry(model),
+    interactive: false,
+  });
   await engine.bootstrap();
   const events: UIEvent[] = [];
   // Collect until the stream ends (on shutdown) so buffered events — engine-idle
@@ -94,7 +110,9 @@ function selfAbortingModel() {
 
 const idleEvents = (events: UIEvent[]) => events.filter((e) => e.type === "engine-idle");
 const warnNotices = (events: UIEvent[]) =>
-  events.filter((e): e is Extract<UIEvent, { type: "notice" }> => e.type === "notice" && e.level === "warn");
+  events.filter(
+    (e): e is Extract<UIEvent, { type: "notice" }> => e.type === "notice" && e.level === "warn",
+  );
 
 test("session.idle continue hook forces one follow-up turn then settles idle", async () => {
   const { model, prompts } = textModel();
@@ -264,7 +282,12 @@ test("a prompt denied by a user.prompt.submit hook seeds NO checkpoint (deny run
 const presentPlanStep = (plan: string) =>
   stream([
     { type: "stream-start", warnings: [] },
-    { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan }) },
+    {
+      type: "tool-call",
+      toolCallId: "p1",
+      toolName: "present_plan",
+      input: JSON.stringify({ plan }),
+    },
     { type: "finish", finishReason: "tool-calls", usage: USAGE },
   ]);
 

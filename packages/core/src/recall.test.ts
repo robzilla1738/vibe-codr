@@ -16,16 +16,31 @@ process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
 beforeEach(() => _resetRecallCache());
 
 function msg(role: Message["role"], text: string): Message {
-  return { id: `m_${role}_${text.slice(0, 4)}`, role, parts: [{ type: "text", text }], createdAt: 1 };
+  return {
+    id: `m_${role}_${text.slice(0, 4)}`,
+    role,
+    parts: [{ type: "text", text }],
+    createdAt: 1,
+  };
 }
 
 async function seed(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "vibe-recall-"));
   const store = new SessionStore(dir);
   await store.save(
-    { id: "ses_a", model: "m", mode: "execute", goal: "ship the JSONC config loader", createdAt: 1, updatedAt: 1000 },
+    {
+      id: "ses_a",
+      model: "m",
+      mode: "execute",
+      goal: "ship the JSONC config loader",
+      createdAt: 1,
+      updatedAt: 1000,
+    },
     [],
-    [msg("user", "Refactor the config loader to support JSONC"), msg("assistant", "Done — added a JSONC parser with comment stripping.")],
+    [
+      msg("user", "Refactor the config loader to support JSONC"),
+      msg("assistant", "Done — added a JSONC parser with comment stripping."),
+    ],
   );
   await store.save(
     { id: "ses_b", model: "m", mode: "execute", goal: "auth", createdAt: 2, updatedAt: 2000 },
@@ -85,7 +100,14 @@ test("a rarer (higher-IDF) term outranks a ubiquitous one", async () => {
   // "config" appears everywhere (low IDF); "zylphqx" is unique (high IDF).
   for (let i = 0; i < 6; i++) {
     await store.save(
-      { id: `common_${i}`, model: "m", mode: "execute", goal: null, createdAt: i, updatedAt: 100 + i },
+      {
+        id: `common_${i}`,
+        model: "m",
+        mode: "execute",
+        goal: null,
+        createdAt: i,
+        updatedAt: 100 + i,
+      },
       [],
       [msg("user", "update the config settings here"), msg("assistant", "ok")],
     );

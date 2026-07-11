@@ -104,7 +104,9 @@ test("toolLabel joins the icon and the summary", () => {
 
 test("humanized fallback: snake_case reads as words and drops an mcp prefix", () => {
   expect(toolSummary("recall_memory", { query: "bt price" })).toBe('recall memory "bt price"');
-  expect(toolSummary("mcp__linear__create_issue", { title: "x" })).toBe("linear create issue [title=x]");
+  expect(toolSummary("mcp__linear__create_issue", { title: "x" })).toBe(
+    "linear create issue [title=x]",
+  );
 });
 
 test("save_memory summarizes the FACT it stores (the real schema field)", () => {
@@ -138,8 +140,12 @@ test("orchestration + session tools carry bespoke summaries", () => {
   expect(toolSummary("read_report", { task_id: "impl" })).toBe("read report impl");
   expect(toolSummary("use_skill", { name: "polish" })).toBe("skill polish");
   expect(toolSummary("run_check", { check: "test" })).toBe("run test");
-  expect(toolSummary("post_note", { note: "api uses v2 auth" })).toBe('post note "api uses v2 auth"');
-  expect(toolSummary("package_info", { name: "react", ecosystem: "npm" })).toBe("package react (npm)");
+  expect(toolSummary("post_note", { note: "api uses v2 auth" })).toBe(
+    'post note "api uses v2 auth"',
+  );
+  expect(toolSummary("package_info", { name: "react", ecosystem: "npm" })).toBe(
+    "package react (npm)",
+  );
   expect(toolSummary("job_status", { id: "job_1" })).toBe("job job_1");
   expect(toolSummary("job_kill", { id: "job_1" })).toBe("kill job job_1");
   expect(toolSummary("crawl_docs", { url: "https://docs.x.dev", query: "auth" })).toBe(

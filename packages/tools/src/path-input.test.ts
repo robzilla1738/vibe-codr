@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ZodType } from "zod";
 import type { ToolContext, UIEvent } from "@vibe/shared";
-import {
-  PATH_FIELD_ALIASES,
-  pickPathField,
-  normalizePathAliases,
-} from "./path-input.ts";
+import { PATH_FIELD_ALIASES, pickPathField, normalizePathAliases } from "./path-input.ts";
 import { writeTool } from "./builtins/write.ts";
 import { editTool } from "./builtins/edit.ts";
 import { readTool } from "./builtins/read.ts";
@@ -71,9 +67,10 @@ test("normalizePathAliases copies the first alias into path", () => {
 
 test("write/edit/read schemas accept path under each alias", () => {
   for (const alias of ["file_path", "filePath", "file"] as const) {
-    expect(
-      parseSchema(writeTool.inputSchema, { [alias]: "out.txt", content: "body\n" }),
-    ).toEqual({ path: "out.txt", content: "body\n" });
+    expect(parseSchema(writeTool.inputSchema, { [alias]: "out.txt", content: "body\n" })).toEqual({
+      path: "out.txt",
+      content: "body\n",
+    });
     expect(parseSchema(readTool.inputSchema, { [alias]: "in.txt" })).toEqual({
       path: "in.txt",
     });

@@ -34,7 +34,11 @@ test("maps /v1/models data to {id, providerId} and hits the right URL", async ()
     json: async () => ({ data: [{ id: "model-a" }, { id: "model-b" }] }),
   }));
   // Trailing slash on the base URL must be normalized, then `/models` appended.
-  const models = await listOpenAICompatibleModels("myprov", "https://api.example.com/v1/", "sk-key");
+  const models = await listOpenAICompatibleModels(
+    "myprov",
+    "https://api.example.com/v1/",
+    "sk-key",
+  );
   expect(cap.url).toBe("https://api.example.com/v1/models");
   expect(models).toEqual([
     { id: "model-a", providerId: "myprov" },

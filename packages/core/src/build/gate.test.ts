@@ -87,7 +87,11 @@ test("runGate: the abort signal is forwarded to exec (abortable mid-check)", asy
     return { out: "10 pass", code: 0 };
   };
   const ctrl = new AbortController();
-  await runGate("/x", profile({ typecheck: "tsc" }), 0, { checks: ["typecheck"], exec, signal: ctrl.signal });
+  await runGate("/x", profile({ typecheck: "tsc" }), 0, {
+    checks: ["typecheck"],
+    exec,
+    signal: ctrl.signal,
+  });
   expect(received).toBe(ctrl.signal);
 });
 
@@ -97,7 +101,11 @@ test("runGate: a non-positive timeout is coerced to the default (no wedge)", asy
     seenTimeout = opts.timeoutSec;
     return { out: "10 pass", code: 0 };
   };
-  await runGate("/x", profile({ typecheck: "tsc" }), 0, { checks: ["typecheck"], exec, timeoutSec: 0 });
+  await runGate("/x", profile({ typecheck: "tsc" }), 0, {
+    checks: ["typecheck"],
+    exec,
+    timeoutSec: 0,
+  });
   expect(seenTimeout).toBe(600); // coerced away from the wedge-inducing 0
 });
 
@@ -139,7 +147,10 @@ test("runGate: no detected commands → unverified, never green", async () => {
 });
 
 test("formatGateFailure carries per-check verdicts, round budget, and the honesty framing", async () => {
-  const exec: Exec = async () => ({ out: "Tests: 3 failed, 139 passed, 142 total\n✗ renders header", code: 1 });
+  const exec: Exec = async () => ({
+    out: "Tests: 3 failed, 139 passed, 142 total\n✗ renders header",
+    code: 1,
+  });
   const summary = await runGate("/x", profile({ test: "bun test" }), 0, { checks: ["test"], exec });
   const prompt = formatGateFailure(summary, 2);
   expect(prompt).toContain("RED (fix round 1/2)");

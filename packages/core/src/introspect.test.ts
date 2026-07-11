@@ -69,7 +69,10 @@ test("formatConfig masks secrets, including MCP env and HTTP headers", () => {
   const config = ConfigSchema.parse({
     providers: {
       anthropic: { apiKey: "sk-secret-123" },
-      codex: { headers: { Authorization: "Bearer header-secret" }, tokenFile: "~/.codex/auth.json" },
+      codex: {
+        headers: { Authorization: "Bearer header-secret" },
+        tokenFile: "~/.codex/auth.json",
+      },
     },
     search: { enabled: true, apiKey: "tf-secret" },
     mcp: {
@@ -93,8 +96,20 @@ test("formatConfig masks secrets, including MCP env and HTTP headers", () => {
 
 test("formatTools groups read-only vs side-effecting", () => {
   const tools: ToolDefinition[] = [
-    { name: "read", description: "Read a file", inputSchema: {}, readOnly: true, execute: async () => ({ output: "" }) },
-    { name: "write", description: "Write a file", inputSchema: {}, readOnly: false, execute: async () => ({ output: "" }) },
+    {
+      name: "read",
+      description: "Read a file",
+      inputSchema: {},
+      readOnly: true,
+      execute: async () => ({ output: "" }),
+    },
+    {
+      name: "write",
+      description: "Write a file",
+      inputSchema: {},
+      readOnly: false,
+      execute: async () => ({ output: "" }),
+    },
   ];
   const out = formatTools(tools, "execute");
   expect(out).toContain("read-only:");
@@ -107,7 +122,14 @@ test("formatMcp reports per-server status", () => {
   const out = formatMcp(
     [
       { name: "github", connected: true, toolCount: 8, resourceCount: 2, promptCount: 0 },
-      { name: "broken", connected: false, toolCount: 0, resourceCount: 0, promptCount: 0, error: "boom" },
+      {
+        name: "broken",
+        connected: false,
+        toolCount: 0,
+        resourceCount: 0,
+        promptCount: 0,
+        error: "boom",
+      },
     ],
     ["github", "broken"],
   );
@@ -129,9 +151,7 @@ test("formatPermissions shows the default and any rules", () => {
 
 test("formatNamedList falls back when empty", () => {
   expect(formatNamedList("Skills:", [], "none here")).toBe("none here");
-  expect(formatNamedList("Skills:", [{ name: "x", description: "y" }], "none")).toContain(
-    "x — y",
-  );
+  expect(formatNamedList("Skills:", [{ name: "x", description: "y" }], "none")).toContain("x — y");
 });
 
 test("formatTranscript renders user/assistant/tool turns as Markdown", () => {
@@ -186,9 +206,7 @@ test("formatDoctor marks failures and summarizes", () => {
 });
 
 test("formatDoctor reports all-clear", () => {
-  expect(formatDoctor([{ label: "git", ok: true, detail: "ok" }])).toContain(
-    "All checks passed.",
-  );
+  expect(formatDoctor([{ label: "git", ok: true, detail: "ok" }])).toContain("All checks passed.");
 });
 
 test("/doctor treats keyless web search as healthy (never 'searches will fail')", () => {
@@ -240,7 +258,9 @@ test("/doctor lsp line is honest: null when off/idle, ✓ running, ✗ crashed/m
   // Enabled but nothing active yet → neutral (no non-TS file diagnosed).
   expect(lspDoctorCheck(true, []).ok).toBeNull();
   // A running server → healthy, names the language→command mapping.
-  const running = lspDoctorCheck(true, [{ language: "py", command: "basedpyright-langserver", state: "running" }]);
+  const running = lspDoctorCheck(true, [
+    { language: "py", command: "basedpyright-langserver", state: "running" },
+  ]);
   expect(running.ok).toBe(true);
   expect(running.detail).toContain("py→basedpyright-langserver");
   // A missing server for an edited/configured language → a real gap (✗).

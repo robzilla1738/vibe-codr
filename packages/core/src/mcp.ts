@@ -310,14 +310,15 @@ export class McpHub {
   /** Wire live-update handlers for a connected client: re-list on tools/list_changed,
    * reconnect on transport close. No-ops for fakes/transports lacking the hooks. */
   #wire(entry: McpEntry, client: McpClient): void {
-    client.onListChanged?.(() =>
-      void this.#coalesce(`${entry.name}\x00tools`, () => this.#refreshTools(entry.name)),
+    client.onListChanged?.(
+      () => void this.#coalesce(`${entry.name}\x00tools`, () => this.#refreshTools(entry.name)),
     );
-    client.onResourcesChanged?.(() =>
-      void this.#coalesce(`${entry.name}\x00resources`, () => this.#refreshResources(entry.name)),
+    client.onResourcesChanged?.(
+      () =>
+        void this.#coalesce(`${entry.name}\x00resources`, () => this.#refreshResources(entry.name)),
     );
-    client.onPromptsChanged?.(() =>
-      void this.#coalesce(`${entry.name}\x00prompts`, () => this.#refreshPrompts(entry.name)),
+    client.onPromptsChanged?.(
+      () => void this.#coalesce(`${entry.name}\x00prompts`, () => this.#refreshPrompts(entry.name)),
     );
     client.onClose?.(() => void this.#scheduleReconnect(entry.name));
   }

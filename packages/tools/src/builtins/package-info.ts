@@ -44,7 +44,10 @@ interface NpmLatest {
 const NPM_NAME = /^(?:@[a-z0-9][a-z0-9-._~]*\/)?[a-z0-9][a-z0-9-._~]*$/i;
 const PYPI_NAME = /^[a-z0-9][a-z0-9._-]*$/i;
 
-async function npmInfo(name: string, signal: AbortSignal): Promise<{ output: string; isError?: boolean }> {
+async function npmInfo(
+  name: string,
+  signal: AbortSignal,
+): Promise<{ output: string; isError?: boolean }> {
   if (!NPM_NAME.test(name)) {
     return { output: `Invalid npm package name: "${name}".`, isError: true };
   }
@@ -63,8 +66,7 @@ async function npmInfo(name: string, signal: AbortSignal): Promise<{ output: str
   }
   const latest = (await readJsonCapped(latestRes)) as NpmLatest;
   const tags = tagsRes.ok ? ((await readJsonCapped(tagsRes)) as Record<string, string>) : {};
-  const license =
-    typeof latest.license === "string" ? latest.license : latest.license?.type;
+  const license = typeof latest.license === "string" ? latest.license : latest.license?.type;
   const lines = [`npm · ${name}`, `latest: ${latest.version ?? "unknown"}`];
   if (latest.description) lines.push(`description: ${clip(latest.description.trim(), 500)}`);
   if (license) lines.push(`license: ${clip(String(license), 80)}`);
@@ -72,9 +74,7 @@ async function npmInfo(name: string, signal: AbortSignal): Promise<{ output: str
   if (latest.deprecated) lines.push(`⚠ deprecated: ${clip(latest.deprecated, 300)}`);
   const otherTags = Object.entries(tags).filter(([k]) => k !== "latest");
   if (otherTags.length) {
-    lines.push(
-      `other dist-tags: ${clip(otherTags.map(([k, v]) => `${k}=${v}`).join(", "), 400)}`,
-    );
+    lines.push(`other dist-tags: ${clip(otherTags.map(([k, v]) => `${k}=${v}`).join(", "), 400)}`);
   }
   return { output: clip(lines.join("\n"), 4000) };
 }
@@ -96,7 +96,10 @@ interface PypiJson {
   };
 }
 
-async function pypiInfo(name: string, signal: AbortSignal): Promise<{ output: string; isError?: boolean }> {
+async function pypiInfo(
+  name: string,
+  signal: AbortSignal,
+): Promise<{ output: string; isError?: boolean }> {
   if (!PYPI_NAME.test(name)) {
     return { output: `Invalid PyPI package name: "${name}".`, isError: true };
   }
@@ -129,14 +132,12 @@ export const packageInfoTool: ToolDefinition<z.infer<typeof Input>> = {
     "range, then call this to compare against the real latest.",
   inputSchema: Input,
   readOnly: true,
-    network: true,
+  network: true,
   concurrencySafe: true,
   async execute({ name, ecosystem = "npm" }, ctx: ToolContext) {
     const signal = withTimeout(ctx.abortSignal);
     try {
-      return ecosystem === "pypi"
-        ? await pypiInfo(name, signal)
-        : await npmInfo(name, signal);
+      return ecosystem === "pypi" ? await pypiInfo(name, signal) : await npmInfo(name, signal);
     } catch (err) {
       if (ctx.abortSignal.aborted) return { output: "Lookup aborted." };
       const reason = (err as Error).name === "TimeoutError" ? "timed out" : (err as Error).message;

@@ -112,7 +112,12 @@ test("listModels returns provider models as summaries for the picker", async () 
 
 test("/models refresh force-pulls the catalog", async () => {
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => ({}) as never, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => ({}) as never,
+      listModels: async () => [],
+    },
   ]);
   let fetched = 0;
   const realFetch = globalThis.fetch;

@@ -147,7 +147,9 @@ function normalizeText(text: string): string {
 /** Normalized form of a fact for dedup: case-, whitespace-, and trailing-
  * punctuation-insensitive, so "Use Bun." re-saved as "use bun" is one memory. */
 function normalizeFact(fact: string): string {
-  return normalizeText(fact).trim().replace(/[.!?]+$/, "");
+  return normalizeText(fact)
+    .trim()
+    .replace(/[.!?]+$/, "");
 }
 
 /**
@@ -185,7 +187,11 @@ function containsFact(existing: string, fact: string): boolean {
 /** Lowercased word-token SET (length ≥ 2) of a fact, for fuzzy (Jaccard)
  * near-duplicate detection. */
 function tokenSet(text: string): Set<string> {
-  return new Set(normalizeText(text).split(/[^a-z0-9]+/).filter((t) => t.length >= 2));
+  return new Set(
+    normalizeText(text)
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 2),
+  );
 }
 
 /** Jaccard similarity (|A∩B| / |A∪B|) of two token sets; 0 when either is empty. */
@@ -268,7 +274,11 @@ async function scopeText(dir: string): Promise<string | null> {
   const texts = await Promise.all(
     entries
       .filter((name) => name.endsWith(".md"))
-      .map((name) => Bun.file(join(dir, name)).text().catch(() => null)),
+      .map((name) =>
+        Bun.file(join(dir, name))
+          .text()
+          .catch(() => null),
+      ),
   );
   if (texts.some((t) => t === null)) return null;
   return texts.join("\n");
@@ -326,7 +336,9 @@ async function appendUserMemory(fact: string): Promise<SaveMemoryResult> {
   let deduped = false;
   let overBudget = false;
   await serializeByPath(path, async () => {
-    const existing = await Bun.file(path).text().catch(() => "");
+    const existing = await Bun.file(path)
+      .text()
+      .catch(() => "");
     if (containsFact(existing, fact)) {
       deduped = true;
       return;
@@ -340,7 +352,11 @@ async function appendUserMemory(fact: string): Promise<SaveMemoryResult> {
     // file is no longer injected whole — report it so save_memory can suggest pruning.
     overBudget = new TextEncoder().encode(next).length > MAX_MEMORY_BYTES;
   });
-  return { path: "~/.config/vibe-codr/memory/USER.md", deduped, ...(overBudget ? { overBudget: true } : {}) };
+  return {
+    path: "~/.config/vibe-codr/memory/USER.md",
+    deduped,
+    ...(overBudget ? { overBudget: true } : {}),
+  };
 }
 
 /**
@@ -405,7 +421,9 @@ export async function appendMemory(
       deduped = true;
       return;
     }
-    const existing = await Bun.file(path).text().catch(() => "");
+    const existing = await Bun.file(path)
+      .text()
+      .catch(() => "");
     const header = existing.trim() ? "" : `# Memory — ${date}\n\n`;
     await atomicOverwrite(path, `${existing}${header}${entry}`);
   });

@@ -15,16 +15,26 @@ import type { StubFinding } from "@vibe/shared";
 /** Source files worth scanning; skip generated/lockfiles/tests/markdown noise. */
 function scannablePath(p: string): boolean {
   const f = p.toLowerCase();
-  if (/(^|\/)(node_modules|dist|build|out|\.next|vendor|target|__snapshots__)\//.test(f)) return false;
-  if (/\.(lock|md|mdx|txt|json|lockb|snap|map|svg|png|jpe?g|gif|ico|woff2?|ttf)$/.test(f)) return false;
-  if (/\.(test|spec)\.([mc][tj]s|[tj]sx?)$/.test(f) || /(^|\/)(tests?|__tests__|e2e|fixtures?)\//.test(f)) return false;
+  if (/(^|\/)(node_modules|dist|build|out|\.next|vendor|target|__snapshots__)\//.test(f))
+    return false;
+  if (/\.(lock|md|mdx|txt|json|lockb|snap|map|svg|png|jpe?g|gif|ico|woff2?|ttf)$/.test(f))
+    return false;
+  if (
+    /\.(test|spec)\.([mc][tj]s|[tj]sx?)$/.test(f) ||
+    /(^|\/)(tests?|__tests__|e2e|fixtures?)\//.test(f)
+  )
+    return false;
   // `[mc][tj]s` covers the ESM/CJS variants (.mjs/.cjs/.mts/.cts) that `tsx?`/`jsx?` alone miss.
-  return /\.([mc][tj]s|tsx?|jsx?|vue|svelte|py|rs|go|rb|java|kt|swift|php|cs|c|cc|cpp|h|hpp)$/.test(f);
+  return /\.([mc][tj]s|tsx?|jsx?|vue|svelte|py|rs|go|rb|java|kt|swift|php|cs|c|cc|cpp|h|hpp)$/.test(
+    f,
+  );
 }
 
 /** Path looks like server/route/handler code where a bare `return null` is a likely stub. */
 function isHandlerPath(p: string): boolean {
-  return /(route|router|controller|handler|service|api|endpoint|action|resolver|usecase|use-case)/i.test(p);
+  return /(route|router|controller|handler|service|api|endpoint|action|resolver|usecase|use-case)/i.test(
+    p,
+  );
 }
 
 const STUB_RULES: { kind: string; re: RegExp }[] = [
@@ -112,7 +122,10 @@ export function scanStubs(diff: string, opts: { max?: number } = {}): StubFindin
       }
     }
     // bare placeholder return only in server/handler-ish files (too noisy elsewhere)
-    if (isHandlerPath(file) && /^\s*return\s*(null|\[\s*\]|\{\s*\}|""|''|``)\s*;?\s*$/.test(content)) {
+    if (
+      isHandlerPath(file) &&
+      /^\s*return\s*(null|\[\s*\]|\{\s*\}|""|''|``)\s*;?\s*$/.test(content)
+    ) {
       push("empty-return", content);
     }
     if (out.length >= max) break;

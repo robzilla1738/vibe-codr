@@ -45,7 +45,12 @@ const writeStep = (id: string, path: string, content: string) =>
 
 function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -96,11 +101,7 @@ test("mid-turn flip to plan hard-denies a later write tool in the same turn", as
     },
   };
   let call = 0;
-  const steps = [
-    toolStep("f1", "flip_to_plan"),
-    toolStep("w1", "force_write"),
-    textStep("done"),
-  ];
+  const steps = [toolStep("f1", "flip_to_plan"), toolStep("w1", "force_write"), textStep("done")];
   const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
   engineRef = new Engine({
     config: { ...defaultConfig(), model: "mock/test", mode: "execute", approvalMode: "auto" },
@@ -120,9 +121,7 @@ test("mid-turn flip to plan hard-denies a later write tool in the same turn", as
   await collector;
 
   expect(existsSync(join(cwd, "should-not-exist.txt"))).toBe(false);
-  expect(
-    notices(events).some((n) => /Blocked force_write.*plan mode/i.test(n.message)),
-  ).toBe(true);
+  expect(notices(events).some((n) => /Blocked force_write.*plan mode/i.test(n.message))).toBe(true);
   expect(engineRef.snapshot().mode).toBe("plan");
 });
 
@@ -334,7 +333,9 @@ test("switching back to plan after plan approval disarms task auto-continuations
   expect(engine.snapshot().mode).toBe("plan");
   // After the pause, no further "not finished" turns should be enqueued beyond
   // the one we held (disarm clears #planExecutionActive before it can re-arm).
-  const continueCount = prompts.filter((p) => p.includes("The approved plan is not finished")).length;
+  const continueCount = prompts.filter((p) =>
+    p.includes("The approved plan is not finished"),
+  ).length;
   expect(continueCount).toBe(1);
 });
 
@@ -454,10 +455,7 @@ test("quiet set-approvals auto is ignored while a plan is waiting in plan mode",
   // Mirrors a buggy client that still sends YOLO after bare set-mode on a live
   // plan. Engine must not flip approvals — Enter would otherwise inherit YOLO.
   const cwd = mkdtempSync(join(tmpdir(), "vibe-quiet-yolo-"));
-  const steps = [
-    toolStep("p1", "present_plan", { plan: "# Plan\n- [ ] step" }),
-    textStep("ready"),
-  ];
+  const steps = [toolStep("p1", "present_plan", { plan: "# Plan\n- [ ] step" }), textStep("ready")];
   let call = 0;
   const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
   const engine = new Engine({

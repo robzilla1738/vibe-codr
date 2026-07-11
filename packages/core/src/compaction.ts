@@ -146,7 +146,10 @@ export async function compactMessages(
   if (first && first.role === "user" && typeof first.content === "string") {
     next = [{ role: "user", content: `${note}\n\n${first.content}` }, ...recent.slice(1)];
   } else if (first && first.role === "user" && Array.isArray(first.content)) {
-    next = [{ role: "user", content: [{ type: "text", text: note }, ...first.content] }, ...recent.slice(1)];
+    next = [
+      { role: "user", content: [{ type: "text", text: note }, ...first.content] },
+      ...recent.slice(1),
+    ];
   } else {
     // recent[0] is an assistant/tool turn, or a user turn with malformed/legacy
     // content (neither string nor array — spreading it would throw, and

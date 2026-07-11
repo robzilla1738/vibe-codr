@@ -3,11 +3,7 @@ import type { ProviderRegistry } from "@vibe/providers";
 import type { Logger } from "@vibe/shared";
 import { resolveEmbedder } from "./embeddings.ts";
 import { openSemanticMemory, type SemanticMemory, type MemoryDoc } from "./semantic-memory.ts";
-import {
-  searchMemory,
-  type MemoryHit,
-  type MemorySearchMode,
-} from "./memory-search.ts";
+import { searchMemory, type MemoryHit, type MemorySearchMode } from "./memory-search.ts";
 import {
   gatherMemoryDocs,
   appendMemory,

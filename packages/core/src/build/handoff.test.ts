@@ -1,5 +1,10 @@
 import { test, expect } from "bun:test";
-import { parseHandoff, formatHandoffForKickoff, stripHandoffFence, HANDOFF_INSTRUCTION } from "./handoff.ts";
+import {
+  parseHandoff,
+  formatHandoffForKickoff,
+  stripHandoffFence,
+  HANDOFF_INSTRUCTION,
+} from "./handoff.ts";
 
 test("parses a full handoff block", () => {
   const report = `I refactored the auth module.

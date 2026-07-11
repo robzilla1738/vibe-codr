@@ -44,10 +44,7 @@ export class PlanModeViolationError extends VibeError {
 /** Raised when a tool call is denied by the permission layer. */
 export class PermissionDeniedError extends VibeError {
   constructor(toolName: string, reason?: string) {
-    super(
-      `Permission denied for "${toolName}"${reason ? `: ${reason}` : ""}`,
-      "PERMISSION_DENIED",
-    );
+    super(`Permission denied for "${toolName}"${reason ? `: ${reason}` : ""}`, "PERMISSION_DENIED");
     this.name = "PermissionDeniedError";
   }
 }

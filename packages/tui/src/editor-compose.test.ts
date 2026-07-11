@@ -34,7 +34,10 @@ function memDeps(
 test("parseEditorCommand splits the binary from its flags", () => {
   expect(parseEditorCommand("vim")).toEqual({ command: "vim", args: [] });
   expect(parseEditorCommand("code -w")).toEqual({ command: "code", args: ["-w"] });
-  expect(parseEditorCommand("  emacsclient  -nw ")).toEqual({ command: "emacsclient", args: ["-nw"] });
+  expect(parseEditorCommand("  emacsclient  -nw ")).toEqual({
+    command: "emacsclient",
+    args: ["-nw"],
+  });
   expect(parseEditorCommand("")).toEqual({ command: "", args: [] });
 });
 

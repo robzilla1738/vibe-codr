@@ -67,7 +67,10 @@ test("use_skill discloses the skill directory on every load", async () => {
 });
 
 test("use_skill omits the directory line when a skill has no dir", async () => {
-  const res = await buildUseSkillTool(handleWithSkill("short body", "")).execute({ name: "big" }, ctx);
+  const res = await buildUseSkillTool(handleWithSkill("short body", "")).execute(
+    { name: "big" },
+    ctx,
+  );
   const out = String(res.output);
   expect(out).toContain("short body");
   expect(out).not.toContain("Skill directory:");

@@ -37,7 +37,12 @@ function textStep(t: string) {
 
 function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -52,7 +57,10 @@ function assessments(verdicts: { met: boolean; gaps: string[]; reason: string }[
     prompts.push(JSON.stringify(options.prompt));
     return {
       content: [
-        { type: "text" as const, text: JSON.stringify(verdicts[Math.min(i++, verdicts.length - 1)]) },
+        {
+          type: "text" as const,
+          text: JSON.stringify(verdicts[Math.min(i++, verdicts.length - 1)]),
+        },
       ],
       finishReason: "stop" as const,
       usage: USAGE,
@@ -110,7 +118,9 @@ test("/goal starts a run, continues past gaps, and finishes only after 2 clean p
 
   // The goal is set (the ★) AND announced as a run.
   expect(engine.snapshot().goal).toBe("write the README");
-  expect(events.some((e) => e.type === "notice" && /Goal set: write the README/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /Goal set: write the README/.test(e.message)),
+  ).toBe(true);
 
   // Exactly three working turns: drive, gap continuation, adversarial verify.
   expect(prompts).toHaveLength(3);
@@ -128,7 +138,11 @@ test("/goal starts a run, continues past gaps, and finishes only after 2 clean p
   // Convergence: assessed after each turn, then declared verified-met.
   expect(assess.calls()).toBe(3);
   expect(
-    events.some((e) => e.type === "notice" && /Goal met after .* verified across 2 consecutive clean passes/.test(e.message)),
+    events.some(
+      (e) =>
+        e.type === "notice" &&
+        /Goal met after .* verified across 2 consecutive clean passes/.test(e.message),
+    ),
   ).toBe(true);
 });
 
@@ -163,7 +177,10 @@ test("/goal run stops at goal.maxRounds with a warn — the ★ stays set", asyn
   expect(assess.calls()).toBe(2);
   expect(
     events.some(
-      (e) => e.type === "notice" && e.level === "warn" && /not confirmed met after 2 continuation rounds/.test(e.message),
+      (e) =>
+        e.type === "notice" &&
+        e.level === "warn" &&
+        /not confirmed met after 2 continuation rounds/.test(e.message),
     ),
   ).toBe(true);
   // The goal is NOT met, so the ★ must survive for the user to act on.
@@ -226,7 +243,9 @@ test("/goal clear mid-run sweeps queued goal turns but NOT a queued loop iterati
   // The loop iteration was NOT swept (label prefixes are disjoint) and ran.
   expect(prompts.some((p) => p.includes("ping"))).toBe(true);
   expect(engine.snapshot().goal).toBeNull();
-  expect(events.some((e) => e.type === "notice" && /Goal cleared — run stopped/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /Goal cleared — run stopped/.test(e.message)),
+  ).toBe(true);
 });
 
 test("Esc (abort) mid-run stops the goal run; the ★ goal stays set", async () => {
@@ -335,7 +354,11 @@ test("a typed prompt mid-run STEERS the goal run instead of killing it", async (
   expect(prompts[3]).toContain("TRULY met");
   expect(assess.calls()).toBe(3);
   expect(
-    events.some((e) => e.type === "notice" && /Goal met after .* verified across 2 consecutive clean passes/.test(e.message)),
+    events.some(
+      (e) =>
+        e.type === "notice" &&
+        /Goal met after .* verified across 2 consecutive clean passes/.test(e.message),
+    ),
   ).toBe(true);
   expect(engine.snapshot().goal).toBe("ship the feature");
 });
@@ -440,7 +463,9 @@ test("pipeline: a prose plan with no checklist falls back to a single goal task"
 
   // The execute loop always has a task spine: the goal itself became the task.
   const seeded = events.find((e) => e.type === "tasks-updated");
-  expect(seeded && "tasks" in seeded ? seeded.tasks.map((t) => t.title) : []).toEqual(["tidy the docs"]);
+  expect(seeded && "tasks" in seeded ? seeded.tasks.map((t) => t.title) : []).toEqual([
+    "tidy the docs",
+  ]);
   expect(events.some((e) => e.type === "notice" && /single task/.test(e.message))).toBe(true);
   expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
 });
@@ -484,7 +509,9 @@ test("pipeline: unfinished tasks drive task continuations — no assessment unti
   expect(prompts[2]).toContain("these tasks remain");
   expect(prompts[2]).toContain("t1 (pending): the one thing");
   expect(
-    events.some((e) => e.type === "notice" && /Goal round 1\/10 — unfinished tasks: t1/.test(e.message)),
+    events.some(
+      (e) => e.type === "notice" && /Goal round 1\/10 — unfinished tasks: t1/.test(e.message),
+    ),
   ).toBe(true);
   // Assessments only began once the list was complete: met + met = done.
   expect(assess.calls()).toBe(2);
@@ -535,7 +562,10 @@ test("pipeline: task continuations charge the UNIFIED goal budget and exhaust wi
   );
   expect(warns).toHaveLength(1);
   expect(
-    events.filter((e) => e.type === "notice" && e.level === "warn" && /Plan tasks still unfinished/.test(e.message)),
+    events.filter(
+      (e) =>
+        e.type === "notice" && e.level === "warn" && /Plan tasks still unfinished/.test(e.message),
+    ),
   ).toHaveLength(0);
   // ★ stays for the user to act on.
   expect(engine.snapshot().goal).toBe("do the impossible");
@@ -664,7 +694,9 @@ test("pipeline: a live run persists to engine.json and --resume re-enters it", a
   engineB.send({ type: "shutdown" });
   await doneB;
 
-  expect(eventsB.some((e) => e.type === "notice" && /Resuming goal run/.test(e.message))).toBe(true);
+  expect(eventsB.some((e) => e.type === "notice" && /Resuming goal run/.test(e.message))).toBe(
+    true,
+  );
   // Assessment-driven re-entry: one verify turn, two clean passes, done.
   expect(assessB.calls()).toBe(2);
   expect(promptsB).toHaveLength(1);
@@ -718,10 +750,14 @@ test("/goal from plan mode flips to execute WITHOUT hijacking a presented plan",
 
   // The run flipped the mode itself (a plan-mode run could never mutate)…
   expect(engine.snapshot().mode).toBe("execute");
-  expect(events.some((e) => e.type === "notice" && /requires execute mode/.test(e.message))).toBe(true);
+  expect(events.some((e) => e.type === "notice" && /requires execute mode/.test(e.message))).toBe(
+    true,
+  );
   // …WITHOUT approving the unrelated presented plan (the set-mode command path
   // would have): no handoff notice, no approval preamble in any prompt.
-  expect(events.some((e) => e.type === "notice" && /Executing the approved plan/.test(e.message))).toBe(false);
+  expect(
+    events.some((e) => e.type === "notice" && /Executing the approved plan/.test(e.message)),
+  ).toBe(false);
   expect(prompts.some((p) => p.includes("approved by the user"))).toBe(false);
   expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
 });
@@ -834,7 +870,9 @@ test("pipeline: Esc pause is ANNOUNCED and /goal resume re-arms at the paused ph
   ).toBe(true);
   // …and broadcast as goal-run state for the ★ header.
   expect(
-    events.some((e) => e.type === "goal-run" && !e.run.active && e.run.pausedReason === "interrupted (Esc)"),
+    events.some(
+      (e) => e.type === "goal-run" && !e.run.active && e.run.pausedReason === "interrupted (Esc)",
+    ),
   ).toBe(true);
   expect(engine.snapshot().goalRun?.active).toBe(false);
 
@@ -845,7 +883,9 @@ test("pipeline: Esc pause is ANNOUNCED and /goal resume re-arms at the paused ph
   engine.send({ type: "shutdown" });
   await done;
 
-  expect(events.some((e) => e.type === "notice" && /Goal run resumed \(continuing/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /Goal run resumed \(continuing/.test(e.message)),
+  ).toBe(true);
   expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
   expect(engine.snapshot().goalRun?.met).toBe(true);
 });
@@ -900,7 +940,9 @@ test("pipeline: /goal <new text> mid-run SWEEPS the old run's queued continuatio
   // task list after the replacement (the continuation prompt never ran).
   expect(prompts.some((p) => p.includes("approved plan is not finished"))).toBe(false);
   // A's unfinished task list was cleared at B's arm (the run owns the spine)…
-  expect(events.some((e) => e.type === "notice" && /Cleared the pre-existing task list/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /Cleared the pre-existing task list/.test(e.message)),
+  ).toBe(true);
   // …and B ran its own clean pipeline to convergence.
   expect(engine.snapshot().goal).toBe("ship goal B");
   expect(engine.snapshot().tasks.map((t) => t.title)).toEqual(["task B"]);
@@ -951,7 +993,11 @@ test("pipeline: /clear pauses the run (swept queue) and /goal resume RE-PLANS on
 
   // The run paused (its queued continuation swept) instead of firing turns
   // into the wiped conversation; the ★ goal survives the clear.
-  expect(events.some((e) => e.type === "notice" && /Goal run paused — conversation cleared/.test(e.message))).toBe(true);
+  expect(
+    events.some(
+      (e) => e.type === "notice" && /Goal run paused — conversation cleared/.test(e.message),
+    ),
+  ).toBe(true);
   expect(engine.snapshot().goal).toBe("finish the work");
   expect(engine.snapshot().goalRun?.active).toBe(false);
   expect(engine.snapshot().tasks).toHaveLength(0);
@@ -964,7 +1010,9 @@ test("pipeline: /clear pauses the run (swept queue) and /goal resume RE-PLANS on
   engine.send({ type: "shutdown" });
   await done;
 
-  expect(events.some((e) => e.type === "notice" && /Goal run resumed \(re-planning/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /Goal run resumed \(re-planning/.test(e.message)),
+  ).toBe(true);
   expect(engine.snapshot().tasks.map((t) => t.title)).toEqual(["the work again"]);
   expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
 });
@@ -1024,7 +1072,12 @@ test("an Esc landing DURING the self-assessment does not launch one more turn", 
       sawAssess();
       await assessGate;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ met: false, gaps: ["more"], reason: "keep going" }) }],
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ met: false, gaps: ["more"], reason: "keep going" }),
+          },
+        ],
         finishReason: "stop" as const,
         usage: USAGE,
         warnings: [],
@@ -1099,7 +1152,12 @@ test("a steer's round-budget re-grant is PERSISTED (a kill mid-steer resumes wit
   // Anchor on the ROUND-1 write first: the arm-time write is also 0, so
   // breaking on the first 0 could pass vacuously if the round-1 write were
   // still queued when the steer zeroed the in-memory counter.
-  const statePath = join(globalStateDir(cwd), "sessions", engine.snapshot().sessionId, "engine.json");
+  const statePath = join(
+    globalStateDir(cwd),
+    "sessions",
+    engine.snapshot().sessionId,
+    "engine.json",
+  );
   let persisted: { goalContinueRounds?: number } | null = null;
   for (let tries = 0; tries < 100; tries++) {
     persisted = (await Bun.file(statePath)
@@ -1121,7 +1179,9 @@ test("a steer's round-budget re-grant is PERSISTED (a kill mid-steer resumes wit
     await new Promise((r) => setTimeout(r, 10));
   }
   expect(persisted?.goalContinueRounds).toBe(0);
-  expect(events.some((e) => e.type === "notice" && /Steer folded into the goal run/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /Steer folded into the goal run/.test(e.message)),
+  ).toBe(true);
 
   release();
   await engine.whenIdle();
@@ -1182,7 +1242,9 @@ test("pipeline: tasks left over from BEFORE the run never hijack its spine", asy
 
   // The stale list was cleared at arm — the execute contract names ONLY the
   // fresh plan's work, and no round ever chased the abandoned steps.
-  expect(events.some((e) => e.type === "notice" && /Cleared the pre-existing task list/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /Cleared the pre-existing task list/.test(e.message)),
+  ).toBe(true);
   expect(prompts.some((p) => p.includes("old abandoned plan step"))).toBe(false);
   expect(engine.snapshot().tasks.map((t) => t.title)).toEqual(["new goal work"]);
   expect(events.some((e) => e.type === "notice" && /Goal met after/.test(e.message))).toBe(true);
@@ -1202,9 +1264,11 @@ test("a gate that exhausts its fix budget STILL RED pauses the run instead of we
     doStream: async () => {
       // Every turn mutates (write) then finishes — so the gate always runs.
       const idx = call++;
-      return (idx % 2 === 0
-        ? toolCall(`w${idx}`, "write", { path: "out.txt", content: `gen ${idx}\n` })
-        : textStep("done")) as never;
+      return (
+        idx % 2 === 0
+          ? toolCall(`w${idx}`, "write", { path: "out.txt", content: `gen ${idx}\n` })
+          : textStep("done")
+      ) as never;
     },
     doGenerate: assess.doGenerate,
   });
@@ -1226,7 +1290,10 @@ test("a gate that exhausts its fix budget STILL RED pauses the run instead of we
   // kill+resume would resurrect it against an unverified gate).
   expect(
     events.some(
-      (e) => e.type === "notice" && e.level === "warn" && /Goal run paused — the gate is still red/.test(e.message),
+      (e) =>
+        e.type === "notice" &&
+        e.level === "warn" &&
+        /Goal run paused — the gate is still red/.test(e.message),
     ),
   ).toBe(true);
   expect(engine.snapshot().goalRun?.active).toBe(false);
@@ -1299,7 +1366,9 @@ test("dequeuing the run's queued turn pauses the run instead of leaving it armed
   await done;
 
   // The run paused with a notice — not silently armed with nothing queued.
-  expect(events.some((e) => e.type === "notice" && /its queued turn was removed/.test(e.message))).toBe(true);
+  expect(
+    events.some((e) => e.type === "notice" && /its queued turn was removed/.test(e.message)),
+  ).toBe(true);
   expect(engine.snapshot().goalRun?.active).toBe(false);
   expect(assess.calls()).toBe(0);
 });
@@ -1358,9 +1427,11 @@ test("/queue clear pauses the run when it drops the run's queued turn", async ()
 
   // /queue clear dropped the run's next turn → announced pause, not a silent
   // armed-but-idle wedge that an unrelated later prompt would revive.
-  expect(events.some((e) => e.type === "notice" && /Goal run paused — the queue was cleared/.test(e.message))).toBe(
-    true,
-  );
+  expect(
+    events.some(
+      (e) => e.type === "notice" && /Goal run paused — the queue was cleared/.test(e.message),
+    ),
+  ).toBe(true);
   expect(engine.snapshot().goalRun?.active).toBe(false);
   expect(assess.calls()).toBe(0);
 });
@@ -1398,7 +1469,10 @@ test("a hook-denied goal turn pauses the run; a denied PLAN turn never fabricate
   // and the denied plan turn did NOT march into execute on a fabricated task.
   expect(streamCalls).toBe(0);
   expect(
-    events.some((e) => e.type === "notice" && /Goal run paused — a prompt hook blocked the turn/.test(e.message)),
+    events.some(
+      (e) =>
+        e.type === "notice" && /Goal run paused — a prompt hook blocked the turn/.test(e.message),
+    ),
   ).toBe(true);
   expect(engine.snapshot().goalRun?.active).toBe(false);
   expect(engine.snapshot().tasks).toHaveLength(0);
@@ -1433,7 +1507,9 @@ test("switching to plan mode mid-goal-run pauses the run (no read-only continuat
   await done;
 
   expect(
-    events.some((e) => e.type === "notice" && /Goal run paused — switched to plan mode/.test(e.message)),
+    events.some(
+      (e) => e.type === "notice" && /Goal run paused — switched to plan mode/.test(e.message),
+    ),
   ).toBe(true);
   expect(engine.snapshot().goalRun?.active).toBe(false);
   // The ★ goal stays set — a pause, not a clear.

@@ -89,7 +89,9 @@ test("/theme accepts every name in the shared THEME_NAMES and emits theme-change
     const events = collect(engine);
     engine.send({ type: "run-slash", name: "theme", args: name });
     await engine.whenIdle();
-    const changed = events.filter((e): e is Extract<UIEvent, { type: "theme-changed" }> => e.type === "theme-changed");
+    const changed = events.filter(
+      (e): e is Extract<UIEvent, { type: "theme-changed" }> => e.type === "theme-changed",
+    );
     expect(changed.at(-1)?.theme).toBe(name);
     expect(notices(events).at(-1)?.level).not.toBe("warn");
   }
@@ -110,7 +112,9 @@ test("/accent resolves each shared preset NAME to its hex on accent-changed", as
     const events = collect(engine);
     engine.send({ type: "run-slash", name: "accent", args: name });
     await engine.whenIdle();
-    const changed = events.filter((e): e is Extract<UIEvent, { type: "accent-changed" }> => e.type === "accent-changed");
+    const changed = events.filter(
+      (e): e is Extract<UIEvent, { type: "accent-changed" }> => e.type === "accent-changed",
+    );
     // A preset name resolves to its shared hex; the emitted event carries a hex.
     expect(changed.at(-1)?.accent).toBe(hex);
   }
@@ -124,9 +128,7 @@ test("/details sets quiet|normal|verbose and emits details-changed; bare cycles"
   engine.send({ type: "run-slash", name: "details", args: "quiet" });
   await engine.whenIdle();
   expect(engine.snapshot().details).toBe("quiet");
-  expect(
-    events.some((e) => e.type === "details-changed" && e.details === "quiet"),
-  ).toBe(true);
+  expect(events.some((e) => e.type === "details-changed" && e.details === "quiet")).toBe(true);
 
   // Bare /details cycles quiet → normal.
   engine.send({ type: "run-slash", name: "details", args: "" });
@@ -453,7 +455,9 @@ test("/redo skips a stale tail when the conversation moved past the undo mark", 
   await handleSlash(h, "redo", "");
   expect(await Bun.file(join(dir, "a.txt")).text()).toBe("v1\n");
   expect(session.messageCount).toBe(3); // 1 + 2 fresh — the stale tail was NOT appended
-  expect(messages.some((m) => m.message.includes("Conversation changed since the undo"))).toBe(true);
+  expect(messages.some((m) => m.message.includes("Conversation changed since the undo"))).toBe(
+    true,
+  );
 });
 
 test("/undo then immediate /redo still round-trips the conversation tail", async () => {
@@ -494,16 +498,24 @@ test("goalStatusText names the run's actual state (active / paused / met / detac
   const base = { phase: null, round: 0, max: 25, pausedReason: null, met: false } as const;
   expect(goalStatusText(null, { ...base, active: false })).toContain("No goal set");
   // Active: phase while planning, round counter while executing.
-  expect(goalStatusText("ship it", { ...base, active: true, phase: "plan" })).toContain("Run active (planning)");
-  expect(goalStatusText("ship it", { ...base, active: true, phase: "execute", round: 7 })).toContain(
-    "Run active (round 7/25)",
+  expect(goalStatusText("ship it", { ...base, active: true, phase: "plan" })).toContain(
+    "Run active (planning)",
   );
+  expect(
+    goalStatusText("ship it", { ...base, active: true, phase: "execute", round: 7 }),
+  ).toContain("Run active (round 7/25)");
   // Paused: says WHY and how to re-arm.
-  const paused = goalStatusText("ship it", { ...base, active: false, pausedReason: "interrupted (Esc)" });
+  const paused = goalStatusText("ship it", {
+    ...base,
+    active: false,
+    pausedReason: "interrupted (Esc)",
+  });
   expect(paused).toContain("Run paused — interrupted (Esc)");
   expect(paused).toContain("/goal resume");
   // Met: no false "stops it" implication of a live run.
-  expect(goalStatusText("ship it", { ...base, active: false, met: true })).toContain("verified met");
+  expect(goalStatusText("ship it", { ...base, active: false, met: true })).toContain(
+    "verified met",
+  );
   // Goal set but never ran (legacy sessions): resume still offered.
   expect(goalStatusText("ship it", { ...base, active: false })).toContain("No run attached");
 });

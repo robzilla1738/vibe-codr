@@ -76,10 +76,7 @@ test("replacement text containing $ sequences is inserted literally", async () =
 test("non-unique match errors unless replaceAll is set", async () => {
   const { cwd, path } = await seed("x x x\n");
   const events: UIEvent[] = [];
-  const fail = await editTool.execute(
-    { path, oldString: "x", newString: "y" },
-    ctx(cwd, events),
-  );
+  const fail = await editTool.execute({ path, oldString: "x", newString: "y" }, ctx(cwd, events));
   expect(fail.isError).toBe(true);
   // File is untouched after the failed edit.
   expect(await Bun.file(join(cwd, path)).text()).toBe("x x x\n");
@@ -148,10 +145,7 @@ test("a large diff is capped in the model output but full in the UI event", asyn
 
 test("edit writes via temp+rename and leaves no stray temp file on success", async () => {
   const { cwd, path } = await seed("hello world\n");
-  const r = await editTool.execute(
-    { path, oldString: "world", newString: "there" },
-    ctx(cwd, []),
-  );
+  const r = await editTool.execute({ path, oldString: "world", newString: "there" }, ctx(cwd, []));
   expect(r.isError).toBeUndefined();
   expect(await Bun.file(join(cwd, path)).text()).toBe("hello there\n");
   // The atomic temp+rename must clean up after itself — no `*.tmp` sibling left.
@@ -202,10 +196,7 @@ test("editing a missing file reports 'File not found' (C-2), not 'looks binary'"
   // test). The "binary" wording must NOT appear in the missing-file path.
   const cwd = mkdtempSync(join(tmpdir(), "vibe-edit-missing-"));
   const path = "absent.txt";
-  const r = await editTool.execute(
-    { path, oldString: "x", newString: "y" },
-    ctx(cwd, []),
-  );
+  const r = await editTool.execute({ path, oldString: "x", newString: "y" }, ctx(cwd, []));
   expect(r.isError).toBe(true);
   expect(String(r.output)).toContain("File not found");
   expect(String(r.output)).not.toContain("looks binary");
@@ -232,8 +223,6 @@ test("editing THROUGH a symlink preserves the link and updates its real target",
   expect(readdirSync(cwd).filter((f) => f.includes(".tmp"))).toEqual([]);
 });
 
-
-
 test("edit after an external chmod lands at the CURRENT target mode (C-1: captured on target, not on full)", async () => {
   // C-1 regression directly. The OLD edit.ts captured `statSync(full).mode`
   // outside atomicReplace — if a chmod happens between the read and the
@@ -254,10 +243,7 @@ test("edit after an external chmod lands at the CURRENT target mode (C-1: captur
   // allows the edit). The user's intent is now 0o700.
   chmodSync(full, 0o700);
 
-  const r = await editTool.execute(
-    { path, oldString: "original", newString: "new" },
-    ctx(cwd, []),
-  );
+  const r = await editTool.execute({ path, oldString: "original", newString: "new" }, ctx(cwd, []));
   expect(r.isError).toBeUndefined();
   // The file lands at the CURRENT post-chmod mode, not the pre-read one.
   expect(statSync(full).mode & 0o777).toBe(0o700);
@@ -282,7 +268,10 @@ test("a trailing-newline-only edit reports the change honestly, not a misleading
   // diff empty — the output must say so rather than read as a no-op.
   const { cwd, path } = await seed("foo\n");
   const events: UIEvent[] = [];
-  const r = await editTool.execute({ path, oldString: "foo\n", newString: "foo" }, ctx(cwd, events));
+  const r = await editTool.execute(
+    { path, oldString: "foo\n", newString: "foo" },
+    ctx(cwd, events),
+  );
   expect(r.isError).toBeFalsy();
   expect(String(r.output)).not.toContain("(+0 -0)");
   expect(String(r.output).toLowerCase()).toContain("newline");

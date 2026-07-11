@@ -24,7 +24,11 @@ test("extractLmStudioContext returns undefined for an unlisted model", () => {
 });
 
 test("extractLmStudioContext ignores non-positive lengths", () => {
-  expect(extractLmStudioContext([{ id: "x", loaded_context_length: 0, max_context_length: 0 }], "x")).toBeUndefined();
+  expect(
+    extractLmStudioContext([{ id: "x", loaded_context_length: 0, max_context_length: 0 }], "x"),
+  ).toBeUndefined();
   // A zero loaded length falls through to the positive max.
-  expect(extractLmStudioContext([{ id: "y", loaded_context_length: 0, max_context_length: 4096 }], "y")).toBe(4096);
+  expect(
+    extractLmStudioContext([{ id: "y", loaded_context_length: 0, max_context_length: 4096 }], "y"),
+  ).toBe(4096);
 });

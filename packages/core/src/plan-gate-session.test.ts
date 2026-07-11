@@ -138,7 +138,12 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
   const session = new Session({
     config: defaultConfig(),
     registry: new ProviderRegistry([
-      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
     ]),
     toolset: new Toolset([presentPlanTool, fakeSearch, fakeFetch, fakePkg]),
     bus,
@@ -171,7 +176,9 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
   expect(plans.length).toBe(1);
   // The grounded present passed, carrying its evidence.
   expect(plans[0]!.plan).toContain("Morocco");
-  expect(plans[0]!.sources).toEqual([{ url: "https://fifa.com/todays-match", title: "Match page" }]);
+  expect(plans[0]!.sources).toEqual([
+    { url: "https://fifa.com/todays-match", title: "Match page" },
+  ]);
   expect(plans[0]!.assumptions).toEqual(["exact lineup unknown until kickoff"]);
   expect(plans[0]!.ungrounded).toBeUndefined();
 });
@@ -244,7 +251,12 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
   session = new Session({
     config: defaultConfig(),
     registry: new ProviderRegistry([
-      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
     ]),
     toolset: new Toolset([presentPlanTool, flippingSearch, fakeFetch, fakePkg]),
     bus,
@@ -284,7 +296,12 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
     // Step 1: a junk search that finds nothing.
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "web_search", input: JSON.stringify({ query: "zzz qqq" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "web_search",
+        input: JSON.stringify({ query: "zzz qqq" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     // Step 2: try to present with a fabricated source — must be REJECTED.
@@ -294,7 +311,10 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
         type: "tool-call",
         toolCallId: "p1",
         toolName: "present_plan",
-        input: JSON.stringify({ plan: "Build it.", sources: [{ url: "https://example.com/made-up" }] }),
+        input: JSON.stringify({
+          plan: "Build it.",
+          sources: [{ url: "https://example.com/made-up" }],
+        }),
       },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
@@ -312,7 +332,12 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
   const session = new Session({
     config: defaultConfig(),
     registry: new ProviderRegistry([
-      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
     ]),
     toolset: new Toolset([presentPlanTool, emptySearch]),
     bus,
@@ -420,7 +445,12 @@ test("successful present_plan disables further tools this turn", async () => {
   const session = new Session({
     config: defaultConfig(),
     registry: new ProviderRegistry([
-      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
     ]),
     toolset: new Toolset([presentPlanTool, countingSearch, fakeFetch, fakePkg]),
     bus,

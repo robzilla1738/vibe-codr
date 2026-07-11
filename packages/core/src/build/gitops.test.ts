@@ -20,10 +20,33 @@ const run = (cwd: string, args: string[]) => spawnGit(cwd, args);
 async function makeRepo(): Promise<string> {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-gitops-"));
   await run(cwd, ["init", "-q", "-b", "main"]);
-  await run(cwd, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "root"]);
+  await run(cwd, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "root",
+  ]);
   writeFileSync(join(cwd, "a.txt"), "one\n");
   await run(cwd, ["add", "-A"]);
-  await run(cwd, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "a"]);
+  await run(cwd, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-q",
+    "-m",
+    "a",
+  ]);
   return cwd;
 }
 
@@ -70,7 +93,18 @@ test("worktree lifecycle: add → edit → squash-merge back → remove", async 
 
   writeFileSync(join(wtPath, "a.txt"), "one\nedited-in-worktree\n");
   await run(wtPath, ["add", "-A"]);
-  await run(wtPath, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "wt edit"]);
+  await run(wtPath, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-q",
+    "-m",
+    "wt edit",
+  ]);
 
   const changed = await gitDiffSince(cwd, "vibe-wt/t1");
   expect(changed).toContain("a.txt");
@@ -92,10 +126,32 @@ test("conflicting squash-merge is aborted cleanly and returns false", async () =
   // Diverge: same line edited in the worktree AND committed on main.
   writeFileSync(join(wtPath, "a.txt"), "worktree-version\n");
   await run(wtPath, ["add", "-A"]);
-  await run(wtPath, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "wt"]);
+  await run(wtPath, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-q",
+    "-m",
+    "wt",
+  ]);
   writeFileSync(join(cwd, "a.txt"), "main-version\n");
   await run(cwd, ["add", "-A"]);
-  await run(cwd, ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "main"]);
+  await run(cwd, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-q",
+    "-m",
+    "main",
+  ]);
 
   const merged = await gitMergeWorktreeBranch(cwd, "vibe-wt/t2");
   expect(merged).toBe(false);
@@ -136,9 +192,15 @@ test("gitAddWorktree clears a stale leftover at the same path", async () => {
 
 test("codeCacheCleanCommand: JS caches only, never node_modules/dist; null for unknown", () => {
   const js = codeCacheCleanCommand({
-    greenfield: false, primaryLanguage: "TypeScript", packageManager: "bun", framework: null,
-    commands: {}, monorepo: { tool: null, packages: [] }, git: { isRepo: true, branch: "main", dirty: false },
-    conventions: [], manifestFiles: ["package.json"],
+    greenfield: false,
+    primaryLanguage: "TypeScript",
+    packageManager: "bun",
+    framework: null,
+    commands: {},
+    monorepo: { tool: null, packages: [] },
+    git: { isRepo: true, branch: "main", dirty: false },
+    conventions: [],
+    manifestFiles: ["package.json"],
   });
   expect(js).toContain(".next");
   expect(js).toContain("tsconfig.tsbuildinfo");
@@ -146,9 +208,15 @@ test("codeCacheCleanCommand: JS caches only, never node_modules/dist; null for u
   expect(js).not.toMatch(/rm[^;]*node_modules(?!\/\.(cache|vite))/);
 
   const none = codeCacheCleanCommand({
-    greenfield: true, primaryLanguage: null, packageManager: null, framework: null,
-    commands: {}, monorepo: { tool: null, packages: [] }, git: { isRepo: false, branch: null, dirty: false },
-    conventions: [], manifestFiles: [],
+    greenfield: true,
+    primaryLanguage: null,
+    packageManager: null,
+    framework: null,
+    commands: {},
+    monorepo: { tool: null, packages: [] },
+    git: { isRepo: false, branch: null, dirty: false },
+    conventions: [],
+    manifestFiles: [],
   });
   expect(none).toBeNull();
 });

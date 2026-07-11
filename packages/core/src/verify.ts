@@ -55,9 +55,7 @@ export async function runVerify(
     const code = await proc.exited;
     const combined = `${stdout.text}${stderr.text}`.trim();
     const output =
-      combined.length > MAX_OUTPUT
-        ? `${combined.slice(0, MAX_OUTPUT)}\n…(truncated)`
-        : combined;
+      combined.length > MAX_OUTPUT ? `${combined.slice(0, MAX_OUTPUT)}\n…(truncated)` : combined;
     if (killed || signal?.aborted) {
       return { ok: false, output: output || "verify aborted" };
     }

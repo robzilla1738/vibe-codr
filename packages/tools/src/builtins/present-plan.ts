@@ -33,9 +33,7 @@ const Input = z.object({
   files: z
     .array(z.string())
     .optional()
-    .describe(
-      "Files, directories, or areas the plan will touch (or a single 'greenfield' entry).",
-    ),
+    .describe("Files, directories, or areas the plan will touch (or a single 'greenfield' entry)."),
   verification: z
     .string()
     .optional()
@@ -88,7 +86,10 @@ export const presentPlanTool: ToolDefinition<z.infer<typeof Input>> = {
       ...(decisions ? { decisions } : {}),
     });
     if (verdict && !verdict.allow) {
-      return { output: verdict.reason ?? "Plan rejected — required grounding is missing.", isError: true };
+      return {
+        output: verdict.reason ?? "Plan rejected — required grounding is missing.",
+        isError: true,
+      };
     }
     ctx.emit({
       type: "plan-presented",

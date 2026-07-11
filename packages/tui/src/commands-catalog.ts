@@ -30,24 +30,40 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "export", description: "Export the conversation to Markdown", arg: "[path]" },
   { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
   // Model & mode
-  { name: "model", description: "Pick the model (Tab: main ⇄ subagents · /model refresh)", arg: "[filter]" },
+  {
+    name: "model",
+    description: "Pick the model (Tab: main ⇄ subagents · /model refresh)",
+    arg: "[filter]",
+  },
   { name: "models", description: "List available models (/models refresh to force-pull)" },
   { name: "providers", description: "Providers + keys (Enter to configure)", arg: "[filter]" },
   { name: "plan", description: "Read-only plan mode — present a plan for approval" },
   { name: "execute", description: "Gated execute — every action asks (AGENT chip)" },
   { name: "yolo", description: "Execute with approvals off — no prompts" },
   { name: "approvals", description: "Set approval mode", values: ["ask", "auto"] },
-  { name: "reasoning", description: "Set reasoning effort", values: ["low", "medium", "high", "off"] },
+  {
+    name: "reasoning",
+    description: "Set reasoning effort",
+    values: ["low", "medium", "high", "off"],
+  },
   {
     name: "details",
     description: "Transcript density (quiet · normal · verbose)",
     values: ["quiet", "normal", "verbose"],
   },
-  { name: "mouse", description: "Mouse capture (off = native terminal selection)", values: ["on", "off"] },
+  {
+    name: "mouse",
+    description: "Mouse capture (off = native terminal selection)",
+    values: ["on", "off"],
+  },
   { name: "keys", description: "Essential keyboard shortcuts" },
   // Values derive from the palette registry so a new theme/accent shows up here
   // automatically ("dark" is an alias of default — hidden to keep the menu tight).
-  { name: "theme", description: "Set the UI theme", values: THEME_NAMES.filter((n) => n !== "dark") },
+  {
+    name: "theme",
+    description: "Set the UI theme",
+    values: THEME_NAMES.filter((n) => n !== "dark"),
+  },
   { name: "accent", description: "Set the accent color (or /accent <hex>)", values: ACCENT_NAMES },
   // Steering
   {
@@ -77,9 +93,17 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "memory", description: "Show loaded memory files" },
   { name: "permissions", description: "Show tool permission rules" },
   { name: "tools", description: "List tools in the current mode" },
-  { name: "agents", description: "Named subagents — set a model or create one", arg: "[new <name>]" },
+  {
+    name: "agents",
+    description: "Named subagents — set a model or create one",
+    arg: "[new <name>]",
+  },
   { name: "skills", description: "Browse skills — searchable menu", arg: "[filter]" },
-  { name: "skill", description: "Run a skill by name (never shadowed by built-ins)", arg: "<name> [task]" },
+  {
+    name: "skill",
+    description: "Run a skill by name (never shadowed by built-ins)",
+    arg: "<name> [task]",
+  },
   { name: "commands", description: "List custom slash commands" },
   { name: "mcp", description: "Show connected MCP servers" },
   { name: "doctor", description: "Run an environment health check" },
@@ -149,7 +173,10 @@ export function paletteState(draft: string): PaletteState {
   const name = draft.slice(1, space).toLowerCase();
   const command = PALETTE_COMMANDS.find((c) => c.name === name);
   if (!command?.values) return { open: false };
-  const query = draft.slice(space + 1).trim().toLowerCase();
+  const query = draft
+    .slice(space + 1)
+    .trim()
+    .toLowerCase();
   // BUG-081: prefix → substring (same tiers as the command menu, minus fuzzy).
   const tier = (v: string): number => {
     const n = v.toLowerCase();

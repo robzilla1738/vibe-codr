@@ -37,7 +37,9 @@ function tempCwd(pkg?: Record<string, unknown>): string {
  * gate WITHOUT depending on the real dep being present. It's never used past the
  * serve-detection early-exits these tests exercise. */
 const fakePlaywright = (): Promise<PlaywrightModule> =>
-  Promise.resolve({ chromium: { launch: async () => ({ newPage: async () => ({}), close: async () => {} }) } } as unknown as PlaywrightModule);
+  Promise.resolve({
+    chromium: { launch: async () => ({ newPage: async () => ({}), close: async () => {} }) },
+  } as unknown as PlaywrightModule);
 
 // ── degradation paths (no real browser needed) ───────────────────────────────
 
@@ -166,7 +168,7 @@ browserTest(
     const html =
       "<!doctype html><html><body>" +
       '<button id="dead">Dead Button</button>' +
-      "<button id=\"live\" onclick=\"document.body.appendChild(document.createElement('div'))\">Live Button</button>" +
+      '<button id="live" onclick="document.body.appendChild(document.createElement(\'div\'))">Live Button</button>' +
       '<script>console.error("boom from the page")</script>' +
       "</body></html>";
     const server = Bun.serve({

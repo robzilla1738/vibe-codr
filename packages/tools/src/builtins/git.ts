@@ -118,7 +118,13 @@ export const gitCommitTool: ToolDefinition<z.infer<typeof CommitInput>> = {
 };
 
 const LogInput = withPathAliases({
-  max: z.number().int().positive().max(100).optional().describe("Number of commits to show (default 10)."),
+  max: z
+    .number()
+    .int()
+    .positive()
+    .max(100)
+    .optional()
+    .describe("Number of commits to show (default 10)."),
   path: z.string().optional().describe("Limit history to this path."),
 });
 
@@ -128,12 +134,7 @@ export const gitLogTool: ToolDefinition<z.output<typeof LogInput>> = {
   inputSchema: LogInput,
   readOnly: true,
   async execute({ max, path }, ctx) {
-    const args = [
-      "log",
-      `-n${max ?? 10}`,
-      "--pretty=format:%h %an %ad %s",
-      "--date=short",
-    ];
+    const args = ["log", `-n${max ?? 10}`, "--pretty=format:%h %an %ad %s", "--date=short"];
     if (path) args.push("--", path);
     const { code, out } = await git(args, ctx);
     if (code !== 0) return { output: out || "git log failed", isError: true };
@@ -144,10 +145,7 @@ export const gitLogTool: ToolDefinition<z.output<typeof LogInput>> = {
 const PushInput = z.object({
   remote: z.string().optional().describe("Remote name (default: origin)."),
   branch: z.string().optional().describe("Branch to push (default: current branch)."),
-  setUpstream: z
-    .boolean()
-    .optional()
-    .describe("Pass -u to set the upstream tracking branch."),
+  setUpstream: z.boolean().optional().describe("Pass -u to set the upstream tracking branch."),
 });
 
 export const gitPushTool: ToolDefinition<z.infer<typeof PushInput>> = {

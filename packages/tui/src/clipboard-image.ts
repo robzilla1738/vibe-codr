@@ -51,7 +51,10 @@ export type ClipboardImageResult =
  * order is unit-testable. */
 export function clipboardImageProbes(platform: string): string[][] {
   if (platform === "darwin") {
-    return [["pngpaste", "-"], ["osascript", "-e", "the clipboard as «class PNGf»"]];
+    return [
+      ["pngpaste", "-"],
+      ["osascript", "-e", "the clipboard as «class PNGf»"],
+    ];
   }
   if (platform === "linux") {
     return [

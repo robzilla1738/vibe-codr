@@ -50,7 +50,11 @@ export async function gitPrepare(
     if (!owns) {
       const ls = Bun.spawnSync(["ls", "-A"], { cwd });
       const entries = ls.success
-        ? new TextDecoder().decode(ls.stdout).split("\n").map((l) => l.trim()).filter(Boolean)
+        ? new TextDecoder()
+            .decode(ls.stdout)
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean)
         : ["unknown"];
       if (!looksGreenfield(entries)) {
         return {
@@ -61,13 +65,18 @@ export async function gitPrepare(
       }
     }
     const init = await run(cwd, id(["init", "-q"]));
-    if (!init.ok) return { ok: false, branch: null, reason: `git init failed: ${firstLine(init.stderr)}` };
+    if (!init.ok)
+      return { ok: false, branch: null, reason: `git init failed: ${firstLine(init.stderr)}` };
     await run(cwd, id(["add", "-A"]));
     await run(cwd, id(["commit", "-q", "-m", "vibecodr: baseline", "--allow-empty"]));
     const co = await run(cwd, id(["checkout", "-B", opts.branch]));
     return co.ok
       ? { ok: true, branch: opts.branch }
-      : { ok: false, branch: null, reason: `could not create work branch: ${firstLine(co.stderr)}` };
+      : {
+          ok: false,
+          branch: null,
+          reason: `could not create work branch: ${firstLine(co.stderr)}`,
+        };
   }
   // Existing repo. On the user's real directory, never touch a dirty tree.
   if (!owns) {
@@ -76,12 +85,18 @@ export async function gitPrepare(
       return {
         ok: false,
         branch: null,
-        reason: "working tree has uncommitted changes — branch commits disabled (commit or stash to enable)",
+        reason:
+          "working tree has uncommitted changes — branch commits disabled (commit or stash to enable)",
       };
     }
   }
   const co = await run(cwd, id(["checkout", "-B", opts.branch]));
-  if (!co.ok) return { ok: false, branch: null, reason: `could not create work branch: ${firstLine(co.stderr)}` };
+  if (!co.ok)
+    return {
+      ok: false,
+      branch: null,
+      reason: `could not create work branch: ${firstLine(co.stderr)}`,
+    };
   return { ok: true, branch: opts.branch };
 }
 
@@ -184,7 +199,10 @@ export async function commitWorktree(
   if (!add.ok) return false;
   const status = await run(wtPath, ["status", "--porcelain"]);
   if (!status.ok || !status.stdout.trim()) return false; // nothing changed → no commit
-  const commit = await run(wtPath, id(["commit", "-q", "--no-verify", "-m", message.slice(0, 200)]));
+  const commit = await run(
+    wtPath,
+    id(["commit", "-q", "--no-verify", "-m", message.slice(0, 200)]),
+  );
   return commit.ok;
 }
 
@@ -259,8 +277,10 @@ export async function gitStagedFiles(cwd: string, run: GitRunner = spawnGit): Pr
   if (!r.ok) return [];
   const out: string[] = [];
   for (const rec of parseNameStatusZ(r.stdout)) {
-    if (rec.status === "R") out.push(...rec.paths); // old (deleted) + new (added)
-    else if (rec.status === "C") out.push(rec.paths[1] ?? rec.paths[0]!); // only the new copy
+    if (rec.status === "R")
+      out.push(...rec.paths); // old (deleted) + new (added)
+    else if (rec.status === "C")
+      out.push(rec.paths[1] ?? rec.paths[0]!); // only the new copy
     else out.push(rec.paths[0]!);
   }
   return [...new Set(out)];
@@ -313,9 +333,18 @@ export async function gitRestoreFiles(
 }
 
 /** Files changed vs a ref (a worktree branch's diff scope). */
-export async function gitDiffSince(cwd: string, ref: string, run: GitRunner = spawnGit): Promise<string[]> {
+export async function gitDiffSince(
+  cwd: string,
+  ref: string,
+  run: GitRunner = spawnGit,
+): Promise<string[]> {
   const r = await run(cwd, ["diff", "--name-only", ref]);
-  return r.ok ? r.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  return r.ok
+    ? r.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+    : [];
 }
 
 /**
@@ -333,14 +362,24 @@ export function codeCacheCleanCommand(profile: RepoProfile): string | null {
     profile.manifestFiles.some((f) => /(^|\/)package\.json$/.test(f));
   if (isJs) {
     paths.push(
-      ".next", ".turbo", ".svelte-kit", ".astro", ".nuxt", ".cache", ".parcel-cache",
-      "node_modules/.cache", "node_modules/.vite",
-      "tsconfig.tsbuildinfo", "*.tsbuildinfo",
+      ".next",
+      ".turbo",
+      ".svelte-kit",
+      ".astro",
+      ".nuxt",
+      ".cache",
+      ".parcel-cache",
+      "node_modules/.cache",
+      "node_modules/.vite",
+      "tsconfig.tsbuildinfo",
+      "*.tsbuildinfo",
     );
   }
   const isPy =
     profile.primaryLanguage === "Python" ||
-    profile.manifestFiles.some((f) => /(pyproject\.toml|setup\.py|requirements[^/]*\.txt)$/.test(f));
+    profile.manifestFiles.some((f) =>
+      /(pyproject\.toml|setup\.py|requirements[^/]*\.txt)$/.test(f),
+    );
   if (isPy) paths.push(".mypy_cache", ".pytest_cache", ".ruff_cache");
   if (!paths.length) return null;
   return `rm -rf ${paths.join(" ")} 2>/dev/null; true`;

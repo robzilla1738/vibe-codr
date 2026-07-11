@@ -71,9 +71,7 @@ export function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise
   });
 }
 
-export async function localEmbedder(
-  modelId: string = DEFAULT_LOCAL_MODEL,
-): Promise<Embedder> {
+export async function localEmbedder(modelId: string = DEFAULT_LOCAL_MODEL): Promise<Embedder> {
   const spec = "@huggingface/transformers";
   let pipelineFn: (task: string, model: string) => Promise<unknown>;
   try {

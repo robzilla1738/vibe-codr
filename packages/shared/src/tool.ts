@@ -94,10 +94,7 @@ export interface ToolContext {
 export interface FreshnessRegistryLike {
   recordRead(sessionId: string, absPath: string): void;
   recordWrite(sessionId: string, absPath: string): void;
-  assertFresh(
-    sessionId: string,
-    absPath: string,
-  ): { stale: boolean; ageMs?: number };
+  assertFresh(sessionId: string, absPath: string): { stale: boolean; ageMs?: number };
   clearSession(sessionId: string): void;
 }
 

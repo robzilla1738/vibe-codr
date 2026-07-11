@@ -83,7 +83,10 @@ export function crawlDocsTool(opts: CrawlDocsOptions = {}): ToolDefinition<z.inf
     concurrencySafe: true,
     async execute({ url, query, maxPages }, ctx) {
       const budget = Math.min(maxPages ?? DEFAULT_MAX_PAGES, 15);
-      const signal = AbortSignal.any([ctx.abortSignal, AbortSignal.timeout(opts.timeoutMs ?? 30_000)]);
+      const signal = AbortSignal.any([
+        ctx.abortSignal,
+        AbortSignal.timeout(opts.timeoutMs ?? 30_000),
+      ]);
       // The crawl is bounded to the start page's origin (extractLinks only
       // enqueues same-origin links); pin that same origin THROUGH redirects so a
       // server-side redirect to an external host can't escape the crawl scope and

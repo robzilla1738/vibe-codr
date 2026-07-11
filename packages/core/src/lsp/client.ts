@@ -98,13 +98,19 @@ export class LspClient {
   #proc: LspProcess | undefined;
   #buffer = new Uint8Array(0);
   #nextId = 1;
-  #pending = new Map<number | string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  #pending = new Map<
+    number | string,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
   /** Monotonic per-uri document version (didOpen=1, then didChange bumps). */
   #versions = new Map<string, number>();
   /** Whether the uri has been didOpen'd (didChange requires a prior didOpen). */
   #opened = new Set<string>();
   /** The in-flight diagnose waiter for a uri, keyed by uri. */
-  #waiters = new Map<string, { version: number; resolve: (d: LspDiagnostic[] | undefined) => void }>();
+  #waiters = new Map<
+    string,
+    { version: number; resolve: (d: LspDiagnostic[] | undefined) => void }
+  >();
   #exited = false;
   #exitCbs: ((code: number) => void)[] = [];
   #encoder = new TextEncoder();
@@ -165,7 +171,9 @@ export class LspClient {
     if (this.#exited || !this.#proc) return undefined;
     let text: string;
     try {
-      text = new TextDecoder("utf-8", { fatal: false }).decode(await Bun.file(absPath).arrayBuffer());
+      text = new TextDecoder("utf-8", { fatal: false }).decode(
+        await Bun.file(absPath).arrayBuffer(),
+      );
     } catch {
       return undefined; // unreadable/deleted between the edit and here — skip.
     }
@@ -240,10 +248,16 @@ export class LspClient {
       const line = d.range.start.line + 1;
       const col = d.range.start.character + 1;
       const sev = SEVERITY_LABEL[d.severity ?? 1] ?? "error";
-      const code = d.code !== undefined && d.code !== "" ? ` [${d.source ? `${d.source} ` : ""}${d.code}]` : d.source ? ` [${d.source}]` : "";
+      const code =
+        d.code !== undefined && d.code !== ""
+          ? ` [${d.source ? `${d.source} ` : ""}${d.code}]`
+          : d.source
+            ? ` [${d.source}]`
+            : "";
       return `  ${absPath}:${line}:${col} ${sev}${code}: ${d.message.replace(/\s+/g, " ").trim()}`;
     });
-    const more = relevant.length > MAX_DIAGNOSTICS ? `\n  …(${relevant.length - MAX_DIAGNOSTICS} more)` : "";
+    const more =
+      relevant.length > MAX_DIAGNOSTICS ? `\n  …(${relevant.length - MAX_DIAGNOSTICS} more)` : "";
     return `LSP diagnostics (${this.#opts.languageId}) — fix before moving on:\n${lines.join("\n")}${more}`;
   }
 

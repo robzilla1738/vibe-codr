@@ -20,9 +20,7 @@ function diffLines(a: string[], b: string[]): Op[] {
   const n = a.length;
   const m = b.length;
   // lcs[i][j] = length of LCS of a[i..] and b[j..].
-  const lcs: number[][] = Array.from({ length: n + 1 }, () =>
-    new Array<number>(m + 1).fill(0),
-  );
+  const lcs: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     const row = lcs[i] as number[];
     const nextRow = lcs[i + 1] as number[];
@@ -102,11 +100,7 @@ function coarseDiff(a: string[], b: string[]): DiffResult {
  * collapsed to up to `context` lines around each change so large files stay
  * readable.
  */
-export function unifiedDiff(
-  before: string,
-  after: string,
-  context = 3,
-): DiffResult {
+export function unifiedDiff(before: string, after: string, context = 3): DiffResult {
   const a = toLines(before);
   const b = toLines(after);
   // Bail to a coarse diff before allocating a matrix that would OOM the process.
@@ -125,11 +119,7 @@ export function unifiedDiff(
   const keep = new Array<boolean>(ops.length).fill(false);
   for (let k = 0; k < ops.length; k++) {
     if ((ops[k] as Op).kind !== " ") {
-      for (
-        let d = Math.max(0, k - context);
-        d <= Math.min(ops.length - 1, k + context);
-        d++
-      ) {
+      for (let d = Math.max(0, k - context); d <= Math.min(ops.length - 1, k + context); d++) {
         keep[d] = true;
       }
     }

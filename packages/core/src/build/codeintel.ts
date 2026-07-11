@@ -42,7 +42,15 @@ const GREENFIELD_PROFILE: RepoProfile = {
 };
 
 /** Dotfiles/boilerplate that don't make a directory "non-empty" for recon. */
-const TRIVIAL = new Set(["readme.md", "readme", "license", "license.md", ".gitignore", ".git", ".ds_store"]);
+const TRIVIAL = new Set([
+  "readme.md",
+  "readme",
+  "license",
+  "license.md",
+  ".gitignore",
+  ".git",
+  ".ds_store",
+]);
 
 /** Is this directory effectively empty (greenfield) — only dotfiles/README/LICENSE? */
 export function looksGreenfield(entries: string[]): boolean {
@@ -53,20 +61,34 @@ export function looksGreenfield(entries: string[]): boolean {
  * One batched probe of the working directory. Returns a RepoProfile; any probe
  * failure degrades its field rather than throwing.
  */
-export async function reconRepo(exec: Exec, workdir: string, signal?: AbortSignal): Promise<RepoProfile> {
+export async function reconRepo(
+  exec: Exec,
+  workdir: string,
+  signal?: AbortSignal,
+): Promise<RepoProfile> {
   const marker = reconMarker();
   const sec = (name: string) => `printf '%s\\n' "${marker}${name}"`;
   const probe = [
-    sec("LS"), "ls -A 2>/dev/null",
-    sec("GITREPO"), "git rev-parse --is-inside-work-tree 2>/dev/null",
-    sec("GITBRANCH"), "git rev-parse --abbrev-ref HEAD 2>/dev/null",
-    sec("GITDIRTY"), "git status --porcelain 2>/dev/null | head -5",
-    sec("PKG"), "cat package.json 2>/dev/null",
-    sec("PYPROJECT"), "cat pyproject.toml 2>/dev/null",
-    sec("CARGO"), "cat Cargo.toml 2>/dev/null",
-    sec("GOMOD"), "cat go.mod 2>/dev/null",
-    sec("MAKEFILE"), "head -80 Makefile 2>/dev/null",
-    sec("LOCK"), "ls package-lock.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb 2>/dev/null",
+    sec("LS"),
+    "ls -A 2>/dev/null",
+    sec("GITREPO"),
+    "git rev-parse --is-inside-work-tree 2>/dev/null",
+    sec("GITBRANCH"),
+    "git rev-parse --abbrev-ref HEAD 2>/dev/null",
+    sec("GITDIRTY"),
+    "git status --porcelain 2>/dev/null | head -5",
+    sec("PKG"),
+    "cat package.json 2>/dev/null",
+    sec("PYPROJECT"),
+    "cat pyproject.toml 2>/dev/null",
+    sec("CARGO"),
+    "cat Cargo.toml 2>/dev/null",
+    sec("GOMOD"),
+    "cat go.mod 2>/dev/null",
+    sec("MAKEFILE"),
+    "head -80 Makefile 2>/dev/null",
+    sec("LOCK"),
+    "ls package-lock.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb 2>/dev/null",
     sec("END"),
   ].join(" ; ");
 
@@ -86,9 +108,14 @@ export async function reconRepo(exec: Exec, workdir: string, signal?: AbortSigna
   // misreport greenfield (which would suppress ALL command detection).
   const hasOtherSignal =
     /true/.test(sections.GITREPO ?? "") ||
-    [sections.PKG, sections.PYPROJECT, sections.CARGO, sections.GOMOD, sections.MAKEFILE, sections.LOCK].some(
-      (s) => s?.trim(),
-    );
+    [
+      sections.PKG,
+      sections.PYPROJECT,
+      sections.CARGO,
+      sections.GOMOD,
+      sections.MAKEFILE,
+      sections.LOCK,
+    ].some((s) => s?.trim());
   if (looksGreenfield(entries) && !(entries.length === 0 && hasOtherSignal)) {
     return { ...GREENFIELD_PROFILE };
   }
@@ -103,7 +130,7 @@ export async function reconRepo(exec: Exec, workdir: string, signal?: AbortSigna
   };
 
   const isRepo = /true/.test(sections.GITREPO ?? "");
-  const branch = isRepo ? (lines(sections.GITBRANCH)[0] || null) : null;
+  const branch = isRepo ? lines(sections.GITBRANCH)[0] || null : null;
   const dirty = isRepo && Boolean((sections.GITDIRTY ?? "").trim());
 
   const manifestFiles = [
@@ -139,7 +166,10 @@ function splitSections(out: string, marker: string): Record<string, string> {
 }
 
 function lines(s: string | undefined): string[] {
-  return (s ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+  return (s ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -175,7 +205,9 @@ function isNonTerminating(script: string): boolean {
   return false;
 }
 
-function parsePackageJson(raw: string | undefined): { scripts: Record<string, string>; deps: string } | null {
+function parsePackageJson(
+  raw: string | undefined,
+): { scripts: Record<string, string>; deps: string } | null {
   if (!raw) return null;
   try {
     const obj = JSON.parse(raw) as {
@@ -217,7 +249,9 @@ export function detectCommands(m: RepoManifests): CodeCommands {
       return `${pm} run ${name}`;
     };
     cmds.install =
-      m.lockfiles.some((l) => /package-lock\.json/.test(l)) && pm === "npm" ? "npm ci" : `${pm} install`;
+      m.lockfiles.some((l) => /package-lock\.json/.test(l)) && pm === "npm"
+        ? "npm ci"
+        : `${pm} install`;
     const build = runnable("build");
     if (build) cmds.build = build;
     const test =
@@ -237,7 +271,12 @@ export function detectCommands(m: RepoManifests): CodeCommands {
     return cmds;
   }
   if (m.cargo) {
-    return { build: "cargo build", test: "cargo test", typecheck: "cargo check", lint: "cargo clippy -- -D warnings" };
+    return {
+      build: "cargo build",
+      test: "cargo test",
+      typecheck: "cargo check",
+      lint: "cargo clippy -- -D warnings",
+    };
   }
   if (m.gomod) {
     return { build: "go build ./...", test: "go test ./...", typecheck: "go vet ./..." };
@@ -303,14 +342,17 @@ export function detectServeCommand(
   if (!script) return null;
   const fw = detectFramework(m);
   const run = `${pm} run ${script}`;
-  const needsBuild = script === "preview" || /vite\s+preview|next\s+start|\bserve\b|http-server/.test(val);
+  const needsBuild =
+    script === "preview" || /vite\s+preview|next\s+start|\bserve\b|http-server/.test(val);
   if (/vite/.test(val) || fw === "Vue" || fw === "Svelte")
     return { cmd: `${run} -- --port ${port} --strictPort --host 127.0.0.1`, port, needsBuild };
   if (fw === "Next.js" || /next\s+(?:dev|start)/.test(val))
     return { cmd: `PORT=${port} ${run} -- -p ${port}`, port, needsBuild };
-  if (/react-scripts/.test(val)) return { cmd: `PORT=${port} BROWSER=none ${run}`, port, needsBuild };
+  if (/react-scripts/.test(val))
+    return { cmd: `PORT=${port} BROWSER=none ${run}`, port, needsBuild };
   if (/\bserve\b/.test(val)) return { cmd: `${run} -- -l ${port}`, port, needsBuild };
-  if (/http-server/.test(val)) return { cmd: `${run} -- -p ${port} -a 127.0.0.1`, port, needsBuild };
+  if (/http-server/.test(val))
+    return { cmd: `${run} -- -p ${port} -a 127.0.0.1`, port, needsBuild };
   return { cmd: `PORT=${port} ${run} -- --port ${port}`, port, needsBuild };
 }
 

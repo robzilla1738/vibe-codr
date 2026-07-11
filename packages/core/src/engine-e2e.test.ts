@@ -28,7 +28,12 @@ const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
 
 function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -87,13 +92,16 @@ test("Engine: prompt -> real read builtin -> tool result -> final text", async (
   // The REAL read tool ran and returned the file's contents.
   const toolDone = events.find((e) => e.type === "tool-call-finished");
   expect(toolDone && toolDone.type === "tool-call-finished" && toolDone.toolName).toBe("read");
-  expect(
-    toolDone && toolDone.type === "tool-call-finished" && String(toolDone.output),
-  ).toContain("the answer is 42");
+  expect(toolDone && toolDone.type === "tool-call-finished" && String(toolDone.output)).toContain(
+    "the answer is 42",
+  );
 
   // The streamed final answer is correct and the turn completed.
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
+    )
     .map((e) => e.delta)
     .join("");
   expect(text).toBe("The file says the answer is 42.");
@@ -168,7 +176,8 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
   expect(prompts.at(-1)).toContain("approved by the user");
   expect(
     events.some(
-      (e) => e.type === "notice" && "message" in e && e.message.includes("Executing the approved plan"),
+      (e) =>
+        e.type === "notice" && "message" in e && e.message.includes("Executing the approved plan"),
     ),
   ).toBe(true);
 
@@ -260,7 +269,10 @@ test("Engine planning: resolve-plan accept switches to execute, seeds tasks, run
   }[];
   expect(userMsgs.some((e) => e.text.includes("approved by the user"))).toBe(false);
   expect(
-    events.some((e) => e.type === "notice" && "message" in e && e.message.includes("Executing the approved plan")),
+    events.some(
+      (e) =>
+        e.type === "notice" && "message" in e && e.message.includes("Executing the approved plan"),
+    ),
   ).toBe(true);
 
   engine.send({ type: "shutdown" });
@@ -275,7 +287,12 @@ async function seedPlanTasks(plan: string): Promise<{ titles: string[]; truncate
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan }) },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify({ plan }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -416,7 +433,12 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
       { type: "stream-start", warnings: [] },
       // Prose plan (no checklist/numbered items) → no tasks seeded, so this test
       // stays focused on handoff BINDING without the plan-task continuation loop.
-      { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: "Do the thing." }) },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "present_plan",
+        input: JSON.stringify({ plan: "Do the thing." }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]);
   const textStep = (t: string) =>
@@ -428,7 +450,13 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
       { type: "finish", finishReason: "stop", usage: USAGE },
     ]);
   // Calls: 0 present_plan, 1 plan-text, 2 HOLDER (blocks), 3 typed-ahead A, 4 execute-plan B.
-  const steps = [planStep(), textStep("planned"), textStep("holding"), textStep("A ran"), textStep("B ran")];
+  const steps = [
+    planStep(),
+    textStep("planned"),
+    textStep("holding"),
+    textStep("A ran"),
+    textStep("B ran"),
+  ];
   let call = 0;
   const model = new MockLanguageModelV2({
     doStream: async (options) => {
@@ -440,7 +468,12 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
   });
 
   const engine = new Engine({
-    config: { ...defaultConfig(), model: "mock/test", mode: "plan", checkpoints: { enabled: false } },
+    config: {
+      ...defaultConfig(),
+      model: "mock/test",
+      mode: "plan",
+      checkpoints: { enabled: false },
+    },
     cwd,
     registry: mockRegistry(model),
     interactive: false,
@@ -527,7 +560,9 @@ test("abort during a loop iteration interrupts the loop's session (not just the 
   // The turn never completed its stream (the gate was never released), and the
   // loop stopped after its single interrupted iteration.
   const deltas = events.filter((e) => e.type === "assistant-text-delta");
-  expect(deltas.some((e) => e.type === "assistant-text-delta" && e.delta.includes("SHOULD_NOT_APPEAR"))).toBe(false);
+  expect(
+    deltas.some((e) => e.type === "assistant-text-delta" && e.delta.includes("SHOULD_NOT_APPEAR")),
+  ).toBe(false);
 });
 
 test("loop iterations reuse the main session context", async () => {
@@ -798,7 +833,10 @@ test("/skill invokes a skill even when a built-in shadows its bare name", async 
   expect(prompts).toHaveLength(2);
   expect(
     events.some(
-      (e) => e.type === "notice" && e.level === "warn" && e.message.includes('No skill named "nonexistent"'),
+      (e) =>
+        e.type === "notice" &&
+        e.level === "warn" &&
+        e.message.includes('No skill named "nonexistent"'),
     ),
   ).toBe(true);
 });
@@ -840,9 +878,7 @@ test("Engine plan mode: free-form plan without present_plan gets a present nudge
   const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-present-nudge-"));
   const prompts: string[] = [];
   const grounded = {
-    plan:
-      "- [ ] Scaffold a Next.js match story site\n" +
-      "- [ ] Verify with a production build\n",
+    plan: "- [ ] Scaffold a Next.js match story site\n" + "- [ ] Verify with a production build\n",
     sources: [{ url: "https://fifa.com/match-report", title: "Match report" }],
     assumptions: ["exact lineup TBD"],
     verification: "next build",

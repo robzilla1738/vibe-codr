@@ -14,18 +14,32 @@ import { MemoryService } from "./memory-service.ts";
 
 function mockRegistry(model: MockLanguageModelV2) {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 function stream(chunks: unknown[]) {
-  return { stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }) };
+  return {
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
 }
 const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
 test("save_memory persists a fact that recall_memory then surfaces", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mem-int-"));
   // Lexical memory service (no embedder) — deterministic and offline.
-  const config = { ...defaultConfig(), memory: { ...defaultConfig().memory, semantic: { enabled: false, model: "off" } } };
+  const config = {
+    ...defaultConfig(),
+    memory: { ...defaultConfig().memory, semantic: { enabled: false, model: "off" } },
+  };
   const memory = await MemoryService.create(dir, config, new ProviderRegistry());
 
   // Turn 1: the model saves a durable fact.
@@ -33,7 +47,12 @@ test("save_memory persists a fact that recall_memory then surfaces", async () =>
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "save_memory", input: JSON.stringify({ fact: "deploys to Fly.io via GitHub Actions" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "save_memory",
+        input: JSON.stringify({ fact: "deploys to Fly.io via GitHub Actions" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -45,7 +64,12 @@ test("save_memory persists a fact that recall_memory then surfaces", async () =>
     ]),
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "r1", toolName: "recall_memory", input: JSON.stringify({ query: "Fly.io GitHub Actions deploy target" }) },
+      {
+        type: "tool-call",
+        toolCallId: "r1",
+        toolName: "recall_memory",
+        input: JSON.stringify({ query: "Fly.io GitHub Actions deploy target" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -137,7 +161,12 @@ test("buildDigest summarizes a worked session and skips an empty one", async () 
         { type: "finish", finishReason: "stop", usage: USAGE },
       ]) as never,
     doGenerate: async () => ({
-      content: [{ type: "text", text: "Built the JSONC config loader; chose comment-stripping; gotcha: trailing commas." }],
+      content: [
+        {
+          type: "text",
+          text: "Built the JSONC config loader; chose comment-stripping; gotcha: trailing commas.",
+        },
+      ],
       finishReason: "stop",
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
       warnings: [],
@@ -165,7 +194,10 @@ test("buildDigest summarizes a worked session and skips an empty one", async () 
 
 test("save_memory is not offered in plan mode (read-only)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mem-plan-"));
-  const config = { ...defaultConfig(), memory: { ...defaultConfig().memory, semantic: { enabled: false, model: "off" } } };
+  const config = {
+    ...defaultConfig(),
+    memory: { ...defaultConfig().memory, semantic: { enabled: false, model: "off" } },
+  };
   const memory = await MemoryService.create(dir, config, new ProviderRegistry());
   const toolNames: string[][] = [];
   const model = new MockLanguageModelV2({

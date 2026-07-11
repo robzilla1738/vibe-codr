@@ -61,7 +61,12 @@ function makeEngine(
   let call = 0;
   const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
   const cwd = mkdtempSync(join(tmpdir(), "vibe-perm-")); // isolated, non-git
   const engine = new Engine({
@@ -80,7 +85,12 @@ function toolCallCmd(id: string, command: string) {
     stream: simulateReadableStream({
       chunks: [
         { type: "stream-start", warnings: [] },
-        { type: "tool-call", toolCallId: id, toolName: "danger", input: JSON.stringify({ command }) },
+        {
+          type: "tool-call",
+          toolCallId: id,
+          toolName: "danger",
+          input: JSON.stringify({ command }),
+        },
         { type: "finish", finishReason: "tool-calls", usage: USAGE },
       ] as never[],
       initialDelayInMs: 0,
@@ -119,14 +129,13 @@ test("interactive: a denied permission blocks the tool", async () => {
   await engine.whenIdle();
   expect(events.some((e) => e.type === "permission-request")).toBe(true);
   expect(runs()).toBe(0);
-  expect(events.some((e) => e.type === "notice" && e.message.includes("Blocked danger"))).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("Blocked danger"))).toBe(
+    true,
+  );
 });
 
 test("interactive: 'always' suppresses the second prompt", async () => {
-  const { engine, runs } = makeEngine(
-    [toolCall("c1"), toolCall("c2"), finalText()],
-    true,
-  );
+  const { engine, runs } = makeEngine([toolCall("c1"), toolCall("c2"), finalText()], true);
   const events = drive(engine, "always");
   engine.send({ type: "submit-prompt", text: "go" });
   await engine.whenIdle();
@@ -173,7 +182,8 @@ test("re-gating approvals to ask forgets a prior 'always' grant (it can't bypass
   void (async () => {
     for await (const e of engine.events()) {
       events.push(e);
-      if (e.type === "permission-request") engine.send({ type: "resolve-permission", id: e.id, decision: "always" });
+      if (e.type === "permission-request")
+        engine.send({ type: "resolve-permission", id: e.id, decision: "always" });
     }
   })();
   engine.send({ type: "submit-prompt", text: "one" });
@@ -213,7 +223,9 @@ test("non-interactive: an EXPLICIT ask rule fails CLOSED (a human gate can't aut
   await engine.whenIdle();
   expect(events.some((e) => e.type === "permission-request")).toBe(false); // nothing to answer
   expect(runs()).toBe(0); // blocked, not run
-  expect(events.some((e) => e.type === "notice" && e.message.includes("Blocked danger"))).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("Blocked danger"))).toBe(
+    true,
+  );
 });
 
 test("abort auto-denies a pending permission AND emits permission-settled with its id", async () => {
@@ -335,7 +347,12 @@ function makePathEngine(steps: unknown[], cwdOverride?: string) {
   let call = 0;
   const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
   const cwd = cwdOverride ?? mkdtempSync(join(tmpdir(), "vibe-perm-path-"));
   const engine = new Engine({
@@ -451,7 +468,9 @@ test("always-project: a command grant with a glob char persists as matchExact, N
   const checker = new PermissionChecker(cfg.permissions, () => false, "ask", cwd);
   expect((await checker.check("danger", { command: "rm build/*" })).allowed).toBe(true);
   // …but NOT a glob-broadened traversal a `match` rule would have wrongly allowed.
-  expect((await checker.check("danger", { command: "rm build/../secret.env" })).allowed).toBe(false);
+  expect((await checker.check("danger", { command: "rm build/../secret.env" })).allowed).toBe(
+    false,
+  );
 });
 
 test("always-project: a path grant persists the REALPATH-canonical path as matchExact (mirrors the key scope)", async () => {

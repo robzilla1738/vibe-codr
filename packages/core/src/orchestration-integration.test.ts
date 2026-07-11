@@ -29,11 +29,22 @@ afterAll(() => {
 
 function mockRegistry(model: MockLanguageModelV2) {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 function stream(chunks: unknown[]) {
-  return { stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }) };
+  return {
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
 }
 function textStep(delta: string) {
   return stream([
@@ -108,8 +119,16 @@ test("spawn_tasks runs a dependency-ordered plan and returns a consolidated repo
   expect(call).toBe(4);
   // Orchestration status events were emitted for both tasks.
   const statuses = events.filter((e) => e.type === "orchestration-task");
-  expect(statuses.some((e) => e.type === "orchestration-task" && e.taskId === "a" && e.status === "completed")).toBe(true);
-  expect(statuses.some((e) => e.type === "orchestration-task" && e.taskId === "b" && e.status === "completed")).toBe(true);
+  expect(
+    statuses.some(
+      (e) => e.type === "orchestration-task" && e.taskId === "a" && e.status === "completed",
+    ),
+  ).toBe(true);
+  expect(
+    statuses.some(
+      (e) => e.type === "orchestration-task" && e.taskId === "b" && e.status === "completed",
+    ),
+  ).toBe(true);
 });
 
 test("the journal plan stamp includes behavior-bearing fields (verify-pass regression)", async () => {
@@ -204,7 +223,9 @@ test("the journal plan stamp hashes worktree/hard/agent/outputSchema (BUG-002 re
     { ...base, agent: "review" },
     { ...base, outputSchema: { type: "object", properties: { ok: { type: "boolean" } } } },
   ];
-  const stampedEveryTime = flips.every((spec) => loadCompletedTasks(cwd, session.id, planIdentity([spec])).length === 0);
+  const stampedEveryTime = flips.every(
+    (spec) => loadCompletedTasks(cwd, session.id, planIdentity([spec])).length === 0,
+  );
   expect(stampedEveryTime).toBe(true);
   // Sanity: the baseline (no extra field) DOES seed this run's completion.
   expect(loadCompletedTasks(cwd, session.id, planIdentity([base])).length).toBe(1);
@@ -444,8 +465,11 @@ test("a detached spawn_tasks batch runs in the background, journals, and honors 
 
   await session.run("run a background plan");
   // Return was immediate — pull the batch id out of the detach handle message.
-  const spawnDone = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
-  const spawnOut = spawnDone && spawnDone.type === "tool-call-finished" ? String(spawnDone.output) : "";
+  const spawnDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks",
+  );
+  const spawnOut =
+    spawnDone && spawnDone.type === "tool-call-finished" ? String(spawnDone.output) : "";
   expect(spawnOut).toContain("in the background");
   const batchId = /check_task\("([^"]+)"\)/.exec(spawnOut)?.[1] ?? "";
   expect(batchId).not.toBe("");
@@ -503,7 +527,12 @@ test("engine finalize aborts an outstanding detached subagent", async () => {
       if (p.includes("HANGWORK")) return hangStream(options.abortSignal) as never; // background child hangs until aborted
       return stream([
         { type: "stream-start", warnings: [] },
-        { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "do HANGWORK now", detach: true }) },
+        {
+          type: "tool-call",
+          toolCallId: "s1",
+          toolName: "spawn_subagent",
+          input: JSON.stringify({ prompt: "do HANGWORK now", detach: true }),
+        },
         { type: "finish", finishReason: "tool-calls", usage: USAGE },
       ]) as never;
     },
@@ -534,7 +563,9 @@ test("engine finalize aborts an outstanding detached subagent", async () => {
   // The hanging detached child was aborted and settled as interrupted (never
   // producing its would-be output).
   const finished = events.find((e) => e.type === "subagent-finished");
-  expect(finished && finished.type === "subagent-finished" && /interrupt/i.test(finished.result)).toBe(true);
+  expect(
+    finished && finished.type === "subagent-finished" && /interrupt/i.test(finished.result),
+  ).toBe(true);
 }, 15_000);
 
 test("engine finalize terminates within a wall-clock bound even when a detached child wedges", async () => {
@@ -550,7 +581,12 @@ test("engine finalize terminates within a wall-clock bound even when a detached 
       if (p.includes("WEDGEWORK")) return wedgeStream() as never; // hangs forever, even on abort
       return stream([
         { type: "stream-start", warnings: [] },
-        { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "do WEDGEWORK now", detach: true }) },
+        {
+          type: "tool-call",
+          toolCallId: "s1",
+          toolName: "spawn_subagent",
+          input: JSON.stringify({ prompt: "do WEDGEWORK now", detach: true }),
+        },
         { type: "finish", finishReason: "tool-calls", usage: USAGE },
       ]) as never;
     },
@@ -566,7 +602,9 @@ test("engine finalize terminates within a wall-clock bound even when a detached 
   await engine.bootstrap();
   const sub = engine.events();
   const collector = (async () => {
-    for await (const _e of sub) { /* drain */ }
+    for await (const _e of sub) {
+      /* drain */
+    }
   })();
 
   engine.send({ type: "submit-prompt", text: "spawn a wedged background subagent" });
@@ -826,7 +864,10 @@ test("a submit-prompt racing a not-yet-registered detached spawn does not wipe t
     for await (const e of engine.events()) events.push(e);
   })();
 
-  engine.send({ type: "submit-prompt", text: "MARKER1 post then spawn (prompt 2 injected mid-turn)" });
+  engine.send({
+    type: "submit-prompt",
+    text: "MARKER1 post then spawn (prompt 2 injected mid-turn)",
+  });
   await engine.whenIdle(); // drains BOTH turns (the race prompt was queued mid-turn-1)
 
   // Turn 2's read_notes still saw the decision → the racing submit-prompt did
@@ -838,14 +879,8 @@ test("a submit-prompt racing a not-yet-registered detached spawn does not wipe t
 }, 15_000);
 
 test("isReviewClean rejects path:line: and path:line space findings (BUG-093)", () => {
-  expect(
-    isReviewClean("src/foo.ts:10: missing null check\nREVIEW-CLEAN"),
-  ).toBe(false);
-  expect(
-    isReviewClean("src/foo.ts:10 missing null check\nREVIEW-CLEAN"),
-  ).toBe(false);
-  expect(
-    isReviewClean("src/foo.ts:10 — problem\nREVIEW-CLEAN"),
-  ).toBe(false);
+  expect(isReviewClean("src/foo.ts:10: missing null check\nREVIEW-CLEAN")).toBe(false);
+  expect(isReviewClean("src/foo.ts:10 missing null check\nREVIEW-CLEAN")).toBe(false);
+  expect(isReviewClean("src/foo.ts:10 — problem\nREVIEW-CLEAN")).toBe(false);
   expect(isReviewClean("All good.\nREVIEW-CLEAN")).toBe(true);
 });

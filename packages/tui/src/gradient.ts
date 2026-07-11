@@ -31,7 +31,7 @@ const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 /** HSV (h in degrees, s/v in 0..1) → `#rrggbb`. */
 export function hsvToHex(h: number, s: number, v: number): string {
   const c = v * s;
-  const hp = ((((h % 360) + 360) % 360) / 60);
+  const hp = (((h % 360) + 360) % 360) / 60;
   const x = c * (1 - Math.abs((hp % 2) - 1));
   let r = 0;
   let g = 0;

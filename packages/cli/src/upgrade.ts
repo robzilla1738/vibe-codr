@@ -21,12 +21,7 @@ export function detectChannel(execPath: string): UpgradeChannel {
   const base = (execPath.split(/[\\/]/).pop() ?? "").toLowerCase().replace(/\.exe$/, "");
   // Package channel: bun runtime OR node (npm global bins often use node).
   // BUG-096: bare `node` used to fall through to "binary" GitHub instructions.
-  if (
-    base === "bun" ||
-    base.startsWith("bun-") ||
-    base === "node" ||
-    base.startsWith("node")
-  ) {
+  if (base === "bun" || base.startsWith("bun-") || base === "node" || base.startsWith("node")) {
     return "bun";
   }
   return "binary";

@@ -152,12 +152,20 @@ export async function run(argv: string[]): Promise<number> {
     // Error on an unrecognized --mode rather than silently defaulting to execute
     // (a `--mode plann` typo would otherwise run in the wrong mode with no signal).
     if (!applyCliModeOverride(overrides, values.mode)) {
-      process.stderr.write(`vibecodr: invalid --mode "${values.mode}" (expected "plan", "execute", or "yolo")\n`);
+      process.stderr.write(
+        `vibecodr: invalid --mode "${values.mode}" (expected "plan", "execute", or "yolo")\n`,
+      );
       return 1;
     }
   }
-  if (values["output-format"] !== undefined && values["output-format"] !== "json" && values["output-format"] !== "text") {
-    process.stderr.write(`vibecodr: invalid --output-format "${values["output-format"]}" (expected "json" or "text")\n`);
+  if (
+    values["output-format"] !== undefined &&
+    values["output-format"] !== "json" &&
+    values["output-format"] !== "text"
+  ) {
+    process.stderr.write(
+      `vibecodr: invalid --output-format "${values["output-format"]}" (expected "json" or "text")\n`,
+    );
     return 1;
   }
 
@@ -171,7 +179,9 @@ export async function run(argv: string[]): Promise<number> {
   // It PRINTS (never self-mutates) — honest and simple: the channel is detected
   // from how this process was launched (compiled binary vs a bun runtime).
   if (positionals[0] === "upgrade") {
-    process.stdout.write(`${upgradeInstructions({ execPath: process.execPath, version: VERSION })}\n`);
+    process.stdout.write(
+      `${upgradeInstructions({ execPath: process.execPath, version: VERSION })}\n`,
+    );
     return 0;
   }
 
@@ -281,7 +291,7 @@ export async function run(argv: string[]): Promise<number> {
     const wantsStdin = values.prompt === "-" || values.prompt === "";
     if (wantsStdin && process.stdin.isTTY) {
       process.stderr.write(
-        'vibecodr: -p reads the prompt from stdin here, but stdin is a terminal (no piped input). ' +
+        "vibecodr: -p reads the prompt from stdin here, but stdin is a terminal (no piped input). " +
           'Pipe input (`cat task.md | vibecodr -p -`) or pass the prompt directly (`vibecodr -p "…"`).\n',
       );
       await engine.finalize();
@@ -371,9 +381,7 @@ export async function formatSessions(cwd: string): Promise<string> {
   // BUG-074: skip incomplete/corrupt meta rows instead of throwing on .length.
   const rows = metas.filter(
     (m): m is typeof m & { id: string; model: string } =>
-      typeof m?.id === "string" &&
-      m.id.length > 0 &&
-      typeof m?.model === "string",
+      typeof m?.id === "string" && m.id.length > 0 && typeof m?.model === "string",
   );
   if (!rows.length) return "No saved sessions.\n";
   // Align the id and model columns so timestamps, costs, and goals line up.

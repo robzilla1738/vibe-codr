@@ -168,7 +168,11 @@ export async function searchSessions(
   }
   if (!docs.length) return [];
 
-  const ranked = rankBm25(query, docs.map((d) => d.text), terms);
+  const ranked = rankBm25(
+    query,
+    docs.map((d) => d.text),
+    terms,
+  );
   const hits: RecallHit[] = ranked.map(({ index, score }) => {
     const d = docs[index]!;
     return {

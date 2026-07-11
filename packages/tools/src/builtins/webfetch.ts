@@ -113,10 +113,13 @@ export function htmlToText(html: string): string {
     s = stripBlock(s, tag);
   }
   // Code blocks first (their inner whitespace must survive verbatim).
-  s = s.replace(/<pre[^>]*>([^<]*(?:<(?!\/pre[\s>])[^<]*)*)(?:<\/pre[^>]*>)?/gi, (_, body: string) => {
-    const code = decodeEntities(body.replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
-    return `\n\`\`\`\n${code}\n\`\`\`\n`;
-  });
+  s = s.replace(
+    /<pre[^>]*>([^<]*(?:<(?!\/pre[\s>])[^<]*)*)(?:<\/pre[^>]*>)?/gi,
+    (_, body: string) => {
+      const code = decodeEntities(body.replace(/<[^>]+>/g, "")).replace(/^\n+|\n+$/g, "");
+      return `\n\`\`\`\n${code}\n\`\`\`\n`;
+    },
+  );
   // Split on the fenced code blocks created above and do ALL remaining tag/entity
   // processing ONLY on the non-fence segments. The <pre> pass already decoded its
   // body's entities (`&lt;`/`&gt;` → literal `<`/`>`), so if the catch-all
@@ -129,10 +132,16 @@ export function htmlToText(html: string): string {
       if (i % 2 === 1) return part; // fenced code — verbatim
       const stripped = part
         // Headings → markdown heading lines.
-        .replace(/<h([1-6])[^>]*>((?:[^<]|<(?!\/h\1[\s>]))*)(?:<\/h\1[^>]*>)?/gi, (_, level: string, body: string) => {
-          const text = body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-          return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n";
-        })
+        .replace(
+          /<h([1-6])[^>]*>((?:[^<]|<(?!\/h\1[\s>]))*)(?:<\/h\1[^>]*>)?/gi,
+          (_, level: string, body: string) => {
+            const text = body
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+            return text ? `\n\n${"#".repeat(Number(level))} ${text}\n\n` : "\n";
+          },
+        )
         // List items → bullets; block-level closers → line breaks; cells → separators.
         .replace(/<li[^>]*>/gi, "\n- ")
         .replace(/<\/(?:p|div|section|article|li|ul|ol|table|blockquote|figure)>/gi, "\n")
@@ -243,7 +252,10 @@ export interface WebfetchOptions extends FetchPolicy {
   /** Injectable Wayback snapshot lookup (tests). Returns the snapshot URL +
    * timestamp for a dead page, or null when none exists. Defaults to the
    * archive.org availability API. */
-  waybackLookup?: (url: string, signal: AbortSignal) => Promise<{ url: string; timestamp?: string } | null>;
+  waybackLookup?: (
+    url: string,
+    signal: AbortSignal,
+  ) => Promise<{ url: string; timestamp?: string } | null>;
 }
 
 /** Query archive.org for the closest snapshot of `url`. Best-effort. */
@@ -415,7 +427,10 @@ export interface GuardedFetchOptions {
  * any failure. This is THE way to pull web text; never fetch a model-supplied
  * URL without it.
  */
-export async function guardedFetchText(startUrl: string, opts: GuardedFetchOptions): Promise<string> {
+export async function guardedFetchText(
+  startUrl: string,
+  opts: GuardedFetchOptions,
+): Promise<string> {
   const policy = opts.policy ?? {};
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   let current = startUrl;
@@ -503,7 +518,10 @@ function pinnedInit(target: { url: URL; pinnedIp?: string }, signal: AbortSignal
   const base = {
     signal,
     redirect: "manual" as const,
-    headers: { "user-agent": USER_AGENT, accept: "text/html,application/xhtml+xml,application/pdf,*/*" },
+    headers: {
+      "user-agent": USER_AGENT,
+      accept: "text/html,application/xhtml+xml,application/pdf,*/*",
+    },
   };
   if (!target.pinnedIp) return base;
   const init = {
@@ -530,7 +548,9 @@ async function extractText(
   if (isPdf) {
     const pdf = extractPdfText(Buffer.from(bytes));
     if (!pdf) {
-      throw new Error("PDF has no extractable text (likely scanned/encrypted) — find an HTML source.");
+      throw new Error(
+        "PDF has no extractable text (likely scanned/encrypted) — find an HTML source.",
+      );
     }
     return `[PDF, ${pdf.pages} page${pdf.pages === 1 ? "" : "s"}]\n${pdf.text}`;
   }
@@ -560,10 +580,9 @@ export function decodeCharset(bytes: Uint8Array, contentType: string): string {
   }
   if (label && !/^utf-?8$/i.test(label)) {
     try {
-      return new TextDecoder(
-        label.toLowerCase() as ConstructorParameters<typeof TextDecoder>[0],
-        { fatal: false },
-      ).decode(bytes);
+      return new TextDecoder(label.toLowerCase() as ConstructorParameters<typeof TextDecoder>[0], {
+        fatal: false,
+      }).decode(bytes);
     } catch {
       /* unknown label — fall through to UTF-8 */
     }

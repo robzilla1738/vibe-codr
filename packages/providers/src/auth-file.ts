@@ -22,11 +22,13 @@ const COMMON_KEYS = [
 ];
 
 function getPath(obj: unknown, path: string): unknown {
-  return path.split(".").reduce<unknown>(
-    (acc, key) =>
-      acc && typeof acc === "object" ? (acc as Record<string, unknown>)[key] : undefined,
-    obj,
-  );
+  return path
+    .split(".")
+    .reduce<unknown>(
+      (acc, key) =>
+        acc && typeof acc === "object" ? (acc as Record<string, unknown>)[key] : undefined,
+      obj,
+    );
 }
 
 /**

@@ -96,7 +96,9 @@ export async function fetchLatestVersion(
 }
 
 /** Read the cached check, tolerating a missing or corrupt file (returns null). */
-export async function readUpdateCache(file: string = updateCacheFile()): Promise<UpdateCache | null> {
+export async function readUpdateCache(
+  file: string = updateCacheFile(),
+): Promise<UpdateCache | null> {
   try {
     const raw = JSON.parse(await readFile(file, "utf8")) as Partial<UpdateCache>;
     if (raw && typeof raw.latest === "string" && typeof raw.checkedAt === "number") {

@@ -57,7 +57,7 @@ const BINARY_EXT =
 export const grepTool: ToolDefinition<GrepInput> = {
   name: "grep",
   description:
-    "Search file contents by regex (ripgrep when available, otherwise a built-in scan). Supports ignoreCase, context lines (0-10 around each match), a glob filter, and a fileType filter (e.g. \"ts\"). Returns matching lines with file:line prefixes. Inside a git repo the built-in fallback searches tracked files plus untracked-but-not-ignored files (honoring .gitignore), matching ripgrep's default file set.",
+    'Search file contents by regex (ripgrep when available, otherwise a built-in scan). Supports ignoreCase, context lines (0-10 around each match), a glob filter, and a fileType filter (e.g. "ts"). Returns matching lines with file:line prefixes. Inside a git repo the built-in fallback searches tracked files plus untracked-but-not-ignored files (honoring .gitignore), matching ripgrep\'s default file set.',
   inputSchema: Input,
   readOnly: true,
   concurrencySafe: true,
@@ -258,7 +258,9 @@ export async function builtinGrep(
       // (minified JS, embedded data) — skip those to avoid a synchronous hang. A
       // literal pattern is matched with a plain substring scan at any length.
       const hit = isLiteral
-        ? (ignoreCase ? line.toLowerCase().includes(needle) : line.includes(needle))
+        ? ignoreCase
+          ? line.toLowerCase().includes(needle)
+          : line.includes(needle)
         : line.length <= MAX_LINE_LEN && regex.test(line);
       if (hit) matched.push(i);
     }
@@ -288,7 +290,8 @@ export async function builtinGrep(
   const note = `…(skipped ${skippedLarge} file${skippedLarge === 1 ? "" : "s"} over ${Math.floor(MAX_FALLBACK_FILE_BYTES / 1024 / 1024)}MB in fallback grep)`;
   return {
     ...capped,
-    output: capped.output === "(no matches)" ? `(no matches)\n${note}` : `${capped.output}\n${note}`,
+    output:
+      capped.output === "(no matches)" ? `(no matches)\n${note}` : `${capped.output}\n${note}`,
   };
 }
 
@@ -350,7 +353,11 @@ async function walkFiles(cwd: string, root: string): Promise<string[]> {
 
 /** Apply the glob / fileType / binary filters uniformly to a candidate set,
  * whether it came from `git ls-files` or the filesystem walk. */
-function filterFiles(files: string[], glob: string | undefined, fileType: string | undefined): string[] {
+function filterFiles(
+  files: string[],
+  glob: string | undefined,
+  fileType: string | undefined,
+): string[] {
   const matchGlob = glob ? makeGlobMatcher(glob) : null;
   // A mapped fileType (ts/js/py/…) matches any of its ripgrep extensions; an
   // unmapped one keeps the literal `.<type>` behavior.

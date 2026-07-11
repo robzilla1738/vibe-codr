@@ -4,10 +4,7 @@ import { ConfigError } from "@vibe/shared";
 import { ConfigSchema, type Config, type PermissionRule } from "./schema.ts";
 
 /** Deep-merge plain objects (arrays are replaced, not concatenated). */
-function deepMerge<T extends Record<string, unknown>>(
-  base: T,
-  override: Partial<T>,
-): T {
+function deepMerge<T extends Record<string, unknown>>(base: T, override: Partial<T>): T {
   const out: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(override)) {
     if (value === undefined) continue;
@@ -116,18 +113,14 @@ function stripTrailingCommas(input: string): string {
   return out;
 }
 
-async function readConfigFile(
-  path: string,
-): Promise<Record<string, unknown> | null> {
+async function readConfigFile(path: string): Promise<Record<string, unknown> | null> {
   const file = Bun.file(path);
   if (!(await file.exists())) return null;
   try {
     const raw = await file.text();
     return JSON.parse(stripTrailingCommas(stripJsonComments(raw))) as Record<string, unknown>;
   } catch (err) {
-    throw new ConfigError(
-      `Failed to parse config at ${path}: ${(err as Error).message}`,
-    );
+    throw new ConfigError(`Failed to parse config at ${path}: ${(err as Error).message}`);
   }
 }
 
@@ -373,7 +366,10 @@ function sanitizeUntrustedProjectConfig(project: Record<string, unknown>): {
   // credential; `apiKey`/`headers` can route the user's prompt content through
   // an attacker's provider account. With `baseURL` gone a project provider is
   // useless anyway — a user who wants project-local providers trusts the repo.
-  if (isPlainObject(clean.providers) && Object.keys(clean.providers as Record<string, unknown>).length) {
+  if (
+    isPlainObject(clean.providers) &&
+    Object.keys(clean.providers as Record<string, unknown>).length
+  ) {
     delete clean.providers;
     dropped.push("providers");
   }
@@ -488,9 +484,7 @@ export function configSecurityNotices(config: object): string[] {
   const fromMap = securityNotices.get(config);
   if (fromMap) return fromMap;
   const bag = (config as Record<string, unknown>)[SECURITY_NOTICES_KEY];
-  return Array.isArray(bag)
-    ? bag.filter((x): x is string => typeof x === "string")
-    : [];
+  return Array.isArray(bag) ? bag.filter((x): x is string => typeof x === "string") : [];
 }
 
 /** Drop the clone-surviving notices bag before writing config to disk. */
@@ -574,7 +568,8 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
           return false;
         };
         const kept = raw.filter((r) => !isUntrustedAllow(r));
-        if (kept.length !== raw.length) droppedProjectFields.push("permissions (untrusted allow rules)");
+        if (kept.length !== raw.length)
+          droppedProjectFields.push("permissions (untrusted allow rules)");
         permissionLayers.push(...kept);
         fileConfig = { ...fileConfig };
         delete fileConfig.permissions;

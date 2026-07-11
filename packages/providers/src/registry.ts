@@ -86,10 +86,7 @@ export class ProviderRegistry {
   }
 
   /** Resolve a full model string to a live `LanguageModel`. */
-  async resolveModel(
-    modelString: string,
-    config: Config,
-  ): Promise<LanguageModel> {
+  async resolveModel(modelString: string, config: Config): Promise<LanguageModel> {
     const { providerId, modelId } = parseModelString(modelString);
     const def = this.#providers.get(providerId);
     if (!def) {
@@ -102,10 +99,7 @@ export class ProviderRegistry {
   /** Resolve a full model string to a live text-embedding model (for semantic
    * memory). Throws if the provider is unknown, unconfigured, or has no
    * embedding support — the caller catches and degrades to lexical recall. */
-  async embeddingModel(
-    modelString: string,
-    config: Config,
-  ): Promise<EmbeddingModel<string>> {
+  async embeddingModel(modelString: string, config: Config): Promise<EmbeddingModel<string>> {
     const { providerId, modelId } = parseModelString(modelString);
     const def = this.#providers.get(providerId);
     if (!def) {

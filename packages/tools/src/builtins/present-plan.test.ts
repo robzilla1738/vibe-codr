@@ -13,7 +13,7 @@ function ctx(): { ctx: ToolContext; events: UIEvent[] } {
       cwd: "/tmp",
       sessionId: "ses_plan",
       abortSignal: new AbortController().signal,
-    freshness,
+      freshness,
       emit: (e) => events.push(e),
       toolCallId: "call_1",
     },

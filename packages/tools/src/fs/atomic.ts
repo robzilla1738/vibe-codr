@@ -57,10 +57,7 @@ function derefSymlink(full: string): string {
  * learns the write failed. Mirrors the session store's temp+rename discipline
  * (pid + counter suffix, cleanup-on-failure).
  */
-export async function atomicReplace(
-  full: string,
-  data: string | Uint8Array,
-): Promise<void> {
+export async function atomicReplace(full: string, data: string | Uint8Array): Promise<void> {
   const target = derefSymlink(full);
 
   // Capture mode on the resolved target right before we stage the temp.

@@ -5,18 +5,7 @@
  */
 
 /** Ten-frame braille spinner (opencode's general-purpose working indicator). */
-export const SPINNER_FRAMES = [
-  "⠋",
-  "⠙",
-  "⠹",
-  "⠸",
-  "⠼",
-  "⠴",
-  "⠦",
-  "⠧",
-  "⠇",
-  "⠏",
-] as const;
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 /** Frame for a given tick. Negative ticks wrap correctly. */
 export function spinnerFrame(tick: number): string {

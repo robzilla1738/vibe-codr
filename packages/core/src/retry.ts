@@ -17,7 +17,13 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /** Heuristically decide whether an error is a transient network/rate-limit issue. */
 export function isTransientError(err: unknown): boolean {
-  const e = err as { status?: number; statusCode?: number; code?: string; name?: string; message?: string };
+  const e = err as {
+    status?: number;
+    statusCode?: number;
+    code?: string;
+    name?: string;
+    message?: string;
+  };
   const status = e?.status ?? e?.statusCode;
   if (typeof status === "number" && (status === 429 || (status >= 500 && status < 600))) {
     return true;

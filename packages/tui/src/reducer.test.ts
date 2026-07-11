@@ -16,7 +16,10 @@ import {
 } from "./reducer.ts";
 
 /** Fold a sequence of actions over the initial state. */
-function run(actions: TranscriptAction[], from: TranscriptState = initialTranscript()): TranscriptState {
+function run(
+  actions: TranscriptAction[],
+  from: TranscriptState = initialTranscript(),
+): TranscriptState {
   return actions.reduce(reduceTranscript, from);
 }
 
@@ -28,7 +31,12 @@ test("streaming deltas coalesce into one assistant block; finalize flips streami
     { type: "delta", text: "lo" },
   ]);
   expect(s.blocks).toHaveLength(1);
-  expect(s.blocks[0]).toMatchObject({ kind: "assistant", text: "Hello", streaming: true, gap: true });
+  expect(s.blocks[0]).toMatchObject({
+    kind: "assistant",
+    text: "Hello",
+    streaming: true,
+    gap: true,
+  });
   s = reduceTranscript(s, { type: "finalize" });
   expect(s.blocks[0]).toMatchObject({ streaming: false });
   expect(s.activeAssistant).toBe(-1);
@@ -52,12 +60,19 @@ test("user message finalizes the reply, appends a user block, and clears call ma
 });
 
 test("tool-start creates a block; tool-finish fills its output by call id", () => {
-  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "read", input: { path: "a.ts" } }]);
+  let s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "read", input: { path: "a.ts" } },
+  ]);
   const t0 = tool(s.blocks[0]!);
   expect(t0.kind).toBe("tool");
   expect(t0.label).toContain("read");
   expect(t0.collapsed).toBe(true); // non-subagent tools start collapsed
-  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "line1\nline2", isError: false });
+  s = reduceTranscript(s, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: "line1\nline2",
+    isError: false,
+  });
   expect(tool(s.blocks[0]!).output).toEqual(["line1", "line2"]);
   expect(s.toolByCallId).toEqual({}); // call id consumed
 });
@@ -71,7 +86,9 @@ test("a subagent tool is markdown but starts collapsed (panel owns fan-out)", ()
 });
 
 test("a spawn_tasks fan-out is markdown and starts collapsed", () => {
-  const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "spawn_tasks", input: { tasks: [] } }]);
+  const s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "spawn_tasks", input: { tasks: [] } },
+  ]);
   const t = tool(s.blocks[0]!);
   expect(t.collapsed).toBe(true);
   expect(t.isMarkdown).toBe(true);
@@ -79,7 +96,9 @@ test("a spawn_tasks fan-out is markdown and starts collapsed", () => {
 
 test("long successful bash stays collapsed with line-count meta", () => {
   const lines = Array.from({ length: 20 }, (_, i) => `line ${i}`).join("\n");
-  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "bun test" } }]);
+  let s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "bun test" } },
+  ]);
   s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: lines, isError: false });
   const t = tool(s.blocks[0]!);
   expect(t.collapsed).toBe(true);
@@ -88,7 +107,9 @@ test("long successful bash stays collapsed with line-count meta", () => {
 });
 
 test("failed tools expand and collapsedHint carries fail meta", () => {
-  let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "false" } }]);
+  let s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "false" } },
+  ]);
   s = reduceTranscript(s, {
     type: "tool-finish",
     toolCallId: "c1",
@@ -102,7 +123,12 @@ test("failed tools expand and collapsedHint carries fail meta", () => {
 
 test("tool-finish output objects are JSON-stringified", () => {
   let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "read", input: {} }]);
-  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: { ok: true }, isError: false });
+  s = reduceTranscript(s, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: { ok: true },
+    isError: false,
+  });
   expect(tool(s.blocks[0]!).output.join("\n")).toContain('"ok": true');
 });
 
@@ -110,7 +136,16 @@ test("file-changed folds the diff into the producing tool block and suppresses i
   let s = run([
     { type: "tool-start", toolCallId: "c1", toolName: "edit", input: { path: "a.ts" }, at: 1000 },
     { type: "tool-progress", toolCallId: "c1", chunk: "rewriting file..." },
-    { type: "file-changed", toolCallId: "c1", path: "a.ts", action: "edit", added: 3, removed: 1, diff: "+a\n-b", at: 4500 },
+    {
+      type: "file-changed",
+      toolCallId: "c1",
+      path: "a.ts",
+      action: "edit",
+      added: 3,
+      removed: 1,
+      diff: "+a\n-b",
+      at: 4500,
+    },
   ]);
   // Only one block (the tool block became the diff), not a separate diff row.
   expect(s.blocks).toHaveLength(1);
@@ -140,7 +175,12 @@ test("a NO-OP file-changed (±0, empty diff) leaves the tool block + its output 
   expect(t.isDiff).toBe(false);
   expect(t.label).toContain("write a.ts"); // original label, not "wrote a.ts +0 -0"
   // The finish echo is NOT suppressed — the tool's own text lands normally.
-  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "no changes", isError: false });
+  s = reduceTranscript(s, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: "no changes",
+    isError: false,
+  });
   expect(tool(s.blocks[0]!).output).toEqual(["no changes"]);
   // …and the footer doesn't count an untouched file as changed.
   expect(s.changedFiles).toEqual([]);
@@ -156,7 +196,12 @@ test("tool-progress streams a live tail on the RUNNING row, dropped once it fini
   expect(t.done).toBe(false);
   expect(t.tail).toContain("(pass) first case");
   // The result lands: done, tail gone, output is the real capture.
-  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "exit 0\nall pass", isError: false });
+  s = reduceTranscript(s, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: "exit 0\nall pass",
+    isError: false,
+  });
   t = tool(s.blocks[0]!);
   expect(t.done).toBe(true);
   expect(t.tail).toBeUndefined();
@@ -168,7 +213,11 @@ test("tool-progress streams a live tail on the RUNNING row, dropped once it fini
 test("the live tail is bounded — a chatty build can't grow the block", () => {
   let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: {} }]);
   for (let i = 0; i < 50; i++) {
-    s = reduceTranscript(s, { type: "tool-progress", toolCallId: "c1", chunk: `line ${i} ${"x".repeat(80)}\n` });
+    s = reduceTranscript(s, {
+      type: "tool-progress",
+      toolCallId: "c1",
+      chunk: `line ${i} ${"x".repeat(80)}\n`,
+    });
   }
   expect(tool(s.blocks[0]!).tail!.length).toBeLessThanOrEqual(600);
   expect(tool(s.blocks[0]!).tail).toContain("line 49"); // keeps the NEWEST output
@@ -176,26 +225,50 @@ test("the live tail is bounded — a chatty build can't grow the block", () => {
 
 test("a FAILED call opens expanded — the error text is what the user needs next", () => {
   let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: {} }]);
-  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "exit 1\nboom", isError: true });
+  s = reduceTranscript(s, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: "exit 1\nboom",
+    isError: true,
+  });
   const t = tool(s.blocks[0]!);
   expect(t.isError).toBe(true);
   expect(t.collapsed).toBe(false);
   // A successful call stays condensed until clicked.
   let ok = run([{ type: "tool-start", toolCallId: "c2", toolName: "read", input: {} }]);
-  ok = reduceTranscript(ok, { type: "tool-finish", toolCallId: "c2", output: "text", isError: false });
+  ok = reduceTranscript(ok, {
+    type: "tool-finish",
+    toolCallId: "c2",
+    output: "text",
+    isError: false,
+  });
   expect(tool(ok.blocks[0]!).collapsed).toBe(true);
 });
 
 test("tool duration is derived from the action stamps (shown as meta when slow)", () => {
   let s = run([{ type: "tool-start", toolCallId: "c1", toolName: "bash", input: {}, at: 1000 }]);
-  s = reduceTranscript(s, { type: "tool-finish", toolCallId: "c1", output: "ok", isError: false, at: 4500 });
+  s = reduceTranscript(s, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: "ok",
+    isError: false,
+    at: 4500,
+  });
   expect(tool(s.blocks[0]!).elapsedMs).toBe(3500);
 });
 
 test("tool-start records startedAt and leaves the row RUNNING so it can tick a live elapsed", () => {
   // The running-row live elapsed reads `startedAt` (a tool with no streamed tail
   // must still look alive), so the reducer has to stamp it and keep the row open.
-  const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "web_search", input: { query: "x" }, at: 5000 }]);
+  const s = run([
+    {
+      type: "tool-start",
+      toolCallId: "c1",
+      toolName: "web_search",
+      input: { query: "x" },
+      at: 5000,
+    },
+  ]);
   const t = tool(s.blocks[0]!);
   expect(t.startedAt).toBe(5000);
   expect(t.done).toBe(false);
@@ -203,7 +276,9 @@ test("tool-start records startedAt and leaves the row RUNNING so it can tick a l
 });
 
 test("toolDurationLabel: no dead spinner — a running row past 2s shows a live ticking elapsed", () => {
-  const running = run([{ type: "tool-start", toolCallId: "c1", toolName: "crawl_docs", input: {}, at: 1000 }]);
+  const running = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "crawl_docs", input: {}, at: 1000 },
+  ]);
   const t = tool(running.blocks[0]!);
   // Under 2s: nothing (quick calls stay clean). At/over 2s: whole-second live count.
   expect(toolDurationLabel(t, 1000)).toBe("");
@@ -211,27 +286,46 @@ test("toolDurationLabel: no dead spinner — a running row past 2s shows a live 
   expect(toolDurationLabel(t, 3000)).toBe("2s");
   expect(toolDurationLabel(t, 8400)).toBe("7s");
   // Finished: the final wall-clock, one decimal, only when it was slow (≥2s).
-  const done = reduceTranscript(running, { type: "tool-finish", toolCallId: "c1", output: "ok", isError: false, at: 4500 });
+  const done = reduceTranscript(running, {
+    type: "tool-finish",
+    toolCallId: "c1",
+    output: "ok",
+    isError: false,
+    at: 4500,
+  });
   expect(toolDurationLabel(tool(done.blocks[0]!), 9_999_999)).toBe("3.5s");
   // A fast finished call shows nothing regardless of `now`.
   let quick = run([{ type: "tool-start", toolCallId: "c2", toolName: "read", input: {}, at: 0 }]);
-  quick = reduceTranscript(quick, { type: "tool-finish", toolCallId: "c2", output: "ok", isError: false, at: 300 });
+  quick = reduceTranscript(quick, {
+    type: "tool-finish",
+    toolCallId: "c2",
+    output: "ok",
+    isError: false,
+    at: 300,
+  });
   expect(toolDurationLabel(tool(quick.blocks[0]!), 9_999_999)).toBe("");
   // A settled row with no stamp (interrupted turn) shows nothing, never NaN.
-  const settled = reduceTranscript(run([{ type: "tool-start", toolCallId: "c3", toolName: "read", input: {} }]), {
-    type: "clear-turn",
-  });
+  const settled = reduceTranscript(
+    run([{ type: "tool-start", toolCallId: "c3", toolName: "read", input: {} }]),
+    {
+      type: "clear-turn",
+    },
+  );
   expect(toolDurationLabel(tool(settled.blocks[0]!), 9_999_999)).toBe("");
 });
 
 test("a thinking burst lands as a collapsed row; toggle expands it; empty is dropped", () => {
-  let s = run([{ type: "thinking", text: "the loader owns the cache\nso patch there", seconds: 8 }]);
+  let s = run([
+    { type: "thinking", text: "the loader owns the cache\nso patch there", seconds: 8 },
+  ]);
   const t = s.blocks[0]!;
   expect(t.kind).toBe("thinking");
   expect(t.kind === "thinking" && t.collapsed).toBe(true);
   expect(t.kind === "thinking" && t.seconds).toBe(8);
   s = reduceTranscript(s, { type: "toggle", id: t.id });
-  expect(s.blocks[0]!.kind === "thinking" && (s.blocks[0] as { collapsed: boolean }).collapsed).toBe(false);
+  expect(
+    s.blocks[0]!.kind === "thinking" && (s.blocks[0] as { collapsed: boolean }).collapsed,
+  ).toBe(false);
   // Whitespace-only reasoning never lands a row.
   expect(run([{ type: "thinking", text: "   \n  " }]).blocks).toHaveLength(0);
 });
@@ -274,7 +368,14 @@ test("changedFiles accumulates line deltas per path across multiple edits", () =
     { type: "tool-start", toolCallId: "c2", toolName: "edit", input: { path: "a.ts" } },
     { type: "file-changed", toolCallId: "c2", path: "a.ts", action: "edit", added: 2, removed: 4 },
     { type: "tool-start", toolCallId: "c3", toolName: "write", input: { path: "b.ts" } },
-    { type: "file-changed", toolCallId: "c3", path: "b.ts", action: "write", added: 10, removed: 0 },
+    {
+      type: "file-changed",
+      toolCallId: "c3",
+      path: "b.ts",
+      action: "write",
+      added: 10,
+      removed: 0,
+    },
   ]);
   expect(s.changedFiles).toEqual([
     { path: "a.ts", added: 5, removed: 5 },
@@ -285,8 +386,24 @@ test("changedFiles accumulates line deltas per path across multiple edits", () =
 test("a second file-changed for one call appends a standalone diff row", () => {
   const s = run([
     { type: "tool-start", toolCallId: "c1", toolName: "apply_patch", input: {} },
-    { type: "file-changed", toolCallId: "c1", path: "a.ts", action: "edit", added: 1, removed: 0, diff: "+a" },
-    { type: "file-changed", toolCallId: "c1", path: "b.ts", action: "edit", added: 1, removed: 0, diff: "+b" },
+    {
+      type: "file-changed",
+      toolCallId: "c1",
+      path: "a.ts",
+      action: "edit",
+      added: 1,
+      removed: 0,
+      diff: "+a",
+    },
+    {
+      type: "file-changed",
+      toolCallId: "c1",
+      path: "b.ts",
+      action: "edit",
+      added: 1,
+      removed: 0,
+      diff: "+b",
+    },
   ]);
   // First folds into the tool block; second can't (already a diff) → new row.
   const diffs = s.blocks.filter((b) => b.kind === "tool" && b.isDiff);
@@ -302,7 +419,10 @@ test("toggle flips a tool block's collapsed state by id", () => {
 });
 
 test("notice and clear-turn finalize the reply", () => {
-  let s = run([{ type: "delta", text: "hi" }, { type: "notice", text: "saved" }]);
+  let s = run([
+    { type: "delta", text: "hi" },
+    { type: "notice", text: "saved" },
+  ]);
   expect(s.blocks.at(-1)).toMatchObject({ kind: "notice", text: "saved" });
   expect(s.blocks[0]).toMatchObject({ streaming: false });
   s = run([{ type: "delta", text: "again" }, { type: "clear-turn" }], s);
@@ -316,7 +436,9 @@ test("notice level: defaults to info, carries error/warn through so the UI can c
     { type: "notice", text: "boom", level: "error" },
     { type: "notice", text: "heads up", level: "warn" },
   ]);
-  const notices = s.blocks.filter((b): b is Extract<Block, { kind: "notice" }> => b.kind === "notice");
+  const notices = s.blocks.filter(
+    (b): b is Extract<Block, { kind: "notice" }> => b.kind === "notice",
+  );
   expect(notices.map((n) => n.level)).toEqual(["info", "error", "warn"]);
 });
 
@@ -407,13 +529,40 @@ test("collapsedHint reads errors, diffs, search results, and line counts", () =>
       done: true,
     }),
   ).toBe("error");
-  expect(collapsedHint({ kind: "tool", id: 0, label: "x", output: [], collapsed: true, isDiff: true, isError: false, done: true })).toBe("diff");
+  expect(
+    collapsedHint({
+      kind: "tool",
+      id: 0,
+      label: "x",
+      output: [],
+      collapsed: true,
+      isDiff: true,
+      isError: false,
+      done: true,
+    }),
+  ).toBe("diff");
   const search: Extract<Block, { kind: "tool" }> = {
-    kind: "tool", id: 1, label: "◈ search foo", output: ["1. a", "2. b", "notes"], collapsed: true, isDiff: false, isError: false, done: true,
+    kind: "tool",
+    id: 1,
+    label: "◈ search foo",
+    output: ["1. a", "2. b", "notes"],
+    collapsed: true,
+    isDiff: false,
+    isError: false,
+    done: true,
   };
   expect(collapsedHint(search)).toBe("2 results");
   expect(
-    collapsedHint({ kind: "tool", id: 2, label: "→ read x", output: ["only one"], collapsed: true, isDiff: false, isError: false, done: true }),
+    collapsedHint({
+      kind: "tool",
+      id: 2,
+      label: "→ read x",
+      output: ["only one"],
+      collapsed: true,
+      isDiff: false,
+      isError: false,
+      done: true,
+    }),
   ).toBe("1 line");
 });
 

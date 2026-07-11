@@ -47,12 +47,16 @@ export function parseCheckOutput(
     const zeroCollected = /no tests? (ran|found|collected)|0 passed|collected 0 items/i.test(text);
     const goNoTests = /no test files/i.test(text) && !/^ok\s/m.test(text);
     const noTests = total === 0 && (zeroCollected || goNoTests);
-    const failures = ls.filter((l) => /✕|✗|FAIL(ED)?\b|\bfailed\b|panicked|AssertionError|Error:/.test(l)).slice(0, 5);
+    const failures = ls
+      .filter((l) => /✕|✗|FAIL(ED)?\b|\bfailed\b|panicked|AssertionError|Error:/.test(l))
+      .slice(0, 5);
     return {
       pass: ok && !noTests,
       failed: failed ?? 0,
       total,
-      firstFailures: noTests ? ["no tests ran — establish a test command / add tests", ...failures] : failures,
+      firstFailures: noTests
+        ? ["no tests ran — establish a test command / add tests", ...failures]
+        : failures,
     };
   }
 
@@ -68,7 +72,9 @@ export function parseCheckOutput(
   }
 
   // build / install: exit code is the source of truth; collect first error lines.
-  const errLines = ls.filter((l) => /error|fail|cannot|unresolved|undefined reference/i.test(l)).slice(0, 5);
+  const errLines = ls
+    .filter((l) => /error|fail|cannot|unresolved|undefined reference/i.test(l))
+    .slice(0, 5);
   const failed = ok ? 0 : Math.max(1, errLines.length);
   return { pass: ok, failed, total: failed, firstFailures: errLines };
 }
@@ -92,7 +98,9 @@ export function formatCheckResult(
   const head = r.pass
     ? `PASS ${check} (${command}) ${r.total ? `${r.total - r.failed}/${r.total}` : ""} in ${durSec}s`.trim()
     : `FAIL ${check} (${command}) ${r.total ? `${r.failed}/${r.total} failing` : "exit nonzero"} in ${durSec}s`;
-  return r.firstFailures.length ? `${head}\n${r.firstFailures.map((f) => `  ${f}`).join("\n")}` : head;
+  return r.firstFailures.length
+    ? `${head}\n${r.firstFailures.map((f) => `  ${f}`).join("\n")}`
+    : head;
 }
 
 /** Render a full CheckSignal (as run by the green-gate) for prompts/notices. */

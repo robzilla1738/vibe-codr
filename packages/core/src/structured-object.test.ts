@@ -12,9 +12,10 @@ test("extractJsonObject parses bare JSON", () => {
 });
 
 test("extractJsonObject tolerates markdown fences and prose wrappers", () => {
-  expect(
-    extractJsonObject('Here you go:\n```json\n{"done":true,"reason":"yep"}\n```\n'),
-  ).toEqual({ done: true, reason: "yep" });
+  expect(extractJsonObject('Here you go:\n```json\n{"done":true,"reason":"yep"}\n```\n')).toEqual({
+    done: true,
+    reason: "yep",
+  });
   expect(extractJsonObject('Sure! {"done":false,"reason":"nope"} thanks')).toEqual({
     done: false,
     reason: "nope",

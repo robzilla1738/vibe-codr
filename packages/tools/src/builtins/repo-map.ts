@@ -27,8 +27,27 @@ const MAX_SYMBOLS_PER_FILE = 50;
 
 /** Source extensions worth mapping (declaration-bearing languages). */
 const CODE_EXT = new Set([
-  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java",
-  ".kt", ".rb", ".swift", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".php", ".scala",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".py",
+  ".go",
+  ".rs",
+  ".java",
+  ".kt",
+  ".rb",
+  ".swift",
+  ".c",
+  ".h",
+  ".cc",
+  ".cpp",
+  ".hpp",
+  ".cs",
+  ".php",
+  ".scala",
 ]);
 
 export function isCodeFile(path: string): boolean {

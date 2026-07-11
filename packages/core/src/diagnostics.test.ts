@@ -74,7 +74,10 @@ test("editing tsconfig.json rebuilds the service so new options take effect", as
   // rebuild against the new compilerOptions instead of reusing the stale ones.
   writeFileSync(
     join(dir, "tsconfig.json"),
-    JSON.stringify({ compilerOptions: { strict: true, noEmit: true, noUnusedLocals: true }, include: ["*.ts"] }),
+    JSON.stringify({
+      compilerOptions: { strict: true, noEmit: true, noUnusedLocals: true },
+      include: ["*.ts"],
+    }),
   );
   const out = await diag.diagnose(file);
   expect(out).toContain("TS6133"); // 'spare' is declared but never read

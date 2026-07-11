@@ -88,7 +88,9 @@ test("works keyless, fanning out across DuckDuckGo and Bing (no API key required
 test("dedupes by canonical URL across engines (one bun.sh/docs, not two)", async () => {
   delete process.env.TINYFISH_API_KEY;
   const { fetch } = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: BING_HTML } });
-  const out = String((await webSearchTool({ fetchImpl: fetch }).execute({ query: "bun" }, ctx())).output);
+  const out = String(
+    (await webSearchTool({ fetchImpl: fetch }).execute({ query: "bun" }, ctx())).output,
+  );
   // bun.sh/docs appears in BOTH engines' results but is merged to a single entry.
   expect(out.split("https://bun.sh/docs").length - 1).toBe(1);
 });
@@ -96,9 +98,15 @@ test("dedupes by canonical URL across engines (one bun.sh/docs, not two)", async
 test("uses TinyFish when a key is set, sending the X-API-Key header + recency", async () => {
   delete process.env.TINYFISH_API_KEY;
   const tf = JSON.stringify({
-    results: [{ position: 1, site_name: "Bun", title: "Bun homepage", snippet: "x", url: "https://bun.sh" }],
+    results: [
+      { position: 1, site_name: "Bun", title: "Bun homepage", snippet: "x", url: "https://bun.sh" },
+    ],
   });
-  const { fetch, seen } = routingFetch({ tinyfish: { body: tf }, ddg: { body: "" }, bing: { body: "" } });
+  const { fetch, seen } = routingFetch({
+    tinyfish: { body: tf },
+    ddg: { body: "" },
+    bing: { body: "" },
+  });
   const res = await webSearchTool({ apiKey: "secret-key", fetchImpl: fetch }).execute(
     { query: "bun test", recencyDays: 7 },
     ctx(),
@@ -125,10 +133,21 @@ test("a malformed TinyFish 200 (non-array results) doesn't sink the batch (adver
   // reach `collect()`'s `s.results.entries()` and THROW, converting a successful
   // keyless fan-out into a hard `web_search` error. A truthy non-array must be
   // treated as "no results from this engine", not a crash.
-  for (const body of ['{"results":{"error":"quota exceeded"}}', '{"results":"rate limited"}', "{}"]) {
+  for (const body of [
+    '{"results":{"error":"quota exceeded"}}',
+    '{"results":"rate limited"}',
+    "{}",
+  ]) {
     process.env.TINYFISH_API_KEY = "set";
-    const { fetch } = routingFetch({ tinyfish: { body }, ddg: { body: DDG_HTML }, bing: { body: "" } });
-    const res = await webSearchTool({ apiKey: "set", fetchImpl: fetch }).execute({ query: "bun docs" }, ctx());
+    const { fetch } = routingFetch({
+      tinyfish: { body },
+      ddg: { body: DDG_HTML },
+      bing: { body: "" },
+    });
+    const res = await webSearchTool({ apiKey: "set", fetchImpl: fetch }).execute(
+      { query: "bun docs" },
+      ctx(),
+    );
     expect([body, res.isError]).toEqual([body, undefined]);
     expect(String(res.output)).toContain("https://bun.sh/docs"); // DDG results still win
   }
@@ -146,8 +165,15 @@ test("a malformed TinyFish ELEMENT (missing snippet/url) doesn't sink the batch 
   ];
   for (const body of bodies) {
     process.env.TINYFISH_API_KEY = "set";
-    const { fetch } = routingFetch({ tinyfish: { body }, ddg: { body: DDG_HTML }, bing: { body: "" } });
-    const res = await webSearchTool({ apiKey: "set", fetchImpl: fetch }).execute({ query: "bun docs" }, ctx());
+    const { fetch } = routingFetch({
+      tinyfish: { body },
+      ddg: { body: DDG_HTML },
+      bing: { body: "" },
+    });
+    const res = await webSearchTool({ apiKey: "set", fetchImpl: fetch }).execute(
+      { query: "bun docs" },
+      ctx(),
+    );
     expect([body, res.isError]).toEqual([body, undefined]);
     expect(String(res.output)).toContain("https://bun.sh/docs"); // keyless results still win
   }
@@ -157,7 +183,10 @@ test("a malformed TinyFish ELEMENT (missing snippet/url) doesn't sink the batch 
 test("maxResults trims the merged, ranked list", async () => {
   delete process.env.TINYFISH_API_KEY;
   const { fetch } = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });
-  const res = await webSearchTool({ fetchImpl: fetch }).execute({ query: "x", maxResults: 1 }, ctx());
+  const res = await webSearchTool({ fetchImpl: fetch }).execute(
+    { query: "x", maxResults: 1 },
+    ctx(),
+  );
   const out = String(res.output);
   // The docs page ranks above the bare "Example" result and is the only one kept.
   expect(out).toContain("https://bun.sh/docs");
@@ -166,7 +195,10 @@ test("maxResults trims the merged, ranked list", async () => {
 
 test("reports an error only when every engine fails", async () => {
   delete process.env.TINYFISH_API_KEY;
-  const { fetch } = routingFetch({ ddg: { body: "boom", status: 503 }, bing: { body: "boom", status: 503 } });
+  const { fetch } = routingFetch({
+    ddg: { body: "boom", status: 503 },
+    bing: { body: "boom", status: 503 },
+  });
   const res = await webSearchTool({ fetchImpl: fetch }).execute({ query: "x" }, ctx());
   expect(res.isError).toBe(true);
   expect(String(res.output)).toMatch(/duckduckgo|bing/i);
@@ -174,7 +206,10 @@ test("reports an error only when every engine fails", async () => {
 
 test("reports a cooldown error when every engine is temporarily skipped", async () => {
   delete process.env.TINYFISH_API_KEY;
-  const failing = routingFetch({ ddg: { body: "boom", status: 503 }, bing: { body: "boom", status: 503 } });
+  const failing = routingFetch({
+    ddg: { body: "boom", status: 503 },
+    bing: { body: "boom", status: 503 },
+  });
   const first = await webSearchTool({ fetchImpl: failing.fetch }).execute({ query: "x" }, ctx());
   expect(first.isError).toBe(true);
 
@@ -189,7 +224,10 @@ test("reports a cooldown error when every engine is temporarily skipped", async 
 test("deep mode fans the query into multiple phrasings (more engine calls)", async () => {
   delete process.env.TINYFISH_API_KEY;
   const shallow = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });
-  await webSearchTool({ fetchImpl: shallow.fetch }).execute({ query: "how do I use bun test" }, ctx());
+  await webSearchTool({ fetchImpl: shallow.fetch }).execute(
+    { query: "how do I use bun test" },
+    ctx(),
+  );
   const deep = routingFetch({ ddg: { body: DDG_HTML }, bing: { body: "" } });
   // Inject `enrichFetch` (as the sibling deep tests do) so deep mode's top-page
   // enrichment hits the stub, not real bun.sh/example.com over the network — the
@@ -203,9 +241,7 @@ test("deep mode fans the query into multiple phrasings (more engine calls)", asy
 });
 
 test("formatResults numbers results and collapses snippet whitespace", () => {
-  const out = formatResults("q", [
-    { title: "T", snippet: "a   b\n c", url: "u" },
-  ]);
+  const out = formatResults("q", [{ title: "T", snippet: "a   b\n c", url: "u" }]);
   expect(out).toContain("1. T");
   expect(out).toContain("a b c");
 });

@@ -30,7 +30,10 @@ afterEach(() => {
 
 function stubFetch(body: string, contentType: string, status = 200): void {
   globalThis.fetch = (async () =>
-    new Response(body, { status, headers: { "content-type": contentType } })) as unknown as typeof fetch;
+    new Response(body, {
+      status,
+      headers: { "content-type": contentType },
+    })) as unknown as typeof fetch;
 }
 
 test("connects to the guard-verified IP (DNS pinning), keeping the original Host + SNI", async () => {
@@ -61,7 +64,10 @@ test("re-pins each redirect hop, brackets an IPv6 pinned address, and keeps the 
   globalThis.fetch = (async (u: unknown) => {
     seen.push(String(u));
     if (hop++ === 0) {
-      return new Response(null, { status: 302, headers: { location: "https://second.example:8443/next" } });
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://second.example:8443/next" },
+      });
     }
     return new Response("ok", { headers: { "content-type": "text/plain" } });
   }) as unknown as typeof fetch;
@@ -240,10 +246,7 @@ test("re-validates redirects, blocking a redirect into an internal host", async 
 });
 
 test("decodes numeric and named HTML entities", async () => {
-  stubFetch(
-    "<p>a&amp;b &#38; c &lt;tag&gt; &#x2764; &mdash; end</p>",
-    "text/html",
-  );
+  stubFetch("<p>a&amp;b &#38; c &lt;tag&gt; &#x2764; &mdash; end</p>", "text/html");
   const res = await fetcher().execute({ url: "https://example.com" }, ctx());
   const out = String(res.output);
   expect(out).toContain("a&b & c <tag> ❤ — end");
@@ -254,7 +257,10 @@ test("extracts text from a PDF response", async () => {
     await Bun.file(join(import.meta.dir, "__fixtures__", "sample.pdf")).arrayBuffer(),
   );
   globalThis.fetch = (async () =>
-    new Response(bytes, { status: 200, headers: { "content-type": "application/pdf" } })) as unknown as typeof fetch;
+    new Response(bytes, {
+      status: 200,
+      headers: { "content-type": "application/pdf" },
+    })) as unknown as typeof fetch;
   const res = await fetcher().execute({ url: "https://example.com/doc.pdf" }, ctx());
   expect(res.isError).toBeUndefined();
   const out = String(res.output);
@@ -265,11 +271,15 @@ test("extracts text from a PDF response", async () => {
 test("uses an injected Readable extractor for HTML, falling back to htmlToText on null", async () => {
   stubFetch("<html><body><article>real body</article><nav>menu</nav></body></html>", "text/html");
   const readable = webfetchTool({ lookup: publicLookup, readable: () => "READABLE ARTICLE" });
-  expect(String((await readable.execute({ url: "https://a.com" }, ctx())).output)).toBe("READABLE ARTICLE");
+  expect(String((await readable.execute({ url: "https://a.com" }, ctx())).output)).toBe(
+    "READABLE ARTICLE",
+  );
 
   stubFetch("<html><body><h1>Fallback</h1></body></html>", "text/html");
   const nullReadable = webfetchTool({ lookup: publicLookup, readable: () => null });
-  expect(String((await nullReadable.execute({ url: "https://b.com" }, ctx())).output)).toContain("Fallback");
+  expect(String((await nullReadable.execute({ url: "https://b.com" }, ctx())).output)).toContain(
+    "Fallback",
+  );
 });
 
 test("cache-through: a repeat fetch of the same URL is served from cache", async () => {
@@ -277,12 +287,19 @@ test("cache-through: a repeat fetch of the same URL is served from cache", async
   let calls = 0;
   globalThis.fetch = (async () => {
     calls++;
-    return new Response(`body ${calls}`, { status: 200, headers: { "content-type": "text/plain" } });
+    return new Response(`body ${calls}`, {
+      status: 200,
+      headers: { "content-type": "text/plain" },
+    });
   }) as unknown as typeof fetch;
   const tool = webfetchTool({ lookup: publicLookup, cache });
-  expect(String((await tool.execute({ url: "https://docs.example.com/x" }, ctx())).output)).toBe("body 1");
+  expect(String((await tool.execute({ url: "https://docs.example.com/x" }, ctx())).output)).toBe(
+    "body 1",
+  );
   // Second call is cached — fetch is not hit again.
-  expect(String((await tool.execute({ url: "https://docs.example.com/x" }, ctx())).output)).toBe("body 1");
+  expect(String((await tool.execute({ url: "https://docs.example.com/x" }, ctx())).output)).toBe(
+    "body 1",
+  );
   expect(calls).toBe(1);
 });
 
@@ -294,7 +311,9 @@ test("cache-through: stale-on-failure serves the last good copy when the live fe
     return new Response("cached body", { status: 200, headers: { "content-type": "text/plain" } });
   }) as unknown as typeof fetch;
   const tool = webfetchTool({ lookup: publicLookup, cache });
-  expect(String((await tool.execute({ url: "https://docs.example.com/y" }, ctx())).output)).toBe("cached body");
+  expect(String((await tool.execute({ url: "https://docs.example.com/y" }, ctx())).output)).toBe(
+    "cached body",
+  );
   mode = "fail";
   const stale = await tool.execute({ url: "https://docs.example.com/y" }, ctx());
   expect(stale.isError).toBeUndefined();
@@ -354,7 +373,9 @@ test("decodeCharset honors Content-Type charset and meta-charset sniffing", () =
   const withMeta = new TextEncoder().encode('<html><head><meta charset="utf-8"></head>é</html>');
   expect(decodeCharset(withMeta, "text/html")).toContain("é");
   // Unknown label degrades to UTF-8 without throwing.
-  expect(decodeCharset(new TextEncoder().encode("plain"), "text/html; charset=bogus-enc")).toBe("plain");
+  expect(decodeCharset(new TextEncoder().encode("plain"), "text/html; charset=bogus-enc")).toBe(
+    "plain",
+  );
 });
 
 test("htmlToText preserves headings, lists, and code blocks as markdown-ish structure", () => {
@@ -377,7 +398,10 @@ test("htmlToText preserves headings, lists, and code blocks as markdown-ish stru
 });
 
 test("a paywall/anti-bot shell is flagged, never silently returned as content", async () => {
-  stubFetch("<html><body>Checking your browser… enable JavaScript to continue</body></html>", "text/html");
+  stubFetch(
+    "<html><body>Checking your browser… enable JavaScript to continue</body></html>",
+    "text/html",
+  );
   const res = await webfetchTool({
     lookup: publicLookup,
     waybackLookup: async () => null, // no archive copy available
@@ -394,13 +418,18 @@ test("a 404 recovers via the Wayback snapshot, clearly labeled as archived", asy
     // The snapshot fetch is DNS-pinned (hostname replaced by the verified IP),
     // so match on the snapshot PATH, not the archive hostname.
     if (String(u).includes("/web/2024/")) {
-      return new Response("the original article text", { headers: { "content-type": "text/plain" } });
+      return new Response("the original article text", {
+        headers: { "content-type": "text/plain" },
+      });
     }
     return new Response("gone", { status: 404 });
   }) as unknown as typeof fetch;
   const res = await webfetchTool({
     lookup: publicLookup,
-    waybackLookup: async () => ({ url: "https://web.archive.org/web/2024/https://example.com/dead", timestamp: "20240115000000" }),
+    waybackLookup: async () => ({
+      url: "https://web.archive.org/web/2024/https://example.com/dead",
+      timestamp: "20240115000000",
+    }),
   }).execute({ url: "https://example.com/dead" }, ctx());
   expect(res.isError).toBeUndefined();
   expect(String(res.output)).toContain("archived copy from the Wayback Machine, 2024-01-15");
@@ -427,7 +456,10 @@ test("Wayback is NOT consulted for an internal URL even when allowPrivateHosts i
   let waybackAsked = false;
   const privateLookup = async () => [{ address: "10.0.0.5" }]; // intranet resolves private
   globalThis.fetch = (async () =>
-    new Response("not found", { status: 404, headers: { "content-type": "text/plain" } })) as unknown as typeof fetch;
+    new Response("not found", {
+      status: 404,
+      headers: { "content-type": "text/plain" },
+    })) as unknown as typeof fetch;
   const res = await webfetchTool({
     allowPrivateHosts: true,
     lookup: privateLookup,

@@ -58,7 +58,10 @@ test("McpTokenStore.merge serializes concurrent read-merge-writes", async () => 
 
 test("a corrupt token file is set aside on read, not silently clobbered", async () => {
   const store = tmpStore();
-  await store.merge({ clientInformation: { client_id: "dyn-123" }, tokens: { refresh_token: "keep-me" } });
+  await store.merge({
+    clientInformation: { client_id: "dyn-123" },
+    tokens: { refresh_token: "keep-me" },
+  });
   // Simulate a crash-corrupted file (truncated JSON).
   await Bun.write(store.path, '{"tokens": {"refresh');
   // read() must not return {} while erasing the file — it backs it up instead.
@@ -76,7 +79,9 @@ test("McpTokenStore.clear removes the persisted state", async () => {
 });
 
 test("mcpTokenStorePath sanitizes the server name and honors an override", () => {
-  expect(mcpTokenStorePath("gh/api", undefined)).toMatch(/vibe-codr\/mcp\/gh_api-[0-9a-f]{8}\.json$/);
+  expect(mcpTokenStorePath("gh/api", undefined)).toMatch(
+    /vibe-codr\/mcp\/gh_api-[0-9a-f]{8}\.json$/,
+  );
   expect(mcpTokenStorePath("gh", "/custom/tokens.json")).toBe("/custom/tokens.json");
 });
 
@@ -138,7 +143,11 @@ test("provider persists tokens through the store and reflects config in metadata
   const store = tmpStore();
   const provider = createMcpOAuthProvider(
     "gh",
-    { scopes: ["repo", "read:user"], clientName: "my-cli", redirectUri: "http://localhost:9999/cb" },
+    {
+      scopes: ["repo", "read:user"],
+      clientName: "my-cli",
+      redirectUri: "http://localhost:9999/cb",
+    },
     { store },
   );
   expect(provider.redirectUrl).toBe("http://localhost:9999/cb");
@@ -188,7 +197,10 @@ test("extractOAuthCallbackParams parses code and error from the redirect URL", (
   expect(extractOAuthCallbackParams("http://localhost:8976/callback?error=access_denied")).toEqual({
     error: "access_denied",
   });
-  expect(extractOAuthCallbackParams("/callback?code=abc123&state=s1")).toEqual({ code: "abc123", state: "s1" });
+  expect(extractOAuthCallbackParams("/callback?code=abc123&state=s1")).toEqual({
+    code: "abc123",
+    state: "s1",
+  });
   expect(extractOAuthCallbackParams("/callback")).toEqual({});
   expect(extractOAuthCallbackParams("not a url ::::")).toEqual({});
 });
@@ -203,8 +215,16 @@ test("waitForOAuthCallback resolves the code from a loopback hit", async () => {
 
 test("waitForOAuthCallback multiplexes concurrent flows on one redirect URL by state", async () => {
   const redirect = "http://127.0.0.1:8980/callback";
-  const p1 = createMcpOAuthProvider("one", { redirectUri: redirect }, { store: tmpStore(), openUrl: () => {} });
-  const p2 = createMcpOAuthProvider("two", { redirectUri: redirect }, { store: tmpStore(), openUrl: () => {} });
+  const p1 = createMcpOAuthProvider(
+    "one",
+    { redirectUri: redirect },
+    { store: tmpStore(), openUrl: () => {} },
+  );
+  const p2 = createMcpOAuthProvider(
+    "two",
+    { redirectUri: redirect },
+    { store: tmpStore(), openUrl: () => {} },
+  );
   await p1.redirectToAuthorization(new URL("https://auth.example.com/authorize?state=state-one"));
   await p2.redirectToAuthorization(new URL("https://auth.example.com/authorize?state=state-two"));
   const waitOne = waitForOAuthCallback(redirect, 5_000);

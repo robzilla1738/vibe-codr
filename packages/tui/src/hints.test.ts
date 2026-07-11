@@ -47,5 +47,10 @@ test("fitHintSegs returns empty for non-positive width", () => {
 });
 
 test("hintSegsWidth sums display widths", () => {
-  expect(hintSegsWidth([{ t: "ab", fg: "x" }, { t: "cd", fg: "y" }])).toBe(4);
+  expect(
+    hintSegsWidth([
+      { t: "ab", fg: "x" },
+      { t: "cd", fg: "y" },
+    ]),
+  ).toBe(4);
 });

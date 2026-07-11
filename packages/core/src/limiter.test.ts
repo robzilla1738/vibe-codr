@@ -57,9 +57,11 @@ test("recovers the ceiling additively after consecutive successes", async () => 
 
 test("a non-overload error does not lower the ceiling", async () => {
   const lim = createLimiter({ max: 8 });
-  await lim.run(async () => {
-    throw new Error("a logic bug, not back-pressure");
-  }).catch(() => {});
+  await lim
+    .run(async () => {
+      throw new Error("a logic bug, not back-pressure");
+    })
+    .catch(() => {});
   expect(lim.limit).toBe(8);
 });
 

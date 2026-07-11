@@ -3,7 +3,17 @@ import { ESSENTIAL_KEYS, formatKeysHelp } from "./keys-help.ts";
 
 test("ESSENTIAL_KEYS covers the chords the TUI actually binds", () => {
   const blob = ESSENTIAL_KEYS.map((k) => k.keys).join(" ");
-  for (const need of ["Shift+Tab", "Esc", "Ctrl+O", "Ctrl+T", "Ctrl+D", "Ctrl+G", "Ctrl+V", "@", "/"]) {
+  for (const need of [
+    "Shift+Tab",
+    "Esc",
+    "Ctrl+O",
+    "Ctrl+T",
+    "Ctrl+D",
+    "Ctrl+G",
+    "Ctrl+V",
+    "@",
+    "/",
+  ]) {
     expect(blob).toContain(need);
   }
 });

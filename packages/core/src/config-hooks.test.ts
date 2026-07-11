@@ -4,13 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HookBus } from "@vibe/plugins";
 import type { HookConfig } from "@vibe/config";
-import { registerConfigHooks, parseHookOutput, defaultExec, type HookRunResult } from "./config-hooks.ts";
+import {
+  registerConfigHooks,
+  parseHookOutput,
+  defaultExec,
+  type HookRunResult,
+} from "./config-hooks.ts";
 
-const hook = (h: Partial<HookConfig>): HookConfig => ({
-  event: "tool.before.execute",
-  async: false,
-  ...h,
-} as HookConfig);
+const hook = (h: Partial<HookConfig>): HookConfig =>
+  ({
+    event: "tool.before.execute",
+    async: false,
+    ...h,
+  }) as HookConfig;
 
 test("parseHookOutput reads deny/reason/input, ignores non-JSON", () => {
   expect(parseHookOutput("")).toEqual({});
@@ -25,7 +31,9 @@ test("parseHookOutput accepts a final JSON directive after stdout logs", () => {
     reason: "blocked",
   });
   expect(parseHookOutput('first\n{"deny":true,"reason":"old"}\nlast non-json log')).toEqual({});
-  expect(parseHookOutput('first\n{"input":{"cmd":"logged payload"}}\n{"deny":true}')).toEqual({ deny: true });
+  expect(parseHookOutput('first\n{"input":{"cmd":"logged payload"}}\n{"deny":true}')).toEqual({
+    deny: true,
+  });
 });
 
 test("parseHookOutput ignores malformed JSON-looking log lines", () => {
@@ -61,14 +69,20 @@ test("a user.prompt.submit DENY marks the payload so the engine cancels the turn
   registerConfigHooks([hook({ event: "user.prompt.submit", command: "guard.sh" })], bus, {
     exec: async (): Promise<HookRunResult> => ({ deny: true, text: "ignored" }),
   });
-  const out = await bus.run("user.prompt.submit", { text: "secret" }) as { text: string; deny?: boolean };
+  const out = (await bus.run("user.prompt.submit", { text: "secret" })) as {
+    text: string;
+    deny?: boolean;
+  };
   expect(out.deny).toBe(true);
   expect(out.text).toBe("secret"); // deny short-circuits the rewrite
 });
 
 test("parseHookOutput reads additionalContext and continue", () => {
   expect(parseHookOutput('{"additionalContext":"note"}')).toEqual({ additionalContext: "note" });
-  expect(parseHookOutput('{"continue":true,"reason":"more"}')).toEqual({ continue: true, reason: "more" });
+  expect(parseHookOutput('{"continue":true,"reason":"more"}')).toEqual({
+    continue: true,
+    reason: "more",
+  });
   expect(parseHookOutput('{"continue":false}')).toEqual({}); // false is not a continue
 });
 
@@ -77,7 +91,10 @@ test("declarative tool.after.execute hook maps additionalContext onto the payloa
   registerConfigHooks([hook({ event: "tool.after.execute", command: "annotate.sh" })], bus, {
     exec: async (): Promise<HookRunResult> => ({ additionalContext: "linted OK" }),
   });
-  const out = await bus.run("tool.after.execute", { toolName: "write", output: "wrote file" }) as {
+  const out = (await bus.run("tool.after.execute", {
+    toolName: "write",
+    output: "wrote file",
+  })) as {
     additionalContext?: string;
   };
   expect(out.additionalContext).toBe("linted OK");
@@ -88,7 +105,7 @@ test("declarative tool.after.execute hook maps deny/reason onto the payload (ove
   registerConfigHooks([hook({ event: "tool.after.execute", command: "guard.sh" })], bus, {
     exec: async (): Promise<HookRunResult> => ({ deny: true, reason: "secret leaked" }),
   });
-  const out = await bus.run("tool.after.execute", { toolName: "read", output: "AKIA…" }) as {
+  const out = (await bus.run("tool.after.execute", { toolName: "read", output: "AKIA…" })) as {
     deny?: boolean;
     reason?: string;
   };
@@ -99,15 +116,19 @@ test("declarative tool.after.execute hook maps deny/reason onto the payload (ove
 test("declarative tool.after.execute hook honors the matcher", async () => {
   const bus = new HookBus();
   let ran = 0;
-  registerConfigHooks([hook({ event: "tool.after.execute", command: "x", matcher: "write" })], bus, {
-    exec: async (): Promise<HookRunResult> => {
-      ran++;
-      return { additionalContext: "n" };
+  registerConfigHooks(
+    [hook({ event: "tool.after.execute", command: "x", matcher: "write" })],
+    bus,
+    {
+      exec: async (): Promise<HookRunResult> => {
+        ran++;
+        return { additionalContext: "n" };
+      },
     },
-  });
+  );
   await bus.run("tool.after.execute", { toolName: "read", output: "x" }); // no match
   expect(ran).toBe(0);
-  const out = await bus.run("tool.after.execute", { toolName: "write", output: "x" }) as {
+  const out = (await bus.run("tool.after.execute", { toolName: "write", output: "x" })) as {
     additionalContext?: string;
   };
   expect(ran).toBe(1);
@@ -119,7 +140,7 @@ test("declarative session.idle hook maps continue/reason onto the payload", asyn
   registerConfigHooks([hook({ event: "session.idle", command: "stop-check.sh" })], bus, {
     exec: async (): Promise<HookRunResult> => ({ continue: true, reason: "tests still failing" }),
   });
-  const out = await bus.run("session.idle", { sessionId: "s" }) as {
+  const out = (await bus.run("session.idle", { sessionId: "s" })) as {
     continue?: boolean;
     reason?: string;
   };
@@ -132,7 +153,7 @@ test("declarative session.idle hook without continue leaves the payload settling
   registerConfigHooks([hook({ event: "session.idle", command: "stop-check.sh" })], bus, {
     exec: async (): Promise<HookRunResult> => ({}), // hook satisfied, no continue
   });
-  const out = await bus.run("session.idle", { sessionId: "s" }) as { continue?: boolean };
+  const out = (await bus.run("session.idle", { sessionId: "s" })) as { continue?: boolean };
   expect(out.continue).toBeUndefined();
 });
 
@@ -163,7 +184,10 @@ test("a tool.before.execute hook can DENY a tool", async () => {
   registerConfigHooks([hook({ command: "policy.sh", matcher: "bash" })], bus, {
     exec: async (): Promise<HookRunResult> => ({ deny: true, reason: "no shell" }),
   });
-  const out = await bus.run("tool.before.execute", { toolName: "bash", input: { cmd: "rm -rf /" } });
+  const out = await bus.run("tool.before.execute", {
+    toolName: "bash",
+    input: { cmd: "rm -rf /" },
+  });
   expect(out.deny).toBe(true);
   expect(out.reason).toBe("no shell");
 });
@@ -189,19 +213,26 @@ test("a hook can REWRITE the tool input", async () => {
   registerConfigHooks([hook({ command: "redact.sh" })], bus, {
     exec: async (): Promise<HookRunResult> => ({ input: { cmd: "echo redacted" } }),
   });
-  const out = await bus.run("tool.before.execute", { toolName: "bash", input: { cmd: "echo secret" } });
+  const out = await bus.run("tool.before.execute", {
+    toolName: "bash",
+    input: { cmd: "echo secret" },
+  });
   expect(out.input).toEqual({ cmd: "echo redacted" });
 });
 
 test("an async hook is fire-and-forget (can't deny)", async () => {
   const bus = new HookBus();
   let called = false;
-  registerConfigHooks([hook({ event: "user.prompt.submit", url: "https://notify", async: true })], bus, {
-    post: async (): Promise<HookRunResult> => {
-      called = true;
-      return { deny: true }; // ignored — async hooks can't block
+  registerConfigHooks(
+    [hook({ event: "user.prompt.submit", url: "https://notify", async: true })],
+    bus,
+    {
+      post: async (): Promise<HookRunResult> => {
+        called = true;
+        return { deny: true }; // ignored — async hooks can't block
+      },
     },
-  });
+  );
   const out = await bus.run("user.prompt.submit", { text: "hi" });
   expect(out).toEqual({ text: "hi" }); // unchanged
   // The fire-and-forget runner still fired (give the microtask a tick).

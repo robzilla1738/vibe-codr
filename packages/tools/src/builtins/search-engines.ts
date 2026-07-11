@@ -29,8 +29,7 @@ export type FetchLike = (
   body?: ReadableStream<Uint8Array> | null;
 }>;
 
-const BROWSER_UA =
-  "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0";
+const BROWSER_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0";
 
 /** Cap on the HTML fed to a result parser. Result rows live near the top of the
  * page, so the head is all that matters — this bounds a hostile/huge engine
@@ -51,7 +50,9 @@ function decodeEntities(s: string): string {
 
 /** Strip tags and collapse whitespace from an HTML fragment. */
 function stripTags(s: string): string {
-  return decodeEntities(s.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+  return decodeEntities(s.replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function hostOf(url: string): string {
@@ -83,8 +84,10 @@ function resolveDdgHref(href: string): string {
  * every unclosed `<a …>` opener → O(n²) and froze the (uncapped, synchronous)
  * keyless-search parse on an oversized/garbled results page (~4.5s at 720KB). */
 export function parseDuckDuckGoHtml(html: string): SearchResult[] {
-  const linkRe = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/g;
-  const snippetRe = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/;
+  const linkRe =
+    /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/g;
+  const snippetRe =
+    /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/;
   const links = [...html.matchAll(linkRe)];
   const results: SearchResult[] = [];
   for (let i = 0; i < links.length; i++) {
@@ -155,7 +158,10 @@ export function parseBingHtml(html: string): SearchResult[] {
     // with no `b_algo` split point is the WHOLE page, and a lazy match retries at
     // every `<h2>` when the close is missing → O(n²) (a garbled/MITM'd results page
     // froze the parse ~6.7s at 720KB). The unrolled body matches on the first try.
-    const link = /<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/i.exec(block);
+    const link =
+      /<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>((?:[^<]|<(?!\/a[\s>]))*)(?:<\/a[^>]*>)?/i.exec(
+        block,
+      );
     if (!link) continue;
     const url = decodeBingUrl(decodeEntities(link[1] ?? ""));
     if (!url || !/^https?:\/\//.test(url)) continue;

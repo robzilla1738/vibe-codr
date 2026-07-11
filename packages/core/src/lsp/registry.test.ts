@@ -24,7 +24,11 @@ test("languageForPath maps extensions to language keys (and ignores the rest)", 
 
 test("resolveServer picks the FIRST present candidate in preference order", () => {
   // basedpyright present → it wins over pyright/pylsp.
-  const both = resolveServer("py", cfg(), whichWith(["basedpyright-langserver", "pyright-langserver"]));
+  const both = resolveServer(
+    "py",
+    cfg(),
+    whichWith(["basedpyright-langserver", "pyright-langserver"]),
+  );
   expect(both?.command).toBe("basedpyright-langserver");
   expect(both?.args).toEqual(["--stdio"]);
   expect(both?.languageId).toBe("python");

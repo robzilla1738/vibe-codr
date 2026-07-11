@@ -350,7 +350,11 @@ test("triage: UNAMBIGUOUS stack spellings still force versions (Node.js over-cor
     expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, true]);
   }
   // …while the ambiguous bare forms stay self-contained (no version tax).
-  for (const req of ["traverse each tree node", "the react component needs a fix", "add a spring animation"]) {
+  for (const req of [
+    "traverse each tree node",
+    "the react component needs a fix",
+    "add a spring animation",
+  ]) {
     expect([req, triagePlanRequest(req).needsVersions]).toEqual([req, false]);
   }
   // The `react <digit>` version clause requires TWO digits (`\d{2}\b`) — real

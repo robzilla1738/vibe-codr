@@ -117,10 +117,9 @@ async function defaultPost(
   onWarn?: (msg: string) => void,
 ): Promise<HookRunResult> {
   if (externalSignal?.aborted) return {};
-  const signal =
-    externalSignal
-      ? AbortSignal.any([AbortSignal.timeout(timeoutMs), externalSignal])
-      : AbortSignal.timeout(timeoutMs);
+  const signal = externalSignal
+    ? AbortSignal.any([AbortSignal.timeout(timeoutMs), externalSignal])
+    : AbortSignal.timeout(timeoutMs);
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -153,7 +152,8 @@ export function parseHookOutput(text: string): HookRunResult {
   if (typeof parsed.reason === "string") result.reason = parsed.reason;
   if ("input" in parsed) result.input = parsed.input;
   if (typeof parsed.text === "string") result.text = parsed.text;
-  if (typeof parsed.additionalContext === "string") result.additionalContext = parsed.additionalContext;
+  if (typeof parsed.additionalContext === "string")
+    result.additionalContext = parsed.additionalContext;
   if (parsed.continue === true) result.continue = true;
   return result;
 }
@@ -161,11 +161,15 @@ export function parseHookOutput(text: string): HookRunResult {
 function parseHookJson(text: string): Record<string, unknown> | undefined {
   try {
     const parsed = JSON.parse(text) as unknown;
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : undefined;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
   } catch {
     // Hooks may print progress before their directive, but the directive must be
     // the final non-empty stdout line so logged payloads can't be mistaken for it.
-    const lastLine = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+    const lastLine = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1);
     if (!lastLine?.startsWith("{") || !lastLine.endsWith("}")) return undefined;
     try {
       const parsed = JSON.parse(lastLine) as unknown;
@@ -191,12 +195,7 @@ function matches(matcher: string | undefined, toolName: unknown): boolean {
 /** Events that never consume a hook response (observe-only). Default to async
  * fire-and-forget so slow log hooks don't block turns (BUG-053).
  * Note: `session.idle` is NOT here — it can return `{continue}`. */
-const OBSERVE_ONLY = new Set([
-  "session.start",
-  "session.end",
-  "step.finish",
-  "assistant.message",
-]);
+const OBSERVE_ONLY = new Set(["session.start", "session.end", "step.finish", "assistant.message"]);
 
 export function registerConfigHooks(
   hooks: HookConfig[],
@@ -205,9 +204,7 @@ export function registerConfigHooks(
 ): void {
   const timeoutMs = runners.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const externalSignal = runners.signal;
-  const exec =
-    runners.exec ??
-    ((cmd, json) => defaultExec(cmd, json, timeoutMs, externalSignal));
+  const exec = runners.exec ?? ((cmd, json) => defaultExec(cmd, json, timeoutMs, externalSignal));
   const post =
     runners.post ??
     ((url, payload) => defaultPost(url, payload, timeoutMs, externalSignal, runners.onWarn));
@@ -228,7 +225,8 @@ export function registerConfigHooks(
     }
     const handler = (async (payload: unknown) => {
       // Tool events: only fire when the matcher matches the tool name.
-      const isToolEvent = hook.event === "tool.before.execute" || hook.event === "tool.after.execute";
+      const isToolEvent =
+        hook.event === "tool.before.execute" || hook.event === "tool.after.execute";
       if (isToolEvent && !matches(hook.matcher, (payload as { toolName?: unknown }).toolName)) {
         return undefined;
       }
@@ -236,7 +234,8 @@ export function registerConfigHooks(
         ? exec(hook.command, JSON.stringify(payload))
         : post(hook.url!, payload);
       // Fire-and-forget: explicit async OR observe-only events (BUG-053).
-      const fireAndForget = hook.async === true || (hook.async !== false && OBSERVE_ONLY.has(hook.event));
+      const fireAndForget =
+        hook.async === true || (hook.async !== false && OBSERVE_ONLY.has(hook.event));
       if (fireAndForget) {
         void run.catch(() => undefined);
         return undefined;
@@ -260,7 +259,8 @@ export function registerConfigHooks(
           p.deny = true;
           if (result.reason) p.reason = result.reason;
         }
-        if (typeof result.additionalContext === "string") p.additionalContext = result.additionalContext;
+        if (typeof result.additionalContext === "string")
+          p.additionalContext = result.additionalContext;
         return p;
       }
       // Stop-equivalent: `continue` (+reason) injects one more turn instead of

@@ -19,7 +19,12 @@ import { Engine } from "./engine.ts";
 
 function mockRegistry(model: MockLanguageModelV2) {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -70,7 +75,9 @@ test("engine bootstrap recon: detects real commands, fills verify.command, injec
     doStream: async (options) => {
       const prompt = (options as { prompt: { role: string; content: unknown }[] }).prompt;
       const sys = prompt.find((m) => m.role === "system");
-      systems.push(typeof sys?.content === "string" ? sys.content : JSON.stringify(sys?.content ?? ""));
+      systems.push(
+        typeof sys?.content === "string" ? sys.content : JSON.stringify(sys?.content ?? ""),
+      );
       return textStep("ok") as never;
     },
   });
@@ -95,7 +102,12 @@ test("run_check: offered only in execute mode with detected commands; parses PAS
     // Turn 1: call run_check(test); turn 1 step 2: finish.
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "c1", toolName: "run_check", input: JSON.stringify({ check: "test" }) },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "run_check",
+        input: JSON.stringify({ check: "test" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     textStep("done"),
@@ -106,7 +118,10 @@ test("run_check: offered only in execute mode with detected commands; parses PAS
   const outputs: string[] = [];
   const model = new MockLanguageModelV2({
     doStream: async (options) => {
-      const o = options as { tools?: { name: string }[]; prompt: { role: string; content: unknown }[] };
+      const o = options as {
+        tools?: { name: string }[];
+        prompt: { role: string; content: unknown }[];
+      };
       toolNames.push((o.tools ?? []).map((t) => t.name));
       for (const m of o.prompt) {
         if (m.role === "tool") outputs.push(JSON.stringify(m.content));
@@ -142,7 +157,12 @@ test("run_check on an undetected command errors with the detected list", async (
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "c1", toolName: "run_check", input: JSON.stringify({ check: "lint" }) },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "run_check",
+        input: JSON.stringify({ check: "lint" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     textStep("done"),
@@ -179,7 +199,12 @@ test("subagent forks inherit the repo profile and get the symbol map injected", 
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "scout the code" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "scout the code" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     textStep("child done"), // the child's turn

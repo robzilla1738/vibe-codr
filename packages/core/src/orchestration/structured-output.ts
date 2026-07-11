@@ -57,9 +57,12 @@ export function enforceSchema(text: string, schema: JsonSchema): EnforceResult {
  * fenced ```json block, then the last balanced object/array anywhere in the text
  * — so a stray sentence before the JSON doesn't defeat extraction.
  */
-export function extractLastJson(text: string): { ok: true; value: unknown } | { ok: false; error: string } {
+export function extractLastJson(
+  text: string,
+): { ok: true; value: unknown } | { ok: false; error: string } {
   const trimmed = (text ?? "").trim();
-  if (!trimmed) return { ok: false, error: "the subagent produced no final message to parse as JSON" };
+  if (!trimmed)
+    return { ok: false, error: "the subagent produced no final message to parse as JSON" };
 
   const tryParse = (s: string): { ok: true; value: unknown } | null => {
     try {
@@ -91,7 +94,8 @@ export function extractLastJson(text: string): { ok: true; value: unknown } | { 
 
   return {
     ok: false,
-    error: "the subagent's final message was not valid JSON (expected exactly one JSON object matching the schema)",
+    error:
+      "the subagent's final message was not valid JSON (expected exactly one JSON object matching the schema)",
   };
 }
 
@@ -149,7 +153,9 @@ export function validateJsonSchema(schema: JsonSchema, value: unknown, path: str
   // enum / const first — they pin the value regardless of type.
   if (Array.isArray(schema.enum)) {
     if (!schema.enum.some((e) => deepEqual(e, value))) {
-      errors.push(`${at}: value ${short(value)} is not one of the allowed values ${short(schema.enum)}`);
+      errors.push(
+        `${at}: value ${short(value)} is not one of the allowed values ${short(schema.enum)}`,
+      );
       return errors;
     }
   }
@@ -178,12 +184,19 @@ export function validateJsonSchema(schema: JsonSchema, value: unknown, path: str
     }
     for (const [key, sub] of Object.entries(props)) {
       if (hasOwn(value, key) && isPlainObject(sub)) {
-        errors.push(...validateJsonSchema(sub as JsonSchema, (value as Record<string, unknown>)[key], join(path, key)));
+        errors.push(
+          ...validateJsonSchema(
+            sub as JsonSchema,
+            (value as Record<string, unknown>)[key],
+            join(path, key),
+          ),
+        );
       }
     }
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(value)) {
-        if (!hasOwn(props, key)) errors.push(`${join(path, key)}: unexpected property (additionalProperties is false)`);
+        if (!hasOwn(props, key))
+          errors.push(`${join(path, key)}: unexpected property (additionalProperties is false)`);
       }
     }
   }

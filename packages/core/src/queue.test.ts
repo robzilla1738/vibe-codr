@@ -97,9 +97,7 @@ test("/queue clear drops everything still waiting", async () => {
     .map((e) => e.text);
   expect(prompts).toEqual(["A"]);
 
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("Cleared 2")),
-  ).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("Cleared 2"))).toBe(true);
 });
 
 /** Poll the event log for the queue id of a waiting prompt with `label`. */
@@ -221,8 +219,12 @@ test("finalize waits for the in-flight queue item before teardown", async () => 
   const hooks = new HookBus(() => {});
   let releaseHook!: () => void;
   let hookStarted!: () => void;
-  const started = new Promise<void>((resolve) => { hookStarted = resolve; });
-  const release = new Promise<void>((resolve) => { releaseHook = resolve; });
+  const started = new Promise<void>((resolve) => {
+    hookStarted = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releaseHook = resolve;
+  });
   hooks.on("user.prompt.submit", async (event) => {
     hookStarted();
     await release;
@@ -234,7 +236,9 @@ test("finalize waits for the in-flight queue item before teardown", async () => 
   await started;
 
   let finalized = false;
-  const finalizing = engine.finalize().then(() => { finalized = true; });
+  const finalizing = engine.finalize().then(() => {
+    finalized = true;
+  });
   await Bun.sleep(10);
   expect(finalized).toBe(false);
 
@@ -253,7 +257,9 @@ test("a prompt submitted DURING an async session.idle hook's await is not strand
   // drained before settling.
   const hooks = new HookBus(() => {});
   let idleHookInAwait: () => void;
-  const idleHookStarted = new Promise<void>((r) => { idleHookInAwait = r; });
+  const idleHookStarted = new Promise<void>((r) => {
+    idleHookInAwait = r;
+  });
   hooks.on("session.idle", async () => {
     // Yield long enough for the test to inject a prompt during the await.
     idleHookInAwait!();

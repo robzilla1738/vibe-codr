@@ -24,7 +24,8 @@ export class Trail {
     const line = this.#open.trim();
     this.#open = "";
     if (line) this.#lines.push(line);
-    else if (this.#lines.length > 0 && this.#lines[this.#lines.length - 1] !== "") this.#lines.push("");
+    else if (this.#lines.length > 0 && this.#lines[this.#lines.length - 1] !== "")
+      this.#lines.push("");
   }
 
   #cap(): void {
@@ -62,7 +63,11 @@ export class Trail {
  * is what bounds per-commit relayout cost (yoga measures every child in the
  * tree, so an unbounded transcript froze the shared engine+UI thread).
  */
-export function windowStartIndex(totalTurns: number, windowTurns: number, revealed: number): number {
+export function windowStartIndex(
+  totalTurns: number,
+  windowTurns: number,
+  revealed: number,
+): number {
   return Math.max(0, totalTurns - windowTurns - revealed);
 }
 

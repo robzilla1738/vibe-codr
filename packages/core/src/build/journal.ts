@@ -77,7 +77,11 @@ function reportsDir(cwd: string): string {
 
 let eventWriteSeq = 0;
 
-export function appendOrchestrationEvent(cwd: string, sessionId: string, event: OrchestrationEvent): void {
+export function appendOrchestrationEvent(
+  cwd: string,
+  sessionId: string,
+  event: OrchestrationEvent,
+): void {
   try {
     const dir = eventDir(cwd, sessionId);
     mkdirSync(dir, { recursive: true });
@@ -120,7 +124,12 @@ function shortHash(s: string): string {
 
 /** Persist a task's full report; returns its ABSOLUTE path (for read_report
  * after resume), or undefined when the write failed. */
-export function persistTaskReport(cwd: string, sessionId: string, taskId: string, report: string): string | undefined {
+export function persistTaskReport(
+  cwd: string,
+  sessionId: string,
+  taskId: string,
+  report: string,
+): string | undefined {
   try {
     mkdirSync(reportsDir(cwd), { recursive: true });
     const abs = taskReportPath(cwd, sessionId, taskId);
@@ -219,7 +228,9 @@ function readEventFiles(cwd: string, sessionId: string): OrchestrationEvent[] {
   const dir = eventDir(cwd, sessionId);
   try {
     const events: OrchestrationEvent[] = [];
-    for (const file of readdirSync(dir).filter((f) => f.endsWith(".json")).sort()) {
+    for (const file of readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .sort()) {
       try {
         events.push(JSON.parse(readFileSync(join(dir, file), "utf8")) as OrchestrationEvent);
       } catch {

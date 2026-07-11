@@ -50,9 +50,9 @@ test("present_plan is available only in plan mode", () => {
 
 test("web_search is included by default and omitted when disabled", () => {
   expect(builtinTools().map((t) => t.name)).toContain("web_search");
-  expect(
-    builtinTools({ search: { enabled: false } }).map((t) => t.name),
-  ).not.toContain("web_search");
+  expect(builtinTools({ search: { enabled: false } }).map((t) => t.name)).not.toContain(
+    "web_search",
+  );
 });
 
 test("web_search is read-only (usable while planning)", () => {
@@ -83,14 +83,7 @@ test("createSerialLock runs queued tasks strictly one-at-a-time", async () => {
   // Fire three concurrently; the lock must serialize them in FIFO order.
   const results = await Promise.all([task("a", 15), task("b", 1), task("c", 5)]);
   expect(results).toEqual(["a", "b", "c"]);
-  expect(events).toEqual([
-    "start-a",
-    "end-a",
-    "start-b",
-    "end-b",
-    "start-c",
-    "end-c",
-  ]);
+  expect(events).toEqual(["start-a", "end-a", "start-b", "end-b", "start-c", "end-c"]);
 });
 
 test("a failing task doesn't wedge the serial lock", async () => {
@@ -116,9 +109,11 @@ test("beforeTool hook can veto a tool call; afterTool observes output", async ()
   const ts = new Toolset([tool]);
   const exec = (base: Parameters<typeof ts.aiTools>[1]) => {
     const tools = ts.aiTools("execute", base);
-    return (tools.danger as unknown as {
-      execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
-    }).execute({}, { toolCallId: "1" });
+    return (
+      tools.danger as unknown as {
+        execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
+      }
+    ).execute({}, { toolCallId: "1" });
   };
 
   // Deny → the tool never executes and an error string comes back.
@@ -171,21 +166,31 @@ function afterToolHarness(
     emit: () => {},
     freshness,
     afterTool,
-    ...(recorded ? { recordToolResult: (id: string, isError: boolean) => recorded.push({ id, isError }) } : {}),
+    ...(recorded
+      ? { recordToolResult: (id: string, isError: boolean) => recorded.push({ id, isError }) }
+      : {}),
   });
-  return (tools.annotate as unknown as {
-    execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
-  }).execute({}, { toolCallId: "1" });
+  return (
+    tools.annotate as unknown as {
+      execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
+    }
+  ).execute({}, { toolCallId: "1" });
 }
 
 test("afterTool additionalContext is appended (delimited) to the tool result output", async () => {
-  const out = await afterToolHarness("wrote 3 lines", () => ({ additionalContext: "prettier reformatted it" }));
+  const out = await afterToolHarness("wrote 3 lines", () => ({
+    additionalContext: "prettier reformatted it",
+  }));
   expect(out).toBe("wrote 3 lines\n\n[hook: tool.after.execute] prettier reformatted it");
 });
 
 test("afterTool deny yields an isError result carrying the reason (result already produced)", async () => {
   const recorded: Array<{ id: string; isError: boolean }> = [];
-  const out = await afterToolHarness("the secret is AKIA…", () => ({ deny: true, reason: "leaked a credential" }), recorded);
+  const out = await afterToolHarness(
+    "the secret is AKIA…",
+    () => ({ deny: true, reason: "leaked a credential" }),
+    recorded,
+  );
   expect(String(out)).toBe("ERROR: leaked a credential");
   expect(recorded).toEqual([{ id: "1", isError: true }]); // recorded as an error
 });
@@ -223,9 +228,11 @@ test("aiTools serializes mutating tools but lets read-only tools overlap", async
   ]);
   const tools = ts.aiTools("execute", { cwd: ".", sessionId: "s", emit: () => {}, freshness });
   const call = (n: string) => {
-    const exec = (tools[n] as unknown as {
-      execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
-    }).execute;
+    const exec = (
+      tools[n] as unknown as {
+        execute: (i: unknown, o: { toolCallId: string }) => Promise<unknown>;
+      }
+    ).execute;
     return exec({}, { toolCallId: n });
   };
   await Promise.all([call("mutA"), call("mutB"), call("safe")]);
@@ -357,14 +364,22 @@ test("createFileLock SERIALIZES the same agent's writes to one file (no reject)"
     release = r;
   });
   // Same agent issues two parallel writes to one file — they serialize, not fail.
-  const first = lock("/f", async () => {
-    order.push(1);
-    await barrier;
-    order.push(2);
-  }, "agent-A");
-  const second = lock("/f", async () => {
-    order.push(3);
-  }, "agent-A");
+  const first = lock(
+    "/f",
+    async () => {
+      order.push(1);
+      await barrier;
+      order.push(2);
+    },
+    "agent-A",
+  );
+  const second = lock(
+    "/f",
+    async () => {
+      order.push(3);
+    },
+    "agent-A",
+  );
   await new Promise((r) => setTimeout(r, 5));
   expect(order).toEqual([1]); // second waits for first
   release();

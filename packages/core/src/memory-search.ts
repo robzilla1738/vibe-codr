@@ -108,7 +108,11 @@ function applyRelevanceFloor(
   const fraction = mode === "proactive" ? PROACTIVE_FRACTION_OF_TOP : FRACTION_OF_TOP;
   // Corpus-relative BM25 across the candidate hits — a real relevance measure,
   // unlike the rank-based RRF score. Zero-overlap hits are absent from `rel`.
-  const rel = rankBm25(query, hits.map((h) => h.text), qterms);
+  const rel = rankBm25(
+    query,
+    hits.map((h) => h.text),
+    qterms,
+  );
   const scoreByIndex = new Map<number, number>();
   for (const h of rel) scoreByIndex.set(h.index, h.score);
   const top = rel[0]?.score ?? 0;
@@ -162,12 +166,22 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
   // Chunk the corpus once (shared by the lexical pass and as hit metadata).
   const chunks = sources.flatMap((s) => chunkMarkdown(s.source, s.text));
   for (const c of chunks) {
-    byId.set(c.id, { id: c.id, source: c.source, heading: c.heading, text: c.text, kind: "memory", score: 0 });
+    byId.set(c.id, {
+      id: c.id,
+      source: c.source,
+      heading: c.heading,
+      text: c.text,
+      kind: "memory",
+      score: 0,
+    });
   }
 
   // Lexical BM25 over memory chunks.
   if (chunks.length) {
-    const lex = rankBm25(query, chunks.map((c) => c.text));
+    const lex = rankBm25(
+      query,
+      chunks.map((c) => c.text),
+    );
     rankings.push(lex.map((h) => chunks[h.index]!.id));
   }
 
@@ -185,7 +199,14 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
       for (const h of dense) {
         denseCosine.set(h.id, h.score);
         if (!byId.has(h.id)) {
-          byId.set(h.id, { id: h.id, source: h.source, heading: h.heading, text: h.text, kind: "memory", score: 0 });
+          byId.set(h.id, {
+            id: h.id,
+            source: h.source,
+            heading: h.heading,
+            text: h.text,
+            kind: "memory",
+            score: 0,
+          });
         }
       }
     } catch {

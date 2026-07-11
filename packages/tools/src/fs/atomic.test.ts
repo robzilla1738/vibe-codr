@@ -1,12 +1,5 @@
 import { test, expect } from "bun:test";
-import {
-  chmodSync,
-  lstatSync,
-  mkdtempSync,
-  readdirSync,
-  statSync,
-  symlinkSync,
-} from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readdirSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { atomicReplace } from "./atomic.ts";
@@ -101,15 +94,10 @@ test("mid-write failure cleans up the temp and rethrows", async () => {
   await Bun.write(p, "original\n");
   const orig = Bun.write;
   try {
-    (Bun as unknown as { write: unknown }).write = (
-      _path: unknown,
-      _data: unknown,
-    ) => {
+    (Bun as unknown as { write: unknown }).write = (_path: unknown, _data: unknown) => {
       throw new Error("injected atomic write failure");
     };
-    await expect(atomicReplace(p, "clobber\n")).rejects.toThrow(
-      "injected atomic write failure",
-    );
+    await expect(atomicReplace(p, "clobber\n")).rejects.toThrow("injected atomic write failure");
   } finally {
     (Bun as unknown as { write: typeof orig }).write = orig;
   }

@@ -208,7 +208,9 @@ export async function browserVerify(
       const up = await waitForServer(url, SERVER_DEADLINE_MS, signal);
       if (!up) {
         if (signal.aborted) return null;
-        return couldNotRun(`dev server did not respond at ${url} within ${SERVER_DEADLINE_MS / 1000}s`);
+        return couldNotRun(
+          `dev server did not respond at ${url} within ${SERVER_DEADLINE_MS / 1000}s`,
+        );
       }
     }
     if (signal.aborted) return null;
@@ -259,7 +261,8 @@ async function inspect(
   let dialogCount = 0;
 
   page.on("console", (msg) => {
-    if (msg.type() === "error" && consoleErrors.length < MAX_CONSOLE) consoleErrors.push(msg.text());
+    if (msg.type() === "error" && consoleErrors.length < MAX_CONSOLE)
+      consoleErrors.push(msg.text());
   });
   page.on("pageerror", (err) => {
     if (consoleErrors.length < MAX_CONSOLE) consoleErrors.push(String(err?.message ?? err));
@@ -448,7 +451,14 @@ function trunc(s: string, max: number): string {
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function couldNotRun(reason: string): BrowserVerifyResult {
-  return { available: true, ran: false, reason, consoleErrors: [], deadControls: [], pagesChecked: 0 };
+  return {
+    available: true,
+    ran: false,
+    reason,
+    consoleErrors: [],
+    deadControls: [],
+    pagesChecked: 0,
+  };
 }
 
 function controlSelector(ctl: ControlDesc): string {
@@ -492,7 +502,11 @@ function isPortFree(port: number): boolean {
 
 /** Poll the URL until anything answers (server bound the port) or the deadline
  * passes. Any HTTP response — even 4xx/5xx — proves the server is up. */
-async function waitForServer(url: string, deadlineMs: number, signal: AbortSignal): Promise<boolean> {
+async function waitForServer(
+  url: string,
+  deadlineMs: number,
+  signal: AbortSignal,
+): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
     if (signal.aborted) return false;

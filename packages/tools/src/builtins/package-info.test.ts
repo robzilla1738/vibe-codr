@@ -41,7 +41,12 @@ function routeFetch(routes: Record<string, { body: unknown; status?: number }>):
 test("npm: reports the latest version + metadata and non-latest dist-tags", async () => {
   routeFetch({
     "registry.npmjs.org/react/latest": {
-      body: { version: "19.1.0", description: "React library", license: "MIT", homepage: "https://react.dev" },
+      body: {
+        version: "19.1.0",
+        description: "React library",
+        license: "MIT",
+        homepage: "https://react.dev",
+      },
     },
     "/-/package/react/dist-tags": {
       body: { latest: "19.1.0", canary: "0.0.0-canary", experimental: "0.0.0-exp" },
@@ -86,7 +91,9 @@ test("npm: a missing package is a clean error, not a throw", async () => {
 test("pypi: reports the latest version + summary from the JSON API", async () => {
   routeFetch({
     "pypi.org/pypi/requests/json": {
-      body: { info: { version: "2.32.3", summary: "Python HTTP for Humans.", license: "Apache-2.0" } },
+      body: {
+        info: { version: "2.32.3", summary: "Python HTTP for Humans.", license: "Apache-2.0" },
+      },
     },
   });
   const res = await packageInfoTool.execute({ name: "requests", ecosystem: "pypi" }, ctx());

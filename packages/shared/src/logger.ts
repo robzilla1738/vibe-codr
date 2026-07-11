@@ -20,8 +20,7 @@ export interface Logger {
  * TUI render on stdout). Level is controlled by `VIBE_LOG` (default `warn`).
  */
 export function createLogger(scope = "vibe", level?: LogLevel): Logger {
-  const threshold =
-    level ?? (process.env.VIBE_LOG as LogLevel | undefined) ?? "warn";
+  const threshold = level ?? (process.env.VIBE_LOG as LogLevel | undefined) ?? "warn";
   const min = LEVEL_ORDER[threshold] ?? LEVEL_ORDER.warn;
 
   const emit = (lvl: LogLevel, message: string, meta?: unknown) => {

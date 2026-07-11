@@ -3,9 +3,7 @@ import { composeSystemPrompt, formatToday, formatWorkspaceState } from "./system
 
 test("plan mode forbids edits; execute mode allows them", () => {
   expect(composeSystemPrompt({ mode: "plan", goal: null })).toContain("do NOT modify");
-  expect(composeSystemPrompt({ mode: "execute", goal: null })).toContain(
-    "may read and modify",
-  );
+  expect(composeSystemPrompt({ mode: "execute", goal: null })).toContain("may read and modify");
 });
 
 test("plan mode carries the research pipeline: triage → gather → ground → critique → present", () => {

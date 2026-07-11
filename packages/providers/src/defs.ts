@@ -378,9 +378,11 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
 
     async createEmbedding(modelId, opts): Promise<EmbeddingModel<string>> {
       const provider = await buildProvider(spec, baseURL, opts);
-      const embed = (provider as {
-        textEmbeddingModel?: (id: string) => EmbeddingModel<string>;
-      }).textEmbeddingModel;
+      const embed = (
+        provider as {
+          textEmbeddingModel?: (id: string) => EmbeddingModel<string>;
+        }
+      ).textEmbeddingModel;
       if (typeof embed !== "function") {
         throw new VibeError(
           `Provider "${spec.id}" does not support text embeddings.`,

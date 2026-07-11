@@ -15,8 +15,15 @@ import type { Logger } from "@vibe/shared";
  */
 
 interface TsModule {
-  findConfigFile(searchPath: string, fileExists: (f: string) => boolean, name?: string): string | undefined;
-  readConfigFile(path: string, readFile: (f: string) => string | undefined): { config?: unknown; error?: unknown };
+  findConfigFile(
+    searchPath: string,
+    fileExists: (f: string) => boolean,
+    name?: string,
+  ): string | undefined;
+  readConfigFile(
+    path: string,
+    readFile: (f: string) => string | undefined,
+  ): { config?: unknown; error?: unknown };
   parseJsonConfigFileContent(
     json: unknown,
     host: unknown,
@@ -36,7 +43,10 @@ interface TsModule {
 }
 
 interface TsDiagnostic {
-  file?: { fileName: string; getLineAndCharacterOfPosition(pos: number): { line: number; character: number } };
+  file?: {
+    fileName: string;
+    getLineAndCharacterOfPosition(pos: number): { line: number; character: number };
+  };
   start?: number;
   messageText: unknown;
   code: number;
@@ -198,7 +208,8 @@ export class TsDiagnostics implements Diagnostics {
         }
         return `  TS${d.code}: ${message}`;
       });
-      const more = diags.length > MAX_DIAGNOSTICS ? `\n  …(${diags.length - MAX_DIAGNOSTICS} more)` : "";
+      const more =
+        diags.length > MAX_DIAGNOSTICS ? `\n  …(${diags.length - MAX_DIAGNOSTICS} more)` : "";
       return `TypeScript diagnostics (fix before moving on):\n${lines.join("\n")}${more}`;
     } catch (err) {
       // Diagnostics are an enhancement — a service failure must never fail an edit.
@@ -240,7 +251,13 @@ export class TsDiagnostics implements Diagnostics {
       readDirectory: ts.sys.readDirectory,
       useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
     };
-    const entry: ServiceEntry = { service: ts.createLanguageService(host), fileNames, versions, forceAdded: [], configText };
+    const entry: ServiceEntry = {
+      service: ts.createLanguageService(host),
+      fileNames,
+      versions,
+      forceAdded: [],
+      configText,
+    };
     this.#services.set(configPath, entry);
     return entry;
   }

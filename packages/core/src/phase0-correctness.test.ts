@@ -12,7 +12,12 @@ import { Session } from "./session.ts";
 
 function mockRegistry(model: MockLanguageModelV2) {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -83,9 +88,7 @@ test("a tool's isError result is reported as a failed tool call (not a success)"
   bus.close();
   await done;
 
-  const finished = events.find(
-    (e) => e.type === "tool-call-finished" && e.toolName === "flaky",
-  );
+  const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "flaky");
   expect(finished && finished.type === "tool-call-finished" && finished.isError).toBe(true);
 });
 

@@ -14,8 +14,19 @@ function withProvider(id: string, cfg: Record<string, unknown>): Config {
 test("the new providers are registered", () => {
   const reg = new ProviderRegistry();
   for (const id of [
-    "minimax", "codex", "xai", "meta", "ollama", "lmstudio",
-    "google", "groq", "mistral", "together", "cerebras", "perplexity", "custom",
+    "minimax",
+    "codex",
+    "xai",
+    "meta",
+    "ollama",
+    "lmstudio",
+    "google",
+    "groq",
+    "mistral",
+    "together",
+    "cerebras",
+    "perplexity",
+    "custom",
   ]) {
     expect(reg.has(id)).toBe(true);
   }
@@ -34,7 +45,10 @@ test("custom keyless provider still requires a base URL to be configured", () =>
   try {
     expect(reg.isConfigured("custom", defaultConfig())).toBe(false);
     expect(
-      reg.isConfigured("custom", withProvider("custom", { baseURL: "https://endpoint.example.com/v1" })),
+      reg.isConfigured(
+        "custom",
+        withProvider("custom", { baseURL: "https://endpoint.example.com/v1" }),
+      ),
     ).toBe(true);
     process.env.CUSTOM_BASE_URL = "https://env-endpoint.example.com/v1";
     expect(reg.isConfigured("custom", defaultConfig())).toBe(true);
@@ -150,9 +164,22 @@ test("openai-compatible-routed providers create ai@5 (spec v2) models", async ()
   // (AI SDK v6) and would be rejected by ai@5 ("unsupported model version"), so
   // this locks in that each still produces a spec-"v2" model.
   for (const id of [
-    "baseten", "xai", "openrouter", "fireworks", "minimax",
-    "google", "groq", "mistral", "together", "cerebras", "perplexity",
-    "zai", "moonshot", "alibaba", "huggingface", "meta",
+    "baseten",
+    "xai",
+    "openrouter",
+    "fireworks",
+    "minimax",
+    "google",
+    "groq",
+    "mistral",
+    "together",
+    "cerebras",
+    "perplexity",
+    "zai",
+    "moonshot",
+    "alibaba",
+    "huggingface",
+    "meta",
   ]) {
     const def = builtinProviders().find((d) => d.id === id);
     if (!def) throw new Error(`${id} provider missing`);

@@ -1,4 +1,13 @@
-import type { GitInfo, GoalRunInfo, JobInfo, Mode, QueuedItem, SessionUsage, Task, Usage } from "./types.ts";
+import type {
+  GitInfo,
+  GoalRunInfo,
+  JobInfo,
+  Mode,
+  QueuedItem,
+  SessionUsage,
+  Task,
+  Usage,
+} from "./types.ts";
 
 /**
  * Events emitted by the engine and consumed by any UI (TUI, headless printer).

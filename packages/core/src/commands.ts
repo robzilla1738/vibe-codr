@@ -29,7 +29,10 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "resume", description: "List saved sessions to resume" },
       { name: "recall", description: "Search past sessions' memory (/recall <text>)" },
       { name: "sources", description: "List web sources gathered this session (citations)" },
-      { name: "export", description: "Export the conversation to a Markdown file (/export [path])" },
+      {
+        name: "export",
+        description: "Export the conversation to a Markdown file (/export [path])",
+      },
       { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
     ],
   },
@@ -41,21 +44,36 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         description:
           "Switch model + manage providers (persisted): /model <id> · /model sub <id> · /model key <provider> <key>",
       },
-      { name: "models", description: "List available models (/models refresh to force-pull the latest)" },
+      {
+        name: "models",
+        description: "List available models (/models refresh to force-pull the latest)",
+      },
       { name: "providers", description: "List providers + key status (/providers [filter])" },
       { name: "plan", description: "Switch to read-only plan mode" },
-      { name: "execute", description: "Switch to gated execute — every action asks (the AGENT chip)" },
+      {
+        name: "execute",
+        description: "Switch to gated execute — every action asks (the AGENT chip)",
+      },
       { name: "yolo", description: "Execute with approvals off — tools run without prompting" },
       { name: "approvals", description: "Show or set approval mode (/approvals ask|auto)" },
-      { name: "reasoning", description: "Show or set reasoning effort (/reasoning low|medium|high|off)" },
+      {
+        name: "reasoning",
+        description: "Show or set reasoning effort (/reasoning low|medium|high|off)",
+      },
       {
         name: "details",
         description: "Transcript density (/details quiet|normal|verbose · cycles with no arg)",
       },
-      { name: "mouse", description: "TUI mouse capture (/mouse on|off) — off keeps native selection" },
+      {
+        name: "mouse",
+        description: "TUI mouse capture (/mouse on|off) — off keeps native selection",
+      },
       { name: "keys", description: "Show essential keyboard shortcuts" },
       { name: "theme", description: "Show or set the UI theme (/theme <name>)" },
-      { name: "accent", description: "Show or set the accent color (/accent orange · /accent <hex>)" },
+      {
+        name: "accent",
+        description: "Show or set the accent color (/accent orange · /accent <hex>)",
+      },
     ],
   },
   {
@@ -80,7 +98,10 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "diff", description: "Show the working-tree diff" },
       { name: "review", description: "Have the agent review the working-tree changes" },
       { name: "verify", description: "Run the configured verify command (typecheck/tests)" },
-      { name: "undo", description: "Revert the workspace to the last checkpoint (or /undo <n> to jump)" },
+      {
+        name: "undo",
+        description: "Revert the workspace to the last checkpoint (or /undo <n> to jump)",
+      },
       { name: "redo", description: "Re-apply the most recently undone checkpoint" },
       { name: "checkpoints", description: "List workspace checkpoints" },
     ],
@@ -131,7 +152,9 @@ export function helpText(extra: SlashCommand[] = []): string {
     }
   }
   lines.push(`\n  /${"exit".padEnd(pad)} Exit vibe-codr (alias /quit)`);
-  lines.push("\nTip: @file mentions attach file contents; end a line with \\ for multi-line input.");
+  lines.push(
+    "\nTip: @file mentions attach file contents; end a line with \\ for multi-line input.",
+  );
   return lines.join("\n");
 }
 

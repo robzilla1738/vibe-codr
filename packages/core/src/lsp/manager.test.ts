@@ -52,7 +52,11 @@ function fakeFactory(behavior: Behavior): { factory: LspClientFactory; created: 
 
 function makeManager(behavior: Behavior, overrides: Record<string, unknown> = {}) {
   const { factory, created } = fakeFactory(behavior);
-  const config = LspConfigSchema.parse({ timeoutMs: 40, idleShutdownMs: 0, ...(overrides.config as object) });
+  const config = LspConfigSchema.parse({
+    timeoutMs: 40,
+    idleShutdownMs: 0,
+    ...(overrides.config as object),
+  });
   const manager = new LspDiagnostics({
     config,
     workspaceRoot: () => "/root",

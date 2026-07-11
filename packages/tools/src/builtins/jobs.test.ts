@@ -21,11 +21,9 @@ test("background job argv honors dangerouslyUnsandboxed", () => {
   const wrapped = backgroundJobArgv("echo hi", "/work", sandbox());
   expect(wrapped[0]).toBe("bwrap");
   expect(wrapped).toContain("--unshare-net");
-  expect(backgroundJobArgv("echo hi", "/work", sandbox(), { dangerouslyUnsandboxed: true })).toEqual([
-    "bash",
-    "-lc",
-    "echo hi",
-  ]);
+  expect(
+    backgroundJobArgv("echo hi", "/work", sandbox(), { dangerouslyUnsandboxed: true }),
+  ).toEqual(["bash", "-lc", "echo hi"]);
 });
 
 test("a background job runs and transitions to exited with captured output", async () => {

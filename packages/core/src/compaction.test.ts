@@ -186,7 +186,14 @@ test("the kept window never begins with an orphaned tool result", async () => {
   });
   const tRes = (id: string): ModelMessage => ({
     role: "tool",
-    content: [{ type: "tool-result", toolCallId: id, toolName: "read", output: { type: "text", value: "ok" } }],
+    content: [
+      {
+        type: "tool-result",
+        toolCallId: id,
+        toolName: "read",
+        output: { type: "text", value: "ok" },
+      },
+    ],
   });
   const aText = (i: number): ModelMessage => ({
     role: "assistant",
@@ -325,7 +332,7 @@ test("emergency keep=1 folds the kept user into a NEW object (BUG-087 sameRef br
   expect(folded.role).toBe("user");
   // THE point of BUG-087: not the same reference as the pre-compact user.
   expect(folded).not.toBe(lastUser);
-  expect(typeof folded.content === "string" && folded.content.includes("prior turns summarized")).toBe(
-    true,
-  );
+  expect(
+    typeof folded.content === "string" && folded.content.includes("prior turns summarized"),
+  ).toBe(true);
 });

@@ -131,14 +131,10 @@ test("parseBingHtml is LINEAR on an unbounded single block (adversarial P8)", ()
 
 test("bingSearch fetches the search endpoint, applies recency + maxResults", async () => {
   let calledUrl = "";
-  const result = await bingSearch(
-    "bun runtime",
-    { maxResults: 1, recencyDays: 7 },
-    async (url) => {
-      calledUrl = url;
-      return { ok: true, status: 200, text: async () => BING_HTML };
-    },
-  );
+  const result = await bingSearch("bun runtime", { maxResults: 1, recencyDays: 7 }, async (url) => {
+    calledUrl = url;
+    return { ok: true, status: 200, text: async () => BING_HTML };
+  });
   expect(calledUrl).toContain("bing.com/search");
   expect(decodeURIComponent(calledUrl)).toContain('ex1:"ez2"'); // 7 days → week
   expect(result).toHaveLength(1);

@@ -134,7 +134,10 @@ export class LspDiagnostics implements Diagnostics {
       // per-diagnose deadline: a heavy first-spawn returns undefined now and is
       // ready for the next edit.
       const starting = entry.starting ?? this.#ensureClient(entry);
-      client = await Promise.race([starting, this.#delay(this.#diagnoseTimeoutMs).then(() => undefined)]);
+      client = await Promise.race([
+        starting,
+        this.#delay(this.#diagnoseTimeoutMs).then(() => undefined),
+      ]);
       if (!client) return undefined;
     }
     this.#armIdle(entry); // re-arm on use
@@ -225,7 +228,15 @@ export class LspDiagnostics implements Diagnostics {
           gaveUp: false,
           nextRetryAt: 0,
         }
-      : { language: lang, args: [], languageId: lang, missing: true, restarts: 0, gaveUp: false, nextRetryAt: 0 };
+      : {
+          language: lang,
+          args: [],
+          languageId: lang,
+          missing: true,
+          restarts: 0,
+          gaveUp: false,
+          nextRetryAt: 0,
+        };
     this.#entries.set(lang, entry);
     return entry;
   }
@@ -287,12 +298,17 @@ export class LspDiagnostics implements Diagnostics {
 
   #recordCrash(entry: LangEntry, err: Error): void {
     entry.restarts++;
-    entry.nextRetryAt = this.#now() + Math.min(this.#backoffMs * 2 ** (entry.restarts - 1), MAX_RESTART_BACKOFF_MS);
+    entry.nextRetryAt =
+      this.#now() + Math.min(this.#backoffMs * 2 ** (entry.restarts - 1), MAX_RESTART_BACKOFF_MS);
     if (entry.restarts >= this.#maxRestarts) {
       entry.gaveUp = true;
-      this.#log?.debug(`LSP ${entry.language} gave up after ${entry.restarts} restarts: ${err.message}`);
+      this.#log?.debug(
+        `LSP ${entry.language} gave up after ${entry.restarts} restarts: ${err.message}`,
+      );
     } else {
-      this.#log?.debug(`LSP ${entry.language} crashed (restart ${entry.restarts}/${this.#maxRestarts}): ${err.message}`);
+      this.#log?.debug(
+        `LSP ${entry.language} crashed (restart ${entry.restarts}/${this.#maxRestarts}): ${err.message}`,
+      );
     }
   }
 

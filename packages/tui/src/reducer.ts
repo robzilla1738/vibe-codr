@@ -95,7 +95,10 @@ export interface PendingPerm {
  * benign no-op — a card the UI already answered and removed — so a settle event
  * that races the answer never throws or clears the wrong card. Pure so the
  * perms-card lifecycle is unit-tested, not buried in app.tsx signals. */
-export function dropSettledPerms(perms: PendingPerm[], settledIds: readonly string[]): PendingPerm[] {
+export function dropSettledPerms(
+  perms: PendingPerm[],
+  settledIds: readonly string[],
+): PendingPerm[] {
   if (settledIds.length === 0) return perms;
   const settled = new Set(settledIds);
   return perms.filter((p) => !settled.has(p.id));
@@ -120,7 +123,14 @@ export interface TranscriptState {
 }
 
 export function initialTranscript(): TranscriptState {
-  return { blocks: [], changedFiles: [], nextId: 0, activeAssistant: -1, toolByCallId: {}, suppressCallIds: {} };
+  return {
+    blocks: [],
+    changedFiles: [],
+    nextId: 0,
+    activeAssistant: -1,
+    toolByCallId: {},
+    suppressCallIds: {},
+  };
 }
 
 /** Transcript-affecting actions. app.tsx maps engine UIEvents (and its own
@@ -311,7 +321,11 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       if (ci >= 0) {
         changedFiles = s.changedFiles.slice();
         const f = changedFiles[ci]!;
-        changedFiles[ci] = { path: f.path, added: f.added + a.added, removed: f.removed + a.removed };
+        changedFiles[ci] = {
+          path: f.path,
+          added: f.added + a.added,
+          removed: f.removed + a.removed,
+        };
       } else {
         changedFiles = [...s.changedFiles, { path: a.path, added: a.added, removed: a.removed }];
       }
@@ -349,7 +363,10 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       const f = finalizeActive(s);
       return {
         ...f,
-        blocks: [...f.blocks, { kind: "notice", id: f.nextId, text: a.text, level: a.level ?? "info" }],
+        blocks: [
+          ...f.blocks,
+          { kind: "notice", id: f.nextId, text: a.text, level: a.level ?? "info" },
+        ],
         nextId: f.nextId + 1,
       };
     }
@@ -369,9 +386,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       const expand = s.blocks.some((b) => b.kind === "thinking" && b.collapsed);
       return {
         ...s,
-        blocks: s.blocks.map((b) =>
-          b.kind === "thinking" ? { ...b, collapsed: !expand } : b,
-        ),
+        blocks: s.blocks.map((b) => (b.kind === "thinking" ? { ...b, collapsed: !expand } : b)),
       };
     }
     case "clear-turn": {
@@ -438,7 +453,10 @@ export function groupIntoTurns(blocks: Block[]): Turn[] {
  * non-user blocks per turn — so tapping a user message can fold (and count) its
  * whole exchange.
  */
-export function groupTurns(blocks: Block[]): { turnKey: Map<number, number>; counts: Map<number, number> } {
+export function groupTurns(blocks: Block[]): {
+  turnKey: Map<number, number>;
+  counts: Map<number, number>;
+} {
   const turnKey = new Map<number, number>();
   const counts = new Map<number, number>();
   let cur = -1;
@@ -494,7 +512,8 @@ export function failMeta(output: readonly string[]): string {
  * `Date.now()` on the tick) so the finished/running branches are unit-tested.
  */
 export function toolDurationLabel(t: Extract<Block, { kind: "tool" }>, now: number): string {
-  if (t.elapsedMs !== undefined) return t.elapsedMs >= 2000 ? `${(t.elapsedMs / 1000).toFixed(1)}s` : "";
+  if (t.elapsedMs !== undefined)
+    return t.elapsedMs >= 2000 ? `${(t.elapsedMs / 1000).toFixed(1)}s` : "";
   if (!t.done && t.startedAt !== undefined) {
     const live = now - t.startedAt;
     return live >= 2000 ? `${Math.round(live / 1000)}s` : "";
@@ -504,7 +523,10 @@ export function toolDurationLabel(t: Extract<Block, { kind: "tool" }>, now: numb
 
 /** The first non-empty line of a (possibly multi-line) string, for one-line summaries. */
 export function firstLine(s: string | undefined): string | undefined {
-  const line = s?.split("\n").find((l) => l.trim().length > 0)?.trim();
+  const line = s
+    ?.split("\n")
+    .find((l) => l.trim().length > 0)
+    ?.trim();
   return line || undefined;
 }
 

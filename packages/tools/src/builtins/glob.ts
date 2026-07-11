@@ -41,7 +41,13 @@ export const globTool: ToolDefinition<z.infer<typeof Input>> = {
     for await (const file of glob.scan({ cwd: searchDir, dot: false })) {
       // Bun's Glob doesn't auto-ignore these, so a broad "**/*.ts" would otherwise
       // drown real results in dependencies / VCS internals.
-      if (file.includes("node_modules/") || file === ".git" || file.startsWith(".git/") || file.includes("/.git/")) continue;
+      if (
+        file.includes("node_modules/") ||
+        file === ".git" ||
+        file.startsWith(".git/") ||
+        file.includes("/.git/")
+      )
+        continue;
       matches.push(file);
       // Probe for one MORE than the cap so a directory with exactly `LIMIT`
       // matches isn't falsely flagged truncated (the old `>= LIMIT` broke early).
@@ -56,14 +62,14 @@ export const globTool: ToolDefinition<z.infer<typeof Input>> = {
     const timed = await Promise.all(
       matches.map(async (f) => ({
         f,
-        mtime: await stat(join(searchDir, f)).then((s) => s.mtimeMs).catch(() => 0),
+        mtime: await stat(join(searchDir, f))
+          .then((s) => s.mtimeMs)
+          .catch(() => 0),
       })),
     );
     timed.sort((a, b) => b.mtime - a.mtime);
     const shown = timed.slice(0, LIMIT).map((x) => x.f);
-    const note = truncated
-      ? `\n…(truncated at ${LIMIT} matches; narrow the pattern)`
-      : "";
+    const note = truncated ? `\n…(truncated at ${LIMIT} matches; narrow the pattern)` : "";
     return { output: shown.join("\n") + note };
   },
 };

@@ -36,8 +36,7 @@ export function backgroundJobArgv(
 /** Extract localhost server URLs printed by dev servers (vite/next/etc.). */
 function detectServers(output: string): string[] {
   const urls = new Set<string>();
-  const full =
-    /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):\d{2,5}[^\s)'"<>]*/gi;
+  const full = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):\d{2,5}[^\s)'"<>]*/gi;
   for (const m of output.matchAll(full)) urls.add(m[0].replace(/[.,]+$/, ""));
   // Bare "localhost:3000" / "127.0.0.1:8080" → assume http.
   const bare = /(?:^|\s)((?:localhost|127\.0\.0\.1):\d{2,5})\b/gi;

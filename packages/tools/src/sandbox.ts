@@ -276,7 +276,10 @@ export function bwrapArgs(policy: SandboxPolicy, cwd: string): string[] {
  * off/unavailable policy returns it unchanged — sandboxing is a transparent
  * prefix, never a behavior change.
  */
-export function wrapCommand(policy: SandboxPolicy, opts: { cwd: string; command: string }): string[] {
+export function wrapCommand(
+  policy: SandboxPolicy,
+  opts: { cwd: string; command: string },
+): string[] {
   const base = ["bash", "-lc", opts.command];
   if (policy.mode === "off" || !policy.available) return base;
   if (policy.backend === "seatbelt") {

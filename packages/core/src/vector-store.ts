@@ -44,9 +44,7 @@ export class VectorStore {
     this.#db.exec("PRAGMA journal_mode = WAL;");
     // BUG-063: multi-process writers wait instead of SQLITE_BUSY failure.
     this.#db.exec("PRAGMA busy_timeout = 5000;");
-    this.#db.run(
-      `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-    );
+    this.#db.run(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
     this.#db.run(
       `CREATE TABLE IF NOT EXISTS chunks (
          id TEXT PRIMARY KEY,
@@ -66,15 +64,12 @@ export class VectorStore {
    * from a different model is not comparable to a new query vector. */
   #ensureModel(model: string, dimensions: number): void {
     const want = `${model}@${dimensions}`;
-    const row = this.#db.query<{ value: string }, []>(
-      `SELECT value FROM meta WHERE key = 'embedder'`,
-    ).get();
+    const row = this.#db
+      .query<{ value: string }, []>(`SELECT value FROM meta WHERE key = 'embedder'`)
+      .get();
     if (row?.value === want) return;
     if (row) this.#db.run(`DELETE FROM chunks`);
-    this.#db.run(
-      `INSERT OR REPLACE INTO meta (key, value) VALUES ('embedder', ?)`,
-      [want],
-    );
+    this.#db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('embedder', ?)`, [want]);
   }
 
   /** Insert or replace a batch of records (one transaction). */
@@ -87,15 +82,7 @@ export class VectorStore {
     const now = Date.now();
     const tx = this.#db.transaction((rows: VectorRecord[]) => {
       for (const r of rows) {
-        stmt.run(
-          r.id,
-          r.source,
-          r.hash,
-          r.heading ?? "",
-          r.text,
-          encodeVector(r.vector),
-          now,
-        );
+        stmt.run(r.id, r.source, r.hash, r.heading ?? "", r.text, encodeVector(r.vector), now);
       }
     });
     tx(records);
@@ -138,10 +125,7 @@ export class VectorStore {
   /** Top-`k` chunks by cosine similarity to `queryVector` (brute-force, bounded). */
   search(queryVector: number[], k = 8): VectorHit[] {
     const rows = this.#db
-      .query<
-        { id: string; source: string; heading: string; text: string; vector: Uint8Array },
-        []
-      >(
+      .query<{ id: string; source: string; heading: string; text: string; vector: Uint8Array }, []>(
         `SELECT id, source, heading, text, vector FROM chunks
          ORDER BY updated_at DESC
          LIMIT ${VectorStore.MAX_SEARCH_ROWS}`,
@@ -158,9 +142,7 @@ export class VectorStore {
 
   /** Number of stored chunks. */
   count(): number {
-    return (
-      this.#db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM chunks`).get()?.n ?? 0
-    );
+    return this.#db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM chunks`).get()?.n ?? 0;
   }
 
   close(): void {

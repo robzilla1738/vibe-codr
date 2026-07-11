@@ -17,7 +17,10 @@ function bagOfWordsEmbedding(dim = 64) {
     doEmbed: async ({ values }: { values: string[] }) => ({
       embeddings: values.map((text) => {
         const v = new Array(dim).fill(0);
-        for (const tok of text.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 2)) {
+        for (const tok of text
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((t) => t.length >= 2)) {
           let h = 0;
           for (const ch of tok) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
           v[h % dim] += 1;

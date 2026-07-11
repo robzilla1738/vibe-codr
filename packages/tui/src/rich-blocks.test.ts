@@ -119,7 +119,17 @@ test("weatherIcon maps conditions to glyphs", () => {
 test("every weather glyph is BMP text-presentation (predictable width)", () => {
   // A supplementary-plane emoji (🌫/🌬) is double-width with spotty terminal
   // font coverage and would misalign the forecast columns.
-  for (const cond of ["Foggy", "Windy", "Sunny", "Rain", "Snow", "Thunderstorm", "Overcast", "Haze", ""]) {
+  for (const cond of [
+    "Foggy",
+    "Windy",
+    "Sunny",
+    "Rain",
+    "Snow",
+    "Thunderstorm",
+    "Overcast",
+    "Haze",
+    "",
+  ]) {
     const glyph = weatherIcon(cond);
     expect(glyph.codePointAt(0)! <= 0xffff).toBe(true);
   }
@@ -216,7 +226,12 @@ test("brailleChart returns h rows of w braille glyphs", () => {
     expect(/^[⠀-⣿]+$/.test(r)).toBe(true);
   }
   // A varying series draws SOMETHING (not an all-blank canvas).
-  expect(rows.join("").split("").some((ch) => ch !== "⠀")).toBe(true);
+  expect(
+    rows
+      .join("")
+      .split("")
+      .some((ch) => ch !== "⠀"),
+  ).toBe(true);
 });
 test("brailleChart places a rising series' end above its start", () => {
   const rows = brailleChart([0, 100], 8, 4);

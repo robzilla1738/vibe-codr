@@ -19,7 +19,8 @@ export function extractPdfText(buf: Buffer): { text: string; pages: number } | n
   if (buf.subarray(0, 5).toString("latin1") !== "%PDF-") return null;
   // latin1 preserves bytes 1:1, so stream offsets in the string match the buffer.
   const raw = buf.toString("latin1");
-  const pages = (raw.match(/\/Type\s*\/Pages?\b/g) || []).filter((m) => !/Pages/.test(m)).length || 1;
+  const pages =
+    (raw.match(/\/Type\s*\/Pages?\b/g) || []).filter((m) => !/Pages/.test(m)).length || 1;
 
   let text = "";
   const streamRe = /<<([\s\S]{0,2000}?)>>\s*stream\r?\n/g;
@@ -108,7 +109,8 @@ function extractFromContent(src: string): string {
       while (j < n && /[0-9.]/.test(src[j]!)) j++;
       // Large negative kerning inside a TJ array is a word gap.
       const num = parseFloat(src.slice(i, j));
-      if (num <= -180 && pending.length && !pending[pending.length - 1]!.endsWith(" ")) pending.push(" ");
+      if (num <= -180 && pending.length && !pending[pending.length - 1]!.endsWith(" "))
+        pending.push(" ");
       i = j;
     } else {
       i++;
@@ -132,7 +134,16 @@ function parseLiteralString(src: string, start: number): [string, number] {
         out += String.fromCharCode(parseInt(oct, 8));
         i += oct.length;
       } else {
-        const map: Record<string, string> = { n: "\n", r: "\r", t: "\t", b: "\b", f: "\f", "(": "(", ")": ")", "\\": "\\" };
+        const map: Record<string, string> = {
+          n: "\n",
+          r: "\r",
+          t: "\t",
+          b: "\b",
+          f: "\f",
+          "(": "(",
+          ")": ")",
+          "\\": "\\",
+        };
         out += map[next] ?? next ?? "";
         i++;
       }
@@ -161,7 +172,8 @@ function decodeHexString(hex: string): string {
   if (clean.length % 2) bytes.push(parseInt(`${clean[clean.length - 1]}0`, 16));
   if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
     let s = "";
-    for (let i = 2; i + 1 < bytes.length; i += 2) s += String.fromCharCode((bytes[i]! << 8) | bytes[i + 1]!);
+    for (let i = 2; i + 1 < bytes.length; i += 2)
+      s += String.fromCharCode((bytes[i]! << 8) | bytes[i + 1]!);
     return s;
   }
   return bytes.map((b) => String.fromCharCode(b)).join("");

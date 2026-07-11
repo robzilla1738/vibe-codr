@@ -1,5 +1,14 @@
 import { test, expect, beforeEach } from "bun:test";
-import { mkdtempSync, utimesSync, readdirSync, statSync, chmodSync, symlinkSync, lstatSync, unlinkSync } from "node:fs";
+import {
+  mkdtempSync,
+  utimesSync,
+  readdirSync,
+  statSync,
+  chmodSync,
+  symlinkSync,
+  lstatSync,
+  unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolContext, UIEvent } from "@vibe/shared";
@@ -68,10 +77,7 @@ test("overwrites an existing file and reports the delta", async () => {
 test("creates missing parent directories automatically", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-write-mkdir-"));
   const { ctx: c } = ctx(dir);
-  const res = await writeTool.execute(
-    { path: "a/b/c/deep.txt", content: "nested\n" },
-    c,
-  );
+  const res = await writeTool.execute({ path: "a/b/c/deep.txt", content: "nested\n" }, c);
   expect(res.isError).toBeUndefined();
   expect(await Bun.file(join(dir, "a/b/c/deep.txt")).text()).toBe("nested\n");
 });
@@ -79,10 +85,7 @@ test("creates missing parent directories automatically", async () => {
 test("the diff text is kept OUT of the tool output (only the +N -M summary)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-write-nodiff-"));
   const { ctx: c } = ctx(dir);
-  const res = await writeTool.execute(
-    { path: "x.txt", content: "unique-marker-line\n" },
-    c,
-  );
+  const res = await writeTool.execute({ path: "x.txt", content: "unique-marker-line\n" }, c);
   const out = res.output as string;
   // The summary is present…
   expect(out).toContain("(+1 -0)");
@@ -142,9 +145,9 @@ test("a mid-write failure leaves the existing file intact with no temp", async (
     (Bun as unknown as { write: unknown }).write = () => {
       throw new Error("injected write failure");
     };
-    await expect(
-      writeTool.execute({ path: "f.txt", content: "clobber\n" }, c),
-    ).rejects.toThrow("injected write failure");
+    await expect(writeTool.execute({ path: "f.txt", content: "clobber\n" }, c)).rejects.toThrow(
+      "injected write failure",
+    );
   } finally {
     (Bun as unknown as { write: typeof orig }).write = orig;
   }
@@ -208,5 +211,3 @@ test("write after our own write does not self-flag as stale (baseline advances)"
   expect(second.isError).toBeUndefined();
   expect(second.output).toContain("Overwrote f.txt");
 });
-
-

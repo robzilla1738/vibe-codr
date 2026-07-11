@@ -22,14 +22,8 @@ test("glob matches a family of tools", async () => {
 });
 
 test("ask consults the resolver", async () => {
-  const allow = new PermissionChecker(
-    [{ tool: "write", action: "ask" }],
-    () => true,
-  );
-  const deny = new PermissionChecker(
-    [{ tool: "write", action: "ask" }],
-    () => false,
-  );
+  const allow = new PermissionChecker([{ tool: "write", action: "ask" }], () => true);
+  const deny = new PermissionChecker([{ tool: "write", action: "ask" }], () => false);
   expect((await allow.check("write", {})).allowed).toBe(true);
   expect((await deny.check("write", {})).allowed).toBe(false);
 });
@@ -85,8 +79,13 @@ test("path-scoped write rules and URL-scoped fetch rules", async () => {
     { tool: "webfetch", match: "*internal.corp*", action: "deny" },
   ]);
   expect((await checker.check("write", { path: "docs/readme.md" })).allowed).toBe(true);
-  expect((await checker.check("webfetch", { url: "https://internal.corp/secret" })).allowed).toBe(false);
-  expect((await checker.check("webfetch", { url: "https://example.com" }, { fallback: "allow" })).allowed).toBe(true);
+  expect((await checker.check("webfetch", { url: "https://internal.corp/secret" })).allowed).toBe(
+    false,
+  );
+  expect(
+    (await checker.check("webfetch", { url: "https://example.com" }, { fallback: "allow" }))
+      .allowed,
+  ).toBe(true);
 });
 
 test("the fallback option overrides the default for unmatched network tools", async () => {
@@ -95,7 +94,9 @@ test("the fallback option overrides the default for unmatched network tools", as
   // …a normal side-effecting tool asks (and is denied):
   expect((await checker.check("bash", { command: "x" })).allowed).toBe(false);
   // …but a network read-only tool passes its allow fallback (no prompt):
-  expect((await checker.check("webfetch", { url: "https://x.dev" }, { fallback: "allow" })).allowed).toBe(true);
+  expect(
+    (await checker.check("webfetch", { url: "https://x.dev" }, { fallback: "allow" })).allowed,
+  ).toBe(true);
 });
 
 test("egress deny rules govern the dedicated git_push / git_commit tools", async () => {
@@ -107,7 +108,9 @@ test("egress deny rules govern the dedicated git_push / git_commit tools", async
     undefined,
     "allow",
   );
-  expect((await bashRecipe.check("git_push", { remote: "origin", branch: "main" })).allowed).toBe(false);
+  expect((await bashRecipe.check("git_push", { remote: "origin", branch: "main" })).allowed).toBe(
+    false,
+  );
 
   // A targeted glob fires now that git_push carries the command it runs.
   const targeted = new PermissionChecker(
@@ -115,8 +118,12 @@ test("egress deny rules govern the dedicated git_push / git_commit tools", async
     undefined,
     "allow",
   );
-  expect((await targeted.check("git_push", { remote: "origin", branch: "main" })).allowed).toBe(false);
-  expect((await targeted.check("git_push", { remote: "origin", branch: "dev" })).allowed).toBe(true);
+  expect((await targeted.check("git_push", { remote: "origin", branch: "main" })).allowed).toBe(
+    false,
+  );
+  expect((await targeted.check("git_push", { remote: "origin", branch: "dev" })).allowed).toBe(
+    true,
+  );
 
   // git_commit is governable the same way.
   const commit = new PermissionChecker(
@@ -166,9 +173,13 @@ test("a deny can't be dodged by a newline, whitespace-case, or host-case trick",
     "allow",
   );
   // Newline dodge: `.*` must cross newlines for a protective deny (dotAll).
-  expect((await checker.check("bash", { command: "true\ngit push origin evil" })).allowed).toBe(false);
+  expect((await checker.check("bash", { command: "true\ngit push origin evil" })).allowed).toBe(
+    false,
+  );
   // Case dodge on a host (DNS is case-insensitive).
-  expect((await checker.check("webfetch", { url: "https://INTERNAL.CORP/secret" })).allowed).toBe(false);
+  expect((await checker.check("webfetch", { url: "https://INTERNAL.CORP/secret" })).allowed).toBe(
+    false,
+  );
 });
 
 test("an ALLOW stays strict — a trailing command can't be smuggled past it", async () => {
@@ -191,7 +202,9 @@ test("command-scoped match rules govern any command-bearing tool, not just bash"
     undefined,
     "allow",
   );
-  expect((await checker.check("mcp__shell__exec", { command: "git push origin main" })).allowed).toBe(false);
+  expect(
+    (await checker.check("mcp__shell__exec", { command: "git push origin main" })).allowed,
+  ).toBe(false);
   expect((await checker.check("mcp__shell__exec", { command: "ls -la" })).allowed).toBe(true);
 });
 
@@ -369,7 +382,8 @@ test('a "!unsandboxed *" allow rule pre-authorizes the escape hatch; a normal al
     "ask",
   );
   expect(
-    (await authorized.check("bash", { command: "npm publish", dangerouslyUnsandboxed: true })).allowed,
+    (await authorized.check("bash", { command: "npm publish", dangerouslyUnsandboxed: true }))
+      .allowed,
   ).toBe(true);
 
   // A blanket name-only bash allow does NOT silently cover the unsafe variant:
@@ -413,7 +427,10 @@ test("a BROAD allow glob that also matches the bare command does NOT cover the e
     // The ordinary sandboxed form IS covered by the broad allow (no prompt).
     expect((await checker.check("bash", { command: "npm publish" })).allowed).toBe(true);
     // The unsandboxed variant is forced to an explicit ask → fails closed.
-    const res = await checker.check("bash", { command: "npm publish", dangerouslyUnsandboxed: true });
+    const res = await checker.check("bash", {
+      command: "npm publish",
+      dangerouslyUnsandboxed: true,
+    });
     expect(res.allowed).toBe(false);
   }
 });
@@ -436,11 +453,7 @@ test("a partial sentinel glob authorizes the escape hatch without leaking to the
 });
 
 test("a matching deny still wins over the escape hatch (deny is absolute)", async () => {
-  const checker = new PermissionChecker(
-    [{ tool: "bash", action: "deny" }],
-    () => true,
-    "allow",
-  );
+  const checker = new PermissionChecker([{ tool: "bash", action: "deny" }], () => true, "allow");
   const res = await checker.check("bash", { command: "rm -rf /", dangerouslyUnsandboxed: true });
   expect(res.allowed).toBe(false);
   expect(res.allowed === false && res.reason).toBe("denied by policy");

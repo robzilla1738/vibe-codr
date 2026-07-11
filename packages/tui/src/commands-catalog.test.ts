@@ -102,7 +102,8 @@ test("palette matching is tiered fuzzy: prefix, then name-substring, then descri
   // prefix matches, catalog order) ahead of any substring/description hit.
   const byPrefix = paletteState("/co");
   expect(byPrefix.open && byPrefix.mode === "command" && byPrefix.items[0]?.name).toBe("cost");
-  const names = byPrefix.open && byPrefix.mode === "command" ? byPrefix.items.map((c) => c.name) : [];
+  const names =
+    byPrefix.open && byPrefix.mode === "command" ? byPrefix.items.map((c) => c.name) : [];
   const prefixNames = names.filter((n) => n.startsWith("co"));
   expect(names.slice(0, prefixNames.length)).toEqual(prefixNames);
   // Nothing matches anywhere → closed, not an empty shell.

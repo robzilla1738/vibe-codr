@@ -50,7 +50,10 @@ export const spawnGit: GitRunner = async (cwd, args) => {
  * Best-effort git state for the header. Returns undefined outside a repo (so the
  * header simply omits git context). Never throws for the caller's convenience.
  */
-export async function readGitInfo(cwd: string, run: GitRunner = spawnGit): Promise<GitInfo | undefined> {
+export async function readGitInfo(
+  cwd: string,
+  run: GitRunner = spawnGit,
+): Promise<GitInfo | undefined> {
   const branchRes = await run(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (!branchRes.ok) return undefined; // not a repo
   const branch = branchRes.stdout.trim() || "HEAD";
@@ -63,7 +66,10 @@ export async function readGitInfo(cwd: string, run: GitRunner = spawnGit): Promi
   const dirty = status.ok ? status.stdout.split("\n").filter((l) => l.trim().length > 0).length : 0;
   // `@{upstream}` fails with no upstream — treat as 0/0.
   const [behind, ahead] = counts.ok
-    ? counts.stdout.trim().split(/\s+/).map((n) => Number(n) || 0)
+    ? counts.stdout
+        .trim()
+        .split(/\s+/)
+        .map((n) => Number(n) || 0)
     : [0, 0];
   // Inside a linked worktree the per-worktree git-dir differs from the common dir.
   const worktree = gitDir.ok && commonDir.ok && gitDir.stdout.trim() !== commonDir.stdout.trim();

@@ -92,7 +92,10 @@ test("format renders a numbered list and is empty for an empty ledger", () => {
 test("format bounds to ~maxChars, keeping the most-recent entries with a truncation marker", () => {
   const led = new SourceLedger();
   for (let i = 1; i <= 40; i++) {
-    led.record({ url: `https://example.com/very/long/path/segment/number/${i}`, via: "web_search" });
+    led.record({
+      url: `https://example.com/very/long/path/segment/number/${i}`,
+      via: "web_search",
+    });
   }
   const out = led.format(400);
   expect(out.length).toBeLessThanOrEqual(400);
@@ -161,7 +164,12 @@ const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
 
 function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -186,7 +194,12 @@ test("session harvests URLs from a web_search result and injects them into the n
     // Turn 1: model calls web_search…
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "c1", toolName: "web_search", input: JSON.stringify({ query: "x" }) },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "web_search",
+        input: JSON.stringify({ query: "x" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     // …then answers.
@@ -269,7 +282,12 @@ test("webfetch records the URL it FETCHED, not links found inside the page body"
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "c1", toolName: "webfetch", input: JSON.stringify({ url: "https://blog.example.com/post" }) },
+      {
+        type: "tool-call",
+        toolCallId: "c1",
+        toolName: "webfetch",
+        input: JSON.stringify({ url: "https://blog.example.com/post" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([

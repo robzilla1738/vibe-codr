@@ -64,11 +64,19 @@ test("seatbeltProfile: read-only grants NO writes (only reads + process)", () =>
 
 test("bwrapArgs: workspace-write binds each root read-write; network off unshares net", () => {
   expect(bwrapArgs(policy("workspace-write", "off"), "/work")).toEqual([
-    "--ro-bind", "/", "/",
-    "--dev", "/dev",
-    "--proc", "/proc",
-    "--bind", "/work", "/work",
-    "--bind", "/tmp/x", "/tmp/x",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    "--bind",
+    "/work",
+    "/work",
+    "--bind",
+    "/tmp/x",
+    "/tmp/x",
     "--unshare-net",
   ]);
 });
@@ -76,21 +84,33 @@ test("bwrapArgs: workspace-write binds each root read-write; network off unshare
 test("bwrapArgs: network on keeps net; read-only binds nothing writable", () => {
   expect(bwrapArgs(policy("workspace-write", "on"), "/work")).not.toContain("--unshare-net");
   expect(bwrapArgs(policy("read-only", "off"), "/work")).toEqual([
-    "--ro-bind", "/", "/",
-    "--dev", "/dev",
-    "--proc", "/proc",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
     "--unshare-net",
   ]);
   expect(bwrapArgs(policy("read-only", "on"), "/work")).toEqual([
-    "--ro-bind", "/", "/",
-    "--dev", "/dev",
-    "--proc", "/proc",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
   ]);
 });
 
 // -------------------------------------------------------- resolveSandboxPolicy
 
-const CFG = { mode: "workspace-write" as SandboxMode, network: "on" as SandboxNetwork, writablePaths: [] as string[] };
+const CFG = {
+  mode: "workspace-write" as SandboxMode,
+  network: "on" as SandboxNetwork,
+  writablePaths: [] as string[],
+};
 
 test("resolveSandboxPolicy: win32 is unavailable with a human warning", () => {
   const p = resolveSandboxPolicy(CFG, {
@@ -115,7 +135,12 @@ test("resolveSandboxPolicy: darwin picks seatbelt when sandbox-exec is present",
 });
 
 test("resolveSandboxPolicy: darwin without the binary warns + is unavailable", () => {
-  const p = resolveSandboxPolicy(CFG, { cwd: "/work", platform: "darwin", which: () => null, env: {} });
+  const p = resolveSandboxPolicy(CFG, {
+    cwd: "/work",
+    platform: "darwin",
+    which: () => null,
+    env: {},
+  });
   expect(p.available).toBe(false);
   expect(p.warning).toContain("sandbox-exec");
 });
@@ -129,7 +154,12 @@ test("resolveSandboxPolicy: linux picks bwrap / warns when absent", () => {
     smokeBwrap: () => true,
   });
   expect(ok).toMatchObject({ available: true, backend: "bwrap" });
-  const missing = resolveSandboxPolicy(CFG, { cwd: "/work", platform: "linux", which: () => null, env: {} });
+  const missing = resolveSandboxPolicy(CFG, {
+    cwd: "/work",
+    platform: "linux",
+    which: () => null,
+    env: {},
+  });
   expect(missing.available).toBe(false);
   expect(missing.warning).toContain("bwrap");
 });
@@ -177,25 +207,31 @@ test("resolveSandboxPolicy: darwin never runs the bwrap smoke test", () => {
 });
 
 test("resolveSandboxPolicy: off mode is always available with no backend/warning", () => {
-  const p = resolveSandboxPolicy({ ...CFG, mode: "off" }, {
-    cwd: "/work",
-    platform: "win32",
-    which: () => null,
-    env: {},
-  });
+  const p = resolveSandboxPolicy(
+    { ...CFG, mode: "off" },
+    {
+      cwd: "/work",
+      platform: "win32",
+      which: () => null,
+      env: {},
+    },
+  );
   expect(p).toMatchObject({ mode: "off", available: true, backend: "none" });
   expect(p.warning).toBeUndefined();
 });
 
 test("resolveSandboxPolicy: writable roots = cwd + tmp + stateDirs + cfg, absolute + deduped", () => {
-  const p = resolveSandboxPolicy({ ...CFG, writablePaths: ["/extra", "/work"] }, {
-    cwd: "/work",
-    stateDirs: ["/state", "/work"],
-    platform: "linux",
-    which: () => "/usr/bin/bwrap",
-    env: {},
-    smokeBwrap: () => true,
-  });
+  const p = resolveSandboxPolicy(
+    { ...CFG, writablePaths: ["/extra", "/work"] },
+    {
+      cwd: "/work",
+      stateDirs: ["/state", "/work"],
+      platform: "linux",
+      which: () => "/usr/bin/bwrap",
+      env: {},
+      smokeBwrap: () => true,
+    },
+  );
   const realTmp = existsSync(tmpdir()) ? realpathSync(tmpdir()) : resolve(tmpdir());
   expect(p.writablePaths).toContain(resolve("/work")); // non-existent → lexical
   expect(p.writablePaths).toContain(realTmp); // existing → realpath-canonicalized
@@ -207,13 +243,16 @@ test("resolveSandboxPolicy: writable roots = cwd + tmp + stateDirs + cfg, absolu
 
 test("resolveSandboxPolicy: VIBE_SANDBOX env overrides config mode both ways", () => {
   // Override tightens an off config to read-only.
-  const tightened = resolveSandboxPolicy({ ...CFG, mode: "off" }, {
-    cwd: "/work",
-    platform: "linux",
-    which: () => "/usr/bin/bwrap",
-    env: { VIBE_SANDBOX: "read-only" },
-    smokeBwrap: () => true,
-  });
+  const tightened = resolveSandboxPolicy(
+    { ...CFG, mode: "off" },
+    {
+      cwd: "/work",
+      platform: "linux",
+      which: () => "/usr/bin/bwrap",
+      env: { VIBE_SANDBOX: "read-only" },
+      smokeBwrap: () => true,
+    },
+  );
   expect(tightened.mode).toBe("read-only");
   expect(tightened.available).toBe(true);
   // Override loosens a workspace-write config to off.
@@ -257,7 +296,9 @@ test("annotateDenial: appends ONLY on a sandboxed nonzero exit with a denial sig
   expect(annotateDenial("open: Operation not permitted", 1, p)).toContain("[vibe sandbox]");
   expect(annotateDenial("bwrap: Creating new namespace failed", 1, p)).toContain("[vibe sandbox]");
   // No signature → untouched.
-  expect(annotateDenial("bash: foo: command not found", 127, p)).toBe("bash: foo: command not found");
+  expect(annotateDenial("bash: foo: command not found", 127, p)).toBe(
+    "bash: foo: command not found",
+  );
   // Clean exit → untouched even with the word EPERM present.
   expect(annotateDenial("EPERM", 0, p)).toBe("EPERM");
   // Off / unavailable policy → never annotate.
@@ -269,9 +310,14 @@ test("annotateDenial: appends ONLY on a sandboxed nonzero exit with a denial sig
 
 test("wrapCommand: off / unavailable → the unchanged base argv", () => {
   const base = ["bash", "-lc", "echo hi"];
-  expect(wrapCommand({ ...policy("off", "on"), mode: "off" }, { cwd: "/work", command: "echo hi" })).toEqual(base);
   expect(
-    wrapCommand({ ...policy("workspace-write", "on"), available: false }, { cwd: "/work", command: "echo hi" }),
+    wrapCommand({ ...policy("off", "on"), mode: "off" }, { cwd: "/work", command: "echo hi" }),
+  ).toEqual(base);
+  expect(
+    wrapCommand(
+      { ...policy("workspace-write", "on"), available: false },
+      { cwd: "/work", command: "echo hi" },
+    ),
   ).toEqual(base);
 });
 

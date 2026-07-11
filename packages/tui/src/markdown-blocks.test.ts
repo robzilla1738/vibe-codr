@@ -1,10 +1,21 @@
 import { test, expect } from "bun:test";
-import { splitMarkdown, createMarkdownSplitter, renderTable, stripInline, displayWidth, tableFits, tailWidth, truncateWidth, type TableLine } from "./markdown-blocks.ts";
+import {
+  splitMarkdown,
+  createMarkdownSplitter,
+  renderTable,
+  stripInline,
+  displayWidth,
+  tableFits,
+  tailWidth,
+  truncateWidth,
+  type TableLine,
+} from "./markdown-blocks.ts";
 
 /** Reconstruct a grid table line's visual text (the box rules verbatim; a
  * header/row as its cells wrapped by the outer + inner `│` borders the UI draws) so
  * width/content assertions work on the structured grid output. */
-const lineText = (l: TableLine): string => (l.role === "rule" ? l.text : `│ ${l.cells.join(" │ ")} │`);
+const lineText = (l: TableLine): string =>
+  l.role === "rule" ? l.text : `│ ${l.cells.join(" │ ")} │`;
 /** Terminal-cell display width of a reconstructed line (CJK/emoji-aware). */
 const lineWidth = (l: TableLine): number => displayWidth(lineText(l));
 
@@ -53,7 +64,8 @@ test("consecutive blockquote lines group into one quote block, marker stripped",
 });
 
 test("a GFM table is split out, with alignment, between prose", () => {
-  const src = "pick one:\n\n| Name | Size |\n| :-- | --: |\n| Redux | large |\n| Zustand | tiny |\n\ndone";
+  const src =
+    "pick one:\n\n| Name | Size |\n| :-- | --: |\n| Redux | large |\n| Zustand | tiny |\n\ndone";
   const b = splitMarkdown(src);
   expect(b.map((x) => x.kind)).toEqual(["prose", "table", "prose"]);
   const table = b[1] as Extract<(typeof b)[number], { kind: "table" }>;
@@ -69,10 +81,7 @@ test("a GFM table is split out, with alignment, between prose", () => {
 test("a GFM escaped pipe in a cell is a literal | , not a column break", () => {
   const src = "| Op | Meaning |\n| --- | --- |\n| a \\| b | alternation |";
   const b = splitMarkdown(src);
-  const table = b.find((x) => x.kind === "table") as Extract<
-    (typeof b)[number],
-    { kind: "table" }
-  >;
+  const table = b.find((x) => x.kind === "table") as Extract<(typeof b)[number], { kind: "table" }>;
   expect(table).toBeDefined();
   // Two cells (the escaped pipe stays inside cell 1 as a literal "|"), no stray backslash.
   expect(table.rows).toEqual([
@@ -85,10 +94,7 @@ test("a doubled backslash before a pipe is an escaped backslash + a real delimit
   // `a\\|b`: literal backslash, then a column break → cells "a\" and "b" (GFM).
   const src = "| x | y |\n| --- | --- |\n| a\\\\|b | z |";
   const b = splitMarkdown(src);
-  const table = b.find((x) => x.kind === "table") as Extract<
-    (typeof b)[number],
-    { kind: "table" }
-  >;
+  const table = b.find((x) => x.kind === "table") as Extract<(typeof b)[number], { kind: "table" }>;
   expect(table.rows).toEqual([
     ["x", "y"],
     ["a\\", "b", "z"],
@@ -186,7 +192,10 @@ test("stripInline is LINEAR on a `*`-dense line (adversarial P7-W2)", () => {
 
 test("renderTable conceals inline markdown in cells (no raw ** leaks)", () => {
   const lines = renderTable(
-    [["**Metric**", "**BTC**"], ["**Supply**", "21M `hard cap`"]],
+    [
+      ["**Metric**", "**BTC**"],
+      ["**Supply**", "21M `hard cap`"],
+    ],
     ["left", "left"],
     80,
   );
@@ -248,7 +257,10 @@ test("a numbered list-item cell also hangs its wrap (1. / 12) markers)", () => {
 
 test("every wrapped table line is the same visual width", () => {
   const lines = renderTable(
-    [["Name", "Detail"], ["Alpha", "a longer detail that must wrap across lines"]],
+    [
+      ["Name", "Detail"],
+      ["Alpha", "a longer detail that must wrap across lines"],
+    ],
     ["left", "left"],
     28,
   );
@@ -409,7 +421,9 @@ test("createMarkdownSplitter equals a fresh splitMarkdown for every streamed pre
 
 test("createMarkdownSplitter falls back to a full re-split on non-append input", () => {
   const split = createMarkdownSplitter();
-  expect(split("## Heading\n\nbody text here")).toEqual(splitMarkdown("## Heading\n\nbody text here"));
+  expect(split("## Heading\n\nbody text here")).toEqual(
+    splitMarkdown("## Heading\n\nbody text here"),
+  );
   // A completely different (non-prefix) string must not reuse the cached tail.
   expect(split("```js\ncode\n```")).toEqual(splitMarkdown("```js\ncode\n```"));
   // A shrink (not a prefix of the previous) also re-parses fresh.

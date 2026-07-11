@@ -13,8 +13,7 @@ const PATH_NOISE =
   /\b(?:screenshot|screen\s*shot|img|image|photo|pic|desktop|downloads|documents|users|home|var|tmp|private)\b/gi;
 
 /** Absolute, home, or clearly filesystem path runs (incl. shell `\ ` escapes). */
-const FS_PATH_RUN =
-  /(?:^|[\s"'`])((?:\/|~\/|[A-Za-z]:\\)(?:\\ |\\[^ ]|[^\s"'`\\])+)/g;
+const FS_PATH_RUN = /(?:^|[\s"'`])((?:\/|~\/|[A-Za-z]:\\)(?:\\ |\\[^ ]|[^\s"'`\\])+)/g;
 
 /** Bare URL — never useful as a memory seed token. */
 const URL_RUN = /\bhttps?:\/\/[^\s"'`]+/gi;
@@ -30,10 +29,7 @@ const IMAGE_EXT = /\.(?:png|jpe?g|gif|webp|bmp|svg|heic|tiff?)\b/gi;
  * Strip filesystem paths, URLs, screenshot/date noise from a first-turn prompt
  * so proactive recall keys on the user's intent, not path tokens.
  */
-export function cleanProactiveRecallSeed(
-  goal: string | null | undefined,
-  prompt: string,
-): string {
+export function cleanProactiveRecallSeed(goal: string | null | undefined, prompt: string): string {
   let text = prompt ?? "";
   // Shell-escaped spaces → real spaces so path runs match as one token stream.
   text = text.replace(/\\ /g, " ");

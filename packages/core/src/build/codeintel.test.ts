@@ -90,7 +90,9 @@ test("detectCommands: non-terminating test scripts are rejected, one-shot forms 
     ["bun test", true],
   ];
   for (const [script, defined] of cases) {
-    const cmds = detectCommands(manifests({ packageJson: JSON.stringify({ scripts: { test: script } }) }));
+    const cmds = detectCommands(
+      manifests({ packageJson: JSON.stringify({ scripts: { test: script } }) }),
+    );
     expect([script, cmds.test !== undefined]).toEqual([script, defined]);
   }
 });
@@ -109,7 +111,9 @@ test("detectCommands: @typescript-eslint devDep alone does NOT inject a tsc type
   expect(cmds.typecheck).toBeUndefined();
   // …but a real `typescript` dependency key still yields tsc.
   const real = detectCommands(
-    manifests({ packageJson: JSON.stringify({ scripts: {}, devDependencies: { typescript: "^5" } }) }),
+    manifests({
+      packageJson: JSON.stringify({ scripts: {}, devDependencies: { typescript: "^5" } }),
+    }),
   );
   expect(real.typecheck).toBe("npx tsc --noEmit");
 });
@@ -124,7 +128,9 @@ test("detectCommands: tooling-only pyproject gets NO pip/pytest command", () => 
 
   // A build-backend-only pyproject is installable but has no pytest.
   const backend = detectCommands(
-    manifests({ pyproject: "[build-system]\nrequires = ['hatchling']\nbuild-backend = 'hatchling.build'" }),
+    manifests({
+      pyproject: "[build-system]\nrequires = ['hatchling']\nbuild-backend = 'hatchling.build'",
+    }),
   );
   expect(backend.install).toBe("pip install -e .");
   expect(backend.test).toBeUndefined();

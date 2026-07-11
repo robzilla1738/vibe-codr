@@ -92,10 +92,7 @@ export class HookBus {
     return this.#handlers.get(name)?.length ?? 0;
   }
 
-  async run<N extends HookName>(
-    name: N,
-    payload: HookPayloads[N],
-  ): Promise<HookPayloads[N]> {
+  async run<N extends HookName>(name: N, payload: HookPayloads[N]): Promise<HookPayloads[N]> {
     let current = payload;
     for (const handler of this.#handlers.get(name) ?? []) {
       // Isolate each handler: one throwing OR HANGING plugin must not abort the
@@ -109,7 +106,10 @@ export class HookBus {
           Promise.resolve(handler(current)),
           new Promise<never>((_, reject) => {
             timer = setTimeout(
-              () => reject(new Error(`hook handler for "${name}" timed out after ${this.#timeoutMs}ms`)),
+              () =>
+                reject(
+                  new Error(`hook handler for "${name}" timed out after ${this.#timeoutMs}ms`),
+                ),
               this.#timeoutMs,
             );
           }),

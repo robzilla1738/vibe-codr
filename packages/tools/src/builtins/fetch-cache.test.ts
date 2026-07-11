@@ -66,7 +66,11 @@ test("concurrent identical fetches coalesce into one produce() call", async () =
     calls++;
     return gate;
   };
-  const [a, b, c] = [cache.through("u", produce), cache.through("u", produce), cache.through("u", produce)];
+  const [a, b, c] = [
+    cache.through("u", produce),
+    cache.through("u", produce),
+    cache.through("u", produce),
+  ];
   release("shared");
   const results = await Promise.all([a, b, c]);
   expect(calls).toBe(1);

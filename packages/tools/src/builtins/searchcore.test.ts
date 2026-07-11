@@ -41,7 +41,13 @@ test("mergeCandidates dedupes by canonical URL and ranks quality-first", () => {
     { title: "Noise", url: "https://blog.example.com/x", snippet: "", rank: 1, engine: "ddg" },
     { title: "Docs", url: "https://bun.sh/docs", snippet: "", rank: 3, engine: "ddg" },
     // duplicate of the docs page via a different engine + tracking param
-    { title: "Docs (bing)", url: "https://bun.sh/docs?utm_source=bing", snippet: "", rank: 1, engine: "bing" },
+    {
+      title: "Docs (bing)",
+      url: "https://bun.sh/docs?utm_source=bing",
+      snippet: "",
+      rank: 1,
+      engine: "bing",
+    },
   ];
   const merged = mergeCandidates(cands, 10);
   // Three inputs collapse to two unique URLs.
@@ -63,9 +69,19 @@ test("mergeCandidates caps at maxResults", () => {
 });
 
 test("resultQualityScore boosts official/docs/github and penalizes low-value snippets", () => {
-  const base: Candidate = { title: "t", url: "https://x.com/y", snippet: "", rank: 1, engine: "ddg" };
-  expect(resultQualityScore({ ...base, url: "https://x.com/docs" })).toBeGreaterThan(resultQualityScore(base));
-  expect(resultQualityScore({ ...base, snippet: "copy a direct link" })).toBeLessThan(resultQualityScore(base));
+  const base: Candidate = {
+    title: "t",
+    url: "https://x.com/y",
+    snippet: "",
+    rank: 1,
+    engine: "ddg",
+  };
+  expect(resultQualityScore({ ...base, url: "https://x.com/docs" })).toBeGreaterThan(
+    resultQualityScore(base),
+  );
+  expect(resultQualityScore({ ...base, snippet: "copy a direct link" })).toBeLessThan(
+    resultQualityScore(base),
+  );
 });
 
 test("selectPassages returns the query-densest window", () => {
@@ -80,7 +96,13 @@ test("selectPassages returns the query-densest window", () => {
 });
 
 test("queryTerms drops short/stopword-ish tokens and dedupes", () => {
-  expect(queryTerms("How do I use the Bun bun runtime?")).toEqual(["how", "use", "the", "bun", "runtime"]);
+  expect(queryTerms("How do I use the Bun bun runtime?")).toEqual([
+    "how",
+    "use",
+    "the",
+    "bun",
+    "runtime",
+  ]);
 });
 
 test("expandQueries widens a question into complementary phrasings", () => {

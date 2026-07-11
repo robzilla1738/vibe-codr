@@ -232,7 +232,15 @@ test("snapshot persists green + gate meta (back-compat: old entries lack them)",
     outcome: "green" as const,
     round: 0,
     checks: [
-      { check: "test" as const, command: "bun test", pass: true, failed: 0, total: 3, firstFailures: [], durationMs: 5 },
+      {
+        check: "test" as const,
+        command: "bun test",
+        pass: true,
+        failed: 0,
+        total: 3,
+        firstFailures: [],
+        durationMs: 5,
+      },
     ],
   };
   await cp.snapshot("green: test ✓ 3/3", undefined, { green: true, gate });

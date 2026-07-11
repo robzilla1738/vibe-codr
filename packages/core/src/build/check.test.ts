@@ -63,7 +63,11 @@ test("test: an all-testless Go run (nothing ran) is still 'no tests', not green"
 test("test: exit-0 run is not flipped RED by a '<N> failed' token in log noise", () => {
   // Output contains "Batch 3 failed" / a fixture "2 failed" but the runner
   // exited 0 — the exit code is the source of truth, so this stays green.
-  const r = parseCheckOutput("test", 'console.log("Batch 3 failed")\nfixture emits: 2 failed\nOK', 0);
+  const r = parseCheckOutput(
+    "test",
+    'console.log("Batch 3 failed")\nfixture emits: 2 failed\nOK',
+    0,
+  );
   expect(r.pass).toBe(true);
   expect(r.failed).toBe(0);
 });
@@ -95,7 +99,12 @@ test("typecheck: exit-0 is not flipped RED by an 'error TS…' token in output",
 });
 
 test("formatCheckResult renders PASS n/m and FAIL with first failures", () => {
-  const pass = formatCheckResult("test", "bun test", { pass: true, failed: 0, total: 142, firstFailures: [] }, "3.2");
+  const pass = formatCheckResult(
+    "test",
+    "bun test",
+    { pass: true, failed: 0, total: 142, firstFailures: [] },
+    "3.2",
+  );
   expect(pass).toBe("PASS test (bun test) 142/142 in 3.2s");
   const fail = formatCheckResult(
     "test",

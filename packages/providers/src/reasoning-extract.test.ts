@@ -25,10 +25,29 @@ function startThinkModel(): Server {
     hostname: "127.0.0.1",
     fetch() {
       const payload =
-        sse({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }) +
-        sse({ ...base, choices: [{ index: 0, delta: { content: "<think>weighing options</think>" }, finish_reason: null }] }) +
-        sse({ ...base, choices: [{ index: 0, delta: { content: "the answer" }, finish_reason: null }] }) +
-        sse({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) +
+        sse({
+          ...base,
+          choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+        }) +
+        sse({
+          ...base,
+          choices: [
+            {
+              index: 0,
+              delta: { content: "<think>weighing options</think>" },
+              finish_reason: null,
+            },
+          ],
+        }) +
+        sse({
+          ...base,
+          choices: [{ index: 0, delta: { content: "the answer" }, finish_reason: null }],
+        }) +
+        sse({
+          ...base,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }) +
         "data: [DONE]\n\n";
       return new Response(payload, { headers: { "content-type": "text/event-stream" } });
     },

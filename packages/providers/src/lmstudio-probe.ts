@@ -55,12 +55,14 @@ export async function probeLmStudioContextWindow(
 export function extractLmStudioContext(models: LmStudioModel[], name: string): number | undefined {
   const m = models.find((x) => x.id === name);
   if (!m) return undefined;
-  const loaded = typeof m.loaded_context_length === "number" && m.loaded_context_length > 0
-    ? m.loaded_context_length
-    : undefined;
-  const max = typeof m.max_context_length === "number" && m.max_context_length > 0
-    ? m.max_context_length
-    : undefined;
+  const loaded =
+    typeof m.loaded_context_length === "number" && m.loaded_context_length > 0
+      ? m.loaded_context_length
+      : undefined;
+  const max =
+    typeof m.max_context_length === "number" && m.max_context_length > 0
+      ? m.max_context_length
+      : undefined;
   if (loaded !== undefined && max !== undefined) return Math.min(loaded, max);
   return loaded ?? max;
 }

@@ -16,7 +16,12 @@ import { createLimiter } from "./limiter.ts";
 
 function mockRegistry(model: MockLanguageModelV2) {
   return new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
 }
 
@@ -43,7 +48,12 @@ test("a named agent's tool allowlist restricts the child's tools", async () => {
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "scout", agent: "scout" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "scout", agent: "scout" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -80,7 +90,15 @@ test("a named agent's tool allowlist restricts the child's tools", async () => {
     model: "mock/test",
     mode: "execute",
     agents: new Map([
-      ["scout", { name: "scout", description: "read-only scout", mode: "execute" as const, tools: ["fake_read"] }],
+      [
+        "scout",
+        {
+          name: "scout",
+          description: "read-only scout",
+          mode: "execute" as const,
+          tools: ["fake_read"],
+        },
+      ],
     ]),
   });
   await session.run("delegate to the restricted scout");
@@ -96,7 +114,12 @@ test("a hung subagent is stopped by the wall-clock timeout and reported", async 
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "do slow work" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "do slow work" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     // Child stream stalls long past the 50ms timeout (initialDelay 3s).
@@ -163,7 +186,12 @@ test("post_note writes to the shared board and read_notes reads it back", async 
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "p1", toolName: "post_note", input: JSON.stringify({ note: "claimed src/auth.ts" }) },
+      {
+        type: "tool-call",
+        toolCallId: "p1",
+        toolName: "post_note",
+        input: JSON.stringify({ note: "claimed src/auth.ts" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -241,7 +269,12 @@ function textStep(delta: string) {
 function toolStep(toolName: string, input: unknown) {
   return stream([
     { type: "stream-start", warnings: [] },
-    { type: "tool-call", toolCallId: `tc_${Math.random().toString(36).slice(2, 8)}`, toolName, input: JSON.stringify(input) },
+    {
+      type: "tool-call",
+      toolCallId: `tc_${Math.random().toString(36).slice(2, 8)}`,
+      toolName,
+      input: JSON.stringify(input),
+    },
     { type: "finish", finishReason: "tool-calls", usage: USAGE },
   ]);
 }
@@ -298,7 +331,12 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
   const session = new Session({
     config: defaultConfig(),
     registry: new ProviderRegistry([
-      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
     ]),
     toolset: new Toolset([]), // only the per-session spawn tool is needed
     bus,
@@ -316,9 +354,7 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
   expect(started).toBeDefined();
 
   const finished = events.find((e) => e.type === "subagent-finished");
-  expect(finished && finished.type === "subagent-finished" && finished.result).toBe(
-    "child result",
-  );
+  expect(finished && finished.type === "subagent-finished" && finished.result).toBe("child result");
 
   // The subagent's result is fed back to the parent as the tool output, with the
   // continuation handle appended so the model can follow up via continue_subagent.
@@ -332,8 +368,9 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
 
   // The parent only emits its own assistant text (child stream is isolated).
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
-      e.type === "assistant-text-delta",
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
     )
     .map((e) => e.delta)
     .join("");
@@ -406,8 +443,7 @@ test("a subagent's oversized answer is capped before it reaches the parent promp
   const toolDone = events.find(
     (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
   );
-  const output =
-    toolDone && toolDone.type === "tool-call-finished" ? String(toolDone.output) : "";
+  const output = toolDone && toolDone.type === "tool-call-finished" ? String(toolDone.output) : "";
   expect(output.length).toBeLessThan(huge.length);
   expect(output).toContain("truncated");
 
@@ -595,8 +631,7 @@ test("a plan-mode parent rejects an execute-only named agent (no child runs)", a
   const toolDone = events.find(
     (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
   );
-  const output =
-    toolDone && toolDone.type === "tool-call-finished" ? String(toolDone.output) : "";
+  const output = toolDone && toolDone.type === "tool-call-finished" ? String(toolDone.output) : "";
   expect(output).toContain("execute mode");
   expect(output).toContain("explore");
   // Only the parent's own two steps ran (no child model call).
@@ -609,7 +644,12 @@ test("a read-only subagent does NOT mark the parent turn as mutating", async () 
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "investigate" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "investigate" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -661,7 +701,12 @@ test("a subagent that mutates DOES mark the parent turn as mutating", async () =
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "make a change" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "make a change" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     // child step 1: call the mutating tool
@@ -714,7 +759,12 @@ test("a fanning parent under a max:1 limiter with timeoutMs=0 completes (no hold
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "child work" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "child work" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -778,7 +828,10 @@ test("a fanning parent under a max:1 limiter with timeoutMs=0 completes (no hold
   const finished = events.find((e) => e.type === "subagent-finished");
   expect(finished && finished.type === "subagent-finished" && finished.result).toBe("child done");
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
+    )
     .map((e) => e.delta)
     .join("");
   expect(text).toBe("parent done");
@@ -794,15 +847,13 @@ test("fork() gives a subagent a fresh context — no inherited history/usage/cos
   const model = new MockLanguageModelV2({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
-      return (
-      stream([
+      return stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "c" },
         { type: "text-delta", id: "c", delta: "child" },
         { type: "text-end", id: "c" },
         { type: "finish", finishReason: "stop", usage: USAGE },
-      ]) as never
-      );
+      ]) as never;
     },
   });
   const parent = new Session({
@@ -855,7 +906,11 @@ test("continue_subagent resumes a retained child with its prior context", async 
   const model = new MockLanguageModelV2({
     doStream: async (options) => {
       const i = call++;
-      if (i === 3) return toolStep("continue_subagent", { id: childId, message: "CHILDFOLLOWUP what was the secret?" }) as never;
+      if (i === 3)
+        return toolStep("continue_subagent", {
+          id: childId,
+          message: "CHILDFOLLOWUP what was the secret?",
+        }) as never;
       if (i === 4) continuedPrompt = JSON.stringify(options.prompt);
       return ordered[i] as never;
     },
@@ -894,7 +949,9 @@ test("continue_subagent resumes a retained child with its prior context", async 
   expect(continuedPrompt).toContain("the secret is 42");
   expect(continuedPrompt).toContain("CHILDFOLLOWUP");
   // The continue tool returned the child's answer with the follow-up handle.
-  const contDone = events.find((e) => e.type === "tool-call-finished" && e.toolName === "continue_subagent");
+  const contDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "continue_subagent",
+  );
   const out = contDone && contDone.type === "tool-call-finished" ? String(contDone.output) : "";
   expect(out).toContain("The secret is 42.");
   expect(out).toContain("continue_subagent");
@@ -918,7 +975,8 @@ test("continue_subagent honestly refuses a child whose working directory was rem
   const model = new MockLanguageModelV2({
     doStream: async () => {
       const i = call++;
-      if (i === 3) return toolStep("continue_subagent", { id: childId, message: "keep going" }) as never;
+      if (i === 3)
+        return toolStep("continue_subagent", { id: childId, message: "keep going" }) as never;
       return ordered[i] as never;
     },
   });
@@ -956,7 +1014,9 @@ test("continue_subagent honestly refuses a child whose working directory was rem
   await collector;
 
   // The continuation was refused honestly (no ENOENT crash, no fabricated resume).
-  const done = events.find((e) => e.type === "tool-call-finished" && e.toolName === "continue_subagent");
+  const done = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "continue_subagent",
+  );
   const out = done && done.type === "tool-call-finished" ? String(done.output) : "";
   expect(done && done.type === "tool-call-finished" && done.isError).toBe(true);
   expect(out).toMatch(/no longer be resumed|cleaned up/i);
@@ -1063,7 +1123,9 @@ test("continue_subagent on an unknown id returns an error (no child runs)", asyn
   bus.close();
   await collector;
 
-  const done = events.find((e) => e.type === "tool-call-finished" && e.toolName === "continue_subagent");
+  const done = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "continue_subagent",
+  );
   const out = done && done.type === "tool-call-finished" ? String(done.output) : "";
   expect(done && done.type === "tool-call-finished" && done.isError).toBe(true);
   expect(out).toContain("sub_nonexistent");
@@ -1101,7 +1163,9 @@ test("structured output: a valid-first-try JSON answer is returned verbatim", as
   bus.close();
   await collector;
 
-  const done = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent");
+  const done = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
   const out = done && done.type === "tool-call-finished" ? String(done.output) : "";
   expect(done && done.type === "tool-call-finished" && done.isError).toBeFalsy();
   // Pristine JSON — no continue-handle suffix that would break a machine consumer.
@@ -1141,7 +1205,9 @@ test("structured output: an invalid answer is retried, then accepted", async () 
   bus.close();
   await collector;
 
-  const done = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent");
+  const done = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
   const out = done && done.type === "tool-call-finished" ? String(done.output) : "";
   expect(JSON.parse(out)).toEqual({ status: "ok", count: 7 });
   expect(call).toBe(4); // spawn, invalid child, valid retry, parent wrap
@@ -1178,7 +1244,9 @@ test("structured output: exhausted retries return an error with the raw text, ne
   bus.close();
   await collector;
 
-  const done = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent");
+  const done = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
   const out = done && done.type === "tool-call-finished" ? String(done.output) : "";
   expect(done && done.type === "tool-call-finished" && done.isError).toBe(true);
   expect(out).toContain("did not match"); // honest failure
@@ -1235,8 +1303,11 @@ test("a detached spawn returns immediately, then surfaces + is collectable next 
   await new Promise((r) => setTimeout(r, 10));
   expect(bgId).not.toBe("");
   // The spawn returned a HANDLE immediately, not the child's result.
-  const spawnDone = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent");
-  const spawnOut = spawnDone && spawnDone.type === "tool-call-finished" ? String(spawnDone.output) : "";
+  const spawnDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
+  const spawnOut =
+    spawnDone && spawnDone.type === "tool-call-finished" ? String(spawnDone.output) : "";
   expect(spawnOut).toContain("background");
   expect(spawnOut).toContain("check_task");
   expect(spawnOut).not.toContain("BG-RESULT-42"); // result is NOT inlined
@@ -1258,8 +1329,11 @@ test("a detached spawn returns immediately, then surfaces + is collectable next 
   expect(turn2Prompt).toContain("BACKGROUND SUBAGENTS FINISHED");
   expect(turn2Prompt).toContain(bgId);
   // ...and check_task returned its report.
-  const checkDone = events.find((e) => e.type === "tool-call-finished" && e.toolName === "check_task");
-  const checkOut = checkDone && checkDone.type === "tool-call-finished" ? String(checkDone.output) : "";
+  const checkDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "check_task",
+  );
+  const checkOut =
+    checkDone && checkDone.type === "tool-call-finished" ? String(checkDone.output) : "";
   expect(checkOut).toContain("BG-RESULT-42");
   expect(checkOut).toContain("completed");
 });
@@ -1300,7 +1374,9 @@ test("headless coerces detach to synchronous with a one-time notice", async () =
   await collector;
 
   // The spawn ran synchronously: its tool result IS the child's answer (not a handle).
-  const spawnDone = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent");
+  const spawnDone = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_subagent",
+  );
   const out = spawnDone && spawnDone.type === "tool-call-finished" ? String(spawnDone.output) : "";
   expect(out).toContain("SYNC-RESULT");
   expect(out).not.toContain("in the background");
@@ -1344,7 +1420,12 @@ test("a mid-turn mode flip cannot un-coerce a child spawned later in the same pl
     ]),
     stream([
       { type: "stream-start", warnings: [] },
-      { type: "tool-call", toolCallId: "s1", toolName: "spawn_subagent", input: JSON.stringify({ prompt: "scout" }) },
+      {
+        type: "tool-call",
+        toolCallId: "s1",
+        toolName: "spawn_subagent",
+        input: JSON.stringify({ prompt: "scout" }),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -1419,7 +1500,8 @@ test("continue_subagent folds only THIS-run cost (no triangular double-count)", 
       if (i === 0) return toolStep("spawn_subagent", { prompt: "remember X" }) as never;
       if (i === 1) return textStepWithUsage("learned X", childU1) as never;
       if (i === 2) return textStep("spawned") as never;
-      if (i === 3) return toolStep("continue_subagent", { id: childId, message: "recall X" }) as never;
+      if (i === 3)
+        return toolStep("continue_subagent", { id: childId, message: "recall X" }) as never;
       if (i === 4) return textStepWithUsage("X is recalled", childU2) as never;
       return textStep("done") as never;
     },

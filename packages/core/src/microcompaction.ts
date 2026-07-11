@@ -57,7 +57,9 @@ export function resultText(output: { type?: string; value?: unknown } | undefine
   if (typeof v === "string") return v;
   if (output.type === "content" && Array.isArray(v)) {
     return v
-      .map((p) => (p && typeof p === "object" && "text" in p ? String((p as { text: unknown }).text) : ""))
+      .map((p) =>
+        p && typeof p === "object" && "text" in p ? String((p as { text: unknown }).text) : "",
+      )
       .join("\n");
   }
   try {
@@ -169,7 +171,9 @@ export function planOffloads(messages: ModelMessage[], opts: PlanOptions): ToolR
   // check is O(1) per eligible item (O(n) total), not O(n) via indexOf per item
   // (O(n²) total) — a long agentic turn can accumulate dozens of tool results.
   const refIndex = new Map<ToolResultRef, number>();
-  refs.forEach((r, i) => { refIndex.set(r, i); });
+  refs.forEach((r, i) => {
+    refIndex.set(r, i);
+  });
   const isSuperseded = (r: ToolResultRef): boolean => {
     const p = targetPath(r, opts.canonicalize);
     if (!p || !READ_LIKE.has(r.toolName)) return false;
@@ -177,10 +181,7 @@ export function planOffloads(messages: ModelMessage[], opts: PlanOptions): ToolR
     return last !== undefined && last > (refIndex.get(r) ?? -1);
   };
 
-  const ordered = [
-    ...eligible.filter(isSuperseded),
-    ...eligible.filter((r) => !isSuperseded(r)),
-  ];
+  const ordered = [...eligible.filter(isSuperseded), ...eligible.filter((r) => !isSuperseded(r))];
   // Offloading a result leaves a preview (+ a short note) inline, so the actual
   // reduction is the result MINUS what stays — credit that, not the whole result,
   // or the planner stops early and the step can remain over threshold.
@@ -211,7 +212,9 @@ export function applyOffloads(
   const next = messages.map((m) => {
     if (m.role !== "tool" || !Array.isArray(m.content)) return m;
     const parts = m.content as ToolResultPartLike[];
-    if (!parts.some((p) => p?.type === "tool-result" && p.toolCallId && offloaded.has(p.toolCallId))) {
+    if (
+      !parts.some((p) => p?.type === "tool-result" && p.toolCallId && offloaded.has(p.toolCallId))
+    ) {
       return m;
     }
     changed = true;
@@ -241,7 +244,11 @@ export function applyOffloads(
  * full text is reclaimed. Returns the number of files removed. Pure w.r.t. the
  * caller: all fs errors are swallowed (best-effort reclamation).
  */
-export function pruneArtifacts(dir: string, capBytes: number, livePaths: ReadonlySet<string>): number {
+export function pruneArtifacts(
+  dir: string,
+  capBytes: number,
+  livePaths: ReadonlySet<string>,
+): number {
   if (!capBytes || capBytes <= 0) return 0;
   let entries: { path: string; size: number; mtimeMs: number }[];
   try {
@@ -255,7 +262,9 @@ export function pruneArtifacts(dir: string, capBytes: number, livePaths: Readonl
   }
   let total = entries.reduce((n, e) => n + e.size, 0);
   if (total <= capBytes) return 0;
-  const evictable = entries.filter((e) => !livePaths.has(e.path)).sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const evictable = entries
+    .filter((e) => !livePaths.has(e.path))
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
   let removed = 0;
   for (const e of evictable) {
     if (total <= capBytes) break;

@@ -76,9 +76,7 @@ function truncate(s: string, max = 40): string {
  * (a confirmation aid) is bounded. Caps at the same 20k as `git_diff`.
  */
 function capDiff(s: string, max = 20_000): string {
-  return s.length > max
-    ? `${s.slice(0, max)}\n…(diff truncated at ${max} chars)`
-    : s;
+  return s.length > max ? `${s.slice(0, max)}\n…(diff truncated at ${max} chars)` : s;
 }
 
 type EditInput = z.output<typeof Input>;
@@ -186,9 +184,9 @@ export const editTool: ToolDefinition<EditInput> = {
       // C-1). A missing target falls back to umask-default; the file just
       // verified-exists covers the "existing target" path cleanly.
       await atomicReplace(full, buffer);
-    // Advance the freshness baseline to our own write's mtime so the next edit
-    // in this session doesn't mistake our change for an external one.
-    freshness.recordWrite(ctx.sessionId, full);
+      // Advance the freshness baseline to our own write's mtime so the next edit
+      // in this session doesn't mistake our change for an external one.
+      freshness.recordWrite(ctx.sessionId, full);
       const diff = unifiedDiff(before, buffer);
       ctx.emit({
         type: "file-changed",

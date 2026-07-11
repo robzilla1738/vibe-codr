@@ -10,11 +10,7 @@ function rec(id: string, vector: number[], source = "m.md"): VectorRecord {
 
 test("search ranks by cosine similarity to the query vector", () => {
   const store = new VectorStore(":memory:", "fake", 2);
-  store.upsert([
-    rec("east", [1, 0]),
-    rec("north", [0, 1]),
-    rec("northeast", [1, 1]),
-  ]);
+  store.upsert([rec("east", [1, 0]), rec("north", [0, 1]), rec("northeast", [1, 1])]);
   const hits = store.search([1, 0.1], 3);
   expect(hits[0]!.id).toBe("east"); // closest to the query direction
   expect(hits.map((h) => h.id)).toContain("northeast");

@@ -18,7 +18,9 @@ const call = (id: string, toolName: string, input: unknown): ModelMessage => ({
 });
 const result = (id: string, toolName: string, text: string): ModelMessage => ({
   role: "tool",
-  content: [{ type: "tool-result", toolCallId: id, toolName, output: { type: "text", value: text } }],
+  content: [
+    { type: "tool-result", toolCallId: id, toolName, output: { type: "text", value: text } },
+  ],
 });
 
 const BIG = "x".repeat(20_000);
@@ -80,9 +82,18 @@ test("applyOffloads replaces only offloaded results, keeps other messages by ref
   const user: ModelMessage = { role: "user", content: "go" };
   const kept = result("keep", "read", BIG);
   const victim = result("gone", "read", BIG);
-  const messages = [user, call("keep", "read", { path: "k" }), kept, call("gone", "read", { path: "g" }), victim];
+  const messages = [
+    user,
+    call("keep", "read", { path: "k" }),
+    kept,
+    call("gone", "read", { path: "g" }),
+    victim,
+  ];
   const offloaded = new Map<string, OffloadRecord>([
-    ["gone", { path: ".vibe/sessions/s/tool-results/gone.txt", toolName: "read", fullChars: 20_000 }],
+    [
+      "gone",
+      { path: ".vibe/sessions/s/tool-results/gone.txt", toolName: "read", fullChars: 20_000 },
+    ],
   ]);
   const next = applyOffloads(messages, offloaded, 2_000);
   // Identity preserved for untouched messages (the rollback check depends on it).
@@ -97,15 +108,26 @@ test("applyOffloads replaces only offloaded results, keeps other messages by ref
   expect(text.length).toBeLessThan(2_600);
   // Idempotent: applying again changes nothing further (already a small preview).
   const again = applyOffloads(next, offloaded, 2_000);
-  expect(resultText((again[4] as typeof next[4] as never as { content: { output: never }[] }).content[0]!.output)).toBe(text);
+  expect(
+    resultText(
+      (again[4] as (typeof next)[4] as never as { content: { output: never }[] }).content[0]!
+        .output,
+    ),
+  ).toBe(text);
 });
 
 test("resultText handles text, json, and content-array outputs", () => {
   expect(resultText({ type: "text", value: "plain" })).toBe("plain");
   expect(resultText({ type: "json", value: { a: 1 } })).toBe('{"a":1}');
-  expect(resultText({ type: "content", value: [{ type: "text", text: "x" }, { type: "text", text: "y" }] })).toBe(
-    "x\ny",
-  );
+  expect(
+    resultText({
+      type: "content",
+      value: [
+        { type: "text", text: "x" },
+        { type: "text", text: "y" },
+      ],
+    }),
+  ).toBe("x\ny");
 });
 
 test("planOffloads canonicalizes paths so an abs read is superseded by a relative edit of the same file", () => {
@@ -119,7 +141,12 @@ test("planOffloads canonicalizes paths so an abs read is superseded by a relativ
   ];
   const canonicalize = (p: string) => (p.startsWith("/") ? p : `/repo/${p}`);
   // Without canonicalize the abs read is NOT seen as superseded (different string).
-  const naive = planOffloads(messages, { maxResultBytes: 16_000, keepLiveResults: 1, targetChars: 1, existing: new Set() });
+  const naive = planOffloads(messages, {
+    maxResultBytes: 16_000,
+    keepLiveResults: 1,
+    targetChars: 1,
+    existing: new Set(),
+  });
   expect(naive.find((r) => r.callId === "abs-read")?.callId).toBe("abs-read"); // picked as oldest, not as superseded
   // With canonicalize, the abs read is recognized as superseded by the relative
   // edit and prioritized as the first victim.
@@ -142,7 +169,9 @@ test("applyOffloads preview never splits a surrogate pair at the cut", () => {
     ["c", { path: ".vibe/x.txt", toolName: "read", fullChars: body.length }],
   ]);
   const next = applyOffloads(messages, offloaded, 10); // cut lands mid-emoji
-  const text = resultText((next[1] as { content: { output: { value: string } }[] }).content[0]!.output);
+  const text = resultText(
+    (next[1] as { content: { output: { value: string } }[] }).content[0]!.output,
+  );
   // No unpaired surrogate anywhere in the preview.
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i);

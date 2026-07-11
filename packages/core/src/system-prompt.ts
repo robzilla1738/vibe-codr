@@ -257,7 +257,8 @@ export function formatWorkspaceState(inputs: {
 }): string | undefined {
   const blocks: string[] = [];
   if (inputs.tasks?.length) {
-    const mark = (s: TaskStatus) => (s === "completed" ? "[x]" : s === "in_progress" ? "[~]" : "[ ]");
+    const mark = (s: TaskStatus) =>
+      s === "completed" ? "[x]" : s === "in_progress" ? "[~]" : "[ ]";
     blocks.push(
       `CURRENT TASKS (your live task list — keep exactly one in_progress; flip statuses by id: \`update_tasks({updates:[{id:"t2",status:"completed"}]})\`):\n${inputs.tasks
         .map((t, i) => `t${i + 1} ${mark(t.status)} ${t.title}`)

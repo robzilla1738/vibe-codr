@@ -38,10 +38,7 @@ function ktok(n: number): string {
  * Render a context-window fill line: "45% · 90k / 200k" when the window is
  * known, else just the used estimate. Shared by `/status` and `/context`.
  */
-export function formatContextUsage(
-  used: number | undefined,
-  window: number | undefined,
-): string {
+export function formatContextUsage(used: number | undefined, window: number | undefined): string {
   if (used === undefined) return "—";
   if (!window) return `~${ktok(used)} tokens (window unknown)`;
   const pct = Math.min(100, Math.round((used / window) * 100));
@@ -74,11 +71,7 @@ export function formatStatus(info: StatusInfo): string {
 }
 
 /** `/cost` — token + cost breakdown, with the per-1M rate when known. */
-export function formatCost(
-  usage: SessionUsage,
-  model: string,
-  price?: ModelPrice,
-): string {
+export function formatCost(usage: SessionUsage, model: string, price?: ModelPrice): string {
   const lines: [string, string][] = [
     ["model", model],
     ["input tokens", `${usage.inputTokens}`],
@@ -89,10 +82,7 @@ export function formatCost(
     lines.push(["cached input", `${usage.cachedInputTokens}`]);
   }
   if (price?.input !== undefined || price?.output !== undefined) {
-    lines.push([
-      "rate /1M",
-      `$${price?.input ?? "?"} in · $${price?.output ?? "?"} out`,
-    ]);
+    lines.push(["rate /1M", `$${price?.input ?? "?"} in · $${price?.output ?? "?"} out`]);
   }
   lines.push([
     "cost",
@@ -131,11 +121,7 @@ function redact(value: unknown): unknown {
 
 /** `/config` — the effective merged config as pretty JSON, secrets masked. */
 export function formatConfig(config: Config): string {
-  return `Effective config (secrets masked):\n${JSON.stringify(
-    redact(config),
-    null,
-    2,
-  )}`;
+  return `Effective config (secrets masked):\n${JSON.stringify(redact(config), null, 2)}`;
 }
 
 /** `/tools` — tools available in the current mode, grouped by side-effect. */
@@ -144,8 +130,7 @@ export function formatTools(tools: ToolDefinition[], mode: string): string {
   const sorted = [...tools].sort((a, b) => a.name.localeCompare(b.name));
   const readOnly = sorted.filter((t) => t.readOnly);
   const writes = sorted.filter((t) => !t.readOnly);
-  const fmt = (t: ToolDefinition) =>
-    `  ${t.name} — ${firstLine(t.description)}`;
+  const fmt = (t: ToolDefinition) => `  ${t.name} — ${firstLine(t.description)}`;
   const sections: string[] = [`Tools available in ${mode} mode:`];
   if (readOnly.length) {
     sections.push(`read-only:\n${readOnly.map(fmt).join("\n")}`);
@@ -157,10 +142,7 @@ export function formatTools(tools: ToolDefinition[], mode: string): string {
 }
 
 /** `/mcp` — connection status for each configured server. */
-export function formatMcp(
-  status: McpServerStatus[],
-  configuredNames: string[],
-): string {
+export function formatMcp(status: McpServerStatus[], configuredNames: string[]): string {
   if (!configuredNames.length) {
     return "No MCP servers configured. Add them under `mcp.servers` in config (stdio command, or a url with transport http/sse).";
   }
@@ -199,9 +181,7 @@ export function formatNamedList(
   empty: string,
 ): string {
   if (!items.length) return empty;
-  const lines = items
-    .map((i) => `  ${i.name} — ${firstLine(i.description)}`)
-    .join("\n");
+  const lines = items.map((i) => `  ${i.name} — ${firstLine(i.description)}`).join("\n");
   return `${title}\n${lines}`;
 }
 
@@ -240,8 +220,7 @@ export function formatTranscript(
       } else if (part.type === "tool-call") {
         body.push(`\`${part.toolName}(${firstLine(JSON.stringify(part.input ?? {}))})\``);
       } else if (part.type === "tool-result") {
-        const out =
-          typeof part.output === "string" ? part.output : JSON.stringify(part.output);
+        const out = typeof part.output === "string" ? part.output : JSON.stringify(part.output);
         body.push(`> ${firstLine(out)}`);
       }
     }
@@ -261,13 +240,9 @@ export interface DoctorCheck {
 export function formatDoctor(checks: DoctorCheck[]): string {
   const glyph = (ok: boolean | null) => (ok === true ? "✓" : ok === false ? "✗" : "○");
   const width = Math.max(0, ...checks.map((c) => c.label.length));
-  const lines = checks.map(
-    (c) => `  ${glyph(c.ok)} ${c.label.padEnd(width)}  ${c.detail}`,
-  );
+  const lines = checks.map((c) => `  ${glyph(c.ok)} ${c.label.padEnd(width)}  ${c.detail}`);
   const problems = checks.filter((c) => c.ok === false).length;
   const summary =
-    problems === 0
-      ? "All checks passed."
-      : `${problems} issue(s) found — see ✗ above.`;
+    problems === 0 ? "All checks passed." : `${problems} issue(s) found — see ✗ above.`;
   return `vibe-codr doctor\n${lines.join("\n")}\n\n${summary}`;
 }

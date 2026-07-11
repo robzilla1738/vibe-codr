@@ -127,7 +127,7 @@ export function triagePlanRequest(text: string): PlanTriage {
   const needsWeb = timeSensitive || currentEvents;
   if (timeSensitive) {
     reasons.push(
-      "the request is anchored to the current date (\"today/latest/current\") — facts must come from a fresh web search, not training data",
+      'the request is anchored to the current date ("today/latest/current") — facts must come from a fresh web search, not training data',
     );
   } else if (currentEvents) {
     reasons.push(
@@ -266,7 +266,9 @@ export class PlanGate {
     const t = this.#telemetry;
     // Only real http(s) URLs count as cited evidence — a junk string like
     // `{url:"appease"}` or a `data:` URL must not satisfy the sources requirement.
-    const shapedSources = (plan.sources ?? []).filter((s) => /^https?:\/\/\S+\.\S+/i.test(s?.url ?? ""));
+    const shapedSources = (plan.sources ?? []).filter((s) =>
+      /^https?:\/\/\S+\.\S+/i.test(s?.url ?? ""),
+    );
     // And a well-shaped URL only counts if it was ACTUALLY gathered this session
     // (the caller verifies against the source ledger) — otherwise one unrelated
     // web_search plus a fabricated link would present as fully grounded.
@@ -383,7 +385,7 @@ export class PlanGate {
       this.#allowUngrounded && attemptsLeft > 0
         ? ` ${attemptsLeft} attempt${attemptsLeft === 1 ? "" : "s"} left before the plan is shown with an "ungrounded" warning.`
         : this.#allowUngrounded
-          ? " Next present will be shown with an \"ungrounded\" warning."
+          ? ' Next present will be shown with an "ungrounded" warning.'
           : " Ungrounded plans are disabled — keep gathering evidence.";
     return {
       allow: false,

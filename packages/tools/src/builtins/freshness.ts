@@ -89,10 +89,7 @@ export class FreshnessRegistry {
    * caller's own existence check (the file is gone → not stale, but the
    * caller's read-modify-write will fail anyway). `ageMs` is how much
    * newer the on-disk copy is than the version we saw. */
-  assertFresh(
-    sessionId: string,
-    absPath: string,
-  ): { stale: boolean; ageMs?: number } {
+  assertFresh(sessionId: string, absPath: string): { stale: boolean; ageMs?: number } {
     const seen = this.#registry.get(sessionId);
     if (!seen) return { stale: false };
     const recorded = seen.get(canonicalLockKey(absPath));

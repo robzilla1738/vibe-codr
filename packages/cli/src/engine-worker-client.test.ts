@@ -54,7 +54,7 @@ function makeOpts(workerPath: string, workerData: unknown): WorkerEngineOptions 
 }
 
 const fatalMessages: string[] = [];
-afterEach(() => fatalMessages.length = 0);
+afterEach(() => (fatalMessages.length = 0));
 
 test("events() forwards UIEvents the worker posts, in order", async () => {
   const path = writeStubWorker(`

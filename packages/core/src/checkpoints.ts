@@ -54,7 +54,9 @@ async function withCheckpointFileLock<T>(file: string, fn: () => Promise<T>): Pr
     }
   }
   try {
-    await writeFile(join(lockDir, "owner"), `${process.pid}\n${Date.now()}\n`, "utf8").catch(() => {});
+    await writeFile(join(lockDir, "owner"), `${process.pid}\n${Date.now()}\n`, "utf8").catch(
+      () => {},
+    );
     return await fn();
   } finally {
     await rm(lockDir, { recursive: true, force: true }).catch(() => {});
@@ -227,7 +229,9 @@ export class CheckpointManager {
           // in-memory list (which /undo + the visible list operate on) to THIS
           // session's, so a resumed session can't undo another session's work.
           // #save still re-reads the full file and merges, so nothing is dropped.
-          this.#list = ((await file.json()) as Checkpoint[]).filter((c) => this.#ownedByThisSession(c));
+          this.#list = ((await file.json()) as Checkpoint[]).filter((c) =>
+            this.#ownedByThisSession(c),
+          );
           return;
         }
       } catch {
@@ -244,7 +248,10 @@ export class CheckpointManager {
     const prev = checkpointSaveLocks.get(this.#file) ?? Promise.resolve();
     const run = prev.then(() => this.#saveLocked());
     // Keep the chain from rejecting so one failed save doesn't wedge the next.
-    checkpointSaveLocks.set(this.#file, run.catch(() => {}));
+    checkpointSaveLocks.set(
+      this.#file,
+      run.catch(() => {}),
+    );
     await run;
   }
 
@@ -281,7 +288,9 @@ export class CheckpointManager {
         byId.set(c.id, c);
       }
       for (const c of this.#list) byId.set(c.id, c);
-      const merged = [...byId.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_CHECKPOINTS);
+      const merged = [...byId.values()]
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .slice(-MAX_CHECKPOINTS);
       await Bun.write(tmp, `${JSON.stringify(merged, null, 2)}\n`);
       await rename(tmp, this.#file);
     } catch {
@@ -325,9 +334,8 @@ export class CheckpointManager {
       if (!tree) return null;
       const head = await this.#git(["rev-parse", "HEAD"]);
       const parent = head.ok ? ["-p", head.stdout] : [];
-      commit = (
-        await this.#git(["commit-tree", tree, ...parent, "-m", `vibecodr: ${label}`])
-      ).stdout;
+      commit = (await this.#git(["commit-tree", tree, ...parent, "-m", `vibecodr: ${label}`]))
+        .stdout;
     } finally {
       await rm(indexFile, { force: true }).catch(() => undefined);
     }
@@ -378,7 +386,9 @@ export class CheckpointManager {
         );
         for (const file of untracked) {
           if (!inSnapshot.has(file)) {
-            await rm(join(this.#gitRoot ?? this.#cwd, file), { force: true }).catch(() => undefined);
+            await rm(join(this.#gitRoot ?? this.#cwd, file), { force: true }).catch(
+              () => undefined,
+            );
           }
         }
       }

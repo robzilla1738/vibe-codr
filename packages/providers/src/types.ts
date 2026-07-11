@@ -71,10 +71,7 @@ export interface ProviderDef {
   id: string;
   auth: ProviderAuth;
   /** Build an AI-SDK language model for `modelId`. */
-  create(
-    modelId: string,
-    opts: ProviderCreateOptions,
-  ): LanguageModel | Promise<LanguageModel>;
+  create(modelId: string, opts: ProviderCreateOptions): LanguageModel | Promise<LanguageModel>;
   /** Build an AI-SDK text-embedding model for `modelId`, when the provider
    * supports embeddings (OpenAI + most OpenAI-compatible). Optional; absent or
    * throwing means "no embeddings here" and the caller degrades to lexical. */

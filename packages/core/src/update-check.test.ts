@@ -54,7 +54,9 @@ test("checkForUpdate: gated off returns null (config flag or env)", async () => 
     throw new Error("fetch must not be called when gated off");
   }) as unknown as typeof fetch;
 
-  expect(await checkForUpdate({ current: "0.1.0", enabled: false, cacheFile, fetchImpl })).toBeNull();
+  expect(
+    await checkForUpdate({ current: "0.1.0", enabled: false, cacheFile, fetchImpl }),
+  ).toBeNull();
   expect(
     await checkForUpdate({
       current: "0.1.0",
@@ -141,7 +143,13 @@ test("checkForUpdate: a fetch failure falls back to the stale cached value", asy
 
   await checkForUpdate({ current: "0.1.0", now: () => 0, cacheFile, fetchImpl, env: {} });
   const later = 25 * 60 * 60 * 1000;
-  const status = await checkForUpdate({ current: "0.1.0", now: () => later, cacheFile, fetchImpl, env: {} });
+  const status = await checkForUpdate({
+    current: "0.1.0",
+    now: () => later,
+    cacheFile,
+    fetchImpl,
+    env: {},
+  });
   expect(calls).toBe(2);
   expect(status?.latest).toBe("0.4.0"); // stale-on-failure
 });
@@ -150,10 +158,18 @@ test("checkForUpdate reconciles a stale cached `current` after an in-TTL upgrade
   const dir = mkdtempSync(join(tmpdir(), "vibe-upd-"));
   const cacheFile = join(dir, "update-check.json");
   const fetchOnce = (async () =>
-    new Response(JSON.stringify({ tag_name: "v0.5.0" }), { status: 200 })) as unknown as typeof fetch;
+    new Response(JSON.stringify({ tag_name: "v0.5.0" }), {
+      status: 200,
+    })) as unknown as typeof fetch;
 
   // Seed the cache from the pre-upgrade binary: running 0.3.0, latest 0.5.0.
-  await checkForUpdate({ current: "0.3.0", now: () => 0, cacheFile, fetchImpl: fetchOnce, env: {} });
+  await checkForUpdate({
+    current: "0.3.0",
+    now: () => 0,
+    cacheFile,
+    fetchImpl: fetchOnce,
+    env: {},
+  });
   // Pre-heal, /doctor (which reads `current` from disk) would falsely nag on the
   // freshly-upgraded 0.5.0 binary because the cache still says current=0.3.0.
   const stale = await readUpdateCache(cacheFile);

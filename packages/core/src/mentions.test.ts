@@ -119,10 +119,7 @@ test("bare image paths (no @) become vision attachments when the file exists", a
   const b = join(cwd, "ref-b.png");
   await Bun.write(a, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x01]));
   await Bun.write(b, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x02]));
-  const r = await expandMentions(
-    `${a} ${b} make a website that looks like these images`,
-    cwd,
-  );
+  const r = await expandMentions(`${a} ${b} make a website that looks like these images`, cwd);
   expect(r.images).toHaveLength(2);
   expect(r.images.every((img) => img.mediaType === "image/png")).toBe(true);
   expect(r.notices.some((n) => /Attached 2 image/i.test(n))).toBe(true);
@@ -137,10 +134,7 @@ test("bare image paths do not double-attach an @mention of the same file", async
 
 test("non-existent bare image paths are ignored (no attach, no error)", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-miss-"));
-  const r = await expandMentions(
-    "/tmp/definitely-missing-vibe-test-xyz.png make a site",
-    cwd,
-  );
+  const r = await expandMentions("/tmp/definitely-missing-vibe-test-xyz.png make a site", cwd);
   expect(r.images).toHaveLength(0);
   expect(r.notices.every((n) => !/Attached/i.test(n))).toBe(true);
 });

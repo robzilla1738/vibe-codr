@@ -49,7 +49,13 @@
  */
 
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
-import { render, useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/solid";
+import {
+  render,
+  useKeyboard,
+  useRenderer,
+  useSelectionHandler,
+  useTerminalDimensions,
+} from "@opentui/solid";
 import type {
   EngineClient,
   AgentInfo,
@@ -64,10 +70,35 @@ import type {
   UIEvent,
 } from "@vibe/shared";
 import { makeYieldGate } from "@vibe/shared";
-import { batch, createEffect, createMemo, createSignal, For, Index, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import {
+  batch,
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  Index,
+  Match,
+  onCleanup,
+  onMount,
+  Show,
+  Switch,
+} from "solid-js";
 import { copyToClipboard } from "./clipboard.ts";
-import { applyPalette, isExactCommand, paletteState, skillsPickerFilter } from "./commands-catalog.ts";
-import { createMarkdownSplitter, displayWidth, renderTable, tableFits, tailWidth, truncateWidth, type MdBlock } from "./markdown-blocks.ts";
+import {
+  applyPalette,
+  isExactCommand,
+  paletteState,
+  skillsPickerFilter,
+} from "./commands-catalog.ts";
+import {
+  createMarkdownSplitter,
+  displayWidth,
+  renderTable,
+  tableFits,
+  tailWidth,
+  truncateWidth,
+  type MdBlock,
+} from "./markdown-blocks.ts";
 import {
   barChartLayout,
   barGlyphs,
@@ -109,12 +140,7 @@ import {
   toolCollapsed,
   type TranscriptDensity,
 } from "./density.ts";
-import {
-  applyAtMention,
-  atMentionState,
-  listProjectFiles,
-  rankPaths,
-} from "./file-fuzzy.ts";
+import { applyAtMention, atMentionState, listProjectFiles, rankPaths } from "./file-fuzzy.ts";
 import { fitHintSegs, type HintSeg } from "./hints.ts";
 import { seedChromeFromSessionStart } from "./chrome-seed.ts";
 import { brandSpans } from "./gradient.ts";
@@ -243,7 +269,9 @@ export function App(props: { engine: EngineClient }) {
   // `turns().length` grows only on a new USER block, so the window is stable
   // for the whole of a streaming turn: no <Index> reshuffle on the hot path.
   const [revealTurns, setRevealTurns] = createSignal(0);
-  const windowStart = createMemo(() => windowStartIndex(turns().length, WINDOW_TURNS, revealTurns()));
+  const windowStart = createMemo(() =>
+    windowStartIndex(turns().length, WINDOW_TURNS, revealTurns()),
+  );
   const windowedTurns = createMemo(() => turns().slice(windowStart()));
   const [revealedTurnItems, setRevealedTurnItems] = createSignal<Map<number, number>>(new Map());
   const revealTurnItems = (turnKey: number, hidden: number) =>
@@ -259,7 +287,11 @@ export function App(props: { engine: EngineClient }) {
     setCollapsedTurns((prev) =>
       prev.size > 0
         ? new Set()
-        : new Set(turns().filter((t) => t.user && t.items.length > 0).map((t) => t.key)),
+        : new Set(
+            turns()
+              .filter((t) => t.user && t.items.length > 0)
+              .map((t) => t.key),
+          ),
     );
   // Subagent rows the user has expanded (one truncated line each by default, so a
   // big fan-out stays tidy unless you open a row).
@@ -653,7 +685,9 @@ export function App(props: { engine: EngineClient }) {
     if (!text.trim()) return;
     void (async () => {
       try {
-        if (await copyToClipboard(text, { osc52: (t) => renderer.copyToClipboardOSC52?.(t) ?? false })) {
+        if (
+          await copyToClipboard(text, { osc52: (t) => renderer.copyToClipboardOSC52?.(t) ?? false })
+        ) {
           flashCopied();
         }
       } catch {
@@ -672,7 +706,8 @@ export function App(props: { engine: EngineClient }) {
     const lines = draft().split("\n");
     const rows = lines.reduce(
       (sum, line, i) =>
-        sum + Math.max(1, Math.ceil((displayWidth(line) + (i === lines.length - 1 ? 1 : 0)) / inner)),
+        sum +
+        Math.max(1, Math.ceil((displayWidth(line) + (i === lines.length - 1 ? 1 : 0)) / inner)),
       0,
     );
     return Math.min(INPUT_MAX_ROWS, Math.max(1, rows));
@@ -708,8 +743,7 @@ export function App(props: { engine: EngineClient }) {
   // Extra fixed chrome rows the grounding metadata adds above the scrollbox
   // (the ⚠ ungrounded banner and/or the "Grounded in N sources" line).
   const planMetaRows = () =>
-    (plan()?.ungrounded ? 1 : 0) +
-    (plan()?.sources?.length || plan()?.assumptions?.length ? 1 : 0);
+    (plan()?.ungrounded ? 1 : 0) + (plan()?.sources?.length || plan()?.assumptions?.length ? 1 : 0);
   // ~8 rows of app chrome (context line, input, status, padding) + ~8 rows of
   // transcript stay reserved; the floor keeps the card usable on tiny panes.
   const planPanelCap = () => Math.max(9, dims().height - 20);
@@ -731,8 +765,7 @@ export function App(props: { engine: EngineClient }) {
   // the menu title/hint/more/divider, the input line, and the under-input status —
   // so the prompt you're typing at always stays visible (the rest scrolls with a
   // "+N more" affordance). Mirrors `planPanelRows()`'s height cap.
-  const menuWindow = () =>
-    Math.max(3, Math.min(MENU_WINDOW_MAX, dims().height - inputRows() - 11));
+  const menuWindow = () => Math.max(3, Math.min(MENU_WINDOW_MAX, dims().height - inputRows() - 11));
   const [menuStart, setMenuStart] = createSignal(0);
   /** Scroll the window the minimum needed to keep row `sel` of `count` visible. */
   const ensureMenuVisible = (sel: number, count: number) => {
@@ -752,7 +785,13 @@ export function App(props: { engine: EngineClient }) {
   // a column); `desc` is the muted explanation beside it.
   // `fg` paints the label in its own hue — the accent submenu uses it to render
   // each preset name as a live swatch of the color it would set.
-  type MenuRow = { label: string; desc?: string; current?: boolean; fg?: string; choose: (run: boolean) => void };
+  type MenuRow = {
+    label: string;
+    desc?: string;
+    current?: boolean;
+    fg?: string;
+    choose: (run: boolean) => void;
+  };
 
   // The unified slash menu — three shapes, one row list:
   //   • command — the flat `/command` list (filters as you type)
@@ -765,7 +804,9 @@ export function App(props: { engine: EngineClient }) {
       const t = pick.target;
       const isAgent = typeof t === "object";
       const agentName = isAgent ? t.agent : "";
-      const curAgent = isAgent ? (agents()?.find((a) => a.name === agentName)?.model ?? null) : null;
+      const curAgent = isAgent
+        ? (agents()?.find((a) => a.name === agentName)?.model ?? null)
+        : null;
       const curSub = subagentModelSig();
       const curMain = headModel();
       // Title: named-agent targets show the agent; main/sub carry the Tab toggle.
@@ -781,7 +822,15 @@ export function App(props: { engine: EngineClient }) {
           : `setting MAIN agent  ·  now: ${curMain}`;
       const all = models();
       if (all === null)
-        return { open: true, loading: true, kind: "models" as const, isAgent, title, hint, rows: [] as MenuRow[] };
+        return {
+          open: true,
+          loading: true,
+          kind: "models" as const,
+          isAgent,
+          title,
+          hint,
+          rows: [] as MenuRow[],
+        };
       const q = pick.query.toLowerCase();
       const cur = isAgent ? curAgent : t === "sub" ? curSub : curMain;
       const rows: MenuRow[] = all
@@ -827,7 +876,15 @@ export function App(props: { engine: EngineClient }) {
       const title = "providers · Enter to configure";
       const hint = "✓ configured   ○ needs a key";
       const all = providers();
-      if (all === null) return { open: true, loading: true, kind: "providers" as const, title, hint, rows: [] as MenuRow[] };
+      if (all === null)
+        return {
+          open: true,
+          loading: true,
+          kind: "providers" as const,
+          title,
+          hint,
+          rows: [] as MenuRow[],
+        };
       const q = provQuery.toLowerCase();
       const rows: MenuRow[] = all
         .filter((p) => !q || p.id.includes(q))
@@ -846,17 +903,34 @@ export function App(props: { engine: EngineClient }) {
             choose: () => setDraft(p.configured ? `/model ${p.id}/` : `/model key ${p.id} `),
           } satisfies MenuRow;
         });
-      return { open: rows.length > 0, loading: false, kind: "providers" as const, title, hint, rows };
+      return {
+        open: rows.length > 0,
+        loading: false,
+        kind: "providers" as const,
+        title,
+        hint,
+        rows,
+      };
     }
     const agentsQuery = agentsPickerQuery();
     if (agentsQuery !== null) {
       const title = "agents · Enter to set model";
       const hint = "Enter → pick its model  ·  /agents new <name> to create one";
       const all = agents();
-      if (all === null) return { open: true, loading: true, kind: "agents" as const, title, hint, rows: [] as MenuRow[] };
+      if (all === null)
+        return {
+          open: true,
+          loading: true,
+          kind: "agents" as const,
+          title,
+          hint,
+          rows: [] as MenuRow[],
+        };
       const q = agentsQuery.toLowerCase();
       const rows: MenuRow[] = all
-        .filter((a) => !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q))
+        .filter(
+          (a) => !q || a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q),
+        )
         .map((a) => ({
           label: a.name,
           desc: `${a.model ?? "inherits"} · ${a.mode}`,
@@ -873,10 +947,19 @@ export function App(props: { engine: EngineClient }) {
       const hint = "Enter → prefill /skill <name>  ·  the model can also load them itself";
       const all = skillsList();
       if (all === null)
-        return { open: true, loading: true, kind: "skills" as const, title, hint, rows: [] as MenuRow[] };
+        return {
+          open: true,
+          loading: true,
+          kind: "skills" as const,
+          title,
+          hint,
+          rows: [] as MenuRow[],
+        };
       const q = skillsQuery.toLowerCase();
       const rows: MenuRow[] = all
-        .filter((s) => !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q))
+        .filter(
+          (s) => !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+        )
         .map((s) => ({
           label: s.name,
           // Frontmatter descriptions can span lines — the menu row shows ONE
@@ -924,7 +1007,15 @@ export function App(props: { engine: EngineClient }) {
       return { open: true, loading: false, kind: "files" as const, title, hint, rows };
     }
     const st = paletteState(draft());
-    if (!st.open) return { open: false, loading: false, kind: "command" as const, title: "", hint: "", rows: [] as MenuRow[] };
+    if (!st.open)
+      return {
+        open: false,
+        loading: false,
+        kind: "command" as const,
+        title: "",
+        hint: "",
+        rows: [] as MenuRow[],
+      };
     if (st.mode === "command") {
       const rows: MenuRow[] = st.items.map((c, idx) => {
         const hint = c.values ? ` (${c.values.join("|")})` : c.arg ? ` ${c.arg}` : "";
@@ -962,7 +1053,14 @@ export function App(props: { engine: EngineClient }) {
       },
     }));
     const hint = st.command.name === "accent" ? "or type a hex — /accent #8b5cf6" : "";
-    return { open: true, loading: false, kind: "value" as const, title: `/${st.command.name}`, hint, rows };
+    return {
+      open: true,
+      loading: false,
+      kind: "value" as const,
+      title: `/${st.command.name}`,
+      hint,
+      rows,
+    };
   });
 
   // Pre-highlight the current value (if any), else the first row, whenever the
@@ -1046,7 +1144,10 @@ export function App(props: { engine: EngineClient }) {
     // (`anthropic/claude-opus-4-8`) in one aligned column; an outlier past the
     // cap still gets a 2-space gap before its description — the gap must never
     // collapse to zero (labels used to run straight into the desc: "…-4-81M").
-    const labelW = Math.min(32, Math.max(0, ...rows.map((r) => (r.desc ? displayWidth(r.label) : 0))));
+    const labelW = Math.min(
+      32,
+      Math.max(0, ...rows.map((r) => (r.desc ? displayWidth(r.label) : 0))),
+    );
     const marker = m.kind === "value" || m.kind === "models";
     // Ellipsize a description that would clip at the column edge (wrapMode="none"
     // hard-cuts mid-word with no affordance): prefix `❯ ` (2) + optional marker
@@ -1396,7 +1497,11 @@ export function App(props: { engine: EngineClient }) {
         setDraft(`${draft()}${mention}`);
       }
     } catch (err) {
-      apply({ type: "notice", text: `Clipboard paste failed: ${(err as Error).message}`, level: "warn" });
+      apply({
+        type: "notice",
+        text: `Clipboard paste failed: ${(err as Error).message}`,
+        level: "warn",
+      });
     } finally {
       pastingImage = false;
     }
@@ -1408,7 +1513,11 @@ export function App(props: { engine: EngineClient }) {
   const editorSpawn: EditorSpawn = (command, args) =>
     new Promise((resolve, reject) => {
       try {
-        const proc = Bun.spawn([command, ...args], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+        const proc = Bun.spawn([command, ...args], {
+          stdin: "inherit",
+          stdout: "inherit",
+          stderr: "inherit",
+        });
         // BUG-080: surface exit code so a non-zero editor abort keeps the draft.
         proc.exited.then((code) => resolve(code ?? 0)).catch(reject);
       } catch (err) {
@@ -1421,7 +1530,11 @@ export function App(props: { engine: EngineClient }) {
     composing = true;
     const editor = process.env.VISUAL || process.env.EDITOR;
     if (!editor) {
-      apply({ type: "notice", text: "Set $VISUAL or $EDITOR to compose in an external editor.", level: "warn" });
+      apply({
+        type: "notice",
+        text: "Set $VISUAL or $EDITOR to compose in an external editor.",
+        level: "warn",
+      });
       composing = false;
       return;
     }
@@ -1432,14 +1545,22 @@ export function App(props: { engine: EngineClient }) {
         setDraft(result.draft);
         refocusInput();
       } else if (result.kind === "kept") {
-        apply({ type: "notice", text: "Editor draft was empty — kept your prior text.", level: "info" });
+        apply({
+          type: "notice",
+          text: "Editor draft was empty — kept your prior text.",
+          level: "info",
+        });
       } else if (result.kind === "failed") {
         apply({ type: "notice", text: `Editor failed: ${result.reason}`, level: "warn" });
       }
     } catch (err) {
       // A throw (e.g. an unwritable $TMPDIR) must NOT leave the `composing` latch
       // stuck true — that would make Ctrl+G a permanent no-op for the session.
-      apply({ type: "notice", text: `Editor failed: ${(err as Error)?.message ?? String(err)}`, level: "warn" });
+      apply({
+        type: "notice",
+        text: `Editor failed: ${(err as Error)?.message ?? String(err)}`,
+        level: "warn",
+      });
     } finally {
       renderer.resume();
       composing = false;
@@ -1449,173 +1570,173 @@ export function App(props: { engine: EngineClient }) {
   const choosePalette = (run: boolean) => chooseAt(selIdx(), run);
   useKeyboard(
     (key: { name?: string; shift?: boolean; ctrl?: boolean; preventDefault?: () => void }) => {
-    // Shift+Tab cycles plan → execute → yolo, menu open or not.
-    if (key.name === "tab" && key.shift) {
-      key.preventDefault?.();
-      cycleMode();
-      return;
-    }
-    // Ctrl+C: clear a half-typed draft first (readline muscle memory); on an
-    // empty draft it exits GRACEFULLY (finalize, then exit — the same path as
-    // /exit). Pressing again mid-teardown hard-exits.
-    if (key.ctrl && key.name === "c") {
-      key.preventDefault?.();
-      if (!exiting && draft().trim()) {
+      // Shift+Tab cycles plan → execute → yolo, menu open or not.
+      if (key.name === "tab" && key.shift) {
+        key.preventDefault?.();
+        cycleMode();
+        return;
+      }
+      // Ctrl+C: clear a half-typed draft first (readline muscle memory); on an
+      // empty draft it exits GRACEFULLY (finalize, then exit — the same path as
+      // /exit). Pressing again mid-teardown hard-exits.
+      if (key.ctrl && key.name === "c") {
+        key.preventDefault?.();
+        if (!exiting && draft().trim()) {
+          setDraft("");
+          return;
+        }
+        gracefulExit();
+        return;
+      }
+      // Ctrl+O folds/unfolds every turn's tool work at once (just the prose left).
+      if (key.ctrl && key.name === "o") {
+        key.preventDefault?.();
+        toggleAllTurns();
+        return;
+      }
+      // Ctrl+T expands every `✻ thinking` row at once (collapses them again if all
+      // are open) — the keyboard route to the reasoning, beside click-per-row.
+      if (key.ctrl && key.name === "t") {
+        key.preventDefault?.();
+        apply({ type: "toggle-thinking-all" });
+        return;
+      }
+      // Ctrl+D cycles transcript density (quiet → normal → verbose).
+      if (key.ctrl && key.name === "d") {
+        key.preventDefault?.();
+        cycleDetails();
+        return;
+      }
+      // Ctrl+V: paste a clipboard IMAGE as an `@<tmpfile>` mention. Only fires when
+      // an image is present; a text paste is bracketed-paste'd into the textarea and
+      // never reaches here. preventDefault stops the textarea inserting a literal.
+      if (key.ctrl && key.name === "v") {
+        key.preventDefault?.();
+        void pasteClipboardImage();
+        return;
+      }
+      // Ctrl+G: open the draft in $VISUAL/$EDITOR (suspends the TUI for the editor).
+      if (key.ctrl && key.name === "g") {
+        key.preventDefault?.();
+        void composeDraftInEditor();
+        return;
+      }
+      // Esc closes the /jobs sub-view first (before it interrupts a turn).
+      if (key.name === "escape" && showJobs()) {
+        key.preventDefault?.();
+        setShowJobs(false);
+        return;
+      }
+      const m = menuModel();
+      // Ctrl+P: grant AND remember for this project (durable config rule). Ctrl-chorded
+      // — mirroring the ^Y plan-accept precedent — so the first keystroke of a typed
+      // deny message ("please deny…", "prefer…") can never fire a persistent ALLOW.
+      if (key.ctrl && key.name === "p" && perms().length > 0 && !m.open) {
+        key.preventDefault?.();
+        answerPerm("always-project");
+        return;
+      }
+      // Permission shortcuts: while a request is pending and you're not mid-typing,
+      // y/a/n answers it directly and Esc rejects it. `p` (always-project) is a
+      // Ctrl+P chord above, NOT a bare letter, because it writes a durable rule.
+      if (perms().length > 0 && !m.open && !draft().trim()) {
+        // y once · a always (session) · n deny.
+        if (key.name === "y" || key.name === "a" || key.name === "n") {
+          key.preventDefault?.();
+          answerPerm(key.name === "y" ? "once" : key.name === "a" ? "always" : "deny");
+          return;
+        }
+        if (key.name === "escape") {
+          key.preventDefault?.();
+          answerPerm("deny");
+          return;
+        }
+      }
+      // Plan-approval shortcuts: while a plan card is up and the input is empty,
+      // Enter accepts (execute) and Esc keeps planning (dismiss). Typing a message
+      // instead revises the plan (handled in runText) — so letters never collide.
+      if (plan() && !m.open && perms().length === 0 && !draft().trim()) {
+        if (key.name === "return" || key.name === "enter") {
+          key.preventDefault?.();
+          answerPlan("accept");
+          return;
+        }
+        // Ctrl+Y: accept AND run unattended (yolo approvals). Ctrl-chorded so a
+        // typed revision starting with "y"/"Y" can never fire it by accident.
+        if (key.ctrl && key.name === "y") {
+          key.preventDefault?.();
+          answerPlan("accept", undefined, "auto");
+          return;
+        }
+        if (key.name === "escape") {
+          key.preventDefault?.();
+          answerPlan("keep-planning");
+          return;
+        }
+      }
+      // While a plan card is up, Esc discards a half-typed REVISION (so the input
+      // returns to empty and the plan-approval shortcuts take over) rather than
+      // aborting — the plan turn already ended, and the draft-clear branch below is
+      // otherwise shadowed because working() stays true while the card is shown.
+      if (key.name === "escape" && !m.open && plan() && draft().trim() && perms().length === 0) {
+        key.preventDefault?.();
         setDraft("");
         return;
       }
-      gracefulExit();
-      return;
-    }
-    // Ctrl+O folds/unfolds every turn's tool work at once (just the prose left).
-    if (key.ctrl && key.name === "o") {
-      key.preventDefault?.();
-      toggleAllTurns();
-      return;
-    }
-    // Ctrl+T expands every `✻ thinking` row at once (collapses them again if all
-    // are open) — the keyboard route to the reasoning, beside click-per-row.
-    if (key.ctrl && key.name === "t") {
-      key.preventDefault?.();
-      apply({ type: "toggle-thinking-all" });
-      return;
-    }
-    // Ctrl+D cycles transcript density (quiet → normal → verbose).
-    if (key.ctrl && key.name === "d") {
-      key.preventDefault?.();
-      cycleDetails();
-      return;
-    }
-    // Ctrl+V: paste a clipboard IMAGE as an `@<tmpfile>` mention. Only fires when
-    // an image is present; a text paste is bracketed-paste'd into the textarea and
-    // never reaches here. preventDefault stops the textarea inserting a literal.
-    if (key.ctrl && key.name === "v") {
-      key.preventDefault?.();
-      void pasteClipboardImage();
-      return;
-    }
-    // Ctrl+G: open the draft in $VISUAL/$EDITOR (suspends the TUI for the editor).
-    if (key.ctrl && key.name === "g") {
-      key.preventDefault?.();
-      void composeDraftInEditor();
-      return;
-    }
-    // Esc closes the /jobs sub-view first (before it interrupts a turn).
-    if (key.name === "escape" && showJobs()) {
-      key.preventDefault?.();
-      setShowJobs(false);
-      return;
-    }
-    const m = menuModel();
-    // Ctrl+P: grant AND remember for this project (durable config rule). Ctrl-chorded
-    // — mirroring the ^Y plan-accept precedent — so the first keystroke of a typed
-    // deny message ("please deny…", "prefer…") can never fire a persistent ALLOW.
-    if (key.ctrl && key.name === "p" && perms().length > 0 && !m.open) {
-      key.preventDefault?.();
-      answerPerm("always-project");
-      return;
-    }
-    // Permission shortcuts: while a request is pending and you're not mid-typing,
-    // y/a/n answers it directly and Esc rejects it. `p` (always-project) is a
-    // Ctrl+P chord above, NOT a bare letter, because it writes a durable rule.
-    if (perms().length > 0 && !m.open && !draft().trim()) {
-      // y once · a always (session) · n deny.
-      if (key.name === "y" || key.name === "a" || key.name === "n") {
+      // Esc interrupts an in-flight turn when nothing else claims the key.
+      if (key.name === "escape" && !m.open && working() && perms().length === 0) {
         key.preventDefault?.();
-        answerPerm(
-          key.name === "y" ? "once" : key.name === "a" ? "always" : "deny",
-        );
+        props.engine.send({ type: "abort" });
         return;
       }
-      if (key.name === "escape") {
-        key.preventDefault?.();
-        answerPerm("deny");
-        return;
-      }
-    }
-    // Plan-approval shortcuts: while a plan card is up and the input is empty,
-    // Enter accepts (execute) and Esc keeps planning (dismiss). Typing a message
-    // instead revises the plan (handled in runText) — so letters never collide.
-    if (plan() && !m.open && perms().length === 0 && !draft().trim()) {
-      if (key.name === "return" || key.name === "enter") {
-        key.preventDefault?.();
-        answerPlan("accept");
-        return;
-      }
-      // Ctrl+Y: accept AND run unattended (yolo approvals). Ctrl-chorded so a
-      // typed revision starting with "y"/"Y" can never fire it by accident.
-      if (key.ctrl && key.name === "y") {
-        key.preventDefault?.();
-        answerPlan("accept", undefined, "auto");
-        return;
-      }
-      if (key.name === "escape") {
-        key.preventDefault?.();
-        answerPlan("keep-planning");
-        return;
-      }
-    }
-    // While a plan card is up, Esc discards a half-typed REVISION (so the input
-    // returns to empty and the plan-approval shortcuts take over) rather than
-    // aborting — the plan turn already ended, and the draft-clear branch below is
-    // otherwise shadowed because working() stays true while the card is shown.
-    if (key.name === "escape" && !m.open && plan() && draft().trim() && perms().length === 0) {
-      key.preventDefault?.();
-      setDraft("");
-      return;
-    }
-    // Esc interrupts an in-flight turn when nothing else claims the key.
-    if (key.name === "escape" && !m.open && working() && perms().length === 0) {
-      key.preventDefault?.();
-      props.engine.send({ type: "abort" });
-      return;
-    }
-    // Otherwise Esc clears a half-typed draft (e.g. a prefilled `/model key …` from
-    // the providers menu) so the input returns to empty in one keystroke.
-    if (key.name === "escape" && !m.open && !working() && draft().trim()) {
-      key.preventDefault?.();
-      setDraft("");
-      return;
-    }
-    if (!m.open) return; // menu closed → let the input handle keys normally
-    const n = m.rows.length; // 0 while the model picker is still fetching
-    switch (key.name) {
-      case "up":
-        key.preventDefault?.();
-        if (n) {
-          const ni = (selIdx() - 1 + n) % n;
-          setSelIdx(ni);
-          ensureMenuVisible(ni, n);
-        }
-        break;
-      case "down":
-        key.preventDefault?.();
-        if (n) {
-          const ni = (selIdx() + 1) % n;
-          setSelIdx(ni);
-          ensureMenuVisible(ni, n);
-        }
-        break;
-      case "tab":
-        key.preventDefault?.();
-        // In the main/subagent model picker, Tab flips the target; for an
-        // agent-targeted picker (or any other menu) it completes the highlight.
-        if (m.kind === "models" && !m.isAgent) setModelTarget((t) => (t === "main" ? "sub" : "main"));
-        else if (n) choosePalette(false);
-        break;
-      case "return":
-      case "enter": // run the highlighted entry (preventDefault stops onSubmit)
-        key.preventDefault?.();
-        if (n) choosePalette(true);
-        break;
-      case "escape":
+      // Otherwise Esc clears a half-typed draft (e.g. a prefilled `/model key …` from
+      // the providers menu) so the input returns to empty in one keystroke.
+      if (key.name === "escape" && !m.open && !working() && draft().trim()) {
         key.preventDefault?.();
         setDraft("");
-        break;
-      default:
-        break;
-    }
-  });
+        return;
+      }
+      if (!m.open) return; // menu closed → let the input handle keys normally
+      const n = m.rows.length; // 0 while the model picker is still fetching
+      switch (key.name) {
+        case "up":
+          key.preventDefault?.();
+          if (n) {
+            const ni = (selIdx() - 1 + n) % n;
+            setSelIdx(ni);
+            ensureMenuVisible(ni, n);
+          }
+          break;
+        case "down":
+          key.preventDefault?.();
+          if (n) {
+            const ni = (selIdx() + 1) % n;
+            setSelIdx(ni);
+            ensureMenuVisible(ni, n);
+          }
+          break;
+        case "tab":
+          key.preventDefault?.();
+          // In the main/subagent model picker, Tab flips the target; for an
+          // agent-targeted picker (or any other menu) it completes the highlight.
+          if (m.kind === "models" && !m.isAgent)
+            setModelTarget((t) => (t === "main" ? "sub" : "main"));
+          else if (n) choosePalette(false);
+          break;
+        case "return":
+        case "enter": // run the highlighted entry (preventDefault stops onSubmit)
+          key.preventDefault?.();
+          if (n) choosePalette(true);
+          break;
+        case "escape":
+          key.preventDefault?.();
+          setDraft("");
+          break;
+        default:
+          break;
+      }
+    },
+  );
 
   onMount(() => {
     // Animate the working spinner / elapsed clock while a turn runs — and also
@@ -1660,288 +1781,306 @@ export function App(props: { engine: EngineClient }) {
         // (typing works, nothing updates) with no visible cause. Surface the
         // error as a transcript notice and keep consuming.
         try {
-        switch (event.type) {
-          case "user-message":
-            // Subagents are per-turn activity (tasks persist, they don't) — start
-            // each turn with a clean SUBAGENTS section. The plan box is transient
-            // too: a new turn means it was acted on or abandoned.
-            setSubagents([]);
-            setPlan(null);
-            // The sidebar's trail spans ONE turn — the previous turn's stream
-            // clears here (not at turn end, so it stays readable while you
-            // review the finished work).
-            resetTrail();
-            apply({ type: "user", text: event.text });
-            // A new turn begins: start the working clock/spinner.
-            turnStartedAt = Date.now();
-            setTick(0);
-            setWorking(true);
-            break;
-          case "assistant-text-delta":
-            // Subagent deltas (they carry a subagentId) are summarized in the
-            // Subagents panel, not streamed into the parent transcript; empty
-            // deltas are no-ops.
-            if (event.subagentId || !event.delta) break;
-            // Real answer text is streaming — the model acted, so the thinking
-            // burst lands as its transcript row (and the live preview clears).
-            commitThinking();
-            // Buffer the token and flush on the next frame — coalescing keeps long
-            // streamed replies smooth.
-            pendingDelta += event.delta;
-            scheduleFlush();
-            break;
-          case "reasoning-delta":
-            // The model's chain-of-thought: a one-line live preview under the
-            // spinner while it thinks, landed as a collapsed transcript row when
-            // it acts (subagent thinking stays in its panel row).
-            if (event.subagentId || !event.delta) break;
-            pushReasoning(event.delta);
-            break;
-          case "tool-call-started":
-            if (event.subagentId) break; // subagent tools don't enter the transcript
-            // The thinking that led to this call lands just above it in the
-            // transcript. Tool rows themselves are the sole live work surface
-            // (no sidebar Activity mirror).
-            commitThinking();
-            enqueue({
-              type: "tool-start",
-              toolCallId: event.toolCallId,
-              toolName: event.toolName,
-              input: event.input,
-              at: Date.now(),
-            });
-            break;
-          case "tool-call-progress":
-            // Live streamed output (bash stdout/stderr) → the running row's tail
-            // preview, so a long build/test is visibly alive line by line.
-            // Coalesced onto the frame timer like text deltas.
-            pendingProgress.set(
-              event.toolCallId,
-              (pendingProgress.get(event.toolCallId) ?? "") + event.chunk,
-            );
-            scheduleFlush();
-            break;
-          case "tool-call-finished":
-            if (event.subagentId) break;
-            enqueue({
-              type: "tool-finish",
-              toolCallId: event.toolCallId,
-              output: event.output,
-              isError: event.isError,
-              at: Date.now(),
-            });
-            break;
-          case "file-changed":
-            // The reducer folds the diff into the EXACT tool block that produced it
-            // (by call id), so an edit reads as one row with the hunk beneath it, and
-            // accumulates the per-file delta for the footer summary.
-            enqueue({
-              type: "file-changed",
-              toolCallId: event.toolCallId,
-              path: event.path,
-              action: event.action,
-              added: event.added,
-              removed: event.removed,
-              at: Date.now(),
-              ...(event.diff ? { diff: event.diff } : {}),
-            });
-            break;
-          case "tasks-updated":
-            setTasks(event.tasks);
-            break;
-          case "queue-changed":
-            setPendingQ(event.pending);
-            refreshStatus();
-            break;
-          case "usage-updated":
-            usage = event.usage;
-            refreshStatus();
-            break;
-          case "context-updated":
-            ctx = { usedTokens: event.usedTokens, contextWindow: event.contextWindow };
-            refreshStatus();
-            break;
-          case "permission-request":
-            setPerms((p) => [...p, { id: event.id, toolName: event.toolName, input: event.input }]);
-            break;
-          case "permission-settled":
-            // The engine auto-denied these prompts (abort / shutdown) with no user
-            // answer — drop their cards so a stale prompt doesn't linger into the
-            // next turn, block Esc/plan shortcuts, or let a later keypress write a
-            // false "allowed" notice for a tool that never ran (answerPerm's
-            // `if (!head) return` then makes the answer a silent no-op).
-            setPerms((p) => dropSettledPerms(p, event.ids));
-            break;
-          case "plan-presented":
-            finalizeAssistant();
-            setPlan({
-              text: event.plan,
-              ...(event.sources?.length ? { sources: event.sources } : {}),
-              ...(event.assumptions?.length ? { assumptions: event.assumptions } : {}),
-              ...(event.ungrounded ? { ungrounded: true } : {}),
-            });
-            break;
-          case "subagent-started":
-            setSubagents((prev) => [
-              ...prev,
-              { id: event.subagentId, prompt: event.prompt, status: "running", startedAt: Date.now() },
-            ]);
-            break;
-          case "subagent-activity":
-            // Live "what is it doing now" line — attach only to the RUNNING child,
-            // so a stray activity event arriving after it finished can't relight a
-            // done row's label.
-            setSubagents((prev) =>
-              prev.map((s) =>
-                s.id === event.subagentId && s.status === "running"
-                  ? { ...s, activity: event.label }
-                  : s,
-              ),
-            );
-            break;
-          case "subagent-finished":
-            setSubagents((prev) =>
-              prev.map((s) =>
-                s.id === event.subagentId
-                  ? {
-                      ...s,
-                      status: "done",
-                      activity: undefined,
-                      result: firstLine(event.result),
-                      ...(s.startedAt ? { elapsedMs: Date.now() - s.startedAt } : {}),
-                    }
-                  : s,
-              ),
-            );
-            break;
-          case "session-start": {
-            // Re-seed chrome when bootstrap finished after ready()'s soft
-            // deadline left App on PLACEHOLDER model/mode (BUG-107). AGENTS
-            // keeps session-start silent in the transcript; pure merge lives
-            // in chrome-seed.ts so the shipped path is unit-tested.
-            const seeded = seedChromeFromSessionStart(event, props.engine.snapshot());
-            model = seeded.model;
-            mode = seeded.mode;
-            approvals = seeded.approvalMode;
-            goal = seeded.goal;
-            setPalette(getTheme(seeded.theme));
-            setThemeName(seeded.theme);
-            setAccentColor(seeded.accentColor);
-            if (isTranscriptDensity(seeded.details)) setDetails(seeded.details);
-            setMouseOn(seeded.mouse);
-            refreshStatus();
-            break;
-          }
-          case "mode-changed":
-            mode = event.mode;
-            // Leaving plan mode DISMISSES the plan card. Live approve (card
-            // Enter / /execute) already spent #lastPlan and enqueued the
-            // handoff turn engine-side; if the card survived, the next typed
-            // message would be captured as a plan REVISION (answerPlan "edit")
-            // and re-plan instead of letting execution proceed. Bare
-            // Shift+Tab never leaves plan while a plan is waiting (engine
-            // refuses silent approve), so this path is the post-approve /
-            // leave-plan case.
-            if (event.mode !== "plan") setPlan(null);
-            refreshStatus();
-            break;
-          case "model-changed":
-            model = event.model;
-            refreshStatus();
-            break;
-          case "goal-changed":
-            goal = event.goal;
-            refreshStatus();
-            break;
-          case "goal-run":
-            setGoalRunState(event.run);
-            break;
-          case "approvals-changed":
-            approvals = event.mode;
-            refreshStatus();
-            break;
-          case "theme-changed":
-            setPalette(getTheme(event.theme));
-            setThemeName(event.theme);
-            break;
-          case "accent-changed":
-            setAccentColor(event.accent);
-            break;
-          case "details-changed":
-            if (isTranscriptDensity(event.details)) setDetails(event.details);
-            break;
-          case "mouse-changed":
-            setMouseOn(event.mouse);
-            try {
-              // Toggle capture live so /mouse off restores native selection mid-session.
-              (renderer as { useMouse?: boolean }).useMouse = event.mouse;
-            } catch {
-              /* optional on older OpenTUI */
+          switch (event.type) {
+            case "user-message":
+              // Subagents are per-turn activity (tasks persist, they don't) — start
+              // each turn with a clean SUBAGENTS section. The plan box is transient
+              // too: a new turn means it was acted on or abandoned.
+              setSubagents([]);
+              setPlan(null);
+              // The sidebar's trail spans ONE turn — the previous turn's stream
+              // clears here (not at turn end, so it stays readable while you
+              // review the finished work).
+              resetTrail();
+              apply({ type: "user", text: event.text });
+              // A new turn begins: start the working clock/spinner.
+              turnStartedAt = Date.now();
+              setTick(0);
+              setWorking(true);
+              break;
+            case "assistant-text-delta":
+              // Subagent deltas (they carry a subagentId) are summarized in the
+              // Subagents panel, not streamed into the parent transcript; empty
+              // deltas are no-ops.
+              if (event.subagentId || !event.delta) break;
+              // Real answer text is streaming — the model acted, so the thinking
+              // burst lands as its transcript row (and the live preview clears).
+              commitThinking();
+              // Buffer the token and flush on the next frame — coalescing keeps long
+              // streamed replies smooth.
+              pendingDelta += event.delta;
+              scheduleFlush();
+              break;
+            case "reasoning-delta":
+              // The model's chain-of-thought: a one-line live preview under the
+              // spinner while it thinks, landed as a collapsed transcript row when
+              // it acts (subagent thinking stays in its panel row).
+              if (event.subagentId || !event.delta) break;
+              pushReasoning(event.delta);
+              break;
+            case "tool-call-started":
+              if (event.subagentId) break; // subagent tools don't enter the transcript
+              // The thinking that led to this call lands just above it in the
+              // transcript. Tool rows themselves are the sole live work surface
+              // (no sidebar Activity mirror).
+              commitThinking();
+              enqueue({
+                type: "tool-start",
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                input: event.input,
+                at: Date.now(),
+              });
+              break;
+            case "tool-call-progress":
+              // Live streamed output (bash stdout/stderr) → the running row's tail
+              // preview, so a long build/test is visibly alive line by line.
+              // Coalesced onto the frame timer like text deltas.
+              pendingProgress.set(
+                event.toolCallId,
+                (pendingProgress.get(event.toolCallId) ?? "") + event.chunk,
+              );
+              scheduleFlush();
+              break;
+            case "tool-call-finished":
+              if (event.subagentId) break;
+              enqueue({
+                type: "tool-finish",
+                toolCallId: event.toolCallId,
+                output: event.output,
+                isError: event.isError,
+                at: Date.now(),
+              });
+              break;
+            case "file-changed":
+              // The reducer folds the diff into the EXACT tool block that produced it
+              // (by call id), so an edit reads as one row with the hunk beneath it, and
+              // accumulates the per-file delta for the footer summary.
+              enqueue({
+                type: "file-changed",
+                toolCallId: event.toolCallId,
+                path: event.path,
+                action: event.action,
+                added: event.added,
+                removed: event.removed,
+                at: Date.now(),
+                ...(event.diff ? { diff: event.diff } : {}),
+              });
+              break;
+            case "tasks-updated":
+              setTasks(event.tasks);
+              break;
+            case "queue-changed":
+              setPendingQ(event.pending);
+              refreshStatus();
+              break;
+            case "usage-updated":
+              usage = event.usage;
+              refreshStatus();
+              break;
+            case "context-updated":
+              ctx = { usedTokens: event.usedTokens, contextWindow: event.contextWindow };
+              refreshStatus();
+              break;
+            case "permission-request":
+              setPerms((p) => [
+                ...p,
+                { id: event.id, toolName: event.toolName, input: event.input },
+              ]);
+              break;
+            case "permission-settled":
+              // The engine auto-denied these prompts (abort / shutdown) with no user
+              // answer — drop their cards so a stale prompt doesn't linger into the
+              // next turn, block Esc/plan shortcuts, or let a later keypress write a
+              // false "allowed" notice for a tool that never ran (answerPerm's
+              // `if (!head) return` then makes the answer a silent no-op).
+              setPerms((p) => dropSettledPerms(p, event.ids));
+              break;
+            case "plan-presented":
+              finalizeAssistant();
+              setPlan({
+                text: event.plan,
+                ...(event.sources?.length ? { sources: event.sources } : {}),
+                ...(event.assumptions?.length ? { assumptions: event.assumptions } : {}),
+                ...(event.ungrounded ? { ungrounded: true } : {}),
+              });
+              break;
+            case "subagent-started":
+              setSubagents((prev) => [
+                ...prev,
+                {
+                  id: event.subagentId,
+                  prompt: event.prompt,
+                  status: "running",
+                  startedAt: Date.now(),
+                },
+              ]);
+              break;
+            case "subagent-activity":
+              // Live "what is it doing now" line — attach only to the RUNNING child,
+              // so a stray activity event arriving after it finished can't relight a
+              // done row's label.
+              setSubagents((prev) =>
+                prev.map((s) =>
+                  s.id === event.subagentId && s.status === "running"
+                    ? { ...s, activity: event.label }
+                    : s,
+                ),
+              );
+              break;
+            case "subagent-finished":
+              setSubagents((prev) =>
+                prev.map((s) =>
+                  s.id === event.subagentId
+                    ? {
+                        ...s,
+                        status: "done",
+                        activity: undefined,
+                        result: firstLine(event.result),
+                        ...(s.startedAt ? { elapsedMs: Date.now() - s.startedAt } : {}),
+                      }
+                    : s,
+                ),
+              );
+              break;
+            case "session-start": {
+              // Re-seed chrome when bootstrap finished after ready()'s soft
+              // deadline left App on PLACEHOLDER model/mode (BUG-107). AGENTS
+              // keeps session-start silent in the transcript; pure merge lives
+              // in chrome-seed.ts so the shipped path is unit-tested.
+              const seeded = seedChromeFromSessionStart(event, props.engine.snapshot());
+              model = seeded.model;
+              mode = seeded.mode;
+              approvals = seeded.approvalMode;
+              goal = seeded.goal;
+              setPalette(getTheme(seeded.theme));
+              setThemeName(seeded.theme);
+              setAccentColor(seeded.accentColor);
+              if (isTranscriptDensity(seeded.details)) setDetails(seeded.details);
+              setMouseOn(seeded.mouse);
+              refreshStatus();
+              break;
             }
-            break;
-          case "git-updated":
-            setGit(event.git);
-            break;
-          case "jobs-changed":
-            setJobs(event.jobs);
-            break;
-          case "turn-finished":
-          case "session-idle":
-            // A model turn ended — finalize the reply and drop per-turn maps, but
-            // keep the spinner alive until engine-idle so automated follow-up
-            // turns don't briefly look idle between queue-drain passes.
-            endTurn({ stopWorking: false });
-            break;
-          case "engine-idle":
-            endTurn({ stopWorking: true });
-            break;
-          case "notice":
-            enqueue({ type: "notice", text: event.message, level: event.level });
-            break;
-          case "compacted":
-            // Surface compaction in the transcript (the footer's ctx% also drops),
-            // matching the headless printer — otherwise `/compact` looks like a no-op.
-            enqueue({
-              type: "notice",
-              text: `Compacted history · freed ~${event.freedTokens} tokens`,
-              level: "info",
-            });
-            break;
-          case "loop-stopped":
-            enqueue({ type: "notice", text: `Loop stopped — ${event.reason}`, level: "info" });
-            break;
-          case "loop-tick":
-            // Mark each `/loop` iteration in the transcript (headless parity) so
-            // recurring runs read as separate passes, not one endless turn.
-            enqueue({ type: "notice", text: `${GLYPH.loopTick} loop iteration ${event.iteration}`, level: "info" });
-            break;
-          case "checkpoint-restored":
-            // /undo landed — say so in the transcript (the headless printer
-            // already did); otherwise a successful revert looked like a no-op.
-            enqueue({ type: "notice", text: `${GLYPH.revert} reverted: ${event.label}`, level: "info" });
-            break;
-          case "verify-started":
-            enqueue({ type: "notice", text: `verifying: ${event.command}`, level: "info" });
-            break;
-          case "verify-finished": {
-            // Failures carry the check's first line so the reason is visible
-            // without leaving the transcript (the payload was never shown anywhere).
-            const detail =
-              !event.ok && event.output ? ` — ${truncate(firstLine(event.output) ?? "", 120)}` : "";
-            enqueue({
-              type: "notice",
-              text: event.ok ? "verification passed" : `verification failed${detail}`,
-              level: event.ok ? "info" : "error",
-            });
-            break;
+            case "mode-changed":
+              mode = event.mode;
+              // Leaving plan mode DISMISSES the plan card. Live approve (card
+              // Enter / /execute) already spent #lastPlan and enqueued the
+              // handoff turn engine-side; if the card survived, the next typed
+              // message would be captured as a plan REVISION (answerPlan "edit")
+              // and re-plan instead of letting execution proceed. Bare
+              // Shift+Tab never leaves plan while a plan is waiting (engine
+              // refuses silent approve), so this path is the post-approve /
+              // leave-plan case.
+              if (event.mode !== "plan") setPlan(null);
+              refreshStatus();
+              break;
+            case "model-changed":
+              model = event.model;
+              refreshStatus();
+              break;
+            case "goal-changed":
+              goal = event.goal;
+              refreshStatus();
+              break;
+            case "goal-run":
+              setGoalRunState(event.run);
+              break;
+            case "approvals-changed":
+              approvals = event.mode;
+              refreshStatus();
+              break;
+            case "theme-changed":
+              setPalette(getTheme(event.theme));
+              setThemeName(event.theme);
+              break;
+            case "accent-changed":
+              setAccentColor(event.accent);
+              break;
+            case "details-changed":
+              if (isTranscriptDensity(event.details)) setDetails(event.details);
+              break;
+            case "mouse-changed":
+              setMouseOn(event.mouse);
+              try {
+                // Toggle capture live so /mouse off restores native selection mid-session.
+                (renderer as { useMouse?: boolean }).useMouse = event.mouse;
+              } catch {
+                /* optional on older OpenTUI */
+              }
+              break;
+            case "git-updated":
+              setGit(event.git);
+              break;
+            case "jobs-changed":
+              setJobs(event.jobs);
+              break;
+            case "turn-finished":
+            case "session-idle":
+              // A model turn ended — finalize the reply and drop per-turn maps, but
+              // keep the spinner alive until engine-idle so automated follow-up
+              // turns don't briefly look idle between queue-drain passes.
+              endTurn({ stopWorking: false });
+              break;
+            case "engine-idle":
+              endTurn({ stopWorking: true });
+              break;
+            case "notice":
+              enqueue({ type: "notice", text: event.message, level: event.level });
+              break;
+            case "compacted":
+              // Surface compaction in the transcript (the footer's ctx% also drops),
+              // matching the headless printer — otherwise `/compact` looks like a no-op.
+              enqueue({
+                type: "notice",
+                text: `Compacted history · freed ~${event.freedTokens} tokens`,
+                level: "info",
+              });
+              break;
+            case "loop-stopped":
+              enqueue({ type: "notice", text: `Loop stopped — ${event.reason}`, level: "info" });
+              break;
+            case "loop-tick":
+              // Mark each `/loop` iteration in the transcript (headless parity) so
+              // recurring runs read as separate passes, not one endless turn.
+              enqueue({
+                type: "notice",
+                text: `${GLYPH.loopTick} loop iteration ${event.iteration}`,
+                level: "info",
+              });
+              break;
+            case "checkpoint-restored":
+              // /undo landed — say so in the transcript (the headless printer
+              // already did); otherwise a successful revert looked like a no-op.
+              enqueue({
+                type: "notice",
+                text: `${GLYPH.revert} reverted: ${event.label}`,
+                level: "info",
+              });
+              break;
+            case "verify-started":
+              enqueue({ type: "notice", text: `verifying: ${event.command}`, level: "info" });
+              break;
+            case "verify-finished": {
+              // Failures carry the check's first line so the reason is visible
+              // without leaving the transcript (the payload was never shown anywhere).
+              const detail =
+                !event.ok && event.output
+                  ? ` — ${truncate(firstLine(event.output) ?? "", 120)}`
+                  : "";
+              enqueue({
+                type: "notice",
+                text: event.ok ? "verification passed" : `verification failed${detail}`,
+                level: event.ok ? "info" : "error",
+              });
+              break;
+            }
+            case "engine-error":
+              endTurn();
+              apply({ type: "notice", text: `error: ${event.message}`, level: "error" });
+              break;
+            default:
+              break;
           }
-          case "engine-error":
-            endTurn();
-            apply({ type: "notice", text: `error: ${event.message}`, level: "error" });
-            break;
-          default:
-            break;
-        }
         } catch (err) {
           apply({
             type: "notice",
@@ -2068,8 +2207,7 @@ export function App(props: { engine: EngineClient }) {
   // Show the block wordmark when the column is wide + tall enough to seat it
   // (it's 80 cols / 7 rows); otherwise the splash falls back to the compact
   // ascii-font logo, then a one-line glyph. The column padding eats 2 cols.
-  const showWordmark = () =>
-    contentWidth() - 2 >= WORDMARK_COLS && dims().height >= 16;
+  const showWordmark = () => contentWidth() - 2 >= WORDMARK_COLS && dims().height >= 16;
   // Fit `parts` into `width` columns: join with `  ·  `, dropping trailing parts
   // (least important last) until the line fits, then ellipsis-truncate as a last
   // resort — so a narrow terminal NEVER hard-clips a status line mid-word.
@@ -2088,7 +2226,11 @@ export function App(props: { engine: EngineClient }) {
     sidebarOn()
       ? ""
       : fitParts(
-          [cwd, gitSummary(), goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}${goalSuffix()}` : ""],
+          [
+            cwd,
+            gitSummary(),
+            goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}${goalSuffix()}` : "",
+          ],
           contentWidth() - 2,
         );
   // Live status shown under the input: model · changed · ctx · cost. The metrics
@@ -2260,810 +2402,911 @@ export function App(props: { engine: EngineClient }) {
         flexShrink={0}
         padding={1}
       >
-      {/* Top-left context line: location · git · goal — the persistent "where am
+        {/* Top-left context line: location · git · goal — the persistent "where am
           I", tucked in the corner so it's out of the conversation's way. Pinned
           to height 1: it goes BLANK (not away) while the sidebar session card
           shows the same facts, so the transcript top never reflows. */}
-      <box flexDirection="row" flexShrink={0} height={1}>
-        <text flexShrink={1} fg={palette().muted} wrapMode="none">{topLeftLine()}</text>
-        <box flexGrow={1} />
-      </box>
-      {/* Body — the /jobs sub-view when open; otherwise a centered VIBE CODR splash
+        <box flexDirection="row" flexShrink={0} height={1}>
+          <text flexShrink={1} fg={palette().muted} wrapMode="none">
+            {topLeftLine()}
+          </text>
+          <box flexGrow={1} />
+        </box>
+        {/* Body — the /jobs sub-view when open; otherwise a centered VIBE CODR splash
           on a fresh screen, or the scrolling transcript once the chat starts. */}
-      <box flexDirection="column" flexGrow={1}>
-        {/* /jobs sub-view: running shell commands + detected localhost servers, in
+        <box flexDirection="column" flexGrow={1}>
+          {/* /jobs sub-view: running shell commands + detected localhost servers, in
             place of the transcript. Esc or /jobs closes it. */}
-        <Show when={showJobs()}>
-          <box flexDirection="column" flexGrow={1}>
-            <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-              {`Background jobs · ${jobs().length}`}
-            </text>
-            <text flexShrink={0} fg={palette().muted}>
-              {"running shell commands + any localhost servers · esc or /jobs to close"}
-            </text>
-            <scrollbox
-              flexGrow={1}
-              flexShrink={1}
-              scrollY
-              contentOptions={{ flexDirection: "column", gap: 1 }}
-              scrollbarOptions={{ visible: false }}
-            >
-              <Show
-                when={jobs().length > 0}
-                fallback={
-                  <text fg={palette().muted} wrapMode="word" marginTop={1}>
-                    {"No background jobs yet — start a long-running command (a dev server, watcher, or build) with the bash tool's background mode and it'll appear here with any localhost URL it prints."}
-                  </text>
-                }
-              >
-                <For each={jobs()}>
-                  {(j) => {
-                    const c = () =>
-                      j.status === "running"
-                        ? brand()
-                        : j.status === "killed"
-                          ? palette().del
-                          : palette().muted;
-                    return (
-                      <box flexDirection="column">
-                        <box flexDirection="row" gap={1}>
-                          <text flexShrink={0} fg={c()}>
-                            {j.status === "running"
-                              ? spinnerFrame(tick())
-                              : j.status === "killed"
-                                ? GLYPH.warn
-                                : GLYPH.check}
-                          </text>
-                          <text flexGrow={1} wrapMode="word" fg={palette().assistant}>{j.command}</text>
-                          <text flexShrink={0} fg={palette().muted}>
-                            {j.status === "running"
-                              ? j.pid
-                                ? `pid ${j.pid}`
-                                : "running"
-                              : `${j.status} ${j.exitCode ?? ""}`.trim()}
-                          </text>
-                        </box>
-                        <For each={j.servers}>
-                          {(url) => <text fg={palette().tool}>{`    → ${url}`}</text>}
-                        </For>
-                        <For each={j.outputTail.split("\n").filter(Boolean).slice(-4)}>
-                          {(line) => (
-                            <text fg={palette().muted} wrapMode="none">
-                              {`    ${truncate(line, Math.max(20, contentWidth() - 8))}`}
-                            </text>
-                          )}
-                        </For>
-                      </box>
-                    );
-                  }}
-                </For>
-              </Show>
-            </scrollbox>
-          </box>
-        </Show>
-        <Show when={!showJobs()}>
-        <Show
-          when={blocks().length > 0}
-          fallback={
-            // Vertically centered by the top/bottom flex-grow spacers. The
-            // wordmark and every tip line are EACH centered on their own row, so
-            // the whole splash reads as one centered column under the logo.
+          <Show when={showJobs()}>
             <box flexDirection="column" flexGrow={1}>
-              <box flexGrow={1} />
-              <box flexDirection="row">
-                <box flexGrow={1} />
-                <box flexDirection="column" flexShrink={0}>
-                  <Show
-                    when={showWordmark()}
-                    fallback={
+              <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                {`Background jobs · ${jobs().length}`}
+              </text>
+              <text flexShrink={0} fg={palette().muted}>
+                {"running shell commands + any localhost servers · esc or /jobs to close"}
+              </text>
+              <scrollbox
+                flexGrow={1}
+                flexShrink={1}
+                scrollY
+                contentOptions={{ flexDirection: "column", gap: 1 }}
+                scrollbarOptions={{ visible: false }}
+              >
+                <Show
+                  when={jobs().length > 0}
+                  fallback={
+                    <text fg={palette().muted} wrapMode="word" marginTop={1}>
+                      {
+                        "No background jobs yet — start a long-running command (a dev server, watcher, or build) with the bash tool's background mode and it'll appear here with any localhost URL it prints."
+                      }
+                    </text>
+                  }
+                >
+                  <For each={jobs()}>
+                    {(j) => {
+                      const c = () =>
+                        j.status === "running"
+                          ? brand()
+                          : j.status === "killed"
+                            ? palette().del
+                            : palette().muted;
+                      return (
+                        <box flexDirection="column">
+                          <box flexDirection="row" gap={1}>
+                            <text flexShrink={0} fg={c()}>
+                              {j.status === "running"
+                                ? spinnerFrame(tick())
+                                : j.status === "killed"
+                                  ? GLYPH.warn
+                                  : GLYPH.check}
+                            </text>
+                            <text flexGrow={1} wrapMode="word" fg={palette().assistant}>
+                              {j.command}
+                            </text>
+                            <text flexShrink={0} fg={palette().muted}>
+                              {j.status === "running"
+                                ? j.pid
+                                  ? `pid ${j.pid}`
+                                  : "running"
+                                : `${j.status} ${j.exitCode ?? ""}`.trim()}
+                            </text>
+                          </box>
+                          <For each={j.servers}>
+                            {(url) => <text fg={palette().tool}>{`    → ${url}`}</text>}
+                          </For>
+                          <For each={j.outputTail.split("\n").filter(Boolean).slice(-4)}>
+                            {(line) => (
+                              <text fg={palette().muted} wrapMode="none">
+                                {`    ${truncate(line, Math.max(20, contentWidth() - 8))}`}
+                              </text>
+                            )}
+                          </For>
+                        </box>
+                      );
+                    }}
+                  </For>
+                </Show>
+              </scrollbox>
+            </box>
+          </Show>
+          <Show when={!showJobs()}>
+            <Show
+              when={blocks().length > 0}
+              fallback={
+                // Vertically centered by the top/bottom flex-grow spacers. The
+                // wordmark and every tip line are EACH centered on their own row, so
+                // the whole splash reads as one centered column under the logo.
+                <box flexDirection="column" flexGrow={1}>
+                  <box flexGrow={1} />
+                  <box flexDirection="row">
+                    <box flexGrow={1} />
+                    <box flexDirection="column" flexShrink={0}>
                       <Show
-                        when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 12}
+                        when={showWordmark()}
                         fallback={
-                          <text fg={brand()} attributes={TextAttributes.BOLD}>{"◆ Vibe Codr"}</text>
-                        }
-                      >
-                        {/* Native ASCII-font wordmark (medium terminals, where the
+                          <Show
+                            when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 12}
+                            fallback={
+                              <text fg={brand()} attributes={TextAttributes.BOLD}>
+                                {"◆ Vibe Codr"}
+                              </text>
+                            }
+                          >
+                            {/* Native ASCII-font wordmark (medium terminals, where the
                             block art doesn't fit) — the flat brand accent (a
                             per-character gradient isn't available on this renderable). */}
-                        <ascii_font text="VIBE CODR" font="slick" color={brand()} />
-                      </Show>
-                    }
-                  >
-                    {/* ░██ block wordmark with a clean left→right single-hue brand
+                            <ascii_font text="VIBE CODR" font="slick" color={brand()} />
+                          </Show>
+                        }
+                      >
+                        {/* ░██ block wordmark with a clean left→right single-hue brand
                         sweep: each row is a line of per-character <text>s colored by
                         COLUMN position, so column i shares a ramp position across
                         every row and the whole block reads as one smooth light→deep
                         brand fade, not per-letter confetti. Follows `/accent`. Static
                         (rendered once on the idle splash) — no idle timer. */}
-                    <For each={WORDMARK}>
-                      {(line) => <BrandLine line={line} cols={WORDMARK_COLS} hue={brand()} />}
-                    </For>
-                  </Show>
-                </box>
-                <box flexGrow={1} />
-              </box>
-              {/* Prompt starters under the wordmark: a quiet intro, then the
+                        <For each={WORDMARK}>
+                          {(line) => <BrandLine line={line} cols={WORDMARK_COLS} hue={brand()} />}
+                        </For>
+                      </Show>
+                    </box>
+                    <box flexGrow={1} />
+                  </box>
+                  {/* Prompt starters under the wordmark: a quiet intro, then the
                   example asks as a block-centered list with aligned `›` markers —
                   reads as inviting quick-actions instead of a cramped one-liner. */}
-              <box flexDirection="column" marginTop={2}>
-                <SegRow center segs={[{ t: "Try asking", fg: palette().muted }]} />
-                <box flexDirection="row" flexShrink={0} marginTop={1}>
-                  <box flexGrow={1} />
-                  <box flexDirection="column" flexShrink={0}>
-                    <For each={["explain this codebase", "fix the failing test", "add a --json flag"]}>
-                      {(ex) => (
-                        <box flexDirection="row" flexShrink={0}>
-                          <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>{"›  "}</text>
-                          <text flexShrink={0} fg={palette().assistant}>{ex}</text>
-                        </box>
-                      )}
-                    </For>
+                  <box flexDirection="column" marginTop={2}>
+                    <SegRow center segs={[{ t: "Try asking", fg: palette().muted }]} />
+                    <box flexDirection="row" flexShrink={0} marginTop={1}>
+                      <box flexGrow={1} />
+                      <box flexDirection="column" flexShrink={0}>
+                        <For
+                          each={[
+                            "explain this codebase",
+                            "fix the failing test",
+                            "add a --json flag",
+                          ]}
+                        >
+                          {(ex) => (
+                            <box flexDirection="row" flexShrink={0}>
+                              <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
+                                {"›  "}
+                              </text>
+                              <text flexShrink={0} fg={palette().assistant}>
+                                {ex}
+                              </text>
+                            </box>
+                          )}
+                        </For>
+                      </box>
+                      <box flexGrow={1} />
+                    </box>
                   </box>
                   <box flexGrow={1} />
                 </box>
-              </box>
-              <box flexGrow={1} />
-            </box>
-          }
-        >
-        <scrollbox
-          ref={(el: typeof scrollEl) => (scrollEl = el)}
-          flexGrow={1}
-          flexShrink={1}
-          stickyScroll
-          stickyStart="bottom"
-          scrollY
-          viewportCulling
-          contentOptions={{ flexDirection: "column" }}
-          scrollbarOptions={{ visible: false }}
-        >
-          {/* Older turns beyond the render window: a single tappable fold row.
+              }
+            >
+              <scrollbox
+                ref={(el: typeof scrollEl) => (scrollEl = el)}
+                flexGrow={1}
+                flexShrink={1}
+                stickyScroll
+                stickyStart="bottom"
+                scrollY
+                viewportCulling
+                contentOptions={{ flexDirection: "column" }}
+                scrollbarOptions={{ visible: false }}
+              >
+                {/* Older turns beyond the render window: a single tappable fold row.
               Revealing pages them back in (scroll-anchored, see revealOlder) —
               the data was never dropped, only kept out of the layout tree. */}
-          <Show when={windowStart() > 0}>
-            <box flexDirection="column" flexShrink={0} marginTop={1} onMouseDown={revealOlder}>
-              <text flexShrink={0} fg={palette().muted}>
-                {`▸ ${windowStart()} earlier turn${windowStart() === 1 ? "" : "s"} · tap to load ${Math.min(REVEAL_PAGE, windowStart())} more`}
-              </text>
-            </box>
-          </Show>
-          {/* The transcript as connected TURN THREADS. `<Index>` keys by position
+                <Show when={windowStart() > 0}>
+                  <box
+                    flexDirection="column"
+                    flexShrink={0}
+                    marginTop={1}
+                    onMouseDown={revealOlder}
+                  >
+                    <text flexShrink={0} fg={palette().muted}>
+                      {`▸ ${windowStart()} earlier turn${windowStart() === 1 ? "" : "s"} · tap to load ${Math.min(REVEAL_PAGE, windowStart())} more`}
+                    </text>
+                  </box>
+                </Show>
+                {/* The transcript as connected TURN THREADS. `<Index>` keys by position
               (turns only ever append, and the window is stable while a turn
               streams), so streaming re-renders only the live turn.
               Each turn: a `◆` node carrying the user message, then a continuous
               left rail (git-graph style) running top→bottom through the turn's tool
               steps + answer. Tap the node to fold the whole exchange under it. */}
-          <Index each={windowedTurns()}>
-            {(turn) => {
-              const hasNode = () => turn().user !== undefined;
-              const items = () => turn().items;
-              const revealedItems = () => revealedTurnItems().get(turn().key) ?? 0;
-              const itemStart = () =>
-                turnWindowStart(items().length, TURN_ITEMS_MAX, TURN_ITEMS_STEP, revealedItems());
-              const visibleItems = () => items().slice(itemStart());
-              const folded = () => hasNode() && collapsedTurns().has(turn().key);
-              const foldTap = () => {
-                if (hasNode() && items().length > 0) anchoredToggle(() => toggleTurn(turn().key));
-              };
-              const hiddenTap = () => {
-                const hidden = itemStart();
-                if (hidden > 0) revealTurnItems(turn().key, hidden);
-              };
-              // Content width inside a block = column pad(2) + block left border(1) +
-              // block padding L(2)+R(2) = 7 consumed.
-              const blockInner = () => contentWidth() - 7;
-              return (
-                // Every block (including the first, below the top-left context line)
-                // gets the same 1-row top gap, so spacing is uniform throughout.
-                <box flexDirection="column" flexShrink={0} marginTop={1}>
-                  {/* Each turn renders as UNIFORM filled BLOCKS (opencode-style): a
+                <Index each={windowedTurns()}>
+                  {(turn) => {
+                    const hasNode = () => turn().user !== undefined;
+                    const items = () => turn().items;
+                    const revealedItems = () => revealedTurnItems().get(turn().key) ?? 0;
+                    const itemStart = () =>
+                      turnWindowStart(
+                        items().length,
+                        TURN_ITEMS_MAX,
+                        TURN_ITEMS_STEP,
+                        revealedItems(),
+                      );
+                    const visibleItems = () => items().slice(itemStart());
+                    const folded = () => hasNode() && collapsedTurns().has(turn().key);
+                    const foldTap = () => {
+                      if (hasNode() && items().length > 0)
+                        anchoredToggle(() => toggleTurn(turn().key));
+                    };
+                    const hiddenTap = () => {
+                      const hidden = itemStart();
+                      if (hidden > 0) revealTurnItems(turn().key, hidden);
+                    };
+                    // Content width inside a block = column pad(2) + block left border(1) +
+                    // block padding L(2)+R(2) = 7 consumed.
+                    const blockInner = () => contentWidth() - 7;
+                    return (
+                      // Every block (including the first, below the top-left context line)
+                      // gets the same 1-row top gap, so spacing is uniform throughout.
+                      <box flexDirection="column" flexShrink={0} marginTop={1}>
+                        {/* Each turn renders as UNIFORM filled BLOCKS (opencode-style): a
                       raised panel surface with top/bottom/left padding and a thin left
                       accent edge. The fill makes it read as one clean, uniform solid
                       block on any terminal; the accent is a thin line, not a bar. */}
-                  <Show when={turn().user}>
-                    <Rail color={brand()} onMouseDown={foldTap}>
-                      <box
-                        backgroundColor={palette().panel}
-                        flexDirection="column"
-                        paddingTop={1}
-                        paddingBottom={1}
-                        paddingLeft={2}
-                        paddingRight={2}
-                      >
-                        <text flexShrink={0} wrapMode="word" fg={palette().assistant} attributes={TextAttributes.BOLD}>
-                          {turn().user!.text}
-                        </text>
-                        <Show when={folded()}>
-                          <text flexShrink={0} fg={palette().muted} marginTop={1}>
-                            {`▸ ${items().length} item${items().length === 1 ? "" : "s"} hidden · tap to expand`}
-                          </text>
+                        <Show when={turn().user}>
+                          <Rail color={brand()} onMouseDown={foldTap}>
+                            <box
+                              backgroundColor={palette().panel}
+                              flexDirection="column"
+                              paddingTop={1}
+                              paddingBottom={1}
+                              paddingLeft={2}
+                              paddingRight={2}
+                            >
+                              <text
+                                flexShrink={0}
+                                wrapMode="word"
+                                fg={palette().assistant}
+                                attributes={TextAttributes.BOLD}
+                              >
+                                {turn().user!.text}
+                              </text>
+                              <Show when={folded()}>
+                                <text flexShrink={0} fg={palette().muted} marginTop={1}>
+                                  {`▸ ${items().length} item${items().length === 1 ? "" : "s"} hidden · tap to expand`}
+                                </text>
+                              </Show>
+                            </box>
+                          </Rail>
                         </Show>
-                      </box>
-                    </Rail>
-                  </Show>
-                  {/* The turn's output — assistant answer + tool steps + notices — in a
+                        {/* The turn's output — assistant answer + tool steps + notices — in a
                       single uniform panel block with a subtle left accent. */}
-                  <Show when={!folded() && items().length > 0}>
-                    <Rail color={palette().gutter} marginTop={hasNode() ? 1 : 0}>
-                      <box
-                        backgroundColor={palette().panel}
-                        flexDirection="column"
-                        paddingTop={1}
-                        paddingBottom={1}
-                        paddingLeft={2}
-                        paddingRight={2}
-                      >
-                        <Show when={itemStart() > 0}>
-                          <box flexDirection="column" flexShrink={0} marginBottom={1} onMouseDown={hiddenTap}>
-                            <text flexShrink={0} fg={palette().muted}>
-                              {`▸ ${itemStart()} earlier item${itemStart() === 1 ? "" : "s"} in this turn hidden · tap to load ${Math.min(TURN_ITEM_REVEAL_PAGE, itemStart())} more`}
-                            </text>
-                          </box>
-                        </Show>
-                        <Index each={visibleItems()}>
-                          {(blk, i) => {
-                            const sourceIndex = () => itemStart() + i;
-                            const prev = () => items()[sourceIndex() - 1];
-                            // A step row (tool or thinking) stacks flush under a
-                            // preceding step — a run of thought→act→act reads as one
-                            // segment; otherwise a gap row above it.
-                            const steppy = (k: string | undefined) => k === "tool" || k === "thinking";
-                            const chained = () =>
-                              steppy(blk().kind) && steppy(prev()?.kind);
-                            return (
-                              <>
-                                <Show when={blk().kind === "assistant"}>
-                                  <box
-                                    id={`msg-${(blk() as { id: number }).id}`}
-                                    flexDirection="column"
-                                    flexShrink={0}
-                                    marginTop={sourceIndex() > 0 && (blk() as { gap: boolean }).gap ? 1 : 0}
-                                  >
-                                    <AssistantText
-                                      text={(blk() as { text: string }).text}
-                                      streaming={(blk() as { streaming: boolean }).streaming}
-                                      style={mdStyle}
-                                      fg={palette().assistant}
-                                      palette={palette()}
-                                      width={blockInner()}
-                                      indent={0}
-                                    />
-                                  </box>
-                                </Show>
-                                <Show when={blk().kind === "tool"}>
-                                  <ToolBlockView
-                                    block={blk as () => Extract<Block, { kind: "tool" }>}
-                                    palette={palette()}
-                                    style={mdStyle}
-                                    density={details()}
-                                    chained={sourceIndex() > 0 && chained()}
-                                    first={sourceIndex() === 0}
-                                    width={blockInner()}
-                                    spin={() => spinnerFrame(tick())}
-                                    onToggle={(id) => anchoredToggle(() => toggle(id))}
-                                  />
-                                </Show>
-                                <Show when={blk().kind === "thinking" && showThinkingRows(details())}>
-                                  <ThinkingBlockView
-                                    block={blk as () => Extract<Block, { kind: "thinking" }>}
-                                    palette={palette()}
-                                    density={details()}
-                                    chained={sourceIndex() > 0 && chained()}
-                                    first={sourceIndex() === 0}
-                                    width={blockInner()}
-                                    onToggle={(id) => anchoredToggle(() => toggle(id))}
-                                  />
-                                </Show>
-                                <Show when={blk().kind === "notice"}>
-                                  {/* Severity carries the tone: errors red, warnings
+                        <Show when={!folded() && items().length > 0}>
+                          <Rail color={palette().gutter} marginTop={hasNode() ? 1 : 0}>
+                            <box
+                              backgroundColor={palette().panel}
+                              flexDirection="column"
+                              paddingTop={1}
+                              paddingBottom={1}
+                              paddingLeft={2}
+                              paddingRight={2}
+                            >
+                              <Show when={itemStart() > 0}>
+                                <box
+                                  flexDirection="column"
+                                  flexShrink={0}
+                                  marginBottom={1}
+                                  onMouseDown={hiddenTap}
+                                >
+                                  <text flexShrink={0} fg={palette().muted}>
+                                    {`▸ ${itemStart()} earlier item${itemStart() === 1 ? "" : "s"} in this turn hidden · tap to load ${Math.min(TURN_ITEM_REVEAL_PAGE, itemStart())} more`}
+                                  </text>
+                                </box>
+                              </Show>
+                              <Index each={visibleItems()}>
+                                {(blk, i) => {
+                                  const sourceIndex = () => itemStart() + i;
+                                  const prev = () => items()[sourceIndex() - 1];
+                                  // A step row (tool or thinking) stacks flush under a
+                                  // preceding step — a run of thought→act→act reads as one
+                                  // segment; otherwise a gap row above it.
+                                  const steppy = (k: string | undefined) =>
+                                    k === "tool" || k === "thinking";
+                                  const chained = () => steppy(blk().kind) && steppy(prev()?.kind);
+                                  return (
+                                    <>
+                                      <Show when={blk().kind === "assistant"}>
+                                        <box
+                                          id={`msg-${(blk() as { id: number }).id}`}
+                                          flexDirection="column"
+                                          flexShrink={0}
+                                          marginTop={
+                                            sourceIndex() > 0 && (blk() as { gap: boolean }).gap
+                                              ? 1
+                                              : 0
+                                          }
+                                        >
+                                          <AssistantText
+                                            text={(blk() as { text: string }).text}
+                                            streaming={(blk() as { streaming: boolean }).streaming}
+                                            style={mdStyle}
+                                            fg={palette().assistant}
+                                            palette={palette()}
+                                            width={blockInner()}
+                                            indent={0}
+                                          />
+                                        </box>
+                                      </Show>
+                                      <Show when={blk().kind === "tool"}>
+                                        <ToolBlockView
+                                          block={blk as () => Extract<Block, { kind: "tool" }>}
+                                          palette={palette()}
+                                          style={mdStyle}
+                                          density={details()}
+                                          chained={sourceIndex() > 0 && chained()}
+                                          first={sourceIndex() === 0}
+                                          width={blockInner()}
+                                          spin={() => spinnerFrame(tick())}
+                                          onToggle={(id) => anchoredToggle(() => toggle(id))}
+                                        />
+                                      </Show>
+                                      <Show
+                                        when={
+                                          blk().kind === "thinking" && showThinkingRows(details())
+                                        }
+                                      >
+                                        <ThinkingBlockView
+                                          block={blk as () => Extract<Block, { kind: "thinking" }>}
+                                          palette={palette()}
+                                          density={details()}
+                                          chained={sourceIndex() > 0 && chained()}
+                                          first={sourceIndex() === 0}
+                                          width={blockInner()}
+                                          onToggle={(id) => anchoredToggle(() => toggle(id))}
+                                        />
+                                      </Show>
+                                      <Show when={blk().kind === "notice"}>
+                                        {/* Severity carries the tone: errors red, warnings
                                       amber, plain info MUTED — system chatter ("Plan
                                       saved to …") must recede, not read as a warning.
                                       A leading `·` marks a system note. No word-wrap:
                                       command output (/help, /config) is pre-aligned. */}
-                                  <text
-                                    flexShrink={0}
-                                    fg={
-                                      (blk() as { level?: string }).level === "error"
-                                        ? palette().del
-                                        : (blk() as { level?: string }).level === "warn"
-                                          ? palette().notice
-                                          : palette().muted
-                                    }
-                                    marginTop={sourceIndex() > 0 ? 1 : 0}
-                                  >
-                                    {/* Clamped per line so one long unbroken notice
+                                        <text
+                                          flexShrink={0}
+                                          fg={
+                                            (blk() as { level?: string }).level === "error"
+                                              ? palette().del
+                                              : (blk() as { level?: string }).level === "warn"
+                                                ? palette().notice
+                                                : palette().muted
+                                          }
+                                          marginTop={sourceIndex() > 0 ? 1 : 0}
+                                        >
+                                          {/* Clamped per line so one long unbroken notice
                                         (an error payload) can't widen the panel. */}
-                                    {`· ${(blk() as { text: string }).text
-                                      .split("\n")
-                                      .map((l) => truncate(l, Math.max(20, blockInner() - 2)))
-                                      .join("\n")}`}
-                                  </text>
-                                </Show>
-                              </>
-                            );
-                          }}
-                        </Index>
+                                          {`· ${(blk() as { text: string }).text
+                                            .split("\n")
+                                            .map((l) => truncate(l, Math.max(20, blockInner() - 2)))
+                                            .join("\n")}`}
+                                        </text>
+                                      </Show>
+                                    </>
+                                  );
+                                }}
+                              </Index>
+                            </box>
+                          </Rail>
+                        </Show>
                       </box>
-                    </Rail>
-                  </Show>
-                </box>
-              );
-            }}
-          </Index>
-        </scrollbox>
-        </Show>
-        </Show>
-      </box>
+                    );
+                  }}
+                </Index>
+              </scrollbox>
+            </Show>
+          </Show>
+        </box>
 
-      {/* Live working indicator — braille spinner in the brand accent (monochrome
+        {/* Live working indicator — braille spinner in the brand accent (monochrome
           discipline: motion means "alive", not a rainbow carnival). Hidden while
           a permission card is up (the card is the active affordance then). */}
-      <Show when={working() && perms().length === 0 && !plan()}>
-        <box flexDirection="column" flexShrink={0} marginTop={1}>
-          <box flexDirection="row" flexShrink={0}>
-            <text fg={brand()}>
-              {spinnerFrame(tick())}
-            </text>
-            <text fg={palette().muted}>
-              {` ${elapsedLabel()}  ·  esc to interrupt`}
-            </text>
-          </box>
-          {/* Live thinking stack — the model's last few reasoning lines stream
+        <Show when={working() && perms().length === 0 && !plan()}>
+          <box flexDirection="column" flexShrink={0} marginTop={1}>
+            <box flexDirection="row" flexShrink={0}>
+              <text fg={brand()}>{spinnerFrame(tick())}</text>
+              <text fg={palette().muted}>{` ${elapsedLabel()}  ·  esc to interrupt`}</text>
+            </box>
+            {/* Live thinking stack — the model's last few reasoning lines stream
               under the spinner while it thinks (older lines recede to the
               dimmer gutter tone, the newest reads in muted). The stack clears
               when the burst lands as its `✻ thinking` transcript row. */}
-          <Show when={!sidebarOn() && reasoningLines().length > 0}>
-            <box flexDirection="column" flexShrink={0}>
-              {/* Inline view: just the last 3 lines, clipped to the column (the
+            <Show when={!sidebarOn() && reasoningLines().length > 0}>
+              <box flexDirection="column" flexShrink={0}>
+                {/* Inline view: just the last 3 lines, clipped to the column (the
                   deeper untruncated tail feeds the sidebar on wide panes). */}
-              <Index each={reasoningLines().slice(-3)}>
-                {(line, i) => (
-                  <box flexDirection="row" flexShrink={0}>
-                    <text flexShrink={0} fg={i === 0 ? brand() : palette().gutter}>{i === 0 ? "  ✻ " : "    "}</text>
-                    <text
-                      flexShrink={1}
-                      wrapMode="none"
-                      fg={i === Math.min(3, reasoningLines().length) - 1 ? palette().muted : palette().gutter}
-                      attributes={TextAttributes.ITALIC}
-                    >
-                      {truncate(line(), Math.max(24, contentWidth() - 10))}
-                    </text>
-                  </box>
-                )}
-              </Index>
-            </box>
-          </Show>
-        </box>
-      </Show>
-      <Show when={plan()}>
-        {/* Bounded + scrollable: the plan can be long, so its content scrolls
+                <Index each={reasoningLines().slice(-3)}>
+                  {(line, i) => (
+                    <box flexDirection="row" flexShrink={0}>
+                      <text flexShrink={0} fg={i === 0 ? brand() : palette().gutter}>
+                        {i === 0 ? "  ✻ " : "    "}
+                      </text>
+                      <text
+                        flexShrink={1}
+                        wrapMode="none"
+                        fg={
+                          i === Math.min(3, reasoningLines().length) - 1
+                            ? palette().muted
+                            : palette().gutter
+                        }
+                        attributes={TextAttributes.ITALIC}
+                      >
+                        {truncate(line(), Math.max(24, contentWidth() - 10))}
+                      </text>
+                    </box>
+                  )}
+                </Index>
+              </box>
+            </Show>
+          </box>
+        </Show>
+        <Show when={plan()}>
+          {/* Bounded + scrollable: the plan can be long, so its content scrolls
             inside the card (mouse wheel / drag) while the approval hint below it
             and the input stay on-screen — instead of the whole thing overflowing.
             Same block language as the turns + input: a filled panel surface with a
             thin left accent in the PLAN hue, so the approval moment reads as one
             coherent card. */}
-        <Rail color={modeColor("plan")} marginTop={1} height={planPanelRows()}>
-          <box
-            backgroundColor={palette().panel}
-            flexDirection="column"
-            flexGrow={1}
-            paddingTop={1}
-            paddingBottom={1}
-            paddingLeft={2}
-            paddingRight={2}
-          >
-            <text flexShrink={0} fg={modeColor("plan")} attributes={TextAttributes.BOLD}>
-              {"Plan · review & approve"}
-            </text>
-            <Show when={plan()?.ungrounded}>
-              <text flexShrink={0} fg={palette().notice} attributes={TextAttributes.BOLD}>
-                {"⚠ ungrounded — presented without the research this request required"}
+          <Rail color={modeColor("plan")} marginTop={1} height={planPanelRows()}>
+            <box
+              backgroundColor={palette().panel}
+              flexDirection="column"
+              flexGrow={1}
+              paddingTop={1}
+              paddingBottom={1}
+              paddingLeft={2}
+              paddingRight={2}
+            >
+              <text flexShrink={0} fg={modeColor("plan")} attributes={TextAttributes.BOLD}>
+                {"Plan · review & approve"}
               </text>
-            </Show>
-            <Show when={plan()?.sources?.length || plan()?.assumptions?.length}>
-              <text flexShrink={0} fg={palette().muted}>
-                {[
-                  plan()?.sources?.length
-                    ? `Grounded in ${plan()!.sources!.length} web source${plan()!.sources!.length === 1 ? "" : "s"}`
-                    : "",
-                  plan()?.assumptions?.length
-                    ? `${plan()!.assumptions!.length} assumption${plan()!.assumptions!.length === 1 ? "" : "s"} flagged`
-                    : "",
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </text>
-            </Show>
-            <scrollbox flexGrow={1} flexShrink={1} stickyScroll={false} scrollbarOptions={{ visible: false }}>
-              <AssistantText
-                text={planDisplayText()}
-                streaming={false}
-                style={mdStyle}
-                fg={palette().assistant}
-                palette={palette()}
-                width={contentWidth() - 7}
-              />
-            </scrollbox>
-            {/* Approval hint — fitted by priority so a narrow card never clips
-                mid-token ("scro"). Primary: Enter/Esc; secondary: revise/yolo; tertiary: scroll. */}
-            <box flexDirection="row" flexShrink={0} marginTop={1} flexWrap="wrap">
-              <For
-                each={(() => {
-                  const lit = palette().assistant;
-                  const dim = palette().muted;
-                  const segs: HintSeg[] = [
-                    { t: "Enter", fg: lit, priority: 0 },
-                    { t: " accept & run", fg: dim, priority: 0 },
-                    { t: "  ·  ", fg: dim, priority: 0 },
-                    { t: "Esc", fg: lit, priority: 0 },
-                    { t: " keep planning", fg: dim, priority: 0 },
-                    { t: "  ·  ", fg: dim, priority: 1 },
-                    { t: "type", fg: lit, priority: 1 },
-                    { t: " to revise", fg: dim, priority: 1 },
-                    { t: "  ·  ", fg: dim, priority: 1 },
-                    { t: "^Y", fg: lit, priority: 1 },
-                    { t: " run in yolo", fg: dim, priority: 1 },
-                  ];
-                  if (planOverflows()) {
-                    segs.push(
-                      { t: "  ·  ", fg: dim, priority: 2 },
-                      { t: "scroll", fg: lit, priority: 2 },
-                      { t: " to read", fg: dim, priority: 2 },
-                    );
-                  }
-                  // Card padding + rail ≈ 9 cols of chrome.
-                  return fitHintSegs(segs, Math.max(20, contentWidth() - 9));
-                })()}
+              <Show when={plan()?.ungrounded}>
+                <text flexShrink={0} fg={palette().notice} attributes={TextAttributes.BOLD}>
+                  {"⚠ ungrounded — presented without the research this request required"}
+                </text>
+              </Show>
+              <Show when={plan()?.sources?.length || plan()?.assumptions?.length}>
+                <text flexShrink={0} fg={palette().muted}>
+                  {[
+                    plan()?.sources?.length
+                      ? `Grounded in ${plan()!.sources!.length} web source${plan()!.sources!.length === 1 ? "" : "s"}`
+                      : "",
+                    plan()?.assumptions?.length
+                      ? `${plan()!.assumptions!.length} assumption${plan()!.assumptions!.length === 1 ? "" : "s"} flagged`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </text>
+              </Show>
+              <scrollbox
+                flexGrow={1}
+                flexShrink={1}
+                stickyScroll={false}
+                scrollbarOptions={{ visible: false }}
               >
-                {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
-              </For>
+                <AssistantText
+                  text={planDisplayText()}
+                  streaming={false}
+                  style={mdStyle}
+                  fg={palette().assistant}
+                  palette={palette()}
+                  width={contentWidth() - 7}
+                />
+              </scrollbox>
+              {/* Approval hint — fitted by priority so a narrow card never clips
+                mid-token ("scro"). Primary: Enter/Esc; secondary: revise/yolo; tertiary: scroll. */}
+              <box flexDirection="row" flexShrink={0} marginTop={1} flexWrap="wrap">
+                <For
+                  each={(() => {
+                    const lit = palette().assistant;
+                    const dim = palette().muted;
+                    const segs: HintSeg[] = [
+                      { t: "Enter", fg: lit, priority: 0 },
+                      { t: " accept & run", fg: dim, priority: 0 },
+                      { t: "  ·  ", fg: dim, priority: 0 },
+                      { t: "Esc", fg: lit, priority: 0 },
+                      { t: " keep planning", fg: dim, priority: 0 },
+                      { t: "  ·  ", fg: dim, priority: 1 },
+                      { t: "type", fg: lit, priority: 1 },
+                      { t: " to revise", fg: dim, priority: 1 },
+                      { t: "  ·  ", fg: dim, priority: 1 },
+                      { t: "^Y", fg: lit, priority: 1 },
+                      { t: " run in yolo", fg: dim, priority: 1 },
+                    ];
+                    if (planOverflows()) {
+                      segs.push(
+                        { t: "  ·  ", fg: dim, priority: 2 },
+                        { t: "scroll", fg: lit, priority: 2 },
+                        { t: " to read", fg: dim, priority: 2 },
+                      );
+                    }
+                    // Card padding + rail ≈ 9 cols of chrome.
+                    return fitHintSegs(segs, Math.max(20, contentWidth() - 9));
+                  })()}
+                >
+                  {(s) => (
+                    <text flexShrink={0} fg={s.fg}>
+                      {s.t}
+                    </text>
+                  )}
+                </For>
+              </box>
             </box>
-          </box>
-        </Rail>
-      </Show>
-      {/* Tasks — the live to-do list, just above the input; hides once everything
+          </Rail>
+        </Show>
+        {/* Tasks — the live to-do list, just above the input; hides once everything
           is done so a finished list doesn't linger. The window centers on the
           ACTIVE work: overflowing completed tasks collapse into one leading
           "✔ N done" line, so the in-progress task is never scrolled out.
           On wide terminals the list moves to the right sidebar instead. */}
-      <Show when={!sidebarOn() && tasksVisible()}>
-        <Panel
-          title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-          titleColor={brand()}
-        >
-          <Show when={windowTasks(tasks(), PANEL_MAX_ROWS).lead > 0}>
-            <box flexDirection="row" gap={1}>
-              <text flexShrink={0} fg={palette().muted}>{TASK_GLYPH.completed}</text>
-              <text flexShrink={0} fg={palette().muted}>
-                {`${windowTasks(tasks(), PANEL_MAX_ROWS).lead} done`}
-              </text>
-            </box>
-          </Show>
-          <For each={windowTasks(tasks(), PANEL_MAX_ROWS).visible}>
-            {(task) => {
-              const c = () =>
-                task.status === "completed"
-                  ? palette().muted
-                  : task.status === "in_progress"
-                    ? brand()
-                    : palette().assistant;
-              return (
-                <box flexDirection="row" gap={1}>
-                  <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
-                  <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
-                </box>
-              );
-            }}
-          </For>
-          <Show when={windowTasks(tasks(), PANEL_MAX_ROWS).trailing > 0}>
-            <text fg={palette().muted}>{`  +${windowTasks(tasks(), PANEL_MAX_ROWS).trailing} more`}</text>
-          </Show>
-        </Panel>
-      </Show>
-      {/* Subagents — live fan-out. ONE truncated line each by default (so a big
+        <Show when={!sidebarOn() && tasksVisible()}>
+          <Panel
+            title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
+            titleColor={brand()}
+          >
+            <Show when={windowTasks(tasks(), PANEL_MAX_ROWS).lead > 0}>
+              <box flexDirection="row" gap={1}>
+                <text flexShrink={0} fg={palette().muted}>
+                  {TASK_GLYPH.completed}
+                </text>
+                <text flexShrink={0} fg={palette().muted}>
+                  {`${windowTasks(tasks(), PANEL_MAX_ROWS).lead} done`}
+                </text>
+              </box>
+            </Show>
+            <For each={windowTasks(tasks(), PANEL_MAX_ROWS).visible}>
+              {(task) => {
+                const c = () =>
+                  task.status === "completed"
+                    ? palette().muted
+                    : task.status === "in_progress"
+                      ? brand()
+                      : palette().assistant;
+                return (
+                  <box flexDirection="row" gap={1}>
+                    <text flexShrink={0} fg={c()}>
+                      {TASK_GLYPH[task.status]}
+                    </text>
+                    <text flexGrow={1} wrapMode="word" fg={c()}>
+                      {task.title}
+                    </text>
+                  </box>
+                );
+              }}
+            </For>
+            <Show when={windowTasks(tasks(), PANEL_MAX_ROWS).trailing > 0}>
+              <text
+                fg={palette().muted}
+              >{`  +${windowTasks(tasks(), PANEL_MAX_ROWS).trailing} more`}</text>
+            </Show>
+          </Panel>
+        </Show>
+        {/* Subagents — live fan-out. ONE truncated line each by default (so a big
           fan-out stays tidy and never fills the screen); tap a row to expand its
           full prompt + result (bounded), tap again to collapse. Each row carries
           a right-aligned elapsed (live while running, final once done); a done
           row folds its result glimpse into the line. Cleared per turn. */}
-      <Show when={!sidebarOn() && subagents().length > 0}>
-        <Panel
-          title={(() => {
-            const done = subagents().filter((s) => s.status === "done").length;
-            return done > 0 && done < subagents().length
-              ? `Subagents · ${done}/${subagents().length} done`
-              : `Subagents · ${subagents().length}`;
-          })()}
-          titleColor={brand()}
-        >
-          <For each={subagents().slice(0, PANEL_MAX_ROWS)}>
-            {(s) => {
-              const open = () => expandedSubs().has(s.id);
-              // Calm single tone (no rainbow rotation): a running agent's glyph is
-              // the brand accent (alive), a finished one recedes to the muted gutter
-              // tone. The prompt text reads in the body color while running and
-              // dims to muted once done so finished rows recede.
-              const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
-              const fg = () => (s.status === "running" ? palette().assistant : palette().muted);
-              // Right-aligned elapsed: ticks live while running, freezes at the
-              // total once done — the fan-out reads like a build matrix. A
-              // sub-second finish shows nothing (a "0.0s" column is noise).
-              const elapsed = () => {
-                if (s.status === "running" && s.startedAt) {
-                  void tick();
-                  return `${Math.max(0, Math.round((Date.now() - s.startedAt) / 1000))}s`;
-                }
-                if (s.elapsedMs === undefined || s.elapsedMs < 1000) return "";
-                return `${(s.elapsedMs / 1000).toFixed(s.elapsedMs >= 10_000 ? 0 : 1)}s`;
-              };
-              const oneLine = () => {
-                const base = firstLine(s.prompt) ?? s.prompt;
-                // A running child appends its live activity ("… · $ bun test");
-                // a done row folds in its result glimpse ("… ↳ found 3 cases").
-                const line =
-                  s.status === "running" && s.activity
-                    ? `${base} · ${s.activity}`
-                    : s.status === "done" && s.result
-                      ? `${base} ${GLYPH.result} ${s.result}`
-                      : base;
-                return truncate(line, Math.max(24, contentWidth() - 20));
-              };
-              return (
-                <box flexDirection="column" onMouseDown={() => toggleSub(s.id)}>
-                  <box flexDirection="row" gap={1}>
-                    <text flexShrink={0} fg={palette().muted}>{open() ? "▾" : "▸"}</text>
-                    <text flexShrink={0} fg={glyphFg()}>
-                      {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
-                    </text>
-                    <Show
-                      when={open()}
-                      fallback={<text flexGrow={1} wrapMode="none" fg={fg()}>{oneLine()}</text>}
-                    >
-                      {/* Bounded so an expanded row can't run off the screen. */}
-                      <text flexGrow={1} wrapMode="word" fg={fg()}>{truncate(s.prompt, 700)}</text>
-                    </Show>
-                    <Show when={elapsed()}>
-                      <text flexShrink={0} fg={palette().gutter}>{elapsed()}</text>
+        <Show when={!sidebarOn() && subagents().length > 0}>
+          <Panel
+            title={(() => {
+              const done = subagents().filter((s) => s.status === "done").length;
+              return done > 0 && done < subagents().length
+                ? `Subagents · ${done}/${subagents().length} done`
+                : `Subagents · ${subagents().length}`;
+            })()}
+            titleColor={brand()}
+          >
+            <For each={subagents().slice(0, PANEL_MAX_ROWS)}>
+              {(s) => {
+                const open = () => expandedSubs().has(s.id);
+                // Calm single tone (no rainbow rotation): a running agent's glyph is
+                // the brand accent (alive), a finished one recedes to the muted gutter
+                // tone. The prompt text reads in the body color while running and
+                // dims to muted once done so finished rows recede.
+                const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
+                const fg = () => (s.status === "running" ? palette().assistant : palette().muted);
+                // Right-aligned elapsed: ticks live while running, freezes at the
+                // total once done — the fan-out reads like a build matrix. A
+                // sub-second finish shows nothing (a "0.0s" column is noise).
+                const elapsed = () => {
+                  if (s.status === "running" && s.startedAt) {
+                    void tick();
+                    return `${Math.max(0, Math.round((Date.now() - s.startedAt) / 1000))}s`;
+                  }
+                  if (s.elapsedMs === undefined || s.elapsedMs < 1000) return "";
+                  return `${(s.elapsedMs / 1000).toFixed(s.elapsedMs >= 10_000 ? 0 : 1)}s`;
+                };
+                const oneLine = () => {
+                  const base = firstLine(s.prompt) ?? s.prompt;
+                  // A running child appends its live activity ("… · $ bun test");
+                  // a done row folds in its result glimpse ("… ↳ found 3 cases").
+                  const line =
+                    s.status === "running" && s.activity
+                      ? `${base} · ${s.activity}`
+                      : s.status === "done" && s.result
+                        ? `${base} ${GLYPH.result} ${s.result}`
+                        : base;
+                  return truncate(line, Math.max(24, contentWidth() - 20));
+                };
+                return (
+                  <box flexDirection="column" onMouseDown={() => toggleSub(s.id)}>
+                    <box flexDirection="row" gap={1}>
+                      <text flexShrink={0} fg={palette().muted}>
+                        {open() ? "▾" : "▸"}
+                      </text>
+                      <text flexShrink={0} fg={glyphFg()}>
+                        {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
+                      </text>
+                      <Show
+                        when={open()}
+                        fallback={
+                          <text flexGrow={1} wrapMode="none" fg={fg()}>
+                            {oneLine()}
+                          </text>
+                        }
+                      >
+                        {/* Bounded so an expanded row can't run off the screen. */}
+                        <text flexGrow={1} wrapMode="word" fg={fg()}>
+                          {truncate(s.prompt, 700)}
+                        </text>
+                      </Show>
+                      <Show when={elapsed()}>
+                        <text flexShrink={0} fg={palette().gutter}>
+                          {elapsed()}
+                        </text>
+                      </Show>
+                    </box>
+                    <Show when={open() && s.result}>
+                      {/* A flex row so a long result HANGS under the `↳` marker
+                        instead of wrapping back to the panel's left edge. */}
+                      <box flexDirection="row" paddingLeft={4}>
+                        <text flexShrink={0} fg={palette().muted}>{`${GLYPH.result} `}</text>
+                        <text flexGrow={1} wrapMode="word" fg={palette().muted}>
+                          {truncate(s.result ?? "", 300)}
+                        </text>
+                      </box>
                     </Show>
                   </box>
-                  <Show when={open() && s.result}>
-                    {/* A flex row so a long result HANGS under the `↳` marker
-                        instead of wrapping back to the panel's left edge. */}
-                    <box flexDirection="row" paddingLeft={4}>
-                      <text flexShrink={0} fg={palette().muted}>{`${GLYPH.result} `}</text>
-                      <text flexGrow={1} wrapMode="word" fg={palette().muted}>
-                        {truncate(s.result ?? "", 300)}
-                      </text>
-                    </box>
-                  </Show>
-                </box>
-              );
-            }}
-          </For>
-          <Show when={subagents().length > PANEL_MAX_ROWS}>
-            <text fg={palette().muted}>{`  +${subagents().length - PANEL_MAX_ROWS} more`}</text>
-          </Show>
-        </Panel>
-      </Show>
-      {/* Queue — prompts you typed ahead while a turn runs. They auto-run in
+                );
+              }}
+            </For>
+            <Show when={subagents().length > PANEL_MAX_ROWS}>
+              <text fg={palette().muted}>{`  +${subagents().length - PANEL_MAX_ROWS} more`}</text>
+            </Show>
+          </Panel>
+        </Show>
+        {/* Queue — prompts you typed ahead while a turn runs. They auto-run in
           order; each row offers `steer` (jump it to the front + interrupt the
           current turn so it runs NOW) and `✕` (drop it). */}
-      <Show when={pendingQ().length > 0}>
-        <Panel title={`Queued · ${pendingQ().length}`} titleColor={brand()}>
-          <For each={pendingQ().slice(0, PANEL_MAX_ROWS)}>
-            {(q, i) => (
-              <box flexDirection="row" gap={1}>
-                <text flexShrink={0} fg={palette().muted}>{`${i() + 1}.`}</text>
-                <text flexGrow={1} wrapMode="none" fg={palette().assistant}>
-                  {truncate(q.label, Math.max(20, contentWidth() - 24))}
-                </text>
-                <text
-                  flexShrink={0}
-                  fg={brand()}
-                  attributes={TextAttributes.UNDERLINE}
-                  onMouseDown={() => props.engine.send({ type: "steer", id: q.id })}
-                >
-                  {"steer"}
-                </text>
-                <text
-                  flexShrink={0}
-                  fg={palette().muted}
-                  onMouseDown={() => props.engine.send({ type: "dequeue", id: q.id })}
-                >
-                  {"✕"}
-                </text>
-              </box>
-            )}
-          </For>
-          <Show when={pendingQ().length > PANEL_MAX_ROWS}>
-            <text fg={palette().muted}>{`  +${pendingQ().length - PANEL_MAX_ROWS} more queued`}</text>
-          </Show>
-          <text fg={palette().muted} marginTop={1}>
-            {"steer = run next & interrupt now  ·  ✕ = remove  ·  otherwise they run in order"}
-          </text>
-        </Panel>
-      </Show>
-      {/* Permission request — the same block language as the turns + input: a
+        <Show when={pendingQ().length > 0}>
+          <Panel title={`Queued · ${pendingQ().length}`} titleColor={brand()}>
+            <For each={pendingQ().slice(0, PANEL_MAX_ROWS)}>
+              {(q, i) => (
+                <box flexDirection="row" gap={1}>
+                  <text flexShrink={0} fg={palette().muted}>{`${i() + 1}.`}</text>
+                  <text flexGrow={1} wrapMode="none" fg={palette().assistant}>
+                    {truncate(q.label, Math.max(20, contentWidth() - 24))}
+                  </text>
+                  <text
+                    flexShrink={0}
+                    fg={brand()}
+                    attributes={TextAttributes.UNDERLINE}
+                    onMouseDown={() => props.engine.send({ type: "steer", id: q.id })}
+                  >
+                    {"steer"}
+                  </text>
+                  <text
+                    flexShrink={0}
+                    fg={palette().muted}
+                    onMouseDown={() => props.engine.send({ type: "dequeue", id: q.id })}
+                  >
+                    {"✕"}
+                  </text>
+                </box>
+              )}
+            </For>
+            <Show when={pendingQ().length > PANEL_MAX_ROWS}>
+              <text
+                fg={palette().muted}
+              >{`  +${pendingQ().length - PANEL_MAX_ROWS} more queued`}</text>
+            </Show>
+            <text fg={palette().muted} marginTop={1}>
+              {"steer = run next & interrupt now  ·  ✕ = remove  ·  otherwise they run in order"}
+            </text>
+          </Panel>
+        </Show>
+        {/* Permission request — the same block language as the turns + input: a
           filled panel card with a thin amber left accent. The tool action reads in
           the body tone; below it, a PREVIEW of what's actually being approved
           (the full command / the edit's -/+ lines / a write's content head) so
           the user never grants blind off a truncated one-liner. */}
-      <Show when={perms()[0]}>
-        {(p) => {
-          const preview = () => permissionPreview(p().toolName, p().input);
-          return (
-            <Rail color={palette().notice} marginTop={1}>
-              <box
-                backgroundColor={palette().panel}
-                flexDirection="column"
-                paddingTop={1}
-                paddingBottom={1}
-                paddingLeft={2}
-                paddingRight={2}
-              >
-                <text fg={palette().notice} attributes={TextAttributes.BOLD}>
-                  {`${GLYPH.warn} Permission required · ${p().toolName}${
-                    perms().length > 1 ? ` · 1/${perms().length}` : ""
-                  }`}
-                </text>
-                <text fg={palette().assistant} wrapMode="word">{toolLabel(p().toolName, p().input)}</text>
-                <Show when={preview()}>
-                  <box flexDirection="column" flexShrink={0} marginTop={1}>
-                    {/* Clamped to the card width — an unclamped wrapMode="none"
+        <Show when={perms()[0]}>
+          {(p) => {
+            const preview = () => permissionPreview(p().toolName, p().input);
+            return (
+              <Rail color={palette().notice} marginTop={1}>
+                <box
+                  backgroundColor={palette().panel}
+                  flexDirection="column"
+                  paddingTop={1}
+                  paddingBottom={1}
+                  paddingLeft={2}
+                  paddingRight={2}
+                >
+                  <text fg={palette().notice} attributes={TextAttributes.BOLD}>
+                    {`${GLYPH.warn} Permission required · ${p().toolName}${
+                      perms().length > 1 ? ` · 1/${perms().length}` : ""
+                    }`}
+                  </text>
+                  <text fg={palette().assistant} wrapMode="word">
+                    {toolLabel(p().toolName, p().input)}
+                  </text>
+                  <Show when={preview()}>
+                    <box flexDirection="column" flexShrink={0} marginTop={1}>
+                      {/* Clamped to the card width — an unclamped wrapMode="none"
                         line (a long command) would widen the card past the column. */}
-                    <For each={preview()!.lines}>
-                      {(line) => (
-                        <text
-                          flexShrink={0}
-                          wrapMode="none"
-                          fg={preview()!.diff ? diffColor(line, palette()) : palette().muted}
-                          bg={preview()!.diff ? diffBg(line, palette()) : undefined}
-                        >
-                          {`  ${truncate(preview()!.diff ? diffPad(line) : line, Math.max(20, contentWidth() - 9)) || " "}`}
+                      <For each={preview()!.lines}>
+                        {(line) => (
+                          <text
+                            flexShrink={0}
+                            wrapMode="none"
+                            fg={preview()!.diff ? diffColor(line, palette()) : palette().muted}
+                            bg={preview()!.diff ? diffBg(line, palette()) : undefined}
+                          >
+                            {`  ${truncate(preview()!.diff ? diffPad(line) : line, Math.max(20, contentWidth() - 9)) || " "}`}
+                          </text>
+                        )}
+                      </For>
+                    </box>
+                  </Show>
+                  {/* Answer hints: priority-fitted so narrow terminals never mid-token
+                    clip; also flexWrap as a second line of defense. ^P is Ctrl-chorded
+                    so the first keystroke of a typed deny can't fire a durable ALLOW. */}
+                  <box flexDirection="row" flexWrap="wrap" flexShrink={0} marginTop={1}>
+                    <For
+                      each={(() => {
+                        const lit = palette().assistant;
+                        const dim = palette().muted;
+                        // All answers stay present; flexWrap stacks on narrow
+                        // terminals so nothing mid-token clips (smoke at 80 cols
+                        // asserts allow once + ^P + deny with feedback).
+                        const segs: Seg[] = [
+                          { t: "y", fg: lit },
+                          { t: " allow once", fg: dim },
+                          { t: "  ·  ", fg: dim },
+                          { t: "a", fg: lit },
+                          { t: " always (session)", fg: dim },
+                          { t: "  ·  ", fg: dim },
+                          { t: "^P", fg: lit },
+                          { t: " always (project)", fg: dim },
+                          { t: "  ·  ", fg: dim },
+                          { t: "n", fg: lit },
+                          { t: "/", fg: dim },
+                          { t: "esc", fg: lit },
+                          { t: " deny", fg: dim },
+                          { t: "  ·  ", fg: dim },
+                          { t: "type", fg: lit },
+                          { t: " why → deny with feedback", fg: dim },
+                        ];
+                        return segs;
+                      })()}
+                    >
+                      {(s) => (
+                        <text flexShrink={0} fg={s.fg}>
+                          {s.t}
                         </text>
                       )}
                     </For>
                   </box>
-                </Show>
-                {/* Answer hints: priority-fitted so narrow terminals never mid-token
-                    clip; also flexWrap as a second line of defense. ^P is Ctrl-chorded
-                    so the first keystroke of a typed deny can't fire a durable ALLOW. */}
-                <box flexDirection="row" flexWrap="wrap" flexShrink={0} marginTop={1}>
-                  <For
-                    each={(() => {
-                      const lit = palette().assistant;
-                      const dim = palette().muted;
-                      // All answers stay present; flexWrap stacks on narrow
-                      // terminals so nothing mid-token clips (smoke at 80 cols
-                      // asserts allow once + ^P + deny with feedback).
-                      const segs: Seg[] = [
-                        { t: "y", fg: lit },
-                        { t: " allow once", fg: dim },
-                        { t: "  ·  ", fg: dim },
-                        { t: "a", fg: lit },
-                        { t: " always (session)", fg: dim },
-                        { t: "  ·  ", fg: dim },
-                        { t: "^P", fg: lit },
-                        { t: " always (project)", fg: dim },
-                        { t: "  ·  ", fg: dim },
-                        { t: "n", fg: lit },
-                        { t: "/", fg: dim },
-                        { t: "esc", fg: lit },
-                        { t: " deny", fg: dim },
-                        { t: "  ·  ", fg: dim },
-                        { t: "type", fg: lit },
-                        { t: " why → deny with feedback", fg: dim },
-                      ];
-                      return segs;
-                    })()}
-                  >
-                    {(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}
-                  </For>
                 </box>
-              </box>
-            </Rail>
-          );
-        }}
-      </Show>
-      {/* The input — a UNIFORM filled block (same language as the message blocks):
+              </Rail>
+            );
+          }}
+        </Show>
+        {/* The input — a UNIFORM filled block (same language as the message blocks):
           a raised ELEVATED surface (a shade above the panel blocks, so the active
           field stands out) with padding and a thin left rail in the MODE hue
           (AGENT follows brand · PLAN green · YOLO red). The prompt reads
           `MODE ❯ …`; typing `/` opens the command menu as rows inside the SAME
           block above the prompt — one connected control. A background fill (not a
           line frame) stays a clean solid box on any terminal. */}
-      <Rail color={accent()} marginTop={1}>
-        <box
-          backgroundColor={palette().elevated}
-          flexDirection="column"
-          paddingTop={1}
-          paddingBottom={1}
-          paddingLeft={2}
-          paddingRight={2}
-        >
-          {/* Command menu / submenus, inside the block above the prompt while typing
+        <Rail color={accent()} marginTop={1}>
+          <box
+            backgroundColor={palette().elevated}
+            flexDirection="column"
+            paddingTop={1}
+            paddingBottom={1}
+            paddingLeft={2}
+            paddingRight={2}
+          >
+            {/* Command menu / submenus, inside the block above the prompt while typing
               `/`. ↑/↓ (or hover) highlight, Tab completes, Enter (or click) runs, Esc
               dismisses. `/model` opens a live searchable picker; enum commands mark the
               current value with `●`. Only the highlighted row carries a selection tint. */}
-          <Show when={menuModel().open}>
-            <box flexDirection="column" flexShrink={0}>
-              {/* Section header in the theme's signature hue (violet on the
+            <Show when={menuModel().open}>
+              <box flexDirection="column" flexShrink={0}>
+                {/* Section header in the theme's signature hue (violet on the
                   default) — the one colored line above a monochrome list,
                   mirroring opencode's dialog headers. */}
-              <Show when={menuView()?.title}>
-                <text fg={palette().heading} attributes={TextAttributes.BOLD}>{menuView()?.title}</text>
-              </Show>
-              <Show when={menuView()?.hint}>
-                <text fg={palette().muted}>{menuView()?.hint}</text>
-              </Show>
-              <Show when={menuView()?.loading}>
-                <text fg={palette().muted}>{"Loading…"}</text>
-              </Show>
-              <For each={menuView()?.rows ?? []}>
-                {/* Two-column rows — the label (command/model/value) in the body
+                <Show when={menuView()?.title}>
+                  <text fg={palette().heading} attributes={TextAttributes.BOLD}>
+                    {menuView()?.title}
+                  </text>
+                </Show>
+                <Show when={menuView()?.hint}>
+                  <text fg={palette().muted}>{menuView()?.hint}</text>
+                </Show>
+                <Show when={menuView()?.loading}>
+                  <text fg={palette().muted}>{"Loading…"}</text>
+                </Show>
+                <For each={menuView()?.rows ?? []}>
+                  {/* Two-column rows — the label (command/model/value) in the body
                     tone, its description muted beside it; the highlighted row gets
                     a FULL-WIDTH selection band (bg on the row box, with a flex
                     spacer) instead of a ragged text-length tint. Hover highlights
                     (only on real pointer movement — see hoverRow), click selects +
                     runs. Keyboard nav is global via useKeyboard; terminal rows
                     have no DOM focus, hence the a11y ignore. */}
-                {(row) => (
-                  // biome-ignore lint/a11y/useKeyWithMouseEvents: terminal UI — no text-row focus; keyboard nav is global (useKeyboard)
-                  <box
-                    flexDirection="row"
-                    flexShrink={0}
-                    backgroundColor={row.active ? palette().selBg : undefined}
-                    onMouseOver={(e: { x: number; y: number }) => hoverRow(row.idx, e)}
-                    onMouseDown={() => {
-                      chooseAt(row.idx, true);
-                      refocusInput();
-                    }}
-                  >
-                    {/* On the active row everything flips to `selFg` — the band
+                  {(row) => (
+                    // biome-ignore lint/a11y/useKeyWithMouseEvents: terminal UI — no text-row focus; keyboard nav is global (useKeyboard)
+                    <box
+                      flexDirection="row"
+                      flexShrink={0}
+                      backgroundColor={row.active ? palette().selBg : undefined}
+                      onMouseOver={(e: { x: number; y: number }) => hoverRow(row.idx, e)}
+                      onMouseDown={() => {
+                        chooseAt(row.idx, true);
+                        refocusInput();
+                      }}
+                    >
+                      {/* On the active row everything flips to `selFg` — the band
                         is a solid accent surface (violet on the default theme),
                         so text must take the band's own contrast color, not the
                         chrome tones tuned for the dark backdrop. */}
-                    <text flexShrink={0} fg={row.active ? palette().selFg : palette().muted}>
-                      {`${row.active ? "❯" : " "} `}
-                    </text>
-                    <Show when={menuView()?.marker}>
-                      <text flexShrink={0} fg={row.active ? palette().selFg : row.current ? brand() : palette().muted}>
-                        {row.current ? "● " : "  "}
+                      <text flexShrink={0} fg={row.active ? palette().selFg : palette().muted}>
+                        {`${row.active ? "❯" : " "} `}
                       </text>
-                    </Show>
-                    {/* A row's own `fg` (the accent swatches) wins over the
+                      <Show when={menuView()?.marker}>
+                        <text
+                          flexShrink={0}
+                          fg={
+                            row.active ? palette().selFg : row.current ? brand() : palette().muted
+                          }
+                        >
+                          {row.current ? "● " : "  "}
+                        </text>
+                      </Show>
+                      {/* A row's own `fg` (the accent swatches) wins over the
                         active/body tones so the color preview reads even while
                         highlighted; selection still shows via ❯ + the band. */}
-                    <text
-                      flexShrink={0}
-                      fg={row.fg ?? (row.active ? palette().selFg : palette().assistant)}
-                      attributes={row.active ? TextAttributes.BOLD : undefined}
-                    >
-                      {row.label}
-                    </text>
-                    <Show when={row.desc}>
-                      <text flexShrink={1} wrapMode="none" fg={row.active ? palette().selFg : palette().muted}>
-                        {row.desc}
+                      <text
+                        flexShrink={0}
+                        fg={row.fg ?? (row.active ? palette().selFg : palette().assistant)}
+                        attributes={row.active ? TextAttributes.BOLD : undefined}
+                      >
+                        {row.label}
                       </text>
-                    </Show>
-                    <box flexGrow={1} />
-                  </box>
-                )}
-              </For>
-              <Show when={menuView()?.more}>
-                {/* Indent matches the 2-char `❯ ` row prefix so the affordance
+                      <Show when={row.desc}>
+                        <text
+                          flexShrink={1}
+                          wrapMode="none"
+                          fg={row.active ? palette().selFg : palette().muted}
+                        >
+                          {row.desc}
+                        </text>
+                      </Show>
+                      <box flexGrow={1} />
+                    </box>
+                  )}
+                </For>
+                <Show when={menuView()?.more}>
+                  {/* Indent matches the 2-char `❯ ` row prefix so the affordance
                     aligns with the label column above it. */}
-                <text fg={palette().muted}>{`  ${menuView()?.more}`}</text>
-              </Show>
-              <text flexShrink={0}>{" "}</text>
-            </box>
-          </Show>
-          {/* The prompt row: mode label · caret · field. The field grows with wrapped
+                  <text fg={palette().muted}>{`  ${menuView()?.more}`}</text>
+                </Show>
+                <text flexShrink={0}> </text>
+              </box>
+            </Show>
+            {/* The prompt row: mode label · caret · field. The field grows with wrapped
               text up to INPUT_MAX_ROWS, then scrolls internally; the mode + caret stay
               on the first line. */}
-          <box flexDirection="row" flexShrink={0}>
-            <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>{`${modeWord()} `}</text>
-            <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>{"❯ "}</text>
-            {/* A TEXTAREA, not an <input>: OpenTUI's InputRenderable is
+            <box flexDirection="row" flexShrink={0}>
+              <text
+                flexShrink={0}
+                fg={accent()}
+                attributes={TextAttributes.BOLD}
+              >{`${modeWord()} `}</text>
+              <text flexShrink={0} fg={accent()} attributes={TextAttributes.BOLD}>
+                {"❯ "}
+              </text>
+              {/* A TEXTAREA, not an <input>: OpenTUI's InputRenderable is
                 single-line by design (height 1, no wrapping), so long drafts
                 horizontally scrolled out of the box instead of wrapping — the
                 "text going out of the input area" bug. The textarea wraps for
@@ -3075,57 +3318,75 @@ export function App(props: { engine: EngineClient }) {
                 flow back through the createEffect near refocusInput. onSubmit
                 receives a SubmitEvent, so it must not shadow submit's optional
                 draft-override parameter. */}
-            <textarea
-              ref={(el: NonNullable<typeof inputEl>) => (inputEl = el)}
-              focused
-              flexGrow={1}
-              minHeight={1}
-              maxHeight={INPUT_MAX_ROWS}
-              wrapMode="word"
-              keyBindings={PROMPT_KEYS}
-              onContentChange={() => {
-                const v = inputEl?.editBuffer.getText() ?? "";
-                if (v !== draft()) setDraft(v);
-              }}
-              onSubmit={() => submit()}
-              placeholder="Send a message or type / to start"
-              backgroundColor="transparent"
-              focusedBackgroundColor="transparent"
-              // The "registered command" cue: a slash draft whose command word
-              // is a real invocable (built-in, custom command, or skill) reads
-              // in the heading hue — typo'd commands stay body-colored.
-              textColor={draftIsCommand() ? palette().heading : palette().assistant}
-              focusedTextColor={draftIsCommand() ? palette().heading : palette().assistant}
-              placeholderColor={palette().muted}
-              cursorColor={accent()}
-            />
+              <textarea
+                ref={(el: NonNullable<typeof inputEl>) => (inputEl = el)}
+                focused
+                flexGrow={1}
+                minHeight={1}
+                maxHeight={INPUT_MAX_ROWS}
+                wrapMode="word"
+                keyBindings={PROMPT_KEYS}
+                onContentChange={() => {
+                  const v = inputEl?.editBuffer.getText() ?? "";
+                  if (v !== draft()) setDraft(v);
+                }}
+                onSubmit={() => submit()}
+                placeholder="Send a message or type / to start"
+                backgroundColor="transparent"
+                focusedBackgroundColor="transparent"
+                // The "registered command" cue: a slash draft whose command word
+                // is a real invocable (built-in, custom command, or skill) reads
+                // in the heading hue — typo'd commands stay body-colored.
+                textColor={draftIsCommand() ? palette().heading : palette().assistant}
+                focusedTextColor={draftIsCommand() ? palette().heading : palette().assistant}
+                placeholderColor={palette().muted}
+                cursorColor={accent()}
+              />
+            </box>
           </box>
-        </box>
-      </Rail>
-      {/* Under-input status bar — a justified row, NOT centered: the live status
+        </Rail>
+        {/* Under-input status bar — a justified row, NOT centered: the live status
           (model · changed · ctx · cost) hugs the LEFT edge (aligned with the
           top-left context line), and the key hints hug the RIGHT edge. Hints show
           only on the splash / while a job runs; if they don't fit beside the status
           they drop to their own left row below (never centered, never colliding). */}
-      {/* Pinned to height 1: with the session card up the status may be empty
+        {/* Pinned to height 1: with the session card up the status may be empty
           (model/usage live in the card), and a collapsed row would pull the
           sidebar's bottom-alignment reserve off by one. */}
-      <box flexDirection="row" flexShrink={0} height={1} marginTop={1}>
-        <box flexDirection="row" flexShrink={1}>
-          <For each={statusSegs()}>{(s) => <text flexShrink={0} wrapMode="none" fg={s.fg}>{s.t}</text>}</For>
+        <box flexDirection="row" flexShrink={0} height={1} marginTop={1}>
+          <box flexDirection="row" flexShrink={1}>
+            <For each={statusSegs()}>
+              {(s) => (
+                <text flexShrink={0} wrapMode="none" fg={s.fg}>
+                  {s.t}
+                </text>
+              )}
+            </For>
+          </box>
+          <box flexGrow={1} />
+          <Show when={showHints() && footerFits()}>
+            <box flexDirection="row" flexShrink={0}>
+              <For each={hintSegs()}>
+                {(s) => (
+                  <text flexShrink={0} fg={s.fg}>
+                    {s.t}
+                  </text>
+                )}
+              </For>
+            </box>
+          </Show>
         </box>
-        <box flexGrow={1} />
-        <Show when={showHints() && footerFits()}>
+        <Show when={showHints() && !footerFits()}>
           <box flexDirection="row" flexShrink={0}>
-            <For each={hintSegs()}>{(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}</For>
+            <For each={hintSegs()}>
+              {(s) => (
+                <text flexShrink={0} fg={s.fg}>
+                  {s.t}
+                </text>
+              )}
+            </For>
           </box>
         </Show>
-      </box>
-      <Show when={showHints() && !footerFits()}>
-        <box flexDirection="row" flexShrink={0}>
-          <For each={hintSegs()}>{(s) => <text flexShrink={0} fg={s.fg}>{s.t}</text>}</For>
-        </box>
-      </Show>
       </box>
       {/* Right sidebar (wide terminals) — status-first SESSION card (cwd · model
           · git · ctx · goal — no large wordmark; branding lives on the empty
@@ -3159,11 +3420,7 @@ export function App(props: { engine: EngineClient }) {
                     flexShrink={0}
                     wrapMode="none"
                     fg={
-                      row.warn
-                        ? palette().notice
-                        : row.dim
-                          ? palette().muted
-                          : palette().assistant
+                      row.warn ? palette().notice : row.dim ? palette().muted : palette().assistant
                     }
                   >
                     {row.value}
@@ -3196,7 +3453,9 @@ export function App(props: { engine: EngineClient }) {
                 </text>
                 <Show when={windowTasks(tasks(), sideTaskCap()).lead > 0}>
                   <box flexDirection="row" gap={1}>
-                    <text flexShrink={0} fg={palette().muted}>{TASK_GLYPH.completed}</text>
+                    <text flexShrink={0} fg={palette().muted}>
+                      {TASK_GLYPH.completed}
+                    </text>
                     <text flexShrink={0} fg={palette().muted}>
                       {`${windowTasks(tasks(), sideTaskCap()).lead} done`}
                     </text>
@@ -3212,14 +3471,20 @@ export function App(props: { engine: EngineClient }) {
                           : palette().assistant;
                     return (
                       <box flexDirection="row" gap={1}>
-                        <text flexShrink={0} fg={c()}>{TASK_GLYPH[task.status]}</text>
-                        <text flexGrow={1} wrapMode="word" fg={c()}>{task.title}</text>
+                        <text flexShrink={0} fg={c()}>
+                          {TASK_GLYPH[task.status]}
+                        </text>
+                        <text flexGrow={1} wrapMode="word" fg={c()}>
+                          {task.title}
+                        </text>
                       </box>
                     );
                   }}
                 </For>
                 <Show when={windowTasks(tasks(), sideTaskCap()).trailing > 0}>
-                  <text fg={palette().muted}>{`  +${windowTasks(tasks(), sideTaskCap()).trailing} more`}</text>
+                  <text
+                    fg={palette().muted}
+                  >{`  +${windowTasks(tasks(), sideTaskCap()).trailing} more`}</text>
                 </Show>
               </box>
             </Rail>
@@ -3254,7 +3519,8 @@ export function App(props: { engine: EngineClient }) {
                 <For each={subagents().slice(0, sideSubCap())}>
                   {(s) => {
                     const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
-                    const fg = () => (s.status === "running" ? palette().assistant : palette().muted);
+                    const fg = () =>
+                      s.status === "running" ? palette().assistant : palette().muted;
                     // Same elapsed shape as the inline panel: live while
                     // running, frozen total once done, sub-second hidden.
                     const elapsed = () => {
@@ -3283,7 +3549,9 @@ export function App(props: { engine: EngineClient }) {
                             {truncate(firstLine(s.prompt) ?? s.prompt, 2 * (SIDEBAR_W - 12))}
                           </text>
                           <Show when={elapsed()}>
-                            <text flexShrink={0} fg={palette().gutter}>{elapsed()}</text>
+                            <text flexShrink={0} fg={palette().gutter}>
+                              {elapsed()}
+                            </text>
                           </Show>
                         </box>
                         <Show when={detail()}>
@@ -3337,7 +3605,9 @@ export function App(props: { engine: EngineClient }) {
                 paddingRight={2}
               >
                 <box flexDirection="row" flexShrink={0}>
-                  <text flexShrink={0} fg={working() ? brand() : palette().gutter}>{"✻ "}</text>
+                  <text flexShrink={0} fg={working() ? brand() : palette().gutter}>
+                    {"✻ "}
+                  </text>
                   <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
                     Thinking
                   </text>
@@ -3370,7 +3640,9 @@ export function App(props: { engine: EngineClient }) {
           {/* Session-only stretch: working turn with no Tasks/Subagents/
               Thinking still needs a grow Rail so bottom alignment holds
               without inventing an Activity feed. */}
-          <Show when={thoughtLog().length === 0 && tasks().length === 0 && subagents().length === 0}>
+          <Show
+            when={thoughtLog().length === 0 && tasks().length === 0 && subagents().length === 0}
+          >
             <Rail color={palette().gutter} marginTop={1} grow>
               <box backgroundColor={palette().panel} flexGrow={1} flexShrink={1} />
             </Rail>
@@ -3439,7 +3711,9 @@ function Rail(props: {
       </box>
       {/* The thin line itself — stretched to the block height, clipped. */}
       <box position="absolute" left={0} top={0} bottom={0} width={1} overflow="hidden">
-        <text fg={props.color} wrapMode="none">{RAIL_GLYPHS}</text>
+        <text fg={props.color} wrapMode="none">
+          {RAIL_GLYPHS}
+        </text>
       </box>
     </box>
   );
@@ -3543,10 +3817,16 @@ function AssistantText(props: {
             <box flexDirection="column" marginTop={i > 0 ? 1 : 0} paddingLeft={pad(block().kind)}>
               <Switch>
                 <Match when={block().kind === "heading"}>
-                  <HeadingBlock block={block as () => Extract<MdBlock, { kind: "heading" }>} palette={props.palette} />
+                  <HeadingBlock
+                    block={block as () => Extract<MdBlock, { kind: "heading" }>}
+                    palette={props.palette}
+                  />
                 </Match>
                 <Match when={block().kind === "quote"}>
-                  <QuoteBlock block={block as () => Extract<MdBlock, { kind: "quote" }>} palette={props.palette} />
+                  <QuoteBlock
+                    block={block as () => Extract<MdBlock, { kind: "quote" }>}
+                    palette={props.palette}
+                  />
                 </Match>
                 <Match when={block().kind === "code"}>
                   {/* A fenced block tagged with a data-view language (chart / line /
@@ -3589,7 +3869,10 @@ function AssistantText(props: {
 /** A markdown heading — bold accent text, no underline rule. Any rule (a filled
  * band OR a `─` run) reads as stray chrome at terminal scale; the accent color +
  * bold + surrounding blank rows carry the document structure on their own. */
-function HeadingBlock(props: { block: () => Extract<MdBlock, { kind: "heading" }>; palette: Palette }) {
+function HeadingBlock(props: {
+  block: () => Extract<MdBlock, { kind: "heading" }>;
+  palette: Palette;
+}) {
   const p = props.palette;
   return (
     <text fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="word">
@@ -3641,12 +3924,30 @@ function CodeBlock(props: {
   // block header (opencode-style) rather than a line of code. Vertical padding
   // gives the code breathing room inside the raised surface.
   return (
-    <box flexDirection="column" flexShrink={0} backgroundColor={p.elevated} paddingLeft={1} paddingRight={1} paddingTop={1} paddingBottom={1}>
+    <box
+      flexDirection="column"
+      flexShrink={0}
+      backgroundColor={p.elevated}
+      paddingLeft={1}
+      paddingRight={1}
+      paddingTop={1}
+      paddingBottom={1}
+    >
       <Show when={props.block().lang}>
-        <text fg={p.muted} attributes={TextAttributes.BOLD}>{props.block().lang}</text>
-        <text fg={p.border} wrapMode="none">{"─".repeat(Math.max(4, Math.min(w(), 72)))}</text>
+        <text fg={p.muted} attributes={TextAttributes.BOLD}>
+          {props.block().lang}
+        </text>
+        <text fg={p.border} wrapMode="none">
+          {"─".repeat(Math.max(4, Math.min(w(), 72)))}
+        </text>
       </Show>
-      <For each={lines()}>{(l) => <text fg={p.code} wrapMode="none">{truncateWidth(l, w()) || " "}</text>}</For>
+      <For each={lines()}>
+        {(l) => (
+          <text fg={p.code} wrapMode="none">
+            {truncateWidth(l, w()) || " "}
+          </text>
+        )}
+      </For>
     </box>
   );
 }
@@ -3677,7 +3978,8 @@ function TableBlock(props: {
       })),
     );
   };
-  const lines = () => renderTable(props.block().rows, props.block().align, Math.max(12, props.width));
+  const lines = () =>
+    renderTable(props.block().rows, props.block().align, Math.max(12, props.width));
   // A header/row → alternating border + ` cell ` parts: │ c0 │ c1 │ … so the `│`
   // and the rule junctions line up (each ` cell ` is the column width + 2 pad).
   const parts = (cells: string[]): { text: string; sep: boolean }[] => {
@@ -3702,7 +4004,9 @@ function TableBlock(props: {
                       <Show when={f.label}>
                         <text flexShrink={0} fg={p.muted}>{`${f.label}: `}</text>
                       </Show>
-                      <text flexShrink={1} wrapMode="word" fg={p.assistant}>{f.value || " "}</text>
+                      <text flexShrink={1} wrapMode="word" fg={p.assistant}>
+                        {f.value || " "}
+                      </text>
                     </box>
                   )}
                 </For>
@@ -3716,7 +4020,9 @@ function TableBlock(props: {
         <For each={lines()}>
           {(line) =>
             line.role === "rule" ? (
-              <text flexShrink={0} fg={p.border} wrapMode="none">{line.text}</text>
+              <text flexShrink={0} fg={p.border} wrapMode="none">
+                {line.text}
+              </text>
             ) : (
               <box flexDirection="row" flexShrink={0}>
                 <For each={parts(line.cells)}>
@@ -3724,7 +4030,9 @@ function TableBlock(props: {
                     <text
                       flexShrink={0}
                       fg={part.sep ? p.border : line.role === "header" ? p.heading : p.assistant}
-                      attributes={!part.sep && line.role === "header" ? TextAttributes.BOLD : undefined}
+                      attributes={
+                        !part.sep && line.role === "header" ? TextAttributes.BOLD : undefined
+                      }
                       wrapMode="none"
                     >
                       {part.text}
@@ -3744,17 +4052,28 @@ function TableBlock(props: {
 
 /** Route a fenced code block to its rich view (bar/line/pie/weather/sources) by
  * language tag, or fall back to a syntax-highlighted code block. */
-function RichOrCode(props: { block: () => Extract<MdBlock, { kind: "code" }>; palette: Palette; width: number }) {
+function RichOrCode(props: {
+  block: () => Extract<MdBlock, { kind: "code" }>;
+  palette: Palette;
+  width: number;
+}) {
   const kind = () => richKind(props.block().lang);
   const body = () => props.block().lines.join("\n");
   const w = () => Math.max(12, props.width);
   return (
-    <Switch fallback={<CodeBlock block={props.block} palette={props.palette} width={props.width} />}>
+    <Switch
+      fallback={<CodeBlock block={props.block} palette={props.palette} width={props.width} />}
+    >
       <Match when={kind() === "bar"}>
         <BarChart body={body()} palette={props.palette} width={w()} />
       </Match>
       <Match when={kind() === "line" || kind() === "sparkline"}>
-        <LineChart body={body()} palette={props.palette} width={w()} spark={kind() === "sparkline"} />
+        <LineChart
+          body={body()}
+          palette={props.palette}
+          width={w()}
+          spark={kind() === "sparkline"}
+        />
       </Match>
       <Match when={kind() === "pie"}>
         <PieChart body={body()} palette={props.palette} width={w()} />
@@ -3825,15 +4144,25 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
   return (
     <box flexDirection="column" flexShrink={0}>
       <Show when={model().title}>
-        <text fg={p.heading} attributes={TextAttributes.BOLD}>{model().title}</text>
+        <text fg={p.heading} attributes={TextAttributes.BOLD}>
+          {model().title}
+        </text>
       </Show>
       <Show when={model().data.length === 0}>
-        <CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />
+        <CodeBlock
+          block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })}
+          palette={p}
+          width={props.width}
+        />
       </Show>
       <Show when={model().data.length === 1}>
         <box flexDirection="row" flexShrink={0}>
-          <text flexShrink={0} fg={p.series[0]!}>{"▍ "}</text>
-          <text flexShrink={0} fg={p.assistant} attributes={TextAttributes.BOLD}>{model().data[0]!.display}</text>
+          <text flexShrink={0} fg={p.series[0]!}>
+            {"▍ "}
+          </text>
+          <text flexShrink={0} fg={p.assistant} attributes={TextAttributes.BOLD}>
+            {model().data[0]!.display}
+          </text>
           <text flexShrink={0} fg={p.muted}>{`  ${model().data[0]!.label}`}</text>
         </box>
       </Show>
@@ -3843,12 +4172,18 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
             <box flexDirection="row" flexShrink={0}>
               <text flexShrink={0} fg={p.muted}>{`${r.label}  `}</text>
               <Show when={r.full > 0}>
-                <text flexShrink={0} bg={r.color}>{" ".repeat(r.full)}</text>
+                <text flexShrink={0} bg={r.color}>
+                  {" ".repeat(r.full)}
+                </text>
               </Show>
               <Show when={r.tailGlyph}>
-                <text flexShrink={0} fg={r.color}>{r.tailGlyph}</text>
+                <text flexShrink={0} fg={r.color}>
+                  {r.tailGlyph}
+                </text>
               </Show>
-              <text flexShrink={0} fg={p.assistant}>{r.tail}</text>
+              <text flexShrink={0} fg={p.assistant}>
+                {r.tail}
+              </text>
             </box>
           )}
         </For>
@@ -3863,7 +4198,8 @@ function BarChart(props: { body: string; palette: Palette; width: number }) {
 function LineChart(props: { body: string; palette: Palette; width: number; spark?: boolean }) {
   const p = props.palette;
   const model = () => parseSeries(props.body);
-  const useBraille = () => !props.spark && model().series.length === 1 && model().series[0]!.points.length >= 2;
+  const useBraille = () =>
+    !props.spark && model().series.length === 1 && model().series[0]!.points.length >= 2;
   const braille = () => {
     const pts = model().series[0]!.points;
     const min = Math.min(...pts);
@@ -3906,11 +4242,19 @@ function LineChart(props: { body: string; palette: Palette; width: number; spark
     // as an ordinary code block (same fallback bar/pie use).
     <Show
       when={model().series.length > 0}
-      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />}
+      fallback={
+        <CodeBlock
+          block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })}
+          palette={p}
+          width={props.width}
+        />
+      }
     >
       <box flexDirection="column" flexShrink={0}>
         <Show when={model().title}>
-          <text fg={p.heading} attributes={TextAttributes.BOLD}>{model().title}</text>
+          <text fg={p.heading} attributes={TextAttributes.BOLD}>
+            {model().title}
+          </text>
         </Show>
         <Show
           when={useBraille()}
@@ -3921,8 +4265,12 @@ function LineChart(props: { body: string; palette: Palette; width: number; spark
                   <Show when={s.label}>
                     <text flexShrink={0} fg={p.muted}>{`${s.label}  `}</text>
                   </Show>
-                  <text flexShrink={0} fg={s.color}>{s.spark}</text>
-                  <text flexShrink={0} fg={p.muted}>{s.range}</text>
+                  <text flexShrink={0} fg={s.color}>
+                    {s.spark}
+                  </text>
+                  <text flexShrink={0} fg={p.muted}>
+                    {s.range}
+                  </text>
                 </box>
               )}
             </For>
@@ -3934,7 +4282,9 @@ function LineChart(props: { body: string; palette: Palette; width: number; spark
                 <text flexShrink={0} fg={p.muted}>
                   {`${padLeft(i() === 0 ? braille().top : i() === braille().rows.length - 1 ? braille().bottom : "", braille().axisW)} `}
                 </text>
-                <text flexShrink={0} fg={braille().color}>{row}</text>
+                <text flexShrink={0} fg={braille().color}>
+                  {row}
+                </text>
               </box>
             )}
           </For>
@@ -3956,7 +4306,14 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
     // Budgeted columns: the legend label shrinks before the disc, and when the
     // width can't seat a legible disc at all (cols = 0) the legend stands alone
     // — the old fixed 10-col disc floor pushed the legend off a narrow terminal.
-    const { labelW, cols, rows: pieRows } = pieLayout(data.map((d) => d.label), props.width);
+    const {
+      labelW,
+      cols,
+      rows: pieRows,
+    } = pieLayout(
+      data.map((d) => d.label),
+      props.width,
+    );
     // A SOLID disc (not a donut) — at terminal cell sizes a filled circle reads
     // unmistakably as a pie, where a hole fragments into scattered arcs.
     const grid = cols > 0 ? pieGrid(values, cols, pieRows) : [];
@@ -3974,7 +4331,13 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
     // would draw an invisible disc beside an all-0% legend; show the raw text.
     <Show
       when={model().data.some((d) => d.value > 0)}
-      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />}
+      fallback={
+        <CodeBlock
+          block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })}
+          palette={p}
+          width={props.width}
+        />
+      }
     >
       <box flexDirection="row" flexShrink={0}>
         {/* The circular grid, painted as background-colored cells (run-length
@@ -3988,7 +4351,10 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
               <box flexDirection="row" flexShrink={0}>
                 <For each={pieRuns(gridRow)}>
                   {(run) => (
-                    <text flexShrink={0} bg={run.slice >= 0 ? view().legend[run.slice]?.color ?? p.muted : undefined}>
+                    <text
+                      flexShrink={0}
+                      bg={run.slice >= 0 ? (view().legend[run.slice]?.color ?? p.muted) : undefined}
+                    >
                       {" ".repeat(run.len)}
                     </text>
                   )}
@@ -4003,7 +4369,9 @@ function PieChart(props: { body: string; palette: Palette; width: number }) {
           <For each={view().legend}>
             {(l) => (
               <box flexDirection="row" flexShrink={0}>
-                <text flexShrink={0} fg={l.color}>{"■ "}</text>
+                <text flexShrink={0} fg={l.color}>
+                  {"■ "}
+                </text>
                 <text flexShrink={0} fg={p.assistant}>{`${l.label}  `}</text>
                 <text flexShrink={0} fg={p.muted}>{`${l.pct}%`}</text>
               </box>
@@ -4029,59 +4397,82 @@ function WeatherCard(props: { body: string; palette: Palette; width?: number }) 
   return (
     <Show
       when={hasContent()}
-      fallback={<CodeBlock block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })} palette={p} width={props.width} />}
+      fallback={
+        <CodeBlock
+          block={() => ({ kind: "code", lang: "", lines: props.body.split("\n") })}
+          palette={p}
+          width={props.width}
+        />
+      }
     >
-    <box flexDirection="column" flexShrink={0}>
-      <Show when={w().location}>
-        <text fg={p.heading} attributes={TextAttributes.BOLD}>{w().location}</text>
-      </Show>
-      <box flexDirection="row" flexShrink={0}>
-        <text flexShrink={0} fg={p.series[3] ?? p.notice}>{weatherIcon(w().condition)}</text>
-        <Show when={w().temp}>
-          <text flexShrink={0} fg={p.assistant} attributes={TextAttributes.BOLD}>{`  ${w().temp}`}</text>
+      <box flexDirection="column" flexShrink={0}>
+        <Show when={w().location}>
+          <text fg={p.heading} attributes={TextAttributes.BOLD}>
+            {w().location}
+          </text>
         </Show>
-        <Show when={w().condition}>
-          <text flexShrink={0} fg={p.muted}>{`   ${w().condition}`}</text>
+        <box flexDirection="row" flexShrink={0}>
+          <text flexShrink={0} fg={p.series[3] ?? p.notice}>
+            {weatherIcon(w().condition)}
+          </text>
+          <Show when={w().temp}>
+            <text
+              flexShrink={0}
+              fg={p.assistant}
+              attributes={TextAttributes.BOLD}
+            >{`  ${w().temp}`}</text>
+          </Show>
+          <Show when={w().condition}>
+            <text flexShrink={0} fg={p.muted}>{`   ${w().condition}`}</text>
+          </Show>
+        </box>
+        <Show when={w().hi || w().lo || w().chips.length > 0}>
+          {/* A flat row of adjacent <text> runs — OpenTUI paints fg per <text>, so a
+            two-tone chip (muted label + bright value) is two siblings, not nested. */}
+          <box flexDirection="row" flexShrink={0}>
+            <Show when={w().hi}>
+              <text flexShrink={0} fg={p.add}>{`↑${w().hi}`}</text>
+            </Show>
+            <Show when={w().lo}>
+              <text flexShrink={0} fg={p.del}>{`  ↓${w().lo}`}</text>
+            </Show>
+            <For each={w().chips}>
+              {(c, i) => (
+                <>
+                  <text flexShrink={0} fg={p.muted}>
+                    {`${i() > 0 || w().hi || w().lo ? "  ·  " : ""}${c.label} `}
+                  </text>
+                  <text flexShrink={0} fg={p.assistant}>
+                    {c.value}
+                  </text>
+                </>
+              )}
+            </For>
+          </box>
+        </Show>
+        <Show when={w().forecast.length > 0}>
+          {/* `gap` between day columns (no trailing padding on the last), so the row
+            isn't wider than the rest and the filled card stays a clean rectangle. */}
+          <box flexDirection="row" flexShrink={0} marginTop={1} gap={3}>
+            <For each={w().forecast}>
+              {(d) => (
+                <box flexDirection="column" flexShrink={0}>
+                  <text flexShrink={0} fg={p.muted}>
+                    {d.day}
+                  </text>
+                  <text flexShrink={0} fg={p.series[3] ?? p.notice}>
+                    {weatherIcon(d.cond)}
+                  </text>
+                  <text
+                    flexShrink={0}
+                    fg={p.assistant}
+                  >{`${d.hi ?? ""}${d.lo ? `/${d.lo}` : ""}`}</text>
+                </box>
+              )}
+            </For>
+          </box>
         </Show>
       </box>
-      <Show when={w().hi || w().lo || w().chips.length > 0}>
-        {/* A flat row of adjacent <text> runs — OpenTUI paints fg per <text>, so a
-            two-tone chip (muted label + bright value) is two siblings, not nested. */}
-        <box flexDirection="row" flexShrink={0}>
-          <Show when={w().hi}>
-            <text flexShrink={0} fg={p.add}>{`↑${w().hi}`}</text>
-          </Show>
-          <Show when={w().lo}>
-            <text flexShrink={0} fg={p.del}>{`  ↓${w().lo}`}</text>
-          </Show>
-          <For each={w().chips}>
-            {(c, i) => (
-              <>
-                <text flexShrink={0} fg={p.muted}>
-                  {`${i() > 0 || w().hi || w().lo ? "  ·  " : ""}${c.label} `}
-                </text>
-                <text flexShrink={0} fg={p.assistant}>{c.value}</text>
-              </>
-            )}
-          </For>
-        </box>
-      </Show>
-      <Show when={w().forecast.length > 0}>
-        {/* `gap` between day columns (no trailing padding on the last), so the row
-            isn't wider than the rest and the filled card stays a clean rectangle. */}
-        <box flexDirection="row" flexShrink={0} marginTop={1} gap={3}>
-          <For each={w().forecast}>
-            {(d) => (
-              <box flexDirection="column" flexShrink={0}>
-                <text flexShrink={0} fg={p.muted}>{d.day}</text>
-                <text flexShrink={0} fg={p.series[3] ?? p.notice}>{weatherIcon(d.cond)}</text>
-                <text flexShrink={0} fg={p.assistant}>{`${d.hi ?? ""}${d.lo ? `/${d.lo}` : ""}`}</text>
-              </box>
-            )}
-          </For>
-        </box>
-      </Show>
-    </box>
     </Show>
   );
 }
@@ -4092,7 +4483,9 @@ function WeatherCard(props: { body: string; palette: Palette; width?: number }) 
  * HYPERLINKS (via the `link` prop), so Cmd/Ctrl-click opens the source in a browser
  * on any terminal that supports terminal hyperlinks. */
 function SourceCards(props: { body: string; palette: Palette; width: number }) {
-  return <SourceList sources={parseSources(props.body)} palette={props.palette} width={props.width} />;
+  return (
+    <SourceList sources={parseSources(props.body)} palette={props.palette} width={props.width} />
+  );
 }
 
 /** The shared source-card list renderer (```sources``` blocks AND expanded
@@ -4110,16 +4503,29 @@ function SourceList(props: { sources: SourceItem[]; palette: Palette; width: num
           <box flexDirection="row" flexShrink={0} marginTop={i() > 0 ? 1 : 0}>
             <text flexShrink={0} fg={p.muted}>{`${i() + 1}  `}</text>
             <box flexDirection="column" flexGrow={1}>
-              <text flexShrink={0} fg={p.heading} attributes={TextAttributes.BOLD} wrapMode="none" link={href(s)}>
+              <text
+                flexShrink={0}
+                fg={p.heading}
+                attributes={TextAttributes.BOLD}
+                wrapMode="none"
+                link={href(s)}
+              >
                 {truncateWidth(s.title, Math.max(8, props.width - 4))}
               </text>
               <Show when={s.domain}>
-                <text flexShrink={0} fg={p.tool} attributes={TextAttributes.UNDERLINE} link={href(s)}>
+                <text
+                  flexShrink={0}
+                  fg={p.tool}
+                  attributes={TextAttributes.UNDERLINE}
+                  link={href(s)}
+                >
                   {s.domain}
                 </text>
               </Show>
               <Show when={s.snippet}>
-                <text flexGrow={1} fg={p.muted} wrapMode="word">{s.snippet}</text>
+                <text flexGrow={1} fg={p.muted} wrapMode="word">
+                  {s.snippet}
+                </text>
               </Show>
             </box>
           </box>
@@ -4136,14 +4542,12 @@ function SourceList(props: { sources: SourceItem[]; palette: Palette; width: num
  * spacing ragged-edges the fill); a titled, flat section stays uniform on any
  * terminal. Hierarchy comes from the accent title + spacing, not a container.
  */
-function Panel(props: {
-  title: string;
-  titleColor: string;
-  children: unknown;
-}) {
+function Panel(props: { title: string; titleColor: string; children: unknown }) {
   return (
     <box flexDirection="column" flexShrink={0} marginTop={1}>
-      <text flexShrink={0} fg={props.titleColor} attributes={TextAttributes.BOLD}>{props.title}</text>
+      <text flexShrink={0} fg={props.titleColor} attributes={TextAttributes.BOLD}>
+        {props.title}
+      </text>
       {props.children}
     </box>
   );
@@ -4205,7 +4609,9 @@ function ToolBlockView(props: {
     return toolDurationLabel(b(), Date.now());
   };
   const meta = () =>
-    collapsed() && expandable() ? [duration(), collapsedHint(b())].filter(Boolean).join(" · ") : duration();
+    collapsed() && expandable()
+      ? [duration(), collapsedHint(b())].filter(Boolean).join(" · ")
+      : duration();
   const visible = () => b().output.slice(0, MAX_OUTPUT_LINES);
   const overflow = () => Math.max(0, b().output.length - MAX_OUTPUT_LINES);
   // Live output preview while the call runs: the last couple of streamed lines,
@@ -4229,16 +4635,25 @@ function ToolBlockView(props: {
       {/* Header: chevron/spinner · icon · summary … right-aligned meta. */}
       <box flexDirection="row" flexShrink={0}>
         <text flexShrink={0} fg={!b().done ? p.tool : p.muted}>{`${chevron()} `}</text>
-        <text flexShrink={0} fg={b().isError ? p.del : !b().done ? p.tool : p.muted}>{icon()}</text>
+        <text flexShrink={0} fg={b().isError ? p.del : !b().done ? p.tool : p.muted}>
+          {icon()}
+        </text>
         {/* The summary is PRE-truncated with an ellipsis to the width left after
             the meta column — flexShrink alone hard-clips it mid-word straight
             into the meta ("…comparison 202  2.1s · 5 results"), reading as broken. */}
-        <text flexShrink={1} wrapMode="none" fg={b().isError ? p.del : !b().done ? p.assistant : p.muted}>
+        <text
+          flexShrink={1}
+          wrapMode="none"
+          fg={b().isError ? p.del : !b().done ? p.assistant : p.muted}
+        >
           {` ${truncate(
             summary(),
             Math.max(
               12,
-              (props.width ?? 80) - 3 - displayWidth(icon()) - (meta() ? displayWidth(meta()) + 2 : 0),
+              (props.width ?? 80) -
+                3 -
+                displayWidth(icon()) -
+                (meta() ? displayWidth(meta()) + 2 : 0),
             ),
           )}`}
         </text>
@@ -4269,11 +4684,7 @@ function ToolBlockView(props: {
                     // deletions on delBg, dim context on the panel surface —
                     // matching opencode's diff rendering (the palette ships
                     // addBg/delBg per theme for exactly this).
-                    <text
-                      fg={diffColor(line, p)}
-                      bg={diffBg(line, p)}
-                      wrapMode="none"
-                    >
+                    <text fg={diffColor(line, p)} bg={diffBg(line, p)} wrapMode="none">
                       {`  ${truncate(diffPad(line), Math.max(20, (props.width ?? 80) - 2)) || " "}`}
                     </text>
                   ) : (
@@ -4284,7 +4695,9 @@ function ToolBlockView(props: {
                 }
               </For>
               <Show when={overflow() > 0}>
-                <text fg={p.muted}>{`  … ${overflow()} more line${overflow() === 1 ? "" : "s"}`}</text>
+                <text
+                  fg={p.muted}
+                >{`  … ${overflow()} more line${overflow() === 1 ? "" : "s"}`}</text>
               </Show>
             </box>
           }
@@ -4355,7 +4768,9 @@ function ThinkingBlockView(props: {
     >
       <box flexDirection="row" flexShrink={0}>
         <text flexShrink={0} fg={p.muted}>{`${collapsed() ? "▸" : "▾"} `}</text>
-        <text flexShrink={0} fg={p.gutter}>{"✻"}</text>
+        <text flexShrink={0} fg={p.gutter}>
+          {"✻"}
+        </text>
         <text flexShrink={1} wrapMode="none" fg={p.muted} attributes={TextAttributes.ITALIC}>
           {` ${header()}`}
         </text>

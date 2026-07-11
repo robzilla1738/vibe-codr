@@ -56,7 +56,12 @@ function makeEngine(steps: unknown[][], verify: Config["verify"]) {
     },
   });
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test", verify },
@@ -84,9 +89,9 @@ test("auto-verify retries on failure up to maxRetries, then stops", async () => 
 
   const verifies = events.filter((e) => e.type === "verify-started").length;
   expect(verifies).toBe(3); // initial turn + 2 retries
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("stopping auto-fix")),
-  ).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("stopping auto-fix"))).toBe(
+    true,
+  );
 });
 
 test("auto-verify does not run when the turn made no edits", async () => {
@@ -137,7 +142,10 @@ test("auto-verify is killed by an abort — a long verify command can't wedge th
 
 test("runVerify bounds a high-volume command's output in memory", async () => {
   const start = Date.now();
-  const r = await runVerify(process.cwd(), "yes xxxxxxxxxxxxxxxxxxxxxxxxxxxx | head -100000; exit 1");
+  const r = await runVerify(
+    process.cwd(),
+    "yes xxxxxxxxxxxxxxxxxxxxxxxxxxxx | head -100000; exit 1",
+  );
   expect(r.ok).toBe(false);
   expect(r.output).toContain("truncated");
   expect(r.output.length).toBeLessThan(9000); // ~8k display cap + marker, not ~3MB

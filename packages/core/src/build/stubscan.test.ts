@@ -2,9 +2,13 @@ import { test, expect } from "bun:test";
 import { scanStubs, formatStubFindings } from "./stubscan.ts";
 
 const diff = (file: string, added: string[]): string =>
-  [`diff --git a/${file} b/${file}`, `--- a/${file}`, `+++ b/${file}`, "@@ -1,0 +1,5 @@", ...added.map((l) => `+${l}`)].join(
-    "\n",
-  );
+  [
+    `diff --git a/${file} b/${file}`,
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    "@@ -1,0 +1,5 @@",
+    ...added.map((l) => `+${l}`),
+  ].join("\n");
 
 test("flags dead handlers, dead links, alert-only, TODO, not-implemented", () => {
   const findings = scanStubs(
@@ -34,7 +38,9 @@ test("a real handler that also logs is not flagged as console-only", () => {
 });
 
 test("console-only handler IS flagged", () => {
-  const findings = scanStubs(diff("src/Form.tsx", ["<button onClick={() => console.log('todo')}>Go</button>"]));
+  const findings = scanStubs(
+    diff("src/Form.tsx", ["<button onClick={() => console.log('todo')}>Go</button>"]),
+  );
   expect(findings.map((f) => f.kind)).toContain("stub-console");
 });
 
@@ -65,7 +71,13 @@ test("tests, markdown, and vendored paths are not scanned; removed lines ignored
     diff("src/App.test.tsx", ["// TODO: assert more"]),
     diff("README.md", ["TODO: docs"]),
     diff("node_modules/x/index.js", ["// TODO"]),
-    [`diff --git a/src/x.ts b/src/x.ts`, `--- a/src/x.ts`, `+++ b/src/x.ts`, "@@ -1,2 +1,1 @@", "-// TODO old"].join("\n"),
+    [
+      `diff --git a/src/x.ts b/src/x.ts`,
+      `--- a/src/x.ts`,
+      `+++ b/src/x.ts`,
+      "@@ -1,2 +1,1 @@",
+      "-// TODO old",
+    ].join("\n"),
   ].join("\n");
   expect(scanStubs(noise)).toEqual([]);
 });

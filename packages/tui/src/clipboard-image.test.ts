@@ -35,7 +35,10 @@ test("decodeProbe accepts raw PNG stdout but rejects non-PNG bytes", () => {
 });
 
 test("decodeProbe decodes osascript «data PNGf…» hex", () => {
-  const hex = [...PNG].map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+  const hex = [...PNG]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
   const stdout = new TextEncoder().encode(`«data PNGf${hex}»\n`);
   expect(decodeProbe(["osascript", "-e", "…"], ok(stdout))).toEqual(PNG);
   // Non-image osascript output (no «data PNGf…») → null.
@@ -140,9 +143,17 @@ test("readClipboardImage returns none/unavailable without writing a file", async
   const writeFile = async () => {
     wrote = true;
   };
-  const none = await readClipboardImage({ platform: "linux", exec: async () => ranNoImage, writeFile });
+  const none = await readClipboardImage({
+    platform: "linux",
+    exec: async () => ranNoImage,
+    writeFile,
+  });
   expect(none).toEqual({ kind: "none" });
-  const un = await readClipboardImage({ platform: "linux", exec: async () => notInstalled, writeFile });
+  const un = await readClipboardImage({
+    platform: "linux",
+    exec: async () => notInstalled,
+    writeFile,
+  });
   expect(un).toEqual({ kind: "unavailable" });
   expect(wrote).toBe(false);
 });

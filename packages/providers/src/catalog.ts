@@ -436,9 +436,7 @@ function parseTiers(cost: any): PricingTier[] | undefined {
 export function parseModelsDev(raw: unknown): Map<string, Partial<ModelInfo>> {
   const out = new Map<string, Partial<ModelInfo>>();
   if (typeof raw !== "object" || raw === null) return out;
-  for (const [providerId, providerRaw] of Object.entries(
-    raw as Record<string, any>,
-  )) {
+  for (const [providerId, providerRaw] of Object.entries(raw as Record<string, any>)) {
     const models = providerRaw?.models;
     if (typeof models !== "object" || models === null) continue;
     for (const [modelId, m] of Object.entries(models as Record<string, any>)) {

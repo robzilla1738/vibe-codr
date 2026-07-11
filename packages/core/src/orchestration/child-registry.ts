@@ -158,7 +158,9 @@ export class ChildRegistry {
     rec.status = result.isError ? "failed" : "completed";
     rec.report = result.report;
     rec.isError = result.isError;
-    this.#pendingFinished.push(`\`${id}\`${rec.summary ? ` (${rec.summary})` : ""} — ${rec.status}`);
+    this.#pendingFinished.push(
+      `\`${id}\`${rec.summary ? ` (${rec.summary})` : ""} — ${rec.status}`,
+    );
   }
 
   /** Abort every still-running detached child (engine finalize). */

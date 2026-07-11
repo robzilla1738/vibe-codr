@@ -36,9 +36,7 @@ test("matches files by pattern and reports no matches distinctly", async () => {
 
 test("appends a truncation marker past the 1000-match cap", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-glob-cap-"));
-  await Promise.all(
-    Array.from({ length: 1001 }, (_, i) => Bun.write(join(cwd, `f${i}.ts`), "")),
-  );
+  await Promise.all(Array.from({ length: 1001 }, (_, i) => Bun.write(join(cwd, `f${i}.ts`), "")));
   const r = await globTool.execute({ pattern: "*.ts" }, ctx(cwd));
   const lines = (r.output as string).split("\n");
   expect(lines.length).toBe(1001); // 1000 matches + the marker line
@@ -47,9 +45,7 @@ test("appends a truncation marker past the 1000-match cap", async () => {
 
 test("exactly 1000 matches is NOT flagged truncated (boundary)", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-glob-exact-"));
-  await Promise.all(
-    Array.from({ length: 1000 }, (_, i) => Bun.write(join(cwd, `f${i}.ts`), "")),
-  );
+  await Promise.all(Array.from({ length: 1000 }, (_, i) => Bun.write(join(cwd, `f${i}.ts`), "")));
   const r = await globTool.execute({ pattern: "*.ts" }, ctx(cwd));
   const lines = (r.output as string).split("\n");
   expect(lines.length).toBe(1000); // all 1000, no spurious marker line

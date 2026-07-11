@@ -6,11 +6,7 @@ import { createId, type Handoff, type Mode, type ToolDefinition } from "@vibe/sh
 import { createSemaphore, createSerialLock } from "@vibe/tools";
 import { EventBus as EventBusImpl } from "../event-bus.ts";
 import { ChildRegistry } from "./child-registry.ts";
-import {
-  enforceSchema,
-  structuredDirective,
-  structuredRetryPrompt,
-} from "./structured-output.ts";
+import { enforceSchema, structuredDirective, structuredRetryPrompt } from "./structured-output.ts";
 import type { NamedAgent } from "../agents.ts";
 import {
   validateDag,
@@ -268,7 +264,10 @@ export class OrchestratorRunner {
           const abort = new AbortController();
           const promise = this.#runSpawnedChild(child, prompt, outputSchema, abort.signal, false)
             .then((r) => {
-              this.#childRegistry.markDetachedFinished(child.id, { report: r.text, isError: r.isError });
+              this.#childRegistry.markDetachedFinished(child.id, {
+                report: r.text,
+                isError: r.isError,
+              });
               // Detached mutations land after the parent turn may already have
               // skipped the green-gate — surface that so the user (and the next
               // turn's gate via Session.backgroundDirty) can react.
@@ -381,7 +380,11 @@ export class OrchestratorRunner {
           child.rebindBus(childBus);
           this.#tapChildActivity(child.id, childBus);
           this.#emitStarted(child.id, message);
-          const { timedOut, aborted } = await this.#runChildToCompletion(child, message, ctx.abortSignal);
+          const { timedOut, aborted } = await this.#runChildToCompletion(
+            child,
+            message,
+            ctx.abortSignal,
+          );
           const outcome = this.#childOutcome(child, timedOut, aborted);
           this.#emitFinished(child.id, outcome.event);
           this.#childRegistry.retain(child); // bump LRU on reuse
@@ -416,7 +419,9 @@ export class OrchestratorRunner {
           return { output: `No background spawn with id "${id}" in this session.`, isError: true };
         }
         if (rec.status === "running") {
-          return { output: `Background spawn \`${id}\`${rec.summary ? ` (${rec.summary})` : ""} is still running.` };
+          return {
+            output: `Background spawn \`${id}\`${rec.summary ? ` (${rec.summary})` : ""} is still running.`,
+          };
         }
         return {
           output: `Background spawn \`${id}\` ${rec.status}:\n${capSubagentOutput(rec.report ?? "(no report)")}`,
@@ -450,9 +455,17 @@ export class OrchestratorRunner {
       id: z.string().describe("Stable id, referenced by other tasks' `deps`."),
       objective: z
         .string()
-        .describe("The complete, self-contained subtask (the subagent sees none of this conversation)."),
-      deps: z.array(z.string()).optional().describe("Ids of tasks that must finish before this one starts."),
-      files: z.array(z.string()).optional().describe("Files this task owns (give each task a DISJOINT set)."),
+        .describe(
+          "The complete, self-contained subtask (the subagent sees none of this conversation).",
+        ),
+      deps: z
+        .array(z.string())
+        .optional()
+        .describe("Ids of tasks that must finish before this one starts."),
+      files: z
+        .array(z.string())
+        .optional()
+        .describe("Files this task owns (give each task a DISJOINT set)."),
       verify: z.boolean().optional().describe("Run a review→retry pass after this task."),
       agent: z.string().optional().describe("Named agent to specialize the subagent."),
       tier: z
@@ -464,7 +477,9 @@ export class OrchestratorRunner {
       check: z
         .boolean()
         .optional()
-        .describe("Run the repo's real detected checks (build/typecheck/test) after this task; a red result fails it."),
+        .describe(
+          "Run the repo's real detected checks (build/typecheck/test) after this task; a red result fails it.",
+        ),
       worktree: z
         .boolean()
         .optional()
@@ -597,7 +612,12 @@ export class OrchestratorRunner {
           const abort = new AbortController();
           const batchId = createId("bgtasks");
           const promise = runPlan(abort.signal, false)
-            .then((r) => this.#childRegistry.markDetachedFinished(batchId, { report: r.report, isError: r.isError }))
+            .then((r) =>
+              this.#childRegistry.markDetachedFinished(batchId, {
+                report: r.report,
+                isError: r.isError,
+              }),
+            )
             .catch((err) =>
               this.#childRegistry.markDetachedFinished(batchId, {
                 report: `Background tasks threw: ${(err as Error)?.message ?? String(err)}`,
@@ -634,7 +654,9 @@ export class OrchestratorRunner {
    * while the parent is planning (read-only). Callers render their own message
    * from the verdict (the two surfaces word the rejection differently).
    */
-  #classifyAgent(agent: string | undefined):
+  #classifyAgent(
+    agent: string | undefined,
+  ):
     | { ok: true; named: NamedAgent | undefined }
     | { ok: false; reason: "unknown" | "execute-in-plan" } {
     if (!agent) return { ok: true, named: undefined };
@@ -680,7 +702,8 @@ export class OrchestratorRunner {
   ): Promise<TaskResult> {
     const build = this.#handle.deps.config.build;
     if (build.ensemble.n > 0 && spec.hard && build.worktrees.enabled) {
-      if (await this.#worktreesUsable()) return this.#runEnsembleTask(spec, depResults, parentSignal, suspendParentSlot);
+      if (await this.#worktreesUsable())
+        return this.#runEnsembleTask(spec, depResults, parentSignal, suspendParentSlot);
       // Worktrees can't be created here (a non-git cwd, or an unborn HEAD — a
       // greenfield repo with no commit for `worktree add` to fork off). A hard
       // task must still run: fall back to a single shared-tree attempt rather than
@@ -787,14 +810,41 @@ export class OrchestratorRunner {
     try {
       const child = this.#forkChild(named, undefined, spec.tier, wt);
       if (!child) {
-        return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: this.#spawnCeilingError().output, attempts: 1 });
+        return settle({
+          id: spec.id,
+          objective: spec.objective,
+          outcome: "failed",
+          output: this.#spawnCeilingError().output,
+          attempts: 1,
+        });
       }
-      this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
-      const { timedOut, aborted } = await this.#runChildToCompletion(child, buildTaskKickoff(spec, depResults, ""), parentSignal, suspendParentSlot);
+      this.#handle.deps.bus.emit({
+        type: "subagent-started",
+        sessionId: this.#handle.id,
+        subagentId: child.id,
+        prompt: spec.objective,
+      });
+      const { timedOut, aborted } = await this.#runChildToCompletion(
+        child,
+        buildTaskKickoff(spec, depResults, ""),
+        parentSignal,
+        suspendParentSlot,
+      );
       const outcome = this.#childOutcome(child, timedOut, aborted);
-      this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
+      this.#handle.deps.bus.emit({
+        type: "subagent-finished",
+        sessionId: this.#handle.id,
+        subagentId: child.id,
+        result: outcome.event,
+      });
       if (outcome.isError) {
-        return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: outcome.text, attempts: 1 });
+        return settle({
+          id: spec.id,
+          objective: spec.objective,
+          outcome: "failed",
+          output: outcome.text,
+          attempts: 1,
+        });
       }
       const handoff = parseHandoff(outcome.text) ?? undefined;
 
@@ -830,8 +880,7 @@ export class OrchestratorRunner {
       // the outer finally, also serialized.
       const verdict = await this.#mergeLock(
         async (): Promise<
-          | { ok: true; diff?: string; mergedFiles: string[] }
-          | { ok: false; output: string }
+          { ok: true; diff?: string; mergedFiles: string[] } | { ok: false; output: string }
         > => {
           // BUG-048: commitWorktree returns false when the child made nothing
           // committable. The ensemble path already checks this; the worktree
@@ -840,15 +889,25 @@ export class OrchestratorRunner {
           // `completed` verdict, and a worktree removal that ORPHANED the child's
           // uncommitted edits. Fail the task honestly — nothing to verify, no
           // merge to gate.
-          const committed = await commitWorktree(wt, `vibecodr(task ${spec.id}): ${spec.objective}`);
+          const committed = await commitWorktree(
+            wt,
+            `vibecodr(task ${spec.id}): ${spec.objective}`,
+          );
           if (!committed) {
-            return { ok: false, output: "Worktree child made no committable changes — task not verified." };
+            return {
+              ok: false,
+              output: "Worktree child made no committable changes — task not verified.",
+            };
           }
           // Sibling tasks' already-staged (uncommitted) changes in this shared tree,
           // captured BEFORE our merge so the revert set is OUR delta only.
           const preStaged = new Set(await gitStagedFiles(mainCwd));
           if (!(await gitMergeWorktreeBranch(mainCwd, branch))) {
-            return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
+            return {
+              ok: false,
+              output:
+                "merge conflict — changes discarded; re-plan with disjoint files or sequential deps",
+            };
           }
           // Exactly what OUR squash-merge staged — reverted on a red/aborted gate so
           // main isn't left holding the failing changes; a sibling's disjoint staged
@@ -865,14 +924,20 @@ export class OrchestratorRunner {
             });
             if (gate.outcome === "red") {
               await gitRestoreFiles(mainCwd, mergedFiles);
-              return { ok: false, output: `Checks failed on the merged tree (changes reverted):\n${formatGateFailure(gate, 1)}` };
+              return {
+                ok: false,
+                output: `Checks failed on the merged tree (changes reverted):\n${formatGateFailure(gate, 1)}`,
+              };
             }
             // An interrupted gate produced NO verdict — treat it like red so the
             // task fails and the merged changes are reverted (the outer finally
             // tears down the worktree). Never let an interrupt read as a pass.
             if (gate.outcome === "aborted") {
               await gitRestoreFiles(mainCwd, mergedFiles);
-              return { ok: false, output: "Gate interrupted before a verdict — merged changes reverted." };
+              return {
+                ok: false,
+                output: "Gate interrupted before a verdict — merged changes reverted.",
+              };
             }
             // BUG-047: a `check:true`/`verify:true` task explicitly requested
             // machine verification. An `unverified` gate means the repo had no
@@ -884,7 +949,11 @@ export class OrchestratorRunner {
             // journal `completed` with zero machine verification.
             if (gate.outcome === "unverified") {
               await gitRestoreFiles(mainCwd, mergedFiles);
-              return { ok: false, output: "Repo has no detected checks — worktree task not verified. Configure build/test detection or drop `check`/`verify`." };
+              return {
+                ok: false,
+                output:
+                  "Repo has no detected checks — worktree task not verified. Configure build/test detection or drop `check`/`verify`.",
+              };
             }
           }
           // Capture the diff of THIS task's merged changes while the tree is still
@@ -899,16 +968,31 @@ export class OrchestratorRunner {
         },
       );
       if (!verdict.ok) {
-        return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: verdict.output, attempts: 1, ...(handoff ? { handoff } : {}) });
+        return settle({
+          id: spec.id,
+          objective: spec.objective,
+          outcome: "failed",
+          output: verdict.output,
+          attempts: 1,
+          ...(handoff ? { handoff } : {}),
+        });
       }
       // Review OUTSIDE the lock (see above) on the diff captured inside it.
       if (spec.verify) {
-        const review = await this.#reviewCapturedDiff(spec, reportText, verdict.diff ?? "", parentSignal, suspendParentSlot);
+        const review = await this.#reviewCapturedDiff(
+          spec,
+          reportText,
+          verdict.diff ?? "",
+          parentSignal,
+          suspendParentSlot,
+        );
         if (!review.clean) {
           // BUG-086: gate failures already restored; review must too or main
           // keeps rejected edits while the task reports failed.
           if (verdict.mergedFiles.length) {
-            await this.#mergeLock(() => gitRestoreFiles(mainCwd, verdict.mergedFiles)).catch(() => {});
+            await this.#mergeLock(() => gitRestoreFiles(mainCwd, verdict.mergedFiles)).catch(
+              () => {},
+            );
           }
           return settle({
             id: spec.id,
@@ -920,9 +1004,22 @@ export class OrchestratorRunner {
           });
         }
       }
-      return settle({ id: spec.id, objective: spec.objective, outcome: "completed", output: reportText, attempts: 1, ...(handoff ? { handoff } : {}) });
+      return settle({
+        id: spec.id,
+        objective: spec.objective,
+        outcome: "completed",
+        output: reportText,
+        attempts: 1,
+        ...(handoff ? { handoff } : {}),
+      });
     } catch (err) {
-      return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: `Worktree task threw: ${(err as Error)?.message ?? String(err)}`, attempts: 1 });
+      return settle({
+        id: spec.id,
+        objective: spec.objective,
+        outcome: "failed",
+        output: `Worktree task threw: ${(err as Error)?.message ?? String(err)}`,
+        attempts: 1,
+      });
     } finally {
       // Always tear down the worktree — the happy path AND every early return/throw
       // after gitAddWorktree created it (spawn-ceiling, child error/interrupt, a
@@ -1057,7 +1154,11 @@ export class OrchestratorRunner {
           // revert set below is OUR merge's DELTA only — never the whole index.
           const preStaged = new Set(await gitStagedFiles(mainCwd));
           if (!(await gitMergeWorktreeBranch(mainCwd, winner.branch))) {
-            return { ok: false, output: "merge conflict — changes discarded; re-plan with disjoint files or sequential deps" };
+            return {
+              ok: false,
+              output:
+                "merge conflict — changes discarded; re-plan with disjoint files or sequential deps",
+            };
           }
           // Exactly what OUR squash-merge added to the staged set — a RED gate
           // reverts THESE paths, leaving main clean, while a sibling's disjoint
@@ -1074,11 +1175,17 @@ export class OrchestratorRunner {
             });
             if (gate.outcome === "red") {
               await gitRestoreFiles(mainCwd, mergedFiles);
-              return { ok: false, output: `Ensemble winner passed in isolation but the MERGED tree is red (changes reverted):\n${formatGateFailure(gate, 1)}` };
+              return {
+                ok: false,
+                output: `Ensemble winner passed in isolation but the MERGED tree is red (changes reverted):\n${formatGateFailure(gate, 1)}`,
+              };
             }
             if (gate.outcome === "aborted") {
               await gitRestoreFiles(mainCwd, mergedFiles);
-              return { ok: false, output: "Gate interrupted before a verdict — merged changes reverted." };
+              return {
+                ok: false,
+                output: "Gate interrupted before a verdict — merged changes reverted.",
+              };
             }
             // BUG-047: a re-gate landing `unverified` (the repo's detected
             // checks have since changed — e.g. a sibling flush changed the
@@ -1087,7 +1194,10 @@ export class OrchestratorRunner {
             // against the combined tree, and `unverified` is never green.
             if (gate.outcome === "unverified") {
               await gitRestoreFiles(mainCwd, mergedFiles);
-              return { ok: false, output: "Repo no longer has detected checks — ensemble merged task not verified." };
+              return {
+                ok: false,
+                output: "Repo no longer has detected checks — ensemble merged task not verified.",
+              };
             }
           }
           return { ok: true };
@@ -1119,7 +1229,10 @@ export class OrchestratorRunner {
       // this finally, clobber the already-settled result — swallow per iteration
       // (matches the worktree-path teardown).
       for (const a of attempts) {
-        if (a.wt) await this.#mergeLock(() => gitRemoveWorktree(mainCwd, a.wtPath, a.branch)).catch(() => {});
+        if (a.wt)
+          await this.#mergeLock(() => gitRemoveWorktree(mainCwd, a.wtPath, a.branch)).catch(
+            () => {},
+          );
       }
     }
   }
@@ -1142,7 +1255,17 @@ export class OrchestratorRunner {
     const wtId = `${worktreeSlug(spec.id)}-a${i}`;
     const wtPath = join(mainCwd, ".vibe", "worktrees", worktreePathName(this.#handle.id, wtId));
     const branch = worktreeBranch(this.#handle.id, wtId);
-    const base: EnsembleAttempt = { i, label, wt: null, wtPath, branch, text: "", score: -1, diffSize: Infinity, verdict: "not-run" };
+    const base: EnsembleAttempt = {
+      i,
+      label,
+      wt: null,
+      wtPath,
+      branch,
+      text: "",
+      score: -1,
+      diffSize: Infinity,
+      verdict: "not-run",
+    };
 
     // Track the worktree handle in the OUTER scope so a throw anywhere below still
     // returns it to the caller for cleanup. Without this, a throw from `runGate`/
@@ -1155,18 +1278,51 @@ export class OrchestratorRunner {
       if (!wt) return { ...base, verdict: "worktree-unavailable" };
       const child = this.#forkChild(named, undefined, spec.tier, wt);
       if (!child) return { ...base, wt, verdict: "spawn-ceiling" };
-      this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: child.id, prompt: spec.objective });
+      this.#handle.deps.bus.emit({
+        type: "subagent-started",
+        sessionId: this.#handle.id,
+        subagentId: child.id,
+        prompt: spec.objective,
+      });
       const kickoff = `${buildTaskKickoff(spec, depResults, "")}\n\n${strategy.directive}`;
-      const { timedOut, aborted } = await this.#runChildToCompletion(child, kickoff, parentSignal, suspendParentSlot);
+      const { timedOut, aborted } = await this.#runChildToCompletion(
+        child,
+        kickoff,
+        parentSignal,
+        suspendParentSlot,
+      );
       const outcome = this.#childOutcome(child, timedOut, aborted);
-      this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: child.id, result: outcome.event });
+      this.#handle.deps.bus.emit({
+        type: "subagent-finished",
+        sessionId: this.#handle.id,
+        subagentId: child.id,
+        result: outcome.event,
+      });
       const handoff = parseHandoff(outcome.text) ?? undefined;
-      if (outcome.isError) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), verdict: "child-error" };
+      if (outcome.isError)
+        return {
+          ...base,
+          wt,
+          text: outcome.text,
+          ...(handoff ? { handoff } : {}),
+          verdict: "child-error",
+        };
 
       // Commit so the branch carries the work (squash-merge sees only commits) and
       // the in-worktree gate judges the committed state.
-      const committed = await commitWorktree(wt, `vibecodr(ensemble ${spec.id} a${i}): ${spec.objective}`);
-      if (!committed) return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score: -1, verdict: "no-changes" };
+      const committed = await commitWorktree(
+        wt,
+        `vibecodr(ensemble ${spec.id} a${i}): ${spec.objective}`,
+      );
+      if (!committed)
+        return {
+          ...base,
+          wt,
+          text: outcome.text,
+          ...(handoff ? { handoff } : {}),
+          score: -1,
+          verdict: "no-changes",
+        };
 
       const diffSize = (await gitDiffSince(wt, baseRef)).length;
       // Default score 0: an attempt that ran no gate (no profile, BUG-050) is
@@ -1190,13 +1346,31 @@ export class OrchestratorRunner {
         // An interrupted gate (aborted) scores 0 alongside red: never select
         // work whose checks the user cut short — an unverified interrupt is not a
         // tiebreak-eligible "unverified" (score 1), it's a non-result.
-        score = gate.outcome === "green" ? 2 : gate.outcome === "red" || gate.outcome === "aborted" ? 0 : 1;
+        score =
+          gate.outcome === "green"
+            ? 2
+            : gate.outcome === "red" || gate.outcome === "aborted"
+              ? 0
+              : 1;
         verdict = gate.outcome;
       }
-      return { ...base, wt, text: outcome.text, ...(handoff ? { handoff } : {}), score, diffSize, verdict };
+      return {
+        ...base,
+        wt,
+        text: outcome.text,
+        ...(handoff ? { handoff } : {}),
+        score,
+        diffSize,
+        verdict,
+      };
     } catch (err) {
       // Return the (possibly created) worktree so the caller's cleanup removes it.
-      return { ...base, wt, verdict: "error", text: `ensemble attempt threw: ${(err as Error)?.message ?? String(err)}` };
+      return {
+        ...base,
+        wt,
+        verdict: "error",
+        text: `ensemble attempt threw: ${(err as Error)?.message ?? String(err)}`,
+      };
     }
   }
 
@@ -1266,8 +1440,7 @@ export class OrchestratorRunner {
         id: spec.id,
         objective: spec.objective,
         outcome: "failed",
-        output:
-          "Repo profile unavailable — task not verified. Wait for recon or drop `check`.",
+        output: "Repo profile unavailable — task not verified. Wait for recon or drop `check`.",
         attempts: 0,
       });
     }
@@ -1304,7 +1477,13 @@ export class OrchestratorRunner {
         result: outcome.event,
       });
       if (outcome.isError) {
-        return settle({ id: spec.id, objective: spec.objective, outcome: "failed", output: outcome.text, attempts });
+        return settle({
+          id: spec.id,
+          objective: spec.objective,
+          outcome: "failed",
+          output: outcome.text,
+          attempts,
+        });
       }
       // The structured handoff (if the child emitted one) rides to dependents
       // verbatim; the full prose is pull-only via read_report.
@@ -1392,7 +1571,8 @@ export class OrchestratorRunner {
             id: spec.id,
             objective: spec.objective,
             outcome: "failed",
-            output: "Repo has no detected checks — task not verified. Configure build/test detection or drop `check`/`verify`.",
+            output:
+              "Repo has no detected checks — task not verified. Configure build/test detection or drop `check`/`verify`.",
             attempts,
             ...(handoff ? { handoff } : {}),
           });
@@ -1461,7 +1641,13 @@ export class OrchestratorRunner {
     // Capture the diff, THEN review it (the review reads the captured diff, not the
     // live tree). Split so a caller holding the shared-tree merge lock can capture
     // INSIDE the lock and run the review child OUTSIDE it — see #reviewCapturedDiff.
-    return this.#reviewCapturedDiff(spec, work, await this.#captureTaskDiff(spec), parentSignal, suspendParentSlot);
+    return this.#reviewCapturedDiff(
+      spec,
+      work,
+      await this.#captureTaskDiff(spec),
+      parentSignal,
+      suspendParentSlot,
+    );
   }
 
   /**
@@ -1554,10 +1740,18 @@ export class OrchestratorRunner {
    * report for a completed task (so read_report survives resume), and journal the
    * finish with its report path. All best-effort. */
   #recordFinished(spec: TaskSpec, result: TaskResult): void {
-    this.#handle.deps.reportStore?.set(spec.id, { objective: spec.objective, output: result.output });
+    this.#handle.deps.reportStore?.set(spec.id, {
+      objective: spec.objective,
+      output: result.output,
+    });
     let reportPath: string | undefined;
     if (result.outcome === "completed") {
-      reportPath = persistTaskReport(this.#handle.deps.cwd, this.#handle.id, spec.id, result.output);
+      reportPath = persistTaskReport(
+        this.#handle.deps.cwd,
+        this.#handle.id,
+        spec.id,
+        result.output,
+      );
     }
     this.#journal({
       type: "task-finished",
@@ -1617,7 +1811,8 @@ export class OrchestratorRunner {
     const childBus = new EventBusImpl();
     const child = this.#handle.fork({
       bus: childBus,
-      model: named?.model ?? tierModel ?? this.#handle.deps.config.subagent.model ?? this.#handle.model,
+      model:
+        named?.model ?? tierModel ?? this.#handle.deps.config.subagent.model ?? this.#handle.model,
       mode: childMode,
       goal: this.#handle.goal,
       depth: this.#handle.depth + 1,
@@ -1627,7 +1822,12 @@ export class OrchestratorRunner {
       ...(extraSystem.length ? { extraSystem } : {}),
       // A named agent's tool allowlist/denylist restricts the child's tools.
       ...(named?.tools || named?.denyTools
-        ? { toolFilter: { ...(named.tools ? { allow: named.tools } : {}), ...(named.denyTools ? { deny: named.denyTools } : {}) } }
+        ? {
+            toolFilter: {
+              ...(named.tools ? { allow: named.tools } : {}),
+              ...(named.denyTools ? { deny: named.denyTools } : {}),
+            },
+          }
         : {}),
     });
     this.#tapChildActivity(child.id, childBus);
@@ -1669,12 +1869,22 @@ export class OrchestratorRunner {
 
   /** Emit `subagent-started` on the parent bus for `id`. */
   #emitStarted(id: string, prompt: string): void {
-    this.#handle.deps.bus.emit({ type: "subagent-started", sessionId: this.#handle.id, subagentId: id, prompt });
+    this.#handle.deps.bus.emit({
+      type: "subagent-started",
+      sessionId: this.#handle.id,
+      subagentId: id,
+      prompt,
+    });
   }
 
   /** Emit `subagent-finished` on the parent bus for `id`. */
   #emitFinished(id: string, result: string): void {
-    this.#handle.deps.bus.emit({ type: "subagent-finished", sessionId: this.#handle.id, subagentId: id, result });
+    this.#handle.deps.bus.emit({
+      type: "subagent-finished",
+      sessionId: this.#handle.id,
+      subagentId: id,
+      result,
+    });
   }
 
   /** Whether a `detach:true` spawn actually runs in the background. Interactive
@@ -1736,12 +1946,21 @@ export class OrchestratorRunner {
     // takes its OWN slot when it runs.
     suspendParentSlot = true,
   ): Promise<{ text: string; isError: boolean }> {
-    if (outputSchema) return this.#runStructured(child, prompt, outputSchema, parentSignal, suspendParentSlot);
-    const { timedOut, aborted } = await this.#runChildToCompletion(child, prompt, parentSignal, suspendParentSlot);
+    if (outputSchema)
+      return this.#runStructured(child, prompt, outputSchema, parentSignal, suspendParentSlot);
+    const { timedOut, aborted } = await this.#runChildToCompletion(
+      child,
+      prompt,
+      parentSignal,
+      suspendParentSlot,
+    );
     const outcome = this.#childOutcome(child, timedOut, aborted);
     this.#emitFinished(child.id, outcome.event);
     this.#retainCompleted(child);
-    return { text: capSubagentOutput(outcome.text) + this.#handleSuffix(child.id), isError: outcome.isError };
+    return {
+      text: capSubagentOutput(outcome.text) + this.#handleSuffix(child.id),
+      isError: outcome.isError,
+    };
   }
 
   /**
@@ -1768,8 +1987,15 @@ export class OrchestratorRunner {
       while (attempts < maxAttempts) {
         attempts++;
         const runPrompt =
-          attempts === 1 ? `${basePrompt}${structuredDirective(schema)}` : structuredRetryPrompt(errors);
-        const { timedOut, aborted } = await this.#runChildOnce(child, runPrompt, parentSignal, suspendParentSlot);
+          attempts === 1
+            ? `${basePrompt}${structuredDirective(schema)}`
+            : structuredRetryPrompt(errors);
+        const { timedOut, aborted } = await this.#runChildOnce(
+          child,
+          runPrompt,
+          parentSignal,
+          suspendParentSlot,
+        );
         const outcome = this.#childOutcome(child, timedOut, aborted);
         if (outcome.isError) {
           // A timeout / interrupt / hard failure isn't a schema mismatch — surface
@@ -1980,7 +2206,9 @@ function buildTaskKickoff(spec: TaskSpec, depResults: TaskResult[], feedback: st
     "You're one task in a coordinated plan. Use read_notes/post_note to see and share decisions with sibling tasks. Be self-contained, then report what you did and any follow-ups. Done only when the objective is fully met.",
   );
   if (feedback) {
-    parts.push(`A previous attempt was reviewed and needs fixing before this is acceptable:\n${feedback}`);
+    parts.push(
+      `A previous attempt was reviewed and needs fixing before this is acceptable:\n${feedback}`,
+    );
   }
   // A structured task's final message must be ONLY JSON — the handoff fence would
   // violate that, so it replaces the handoff instruction with the schema directive.
@@ -1991,7 +2219,11 @@ function buildTaskKickoff(spec: TaskSpec, depResults: TaskResult[], feedback: st
 /** The first non-empty line of a prompt, trimmed and capped — a compact label for
  * a detached child in check_task + the background-finished surfacing. */
 function firstLine(text: string): string {
-  const line = (text ?? "").split("\n").map((l) => l.trim()).find((l) => l.length) ?? "";
+  const line =
+    (text ?? "")
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length) ?? "";
   return line.length > 80 ? `${line.slice(0, 80)}…` : line;
 }
 
@@ -2038,11 +2270,31 @@ interface EnsembleAttempt {
  * distinct directive appended to its kickoff so N children explore genuinely
  * different approaches rather than N near-identical ones. */
 const ENSEMBLE_STRATEGIES: { name: string; directive: string }[] = [
-  { name: "minimal-diff", directive: "Strategy directive: take a MINIMAL-DIFF approach — the smallest, most surgical change that fully satisfies the objective; touch as few lines as possible." },
-  { name: "test-first", directive: "Strategy directive: take a TEST-FIRST approach — pin the desired behavior with tests first, then implement until they pass." },
-  { name: "library-first", directive: "Strategy directive: take a LIBRARY-FIRST approach — prefer an existing dependency or stdlib primitive over hand-rolled code; reuse before you build." },
-  { name: "first-principles", directive: "Strategy directive: take a FROM-FIRST-PRINCIPLES approach — derive the cleanest design directly from the requirements rather than the obvious patch." },
-  { name: "defensive", directive: "Strategy directive: take a DEFENSIVE approach — prioritize edge cases, input validation, and clear error handling." },
+  {
+    name: "minimal-diff",
+    directive:
+      "Strategy directive: take a MINIMAL-DIFF approach — the smallest, most surgical change that fully satisfies the objective; touch as few lines as possible.",
+  },
+  {
+    name: "test-first",
+    directive:
+      "Strategy directive: take a TEST-FIRST approach — pin the desired behavior with tests first, then implement until they pass.",
+  },
+  {
+    name: "library-first",
+    directive:
+      "Strategy directive: take a LIBRARY-FIRST approach — prefer an existing dependency or stdlib primitive over hand-rolled code; reuse before you build.",
+  },
+  {
+    name: "first-principles",
+    directive:
+      "Strategy directive: take a FROM-FIRST-PRINCIPLES approach — derive the cleanest design directly from the requirements rather than the obvious patch.",
+  },
+  {
+    name: "defensive",
+    directive:
+      "Strategy directive: take a DEFENSIVE approach — prioritize edge cases, input validation, and clear error handling.",
+  },
 ];
 
 /** At most one live-activity emit per child per this interval (drop intermediate). */
@@ -2056,7 +2308,10 @@ function activityLabel(toolName: string, input: unknown): string {
   let label: string;
   if (toolName === "bash" && typeof inp.command === "string") {
     label = `$ ${inp.command.split("\n")[0]?.trim() ?? ""}`;
-  } else if (typeof inp.path === "string" && (toolName === "edit" || toolName === "read" || toolName === "write")) {
+  } else if (
+    typeof inp.path === "string" &&
+    (toolName === "edit" || toolName === "read" || toolName === "write")
+  ) {
     label = `${toolName} ${inp.path}`;
   } else {
     label = toolName;

@@ -10,7 +10,11 @@ import { Engine } from "./engine.ts";
 
 function stream(chunks: unknown[]) {
   return {
-    stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }),
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
   };
 }
 const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
@@ -33,9 +37,19 @@ function mockEngine(steps: unknown[], cwd: string, config: Config) {
   let call = 0;
   const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
-  const engine = new Engine({ config: { ...config, model: "mock/test" }, cwd, registry, interactive: false });
+  const engine = new Engine({
+    config: { ...config, model: "mock/test" },
+    cwd,
+    registry,
+    interactive: false,
+  });
   const events: UIEvent[] = [];
   const sub = engine.events();
   const collector = (async () => {
@@ -48,7 +62,10 @@ test("execute: model edits a real file and the change is applied + surfaced", as
   const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-edit-"));
   writeFileSync(join(cwd, "note.txt"), "the old value\n");
   const { engine, events, collector } = mockEngine(
-    [toolStep("c1", "edit", { path: "note.txt", oldString: "old", newString: "new" }), textStep("Updated the note.")],
+    [
+      toolStep("c1", "edit", { path: "note.txt", oldString: "old", newString: "new" }),
+      textStep("Updated the note."),
+    ],
     cwd,
     defaultConfig(),
   );
@@ -62,7 +79,10 @@ test("execute: model edits a real file and the change is applied + surfaced", as
   const changed = events.find((e) => e.type === "file-changed");
   expect(changed && changed.type === "file-changed" && changed.action).toBe("edit");
   const text = events
-    .filter((e): e is Extract<UIEvent, { type: "assistant-text-delta" }> => e.type === "assistant-text-delta")
+    .filter(
+      (e): e is Extract<UIEvent, { type: "assistant-text-delta" }> =>
+        e.type === "assistant-text-delta",
+    )
     .map((e) => e.delta)
     .join("");
   expect(text).toBe("Updated the note.");
@@ -72,7 +92,10 @@ test("plan mode: present_plan emits a plan and no file is mutated", async () => 
   const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-plan-"));
   const config = { ...defaultConfig(), mode: "plan" as const };
   const { engine, events, collector } = mockEngine(
-    [toolStep("c1", "present_plan", { plan: "# Plan\n1. do the thing" }), textStep("Plan is ready for review.")],
+    [
+      toolStep("c1", "present_plan", { plan: "# Plan\n1. do the thing" }),
+      textStep("Plan is ready for review."),
+    ],
     cwd,
     config,
   );
@@ -168,7 +191,12 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
     const steps = [
       stream([
         { type: "stream-start", warnings: [] },
-        { type: "tool-call", toolCallId: "p1", toolName: "present_plan", input: JSON.stringify({ plan: PLAN }) },
+        {
+          type: "tool-call",
+          toolCallId: "p1",
+          toolName: "present_plan",
+          input: JSON.stringify({ plan: PLAN }),
+        },
         { type: "finish", finishReason: "tool-calls", usage: USAGE },
       ]),
       textStep("Plan presented."),
@@ -182,7 +210,12 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
       },
     });
     const registry = new ProviderRegistry([
-      { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
     ]);
     // The baseline approval preference is what approval must HONOR: auto in →
     // auto out (yolo execution), ask in → gated ask.
@@ -270,9 +303,9 @@ test("bare set-mode (Shift+Tab) does NOT auto-approve a waiting plan", async () 
         e.message.includes("waiting for approval"),
     ),
   ).toBe(true);
-  expect(events.filter((e) => e.type === "notice" && e.message.includes("Plan approved")).length).toBe(
-    0,
-  );
+  expect(
+    events.filter((e) => e.type === "notice" && e.message.includes("Plan approved")).length,
+  ).toBe(0);
   expect(events.filter((e) => e.type === "tasks-updated").length).toBe(0);
 });
 
@@ -302,7 +335,12 @@ test("a mid-turn mode flip cannot smuggle a mutating turn past the gate", async 
   const steps = [toolStep("c1", "mutate_flip", {}), textStep("Done.")];
   const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
   engineRef = new Engine({
     config: { ...defaultConfig(), model: "mock/test" },
@@ -323,9 +361,7 @@ test("a mid-turn mode flip cannot smuggle a mutating turn past the gate", async 
   await collector;
 
   expect(existsSync(join(cwd, "made.txt"))).toBe(true);
-  expect(
-    events.some((e) => e.type === "notice" && e.message.includes("UNVERIFIED")),
-  ).toBe(true);
+  expect(events.some((e) => e.type === "notice" && e.message.includes("UNVERIFIED"))).toBe(true);
 });
 
 test("a denied handoff prompt re-arms the plan approval (the next message retries it)", async () => {
@@ -349,7 +385,12 @@ test("a denied handoff prompt re-arms the plan approval (the next message retrie
     },
   });
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
@@ -383,7 +424,9 @@ test("a denied handoff prompt re-arms the plan approval (the next message retrie
   await collector;
 
   // The deny re-armed the approval and said so.
-  expect(events.some((e) => e.type === "notice" && /Plan approval preserved/.test(e.message))).toBe(true);
+  expect(events.some((e) => e.type === "notice" && /Plan approval preserved/.test(e.message))).toBe(
+    true,
+  );
   // The retry carried the handoff directive into the model prompt.
   expect(prompts.at(-1)).toContain("approved by the user");
 });
@@ -398,7 +441,12 @@ test("/loop iteration runs built-in /status without prompting the model (BUG-075
     },
   });
   const registry = new ProviderRegistry([
-    { id: "mock", auth: { env: [], keyless: true }, create: () => model, listModels: async () => [] },
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => model,
+      listModels: async () => [],
+    },
   ]);
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test" },

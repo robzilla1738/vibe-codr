@@ -30,7 +30,13 @@ afterAll(() => {
 const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
 
 function stream(chunks: unknown[]) {
-  return { stream: simulateReadableStream({ chunks: chunks as never[], initialDelayInMs: 0, chunkDelayInMs: 0 }) };
+  return {
+    stream: simulateReadableStream({
+      chunks: chunks as never[],
+      initialDelayInMs: 0,
+      chunkDelayInMs: 0,
+    }),
+  };
 }
 function textStep(delta: string) {
   return stream([
@@ -44,7 +50,12 @@ function textStep(delta: string) {
 function spawnTasksStep(tasks: unknown[]) {
   return stream([
     { type: "stream-start", warnings: [] },
-    { type: "tool-call", toolCallId: "p1", toolName: "spawn_tasks", input: JSON.stringify({ tasks }) },
+    {
+      type: "tool-call",
+      toolCallId: "p1",
+      toolName: "spawn_tasks",
+      input: JSON.stringify({ tasks }),
+    },
     { type: "finish", finishReason: "tool-calls", usage: USAGE },
   ]);
 }
@@ -161,7 +172,14 @@ test("read_report returns a task's full report, and caps an oversized one at 32k
   store.set("a", { objective: "A", output: full });
   store.set("big", { objective: "B", output: "x".repeat(40_000) });
   const tool = buildReadReportTool(store);
-  const ctx = { cwd: ".", sessionId: "s", abortSignal: new AbortController().signal, emit() {}, toolCallId: "t", freshness: new FreshnessRegistry() } as ToolContext;
+  const ctx = {
+    cwd: ".",
+    sessionId: "s",
+    abortSignal: new AbortController().signal,
+    emit() {},
+    toolCallId: "t",
+    freshness: new FreshnessRegistry(),
+  } as ToolContext;
 
   const hit = await tool.execute({ task_id: "a" }, ctx);
   expect(String(hit.output)).toContain("FULL_REPORT_BODY");
@@ -203,10 +221,13 @@ test("tier resolves to the configured tier model; absent tier falls back to suba
   const ids: string[] = [];
   let call = 0;
   const model = new MockLanguageModelV2({
-    doStream: async () => (call++ === 0 ? spawnTasksStep([
-      { id: "x", objective: "strong task", tier: "strong" },
-      { id: "y", objective: "default task" },
-    ]) : textStep("done")) as never,
+    doStream: async () =>
+      (call++ === 0
+        ? spawnTasksStep([
+            { id: "x", objective: "strong task", tier: "strong" },
+            { id: "y", objective: "default task" },
+          ])
+        : textStep("done")) as never,
   });
   const config = orchestrationConfig();
   config.build.models = { strong: "mock/strong-model" };
@@ -237,9 +258,10 @@ test("tier resolves to the configured tier model; absent tier falls back to suba
 test("check:true with a red gate fails the attempt on PASS/FAIL text, with no LLM review call", async () => {
   let call = 0;
   const model = new MockLanguageModelV2({
-    doStream: async () => (call++ === 0
-      ? spawnTasksStep([{ id: "t", objective: "make a change", check: true }])
-      : textStep("did the change")) as never,
+    doStream: async () =>
+      (call++ === 0
+        ? spawnTasksStep([{ id: "t", objective: "make a change", check: true }])
+        : textStep("did the change")) as never,
   });
   const bus = new EventBus();
   const { events, done } = collect(bus);
@@ -260,7 +282,9 @@ test("check:true with a red gate fails the attempt on PASS/FAIL text, with no LL
   bus.close();
   await done;
 
-  const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  const finished = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks",
+  );
   const out = finished && finished.type === "tool-call-finished" ? String(finished.output) : "";
   expect(out).toContain("FAIL typecheck");
   expect(out).toContain("Checks failed");
@@ -280,9 +304,10 @@ test("verify task: an Esc during the gate settles the task failed, with no retry
   const cwd = tmpCwd();
   let call = 0;
   const model = new MockLanguageModelV2({
-    doStream: async () => (call++ === 0
-      ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
-      : textStep("did the change")) as never,
+    doStream: async () =>
+      (call++ === 0
+        ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
+        : textStep("did the change")) as never,
   });
   const bus = new EventBus();
   const { events, done } = collect(bus);
@@ -306,7 +331,8 @@ test("verify task: an Esc during the gate settles the task failed, with no retry
   const marker = join(cwd, "gate-started");
   const watcher = (async () => {
     const deadline = Date.now() + 15_000;
-    while (!existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    while (!existsSync(marker) && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 20));
     session.abort();
     writeFileSync(join(cwd, "release"), "");
   })();
@@ -334,9 +360,10 @@ test("check:true on a repo with no detected checks fails the task as unverified 
   // has no detected commands — not journal `completed` with zero verification.
   let call = 0;
   const model = new MockLanguageModelV2({
-    doStream: async () => (call++ === 0
-      ? spawnTasksStep([{ id: "t", objective: "make a change", check: true }])
-      : textStep("did the change")) as never,
+    doStream: async () =>
+      (call++ === 0
+        ? spawnTasksStep([{ id: "t", objective: "make a change", check: true }])
+        : textStep("did the change")) as never,
   });
   const bus = new EventBus();
   const { events, done } = collect(bus);
@@ -356,12 +383,16 @@ test("check:true on a repo with no detected checks fails the task as unverified 
   bus.close();
   await done;
 
-  const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  const finished = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks",
+  );
   const out = finished && finished.type === "tool-call-finished" ? String(finished.output) : "";
   expect(out).toContain("no detected checks");
   expect(out).toContain("0 completed");
   // Honest failure: the task journal carries `failed`, not `completed`.
-  const failed = events.find((e) => e.type === "orchestration-task" && e.taskId === "t" && e.status === "failed");
+  const failed = events.find(
+    (e) => e.type === "orchestration-task" && e.taskId === "t" && e.status === "failed",
+  );
   expect(failed).toBeDefined();
 });
 
@@ -370,9 +401,10 @@ test("check:true on a repo with no detected checks fails the task as unverified 
 test("verify:true with no detected checks fails the task as unverified (BUG-047)", async () => {
   let call = 0;
   const model = new MockLanguageModelV2({
-    doStream: async () => (call++ === 0
-      ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
-      : textStep("did the change")) as never,
+    doStream: async () =>
+      (call++ === 0
+        ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
+        : textStep("did the change")) as never,
   });
   const bus = new EventBus();
   const { events, done } = collect(bus);
@@ -392,9 +424,13 @@ test("verify:true with no detected checks fails the task as unverified (BUG-047)
   bus.close();
   await done;
 
-  const failed = events.find((e) => e.type === "orchestration-task" && e.taskId === "t" && e.status === "failed");
+  const failed = events.find(
+    (e) => e.type === "orchestration-task" && e.taskId === "t" && e.status === "failed",
+  );
   expect(failed).toBeDefined();
-  const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  const finished = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks",
+  );
   const out = finished && finished.type === "tool-call-finished" ? String(finished.output) : "";
   expect(out).toContain("no detected checks");
 });
@@ -501,13 +537,14 @@ test("a verify task that does not mutate still runs the reviewer", async () => {
 test("the spawn ceiling errors the task that would exceed subagent.maxTotal", async () => {
   let call = 0;
   const model = new MockLanguageModelV2({
-    doStream: async () => (call++ === 0
-      ? spawnTasksStep([
-          { id: "a", objective: "A" },
-          { id: "b", objective: "B" },
-          { id: "c", objective: "C" },
-        ])
-      : textStep("done")) as never,
+    doStream: async () =>
+      (call++ === 0
+        ? spawnTasksStep([
+            { id: "a", objective: "A" },
+            { id: "b", objective: "B" },
+            { id: "c", objective: "C" },
+          ])
+        : textStep("done")) as never,
   });
   const config = orchestrationConfig();
   config.subagent.maxTotal = 2; // only two children may ever be spawned
@@ -528,7 +565,9 @@ test("the spawn ceiling errors the task that would exceed subagent.maxTotal", as
   bus.close();
   await done;
 
-  const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  const finished = events.find(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks",
+  );
   const out = finished && finished.type === "tool-call-finished" ? String(finished.output) : "";
   // Two completed, the third hit the budget and failed with the ceiling message.
   expect(out).toContain("2 completed");
@@ -583,7 +622,9 @@ test("a re-submitted plan re-runs only unfinished tasks (journal seed)", async (
   expect(started).toBe(2);
 
   // Turn 2 still reports both tasks completed (from the seeded results).
-  const finishes = events.filter((e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks");
+  const finishes = events.filter(
+    (e) => e.type === "tool-call-finished" && e.toolName === "spawn_tasks",
+  );
   const lastOut = finishes.at(-1);
   const out = lastOut && lastOut.type === "tool-call-finished" ? String(lastOut.output) : "";
   expect(out).toContain("2 completed");

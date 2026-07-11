@@ -99,7 +99,9 @@ export class PluginHost {
               };
             }
             const value = Reflect.get(target, prop, receiver);
-            return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+            return typeof value === "function"
+              ? (value as (...a: unknown[]) => unknown).bind(target)
+              : value;
           },
         }) as HookBus,
         logger: this.#log,

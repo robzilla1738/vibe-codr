@@ -144,7 +144,12 @@ export class SourceLedger {
     for (const e of entries) {
       const canon = canonicalizeUrl(e.url);
       if (this.#byCanon.has(canon)) continue;
-      const entry: SourceEntry = { index: e.index, url: canon, via: e.via, ...(e.title ? { title: e.title } : {}) };
+      const entry: SourceEntry = {
+        index: e.index,
+        url: canon,
+        via: e.via,
+        ...(e.title ? { title: e.title } : {}),
+      };
       this.#byCanon.set(canon, entry);
       this.#order.push(entry);
       this.#next = Math.max(this.#next, e.index + 1);

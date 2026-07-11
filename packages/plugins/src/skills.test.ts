@@ -65,7 +65,12 @@ test("disable-model-invocation skills are omitted from progressive disclosure", 
   // Model must not discover user-only skills; they stay slash-invocable.
   expect(reg.descriptions()).toEqual(["- pdf: Work with PDFs"]);
   expect(reg.modelVisible().map((s) => s.name)).toEqual(["pdf"]);
-  expect(reg.list().map((s) => s.name).sort()).toEqual(["pdf", "svvarm"]);
+  expect(
+    reg
+      .list()
+      .map((s) => s.name)
+      .sort(),
+  ).toEqual(["pdf", "svvarm"]);
 });
 
 test("user-invocable:false skills stay model-visible but leave the user menu", () => {
@@ -122,7 +127,9 @@ test("literal block scalar (`|`): lines keep their newlines", () => {
 });
 
 test("folded scalar with an interior blank line keeps a paragraph break", () => {
-  const { frontmatter } = parseSkillMarkdown("---\ndescription: >\n  para one\n\n  para two\n---\n");
+  const { frontmatter } = parseSkillMarkdown(
+    "---\ndescription: >\n  para one\n\n  para two\n---\n",
+  );
   expect(frontmatter.description).toBe("para one\npara two");
 });
 
@@ -171,7 +178,12 @@ test("descriptions() caps each prompt-resident line — a folded essay can't tax
   expect(reg.descriptions()[1]).toBe("- tidy: Short.");
   // The cut is code-point safe: an emoji straddling the cap boundary is dropped
   // whole, never stranded as a lone surrogate half.
-  reg.register({ name: "emoji", description: "🎉".repeat(300), dir: "/tmp/emoji", load: async () => "" });
+  reg.register({
+    name: "emoji",
+    description: "🎉".repeat(300),
+    dir: "/tmp/emoji",
+    load: async () => "",
+  });
   const capped = reg.descriptions()[2]!;
   expect(capped.endsWith("…")).toBe(true);
   for (let i = 0; i < capped.length; i++) {

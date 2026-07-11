@@ -1,12 +1,13 @@
 import { emitKeypressEvents } from "node:readline";
 import { stdin, stdout } from "node:process";
 import { writeGlobalConfig, globalConfigPath, type Config } from "@vibe/config";
-import { parseModelString, type ProviderRegistry, type ModelInfo, type ProviderCreateOptions } from "@vibe/providers";
 import {
-  PROVIDER_CHOICES,
-  initialChoiceIndex,
-  type ProviderChoice,
-} from "./providers-catalog.ts";
+  parseModelString,
+  type ProviderRegistry,
+  type ModelInfo,
+  type ProviderCreateOptions,
+} from "@vibe/providers";
+import { PROVIDER_CHOICES, initialChoiceIndex, type ProviderChoice } from "./providers-catalog.ts";
 
 export { PROVIDER_CHOICES, initialChoiceIndex, type ProviderChoice };
 
@@ -15,10 +16,7 @@ export { PROVIDER_CHOICES, initialChoiceIndex, type ProviderChoice };
  * usable credentials (and isn't keyless), so a real run would fail with an
  * auth error. Keyless providers (e.g. LM Studio) never need onboarding.
  */
-export function needsOnboarding(
-  config: Config,
-  registry: ProviderRegistry,
-): boolean {
+export function needsOnboarding(config: Config, registry: ProviderRegistry): boolean {
   let providerId: string;
   try {
     providerId = parseModelString(config.model).providerId;
@@ -86,9 +84,7 @@ export interface OnboardingAnswers {
 }
 
 /** Build the global-config patch from collected answers (pure, for testing). */
-export function buildOnboardingPatch(
-  answers: OnboardingAnswers,
-): Record<string, unknown> {
+export function buildOnboardingPatch(answers: OnboardingAnswers): Record<string, unknown> {
   const patch: Record<string, unknown> = { model: answers.model };
   if (answers.providerId && (answers.apiKey || answers.baseURL)) {
     patch.providers = {
@@ -183,9 +179,7 @@ function boxed(lines: string[], color: RGB): string {
   const bar = fg("│", color);
   const top = fg(`╭${"─".repeat(width + 2)}╮`, color);
   const bottom = fg(`╰${"─".repeat(width + 2)}╯`, color);
-  const body = lines.map(
-    (l) => `${bar} ${l}${" ".repeat(width - visibleLen(l))} ${bar}`,
-  );
+  const body = lines.map((l) => `${bar} ${l}${" ".repeat(width - visibleLen(l))} ${bar}`);
   return [top, ...body, bottom].join("\n");
 }
 
@@ -259,11 +253,7 @@ interface SelectItem<T> {
 }
 
 /** Arrow-key single-select for a short list. */
-function select<T>(
-  title: string,
-  items: SelectItem<T>[],
-  initial = 0,
-): Promise<T> {
+function select<T>(title: string, items: SelectItem<T>[], initial = 0): Promise<T> {
   let idx = Math.min(Math.max(initial, 0), items.length - 1);
   // Window the list so a long menu (each row up to 2 lines with its hint) doesn't
   // draw a frame taller than the viewport — which the in-place `\x1b[{n}A` redraw
@@ -284,7 +274,9 @@ function select<T>(
       return `${head}${hint}`;
     });
     const more =
-      items.length > WINDOW ? `${dim(`  …${items.length} options (${idx + 1}/${items.length})`)}\n` : "";
+      items.length > WINDOW
+        ? `${dim(`  …${items.length} options (${idx + 1}/${items.length})`)}\n`
+        : "";
     return (
       `${bold(title)}\n\n${rows.join("\n")}\n${more}\n` +
       `${dim("↑/↓ move · enter select · ctrl-c quit")}\n`
@@ -315,18 +307,12 @@ function select<T>(
 }
 
 /** Filterable, scrolling single-select — for long live model lists. */
-function selectFiltered(
-  title: string,
-  all: string[],
-  recommended?: string,
-): Promise<string> {
+function selectFiltered(title: string, all: string[], recommended?: string): Promise<string> {
   let query = "";
   let idx = recommended ? Math.max(0, all.indexOf(recommended)) : 0;
   const WINDOW = 8;
   const view = () =>
-    query
-      ? all.filter((m) => m.toLowerCase().includes(query.toLowerCase()))
-      : all;
+    query ? all.filter((m) => m.toLowerCase().includes(query.toLowerCase())) : all;
 
   const draw = () => {
     const list = view();
@@ -343,12 +329,8 @@ function selectFiltered(
       return active ? `${band(` ❯ ${m} `)}${star}` : `   ${m}${star}`;
     });
     const more =
-      list.length > WINDOW
-        ? dim(`  …${list.length} matches (${idx + 1}/${list.length})`)
-        : "";
-    const filter = query
-      ? `${dim("filter:")} ${query}`
-      : dim("type to filter…");
+      list.length > WINDOW ? dim(`  …${list.length} matches (${idx + 1}/${list.length})`) : "";
+    const filter = query ? `${dim("filter:")} ${query}` : dim("type to filter…");
     return (
       `${bold(title)}\n${filter}\n\n${rows.join("\n") || dim("  (no matches)")}\n${more}\n\n` +
       `${dim("↑/↓ move · type to filter · enter select · ctrl-c quit")}\n`
@@ -464,23 +446,16 @@ async function chooseModel(
   let models: ModelInfo[] = [];
   if (def) {
     try {
-      models = await withSpinner(
-        `Fetching ${choice.label} models…`,
-        def.listModels(opts),
-      );
+      models = await withSpinner(`Fetching ${choice.label} models…`, def.listModels(opts));
     } catch {
       models = [];
     }
   }
 
   if (models.length > 0) {
-    const ids = models
-      .map((m) => `${m.providerId}/${m.id}`)
-      .sort((a, b) => a.localeCompare(b));
+    const ids = models.map((m) => `${m.providerId}/${m.id}`).sort((a, b) => a.localeCompare(b));
     stdout.write(`${fg("✓", OK)} ${dim(`${ids.length} models available`)}\n`);
-    const recommended = ids.includes(choice.defaultModel)
-      ? choice.defaultModel
-      : undefined;
+    const recommended = ids.includes(choice.defaultModel) ? choice.defaultModel : undefined;
     return selectFiltered("Choose a model", ids, recommended);
   }
 
@@ -503,10 +478,7 @@ async function chooseModel(
  * persisted to the user-global config. No-ops (returns false) when stdin isn't
  * a TTY so non-interactive runs surface the normal auth error instead.
  */
-export async function runOnboarding(
-  config: Config,
-  registry: ProviderRegistry,
-): Promise<boolean> {
+export async function runOnboarding(config: Config, registry: ProviderRegistry): Promise<boolean> {
   if (!stdin.isTTY) return false;
 
   stdout.write(banner());
@@ -643,9 +615,7 @@ export async function runOnboarding(
     const def = registry.get(providerId);
     let apiKey: string | undefined;
     if (def && !def.auth.keyless && !registry.isConfigured(providerId, config)) {
-      apiKey =
-        (await input(`${providerId} API key`, { mask: true })).trim() ||
-        undefined;
+      apiKey = (await input(`${providerId} API key`, { mask: true })).trim() || undefined;
     }
     // Usable if keyless, already-configured (env/saved), or a key was provided;
     // otherwise (key required + skipped) don't print a false "all set".
@@ -703,13 +673,15 @@ export async function runOnboarding(
   // key for. If the user SKIPPED a required key, the provider stays unconfigured
   // and we must not claim "all set" (which sends them into a re-onboarding loop
   // with a false confirmation).
-  const configured =
-    choiceIsConfigured(choice, config, registry) || Boolean(apiKey);
+  const configured = choiceIsConfigured(choice, config, registry) || Boolean(apiKey);
   return persist({ model, providerId: choice.registryId, apiKey, searchKey }, { configured });
 }
 
 /** Write the config patch and print a tidy confirmation. */
-async function persist(answers: OnboardingAnswers, opts: { configured?: boolean } = {}): Promise<boolean> {
+async function persist(
+  answers: OnboardingAnswers,
+  opts: { configured?: boolean } = {},
+): Promise<boolean> {
   await writeGlobalConfig(buildOnboardingPatch(answers));
   if (opts.configured === false) {
     // The model was saved, but the provider has no usable credential — be honest

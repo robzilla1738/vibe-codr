@@ -62,8 +62,7 @@ function isPrivateV6(ip: string): boolean {
   // guard. We reconstruct the embedded v4 from the low 32 bits instead.
   const h = expandV6(addr);
   if (!h) return true; // unparseable literal — treat as unsafe
-  const firstFiveZero =
-    h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0;
+  const firstFiveZero = h[0] === 0 && h[1] === 0 && h[2] === 0 && h[3] === 0 && h[4] === 0;
   // The OS routes IPv4-mapped (::ffff:a.b.c.d — h[5]===0xffff) and deprecated
   // IPv4-compatible (::a.b.c.d — h[5]===0) addresses to the embedded IPv4, so
   // reconstruct it from the low 32 bits and judge THAT. `::` (unspecified) and
@@ -182,9 +181,7 @@ export async function assertFetchAllowed(
   if (!addrs.length) throw new Error(`could not resolve ${host}`);
   for (const a of addrs) {
     if (isPrivateIp(a.address)) {
-      throw new Error(
-        `refusing to fetch ${host}: it resolves to a private address (${a.address})`,
-      );
+      throw new Error(`refusing to fetch ${host}: it resolves to a private address (${a.address})`);
     }
   }
   // Every resolved address is public — pin to one so the connection can't be

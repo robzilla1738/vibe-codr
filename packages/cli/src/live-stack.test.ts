@@ -18,7 +18,10 @@ function sse(obj: unknown): string {
 }
 const base = { id: "m", object: "chat.completion.chunk", created: 0, model: "mock-model" };
 
-function startMockModel(edit: { path: string; oldString: string; newString: string }, finalText: string): Server {
+function startMockModel(
+  edit: { path: string; oldString: string; newString: string },
+  finalText: string,
+): Server {
   return Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -32,20 +35,50 @@ function startMockModel(edit: { path: string; oldString: string; newString: stri
       let payload: string;
       if (hasToolResult) {
         payload =
-          sse({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }) +
-          sse({ ...base, choices: [{ index: 0, delta: { content: finalText }, finish_reason: null }] }) +
-          sse({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) +
+          sse({
+            ...base,
+            choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+          }) +
+          sse({
+            ...base,
+            choices: [{ index: 0, delta: { content: finalText }, finish_reason: null }],
+          }) +
+          sse({
+            ...base,
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }) +
           "data: [DONE]\n\n";
       } else {
         payload =
-          sse({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }) +
+          sse({
+            ...base,
+            choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+          }) +
           sse({
             ...base,
             choices: [
-              { index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "edit", arguments: JSON.stringify(edit) } }] }, finish_reason: null },
+              {
+                index: 0,
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "edit", arguments: JSON.stringify(edit) },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
             ],
           }) +
-          sse({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) +
+          sse({
+            ...base,
+            choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+          }) +
           "data: [DONE]\n\n";
       }
       return new Response(payload, { headers: { "content-type": "text/event-stream" } });
@@ -62,14 +95,22 @@ function startTextModel(answers: string[], seen: { messageCounts: number[] }): S
     hostname: "127.0.0.1",
     async fetch(req) {
       const url = new URL(req.url);
-      if (url.pathname.endsWith("/models")) return Response.json({ object: "list", data: [{ id: "mock-model" }] });
+      if (url.pathname.endsWith("/models"))
+        return Response.json({ object: "list", data: [{ id: "mock-model" }] });
       const body = (await req.json()) as { messages?: unknown[] };
       seen.messageCounts.push((body.messages ?? []).length);
       const text = answers[Math.min(turn++, answers.length - 1)] ?? "ok";
       const payload =
-        sse({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] }) +
+        sse({
+          ...base,
+          choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
+        }) +
         sse({ ...base, choices: [{ index: 0, delta: { content: text }, finish_reason: null }] }) +
-        sse({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) +
+        sse({
+          ...base,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        }) +
         "data: [DONE]\n\n";
       return new Response(payload, { headers: { "content-type": "text/event-stream" } });
     },
@@ -82,7 +123,8 @@ function startErrorModel(status: number): Server {
     port: 0,
     hostname: "127.0.0.1",
     fetch(req) {
-      if (new URL(req.url).pathname.endsWith("/models")) return Response.json({ data: [{ id: "mock-model" }] });
+      if (new URL(req.url).pathname.endsWith("/models"))
+        return Response.json({ data: [{ id: "mock-model" }] });
       return new Response("upstream boom", { status });
     },
   });
@@ -142,7 +184,14 @@ test("real CLI -> live HTTP model -> real edit tool edits a real file", async ()
     process.stderr.write = origErr;
   };
 
-  const code = await run(["-p", "replace old value with NEW VALUE in note.txt", "-m", "lmstudio/mock-model", "--cwd", cwd]);
+  const code = await run([
+    "-p",
+    "replace old value with NEW VALUE in note.txt",
+    "-m",
+    "lmstudio/mock-model",
+    "--cwd",
+    cwd,
+  ]);
   restoreOut();
   restoreOut = null;
 
@@ -173,7 +222,10 @@ test("a provider HTTP 500 fails cleanly with a non-zero exit", async () => {
   // Disable retries (a 5xx is transient, so the SDK would otherwise back off and
   // retry) via a real project config file — also exercising config loading.
   mkdirSync(join(cwd, ".vibe"), { recursive: true });
-  writeFileSync(join(cwd, ".vibe", "config.json"), JSON.stringify({ retry: { maxAttempts: 0, baseDelayMs: 0 } }));
+  writeFileSync(
+    join(cwd, ".vibe", "config.json"),
+    JSON.stringify({ retry: { maxAttempts: 0, baseDelayMs: 0 } }),
+  );
   server = startErrorModel(500);
   process.env.LMSTUDIO_BASE_URL = `http://127.0.0.1:${server.port}/v1`;
   const { code } = await captureStdout(() =>

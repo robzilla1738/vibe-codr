@@ -183,8 +183,7 @@ export async function runDag(
 
   const depResultsOf = (s: TaskSpec): TaskResult[] =>
     s.deps.map((d) => results.get(d)).filter((r): r is TaskResult => r !== undefined);
-  const depsAllDone = (s: TaskSpec): boolean =>
-    s.deps.every((d) => results.has(d));
+  const depsAllDone = (s: TaskSpec): boolean => s.deps.every((d) => results.has(d));
   const anyDepNotCompleted = (s: TaskSpec): boolean =>
     s.deps.some((d) => results.get(d)?.outcome !== "completed");
 

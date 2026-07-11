@@ -111,7 +111,10 @@ export class McpTokenStore {
    * the previous good file intact instead of a truncated one that reads as empty
    * (which would drop the whole grant on the next merge). */
   async merge(patch: Partial<StoredMcpAuth>): Promise<void> {
-    const next = this.#chain.then(() => this.#mergeLocked(patch), () => this.#mergeLocked(patch));
+    const next = this.#chain.then(
+      () => this.#mergeLocked(patch),
+      () => this.#mergeLocked(patch),
+    );
     this.#chain = next.then(
       () => undefined,
       () => undefined,
@@ -248,7 +251,11 @@ export function createMcpOAuthProvider(
 
 /** Parse an OAuth redirect request URL into its `code` / `error` params. Pure
  * (no I/O) so the callback parsing is unit-testable without a live server. */
-export function extractOAuthCallbackParams(reqUrl: string): { code?: string; error?: string; state?: string } {
+export function extractOAuthCallbackParams(reqUrl: string): {
+  code?: string;
+  error?: string;
+  state?: string;
+} {
   try {
     // reqUrl may be a bare path+query ("/callback?code=…") — resolve against a
     // dummy origin so the URL constructor accepts it.
@@ -314,7 +321,12 @@ function removeWaiter(key: string, waiter: OAuthCallbackWaiter): void {
   }, 0);
 }
 
-function settleWaiter(key: string, waiter: OAuthCallbackWaiter, err: Error | null, code?: string): void {
+function settleWaiter(
+  key: string,
+  waiter: OAuthCallbackWaiter,
+  err: Error | null,
+  code?: string,
+): void {
   clearTimeout(waiter.timer);
   removeWaiter(key, waiter);
   if (err) waiter.reject(err);
@@ -354,9 +366,12 @@ function getCallbackServer(target: URL, key: string): OAuthCallbackServer {
         }
         if (code) {
           settleWaiter(key, waiter, null, code);
-          return new Response("Authorization complete — you can close this tab and return to the terminal.", {
-            headers: { "content-type": "text/plain" },
-          });
+          return new Response(
+            "Authorization complete — you can close this tab and return to the terminal.",
+            {
+              headers: { "content-type": "text/plain" },
+            },
+          );
         }
         return new Response("Waiting for the OAuth callback…", {
           headers: { "content-type": "text/plain" },
@@ -385,7 +400,11 @@ export function waitForOAuthCallback(redirectUrl: string, timeoutMs = 120_000): 
     try {
       entry = getCallbackServer(target, key);
     } catch (err) {
-      reject(new Error(`could not listen on ${target.host} for the OAuth callback: ${(err as Error).message}`));
+      reject(
+        new Error(
+          `could not listen on ${target.host} for the OAuth callback: ${(err as Error).message}`,
+        ),
+      );
       return;
     }
     const waiter: OAuthCallbackWaiter = {
@@ -393,7 +412,12 @@ export function waitForOAuthCallback(redirectUrl: string, timeoutMs = 120_000): 
       resolve,
       reject,
       timer: setTimeout(
-        () => settleWaiter(key, waiter, new Error(`timed out waiting for the OAuth callback on ${target.host}`)),
+        () =>
+          settleWaiter(
+            key,
+            waiter,
+            new Error(`timed out waiting for the OAuth callback on ${target.host}`),
+          ),
         timeoutMs,
       ),
     };

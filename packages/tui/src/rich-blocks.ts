@@ -21,7 +21,7 @@ export type RichKind = "bar" | "line" | "sparkline" | "pie" | "weather" | "sourc
  * null for an ordinary code block. Only the first whitespace-delimited word counts,
  * so ```chart title="Prices"``` still resolves to a bar chart. */
 export function richKind(lang: string): RichKind | null {
-  const l = (lang.trim().toLowerCase().split(/\s+/)[0] ?? "");
+  const l = lang.trim().toLowerCase().split(/\s+/)[0] ?? "";
   switch (l) {
     case "chart":
     case "bar":
@@ -315,8 +315,14 @@ export function parseSources(body: string): Source[] {
     const bare = /(https?:\/\/\S+)/i.exec(line);
     if (bare) {
       const url = bare[1]!;
-      const title = line.slice(0, bare.index).replace(/[\s—–:-]+$/, "").trim();
-      const after = line.slice(bare.index + url.length).replace(/^[\s—–:-]+/, "").trim();
+      const title = line
+        .slice(0, bare.index)
+        .replace(/[\s—–:-]+$/, "")
+        .trim();
+      const after = line
+        .slice(bare.index + url.length)
+        .replace(/^[\s—–:-]+/, "")
+        .trim();
       sources.push({
         title: title || hostOf(url),
         url,
@@ -409,7 +415,13 @@ const DOT = [
 ];
 
 /** Bresenham line between two dot coordinates, calling `plot` for each dot. */
-function plotLine(x0: number, y0: number, x1: number, y1: number, plot: (x: number, y: number) => void): void {
+function plotLine(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  plot: (x: number, y: number) => void,
+): void {
   const dx = Math.abs(x1 - x0);
   const dy = -Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1;
@@ -454,7 +466,8 @@ export function brailleChart(points: number[], w: number, h: number): string[] {
       max = min + 1;
       min = min - 1; // center a flat line
     }
-    const px = (i: number) => (n === 1 ? Math.floor((dotsW - 1) / 2) : Math.round((i / (n - 1)) * (dotsW - 1)));
+    const px = (i: number) =>
+      n === 1 ? Math.floor((dotsW - 1) / 2) : Math.round((i / (n - 1)) * (dotsW - 1));
     const py = (v: number) => Math.round((1 - (v - min) / (max - min)) * (dotsH - 1));
     let prevX = px(0);
     let prevY = py(points[0]!);
@@ -476,7 +489,12 @@ export function brailleChart(points: number[], w: number, h: number): string[] {
  * share of the total. For a round result on a terminal's ~1:2 cell aspect, pass
  * `cols ≈ 2·rows`. `donut` punches a centered hole.
  */
-export function pieGrid(values: number[], cols: number, rows: number, opts: { donut?: boolean } = {}): number[][] {
+export function pieGrid(
+  values: number[],
+  cols: number,
+  rows: number,
+  opts: { donut?: boolean } = {},
+): number[][] {
   const C = Math.max(1, Math.floor(cols));
   const R = Math.max(1, Math.floor(rows));
   const grid: number[][] = Array.from({ length: R }, () => Array<number>(C).fill(-1));
@@ -515,9 +533,7 @@ export function sharePercents(values: number[]): number[] {
   const floor = raw.map((r) => Math.floor(r));
   let remainder = 100 - floor.reduce((a, b) => a + b, 0);
   // Hand the leftover points to the largest fractional parts, biggest first.
-  const order = raw
-    .map((r, i) => ({ i, frac: r - Math.floor(r) }))
-    .sort((a, b) => b.frac - a.frac);
+  const order = raw.map((r, i) => ({ i, frac: r - Math.floor(r) })).sort((a, b) => b.frac - a.frac);
   const out = floor.slice();
   for (const { i } of order) {
     if (remainder <= 0) break;
@@ -547,7 +563,10 @@ export interface BarLayout {
 
 /** Column budget for a bar-chart row — `label··bar…gap··value` + 1 slack cell.
  * Invariant (width ≥ 10): labelW + 2 + track + 2 + valueW ≤ width. */
-export function barChartLayout(data: { label: string; display: string }[], width: number): BarLayout {
+export function barChartLayout(
+  data: { label: string; display: string }[],
+  width: number,
+): BarLayout {
   let labelW = Math.min(20, Math.max(1, ...data.map((d) => displayWidth(d.label))));
   let valueW = Math.max(1, ...data.map((d) => displayWidth(d.display)));
   const budget = Math.max(4, width - 6); // leave the 2+2 gaps + ≥1 track + slack
@@ -575,13 +594,18 @@ export interface SparkLayout {
 /** Column budget for sparkline rows — `label··spark··range`. The range column
  * is dropped before the spark shrinks below ~4 glyphs; the label shrinks last.
  * Invariant (width ≥ 12): labelW + 2 + sparkW + (range ? rangeW : 0) ≤ width. */
-export function sparkLayout(series: { label?: string; points: number[] }[], width: number): SparkLayout {
+export function sparkLayout(
+  series: { label?: string; points: number[] }[],
+  width: number,
+): SparkLayout {
   const hasLabel = series.some((s) => s.label);
   let labelW = hasLabel
     ? Math.min(16, Math.max(1, ...series.map((s) => displayWidth(s.label ?? ""))))
     : 0;
   // Range chrome: the 2-cell gap + the widest `min–max` text across the series.
-  const rangeW = 2 + Math.max(0, ...series.map((s) => (s.points.length ? displayWidth(sparkRange(s.points)) : 0)));
+  const rangeW =
+    2 +
+    Math.max(0, ...series.map((s) => (s.points.length ? displayWidth(sparkRange(s.points)) : 0)));
   const chrome = () => (labelW > 0 ? labelW + 2 : 0);
   let showRange = true;
   let sparkW = width - chrome() - rangeW;

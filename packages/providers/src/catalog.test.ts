@@ -99,7 +99,15 @@ test("parseModelsDev coerces a non-numeric/NaN/Infinity price to undefined (adve
   expect(cost?.cacheRead).toBeUndefined();
   expect(cost?.cacheWrite).toBe(0.3);
   // Tier prices are coerced too: the bad `input` drops, the real `output` stays.
-  expect(cost?.tiers).toEqual([{ threshold: 200000, input: undefined, output: 40, cacheRead: undefined, cacheWrite: undefined }]);
+  expect(cost?.tiers).toEqual([
+    {
+      threshold: 200000,
+      input: undefined,
+      output: 40,
+      cacheRead: undefined,
+      cacheWrite: undefined,
+    },
+  ]);
 });
 
 test("parseModelsDev captures long-context pricing tiers from cost.tiers", () => {
@@ -132,7 +140,11 @@ test("parseModelsDev falls back to context_over_200k when cost.tiers is absent",
     xai: {
       models: {
         "grok-legacy": {
-          cost: { input: 1.25, output: 2.5, context_over_200k: { input: 2.5, output: 5, cache_read: 0.4 } },
+          cost: {
+            input: 1.25,
+            output: 2.5,
+            context_over_200k: { input: 2.5, output: 5, cache_read: 0.4 },
+          },
         },
       },
     },
@@ -254,10 +266,13 @@ test("a failed first load does NOT poison the catalog — a later lookup retries
   let failNext = true;
   globalThis.fetch = (async (_url: string | URL) => {
     if (failNext) throw new Error("offline");
-    return new Response(JSON.stringify({ openai: { models: { "gpt-5.2": { limit: { context: 400000 } } } } }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ openai: { models: { "gpt-5.2": { limit: { context: 400000 } } } } }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
   }) as typeof fetch;
   try {
     const cat = new CatalogService();
@@ -287,11 +302,18 @@ test("a malformed 200 does NOT poison the catalog (memory or disk) — a later g
   const realFetch = globalThis.fetch;
   let bad = true;
   globalThis.fetch = (async (_url: string | URL) => {
-    if (bad) return new Response(JSON.stringify({ unexpected: "shape" }), { status: 200, headers: { "content-type": "application/json" } });
-    return new Response(JSON.stringify({ openai: { models: { "gpt-5.2": { limit: { context: 400000 } } } } }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    if (bad)
+      return new Response(JSON.stringify({ unexpected: "shape" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    return new Response(
+      JSON.stringify({ openai: { models: { "gpt-5.2": { limit: { context: 400000 } } } } }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
   }) as typeof fetch;
   try {
     const cat = new CatalogService();

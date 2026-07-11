@@ -117,15 +117,16 @@ export function parseConfigNatural(args: string): ConfigNlResult | null {
       }
       const v = parseIntToken(tok, 0, 1000);
       if (v === null) {
-        return { kind: "error", message: "loop.defaultMax must be 0–1000 (0 = unlimited default)." };
+        return {
+          kind: "error",
+          message: "loop.defaultMax must be 0–1000 (0 = unlimited default).",
+        };
       }
       return {
         kind: "set",
         patch: { loop: { defaultMax: v } },
         description:
-          v === 0
-            ? "loop.defaultMax = 0 (unlimited by default)"
-            : `loop.defaultMax = ${v}`,
+          v === 0 ? "loop.defaultMax = 0 (unlimited by default)" : `loop.defaultMax = ${v}`,
       };
     }
   }
@@ -357,7 +358,8 @@ export function formatConfigSection(
     `plan.allowUngrounded = ${config.plan.allowUngrounded}`,
     `plan.maxRejections = ${config.plan.maxRejections}`,
   ].join("\n");
-  if (section === "goal") return `Goal settings:\n${goal}\n\nChange: /goal max 15 · /config goal plan first off`;
+  if (section === "goal")
+    return `Goal settings:\n${goal}\n\nChange: /goal max 15 · /config goal plan first off`;
   if (section === "loop") {
     return (
       `Loop defaults:\n${loop}\n\n` +
@@ -370,8 +372,10 @@ export function formatConfigSection(
       "Change: /config plan min code touches 5 · /config plan require webfetch on"
     );
   }
-  return `Steering settings:\n${goal}\n${loop}\n${plan}\n\n` +
-    "Natural language: /config goal max rounds 15 · /config loop default max 20 · /config plan min code touches 5";
+  return (
+    `Steering settings:\n${goal}\n${loop}\n${plan}\n\n` +
+    "Natural language: /config goal max rounds 15 · /config loop default max 20 · /config plan min code touches 5"
+  );
 }
 
 /** Deep-merge a small nested patch into a live Config-like object. */

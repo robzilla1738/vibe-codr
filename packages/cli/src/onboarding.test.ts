@@ -167,6 +167,8 @@ test("the new providers + custom endpoint appear in the onboarding menu", () => 
     "kilo",
     "llmgateway",
     "zenmux",
+    "snowflake",
+    "cloudflare",
     "custom-endpoint",
   ]) {
     expect(keys.has(k)).toBe(true);

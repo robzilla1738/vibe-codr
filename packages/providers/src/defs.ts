@@ -337,6 +337,35 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
+    // Snowflake Cortex — OpenAI-compatible LLM gateway on Snowflake's
+    // managed Cortex service. The base URL is account-specific:
+    // https://{account}.snowflakecomputing.com/api/v2/cortex/v1 — set it via
+    // SNOWFLAKE_CORTEX_BASE_URL or config.providers.snowflake-cortex.baseURL.
+    // Auth: a bearer token (OAuth, JWT, or PAT) via SNOWFLAKE_CORTEX_TOKEN or
+    // SNOWFLAKE_CORTEX_PAT. models.dev slug is `snowflake` (enrichment via alias).
+    id: "snowflake-cortex",
+    env: ["SNOWFLAKE_CORTEX_TOKEN", "SNOWFLAKE_CORTEX_PAT"],
+    baseURL: "",
+    baseURLEnv: "SNOWFLAKE_CORTEX_BASE_URL",
+    requiresBaseURL: true,
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Cloudflare Workers AI — OpenAI-compatible endpoint scoped to a Cloudflare
+    // account. The base URL includes the account ID:
+    // https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1 — set it
+    // via CLOUDFLARE_BASE_URL or config.providers.cloudflare-workers-ai.baseURL.
+    // Auth: CLOUDFLARE_API_KEY. models.dev slug is `cloudflare-workers-ai`.
+    id: "cloudflare-workers-ai",
+    env: ["CLOUDFLARE_API_KEY"],
+    baseURL: "",
+    baseURLEnv: "CLOUDFLARE_BASE_URL",
+    requiresBaseURL: true,
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
     // Generic bring-your-own OpenAI-compatible endpoint: point it at ANY OpenAI-
     // style API. The base URL is REQUIRED (no default) — set it via
     // `config.providers.custom.baseURL` or `CUSTOM_BASE_URL`; the key is optional

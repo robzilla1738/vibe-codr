@@ -82,7 +82,16 @@ export class ProviderRegistry {
           (def.auth.baseURLEnv ? process.env[def.auth.baseURLEnv] : undefined),
       );
     }
-    return Boolean(this.#resolveKey(def, config.providers[id]));
+    // A non-keyless provider with requiresBaseURL needs BOTH a key AND a base
+    // URL to be truly usable (e.g. Snowflake Cortex, Cloudflare Workers AI —
+    // the base URL carries an account ID so there's no sensible default).
+    const hasKey = Boolean(this.#resolveKey(def, config.providers[id]));
+    if (!hasKey) return false;
+    if (!def.auth.requiresBaseURL) return true;
+    return Boolean(
+      config.providers[id]?.baseURL ||
+        (def.auth.baseURLEnv ? process.env[def.auth.baseURLEnv] : undefined),
+    );
   }
 
   /** Resolve a full model string to a live `LanguageModel`. */

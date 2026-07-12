@@ -20,6 +20,9 @@ export const PROVIDER_SLUG_ALIASES: Record<string, string> = {
   fireworks: "fireworks-ai",
   codex: "openai", // Codex serves OpenAI models
   moonshot: "moonshotai",
+  // Snowflake Cortex uses `snowflake-cortex` as the provider id, but
+  // models.dev catalogs it under the `snowflake` slug.
+  "snowflake-cortex": "snowflake",
   // Hosted ollama.com ids (e.g. `glm-5.2`, `gpt-oss:120b`) are cataloged under
   // `ollama-cloud`; purely local tags miss and fall back as before.
   ollama: "ollama-cloud",

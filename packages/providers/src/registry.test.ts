@@ -58,6 +58,39 @@ test("custom keyless provider still requires a base URL to be configured", () =>
   }
 });
 
+test("snowflake-cortex and cloudflare-workers-ai require both key and base URL", () => {
+  const reg = new ProviderRegistry();
+  const prev = {
+    snowflakeToken: process.env.SNOWFLAKE_CORTEX_TOKEN,
+    snowflakePat: process.env.SNOWFLAKE_CORTEX_PAT,
+    snowflakeBase: process.env.SNOWFLAKE_CORTEX_BASE_URL,
+    cfKey: process.env.CLOUDFLARE_API_KEY,
+    cfBase: process.env.CLOUDFLARE_BASE_URL,
+  };
+  delete process.env.SNOWFLAKE_CORTEX_TOKEN;
+  delete process.env.SNOWFLAKE_CORTEX_PAT;
+  delete process.env.SNOWFLAKE_CORTEX_BASE_URL;
+  delete process.env.CLOUDFLARE_API_KEY;
+  delete process.env.CLOUDFLARE_BASE_URL;
+  try {
+    // Neither key nor base URL → not configured.
+    expect(reg.isConfigured("snowflake-cortex", defaultConfig())).toBe(false);
+    expect(reg.isConfigured("cloudflare-workers-ai", defaultConfig())).toBe(false);
+    // Key only (no base URL) → still not configured (requiresBaseURL).
+    process.env.SNOWFLAKE_CORTEX_TOKEN = "sf-token";
+    expect(reg.isConfigured("snowflake-cortex", defaultConfig())).toBe(false);
+    // Key + base URL → configured.
+    process.env.SNOWFLAKE_CORTEX_BASE_URL = "https://acct.snowflakecomputing.com/api/v2/cortex/v1";
+    expect(reg.isConfigured("snowflake-cortex", defaultConfig())).toBe(true);
+    process.env.SNOWFLAKE_API_KEY = "";
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else (process.env as Record<string, string>)[k] = v;
+    }
+  }
+});
+
 test("ollama stays keyless for local use but accepts a cloud key", () => {
   const reg = new ProviderRegistry();
   // Local: no key needed, no apiKey resolved.
@@ -187,10 +220,17 @@ test("openai-compatible-routed providers create ai@5 (spec v2) models", async ()
     "kilo",
     "llmgateway",
     "zenmux",
+    "snowflake-cortex",
+    "cloudflare-workers-ai",
   ]) {
     const def = builtinProviders().find((d) => d.id === id);
     if (!def) throw new Error(`${id} provider missing`);
-    const model = (await def.create("some-model", { apiKey: "test-key" })) as {
+    // Providers with requiresBaseURL (snowflake-cortex, cloudflare-workers-ai)
+    // need a base URL to build a model — pass one so the spec check works.
+    const opts = def.auth.requiresBaseURL
+      ? { apiKey: "test-key", baseURL: "https://test.example.com/v1" }
+      : { apiKey: "test-key" };
+    const model = (await def.create("some-model", opts)) as {
       specificationVersion?: string;
     };
     expect(model.specificationVersion).toBe("v2");

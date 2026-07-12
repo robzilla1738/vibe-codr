@@ -3201,19 +3201,37 @@ export function App(props: { engine: EngineClient }) {
               current value with `●`. Only the highlighted row carries a selection tint. */}
             <Show when={menuModel().open}>
               <box flexDirection="column" flexShrink={0}>
-                {/* Section header in the theme's signature hue (violet on the
-                  default) — the one colored line above a monochrome list,
-                  mirroring opencode's dialog headers. */}
-                <Show when={menuView()?.title}>
-                  <text fg={palette().heading} attributes={TextAttributes.BOLD}>
-                    {menuView()?.title}
-                  </text>
+                {/* Section header: a bold title in the theme's signature hue on
+                  the left, a muted `esc` dismiss hint on the right — mirroring
+                  opencode's dialog headers. The flex row keeps the title and
+                  the esc hint on one line regardless of menu width. */}
+                <Show when={menuView()?.title || menuView()?.loading}>
+                  <box flexDirection="row" flexShrink={0}>
+                    <Show when={menuView()?.title}>
+                      <text flexShrink={0} fg={palette().heading} attributes={TextAttributes.BOLD}>
+                        {menuView()?.title}
+                      </text>
+                    </Show>
+                    <Show when={menuView()?.loading}>
+                      <text flexShrink={0} fg={palette().muted}>
+                        {"Loading…"}
+                      </text>
+                    </Show>
+                    <box flexGrow={1} />
+                    <text flexShrink={0} fg={palette().muted}>
+                      {"esc"}
+                    </text>
+                  </box>
                 </Show>
                 <Show when={menuView()?.hint}>
                   <text fg={palette().muted}>{menuView()?.hint}</text>
                 </Show>
-                <Show when={menuView()?.loading}>
-                  <text fg={palette().muted}>{"Loading…"}</text>
+                {/* Thin divider between the header and the rows — a single row
+                  of the border tone, matching the panel/input frame lines. */}
+                <Show when={menuView()?.title || menuView()?.hint}>
+                  <box flexDirection="row" flexShrink={0}>
+                    <text fg={palette().border}>{"─".repeat(Math.max(0, contentWidth() - 4))}</text>
+                  </box>
                 </Show>
                 <For each={menuView()?.rows ?? []}>
                   {/* Two-column rows — the label (command/model/value) in the body
@@ -3277,7 +3295,9 @@ export function App(props: { engine: EngineClient }) {
                 </For>
                 <Show when={menuView()?.more}>
                   {/* Indent matches the 2-char `❯ ` row prefix so the affordance
-                    aligns with the label column above it. */}
+                    aligns with the label column above it. A thin divider
+                    separates it from the rows. */}
+                  <text fg={palette().border}>{"─".repeat(Math.max(0, contentWidth() - 4))}</text>
                   <text fg={palette().muted}>{`  ${menuView()?.more}`}</text>
                 </Show>
                 <text flexShrink={0}> </text>

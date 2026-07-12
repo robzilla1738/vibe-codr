@@ -13,7 +13,7 @@ import { loadConfig, type Config } from "@vibe/config";
 import { Engine, loadProjectMemory, SessionStore, type PersistedSession } from "@vibe/core";
 import type { EngineCommand } from "@vibe/shared";
 import { decodeInbound, type HostInbound, type HostOutbound } from "./protocol.ts";
-import { listProjectSummaries } from "./project-index.ts";
+import { listProjectSummaries, renameProject } from "./project-index.ts";
 
 function write(msg: HostOutbound): void {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -143,6 +143,16 @@ export async function runHost(): Promise<void> {
       if (method === "listProjects") {
         const projects = await listProjectSummaries(lastCwd);
         write({ type: "resp", id, ok: true, value: projects });
+        return;
+      }
+      if (method === "renameProject") {
+        const cwd = params?.cwd?.trim() || lastCwd;
+        const result = await renameProject(cwd, params?.name ?? "");
+        write(
+          result
+            ? { type: "resp", id, ok: true, value: { cwd, name: result.name } }
+            : { type: "resp", id, ok: false, error: "project not found or empty name" },
+        );
         return;
       }
       if (method === "renameSession" || method === "deleteSession" || method === "archiveSession") {

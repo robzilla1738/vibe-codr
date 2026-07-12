@@ -1,10 +1,11 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { SessionStore, stateRoot, type SessionMeta } from "@vibe/core";
+import { globalStateDir, SessionStore, stateRoot, type SessionMeta } from "@vibe/core";
 import type { Message } from "@vibe/shared";
 import type { ProjectSessionSummary, ProjectSummary } from "./protocol.ts";
 
 const TITLE_LIMIT = 72;
+const PROJECT_NAME_LIMIT = 80;
 
 function normalizedText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -14,6 +15,23 @@ function clippedTitle(value: string): string {
   const clean = normalizedText(value);
   if (clean.length <= TITLE_LIMIT) return clean;
   return `${clean.slice(0, TITLE_LIMIT - 1).trimEnd()}…`;
+}
+
+function clippedProjectName(value: string): string {
+  const clean = normalizedText(value);
+  if (clean.length <= PROJECT_NAME_LIMIT) return clean;
+  return `${clean.slice(0, PROJECT_NAME_LIMIT - 1).trimEnd()}…`;
+}
+
+async function projectDisplayName(cwd: string): Promise<string> {
+  try {
+    const value = await readFile(join(globalStateDir(cwd), "name"), "utf8");
+    const name = clippedProjectName(value);
+    if (name) return name;
+  } catch {
+    /* legacy projects use their directory name */
+  }
+  return basename(cwd) || cwd;
 }
 
 /** Human session label for desktop navigation. */
@@ -89,10 +107,24 @@ async function summarizeProject(cwd: string): Promise<ProjectSummary | null> {
     .sort((a, b) => b.updatedAt - a.updatedAt);
   return {
     cwd,
-    name: basename(cwd) || cwd,
+    name: await projectDisplayName(cwd),
     updatedAt: sessions[0]?.updatedAt ?? 0,
     sessions,
   };
+}
+
+export async function renameProject(cwd: string, rawName: string): Promise<{ name: string } | null> {
+  const name = clippedProjectName(rawName);
+  if (!name || !(await isDirectory(cwd))) return null;
+  try {
+    const dir = globalStateDir(cwd);
+    await mkdir(dir, { recursive: true });
+    await Bun.write(join(dir, "path"), `${resolve(cwd)}\n`);
+    await Bun.write(join(dir, "name"), `${name}\n`);
+    return { name };
+  } catch {
+    return null;
+  }
 }
 
 /** Read-only desktop index over all registered vibe-codr project state. */

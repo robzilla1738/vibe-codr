@@ -24,12 +24,14 @@ export type HostInbound =
         | "finalize"
         | "listSessions"
         | "listProjects"
+        | "renameProject"
         | "renameSession"
         | "deleteSession"
         | "archiveSession";
       params?: {
         cwd?: string;
         id?: string;
+        name?: string;
         title?: string;
       };
     }
@@ -72,6 +74,7 @@ const RPC_METHODS = new Set<RpcMethod>([
   "finalize",
   "listSessions",
   "listProjects",
+  "renameProject",
   "renameSession",
   "deleteSession",
   "archiveSession",

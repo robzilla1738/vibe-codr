@@ -4,6 +4,23 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — duplicate mode label, spinner, and model name in the input block
+
+The opencode-style footer row inside the input block (added in 0.4.27)
+duplicated three pieces of information already shown elsewhere:
+
+- **Mode label** (AGENT/PLAN/YOLO): already in the prompt row (`MODE ❯`) —
+  the footer row repeated it below the textarea.
+- **Spinner + elapsed label**: already in the working indicator above the
+  input — the footer row repeated it inside the block.
+- **Model name**: already in the under-input status bar (or the sidebar
+  session card on wide panes) — the footer row repeated it on the right.
+
+- **Fix:** removed the footer row entirely. Every piece of info it showed is
+  already displayed in its canonical location.
+
+## 0.4.27 — 2026-07-12
+
 ### Improved — TUI polish + subagent dedup + orchestration doctrine
 
 A focused pass on the TUI's rendering and the multi-agent delegation doctrine:

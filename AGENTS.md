@@ -631,12 +631,7 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   `modes.ts` holds the fixed PLAN/YOLO hues), then a `brand()` `❯` caret glyph. The `<input>`'s own
   `backgroundColor`/`focusedBackgroundColor` are **`"transparent"`** (an OpenTUI
   Textarea otherwise paints its whole row a different shade past the block's
-  fill). The placeholder is "Send a message or type / to start". Below the
-  textarea, an opencode-style **footer row** shows the mode label (left) and the
-  model name (right, hidden when the sidebar session card owns it); a braille
-  spinner + `elapsedLabel()` appears on the left when a turn is active. This
-  makes the input block self-contained: the user sees the model and turn status
-  without looking at the under-input status bar. **All status
+  fill). The placeholder is "Send a message or type / to start". **All status
   details live UNDER the input**, not in a header (and cwd · git · goal sit
   top-left). Git state comes from `readGitInfo()` (`git-info.ts`, an injectable-
   runner module unit-tested against fixed porcelain output; the engine keeps a thin

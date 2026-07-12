@@ -3332,31 +3332,6 @@ export function App(props: { engine: EngineClient }) {
                 cursorColor={accent()}
               />
             </box>
-            {/* Footer row inside the input block — opencode-style: below the
-              textarea, a quiet line showing the mode label (left) and the model
-              name (right, hidden when the sidebar session card owns it). A
-              spinner + working label appears on the left when the turn is active. */}
-            <Show when={!menuModel().open}>
-              <box flexDirection="row" flexShrink={0} gap={1} marginTop={1}>
-                <Show when={working()}>
-                  <text flexShrink={0} fg={accent()}>
-                    {spinnerFrame(tick())}
-                  </text>
-                  <text flexShrink={0} fg={palette().muted}>
-                    {elapsedLabel()}
-                  </text>
-                </Show>
-                <text flexShrink={0} fg={accent()}>
-                  {modeWord()}
-                </text>
-                <box flexGrow={1} />
-                <Show when={!sidebarOn()}>
-                  <text flexShrink={0} fg={palette().muted}>
-                    {headModel()}
-                  </text>
-                </Show>
-              </box>
-            </Show>
           </box>
         </Rail>
         {/* Under-input status bar — a justified row, NOT centered: the live status

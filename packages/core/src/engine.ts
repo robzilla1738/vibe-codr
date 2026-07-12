@@ -438,6 +438,10 @@ export class Engine implements EngineClient {
    * sequence reviews the CUMULATIVE change, not just the last fix turn. Cleared
    * with the round budgets on a fresh user prompt; internal fix turns keep it. */
   #promptBaselineId: string | undefined;
+  /** Whether the vision relay is active for this session — determined once
+  (after the first prompt's catalog load) and set on the session so the system
+  prompt includes the vision relay instructions from the very first turn. */
+  #visionRelayDetermined = false;
   /** Branch-mode commit-on-green: gitPrepare's verdict, cached once per session
    * (null = not yet attempted). A refusal disables branch commits for the session
    * and never re-checks (the work branch is checked out ONCE, then we stay on it). */
@@ -2466,6 +2470,20 @@ export class Engine implements EngineClient {
     // block from long-term memory using the first prompt + goal, injected into
     // the system prompt. Best-effort — a failure must not block the turn.
     await this.#maybeProactiveRecall(text);
+    // Determine vision relay active status ONCE (session-stable). The system
+    // prompt must be byte-stable across turns, so this is set before the first
+    // session.run — the VISION RELAY section rides in the system prompt from
+    // the very first turn, telling the model to use relay descriptions instead
+    // of trying to read image files with tools.
+    if (!this.#visionRelayDetermined) {
+      this.#visionRelayDetermined = true;
+      const relayConfig = this.#config.vision.relay;
+      if (relayConfig.enabled && relayConfig.relayModel) {
+        await this.catalog.ensureLoaded();
+        const ok = await this.#supportsImages(this.#session.model);
+        this.#session.visionRelayActive = ok === false;
+      }
+    }
     // Expand `@file` mentions: text files become context blocks, images become
     // attachments for vision models. Unresolvable mentions pass through.
     const expanded = await expandMentions(text, this.#cwd);

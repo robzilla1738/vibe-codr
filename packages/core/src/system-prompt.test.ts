@@ -262,3 +262,18 @@ test("the task list lives in the workspace-state block, NOT the (cache-stable) s
   expect(formatWorkspaceState({ tasks: [] })).toBeUndefined();
   expect(formatWorkspaceState({})).toBeUndefined();
 });
+
+test("vision relay section is injected when visionRelayActive is true", () => {
+  const out = composeSystemPrompt({ mode: "execute", goal: null, visionRelayActive: true });
+  expect(out).toContain("VISION RELAY");
+  expect(out).toContain("text-only model");
+  expect(out).toContain("relay description");
+  expect(out).toContain("Do NOT try to use");
+});
+
+test("vision relay section is absent when visionRelayActive is false/omitted", () => {
+  const out = composeSystemPrompt({ mode: "execute", goal: null });
+  expect(out).not.toContain("VISION RELAY");
+  const out2 = composeSystemPrompt({ mode: "execute", goal: null, visionRelayActive: false });
+  expect(out2).not.toContain("VISION RELAY");
+});

@@ -235,6 +235,10 @@ export class Session {
   mode: Mode;
   goal: string | null;
   busy = false;
+  /** Set by the engine once (session-stable): true when the vision relay is
+  active — the primary model can't see images and a relay model captions them.
+  Drives a system-prompt section so the model knows to use relay descriptions. */
+  visionRelayActive = false;
 
   #deps: SessionDeps;
   #modelMessages: ModelMessage[];
@@ -1101,6 +1105,7 @@ export class Session {
         pluginBlocks: this.#deps.extraSystem,
         subagentsAvailable,
         ...(rosterLines.length ? { agentRoster: rosterLines } : {}),
+        ...(this.visionRelayActive ? { visionRelayActive: true } : {}),
         // Only model-visible skills land in the prompt (disable-model-invocation
         // skills are omitted by descriptions()). Skip the block entirely when
         // nothing is model-loadable — an empty AVAILABLE SKILLS header is noise.

@@ -33,6 +33,10 @@ export interface SystemPromptInputs {
   subagentsAvailable?: boolean;
   /** Named-agent `name — description` lines, for capability-based routing. */
   agentRoster?: string[];
+  /** True when the vision relay is active (primary model can't see images,
+  relay model captions them). Injects a system-prompt section so the model
+  knows to use the relay descriptions instead of trying to read image files. */
+  visionRelayActive?: boolean;
 }
 
 const BASE = `You are vibe-codr, a capable, model-agnostic coding agent operating in a terminal.
@@ -163,6 +167,15 @@ export function formatToday(now: Date = new Date()): string {
   return `${long} (${iso})`;
 }
 
+const VISION_RELAY = `VISION RELAY. You are a text-only model — you cannot see images directly. When a user attaches an image (paste, @path, or drag-in), a separate vision-capable relay model captions it and the text description is injected into the user's message as a block like:
+
+--- image: /path/to/file.png (vision relay description) ---
+[Structured description: visual layout, OCR'd text content, component positions, error messages, etc.]
+
+Treat these descriptions AS IF you saw the image — they contain everything you need to answer questions about it. Do NOT try to use \`read\`, \`ls\`, \`file\`, \`bash\`, or any other tool to look at the image file — the description is already in your context and the file path in the block header is informational only. If the description is incomplete for your task, say so and ask the user for clarification rather than attempting to access the file yourself.
+
+When answering "can you see this?" about an attached image: yes, you can see it through the vision relay — describe what the relay caption says.`;
+
 /** Assemble the system prompt. Regenerated each turn so it survives compaction. */
 export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   const sections: string[] = [BASE];
@@ -235,6 +248,9 @@ export function composeSystemPrompt(inputs: SystemPromptInputs): string {
   }
   if (inputs.pluginBlocks?.length) {
     sections.push(...inputs.pluginBlocks);
+  }
+  if (inputs.visionRelayActive) {
+    sections.push(VISION_RELAY);
   }
   return sections.join("\n\n");
 }

@@ -350,7 +350,11 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   The engine calls `catalog.ensureLoaded()` before `supportsImages` when the
   relay is enabled, so the relay fires from the very first prompt of a new
   session (the catalog is non-blocking and returns `undefined` until loaded,
-  which would silently skip the relay).
+  which would silently skip the relay). The system prompt includes a `VISION
+  RELAY` section (injected when `session.visionRelayActive` — determined once
+  after the first prompt's catalog load and set on the session for
+  byte-stability) that tells the model to use relay descriptions as its vision
+  and NOT try to `read`/`ls`/`file` the image file.
   - **Meta Model API harness edges:** `/reasoning` forwards `reasoningEffort` and
     never sends `"none"`; after `present_plan`, Meta uses `activeTools:[]` without
     `tool_choice:"none"` (Meta only allows `"auto"`).

@@ -126,7 +126,7 @@ const SCENES: SceneDef[] = [
     cwd: "~/vibe-codr",
     engine: { usage: U, git: { branch: "main", dirty: 0, ahead: 0, behind: 0, worktree: false } },
     async setup({ settle }) {
-      // The empty-state splash: wordmark, "Try asking" suggestion list, input.
+      // The empty-state splash: wordmark, input.
       await settle();
     },
   },

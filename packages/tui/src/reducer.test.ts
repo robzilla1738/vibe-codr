@@ -77,21 +77,21 @@ test("tool-start creates a block; tool-finish fills its output by call id", () =
   expect(s.toolByCallId).toEqual({}); // call id consumed
 });
 
-test("a subagent tool is markdown but starts collapsed (panel owns fan-out)", () => {
+test("a subagent tool starts collapsed (panel owns fan-out)", () => {
   const s = run([{ type: "tool-start", toolCallId: "c1", toolName: "spawn_subagent", input: {} }]);
   const t = tool(s.blocks[0]!);
   expect(t.collapsed).toBe(true);
-  expect(t.isMarkdown).toBe(true);
+  // The Subagents panel is the primary surface for subagent tracking;
+  // the transcript block stays a collapsed marker to avoid duplication.
   expect(t.toolName).toBe("spawn_subagent");
 });
 
-test("a spawn_tasks fan-out is markdown and starts collapsed", () => {
+test("a spawn_tasks fan-out starts collapsed (panel owns detail)", () => {
   const s = run([
     { type: "tool-start", toolCallId: "c1", toolName: "spawn_tasks", input: { tasks: [] } },
   ]);
   const t = tool(s.blocks[0]!);
   expect(t.collapsed).toBe(true);
-  expect(t.isMarkdown).toBe(true);
 });
 
 test("long successful bash stays collapsed with line-count meta", () => {

@@ -112,9 +112,8 @@ const waitForText = async (needle: string, ms = 2000): Promise<string> => {
 // 1) Fresh screen: the centered VIBE CODR wordmark, the mode break on the input
 // border, the model in the under-input status line, and the input placeholder.
 let frame = t.captureCharFrame();
-// Splash: the block wordmark (░██ cells) + the single "Try ›" prompt-starter line
-// (no tagline, no key cheatsheet — those moved to the under-input status).
-check("splash renders (wordmark + try line)", frame.includes("░") && frame.includes("explain this codebase"));
+// Splash: the block wordmark (░██ cells) only — suggestions were removed.
+check("splash renders (wordmark)", frame.includes("░"));
 check("input shows the placeholder", frame.includes("Send a message"));
 check("input border shows the AGENT mode", frame.includes("AGENT"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));

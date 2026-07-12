@@ -30,8 +30,6 @@ export type Block =
       collapsed: boolean;
       /** Output is a unified diff → color +/- lines when expanded. */
       isDiff: boolean;
-      /** Output is markdown prose (a subagent's reply) → render via <markdown>. */
-      isMarkdown?: boolean;
       /** Output is a web-search result list → render as clean source cards. */
       isSources?: boolean;
       isError: boolean;
@@ -209,12 +207,12 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
     case "tool-start": {
       const f = finalizeActive(s);
       const label = toolLabel(a.toolName, a.input);
-      // A subagent reply / task-DAG report is markdown prose; a web-search result
-      // list renders as clean source cards — both instead of raw dumped lines.
-      // Spawn tools stay collapsed by default (the Subagents panel owns fan-out
-      // awareness; opening five full replies floods the transcript). Verbose
-      // density force-opens them at render time.
-      const isMarkdown = a.toolName === "spawn_subagent" || a.toolName === "spawn_tasks";
+      // A web-search result list renders as clean source cards instead of raw
+      // dumped lines. Spawn tools (spawn_subagent / spawn_tasks) are NOT rendered
+      // as full markdown — the Subagents panel is the primary surface for
+      // subagent tracking (each child's live status + result). The transcript
+      // block stays a collapsed one-line marker so the work isn't duplicated.
+      // Verbose density force-opens them at render time for full detail.
       const isSources = a.toolName === "web_search";
       const blocks = [
         ...f.blocks,
@@ -226,7 +224,6 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           output: [] as string[],
           collapsed: true,
           isDiff: false,
-          isMarkdown,
           isSources,
           isError: false,
           done: false,

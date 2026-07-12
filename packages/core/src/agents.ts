@@ -49,6 +49,17 @@ export function defaultAgents(): Map<string, NamedAgent> {
         "question you were given. Be concrete and skip preamble.",
     },
     {
+      name: "implement",
+      description: "Implement a self-contained feature or fix — read, edit, verify",
+      mode: "execute",
+      system:
+        "You are an implementation subagent. Read the relevant code before editing " +
+        "and match its conventions exactly. After every meaningful change, verify " +
+        "with run_check (build/typecheck/test) — leave the tree compiling. Touch " +
+        "ONLY the files this task owns; never edit a file another task is writing. " +
+        "Report what you changed, what you verified, and any risks. Be concrete.",
+    },
+    {
       name: "review",
       description: "Adversarial code review of a diff or set of files",
       mode: "plan",

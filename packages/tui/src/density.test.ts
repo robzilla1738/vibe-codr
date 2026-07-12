@@ -26,17 +26,12 @@ test("densityLabel is non-empty for every level", () => {
 });
 
 test("toolCollapsed: quiet always collapses", () => {
-  expect(
-    toolCollapsed("quiet", { collapsed: false, isError: true, isDiff: true, isMarkdown: true }),
-  ).toBe(true);
+  expect(toolCollapsed("quiet", { collapsed: false, isError: true, isDiff: true })).toBe(true);
 });
 
-test("toolCollapsed: verbose opens error/diff/markdown even when flagged collapsed", () => {
+test("toolCollapsed: verbose opens error/diff even when flagged collapsed", () => {
   expect(toolCollapsed("verbose", { collapsed: true, isError: true, isDiff: false })).toBe(false);
   expect(toolCollapsed("verbose", { collapsed: true, isError: false, isDiff: true })).toBe(false);
-  expect(
-    toolCollapsed("verbose", { collapsed: true, isError: false, isDiff: false, isMarkdown: true }),
-  ).toBe(false);
   // Ordinary tool stays collapsed until the user expands.
   expect(toolCollapsed("verbose", { collapsed: true, isError: false, isDiff: false })).toBe(true);
 });

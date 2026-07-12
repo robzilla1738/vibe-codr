@@ -216,7 +216,10 @@ export class OrchestratorRunner {
         "machine-consumable JSON result, or `detach:true` to run it in the background and collect " +
         "it later with check_task. Follow up with continue_subagent (using the returned id) instead " +
         "of re-spawning when a child already has the context. While you are " +
-        "planning (read-only), subagents are read-only too (investigation only).",
+        "planning (read-only), subagents are read-only too (investigation only). " +
+        "For multi-step plans with dependencies, prefer spawn_tasks (declare deps for ordering, " +
+        "files for disjoint ownership, verify for review). Use the `agent` field to route by " +
+        "capability (explore for research, review for code review, test for test authoring).",
       inputSchema: Input,
       // The spawn itself touches nothing — the child's own tools gate their side
       // effects individually — so don't make orchestration prompt for permission.

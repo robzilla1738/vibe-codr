@@ -41,10 +41,10 @@ export function densityLabel(d: TranscriptDensity): string {
  */
 export function toolCollapsed(
   density: TranscriptDensity,
-  block: { collapsed: boolean; isError: boolean; isDiff: boolean; isMarkdown?: boolean },
+  block: { collapsed: boolean; isError: boolean; isDiff: boolean },
 ): boolean {
   if (density === "quiet") return true;
-  if (density === "verbose" && (block.isError || block.isDiff || block.isMarkdown)) return false;
+  if (density === "verbose" && (block.isError || block.isDiff)) return false;
   return block.collapsed;
 }
 

@@ -191,9 +191,9 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   honestly green-check an implement task). `spawn_subagent` is `readOnly: true`
   so the orchestration itself never prompts for permission — the child's own
   tools gate their side effects individually (auto-verify still counts a spawn
-  turn as mutating via a special-case). Three coding agents ship by default
+  turn as mutating via a special-case). Four coding agents ship by default
   (`agents.ts` `defaultAgents()`: `explore`/`review` are plan-mode/read-only,
-  `test` is execute); `loadAgents` layers `.vibe/agents/*.md` over them so a
+  `implement`/`test` are execute); `loadAgents` layers `.vibe/agents/*.md` over them so a
   user file overrides a default by name. The roster is injected into the prompt
   for capability routing. Per-fan-out concurrency is bounded by a **per-session**
   semaphore (`#childGate` = `createSemaphore(subagent.maxParallel)`) — per-session
@@ -566,12 +566,8 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   via `captureSpans()` (many distinct fg colors, all blue-dominant — `captureCharFrame`
   is color-blind). Shown when the column has room (`showWordmark()`); otherwise it
   falls back to `<ascii_font text="VIBE CODR" font="slick" color={brand()}>` (flat
-  accent), then `◆ Vibe Codr`. Below it is a quiet "Try asking" intro then the
-  example asks as a **block-centered list** with aligned `›` markers (a flex row of
-  `[flexGrow spacer][column of rows][flexGrow spacer]`, each row `[› ][example]`) —
-  reads as inviting quick-actions, not a cramped one-liner. `SegRow` is a row of
-  coloured `<text>` runs (OpenTUI has no inline-markup `<text>`), two-tone: muted
-  scaffolding, brighter foreground. **Context (location · git · goal) sits
+  accent), then `◆ Vibe Codr`. The splash is the wordmark alone — no suggestion
+  prompts (removed to keep the splash clean and focused). **Context (location · git · goal) sits
   TOP-LEFT** of the column (`topLeftLine()`, muted, left-aligned), out of the
   conversation's way. The **under-input footer is a justified status BAR** (NOT
   centered): `detailsRight()` (model · changed · ctx · cost) hugs the LEFT edge
@@ -606,11 +602,13 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   row and expands in place. Consecutive **tool** rows stack flush (chained — the
   follower drops its top margin when the prior visible block is also a tool), so a
   search→fetch→fetch sequence reads as one group instead of separated fragments;
-  the gap is kept only at a boundary with prose, a notice, or a folded turn. A **`spawn_subagent` block is flagged `isMarkdown`** and
-  **starts collapsed** (the Subagents panel owns fan-out status; verbose density
-  force-opens markdown). When expanded it renders through `<markdown>` (headers,
-  bold, lists, code, and **tables**, which OpenTUI renders natively) instead of
-  raw text lines; `ToolBlockView` takes the `SyntaxStyle` for this. Expand/collapse goes
+  the gap is kept only at a boundary with prose, a notice, or a folded turn. A
+  **`spawn_subagent`/`spawn_tasks` block starts collapsed** — the Subagents panel
+  is the primary surface for subagent fan-out status (each child's live activity
+  + result), so the transcript block stays a one-line marker to avoid duplicating
+  the work across two surfaces. Expand/collapse goes
+  through `anchoredToggle`: when the
+  turn is **idle** it disengages the scrollbox's `stickyScroll` and freezes Expand/collapse goes
   through `anchoredToggle`: when the
   turn is **idle** it disengages the scrollbox's `stickyScroll` and freezes
   `scrollTop` so the clicked row stays put; while **streaming** it leaves sticky
@@ -633,7 +631,12 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   `modes.ts` holds the fixed PLAN/YOLO hues), then a `brand()` `❯` caret glyph. The `<input>`'s own
   `backgroundColor`/`focusedBackgroundColor` are **`"transparent"`** (an OpenTUI
   Textarea otherwise paints its whole row a different shade past the block's
-  fill). The placeholder is "Send a message or type / to start". **All status
+  fill). The placeholder is "Send a message or type / to start". Below the
+  textarea, an opencode-style **footer row** shows the mode label (left) and the
+  model name (right, hidden when the sidebar session card owns it); a braille
+  spinner + `elapsedLabel()` appears on the left when a turn is active. This
+  makes the input block self-contained: the user sees the model and turn status
+  without looking at the under-input status bar. **All status
   details live UNDER the input**, not in a header (and cwd · git · goal sit
   top-left). Git state comes from `readGitInfo()` (`git-info.ts`, an injectable-
   runner module unit-tested against fixed porcelain output; the engine keeps a thin
@@ -644,7 +647,13 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   **Subagents** render ONE truncated line each by default (a big fan-out used to
   dump every full multi-line prompt and flood the screen); tap a row
   (`toggleSub`/`expandedSubs`) to expand its full prompt + result, bounded by
-  `truncate(…, 700)` so an expanded row can't run off-screen. User message blocks
+  `truncate(…, 700)` so an expanded row can't run off-screen. The
+  `subagent-started` handler **deduplicates by `subagentId`** —
+  `continue_subagent` reuses the same child session id, so it updates the
+  existing row instead of appending a duplicate. `spawn_subagent`/`spawn_tasks`
+  tool blocks are NOT rendered as full markdown in the transcript (the
+  Subagents panel is the primary surface); the transcript block stays a
+  collapsed one-line marker so the same work doesn't appear in two places. User message blocks
   are filled `panel` cards on the `brand()` Rail (the turn's reply/tool card sits
   on a muted `gutter` Rail) so a sent message reads as a quoted echo of where you
   type.

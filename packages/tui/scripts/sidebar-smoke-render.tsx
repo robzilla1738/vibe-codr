@@ -109,8 +109,18 @@ const frame1 = t.captureCharFrame();
 const rows1 = frame1.split("\n");
 
 // Contract: no redundant Activity panel. Tools stay in the chat transcript.
-const sidebarText = rows1.map((r) => r.slice(W - 44)).join("\n");
-const chatText1 = rows1.map((r) => r.slice(0, W - 46)).join("\n");
+// The sidebar position depends on CONTENT_MAX centering — find the rail
+// column dynamically instead of hardcoding the offset.
+const findRailCol = (rows: string[]): number => {
+  for (const r of rows) {
+    const idx = r.indexOf("\u258e");
+    if (idx >= 20) return idx;
+  }
+  return W - 44;
+};
+const railCol = findRailCol(rows1);
+const sidebarText = rows1.map((r) => r.slice(railCol)).join("\n");
+const chatText1 = rows1.map((r) => r.slice(0, railCol - 2)).join("\n");
 check("sidebar has no Activity header without reasoning", !sidebarText.includes("Activity"));
 check("sidebar has no Thinking panel without reasoning", !sidebarText.includes("Thinking"));
 check("sidebar does not list tool search in the trail", !sidebarText.includes("World Cup match"));
@@ -138,8 +148,8 @@ check("chat footer drops the model while the card is up", !chatText1.includes("o
 // grow filler + under-input reserve still hold bottom alignment.
 const railRows = (lo: number, hi: number): number[] =>
   rows1.flatMap((r, i) => (r.slice(lo, hi).includes("▎") ? [i] : []));
-const chat = railRows(0, 60);
-const side = railRows(W - 48, W);
+const chat = railRows(0, railCol - 2);
+const side = railRows(railCol, W);
 // Row 0 = column padding, row 1 = the (now blank, height-pinned) context
 // line, row 2 = the viewport's first content row — where the sidebar's first
 // block must start. (The context line's text is blank while the session card
@@ -159,7 +169,7 @@ check(
 push({ type: "reasoning-delta", id: "r1", delta: "Now weighing the layout options.\n" } as UIEvent);
 await settle();
 const frame2 = t.captureCharFrame();
-const side2 = frame2.split("\n").map((r) => r.slice(W - 44)).join("\n");
+const side2 = frame2.split("\n").map((r) => r.slice(findRailCol(frame2.split("\n")))).join("\n");
 check("Thinking panel appears once reasoning exists", side2.includes("Thinking"));
 check("sidebar still has no Activity header", !side2.includes("Activity"));
 check("reasoning text is in the Thinking panel", side2.includes("weighing the layout options"));
@@ -182,8 +192,9 @@ push({
 await settle();
 const frameSub = t.captureCharFrame();
 const rowsSub = frameSub.split("\n");
-const sideSlice = rowsSub.map((r) => r.slice(W - 44)).join("\n");
-const chatSlice = rowsSub.map((r) => r.slice(0, W - 46)).join("\n");
+const subRailCol = findRailCol(rowsSub);
+const sideSlice = rowsSub.map((r) => r.slice(subRailCol)).join("\n");
+const chatSlice = rowsSub.map((r) => r.slice(0, subRailCol - 2)).join("\n");
 check("sidebar shows the Subagents panel", sideSlice.includes("Subagents"));
 check("subagent row shows its prompt", sideSlice.includes("research the venue"));
 check("subagent row shows its LIVE activity line", sideSlice.includes("rg capacity"));
@@ -191,7 +202,7 @@ check("inline Subagents panel stays hidden while the sidebar hosts it", !chatSli
 const railRowsSub = (lo: number, hi: number): number[] =>
   rowsSub.flatMap((r, i) => (r.slice(lo, hi).includes("▎") ? [i] : []));
 const chatSub = railRowsSub(0, 60);
-const sideSub = railRowsSub(W - 48, W);
+const sideSub = railRowsSub(subRailCol, W);
 check(
   "sidebar bottom still lands on the input's bottom row with Subagents up",
   chatSub[chatSub.length - 1] === sideSub[sideSub.length - 1],
@@ -205,7 +216,7 @@ push({
 } as UIEvent);
 await settle();
 const frameSubDone = t.captureCharFrame();
-const sideDone = frameSubDone.split("\n").map((r) => r.slice(W - 44)).join("\n");
+const sideDone = frameSubDone.split("\n").map((r) => r.slice(findRailCol(frameSubDone.split("\n")))).join("\n");
 check("finished subagent folds in its result glimpse", sideDone.includes("81,365"));
 
 // ── Scene 3: windowing — 45 turns → fold row with the right count.

@@ -174,14 +174,14 @@ import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
  * 100, originally 84) trades line-length purity for information density —
  * code, diffs, tables and tool output show meaningfully more per row on a
  * full-screen terminal while narrow panes still just fill the window. */
-const CONTENT_MAX = 130;
+const CONTENT_MAX = 100;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
 /** The right sidebar's fixed column width (Tasks + live thinking on wide panes). */
 const SIDEBAR_W = 42;
 /** Min terminal width for the sidebar: below this the chat column would be
- * squeezed under ~96 cols, so Tasks/thinking stay inline instead. */
-const SIDEBAR_MIN_TERM = 140;
+ * squeezed under ~80 cols, so Tasks/thinking stay inline instead. */
+const SIDEBAR_MIN_TERM = 120;
 /** Max visible rows the input box grows to before it scrolls internally. */
 const INPUT_MAX_ROWS = 10;
 /** Prompt-field keybinding overrides (merged over the textarea defaults):
@@ -746,7 +746,7 @@ export function App(props: { engine: EngineClient }) {
     (plan()?.ungrounded ? 1 : 0) + (plan()?.sources?.length || plan()?.assumptions?.length ? 1 : 0);
   // ~8 rows of app chrome (context line, input, status, padding) + ~8 rows of
   // transcript stay reserved; the floor keeps the card usable on tiny panes.
-  const planPanelCap = () => Math.max(9, dims().height - 20);
+  const planPanelCap = () => Math.max(9, dims().height - 21);
   const planPanelRows = () => Math.min(planPanelCap(), planContentRows() + 5 + planMetaRows());
   // Whether the plan overflows its card (→ show the scroll affordance in the hint).
   const planOverflows = () => planContentRows() + 5 + planMetaRows() > planPanelCap();
@@ -765,7 +765,7 @@ export function App(props: { engine: EngineClient }) {
   // the menu title/hint/more/divider, the input line, and the under-input status —
   // so the prompt you're typing at always stays visible (the rest scrolls with a
   // "+N more" affordance). Mirrors `planPanelRows()`'s height cap.
-  const menuWindow = () => Math.max(3, Math.min(MENU_WINDOW_MAX, dims().height - inputRows() - 11));
+  const menuWindow = () => Math.max(3, Math.min(MENU_WINDOW_MAX, dims().height - inputRows() - 12));
   const [menuStart, setMenuStart] = createSignal(0);
   /** Scroll the window the minimum needed to keep row `sel` of `count` visible. */
   const ensureMenuVisible = (sel: number, count: number) => {
@@ -1906,15 +1906,33 @@ export function App(props: { engine: EngineClient }) {
               });
               break;
             case "subagent-started":
-              setSubagents((prev) => [
-                ...prev,
-                {
-                  id: event.subagentId,
-                  prompt: event.prompt,
-                  status: "running",
-                  startedAt: Date.now(),
-                },
-              ]);
+              // Deduplicate by subagentId: a continue_subagent re-uses the same
+              // child id, so we UPDATE the existing row instead of appending a
+              // duplicate. A fresh spawn (new id) appends as before.
+              setSubagents((prev) => {
+                const existing = prev.findIndex((s) => s.id === event.subagentId);
+                if (existing >= 0) {
+                  const next = prev.slice();
+                  next[existing] = {
+                    ...next[existing],
+                    prompt: event.prompt,
+                    status: "running",
+                    activity: undefined,
+                    result: undefined,
+                    startedAt: Date.now(),
+                  };
+                  return next;
+                }
+                return [
+                  ...prev,
+                  {
+                    id: event.subagentId,
+                    prompt: event.prompt,
+                    status: "running",
+                    startedAt: Date.now(),
+                  },
+                ];
+              });
               break;
             case "subagent-activity":
               // Live "what is it doing now" line — attach only to the RUNNING child,
@@ -2532,36 +2550,7 @@ export function App(props: { engine: EngineClient }) {
                     </box>
                     <box flexGrow={1} />
                   </box>
-                  {/* Prompt starters under the wordmark: a quiet intro, then the
-                  example asks as a block-centered list with aligned `›` markers —
-                  reads as inviting quick-actions instead of a cramped one-liner. */}
-                  <box flexDirection="column" marginTop={2}>
-                    <SegRow center segs={[{ t: "Try asking", fg: palette().muted }]} />
-                    <box flexDirection="row" flexShrink={0} marginTop={1}>
-                      <box flexGrow={1} />
-                      <box flexDirection="column" flexShrink={0}>
-                        <For
-                          each={[
-                            "explain this codebase",
-                            "fix the failing test",
-                            "add a --json flag",
-                          ]}
-                        >
-                          {(ex) => (
-                            <box flexDirection="row" flexShrink={0}>
-                              <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                                {"›  "}
-                              </text>
-                              <text flexShrink={0} fg={palette().assistant}>
-                                {ex}
-                              </text>
-                            </box>
-                          )}
-                        </For>
-                      </box>
-                      <box flexGrow={1} />
-                    </box>
-                  </box>
+                  {/* Suggestions removed — the wordmark alone is the splash. */}
                   <box flexGrow={1} />
                 </box>
               }
@@ -3343,6 +3332,31 @@ export function App(props: { engine: EngineClient }) {
                 cursorColor={accent()}
               />
             </box>
+            {/* Footer row inside the input block — opencode-style: below the
+              textarea, a quiet line showing the mode label (left) and the model
+              name (right, hidden when the sidebar session card owns it). A
+              spinner + working label appears on the left when the turn is active. */}
+            <Show when={!menuModel().open}>
+              <box flexDirection="row" flexShrink={0} gap={1} marginTop={1}>
+                <Show when={working()}>
+                  <text flexShrink={0} fg={accent()}>
+                    {spinnerFrame(tick())}
+                  </text>
+                  <text flexShrink={0} fg={palette().muted}>
+                    {elapsedLabel()}
+                  </text>
+                </Show>
+                <text flexShrink={0} fg={accent()}>
+                  {modeWord()}
+                </text>
+                <box flexGrow={1} />
+                <Show when={!sidebarOn()}>
+                  <text flexShrink={0} fg={palette().muted}>
+                    {headModel()}
+                  </text>
+                </Show>
+              </box>
+            </Show>
           </box>
         </Rail>
         {/* Under-input status bar — a justified row, NOT centered: the live status
@@ -3661,7 +3675,7 @@ export function App(props: { engine: EngineClient }) {
   );
 }
 
-/** One coloured run in a {@link SegRow} — bright tokens on muted scaffolding. */
+/** One coloured run in a styled line — bright tokens on muted scaffolding. */
 type Seg = { t: string; fg: string };
 
 /** The rail glyph column: `▎` (left one-quarter block) per row — a THIN solid
@@ -3720,36 +3734,12 @@ function Rail(props: {
 }
 
 /**
- * A single line built from coloured text runs, rendered as a row of adjacent
- * `<text>` segments (OpenTUI has no inline-markup `<text>`, so a styled line is a
- * row of plain ones). `center` wraps the line in flex spacers so it sits centered
- * on its own row (used by the splash + footer so each line is individually
- * centered); without it the row is left-aligned for callers that center a whole
- * stack themselves.
- */
-function SegRow(props: { segs: Seg[]; center?: boolean; marginTop?: number }) {
-  return (
-    <box flexDirection="row" flexShrink={0} marginTop={props.marginTop ?? 0}>
-      <Show when={props.center}>
-        <box flexGrow={1} />
-      </Show>
-      <box flexDirection="row" flexShrink={0}>
-        <For each={props.segs}>{(s) => <text fg={s.fg}>{s.t}</text>}</For>
-      </box>
-      <Show when={props.center}>
-        <box flexGrow={1} />
-      </Show>
-    </box>
-  );
-}
-
-/**
  * One wordmark row as a left→right single-hue brand fade: a flex ROW of one
  * `<text>` per character, each colored by its COLUMN position (`cols` = the full
  * block width, so every row shares the same ramp position per column → one clean
  * light→deep sweep, not per-letter confetti). `hue` is the live accent so the
- * sweep follows `/accent`. This is the same per-`<text fg>` mechanism `SegRow`
- * uses — OpenTUI applies `fg` reliably on a `<text>`, whereas inline `<span fg>`
+ * sweep follows `/accent`. This uses the same per-`<text fg>` mechanism
+ * that the removed SegRow helper used — OpenTUI applies `fg` reliably on a `<text>`, whereas inline `<span fg>`
  * children do not paint. Static (rendered once on the idle splash), so the
  * per-character node count is fine. Empty rows render a single space to keep
  * their height.
@@ -4708,20 +4698,6 @@ function ToolBlockView(props: {
             <box flexDirection="column" paddingLeft={2} paddingTop={1} paddingBottom={1}>
               <SourceList
                 sources={parseSearchResults(b().output.join("\n"))}
-                palette={p}
-                width={(props.width ?? 80) - 2}
-              />
-            </box>
-          </Match>
-          {/* A subagent's reply is markdown prose — render headers/bold/lists/code
-              (and tables where supported) instead of raw text. */}
-          <Match when={b().isMarkdown}>
-            <box flexDirection="column" paddingLeft={1} paddingRight={1}>
-              <AssistantText
-                text={b().output.join("\n")}
-                streaming={false}
-                style={props.style}
-                fg={p.assistant}
                 palette={p}
                 width={(props.width ?? 80) - 2}
               />

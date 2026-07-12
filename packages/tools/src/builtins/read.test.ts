@@ -148,3 +148,17 @@ test("flags an offset past the end of a non-empty file", async () => {
   // The error reports the 1-based offset the model supplied, not a 0-based index.
   expect(r.output).toContain("offset 99 is past the end");
 });
+
+test("read tool resolves U+202F filenames via statResolve (macOS screenshot quirk)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-read-unicode-"));
+  // Create a text file with U+202F in the name (like a macOS screenshot)
+  const realName = "Screenshot 2026-07-12 at 12.32.50\u202FPM.txt";
+  await Bun.write(join(cwd, realName), "hello from unicode-space file");
+  // User passes the path with regular spaces — statResolve must find it
+  const r = await readTool.execute(
+    { path: "Screenshot 2026-07-12 at 12.32.50 PM.txt" },
+    ctx(cwd),
+  );
+  expect(r.isError).toBeFalsy();
+  expect(r.output).toContain("hello from unicode-space file");
+});

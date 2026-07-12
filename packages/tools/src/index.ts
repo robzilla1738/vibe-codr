@@ -50,3 +50,4 @@ export {
   seatbeltProfile,
   bwrapArgs,
 } from "./sandbox.ts";
+export { statResolve, normalizeSpaces } from "./fs/stat-resolve.ts";

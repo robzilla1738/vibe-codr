@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
 import { withPathAliases } from "../path-input.ts";
+import { statResolve } from "../fs/stat-resolve.ts";
 
 const Input = withPathAliases({
   path: z.string().describe("File path, absolute or relative to the cwd."),
@@ -39,11 +40,15 @@ export const readTool: ToolDefinition<ReadInput> = {
   concurrencySafe: true,
   async execute({ path, offset, limit }, ctx) {
     const full = resolve(ctx.cwd, path);
-    const file = Bun.file(full);
-    if (!(await file.exists())) {
+    // statResolve handles Unicode whitespace variants in filenames (e.g. macOS
+    // screenshot U+202F NARROW NO-BREAK SPACE before AM/PM) that stat() misses.
+    const resolved = await statResolve(full);
+    if (!resolved) {
       return { output: `File not found: ${path}`, isError: true };
     }
-    const beforeMtime = mtimeOf(full);
+    const actual = resolved.actualPath;
+    const file = Bun.file(actual);
+    const beforeMtime = mtimeOf(actual);
     // Sniff the leading bytes for a NUL — present in binary files, never in
     // valid UTF-8 text — and refuse rather than flood the context with thousands
     // of mojibake tokens (an image, an executable, a compiled artifact).

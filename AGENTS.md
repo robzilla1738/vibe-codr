@@ -338,13 +338,15 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
     unchanged. Relay failures degrade gracefully (a placeholder note per image).
   **Bare image paths auto-attach** via `parseBareImagePaths` (handles shell-escaped
   macOS screenshot names like `Screenshot\ 2026-…\ PM.png`). `expandMentions`
-  resolves file paths through `statResolve`, which has a **Unicode-whitespace
-  fallback**: macOS screenshot filenames use U+202F (NARROW NO-BREAK SPACE) before
-  AM/PM instead of a regular space (U+0020), so a pasted path with regular spaces
-  fails `stat()`. When `stat()` misses, `statResolve` lists the parent directory
-  and matches the basename with all Unicode whitespace variants (U+202F, U+00A0,
-  U+2009, U+200A, U+200B, U+2060, U+FEFF) normalized to U+0020 — without this, the
-  image is never attached and the vision relay never fires.
+  resolves file paths through `statResolve` (`@vibe/tools/src/fs/stat-resolve.ts`,
+  shared with the `read` tool), which has a **Unicode-whitespace fallback**: macOS
+  screenshot filenames use U+202F (NARROW NO-BREAK SPACE) before AM/PM instead of
+  a regular space (U+0020), so a pasted path with regular spaces fails `stat()`.
+  When `stat()` misses, `statResolve` lists the parent directory and matches the
+  basename with all Unicode whitespace variants (U+202F, U+00A0, U+2009, U+200A,
+  U+200B, U+2060, U+FEFF) normalized to U+0020 — without this, the image is never
+  attached and the vision relay never fires. The `read` tool uses the same
+  `statResolve` so model-initiated reads of U+202F filenames also resolve.
   - **Meta Model API harness edges:** `/reasoning` forwards `reasoningEffort` and
     never sends `"none"`; after `present_plan`, Meta uses `activeTools:[]` without
     `tool_choice:"none"` (Meta only allows `"auto"`).

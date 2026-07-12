@@ -105,14 +105,16 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   (anthropic `^2`, openai `^2`, deepseek `^1`, codex via openai); **every other
   provider routes through `@ai-sdk/openai-compatible` (`^1`, spec v2)** —
   meta, minimax, ollama, lmstudio, baseten, xai, openrouter, fireworks, google,
-  groq, mistral, together, cerebras, perplexity, custom. Their dedicated packages
+  groq, mistral, together, cerebras, perplexity, nvidia, deepinfra, venice,
+  cohere, kilo, llmgateway, zenmux, snowflake-cortex, cloudflare-workers-ai,
+  custom. Their dedicated packages
   have moved to AI SDK v6/v7 (spec v3/v4) and `ai@5` rejects those with
   "unsupported model version". Don't wire a provider to a dedicated SDK unless
   you confirm it resolves `@ai-sdk/provider@^2`; otherwise use openai-compatible
   with its base URL. `registry.test.ts` asserts the rerouted providers stay
   spec-`v2`.
 - **Adding a provider = one `BuiltinSpec`** in `packages/providers/src/defs.ts`
-  (`id`, `env`, `baseURL`, optional `baseURLEnv`/`keyless`/`tokenFile`,
+  (`id`, `env`, `baseURL`, optional `baseURLEnv`/`keyless`/`requiresBaseURL`/`tokenFile`,
   `module:"@ai-sdk/openai-compatible"`, `factory:"createOpenAICompatible"`). No new
   SDK package, no `PROVIDER_MODULES` change. Then add a `ProviderChoice` to
   `packages/cli/src/providers-catalog.ts` (onboarding). **Match the `id` to its

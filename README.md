@@ -768,7 +768,8 @@ Model strings are `<provider>/<model-id>` (split on the first slash):
 All providers run on **AI SDK v5**. anthropic/openai/deepseek use their dedicated
 v5 SDKs; every other provider (meta, google, zai, moonshot, alibaba, xai, groq,
 mistral, cerebras, together, fireworks, baseten, huggingface, openrouter,
-perplexity, minimax, ollama, lmstudio, custom) is driven through
+perplexity, minimax, nvidia, deepinfra, venice, cohere, kilo, llmgateway, zenmux,
+snowflake-cortex, cloudflare-workers-ai, ollama, lmstudio, custom) is driven through
 `@ai-sdk/openai-compatible` so it works out of the box without chasing
 incompatible SDK majors. Open reasoning models served this way (a `deepseek-r1`
 or `qwen` on Ollama, say) emit their chain-of-thought inline as `<think>…</think>`

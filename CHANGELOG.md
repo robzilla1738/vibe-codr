@@ -4,6 +4,38 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Improved — 9 new providers from opencode + menu popup visual polish
+
+**9 new OpenAI-compatible providers** (routed through `@ai-sdk/openai-compatible`
+to stay on the pinned `ai@5` / spec v2), bringing the total to 31 first-class
+providers — every provider opencode supports that has a working
+OpenAI-compatible endpoint:
+
+- **NVIDIA NIM** (`nvidia`) — hosted open models (Llama, Qwen, Phi, Mistral…)
+  via NVIDIA's NIM API.
+- **DeepInfra** (`deepinfra`) — fast, cheap hosted open models.
+- **Venice AI** (`venice`) — uncensored and private open models.
+- **Cohere** (`cohere`) — Command A / Command R+ via the compatibility endpoint.
+- **Kilo Gateway** (`kilo`) — one key, hundreds of premium models.
+- **LLM Gateway** (`llmgateway`) — unified multi-model gateway.
+- **ZenMux** (`zenmux`) — unified multi-model gateway.
+- **Snowflake Cortex** (`snowflake-cortex`) — managed LLMs on Snowflake
+  (requires an account-specific base URL via `SNOWFLAKE_CORTEX_BASE_URL`).
+- **Cloudflare Workers AI** (`cloudflare-workers-ai`) — serverless open models
+  via Cloudflare (requires an account-scoped base URL via `CLOUDFLARE_BASE_URL`).
+
+The `isConfigured` check now validates the base URL for `requiresBaseURL`
+providers even when they're non-keyless, so `/providers` doesn't falsely report
+"configured" when only the key is set.
+
+**Menu popup visual polish:**
+
+- The command menu / submenu popup now shows a bold title on the left with a
+  muted `esc` dismiss hint on the right (mirroring opencode's dialog headers).
+- A thin divider line (border tone) separates the header from the menu rows.
+- A thin divider above the `+N more` pagination indicator visually separates it
+  from the rows above.
+
 ### Fixed — duplicate mode label, spinner, and model name in the input block
 
 The opencode-style footer row inside the input block (added in 0.4.27)

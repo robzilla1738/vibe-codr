@@ -4,6 +4,8 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.4.29 — 2026-07-12
+
 ## 0.4.28 — 2026-07-12
 
 ### Improved — 9 new providers from opencode + menu popup visual polish

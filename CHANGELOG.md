@@ -4,6 +4,8 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.4.30 — 2026-07-12
+
 ### Fixed — full-codebase audit hardening
 
 - **`formatTaskResults` orchestrator summary** — the task completion summary

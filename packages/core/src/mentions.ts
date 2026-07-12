@@ -50,14 +50,55 @@ export interface ExpandedPrompt {
   notices: string[];
 }
 
-/** Extract `@path` mention tokens (after start/whitespace), trimming trailing punctuation. */
+/**
+ * Extract `@path` mention tokens (after start/whitespace).
+ *
+ * The TUI usually inserts a relative path without spaces, but desktop file
+ * drops can produce Finder names such as `Screenshot 2026.png`. Accept both
+ * `@"path with spaces.png"` and shell-escaped `@path\ with\ spaces.png` so a
+ * visible attachment always resolves to the same file in the engine.
+ */
 export function parseMentions(prompt: string): string[] {
   const out: string[] = [];
-  const re = /(?:^|\s)@([^\s]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(prompt)) !== null) {
-    const token = (m[1] as string).replace(/[.,;:)\]}'"]+$/, "");
+  for (let i = 0; i < prompt.length; i++) {
+    if (prompt[i] !== "@" || (i > 0 && !/\s/.test(prompt[i - 1]!))) continue;
+    let cursor = i + 1;
+    let raw = "";
+    let quoted = false;
+    const quote = prompt[cursor] === '"' || prompt[cursor] === "'" ? prompt[cursor] : null;
+    if (quote) {
+      quoted = true;
+      cursor++;
+      while (cursor < prompt.length) {
+        const ch = prompt[cursor]!;
+        if (ch === "\\" && cursor + 1 < prompt.length) {
+          raw += prompt[cursor + 1]!;
+          cursor += 2;
+          continue;
+        }
+        if (ch === quote) {
+          cursor++;
+          break;
+        }
+        raw += ch;
+        cursor++;
+      }
+    } else {
+      while (cursor < prompt.length) {
+        const ch = prompt[cursor]!;
+        if (ch === "\\" && cursor + 1 < prompt.length && /\s/.test(prompt[cursor + 1]!)) {
+          raw += prompt[cursor + 1]!;
+          cursor += 2;
+          continue;
+        }
+        if (/\s/.test(ch)) break;
+        raw += ch;
+        cursor++;
+      }
+    }
+    const token = (quoted ? raw : raw.replace(/[.,;:)\]}'"]+$/, "")).trim();
     if (token) out.push(token);
+    i = Math.max(i, cursor - 1);
   }
   return out;
 }
@@ -186,6 +227,10 @@ async function readImageAttachment(
  */
 export async function expandMentions(prompt: string, cwd: string): Promise<ExpandedPrompt> {
   const tokens = [...new Set(parseMentions(prompt))];
+  if (process.env.VIBE_DEBUG_RELAY) {
+    const barePaths = parseBareImagePaths(prompt);
+    console.error(`[expandMentions] prompt=${JSON.stringify(prompt).slice(0, 200)} cwd=${cwd} @mentions=${tokens.length} barePaths=${JSON.stringify(barePaths)}`);
+  }
   const blocks: string[] = [];
   const images: ImageAttachment[] = [];
   const notices: string[] = [];
@@ -275,5 +320,8 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
   }
 
   const text = blocks.length ? `${prompt}\n\nReferenced files:\n\n${blocks.join("\n\n")}` : prompt;
+  if (process.env.VIBE_DEBUG_RELAY) {
+    console.error(`[expandMentions] result: images=${images.length} notices=${JSON.stringify(notices)} blocks=${blocks.length}`);
+  }
   return { text, images, notices };
 }

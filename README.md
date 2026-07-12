@@ -535,7 +535,13 @@ the user accepts (plan card Enter or `/execute`) or revises.
   `mcp.servers` (see the MCP example below).
 - **`@file` mentions & images** — reference files inline (`summarize @src/app.ts`)
   and their contents are injected as context; image mentions (`@shot.png`) are
-  attached for vision models (with a notice when the model lacks vision).
+  attached for vision models. **Vision relay** (`/vision` command or
+  `vision.relay` in config) lets non-multimodal models (e.g. Ollama GLM, local
+  Llama, cloud text-only endpoints) "see" images by captioning them via a
+  separate vision-capable relay model (e.g. `openai/gpt-4o`,
+  `google/gemini-2.5-flash`, `ollama/llama3.2-vision`) and injecting the text
+  description into the prompt. Off by default; `/vision on` + `/vision model
+  <provider>/<model>` to enable.
   **Ctrl+V** pastes a **clipboard image** (macOS `pngpaste`/`osascript`, Linux
   `wl-paste`/`xclip`) — it lands as an `@`-mention of a temp PNG that flows
   through the usual image pipeline and is cleaned up on exit (text paste is
@@ -721,7 +727,10 @@ the user accepts (plan card Enter or `/execute`) or revises.
   recall); `memory.sessionDigest` (also on by default) distills each interactive
   session (goal, outcomes, decisions + reasons, user corrections) into a
   recallable note at the end. Paste bare image paths (or `@path`) so vision
-  models receive the pixels without shell `ls` workarounds.
+  models receive the pixels without shell `ls` workarounds. Non-multimodal
+  models can "see" images via the **vision relay** (`/vision`): a separate
+  vision-capable model captions each image and the text is injected into the
+  prompt — the industry-standard image-captioning relay pattern.
 - **Project & global memory** — `VIBE.md`, `AGENTS.md`, or `CLAUDE.md` are
   injected into every system prompt, so the agent follows your stack and
   conventions out of the box. Discovery **walks up from the working directory to

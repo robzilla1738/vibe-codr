@@ -4,6 +4,8 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.4.31 — 2026-07-12
+
 ### Added — vision relay for non-multimodal models
 
 When the active model does NOT support image input (e.g. an Ollama-hosted GLM,

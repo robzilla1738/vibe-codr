@@ -138,3 +138,21 @@ test("non-existent bare image paths are ignored (no attach, no error)", async ()
   expect(r.images).toHaveLength(0);
   expect(r.notices.every((n) => !/Attached/i.test(n))).toBe(true);
 });
+
+test("Unicode-space fallback: macOS screenshot with U+202F before PM is found via statResolve", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-unicode-space-"));
+  // macOS screenshot filenames use U+202F (NARROW NO-BREAK SPACE) before AM/PM.
+  // Simulate: create a file with U+202F in the name, then reference it with a
+  // regular space — statResolve must find it via the parent-dir fallback.
+  const realName = `Screenshot 2026-07-12 at 12.32.50\u202FPM.png`;
+  const realPath = join(cwd, realName);
+  await Bun.write(realPath, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0a]));
+  // User types the path with regular spaces (U+0020), not U+202F.
+  const typedPath = join(cwd, "Screenshot 2026-07-12 at 12.32.50 PM.png");
+  const r = await expandMentions(`describe ${typedPath} please`, cwd);
+  expect(r.images).toHaveLength(1);
+  expect(r.images[0]?.mediaType).toBe("image/png");
+  expect(r.images[0]?.data.length).toBeGreaterThan(0);
+  expect(r.notices.some((n) => /Attached 1 image/i.test(n))).toBe(true);
+});
+

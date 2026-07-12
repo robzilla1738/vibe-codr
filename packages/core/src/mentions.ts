@@ -1,6 +1,7 @@
-import { resolve, extname } from "node:path";
+import { resolve, extname, dirname, basename, join } from "node:path";
 import { homedir } from "node:os";
 import { readdir, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
 
 /** Image extensions that become multimodal attachments rather than text. */
 const IMAGE_MEDIA: Record<string, string> = {
@@ -23,6 +24,56 @@ const MAX_DIR_ENTRIES = 200;
  * visual rebuild and avoids slurping a long dump of image paths.
  */
 const MAX_BARE_IMAGES = 4;
+
+/**
+ * Unicode whitespace variants that appear in real-world filenames — especially
+ * macOS screenshot names, which use U+202F (NARROW NO-BREAK SPACE) before AM/PM
+ * instead of a regular space (U+0020). When a user pastes the path with regular
+ * spaces, `stat()` fails and the image is never attached.
+ */
+const UNICODE_SPACES = /[\u00A0\u2009\u200A\u200B\u202F\u2060\uFEFF]/g;
+
+/** Normalize Unicode whitespace variants to regular spaces for fuzzy matching. */
+function normalizeSpaces(s: string): string {
+  return s.replace(UNICODE_SPACES, " ");
+}
+
+
+/**
+ * `stat` with a Unicode-space fallback. macOS screenshot filenames use U+202F
+ * (NARROW NO-BREAK SPACE) before AM/PM — when a user pastes the path with
+ * regular spaces, `stat` misses. This retries by listing the parent directory
+ * and matching the basename with all Unicode whitespace normalized to U+0020.
+ * Returns both the stat result and the actual on-disk path (which may differ
+ * from the input when the fallback fired).
+ */
+async function statResolve(
+  full: string,
+): Promise<{ info: Stats; actualPath: string } | null> {
+  const direct = await stat(full).catch(() => null);
+  if (direct) return { info: direct, actualPath: full };
+  // Fallback: the filename may contain Unicode whitespace variants (U+202F,
+  // U+00A0, …) that don't match the regular spaces the user typed. Only the
+  // basename is fuzzed — directory components are user-typed and use regular
+  // spaces.
+  const dir = dirname(full);
+  const base = basename(full);
+  // Only fuzz when the basename contains whitespace — a filename with no
+  // spaces can't have a Unicode-space mismatch. The user typed regular spaces;
+  // the file on disk may have U+202F, U+00A0, etc. in their place.
+  if (!/\s/.test(base)) return null;
+  const normBase = normalizeSpaces(base);
+  const entries = await readdir(dir).catch(() => null);
+  if (!entries) return null;
+  for (const entry of entries) {
+    if (normalizeSpaces(entry) === normBase) {
+      const actualPath = join(dir, entry);
+      const info = await stat(actualPath).catch(() => null);
+      if (info) return { info, actualPath };
+    }
+  }
+  return null;
+}
 
 /** Truncate `text` to at most `maxBytes` UTF-8 bytes (not UTF-16 code units). */
 function capBytes(text: string, maxBytes: number): { text: string; truncated: boolean } {
@@ -193,28 +244,32 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
 
   for (const token of tokens) {
     const full = resolve(cwd, expandHome(token));
+    // statResolve tries stat() directly, then falls back to Unicode-space
+    // matching (macOS screenshots use U+202F before AM/PM). Returns the actual
+    // on-disk path, which may differ from `full` when the fallback fired.
+    const resolved = await statResolve(full);
+    if (!resolved) continue; // not a path — leave the literal text
+    const { info, actualPath: actual } = resolved;
     // A directory mention (@src/ or @src) expands to a capped listing.
-    const info = await stat(full).catch(() => null);
-    if (info?.isDirectory()) {
-      const entries = (await readdir(full).catch(() => [])).sort().slice(0, MAX_DIR_ENTRIES);
+    if (info.isDirectory()) {
+      const entries = (await readdir(actual).catch(() => [])).sort().slice(0, MAX_DIR_ENTRIES);
       if (entries.length) {
         blocks.push(`--- ${token}/ (directory) ---\n${entries.join("\n")}`);
       }
       continue;
     }
-    const file = Bun.file(full);
-    if (!(await file.exists())) continue; // not a path — leave the literal text
-    const size = info?.size ?? 0; // byte size from the stat above
+    const file = Bun.file(actual);
+    const size = info.size; // byte size from stat
     const ext = extname(token).toLowerCase();
     const mediaType = IMAGE_MEDIA[ext];
     if (mediaType) {
       // Check the size BEFORE reading, so a huge image isn't slurped into memory
       // just to be rejected (a partial image is useless, so oversize → skip).
-      const got = await readImageAttachment(token, full, size);
+      const got = await readImageAttachment(token, actual, size);
       if (got.notice) notices.push(got.notice);
       if (got.image) {
         images.push(got.image);
-        attachedAbs.add(full);
+        attachedAbs.add(actual);
       }
       continue;
     }
@@ -249,14 +304,17 @@ export async function expandMentions(prompt: string, cwd: string): Promise<Expan
   for (const token of parseBareImagePaths(prompt)) {
     if (bareAttached >= MAX_BARE_IMAGES) break;
     const full = resolve(cwd, expandHome(token));
-    if (attachedAbs.has(full)) continue;
-    const info = await stat(full).catch(() => null);
-    if (!info?.isFile()) continue;
-    const got = await readImageAttachment(token, full, info.size);
+    // statResolve handles Unicode-space fallback (macOS screenshot U+202F).
+    const resolved = await statResolve(full);
+    if (!resolved) continue;
+    const { info, actualPath: actual } = resolved;
+    if (attachedAbs.has(actual)) continue;
+    if (!info.isFile()) continue;
+    const got = await readImageAttachment(token, actual, info.size);
     if (got.notice) notices.push(got.notice);
     if (got.image) {
       images.push(got.image);
-      attachedAbs.add(full);
+      attachedAbs.add(actual);
       bareAttached++;
     }
   }

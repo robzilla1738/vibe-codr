@@ -4,6 +4,24 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.4.32 — 2026-07-12
+
+## 0.4.32 — 2026-07-12
+
+### Fixed — macOS screenshot Unicode-space path resolution
+
+macOS screenshot filenames use U+202F (NARROW NO-BREAK SPACE) before AM/PM
+instead of a regular space (U+0020). When a user pasted the path with regular
+spaces, `stat()` failed, the image was never attached, and the vision relay
+(or any image-attachment flow) never fired — the model fell back to `ls`/`read`
+tool calls and couldn't see the image.
+
+`expandMentions` now resolves file paths through `statResolve`, which falls back
+to listing the parent directory and matching the basename with all Unicode
+whitespace variants (U+202F, U+00A0, U+2009, U+200A, U+200B, U+2060, U+FEFF)
+normalized to regular spaces. This applies to both `@path` mentions and bare
+pasted image paths.
+
 ## 0.4.31 — 2026-07-12
 
 ### Added — vision relay for non-multimodal models

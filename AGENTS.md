@@ -347,6 +347,10 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
   U+200B, U+2060, U+FEFF) normalized to U+0020 — without this, the image is never
   attached and the vision relay never fires. The `read` tool uses the same
   `statResolve` so model-initiated reads of U+202F filenames also resolve.
+  The engine calls `catalog.ensureLoaded()` before `supportsImages` when the
+  relay is enabled, so the relay fires from the very first prompt of a new
+  session (the catalog is non-blocking and returns `undefined` until loaded,
+  which would silently skip the relay).
   - **Meta Model API harness edges:** `/reasoning` forwards `reasoningEffort` and
     never sends `"none"`; after `present_plan`, Meta uses `activeTools:[]` without
     `tool_choice:"none"` (Meta only allows `"auto"`).

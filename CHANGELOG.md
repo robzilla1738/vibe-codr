@@ -4,6 +4,8 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.4.34 — 2026-07-12
+
 ## 0.4.33 — 2026-07-12
 
 ## 0.4.32 — 2026-07-12

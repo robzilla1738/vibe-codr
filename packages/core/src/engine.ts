@@ -2478,8 +2478,17 @@ export class Engine implements EngineClient {
     let relayedText = expanded.text;
     let relayedImages: ImageAttachment[] = expanded.images;
     if (expanded.images.length) {
-      const ok = await this.#supportsImages(this.#session.model);
+      let ok = await this.#supportsImages(this.#session.model);
       const relayConfig = this.#config.vision.relay;
+      // When the relay is enabled but the catalog hasn't loaded yet (first
+      // prompt of a new session), supportsImages returns undefined and
+      // shouldRelay returns false — the relay would silently not fire.
+      // Await the catalog and retry so the relay works from the very first
+      // prompt. Subsequent calls are instant (#metadata is populated).
+      if (ok === undefined && relayConfig.enabled && relayConfig.relayModel) {
+        await this.catalog.ensureLoaded();
+        ok = await this.#supportsImages(this.#session.model);
+      }
       if (shouldRelay(relayConfig, expanded.images.length > 0, ok)) {
         // The relay runs here — before session.run — so the captioned text lands
         // in the user message the primary model actually sees. Images are

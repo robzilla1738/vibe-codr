@@ -235,6 +235,18 @@ export class CatalogService {
   }
 
   /**
+   * Block until the catalog metadata has loaded (from cache or network).
+   * Use when a caller needs a definitive answer from {@link supportsImages}
+   * or other lookups — e.g. the vision relay must know whether the primary
+   * model supports images before deciding to caption, and `undefined` (catalog
+   * not yet loaded) would silently skip the relay on the first prompt of a
+   * new session. Subsequent calls are instant (#metadata is already populated).
+   */
+  async ensureLoaded(): Promise<void> {
+    await this.#load();
+  }
+
+  /**
    * Whether a model supports native structured JSON (`response_format` /
    * `structuredOutputs`). NON-BLOCKING like {@link supportsImages}: undefined
    * until the catalog has loaded. Callers that need a reliable JSON object

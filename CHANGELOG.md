@@ -4,6 +4,38 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Improved — TUI polish + subagent dedup + orchestration doctrine
+
+A focused pass on the TUI's rendering and the multi-agent delegation doctrine:
+
+- **Narrower chat column:** `CONTENT_MAX` 130→100, `SIDEBAR_MIN_TERM` 140→120,
+  giving the transcript more breathing room on standard terminal widths.
+- **Splash cleanup:** removed suggestion starters from the splash screen (the
+  wordmark stands alone).
+- **Opencode-style footer row:** a footer inside the input block shows the mode
+  label + model name + spinner when active (hidden when the sidebar owns it).
+- **Subagent dedup:** `subagent-started` now deduplicates by `subagentId`, so
+  `continue_subagent` no longer creates duplicate rows in the Subagents panel.
+- **Transcript cleanup:** `spawn_subagent`/`spawn_tasks` no longer render full
+  markdown in the transcript — the Subagents panel is the primary surface. The
+  dead `isMarkdown` render path is removed entirely (no tech debt).
+- **Delegation doctrine (agentswarm-inspired):** enhanced DELEGATION guidance
+  (task DAGs, model tiers, react-to-evidence, size-to-problem), enhanced
+  PLAN_DELEGATION (research missions: go wide + cross-check + consolidation;
+  codebase missions: scaffold + disjoint + integration), and a stronger
+  GATHER step (cross-check scout findings, 3–6 parallel scouts, consolidation).
+- **New `implement` agent** (execute mode) for self-contained features, added to
+  the default roster alongside `explore`/`review`/`test`.
+
+### Added — macOS bridge: renameProject RPC + project display names
+
+- **`renameProject` RPC method:** the macOS bridge protocol now supports
+  renaming a project. The host writes a `name` file into the project's global
+  state directory and returns the clipped display name.
+- **Project display names:** `listProjects` summaries now read a display name
+  from `globalStateDir/<cwd>/name` (falling back to `basename(cwd)` for legacy
+  projects that haven't been named).
+
 ## 0.4.26 — 2026-07-11
 
 ### Fixed — flaky browser-verify test (internal timeout vs external abort)

@@ -253,5 +253,6 @@ export function formatTaskResults(results: TaskResult[]): string {
     const mark = r.outcome === "completed" ? "✓" : r.outcome === "failed" ? "✗" : "–";
     return `${mark} [${r.id}] ${r.objective}\n${r.output.trim()}`;
   });
-  return `Orchestrated ${results.length} task(s) — ${done} completed, ${results.length - done} not:\n\n${lines.join("\n\n")}`;
+  const notDone = results.length - done;
+  return `Orchestrated ${results.length} task(s) — ${done} completed, ${notDone} not completed:\n\n${lines.join("\n\n")}`;
 }

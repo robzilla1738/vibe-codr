@@ -4,6 +4,13 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Fixed — full-codebase audit hardening
+
+- **`formatTaskResults` orchestrator summary** — the task completion summary
+  string was grammatically incomplete ("X not:" → "X not completed:"). The
+  model reads this string to decide whether to re-try failed tasks, so an
+  ambiguous "not" could lead to confusion about the task outcome breakdown.
+
 ## 0.4.29 — 2026-07-12
 
 ## 0.4.28 — 2026-07-12
@@ -1400,7 +1407,14 @@ keyless Ollama end-to-end) passes with zero manual fixes. Highlights:
 - **Version stamping.** A committed `0.0.0-dev` sentinel in
   `packages/cli/src/version.ts` is the single source of truth;
   `scripts/release/set-version.ts` stamps the pushed tag across `version.ts` +
-  every workspace `package.json` and promotes the changelog's `## Unreleased`
+  every workspace `package.json` and promotes the changelog's `## Unreleased
+
+### Fixed — full-codebase audit hardening
+
+- **`formatTaskResults` orchestrator summary** — the task completion summary
+  string was grammatically incomplete ("X not:" → "X not completed:"). The
+  model reads this string to decide whether to re-try failed tasks, so an
+  ambiguous "not" could lead to confusion about the task outcome breakdown.`
   section to `## <version> — <date>` (pure, tested rewrites).
 - **`vibe upgrade`.** Detects the install channel from `process.execPath` (a bun
   runtime → `bun add -g vibe-codr@latest`; a compiled binary → the Releases URL +

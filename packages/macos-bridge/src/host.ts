@@ -13,7 +13,12 @@ import { loadConfig, type Config } from "@vibe/config";
 import { Engine, loadProjectMemory, SessionStore, type PersistedSession } from "@vibe/core";
 import type { EngineCommand } from "@vibe/shared";
 import { decodeInbound, type HostInbound, type HostOutbound } from "./protocol.ts";
-import { listProjectSummaries, renameProject } from "./project-index.ts";
+import {
+  archiveProject,
+  deleteProject,
+  listProjectSummaries,
+  renameProject,
+} from "./project-index.ts";
 
 function write(msg: HostOutbound): void {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -152,6 +157,17 @@ export async function runHost(): Promise<void> {
           result
             ? { type: "resp", id, ok: true, value: { cwd, name: result.name } }
             : { type: "resp", id, ok: false, error: "project not found or empty name" },
+        );
+        return;
+      }
+      if (method === "archiveProject" || method === "deleteProject") {
+        const cwd = params?.cwd?.trim() || lastCwd;
+        const result =
+          method === "archiveProject" ? await archiveProject(cwd) : await deleteProject(cwd);
+        write(
+          result
+            ? { type: "resp", id, ok: true, value: result }
+            : { type: "resp", id, ok: false, error: "project not found" },
         );
         return;
       }

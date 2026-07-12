@@ -264,6 +264,79 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
+    // NVIDIA NIM — OpenAI-compatible API for NIM-hosted models (Llama, Qwen,
+    // Phi, Mistral, …). models.dev slug is `nvidia` (enrichment lands directly).
+    id: "nvidia",
+    env: ["NVIDIA_API_KEY"],
+    baseURL: "https://integrate.api.nvidia.com/v1",
+    baseURLEnv: "NVIDIA_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // DeepInfra — OpenAI-compatible endpoint for hosted open models. The
+    // dedicated `@ai-sdk/deepinfra` package tracks AI SDK v6+ (spec v3), so we
+    // drive it through `@ai-sdk/openai-compatible` to stay on the pinned `ai@5`.
+    id: "deepinfra",
+    env: ["DEEPINFRA_API_KEY"],
+    baseURL: "https://api.deepinfra.com/v1/openai",
+    baseURLEnv: "DEEPINFRA_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Venice AI — OpenAI-compatible endpoint. The dedicated
+    // `venice-ai-sdk-provider` may track newer AI SDK specs, so route through
+    // `@ai-sdk/openai-compatible` for spec-v2 stability.
+    id: "venice",
+    env: ["VENICE_API_KEY"],
+    baseURL: "https://api.venice.ai/api/v1",
+    baseURLEnv: "VENICE_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Cohere — OpenAI-compatible "compatibility-mode" endpoint. The dedicated
+    // `@ai-sdk/cohere` package has moved to AI SDK v6+ (spec v3+), so we route
+    // through `@ai-sdk/openai-compatible` to stay on the pinned `ai@5`.
+    id: "cohere",
+    env: ["COHERE_API_KEY"],
+    baseURL: "https://api.cohere.com/compatibility/v1",
+    baseURLEnv: "COHERE_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // Kilo Gateway — OpenAI-compatible multi-model gateway. models.dev slug is
+    // `kilo` (enrichment lands directly).
+    id: "kilo",
+    env: ["KILO_API_KEY"],
+    baseURL: "https://api.kilo.ai/api/gateway",
+    baseURLEnv: "KILO_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // LLM Gateway — OpenAI-compatible multi-model gateway. models.dev slug is
+    // `llmgateway` (enrichment lands directly).
+    id: "llmgateway",
+    env: ["LLMGATEWAY_API_KEY"],
+    baseURL: "https://api.llmgateway.io/v1",
+    baseURLEnv: "LLMGATEWAY_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    // ZenMux — OpenAI-compatible multi-model gateway. models.dev slug is
+    // `zenmux` (enrichment lands directly).
+    id: "zenmux",
+    env: ["ZENMUX_API_KEY"],
+    baseURL: "https://zenmux.ai/api/v1",
+    baseURLEnv: "ZENMUX_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
     // Generic bring-your-own OpenAI-compatible endpoint: point it at ANY OpenAI-
     // style API. The base URL is REQUIRED (no default) — set it via
     // `config.providers.custom.baseURL` or `CUSTOM_BASE_URL`; the key is optional

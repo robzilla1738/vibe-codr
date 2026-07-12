@@ -180,6 +180,13 @@ test("openai-compatible-routed providers create ai@5 (spec v2) models", async ()
     "alibaba",
     "huggingface",
     "meta",
+    "nvidia",
+    "deepinfra",
+    "venice",
+    "cohere",
+    "kilo",
+    "llmgateway",
+    "zenmux",
   ]) {
     const def = builtinProviders().find((d) => d.id === id);
     if (!def) throw new Error(`${id} provider missing`);

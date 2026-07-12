@@ -160,6 +160,13 @@ test("the new providers + custom endpoint appear in the onboarding menu", () => 
     "alibaba",
     "huggingface",
     "meta",
+    "nvidia",
+    "deepinfra",
+    "venice",
+    "cohere",
+    "kilo",
+    "llmgateway",
+    "zenmux",
     "custom-endpoint",
   ]) {
     expect(keys.has(k)).toBe(true);

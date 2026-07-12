@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { globalStateDir, SessionStore, stateRoot, type SessionMeta } from "@vibe/core";
 import type { Message } from "@vibe/shared";
@@ -64,6 +64,7 @@ async function discoveredProjectPaths(root: string): Promise<string[]> {
   const paths = await Promise.all(
     entries.map(async (entry) => {
       try {
+        if (await Bun.file(join(root, entry, "archived")).exists()) return null;
         const value = (await readFile(join(root, entry, "path"), "utf8")).trim();
         return value ? resolve(value) : null;
       } catch {
@@ -74,8 +75,12 @@ async function discoveredProjectPaths(root: string): Promise<string[]> {
   return paths.filter((path): path is string => Boolean(path));
 }
 
+async function isProjectArchived(cwd: string): Promise<boolean> {
+  return Bun.file(join(globalStateDir(cwd), "archived")).exists();
+}
+
 async function summarizeProject(cwd: string): Promise<ProjectSummary | null> {
-  if (!(await isDirectory(cwd))) return null;
+  if (!(await isDirectory(cwd)) || (await isProjectArchived(cwd))) return null;
   const store = new SessionStore(cwd);
   let metas: SessionMeta[];
   try {
@@ -113,7 +118,10 @@ async function summarizeProject(cwd: string): Promise<ProjectSummary | null> {
   };
 }
 
-export async function renameProject(cwd: string, rawName: string): Promise<{ name: string } | null> {
+export async function renameProject(
+  cwd: string,
+  rawName: string,
+): Promise<{ name: string } | null> {
   const name = clippedProjectName(rawName);
   if (!name || !(await isDirectory(cwd))) return null;
   try {
@@ -122,6 +130,29 @@ export async function renameProject(cwd: string, rawName: string): Promise<{ nam
     await Bun.write(join(dir, "path"), `${resolve(cwd)}\n`);
     await Bun.write(join(dir, "name"), `${name}\n`);
     return { name };
+  } catch {
+    return null;
+  }
+}
+
+export async function archiveProject(cwd: string): Promise<{ cwd: string } | null> {
+  if (!(await isDirectory(cwd))) return null;
+  try {
+    const dir = globalStateDir(cwd);
+    await mkdir(dir, { recursive: true });
+    await Bun.write(join(dir, "path"), `${resolve(cwd)}\n`);
+    await Bun.write(join(dir, "archived"), "1\n");
+    return { cwd: resolve(cwd) };
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteProject(cwd: string): Promise<{ cwd: string } | null> {
+  if (!(await isDirectory(cwd))) return null;
+  try {
+    await rm(globalStateDir(cwd), { recursive: true, force: true });
+    return { cwd: resolve(cwd) };
   } catch {
     return null;
   }

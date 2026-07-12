@@ -25,6 +25,8 @@ export type HostInbound =
         | "listSessions"
         | "listProjects"
         | "renameProject"
+        | "archiveProject"
+        | "deleteProject"
         | "renameSession"
         | "deleteSession"
         | "archiveSession";
@@ -75,6 +77,8 @@ const RPC_METHODS = new Set<RpcMethod>([
   "listSessions",
   "listProjects",
   "renameProject",
+  "archiveProject",
+  "deleteProject",
   "renameSession",
   "deleteSession",
   "archiveSession",

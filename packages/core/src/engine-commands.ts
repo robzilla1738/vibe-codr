@@ -608,6 +608,9 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "mouse":
       handleMouse(h, args);
       break;
+    case "vision":
+      handleVision(h, args);
+      break;
     case "keys":
       handleKeys(h);
       break;
@@ -894,6 +897,80 @@ function handleMouse(h: EngineHandle, args: string): void {
   void h.persistConfig({ mouse: next });
   h.emit({ type: "mouse-changed", mouse: next });
   h.notice(`Mouse: ${next ? "on" : "off"}${next ? "" : " — native terminal selection restored"}.`);
+}
+
+/**
+ * `/vision` — configure the vision relay. When the active model doesn't support
+ * image input, attached images are captioned by a vision-capable relay model
+ * and the text description is injected into the prompt.
+ *
+ *   /vision                  — show current relay status
+ *   /vision on               — enable the relay (uses configured relayModel)
+ *   /vision off              — disable the relay
+ *   /vision model <provider>/<model> — set the relay model
+ *   /vision timeout <ms>     — per-image caption wall-clock (default 30000)
+ */
+function handleVision(h: EngineHandle, args: string): void {
+  const raw = args.trim();
+  const relay = h.config.vision.relay;
+  if (!raw) {
+    const status = relay.enabled ? "on" : "off";
+    const model = relay.relayModel ?? "(not set)";
+    h.notice(
+      `Vision relay: ${status}.\n` +
+        `  Relay model: ${model}\n` +
+        `  Timeout: ${relay.timeoutMs}ms per image\n` +
+        `  Max caption: ${relay.maxCaptionChars} chars\n` +
+        `When enabled, images attached to a text-only model are captioned by the relay model.\n` +
+        `Usage: /vision on|off · /vision model <provider>/<model> · /vision timeout <ms>`,
+    );
+    return;
+  }
+  const lower = raw.toLowerCase();
+  if (lower === "on" || lower === "true" || lower === "1") {
+    if (relay.enabled) {
+      h.notice(`Vision relay: already on (relay model: ${relay.relayModel ?? "(not set)"}).`);
+      return;
+    }
+    h.config.vision.relay.enabled = true;
+    void h.persistConfig({ vision: { relay: { enabled: true } } });
+    h.notice(
+      `Vision relay: on${relay.relayModel ? ` (relay model: ${relay.relayModel})` : " — set a relay model with /vision model <provider>/<model>"}.`,
+    );
+    return;
+  }
+  if (lower === "off" || lower === "false" || lower === "0") {
+    if (!relay.enabled) {
+      h.notice("Vision relay: already off.");
+      return;
+    }
+    h.config.vision.relay.enabled = false;
+    void h.persistConfig({ vision: { relay: { enabled: false } } });
+    h.notice("Vision relay: off. Images will be sent directly to the primary model.");
+    return;
+  }
+  const modelMatch = /^model\s+(.+)$/i.exec(raw);
+  if (modelMatch) {
+    const modelStr = modelMatch[1]!.trim();
+    h.config.vision.relay.relayModel = modelStr;
+    void h.persistConfig({ vision: { relay: { relayModel: modelStr } } });
+    h.notice(
+      `Vision relay model set to ${modelStr}.${relay.enabled ? "" : " Enable with /vision on."}`,
+    );
+    return;
+  }
+  const timeoutMatch = /^timeout\s+(\d+)$/i.exec(raw);
+  if (timeoutMatch) {
+    const ms = Math.max(1_000, Math.min(300_000, Number(timeoutMatch[1])));
+    h.config.vision.relay.timeoutMs = ms;
+    void h.persistConfig({ vision: { relay: { timeoutMs: ms } } });
+    h.notice(`Vision relay timeout set to ${ms}ms per image.`);
+    return;
+  }
+  h.notice(
+    "Usage: /vision on|off · /vision model <provider>/<model> · /vision timeout <ms>",
+    "warn",
+  );
 }
 
 /** `/keys` — essential keyboard chords (not the full slash list). */

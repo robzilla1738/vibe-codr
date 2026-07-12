@@ -68,6 +68,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         name: "mouse",
         description: "TUI mouse capture (/mouse on|off) — off keeps native selection",
       },
+      { name: "vision", description: "Vision relay for non-multimodal models (/vision on|off)" },
       { name: "keys", description: "Show essential keyboard shortcuts" },
       { name: "theme", description: "Show or set the UI theme (/theme <name>)" },
       {

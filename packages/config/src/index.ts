@@ -37,3 +37,5 @@ export {
   projectConfigPath,
   type LoadOptions,
 } from "./load.ts";
+export { VisionRelayConfigSchema } from "./schema.ts";
+export type { VisionRelayConfig } from "./schema.ts";

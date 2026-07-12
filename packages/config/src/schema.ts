@@ -248,6 +248,46 @@ export const LspConfigSchema = z.object({
   servers: z.record(z.string(), LspServerSchema).default({}),
 });
 
+
+/**
+ * Vision relay: when the active model does NOT support image input, attached
+ * images are captioned by a SEPARATE vision-capable model and the text
+ * description is injected into the user's prompt instead of the raw image
+ * bytes. This makes any text-only model (e.g. an Ollama-hosted GLM, a local
+ * Llama, a cloud text-only endpoint) "see" images by delegating vision to a
+ * model that supports it — the industry-standard pattern used by multi-model
+ * routers (LiteLLM's `image_generation_dpr`, OpenRouter's vision routing,
+ * LangChain's multi-modal chains).
+ *
+ * `enabled` defaults to false: the relay costs an extra provider call per
+ * image and the user should explicitly opt in. When enabled but no
+ * `relayModel` is configured, the relay is a no-op (images are passed through
+ * to the primary model as before). `relayModel` must be a model string whose
+ * provider supports vision (e.g. `openai/gpt-4o`, `google/gemini-2.5-flash`,
+ * `anthropic/claude-sonnet-4-20250514`, `ollama/llama3.2-vision`).
+ */
+export const VisionRelayConfigSchema = z.object({
+  /** Master toggle — opt in to image captioning via a relay model. */
+  enabled: z.boolean().default(false),
+  /**
+   * The vision-capable model that captions images when the primary model
+   * cannot. A full model string (`provider/model-id`). When unset, the relay
+   * is inert even if `enabled` is true.
+   */
+  relayModel: z.string().optional(),
+  /**
+   * Wall-clock cap on a single image-captioning call. A stalled vision
+   * provider must not wedge the turn.
+   */
+  timeoutMs: z.number().int().positive().default(30_000),
+  /**
+   * Maximum chars per generated caption. A verbose vision model could
+   * otherwise dump a multi-page description per image, flooding the primary
+   * model's context. The model is prompted to be concise but thorough.
+   */
+  maxCaptionChars: z.number().int().positive().default(2_000),
+});
+
 export const ConfigSchema = z.object({
   /** Default model string, e.g. "anthropic/claude-opus-4-8" or "lmstudio/<id>". */
   model: z.string().default("anthropic/claude-opus-4-8"),
@@ -719,6 +759,21 @@ export const ConfigSchema = z.object({
    * quiet one-line hint when a newer version exists. The request carries no user
    * data; `$VIBE_NO_UPDATE_CHECK` also disables it. Headless (`-p`) never checks.
    */
+  /**
+   * Vision relay: caption attached images via a vision-capable relay model
+   * when the primary model doesn't support image input. See
+   * {@link VisionRelayConfigSchema}. Off by default; set `vision.relay.enabled:
+   * true` and `vision.relay.relayModel: "<provider>/<model>"` to enable.
+   */
+  vision: z
+    .object({
+      relay: VisionRelayConfigSchema.default({
+        enabled: false,
+        timeoutMs: 30_000,
+        maxCaptionChars: 2_000,
+      }),
+    })
+    .default({ relay: { enabled: false, timeoutMs: 30_000, maxCaptionChars: 2_000 } }),
   update: z.object({ check: z.boolean().default(true) }).default({ check: true }),
 });
 
@@ -732,5 +787,6 @@ export type HookConfig = z.infer<typeof HookSchema>;
 export type ModelPrice = z.infer<typeof ModelPriceSchema>;
 export type McpServer = z.infer<typeof McpServerSchema>;
 export type LspConfig = z.infer<typeof LspConfigSchema>;
+export type VisionRelayConfig = z.infer<typeof VisionRelayConfigSchema>;
 export type LspServer = z.infer<typeof LspServerSchema>;
 export type McpOAuth = z.infer<typeof McpOAuthSchema>;

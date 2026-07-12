@@ -189,3 +189,10 @@ export {
   type UpdateStatus,
   type CheckForUpdateOptions,
 } from "./update-check.ts";
+export {
+  captionImages,
+  captionsToContextBlock,
+  shouldRelay,
+  type CaptionResult,
+  type RelayResult,
+} from "./vision-relay.ts";

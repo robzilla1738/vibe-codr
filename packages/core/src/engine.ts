@@ -93,7 +93,13 @@ import { CheckpointManager } from "./checkpoints.ts";
 import { McpHub, type McpConnect } from "./mcp.ts";
 import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
 import { withRetry } from "./retry.ts";
-import { expandMentions } from "./mentions.ts";
+import { expandMentions, type ImageAttachment } from "./mentions.ts";
+import {
+  captionImages,
+  captionsToContextBlock,
+  shouldRelay,
+  type CaptionResult,
+} from "./vision-relay.ts";
 import { cleanProactiveRecallSeed } from "./proactive-recall.ts";
 import {
   handleSlash,
@@ -2464,15 +2470,51 @@ export class Engine implements EngineClient {
     // attachments for vision models. Unresolvable mentions pass through.
     const expanded = await expandMentions(text, this.#cwd);
     for (const note of expanded.notices) this.#notice(note, "info");
+    // Vision relay: when the primary model does NOT support image input and a
+    // relay model is configured, caption each image via the relay and inject the
+    // text descriptions into the prompt — the primary model "sees" through the
+    // relay. When the primary model DOES support images (or the relay is off),
+    // images pass through unchanged.
+    let relayedText = expanded.text;
+    let relayedImages: ImageAttachment[] = expanded.images;
     if (expanded.images.length) {
       const ok = await this.#supportsImages(this.#session.model);
-      if (ok === false) {
+      const relayConfig = this.#config.vision.relay;
+      if (shouldRelay(relayConfig, expanded.images.length > 0, ok)) {
+        // The relay runs here — before session.run — so the captioned text lands
+        // in the user message the primary model actually sees. Images are
+        // replaced by their text descriptions; the raw bytes never reach the
+        // primary model.
+        this.#notice(
+          `Vision relay: captioning ${expanded.images.length} image${expanded.images.length === 1 ? "" : "s"} via ${relayConfig.relayModel} (primary model ${this.#session.model} does not support image input).`,
+          "info",
+        );
+        const result = await captionImages(
+          expanded.images,
+          relayConfig,
+          () => this.registry.resolveModel(relayConfig.relayModel!, this.#config),
+          this.#session.abortSignal,
+          this.#log,
+        );
+        const block = captionsToContextBlock(result.captions);
+        relayedText = block ? `${expanded.text}\n\n${block}` : expanded.text;
+        relayedImages = []; // primary model gets text, not bytes
+        if (result.allSucceeded) {
+          this.#notice(`Vision relay: all ${result.captions.length} image(s) captioned successfully.`, "info");
+        } else {
+          const degraded = result.captions.filter((c) => c.degraded).length;
+          this.#notice(
+            `Vision relay: ${result.captions.length - degraded} captioned, ${degraded} degraded (see context for details).`,
+            "warn",
+          );
+        }
+      } else if (ok === false) {
         this.#notice(`${this.#session.model} may not accept image input; sending anyway.`, "warn");
       }
     }
     await this.#session.run(
-      expanded.text,
-      expanded.images,
+      relayedText,
+      relayedImages,
       isHandoff ? { display: null } : opts.display !== undefined ? { display: opts.display } : {},
     );
     await this.#afterTurn();

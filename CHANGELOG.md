@@ -4,6 +4,59 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added — vision relay for non-multimodal models
+
+When the active model does NOT support image input (e.g. an Ollama-hosted GLM,
+a local Llama, a cloud text-only endpoint), attached images are now captioned
+by a separate vision-capable relay model and the text description is injected
+into the prompt — the primary model "sees" through the relay. This is the
+industry-standard "vision relay" / "image captioning relay" pattern used by
+multi-model routers (LiteLLM, OpenRouter, LangChain multi-modal chains).
+
+**Configuration** (in config.json):
+
+```json
+{
+  "vision": {
+    "relay": {
+      "enabled": true,
+      "relayModel": "openai/gpt-4o",
+      "timeoutMs": 30000,
+      "maxCaptionChars": 2000
+    }
+  }
+}
+```
+
+Or via the in-session `/vision` command:
+
+- `/vision` — show current relay status
+- `/vision on` — enable the relay
+- `/vision off` — disable the relay
+- `/vision model <provider>/<model>` — set the relay model (e.g.
+  `openai/gpt-4o`, `google/gemini-2.5-flash`, `anthropic/claude-sonnet-4-20250514`,
+  `ollama/llama3.2-vision`)
+- `/vision timeout <ms>` — per-image caption wall-clock (default 30000)
+
+**How it works:**
+
+1. When a user attaches an image, the engine checks whether the primary model
+   supports image input (via the models.dev catalog + known-model defaults).
+2. If the primary model does NOT support images AND the vision relay is enabled
+   with a relay model configured, each image is sent to the relay model in
+   parallel for captioning.
+3. The relay model produces a structured text description (visual description,
+   OCR'd text content, layout, key details) capped at `maxCaptionChars`.
+4. The captions are injected into the user's prompt as context blocks; the raw
+   image bytes are NOT sent to the primary model.
+5. If the relay call fails (provider down, timeout, missing key), a graceful
+   degradation note replaces the image so the primary model at least knows an
+   image was attached — never a silent drop.
+
+The relay is off by default (it costs an extra provider call per image). When
+the primary model DOES support images, or when the relay is off, images pass
+through unchanged.
+
 ## 0.4.30 — 2026-07-12
 
 ### Fixed — full-codebase audit hardening

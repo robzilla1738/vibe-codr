@@ -325,7 +325,17 @@ bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Rel
     path-cleaned seed + `mode:"proactive"` (stricter overlap/BM25 floor, min dense
     cosine, no session-transcript fusion). Framed as optional PRIOR NOTES, never
     "relevant". Explicit `/recall` stays permissive. Bare image paths in the
-    prompt auto-attach (not only `@path`).
+    prompt auto-attach (not only `@path`). **Vision relay** (`vision.relay`
+    in config, `/vision` command): when the primary model does NOT support image
+    input (`catalog.supportsImages === false`), attached images are captioned by a
+    separate vision-capable relay model (`vision.relay.relayModel`) and the text
+    descriptions are injected into the prompt — the primary model "sees" through
+    the relay. The relay runs in `Engine.#handlePrompt` between `expandMentions`
+    and `session.run`: it captions all images in parallel via `captionImages`
+    (`vision-relay.ts`), replaces the image bytes with `captionsToContextBlock`
+    text, and passes an empty images array to `session.run`. Off by default; when
+    the primary model DOES support images or the relay is off, images pass through
+    unchanged. Relay failures degrade gracefully (a placeholder note per image).
   - **Meta Model API harness edges:** `/reasoning` forwards `reasoningEffort` and
     never sends `"none"`; after `present_plan`, Meta uses `activeTools:[]` without
     `tool_choice:"none"` (Meta only allows `"auto"`).

@@ -143,6 +143,69 @@ test("formatBrowserVerify: could-not-run is honest (never a pass)", () => {
   expect(formatBrowserVerify(unavailable)).toContain("playwright unavailable");
 });
 
+/**
+ * BUG-117: wall-clock abort must race chromium.launch — a never-resolving
+ * launch used to hang the gate until the bun test timeout. raceAbort maps the
+ * abort to could-not-run so production turns unwind. Removing raceAbort makes
+ * this test hang past the assertion window.
+ */
+test("BUG-117: hung chromium.launch returns could-not-run within wall-clock (raceAbort)", async () => {
+  const cwd = tempCwd();
+  // Never resolves — simulates a wedged browser binary.
+  const hungLaunch = new Promise<never>(() => {});
+  const start = Date.now();
+  const result = await browserVerify(cwd, makeProfile(), {
+    urlOverride: "http://127.0.0.1:9/",
+    timeoutMs: 400,
+    loadPlaywright: async () =>
+      ({
+        chromium: {
+          launch: async () => hungLaunch,
+        },
+      }) as unknown as PlaywrightModule,
+  });
+  const elapsed = Date.now() - start;
+  expect(result).not.toBeNull();
+  expect(result!.available).toBe(true);
+  expect(result!.ran).toBe(false);
+  expect(formatBrowserVerify(result!)).toContain("could not run");
+  // Must return near the wall-clock, not sit until a 20s/90s outer timeout.
+  expect(elapsed).toBeLessThan(5_000);
+});
+
+test("BUG-117: hung page.goto returns could-not-run within wall-clock (raceAbort)", async () => {
+  const cwd = tempCwd();
+  const hungGoto = new Promise<never>(() => {});
+  const start = Date.now();
+  const result = await browserVerify(cwd, makeProfile(), {
+    urlOverride: "http://127.0.0.1:9/",
+    timeoutMs: 400,
+    loadPlaywright: async () =>
+      ({
+        chromium: {
+          launch: async () => ({
+            newPage: async () => ({
+              on: () => {},
+              goto: async () => hungGoto,
+              waitForTimeout: async () => {},
+              screenshot: async () => new Uint8Array([1]),
+              evaluate: async () => [],
+              locator: () => ({ count: async () => 0, click: async () => {} }),
+              url: () => "http://127.0.0.1:9/",
+              goBack: async () => {},
+            }),
+            close: async () => {},
+          }),
+        },
+      }) as unknown as PlaywrightModule,
+  });
+  const elapsed = Date.now() - start;
+  expect(result).not.toBeNull();
+  expect(result!.ran).toBe(false);
+  expect(formatBrowserVerify(result!)).toContain("could not run");
+  expect(elapsed).toBeLessThan(5_000);
+});
+
 // ── real browser tier (skips gracefully when playwright/chromium is unavailable) ─
 
 async function playwrightReady(): Promise<boolean> {
@@ -178,7 +241,14 @@ browserTest(
     });
     try {
       const url = `http://127.0.0.1:${server.port}/`;
-      const result = await browserVerify(cwd, makeProfile(), { urlOverride: url });
+      // Bound wall-clock so a wedged chromium.launch cannot hang forever
+      // (raceAbort maps the abort to could-not-run). Under full-suite load
+      // launch can take >15s; keep bun timeout generous and wall-clock tight
+      // enough to still fail closed if chromium is dead.
+      const result = await browserVerify(cwd, makeProfile(), {
+        urlOverride: url,
+        timeoutMs: 45_000,
+      });
       expect(result).not.toBeNull();
       const r = result!;
       expect(r.available).toBe(true);
@@ -200,7 +270,7 @@ browserTest(
       server.stop(true);
     }
   },
-  30_000,
+  60_000,
 );
 
 browserTest(
@@ -213,12 +283,12 @@ browserTest(
       // urlOverride is up-front, so simulate the boot-failure path via a bad URL
       // and a short wall clock: goto against a dead port throws → could-not-run.
       urlOverride: "http://127.0.0.1:1/", // port 1 is not listening
-      timeoutMs: 8_000,
+      timeoutMs: 12_000,
     });
     expect(result).not.toBeNull();
     expect(result!.available).toBe(true);
     expect(result!.ran).toBe(false);
     expect(formatBrowserVerify(result!)).toContain("could not run");
   },
-  20_000,
+  45_000,
 );

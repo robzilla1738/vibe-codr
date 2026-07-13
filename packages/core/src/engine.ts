@@ -605,6 +605,9 @@ export class Engine implements EngineClient {
             ...(resume.meta.lastInputTokens
               ? { initialLastInputTokens: resume.meta.lastInputTokens }
               : {}),
+            ...(resume.meta.offloaded?.length
+              ? { initialOffloaded: resume.meta.offloaded }
+              : {}),
           }
         : {}),
     });
@@ -1647,6 +1650,19 @@ export class Engine implements EngineClient {
         : { tool: toolName, matchExact: scope, action: "allow" };
     try {
       await appendProjectPermission(this.#cwd, rule);
+      // Also install the rule into the LIVE config so re-gating to ask (which
+      // clears `#alwaysAllow`) still honors always-project for the rest of this
+      // process — not only after a restart that reloads from disk. Dedup by
+      // tool + matchExact so a second grant for the same shape is a no-op.
+      const perms = this.#config.permissions ?? [];
+      const already = perms.some(
+        (r) =>
+          r.tool === rule.tool &&
+          r.action === "allow" &&
+          r.matchExact === rule.matchExact &&
+          r.match === rule.match,
+      );
+      if (!already) this.#config.permissions = [...perms, rule];
     } catch (err) {
       // The in-memory grant already applies (added before this call), so a failed
       // persist never blocks the session — just warn that it won't survive resume.

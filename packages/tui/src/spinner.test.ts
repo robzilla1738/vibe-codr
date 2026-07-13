@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { SPINNER_FRAMES, spinnerFrame, workingLabel } from "./spinner.ts";
+import { compactElapsed, SPINNER_FRAMES, spinnerFrame, workingLabel } from "./spinner.ts";
 
 test("spinnerFrame cycles through every frame in order", () => {
   const frames: readonly string[] = SPINNER_FRAMES;
@@ -19,4 +19,11 @@ test("workingLabel shows seconds once elapsed is meaningful", () => {
   expect(workingLabel(0)).toBe("Working…");
   expect(workingLabel(50)).toBe("Working…");
   expect(workingLabel(3200)).toBe("Working… 3.2s");
+});
+
+test("compactElapsed hides sub-second noise", () => {
+  expect(compactElapsed(0)).toBe("");
+  expect(compactElapsed(999)).toBe("");
+  expect(compactElapsed(1500)).toBe("1.5s");
+  expect(compactElapsed(12_000)).toBe("12s");
 });

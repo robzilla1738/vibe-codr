@@ -1,4 +1,8 @@
-import { test, expect } from "bun:test";
+import { test, expect, setDefaultTimeout } from "bun:test";
+// Multi-step engine+gate tests routinely take 1.5–4s each; under suite load
+// they can approach or exceed the default 5s and flake. Prefer a generous
+// per-file default over individual timeouts on every case.
+setDefaultTimeout(20_000);
 import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -449,6 +449,34 @@ test("always-project: persists a validated command-scoped rule mirroring the in-
   ]);
 });
 
+test("always-project: survives re-gate to ask in the same process (live config.permissions)", async () => {
+  // always-project must install into live config.permissions, not only disk —
+  // re-gating to ask clears #alwaysAllow; without the live rule the same
+  // command would re-prompt until restart.
+  const { engine, runs, cwd } = makeEngine(
+    [
+      toolCallCmd("c1", "git status"),
+      finalText(),
+      toolCallCmd("c2", "git status"),
+      finalText(),
+    ],
+    true,
+  );
+  const events = drive(engine, "always-project");
+  engine.send({ type: "submit-prompt", text: "grant" });
+  await engine.whenIdle();
+  expect(events.filter((e) => e.type === "permission-request").length).toBe(1);
+  // Re-gate to ask (clears always-allow memory); next turn must still allow via live rule.
+  engine.send({ type: "set-approvals", mode: "ask" });
+  engine.send({ type: "submit-prompt", text: "again" });
+  await engine.whenIdle();
+  expect(events.filter((e) => e.type === "permission-request").length).toBe(1); // no re-prompt
+  expect(runs()).toBe(2);
+  expect(await readProjectRules(cwd)).toEqual([
+    { tool: "danger", matchExact: "git status", action: "allow" },
+  ]);
+});
+
 test("always-project: a command grant with a glob char persists as matchExact, NOT a broadened match", async () => {
   // The core FIX-3 invariant end-to-end: approving `rm build/*` persists a
   // matchExact rule so a FRESH PermissionChecker load allows ONLY the literal

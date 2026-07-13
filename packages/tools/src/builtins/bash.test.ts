@@ -6,7 +6,7 @@ import type { ToolContext, UIEvent } from "@vibe/shared";
 import { FreshnessRegistry } from "./freshness.ts";
 
 const freshness = new FreshnessRegistry();
-import { bashTool } from "./bash.ts";
+import { bashTool, destructiveMatch } from "./bash.ts";
 
 function ctx(cwd: string, events: UIEvent[] = []): ToolContext {
   return {
@@ -118,6 +118,35 @@ test("background run without a job registry is rejected cleanly", async () => {
   const r = await bashTool().execute({ command: "sleep 1", background: true }, ctx(cwd()));
   expect(r.isError).toBe(true);
   expect(String(r.output)).toContain("unavailable");
+});
+
+test("destructiveMatch flags rm -rf /, force-push, reset --hard", () => {
+  expect(destructiveMatch("rm -rf /")).toBeTruthy();
+  expect(destructiveMatch("git push --force origin main")).toBeTruthy();
+  expect(destructiveMatch("git reset --hard HEAD~1")).toBeTruthy();
+  expect(destructiveMatch("echo hi")).toBeNull();
+});
+
+test("foreground destructive command is hard-refused (YOLO backstop)", async () => {
+  const r = await bashTool().execute({ command: "rm -rf /" }, ctx(cwd()));
+  expect(r.isError).toBe(true);
+  expect(String(r.output)).toMatch(/destructive pattern/i);
+});
+
+test("background:true still hard-refuses destructive commands (no YOLO bypass)", async () => {
+  // A model-controlled background flag must not skip the hard backstop — under
+  // YOLO the permission gate auto-allows and jobs.start would otherwise fire.
+  const jobs = {
+    start: () => {
+      throw new Error("jobs.start must not run for a destructive background command");
+    },
+  };
+  const r = await bashTool(jobs as never).execute(
+    { command: "git push --force origin main", background: true },
+    ctx(cwd()),
+  );
+  expect(r.isError).toBe(true);
+  expect(String(r.output)).toMatch(/destructive pattern/i);
 });
 
 test("a backgrounded child holding the pipe doesn't hang the call past the grace deadline", async () => {

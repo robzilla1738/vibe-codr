@@ -105,9 +105,9 @@ export function cycleModeAction(
  * override is applied.
  */
 export const MODE_COLORS: Record<UiMode, string> = {
-  execute: "#70cbf4", // AGENT fallback — Blue 300
-  plan: "#9ece6a", // PLAN — green
-  yolo: "#f7768e", // YOLO — red
+  execute: "#70cbf4", // AGENT fallback — Blue 300 (app uses brand() when set)
+  plan: "#9ece6a", // PLAN — calm green (read-only)
+  yolo: "#f7768e", // YOLO — alert red (unattended tools)
 };
 
 export function modeColor(m: UiMode): string {

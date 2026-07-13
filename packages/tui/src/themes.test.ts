@@ -63,19 +63,23 @@ test("the opencode theme ships with its signature warm primary", () => {
   expect(oc.delBg).not.toBe(oc.panel);
 });
 
-test("the default theme is white-chromed, DARK, with violet reserved for emphasis", () => {
+test("the default theme is white-chromed, DARK, no purple default accent", () => {
   const d = getTheme("default");
-  // White chrome (opencode-style): titles/markers in the body white...
-  expect(d.primary).toBe("#eeeeee");
-  expect(d.accent).toBe("#eeeeee");
-  // ...with the royal violet kept for the few emphasis moments: the selected
-  // menu row's band (dark text on it) and markdown headings.
-  expect(d.selBg).toBe("#8b5cf6");
-  expect(d.selFg).toBe("#0a0a0a");
-  expect(d.heading).toBe("#8b5cf6");
+  // Near-white chrome: titles, markers, headings, wordmark.
+  expect(d.primary).toBe("#f2f2f2");
+  expect(d.accent).toBe("#f2f2f2");
+  expect(d.heading).toBe("#f2f2f2");
+  // Menu selection is a soft elevated band (not a saturated purple stroke).
+  expect(d.selBg).toBe("#2a2a2a");
+  expect(d.selFg).toBe("#f2f2f2");
+  expect(d.selBg).not.toBe("#8b5cf6");
+  expect(d.heading).not.toBe("#8b5cf6");
   // The default must never drift light — its surfaces stay near-black.
-  expect(d.background).toBe("#0a0a0a");
+  expect(d.background).toBe("#080808");
   expect(d.background).not.toBe(getTheme("light").background);
+  // Three-layer surfaces: background / panel / elevated must be distinct steps.
+  expect(d.panel).not.toBe(d.background);
+  expect(d.elevated).not.toBe(d.panel);
   // gutter/code are their own tones, distinct from the accent and from borders.
   expect(d.gutter).not.toBe(d.primary);
   expect(d.gutter).not.toBe(d.border);
@@ -147,17 +151,17 @@ test("every theme keeps panel/elevated raised surfaces distinct from the backdro
   }
 });
 
-test("accent presets: valid hexes, violet preset matches the default's emphasis hue", () => {
+test("accent presets: valid hexes; purple is opt-in, not default chrome", () => {
   expect(ACCENT_NAMES.length).toBeGreaterThanOrEqual(6);
   for (const name of ACCENT_NAMES) {
     expect(ACCENT_PRESETS[name]).toMatch(/^#[0-9a-f]{6}$/);
   }
   expect(ACCENT_PRESETS.purple).toBe("#8b5cf6");
   expect(ACCENT_PRESETS.orange).toBe("#fab283");
-  // The default's chrome is white, but its signature violet (selection band,
-  // headings) is the same hue as the `purple` preset — `/accent purple` paints
-  // the chrome in that identity hue.
-  expect(ACCENT_PRESETS.purple).toBe(getTheme("default").heading);
+  // Default chrome is white — purple only via `/accent purple`.
+  expect(getTheme("default").primary).not.toBe(ACCENT_PRESETS.purple);
+  expect(getTheme("default").heading).not.toBe(ACCENT_PRESETS.purple);
+  expect(getTheme("default").selBg).not.toBe(ACCENT_PRESETS.purple);
   // Distinct swatches — two names must never set the same hue.
   expect(new Set(Object.values(ACCENT_PRESETS)).size).toBe(ACCENT_NAMES.length);
 });

@@ -218,6 +218,10 @@ export interface SessionDeps {
   initialRecalledContext?: string;
   /** Seed the web-source ledger when resuming, so `[n]` citations still resolve. */
   initialSources?: SourceEntry[];
+  /** Seed the offload map when resuming so artifact prune keeps live paths and
+   * re-plan doesn't re-offload already-previewed tool results. Matches
+   * SessionMeta.offloaded (callId is the map key, not on OffloadRecord). */
+  initialOffloaded?: { callId: string; path: string; toolName: string; fullChars: number }[];
   createdAt?: number;
   /** Resolve the active model's context window (for compaction). */
   getContextWindow?: (model: string) => Promise<number | undefined>;
@@ -306,8 +310,9 @@ export class Session {
    * THAT on success instead. */
   #fetchInputUrls = new Map<string, string>();
   /** Tool results offloaded to session artifacts (mid-turn microcompaction),
-   * keyed by toolCallId. In-memory only: persisted messages carry the previews
-   * themselves, so `--resume` needs no extra state. */
+   * keyed by toolCallId. Persisted in SessionMeta.offloaded and restored on
+   * `--resume` so prune keeps live artifact paths and re-plan skips already-
+   * previewed call ids. */
   #offloaded = new Map<string, OffloadRecord>();
   /** The provider's real system+tools+cache overhead beyond the message-text
    * estimate, measured from step usage — anchors the mid-turn fill projection
@@ -371,6 +376,26 @@ export class Session {
           : (deps.initialCostUSD ?? 0);
     this.#costEstimated = deps.initialCostEstimated ?? false;
     this.#lastInputTokens = deps.initialLastInputTokens ?? 0;
+    // Restore offload map from meta so prune/re-plan stay correct after --resume.
+    if (deps.initialOffloaded?.length) {
+      for (const rec of deps.initialOffloaded) {
+        if (rec?.callId && rec.path) {
+          this.#offloaded.set(rec.callId, {
+            path: rec.path,
+            toolName: rec.toolName,
+            fullChars: rec.fullChars,
+          });
+        }
+      }
+    }
+    // Recompute system+tools overhead from the restored prompt size so the first
+    // mid-turn prepareStep after resume does not under-project fill (overhead 0
+    // would delay microcompaction on an already-large context). BUG-118.
+    if (this.#lastInputTokens > 0 && this.#modelMessages.length) {
+      const msgEst = estimateTokens(this.#modelMessages);
+      this.#overheadTokens = Math.max(0, this.#lastInputTokens - msgEst);
+      this.#lastSentEstimate = msgEst;
+    }
     this.#recalledContext = deps.initialRecalledContext;
     if (deps.initialSources?.length) this.#sources.hydrate(deps.initialSources);
     this.#createdAt = deps.createdAt ?? Date.now();
@@ -1752,11 +1777,19 @@ export class Session {
     // only have the messages-only estimate, so pad it for the unseen system/tool
     // overhead (capped to a fraction of the window so tiny local-model windows
     // aren't forced to compact every turn).
+    // Prefer the mid-turn formula once overhead is known: messages-only estimate
+    // + measured system/tools scaffolding. `#lastInputTokens` alone undercounts
+    // a just-pushed large user turn (it is the PREVIOUS step's full prompt and
+    // omits the new message; message-only estimate rarely exceeds it because it
+    // lacks system/tool overhead — so max() stuck at the stale prior count and
+    // skipped compaction that should fire). BUG-112.
     const estimate = estimateTokens(this.#modelMessages);
     const currentTokens =
-      this.#lastInputTokens > 0
-        ? Math.max(this.#lastInputTokens, estimate)
-        : estimate + Math.min(COMPACT_OVERHEAD_MARGIN, Math.floor(contextWindow * 0.1));
+      this.#overheadTokens > 0
+        ? estimate + this.#overheadTokens
+        : this.#lastInputTokens > 0
+          ? Math.max(this.#lastInputTokens, estimate)
+          : estimate + Math.min(COMPACT_OVERHEAD_MARGIN, Math.floor(contextWindow * 0.1));
     let result: Awaited<ReturnType<typeof compactMessages>>;
     try {
       result = await compactMessages(this.#modelMessages, {
@@ -1933,8 +1966,13 @@ export class Session {
       initialUsage: undefined,
       initialLastInputTokens: undefined,
       initialCostUSD: undefined,
+      // BUG-103 / BUG-119 fork isolation: actual vs estimated spend must not leak
+      // from a resumed parent into children.
+      initialActualCostUSD: undefined,
+      initialCostEstimated: undefined,
       initialRecalledContext: undefined,
       initialSources: undefined,
+      initialOffloaded: undefined,
       store: undefined,
       extraSystem: undefined,
       // Don't inherit a parent agent's tool restriction — #forkChild re-applies

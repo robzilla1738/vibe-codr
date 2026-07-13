@@ -160,6 +160,52 @@ test("conflicting squash-merge is aborted cleanly and returns false", async () =
   expect(status.stdout.trim()).toBe("");
 });
 
+test("multi-file squash conflict discards clean auto-merges (no half-merged tree)", async () => {
+  // A worktree edits BOTH a conflicted file (a.txt) AND a clean new file
+  // (b.txt). On squash conflict Git stages b.txt and marks a.txt unmerged —
+  // restoring only unmerged paths used to leave b.txt staged. Full cleanup
+  // must discard every path this squash introduced.
+  const cwd = await makeRepo();
+  const wtPath = join(cwd, ".vibe", "worktrees", "t-half");
+  await gitAddWorktree(cwd, { path: wtPath, branch: "vibe-wt/t-half" });
+
+  writeFileSync(join(wtPath, "a.txt"), "worktree-version\n");
+  writeFileSync(join(wtPath, "b.txt"), "clean auto-merge from worktree\n");
+  await run(wtPath, ["add", "-A"]);
+  await run(wtPath, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-q",
+    "-m",
+    "wt multi",
+  ]);
+  writeFileSync(join(cwd, "a.txt"), "main-version\n");
+  await run(cwd, ["add", "-A"]);
+  await run(cwd, [
+    "-c",
+    "user.name=t",
+    "-c",
+    "user.email=t@t",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-q",
+    "-m",
+    "main diverge",
+  ]);
+
+  expect(await gitMergeWorktreeBranch(cwd, "vibe-wt/t-half")).toBe(false);
+  const status = await run(cwd, ["status", "--porcelain"]);
+  expect(status.stdout.trim()).toBe("");
+  expect(existsSync(join(cwd, "b.txt"))).toBe(false);
+  expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("main-version\n");
+});
+
 test("gitAddWorktree excludes .vibe/ via .git/info/exclude (idempotently) so the worktree doesn't leak into git status", async () => {
   const cwd = await makeRepo();
   const wtPath = join(cwd, ".vibe", "worktrees", "e1");

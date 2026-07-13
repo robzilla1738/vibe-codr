@@ -228,22 +228,28 @@ export async function gitMergeWorktreeBranch(
   branch: string,
   run: GitRunner = spawnGit,
 ): Promise<boolean> {
+  // Snapshot paths staged BEFORE this squash so concurrent sibling merges'
+  // already-staged work is never discarded on cleanup (a blanket `git reset`
+  // would silently revert them).
+  const preStaged = new Set(await gitStagedFiles(cwd, run));
   const r = await run(cwd, id(["merge", "--squash", branch]));
   if (r.ok) return true;
-  // A squash-merge fails in one of two shapes, and the cleanup must NOT be a
-  // blanket `git reset` — when several worktree tasks squash-merge into ONE
-  // uncommitted tree, an earlier task's changes are already STAGED here, and a
-  // blanket reset silently reverts them (verified). Instead:
-  //   (a) refused to start (its target files have local changes a prior merge
-  //       staged) → git touched nothing, so leave the tree exactly as-is; OR
-  //   (b) started and hit content conflicts → discard just the conflicted paths
-  //       back to HEAD (note `merge --squash` leaves no MERGE_HEAD, so detect the
-  //       half-merge via unmerged index entries, not a merge-in-progress state).
-  // `-z` (NUL-delimited, raw paths) so a conflicted path with spaces or non-ASCII
-  // characters isn't C-quoted into a bogus pathspec that `checkout` then no-ops on.
+  // A squash-merge fails in one of two shapes:
+  //   (a) refused to start (local changes block the apply) → git touched
+  //       nothing, so leave the tree exactly as-is; OR
+  //   (b) started and hit content conflicts on SOME paths while cleanly
+  //       auto-merging OTHERS — Git stages the clean ones and marks the rest
+  //       unmerged. Restoring ONLY unmerged paths left a half-merged tree
+  //       (clean auto-merges stayed staged). Discard EVERY path this squash
+  //       newly introduced (post-staged \ pre-staged ∪ unmerged).
+  // `-z` so conflicted paths with spaces/non-ASCII aren't C-quoted into a
+  // bogus pathspec that restore then no-ops on.
   const unmerged = await run(cwd, ["diff", "--name-only", "--diff-filter=U", "-z"]);
   const conflicted = unmerged.ok ? unmerged.stdout.split("\0").filter(Boolean) : [];
-  if (conflicted.length) await run(cwd, id(["checkout", "HEAD", "--", ...conflicted]));
+  const postStaged = await gitStagedFiles(cwd, run);
+  const leaked = postStaged.filter((f) => !preStaged.has(f));
+  const toRestore = [...new Set([...leaked, ...conflicted])];
+  if (toRestore.length) await gitRestoreFiles(cwd, toRestore, run);
   return false;
 }
 

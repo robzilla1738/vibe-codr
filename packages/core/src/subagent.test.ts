@@ -841,6 +841,9 @@ test("a fanning parent under a max:1 limiter with timeoutMs=0 completes (no hold
 test("fork() gives a subagent a fresh context — no inherited history/usage/cost/store", async () => {
   // Regression for the resume+subagent leak: a resumed parent carries
   // initial*/store in its deps; a forked subagent must NOT inherit any of it.
+  // BUG-103 fields (actualCostUSD / costEstimated) are the spend-guard seeds —
+  // without clearing them a resumed parent with actualCostUSD=48 seeds the
+  // child's hard-stop budget, and costEstimated pollutes parent fold via ||=.
   const dir = mkdtempSync(join(tmpdir(), "vibe-fork-"));
   const store = new SessionStore(dir);
   const prompts: string[] = [];
@@ -866,22 +869,33 @@ test("fork() gives a subagent a fresh context — no inherited history/usage/cos
     model: "mock/test",
     mode: "execute",
     store,
-    // Simulate a resumed parent with prior history / usage / cost.
+    // Simulate a resumed parent with prior history / usage / cost / BUG-103 seeds.
     initialUsage: { inputTokens: 100, outputTokens: 100 },
     initialLastInputTokens: 50_000,
     initialCostUSD: 5,
+    initialActualCostUSD: 48,
+    initialCostEstimated: true,
     initialRecalledContext: "PARENT-RECALL-MARKER do not leak",
     initialModelMessages: [{ role: "user", content: "old history" }],
   });
+  // Parent itself carries the resumed spend seeds (sanity: seeds land).
+  expect(parent.actualCostUSD).toBe(48);
+  expect(parent.costEstimated).toBe(true);
 
   const child = parent.fork({ bus: new EventBus(), depth: 1 });
   // The child starts clean — none of the parent's seeded totals carry over.
   expect(child.snapshot().usage.totalTokens).toBe(0);
   expect(child.costUSD).toBe(0);
+  expect(child.actualCostUSD).toBe(0);
+  expect(child.costEstimated).toBe(false);
 
   await child.run("do the subtask");
   // Only the child's own single step is counted (2 tokens), not 200 + 2.
   expect(child.snapshot().usage.totalTokens).toBe(2);
+  // Child must not have inherited the parent's hard-stop seed or estimated flag
+  // after its own free/mock step (USAGE has no real price).
+  expect(child.actualCostUSD).toBe(0);
+  expect(child.costEstimated).toBe(false);
   expect(prompts[0]).not.toContain("old history");
   expect(prompts[0]).not.toContain("PARENT-RECALL-MARKER");
   // The child is ephemeral: it must not persist itself into the parent's store

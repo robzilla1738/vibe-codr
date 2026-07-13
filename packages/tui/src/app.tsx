@@ -11,41 +11,28 @@
  * to keep in sync — just re-run that script after a visible change.
  *
  * Layout: a single, centered, capped-width chat column (ChatGPT-style) on a
- * black background, with a muted TOP-LEFT context line (cwd · git · goal).
- * On a WIDE terminal (≥ SIDEBAR_MIN_TERM) with live work (tasks / a subagent
- * fan-out / a running turn), a fixed-width RIGHT SIDEBAR takes the Tasks panel,
- * the Subagents fan-out (each child with its live activity line), and the live
- * thinking stream out of the chat column, so the transcript keeps its vertical
- * space; on narrow panes all fall back inline exactly as before. The sidebar
- * spans the SAME height as the chat column — Tasks then Subagents hug the top,
- * the Thinking block grows to fill the rest, and the thought trail persists
- * until the next message is sent.
+ * near-black background, with a muted TOP-LEFT context line (cwd · git · goal).
+ * Tasks, Subagents, and live reasoning always render INLINE in the chat column
+ * (no right sidebar). Quiet side gutters center the column on wide terminals.
  *
- * DESIGN LANGUAGE — flat chrome, filled content. Structural chrome (status
- * sections, the input, cards) is drawn FLAT: accent-colored titles + spacing on the
- * uniform black, never line-drawn boxes or grey fills. This is deliberate: many
- * terminals add line/letter spacing, which turns box-drawing borders (│─┼) into
- * broken dashes and makes multi-row background fills read as messy floating
- * rectangles. Flat text stays uniform on ANY terminal. The ONLY filled/bar elements
- * are: (a) the RAIL — a solid 1-col bg bar (git-graph style, see `Rail`) down the
- * left of every block card (turns, input, plan, permission, toast, quotes); (b)
- * DATA VIZ — bar/line/pie charts, whose colored fills ARE the content. A filled
- * cell fills its whole rect, so these bars/fills stay solid everywhere. NEVER use
- * `border={[…]}` for chrome: border glyphs gap into dashes and can ghost when a
- * block reflows or scrolls (the Rail docstring has the full story).
+ * DESIGN LANGUAGE — "Studio" chrome. Three surface layers (background / panel /
+ * elevated), one brand accent, mode-hued input rail, and Rail glyph accents —
+ * never `border={[…]}` (gaps into dashes; ghosts on scroll). Hierarchy:
+ *   1. Mode chip (AGENT / PLAN / YOLO) — always visible, highest action-state signal
+ *   2. Conversation — user cards on brand rail, assistant/tools on gutter rail
+ *   3. Approval surfaces — plan (green) / permission (amber) above the input
+ *   4. Status — quiet under-input metrics; top-left location context
+ * Idle is calm (muted status, discoverable empty-state tips); working is alive
+ * (braille spinner + elapsed + live tool chevrons). Density (Ctrl+D) only gates
+ * expand/collapse — never hides that work happened.
  *
- * A fresh screen shows a centered VIBE CODR wordmark. Once you start: the scrolling
- * transcript renders as connected TURN THREADS (a `◆` node carries your prompt, a
- * continuous rail runs down through its tool steps + answer); below it sit the live
- * status sections (working · plan · tasks · subagents · queue · permission); then
- * the input — its OWN filled block (elevated surface, mode-hued left accent) holding
- * a `MODE ❯` prompt with the command menu as rows inside the same block; then a
- * justified status line (model ·
- * changed · ctx · cost left; key hints right). Assistant prose renders through
- * OpenTUI's native <markdown>; headings/quotes/code/tables + rich data views
- * (chart/line/pie/weather/sources — see rich-blocks.ts) render from our own
- * primitives. Tool/diff output is condensed to one line and expands on click;
- * tapping your own message folds the whole turn under it.
+ * A fresh screen shows the wordmark alone. Once you start: TURN THREADS (user
+ * panel → tool steps + answer on a continuous rail); live status (working · plan ·
+ * tasks · subagents · queue · permission) inline above the input; the input block
+ * (`MODE ❯` + in-block slash menu); justified status (model · changed · ctx · cost
+ * left; key hints right on splash / jobs). Assistant prose via native <markdown>;
+ * code/tables/rich views as primitives. Tool output condenses; tap your message
+ * to fold the turn.
  */
 
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
@@ -125,7 +112,6 @@ import {
   contextFillPct,
   formatUsage,
   isHotContext,
-  sessionMetricsTone,
   TASK_GLYPH,
   windowTasks,
 } from "./headless.ts";
@@ -143,9 +129,19 @@ import {
 import { applyAtMention, atMentionState, listProjectFiles, rankPaths } from "./file-fuzzy.ts";
 import { fitHintSegs, type HintSeg } from "./hints.ts";
 import { seedChromeFromSessionStart } from "./chrome-seed.ts";
+import {
+  buildFooterHintSegs,
+  earlierTurnsLabel,
+  INPUT_PLACEHOLDER,
+  itemsHiddenLabel,
+  permissionTitle,
+  PLAN_CARD_TITLE,
+  wordmarkHue,
+  workingLineWithInterrupt,
+} from "./design.ts";
 import { brandSpans } from "./gradient.ts";
 import { lineToCommands, routePendingPermLine } from "./slash.ts";
-import { spinnerFrame, workingLabel } from "./spinner.ts";
+import { spinnerFrame } from "./spinner.ts";
 import { ACCENT_PRESETS, accentNameOf, getTheme, type Palette } from "./themes.ts";
 import { permissionPreview, toolLabel } from "./tool-icons.ts";
 import { Trail, turnWindowStart, windowStartIndex } from "./trail.ts";
@@ -174,14 +170,10 @@ import { WORDMARK, WORDMARK_COLS } from "./wordmark.ts";
  * 100, originally 84) trades line-length purity for information density —
  * code, diffs, tables and tool output show meaningfully more per row on a
  * full-screen terminal while narrow panes still just fill the window. */
-const CONTENT_MAX = 100;
+/** Chat column max width — a bit roomier now that there is no right sidebar. */
+const CONTENT_MAX = 108;
 /** Cap how many output lines an expanded tool/diff block renders. */
 const MAX_OUTPUT_LINES = 160;
-/** The right sidebar's fixed column width (Tasks + live thinking on wide panes). */
-const SIDEBAR_W = 42;
-/** Min terminal width for the sidebar: below this the chat column would be
- * squeezed under ~80 cols, so Tasks/thinking stay inline instead. */
-const SIDEBAR_MIN_TERM = 120;
 /** Max visible rows the input box grows to before it scrolls internally. */
 const INPUT_MAX_ROWS = 10;
 /** Prompt-field keybinding overrides (merged over the textarea defaults):
@@ -446,17 +438,17 @@ export function App(props: { engine: EngineClient }) {
     return "";
   };
   const cwd = shortCwd();
-  // The chrome accent: opencode peach by default (the DEFAULT palette's primary),
-  // overridable to any hue via `/accent <hex>`. Reserved for titles + markers —
-  // panel titles, the `❯` user marker + gutter, the active task/step, the selected
-  // menu row, and the caret — plus the wordmark sweep and the spinner. Box borders
-  // stay neutral grey (`palette().border`).
+  // Chrome accent for titles, caret, active markers: near-white by default, or
+  // `/accent` override. Box borders stay neutral grey (`palette().border`).
   const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
   const brand = () => accentColor() || palette().primary;
-  // The mode chip + input rail hue — the one mode-driven color in the UI. AGENT
-  // (execute, the everyday state) FOLLOWS the brand accent so `/accent orange`
-  // recolors the whole input control coherently (a fixed hue chip would clash
-  // with a warm accent); PLAN green and YOLO red stay fixed alert hues.
+  // Wordmark / user-rail / spinner hue: `/accent` when set, else white primary.
+  const logoHue = () =>
+    wordmarkHue({
+      accent: accentColor(),
+      primary: palette().primary,
+    });
+  // Mode chip + input rail: AGENT follows brand; PLAN green / YOLO red fixed.
   const accent = () => (uiMode() === "execute" ? brand() : modeColor(uiMode()));
   // AGENT / PLAN / YOLO — execute reads AGENT (permission-gated coding agent).
   const modeWord = () => modeWordOf(uiMode());
@@ -581,56 +573,17 @@ export function App(props: { engine: EngineClient }) {
     mdStyle = undefined;
   }
 
-  // The chat column is centered with a capped width (ChatGPT-style): it fills a
-  // narrow terminal and gets quiet side gutters on a wide one. Reads the live
-  // terminal width so the column reflows on resize.
+  // Centered chat column with a capped width (ChatGPT-style). Quiet side gutters
+  // on a wide terminal; reflows on resize.
   const dims = useTerminalDimensions();
-  // The Tasks panel is worth showing while any task is unfinished (a fully
-  // completed list hides so it doesn't linger) — shared by the inline panel
-  // and the sidebar so exactly one of them ever renders it.
+  // Tasks panel while any task is unfinished (a completed list hides).
   const tasksVisible = () => tasks().length > 0 && tasks().some((t) => t.status !== "completed");
   const hasRunningSubagents = () => subagents().some((s) => s.status === "running");
-  // The right sidebar mounts on a wide terminal whenever there is work to host:
-  // ANY task list (completed ones included — it must not vanish, reflowing the
-  // whole transcript, the moment the last task finishes), a running turn, or a
-  // lingering thought log from the turn that just ended. In practice that means
-  // it appears when a turn starts and stays for the session; the next /clear or
-  // a narrow resize are the only things that remove it.
-  const sidebarOn = () =>
-    dims().width >= SIDEBAR_MIN_TERM &&
-    (tasks().length > 0 || subagents().length > 0 || working() || thoughtLog().length > 0);
-  const contentWidth = () =>
-    Math.min(CONTENT_MAX, Math.max(1, dims().width - 2 - (sidebarOn() ? SIDEBAR_W : 0)));
-  // How many task rows the sidebar shows before windowing kicks in — taller
-  // than the inline PANEL_MAX_ROWS (vertical space is what the sidebar is for),
-  // budgeted by terminal height with slack for wrapped titles (÷4 ≈ header +
-  // 2-line wraps) so a long list can't push the thinking section off-screen.
-  // When BOTH rigid panels are up (Tasks + Subagents) they split that budget,
-  // keeping the growing Thinking block on-screen even on a short pane.
-  // (−16: chrome rows + the always-on session card, which is rigid ~5-7 rows.)
-  const sidePanelBudget = () =>
-    Math.max(PANEL_MAX_ROWS, Math.min(16, Math.floor((dims().height - 16) / 4)));
-  const sideTaskCap = () =>
-    subagents().length > 0 ? Math.max(3, Math.floor(sidePanelBudget() / 2)) : sidePanelBudget();
-  // Subagent rows can take up to FOUR lines each (a two-line wrapped prompt +
-  // a two-line wrapped activity/result), so the cap counts its half of the
-  // budget in ~3-line rows (most rows use 2-3) — a big fan-out windows into
-  // "+N more" instead of pushing the thinking block off-screen.
-  const sideSubCap = () => Math.max(3, Math.floor(sidePanelBudget() / 3));
-  // The thought-log block GROWS to fill every row left under the Tasks block,
-  // so the sidebar spans the same height as the chat column — its top block
-  // sits level with the first transcript block and its bottom lands level with
-  // the input, one continuous column instead of a short box floating over
-  // empty space. The scrollbox inside inherits that height; content shorter
-  // than the box top-aligns, longer content scrolls (sticky-bottom).
+  // Single centered chat column — no right sidebar. Tasks / Subagents / thinking
+  // always render inline above the input.
+  const contentWidth = () => Math.min(CONTENT_MAX, Math.max(1, dims().width - 2));
 
-  // The live "Working… Ns" elapsed label. It reads `tick()` so Solid re-renders it
-  // on every spinner frame — without a signal dependency the clock would render
-  // once and freeze (the bug where the timer stuck while the turn kept running).
-  const elapsedLabel = () => {
-    void tick();
-    return workingLabel(Date.now() - turnStartedAt);
-  };
+
 
   // Copy-toast: a brief "Copied to clipboard" card that slides in at the TOP-RIGHT
   // corner when a selection is copied, holds, then slides back out. `toastFrame`
@@ -2203,13 +2156,12 @@ export function App(props: { engine: EngineClient }) {
   const gitSummary = () => {
     const g = git();
     if (!g) return "";
-    // "on <branch>" (starship-style) — the `⎇` branch glyph has spotty coverage
-    // across terminal fonts (it falls back to a clipped placeholder), so plain
-    // words keep the context line clean everywhere.
+    // "on <branch>" (starship-style) — plain words keep the context line clean
+    // on terminals with spotty branch-glyph coverage.
     let s = `on ${g.branch}`;
-    if (g.dirty > 0) s += ` ${g.dirty}●`;
+    if (g.dirty > 0) s += ` · ${g.dirty} dirty`;
     if (g.ahead > 0 || g.behind > 0) s += ` ↑${g.ahead} ↓${g.behind}`;
-    if (g.worktree) s += " ⌂";
+    if (g.worktree) s += " · wt";
     return s;
   };
   const changedSummary = () => {
@@ -2220,6 +2172,7 @@ export function App(props: { engine: EngineClient }) {
     const delta = [added > 0 ? `+${added}` : "", removed > 0 ? `-${removed}` : ""]
       .filter(Boolean)
       .join(" ");
+    // Keep "N file(s)" for smoke; glyph prefixes the scannable edit summary.
     return `${GLYPH.file} ${fs.length} file${fs.length === 1 ? "" : "s"}${delta ? ` ${delta}` : ""}`;
   };
   // Show the block wordmark when the column is wide + tall enough to seat it
@@ -2235,46 +2188,45 @@ export function App(props: { engine: EngineClient }) {
     while (keep.length > 1 && displayWidth(keep.join("  ·  ")) > width) keep.pop();
     return truncate(keep.join("  ·  "), Math.max(8, width));
   };
-  // The persistent "where am I" context — location · git · goal — sits at the
-  // TOP-LEFT of the column (out of the way), not under the input. While the
-  // sidebar's session card is up it OWNS these facts — the line goes blank
-  // (the row itself stays, pinned to height 1, so nothing reflows) instead of
-  // double-printing the same dir/git/goal a few columns from the card.
+  // Persistent "where am I" — location · git · goal — top-left of the column.
   const topLeftLine = () =>
-    sidebarOn()
-      ? ""
-      : fitParts(
-          [
-            cwd,
-            gitSummary(),
-            goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}${goalSuffix()}` : "",
-          ],
-          contentWidth() - 2,
-        );
-  // Live status shown under the input: model · changed · ctx · cost. The metrics
-  // string re-splits on the same separator so fitting can drop its least-important
-  // tail pieces individually (queued/cost/tokens) instead of the whole group.
-  // With the session card up, model + usage live THERE — the footer keeps only
-  // what the card doesn't show (the changed-files delta).
+    fitParts(
+      [
+        cwd,
+        gitSummary(),
+        goalInfo() ? `★ ${truncate(goalInfo() ?? "", 44)}${goalSuffix()}` : "",
+      ],
+      contentWidth() - 2,
+    );
+  // Under-input status: model · changed · ctx · cost. Metrics re-split so fitting
+  // can drop least-important tail pieces. Density chip only when non-normal.
+  const densityStatus = () => {
+    const d = details();
+    return d === "normal" ? "" : d;
+  };
   const detailsParts = () =>
     fitParts(
-      sidebarOn()
-        ? [changedSummary()]
-        : [headModel(), changedSummary(), ...metrics().split(/\s+·\s+/)],
+      [headModel(), changedSummary(), densityStatus(), ...metrics().split(/\s+·\s+/)],
       contentWidth() - 2,
     )
       .split(/\s+·\s+/)
       .filter(Boolean);
   const detailsRight = () => detailsParts().join("  ·  ");
-  /** Status as coloured segs — ctx ≥80% paints notice (amber) as a fill warning. */
+  /** Status as coloured segs — ctx ≥80% paints notice (amber); density chip
+   * in brand white when quiet/verbose so the non-default mode is glanceable. */
   const statusSegs = (): Seg[] => {
     const dim = palette().muted;
     const warn = palette().notice;
+    const dens = brand();
     const parts = detailsParts();
     const segs: Seg[] = [];
     for (let i = 0; i < parts.length; i++) {
       if (i > 0) segs.push({ t: "  ·  ", fg: dim });
       const p = parts[i]!;
+      if (p === "quiet" || p === "verbose") {
+        segs.push({ t: p, fg: dens });
+        continue;
+      }
       const m = /^ctx\s+(\d+)%$/.exec(p);
       const hot = m ? isHotContext(Number(m[1])) : false;
       segs.push({ t: p, fg: hot ? warn : dim });
@@ -2282,74 +2234,17 @@ export function App(props: { engine: EngineClient }) {
     return segs;
   };
   const runningJobs = () => jobs().filter((j) => j.status === "running").length;
-  // The sidebar session card's value lines (no label words — the values are
-  // self-evident). One line per row, pre-truncated to the card's inner width
-  // (a `wrapMode:none` overflow would hard-clip mid-glyph, eating the `…`).
-  // The dir keeps its TAIL — in a deep path the trailing segments are the
-  // ones that identify where you are. `dim` mutes secondary rows; `warn` paints
-  // notice amber (ctx ≥80% on the metrics row — the under-input strip drops
-  // metrics while the card owns them, so the warning MUST live here too).
-  const sessionRows = (): { value: string; dim?: boolean; warn?: boolean }[] => {
-    // 42 (sidebar) − 2 (column padding) − 4 (panel padding), minus 2 more so
-    // the `…` lands INSIDE the box (the render clips at the edge otherwise).
-    const valW = SIDEBAR_W - 8;
-    // Display-cell tail keep (the old `.slice(-(valW - 1))` counted UTF-16 units
-    // and could open on half a surrogate pair in a CJK/emoji path).
-    const tail = (s: string) => tailWidth(s, valW);
-    const rows: { value: string; dim?: boolean; warn?: boolean }[] = [
-      { value: tail(cwd) },
-      { value: tail(headModel()) },
-    ];
-    const g = gitSummary();
-    if (g) rows.push({ value: truncate(g, valW), dim: true });
-    // metricsLine's separator is wide ("  ·  "); tighten it for the narrow
-    // card. Its parts self-label (ctx % / tokens / cost / queued).
-    // Subscribe to metrics() so this re-runs when context-updated fires.
-    const m = metrics().replaceAll("  ·  ", " · ");
-    if (m) {
-      // Hot ctx → notice amber on the session card (footer drops metrics when
-      // sidebarOn; see sessionMetricsTone — unit-tested pure helper).
-      const tone = sessionMetricsTone(m);
-      rows.push({ value: truncate(m, valW), dim: tone.dim, warn: tone.warn });
-    }
-    const goal = goalInfo();
-    // The run suffix survives truncation — on a long goal it's the suffix
-    // (planning / 7/25 / paused / met) that carries the information.
-    if (goal) {
-      const suffix = goalSuffix();
-      rows.push({ value: `${truncate(`★ ${goal}`, valW - suffix.length)}${suffix}`, dim: true });
-    }
-    return rows;
-  };
-  // Key hints as coloured runs: the actionable tokens (keys, `/`, `click`) pop in
-  // the bright foreground; descriptors + separators stay muted. Shown on the empty
-  // splash (where discovery matters) and whenever a job is running; the working
-  // footer otherwise stays a single status line. `/jobs` is advertised only while
-  // background jobs are actually running. Fitted to the column so we never clip
-  // mid-token ("scro").
+  // Key hints as coloured runs: actionable tokens pop in the bright foreground;
+  // descriptors + separators stay muted. Assembly lives in design.ts
+  // (`buildFooterHintSegs`) so jobs+tips never double-separate. Fitted by
+  // priority band so we never mid-token clip ("scro").
   const hintSegs = (): Seg[] => {
-    const dim = palette().muted;
-    const lit = palette().assistant;
-    const segs: HintSeg[] = [
-      { t: "shift+tab", fg: lit, priority: 0 },
-      { t: " mode", fg: dim, priority: 0 },
-      { t: "  ·  ", fg: dim, priority: 1 },
-      { t: "/", fg: lit, priority: 1 },
-      { t: " commands", fg: dim, priority: 1 },
-      { t: "  ·  ", fg: dim, priority: 2 },
-      { t: "click", fg: lit, priority: 2 },
-      { t: " ▸ expand", fg: dim, priority: 2 },
-    ];
-    const n = runningJobs();
-    if (n > 0) {
-      segs.push(
-        { t: "  ·  ", fg: dim, priority: 0 },
-        { t: `${n} job${n === 1 ? "" : "s"}`, fg: palette().notice, priority: 0 },
-        { t: " running ", fg: dim, priority: 0 },
-        { t: "(/jobs)", fg: lit, priority: 0 },
-      );
-    }
-    // Budget: full content width when alone; half when sharing the status row.
+    const segs = buildFooterHintSegs({
+      runningJobs: runningJobs(),
+      lit: palette().assistant,
+      dim: palette().muted,
+      notice: palette().notice,
+    });
     const budget = Math.max(12, contentWidth() - 4);
     return fitHintSegs(segs, budget);
   };
@@ -2420,10 +2315,7 @@ export function App(props: { engine: EngineClient }) {
         flexShrink={0}
         padding={1}
       >
-        {/* Top-left context line: location · git · goal — the persistent "where am
-          I", tucked in the corner so it's out of the conversation's way. Pinned
-          to height 1: it goes BLANK (not away) while the sidebar session card
-          shows the same facts, so the transcript top never reflows. */}
+        {/* Top-left context: location · git · goal. */}
         <box flexDirection="row" flexShrink={0} height={1}>
           <text flexShrink={1} fg={palette().muted} wrapMode="none">
             {topLeftLine()}
@@ -2441,7 +2333,7 @@ export function App(props: { engine: EngineClient }) {
                 {`Background jobs · ${jobs().length}`}
               </text>
               <text flexShrink={0} fg={palette().muted}>
-                {"running shell commands + any localhost servers · esc or /jobs to close"}
+                {"shell jobs + localhost servers  ·  esc or /jobs to close"}
               </text>
               <scrollbox
                 flexGrow={1}
@@ -2511,9 +2403,7 @@ export function App(props: { engine: EngineClient }) {
             <Show
               when={blocks().length > 0}
               fallback={
-                // Vertically centered by the top/bottom flex-grow spacers. The
-                // wordmark and every tip line are EACH centered on their own row, so
-                // the whole splash reads as one centered column under the logo.
+                // Vertically centered splash: wordmark alone (no tip clutter).
                 <box flexDirection="column" flexGrow={1}>
                   <box flexGrow={1} />
                   <box flexDirection="row">
@@ -2525,32 +2415,25 @@ export function App(props: { engine: EngineClient }) {
                           <Show
                             when={contentWidth() >= LOGO_MIN_COLS && dims().height >= 12}
                             fallback={
-                              <text fg={brand()} attributes={TextAttributes.BOLD}>
-                                {"◆ Vibe Codr"}
+                              <text fg={logoHue()} attributes={TextAttributes.BOLD}>
+                                {`${GLYPH.brand} Vibe Codr`}
                               </text>
                             }
                           >
-                            {/* Native ASCII-font wordmark (medium terminals, where the
-                            block art doesn't fit) — the flat brand accent (a
-                            per-character gradient isn't available on this renderable). */}
-                            <ascii_font text="VIBE CODR" font="slick" color={brand()} />
+                            <ascii_font text="VIBE CODR" font="slick" color={logoHue()} />
                           </Show>
                         }
                       >
-                        {/* ░██ block wordmark with a clean left→right single-hue brand
-                        sweep: each row is a line of per-character <text>s colored by
-                        COLUMN position, so column i shares a ramp position across
-                        every row and the whole block reads as one smooth light→deep
-                        brand fade, not per-letter confetti. Follows `/accent`. Static
-                        (rendered once on the idle splash) — no idle timer. */}
+                        {/* ░██ wordmark: single-hue white ramp (or `/accent`). */}
                         <For each={WORDMARK}>
-                          {(line) => <BrandLine line={line} cols={WORDMARK_COLS} hue={brand()} />}
+                          {(line) => (
+                            <BrandLine line={line} cols={WORDMARK_COLS} hue={logoHue()} />
+                          )}
                         </For>
                       </Show>
                     </box>
                     <box flexGrow={1} />
                   </box>
-                  {/* Suggestions removed — the wordmark alone is the splash. */}
                   <box flexGrow={1} />
                 </box>
               }
@@ -2577,7 +2460,7 @@ export function App(props: { engine: EngineClient }) {
                     onMouseDown={revealOlder}
                   >
                     <text flexShrink={0} fg={palette().muted}>
-                      {`▸ ${windowStart()} earlier turn${windowStart() === 1 ? "" : "s"} · tap to load ${Math.min(REVEAL_PAGE, windowStart())} more`}
+                      {earlierTurnsLabel(windowStart(), REVEAL_PAGE)}
                     </text>
                   </box>
                 </Show>
@@ -2621,9 +2504,11 @@ export function App(props: { engine: EngineClient }) {
                       accent edge. The fill makes it read as one clean, uniform solid
                       block on any terminal; the accent is a thin line, not a bar. */}
                         <Show when={turn().user}>
-                          <Rail color={brand()} onMouseDown={foldTap}>
+                          {/* User cards sit on elevated (one step above assistant
+                              panel) so your prompt reads as the active "you" surface. */}
+                          <Rail color={logoHue()} onMouseDown={foldTap}>
                             <box
-                              backgroundColor={palette().panel}
+                              backgroundColor={palette().elevated}
                               flexDirection="column"
                               paddingTop={1}
                               paddingBottom={1}
@@ -2640,7 +2525,7 @@ export function App(props: { engine: EngineClient }) {
                               </text>
                               <Show when={folded()}>
                                 <text flexShrink={0} fg={palette().muted} marginTop={1}>
-                                  {`▸ ${items().length} item${items().length === 1 ? "" : "s"} hidden · tap to expand`}
+                                  {itemsHiddenLabel(items().length)}
                                 </text>
                               </Show>
                             </box>
@@ -2773,28 +2658,31 @@ export function App(props: { engine: EngineClient }) {
           </Show>
         </box>
 
-        {/* Live working indicator — braille spinner in the brand accent (monochrome
-          discipline: motion means "alive", not a rainbow carnival). Hidden while
-          a permission card is up (the card is the active affordance then). */}
+        {/* Live working indicator — braille spinner in logoHue (alive motion).
+          Density chip when non-normal. Hidden under permission/plan cards. */}
         <Show when={working() && perms().length === 0 && !plan()}>
           <box flexDirection="column" flexShrink={0} marginTop={1}>
             <box flexDirection="row" flexShrink={0}>
-              <text fg={brand()}>{spinnerFrame(tick())}</text>
-              <text fg={palette().muted}>{` ${elapsedLabel()}  ·  esc to interrupt`}</text>
+              <text fg={logoHue()}>{spinnerFrame(tick())}</text>
+              <text fg={palette().muted}>
+                {` ${(() => {
+                  void tick();
+                  return workingLineWithInterrupt(Date.now() - turnStartedAt, details());
+                })()}`}
+              </text>
             </box>
             {/* Live thinking stack — the model's last few reasoning lines stream
               under the spinner while it thinks (older lines recede to the
               dimmer gutter tone, the newest reads in muted). The stack clears
               when the burst lands as its `✻ thinking` transcript row. */}
-            <Show when={!sidebarOn() && reasoningLines().length > 0}>
+            <Show when={reasoningLines().length > 0}>
               <box flexDirection="column" flexShrink={0}>
-                {/* Inline view: just the last 3 lines, clipped to the column (the
-                  deeper untruncated tail feeds the sidebar on wide panes). */}
+                {/* Inline view: last 3 reasoning lines, clipped to the column. */}
                 <Index each={reasoningLines().slice(-3)}>
                   {(line, i) => (
                     <box flexDirection="row" flexShrink={0}>
-                      <text flexShrink={0} fg={i === 0 ? brand() : palette().gutter}>
-                        {i === 0 ? "  ✻ " : "    "}
+                      <text flexShrink={0} fg={i === 0 ? logoHue() : palette().gutter}>
+                        {i === 0 ? `  ${GLYPH.think} ` : "    "}
                       </text>
                       <text
                         flexShrink={1}
@@ -2833,7 +2721,7 @@ export function App(props: { engine: EngineClient }) {
               paddingRight={2}
             >
               <text flexShrink={0} fg={modeColor("plan")} attributes={TextAttributes.BOLD}>
-                {"Plan · review & approve"}
+                {PLAN_CARD_TITLE}
               </text>
               <Show when={plan()?.ungrounded}>
                 <text flexShrink={0} fg={palette().notice} attributes={TextAttributes.BOLD}>
@@ -2914,8 +2802,8 @@ export function App(props: { engine: EngineClient }) {
           is done so a finished list doesn't linger. The window centers on the
           ACTIVE work: overflowing completed tasks collapse into one leading
           "✔ N done" line, so the in-progress task is never scrolled out.
-          On wide terminals the list moves to the right sidebar instead. */}
-        <Show when={!sidebarOn() && tasksVisible()}>
+ */}
+        <Show when={tasksVisible()}>
           <Panel
             title={`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
             titleColor={brand()}
@@ -2962,7 +2850,7 @@ export function App(props: { engine: EngineClient }) {
           full prompt + result (bounded), tap again to collapse. Each row carries
           a right-aligned elapsed (live while running, final once done); a done
           row folds its result glimpse into the line. Cleared per turn. */}
-        <Show when={!sidebarOn() && subagents().length > 0}>
+        <Show when={subagents().length > 0}>
           <Panel
             title={(() => {
               const done = subagents().filter((s) => s.status === "done").length;
@@ -3087,7 +2975,7 @@ export function App(props: { engine: EngineClient }) {
               >{`  +${pendingQ().length - PANEL_MAX_ROWS} more queued`}</text>
             </Show>
             <text fg={palette().muted} marginTop={1}>
-              {"steer = run next & interrupt now  ·  ✕ = remove  ·  otherwise they run in order"}
+              {"steer = run now  ·  ✕ = drop  ·  else run in order"}
             </text>
           </Panel>
         </Show>
@@ -3110,9 +2998,7 @@ export function App(props: { engine: EngineClient }) {
                   paddingRight={2}
                 >
                   <text fg={palette().notice} attributes={TextAttributes.BOLD}>
-                    {`${GLYPH.warn} Permission required · ${p().toolName}${
-                      perms().length > 1 ? ` · 1/${perms().length}` : ""
-                    }`}
+                    {`${GLYPH.warn} ${permissionTitle(p().toolName, perms().length)}`}
                   </text>
                   <text fg={palette().assistant} wrapMode="word">
                     {toolLabel(p().toolName, p().input)}
@@ -3200,15 +3086,12 @@ export function App(props: { engine: EngineClient }) {
               dismisses. `/model` opens a live searchable picker; enum commands mark the
               current value with `●`. Only the highlighted row carries a selection tint. */}
             <Show when={menuModel().open}>
-              <box flexDirection="column" flexShrink={0}>
-                {/* Section header: a bold title in the theme's signature hue on
-                  the left, a muted `esc` dismiss hint on the right — mirroring
-                  opencode's dialog headers. The flex row keeps the title and
-                  the esc hint on one line regardless of menu width. */}
+              <box flexDirection="column" flexShrink={0} marginBottom={1}>
+                {/* Menu header: brand title left · esc right. Quiet, one row. */}
                 <Show when={menuView()?.title || menuView()?.loading}>
-                  <box flexDirection="row" flexShrink={0}>
+                  <box flexDirection="row" flexShrink={0} marginBottom={menuView()?.hint ? 0 : 1}>
                     <Show when={menuView()?.title}>
-                      <text flexShrink={0} fg={palette().heading} attributes={TextAttributes.BOLD}>
+                      <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
                         {menuView()?.title}
                       </text>
                     </Show>
@@ -3224,23 +3107,14 @@ export function App(props: { engine: EngineClient }) {
                   </box>
                 </Show>
                 <Show when={menuView()?.hint}>
-                  <text fg={palette().muted}>{menuView()?.hint}</text>
-                </Show>
-                {/* Thin divider between the header and the rows — a single row
-                  of the border tone, matching the panel/input frame lines. */}
-                <Show when={menuView()?.title || menuView()?.hint}>
-                  <box flexDirection="row" flexShrink={0}>
-                    <text fg={palette().border}>{"─".repeat(Math.max(0, contentWidth() - 4))}</text>
-                  </box>
+                  <text fg={palette().muted} marginBottom={1}>
+                    {menuView()?.hint}
+                  </text>
                 </Show>
                 <For each={menuView()?.rows ?? []}>
-                  {/* Two-column rows — the label (command/model/value) in the body
-                    tone, its description muted beside it; the highlighted row gets
-                    a FULL-WIDTH selection band (bg on the row box, with a flex
-                    spacer) instead of a ragged text-length tint. Hover highlights
-                    (only on real pointer movement — see hoverRow), click selects +
-                    runs. Keyboard nav is global via useKeyboard; terminal rows
-                    have no DOM focus, hence the a11y ignore. */}
+                  {/* Two-column rows: caret · [●] label · desc. Active row gets a
+                    soft elevated selBg band (monochrome), not a saturated stroke.
+                    Hover only on real pointer movement (hoverRow). */}
                   {(row) => (
                     // biome-ignore lint/a11y/useKeyWithMouseEvents: terminal UI — no text-row focus; keyboard nav is global (useKeyboard)
                     <box
@@ -3253,11 +3127,7 @@ export function App(props: { engine: EngineClient }) {
                         refocusInput();
                       }}
                     >
-                      {/* On the active row everything flips to `selFg` — the band
-                        is a solid accent surface (violet on the default theme),
-                        so text must take the band's own contrast color, not the
-                        chrome tones tuned for the dark backdrop. */}
-                      <text flexShrink={0} fg={row.active ? palette().selFg : palette().muted}>
+                      <text flexShrink={0} fg={row.active ? palette().selFg : palette().gutter}>
                         {`${row.active ? "❯" : " "} `}
                       </text>
                       <Show when={menuView()?.marker}>
@@ -3270,9 +3140,7 @@ export function App(props: { engine: EngineClient }) {
                           {row.current ? "● " : "  "}
                         </text>
                       </Show>
-                      {/* A row's own `fg` (the accent swatches) wins over the
-                        active/body tones so the color preview reads even while
-                        highlighted; selection still shows via ❯ + the band. */}
+                      {/* Swatch fg (accent picker) wins over active/body tones. */}
                       <text
                         flexShrink={0}
                         fg={row.fg ?? (row.active ? palette().selFg : palette().assistant)}
@@ -3294,13 +3162,10 @@ export function App(props: { engine: EngineClient }) {
                   )}
                 </For>
                 <Show when={menuView()?.more}>
-                  {/* Indent matches the 2-char `❯ ` row prefix so the affordance
-                    aligns with the label column above it. A thin divider
-                    separates it from the rows. */}
-                  <text fg={palette().border}>{"─".repeat(Math.max(0, contentWidth() - 4))}</text>
-                  <text fg={palette().muted}>{`  ${menuView()?.more}`}</text>
+                  <text fg={palette().muted} marginTop={1}>
+                    {`  ${menuView()?.more}`}
+                  </text>
                 </Show>
-                <text flexShrink={0}> </text>
               </box>
             </Show>
             {/* The prompt row: mode label · caret · field. The field grows with wrapped
@@ -3340,14 +3205,12 @@ export function App(props: { engine: EngineClient }) {
                   if (v !== draft()) setDraft(v);
                 }}
                 onSubmit={() => submit()}
-                placeholder="Send a message or type / to start"
+                placeholder={INPUT_PLACEHOLDER}
                 backgroundColor="transparent"
                 focusedBackgroundColor="transparent"
-                // The "registered command" cue: a slash draft whose command word
-                // is a real invocable (built-in, custom command, or skill) reads
-                // in the heading hue — typo'd commands stay body-colored.
-                textColor={draftIsCommand() ? palette().heading : palette().assistant}
-                focusedTextColor={draftIsCommand() ? palette().heading : palette().assistant}
+                // Registered slash command: brand white; typos stay body-colored.
+                textColor={draftIsCommand() ? brand() : palette().assistant}
+                focusedTextColor={draftIsCommand() ? brand() : palette().assistant}
                 placeholderColor={palette().muted}
                 cursorColor={accent()}
               />
@@ -3359,9 +3222,7 @@ export function App(props: { engine: EngineClient }) {
           top-left context line), and the key hints hug the RIGHT edge. Hints show
           only on the splash / while a job runs; if they don't fit beside the status
           they drop to their own left row below (never centered, never colliding). */}
-        {/* Pinned to height 1: with the session card up the status may be empty
-          (model/usage live in the card), and a collapsed row would pull the
-          sidebar's bottom-alignment reserve off by one. */}
+        {/* Pinned to height 1 so layout never collapses the status row. */}
         <box flexDirection="row" flexShrink={0} height={1} marginTop={1}>
           <box flexDirection="row" flexShrink={1}>
             <For each={statusSegs()}>
@@ -3397,273 +3258,6 @@ export function App(props: { engine: EngineClient }) {
           </box>
         </Show>
       </box>
-      {/* Right sidebar (wide terminals) — status-first SESSION card (cwd · model
-          · git · ctx · goal — no large wordmark; branding lives on the empty
-          splash only), then Tasks, Subagents, Thinking. Tool activity stays in
-          the chat column only. Same Rail + panel language as the chat column. */}
-      <Show when={sidebarOn()}>
-        <box flexDirection="column" width={SIDEBAR_W} flexShrink={0} padding={1}>
-          {/* One reserved row mirrors the chat column's context line, so the
-              sidebar's first block sits level with the first transcript block.
-              No marginTop on the FIRST sidebar block: the chat's first-block
-              margin is swallowed by its scrollbox, so a sidebar margin here
-              would land the block one row too low. */}
-          <box height={1} flexShrink={0} />
-          {/* Session card — status-first masthead. Optional tiny ◆ brand mark
-              only; vitals as bare value lines (no label words). */}
-          <Rail color={palette().gutter} marginTop={0}>
-            <box
-              backgroundColor={palette().panel}
-              flexDirection="column"
-              paddingTop={1}
-              paddingBottom={1}
-              paddingLeft={2}
-              paddingRight={2}
-            >
-              <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                {"◆ session"}
-              </text>
-              <For each={sessionRows()}>
-                {(row) => (
-                  <text
-                    flexShrink={0}
-                    wrapMode="none"
-                    fg={
-                      row.warn ? palette().notice : row.dim ? palette().muted : palette().assistant
-                    }
-                  >
-                    {row.value}
-                  </text>
-                )}
-              </For>
-            </box>
-          </Rail>
-          <Show when={tasks().length > 0}>
-            {/* Grow when this is the last content block (no Subagents, no
-                Thinking) so bottom still lands on the input without inventing
-                an empty Activity panel. */}
-            <Rail
-              color={palette().gutter}
-              marginTop={1}
-              grow={thoughtLog().length === 0 && subagents().length === 0}
-            >
-              <box
-                backgroundColor={palette().panel}
-                flexDirection="column"
-                flexGrow={thoughtLog().length === 0 && subagents().length === 0 ? 1 : 0}
-                flexShrink={1}
-                paddingTop={1}
-                paddingBottom={1}
-                paddingLeft={2}
-                paddingRight={2}
-              >
-                <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                  {`Tasks · ${tasks().filter((t) => t.status === "completed").length}/${tasks().length}`}
-                </text>
-                <Show when={windowTasks(tasks(), sideTaskCap()).lead > 0}>
-                  <box flexDirection="row" gap={1}>
-                    <text flexShrink={0} fg={palette().muted}>
-                      {TASK_GLYPH.completed}
-                    </text>
-                    <text flexShrink={0} fg={palette().muted}>
-                      {`${windowTasks(tasks(), sideTaskCap()).lead} done`}
-                    </text>
-                  </box>
-                </Show>
-                <For each={windowTasks(tasks(), sideTaskCap()).visible}>
-                  {(task) => {
-                    const c = () =>
-                      task.status === "completed"
-                        ? palette().muted
-                        : task.status === "in_progress"
-                          ? brand()
-                          : palette().assistant;
-                    return (
-                      <box flexDirection="row" gap={1}>
-                        <text flexShrink={0} fg={c()}>
-                          {TASK_GLYPH[task.status]}
-                        </text>
-                        <text flexGrow={1} wrapMode="word" fg={c()}>
-                          {task.title}
-                        </text>
-                      </box>
-                    );
-                  }}
-                </For>
-                <Show when={windowTasks(tasks(), sideTaskCap()).trailing > 0}>
-                  <text
-                    fg={palette().muted}
-                  >{`  +${windowTasks(tasks(), sideTaskCap()).trailing} more`}</text>
-                </Show>
-              </box>
-            </Rail>
-          </Show>
-          {/* Subagents — the live fan-out, in the same block language as Tasks.
-              One line per child (spinner while running / ✓ done, its prompt's
-              first line, a right-aligned elapsed), plus a second muted line
-              under the row for what it's DOING right now (live activity) or —
-              once finished — its one-line result glimpse. The inline chat-column
-              panel hides while the sidebar hosts this (exactly like Tasks). */}
-          <Show when={subagents().length > 0}>
-            {/* Grow when Thinking is absent so the fan-out is the stretch block. */}
-            <Rail color={palette().gutter} marginTop={1} grow={thoughtLog().length === 0}>
-              <box
-                backgroundColor={palette().panel}
-                flexDirection="column"
-                flexGrow={thoughtLog().length === 0 ? 1 : 0}
-                flexShrink={1}
-                paddingTop={1}
-                paddingBottom={1}
-                paddingLeft={2}
-                paddingRight={2}
-              >
-                <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                  {(() => {
-                    const done = subagents().filter((s) => s.status === "done").length;
-                    return done > 0 && done < subagents().length
-                      ? `Subagents · ${done}/${subagents().length} done`
-                      : `Subagents · ${subagents().length}`;
-                  })()}
-                </text>
-                <For each={subagents().slice(0, sideSubCap())}>
-                  {(s) => {
-                    const glyphFg = () => (s.status === "running" ? brand() : palette().gutter);
-                    const fg = () =>
-                      s.status === "running" ? palette().assistant : palette().muted;
-                    // Same elapsed shape as the inline panel: live while
-                    // running, frozen total once done, sub-second hidden.
-                    const elapsed = () => {
-                      if (s.status === "running" && s.startedAt) {
-                        void tick();
-                        return `${Math.max(0, Math.round((Date.now() - s.startedAt) / 1000))}s`;
-                      }
-                      if (s.elapsedMs === undefined || s.elapsedMs < 1000) return "";
-                      return `${(s.elapsedMs / 1000).toFixed(s.elapsedMs >= 10_000 ? 0 : 1)}s`;
-                    };
-                    // The under-row detail: live activity while running, the
-                    // result glimpse once done (nothing → row stays one line).
-                    const detail = () =>
-                      s.status === "running" ? (s.activity ?? "") : (s.result ?? "");
-                    return (
-                      <box flexDirection="column">
-                        <box flexDirection="row" gap={1}>
-                          <text flexShrink={0} fg={glyphFg()}>
-                            {s.status === "running" ? spinnerFrame(tick()) : GLYPH.check}
-                          </text>
-                          {/* Word-wrap up to ~2 lines (pre-truncated) instead of
-                              hard-clipping mid-word at the column edge — a 42-col
-                              card cut "fundamental analysis" to "fundamental
-                              analysi", which read as a rendering bug. */}
-                          <text flexGrow={1} wrapMode="word" fg={fg()}>
-                            {truncate(firstLine(s.prompt) ?? s.prompt, 2 * (SIDEBAR_W - 12))}
-                          </text>
-                          <Show when={elapsed()}>
-                            <text flexShrink={0} fg={palette().gutter}>
-                              {elapsed()}
-                            </text>
-                          </Show>
-                        </box>
-                        <Show when={detail()}>
-                          {/* Hang under the glyph column; wrapped but PRE-CAPPED
-                              to ~2 lines so a chatty child can't grow the panel
-                              row by row. */}
-                          <box flexDirection="row" paddingLeft={2}>
-                            <text flexShrink={0} fg={palette().muted}>
-                              {s.status === "running" ? "· " : `${GLYPH.result} `}
-                            </text>
-                            <text
-                              flexGrow={1}
-                              wrapMode="word"
-                              fg={palette().muted}
-                              attributes={TextAttributes.ITALIC}
-                            >
-                              {truncate(detail(), 2 * (SIDEBAR_W - 12))}
-                            </text>
-                          </box>
-                        </Show>
-                      </box>
-                    );
-                  }}
-                </For>
-                <Show when={subagents().length > sideSubCap()}>
-                  <text fg={palette().muted}>{`  +${subagents().length - sideSubCap()} more`}</text>
-                </Show>
-              </box>
-            </Rail>
-          </Show>
-          {/* Reasoning-only Thinking — the whole turn's chain-of-thought as one
-              continuous, word-wrapped stream in a bottom-sticky scrollbox
-              (newest thought always in view, history scrollable). Hidden when
-              the model emits no reasoning (tool work is already in the
-              transcript). Does NOT clear when a burst lands as a transcript
-              row; lingers until the next user message. GROWS to fill the rows
-              under Tasks/Subagents so the sidebar bottom lines up with the
-              chat column. */}
-          <Show when={thoughtLog().length > 0}>
-            {/* The session card is always above, so this is never the first
-                block — the uniform 1-row inter-block gap applies. */}
-            <Rail color={palette().gutter} marginTop={1} grow>
-              <box
-                backgroundColor={palette().panel}
-                flexDirection="column"
-                flexGrow={1}
-                flexShrink={1}
-                paddingTop={1}
-                paddingBottom={1}
-                paddingLeft={2}
-                paddingRight={2}
-              >
-                <box flexDirection="row" flexShrink={0}>
-                  <text flexShrink={0} fg={working() ? brand() : palette().gutter}>
-                    {"✻ "}
-                  </text>
-                  <text flexShrink={0} fg={brand()} attributes={TextAttributes.BOLD}>
-                    Thinking
-                  </text>
-                </box>
-                <scrollbox
-                  flexGrow={1}
-                  flexShrink={1}
-                  stickyScroll
-                  stickyStart="bottom"
-                  scrollY
-                  contentOptions={{ flexDirection: "column" }}
-                  scrollbarOptions={{ visible: false }}
-                >
-                  <Index each={thoughtLog()}>
-                    {(line) => (
-                      <text
-                        flexShrink={0}
-                        wrapMode="word"
-                        fg={palette().muted}
-                        attributes={TextAttributes.ITALIC}
-                      >
-                        {line() || " "}
-                      </text>
-                    )}
-                  </Index>
-                </scrollbox>
-              </box>
-            </Rail>
-          </Show>
-          {/* Session-only stretch: working turn with no Tasks/Subagents/
-              Thinking still needs a grow Rail so bottom alignment holds
-              without inventing an Activity feed. */}
-          <Show
-            when={thoughtLog().length === 0 && tasks().length === 0 && subagents().length === 0}
-          >
-            <Rail color={palette().gutter} marginTop={1} grow>
-              <box backgroundColor={palette().panel} flexGrow={1} flexShrink={1} />
-            </Rail>
-          </Show>
-          {/* Reserve the chat column's under-input rows (the status bar's
-              marginTop gap + the status row, +1 when the hints wrap to their
-              own line) so the growing last block's BOTTOM edge lands
-              exactly on the input block's bottom edge — not on the terminal's
-              bottom padding two rows below it. */}
-          <box height={2 + (showHints() && !footerFits() ? 1 : 0)} flexShrink={0} />
-        </box>
-      </Show>
       {/* Right gutter — mirrors the left, centering the chat column. */}
       <box flexGrow={1} flexShrink={1} />
     </box>
@@ -3696,9 +3290,7 @@ function Rail(props: {
   /** Hug content but SHRINK when the parent runs out of rows. Default stays
    * rigid. */
   shrink?: boolean;
-  /** GROW to fill the parent's remaining rows (and shrink under pressure) —
-   * the sidebar's thinking block stretches so the sidebar spans the same
-   * height as the chat column. */
+  /** GROW to fill the parent's remaining rows (and shrink under pressure). */
   grow?: boolean;
   onMouseDown?: () => void;
   children: unknown;
@@ -4522,10 +4114,9 @@ function SourceList(props: { sources: SourceItem[]; palette: Palette; width: num
 
 /**
  * A live status section (Tasks / Subagents / Queued): a bold accent TITLE row over
- * its rows, FLAT on the base background — no box, no fill. Filled chrome reads as
- * messy grey rectangles floating on black (especially where a terminal's line
- * spacing ragged-edges the fill); a titled, flat section stays uniform on any
- * terminal. Hierarchy comes from the accent title + spacing, not a container.
+ * its rows, FLAT on the base background — no box, no fill. Hierarchy comes from
+ * the accent title + spacing, not a container (filled chrome ragged-edges on
+ * terminals with line spacing).
  */
 function Panel(props: { title: string; titleColor: string; children: unknown }) {
   return (
@@ -4577,19 +4168,17 @@ function ToolBlockView(props: {
     const sp = b().label.indexOf(" ");
     return sp > 0 ? b().label.slice(sp + 1) : "";
   };
-  // The chevron column: a live spinner while the call RUNS (each step is visibly
-  // alive, not just the bottom working line), then the expand state (`▸`/`▾`),
-  // or `·` for a row with nothing to expand.
+  // Chevron: live spinner while RUNS; else fold/unfold, or mid-dot if empty.
   const chevron = () =>
-    !b().done && props.spin ? props.spin() : expandable() ? (collapsed() ? "▸" : "▾") : "·";
-  // Right-aligned meta: the collapsed hint (`5 results` / `12 lines` / `diff`),
-  // prefixed with the call's duration when it was slow (≥2s) — a scannable
-  // "what cost time" column down a run of steps.
+    !b().done && props.spin
+      ? props.spin()
+      : expandable()
+        ? collapsed()
+          ? GLYPH.fold
+          : GLYPH.unfold
+        : "·";
+  // Right-aligned meta: collapsed hint + duration ≥2s — scannable time column.
   const duration = () => {
-    // While a call RUNS, subscribe to the same tick()-driven spinner the chevron
-    // uses so the live elapsed re-renders each frame; a finished row is static.
-    // The label itself (finished wall-clock vs. live ticking elapsed, both gated
-    // at ≥2s so no tool looks dead) is the pure `toolDurationLabel`.
     if (!b().done && b().startedAt !== undefined) props.spin?.();
     return toolDurationLabel(b(), Date.now());
   };
@@ -4599,14 +4188,15 @@ function ToolBlockView(props: {
       : duration();
   const visible = () => b().output.slice(0, MAX_OUTPUT_LINES);
   const overflow = () => Math.max(0, b().output.length - MAX_OUTPUT_LINES);
-  // Live output preview while the call runs: the last couple of streamed lines,
-  // muted, under the header — a long `bun test` scrolls line by line instead of
-  // sitting dead until it exits. Replaced by the real output when it lands.
+  // Live tail while running: last streamed lines under the header.
   const liveTail = () => {
     if (b().done) return [] as string[];
     const lines = (b().tail ?? "").split("\n").filter((l) => l.trim().length > 0);
     return lines.slice(-2);
   };
+  // Icon tone: error red · live tool cyan · done recedes to gutter (cleaner thread).
+  const iconFg = () => (b().isError ? p.del : !b().done ? p.tool : p.gutter);
+  const summaryFg = () => (b().isError ? p.del : !b().done ? p.assistant : p.muted);
   return (
     <box
       id={`tool-${b().id}`}
@@ -4617,20 +4207,14 @@ function ToolBlockView(props: {
         if (expandable()) props.onToggle(b().id);
       }}
     >
-      {/* Header: chevron/spinner · icon · summary … right-aligned meta. */}
+      {/* Header: chevron · icon · summary … right-aligned meta. */}
       <box flexDirection="row" flexShrink={0}>
-        <text flexShrink={0} fg={!b().done ? p.tool : p.muted}>{`${chevron()} `}</text>
-        <text flexShrink={0} fg={b().isError ? p.del : !b().done ? p.tool : p.muted}>
+        <text flexShrink={0} fg={!b().done ? p.tool : p.gutter}>{`${chevron()} `}</text>
+        <text flexShrink={0} fg={iconFg()}>
           {icon()}
         </text>
-        {/* The summary is PRE-truncated with an ellipsis to the width left after
-            the meta column — flexShrink alone hard-clips it mid-word straight
-            into the meta ("…comparison 202  2.1s · 5 results"), reading as broken. */}
-        <text
-          flexShrink={1}
-          wrapMode="none"
-          fg={b().isError ? p.del : !b().done ? p.assistant : p.muted}
-        >
+        {/* Summary PRE-truncated so flexShrink never mid-word-clips into the meta. */}
+        <text flexShrink={1} wrapMode="none" fg={summaryFg()}>
           {` ${truncate(
             summary(),
             Math.max(
@@ -4738,9 +4322,9 @@ function ThinkingBlockView(props: {
       onMouseDown={() => props.onToggle(b().id)}
     >
       <box flexDirection="row" flexShrink={0}>
-        <text flexShrink={0} fg={p.muted}>{`${collapsed() ? "▸" : "▾"} `}</text>
+        <text flexShrink={0} fg={p.muted}>{`${collapsed() ? GLYPH.fold : GLYPH.unfold} `}</text>
         <text flexShrink={0} fg={p.gutter}>
-          {"✻"}
+          {GLYPH.think}
         </text>
         <text flexShrink={1} wrapMode="none" fg={p.muted} attributes={TextAttributes.ITALIC}>
           {` ${header()}`}

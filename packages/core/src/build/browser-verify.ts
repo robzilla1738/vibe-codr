@@ -121,6 +121,42 @@ export interface BrowserVerifyOptions {
   log?: Pick<Logger, "debug">;
 }
 
+// ── abort helpers ────────────────────────────────────────────────────────────
+
+/** Race a promise against an AbortSignal. On abort, reject so the caller maps
+ * to could-not-run / null; the underlying playwright op may still finish in the
+ * background but `finally` closes the browser + kills the server tree.
+ * Also races a hard deadline so a native hang that starves the AbortController
+ * timer still unwinds (belt-and-suspenders under suite load). BUG-117. */
+function raceAbort<T>(
+  p: Promise<T>,
+  signal: AbortSignal,
+  label: string,
+  hardMs = 60_000,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error(`aborted during ${label}`));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const done = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      signal.removeEventListener("abort", onAbort);
+      fn();
+    };
+    const onAbort = () => done(() => reject(new Error(`aborted during ${label}`)));
+    const hardTimer = setTimeout(
+      () => done(() => reject(new Error(`timed out during ${label}`))),
+      hardMs,
+    );
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => done(() => resolve(v)),
+      (err) => done(() => reject(err)),
+    );
+  });
+}
+
 // ── tunables ─────────────────────────────────────────────────────────────────
 
 /** Deterministic base port; a small scan finds the first free one from here. */
@@ -228,9 +264,18 @@ export async function browserVerify(
     if (signal.aborted)
       return externallyAborted ? null : couldNotRun("timed out before browser launch");
 
-    // 2. Render + inspect.
-    browser = await pw.chromium.launch({ headless: true });
-    return await inspect(browser, url, cwd, signal);
+    // 2. Render + inspect. Race launch against the abort controller — chromium
+    // launch can hang forever when the browser binary is missing/wedged, and
+    // page.goto has its own timeout that ignores our wall-clock. Without this
+    // race, the wall-clock timer aborts the controller but the in-flight
+    // playwright promise keeps the gate afterTurn hung (BUG-117).
+    browser = await raceAbort(
+      pw.chromium.launch({ headless: true }),
+      signal,
+      "browser launch",
+      Math.min(opts.timeoutMs ?? 90_000, 45_000),
+    );
+    return await inspect(browser, url, cwd, signal, opts.timeoutMs ?? 90_000);
   } catch (err) {
     const message = (err as Error)?.message ?? String(err);
     opts.log?.debug(`browser-verify failed: ${message}`);
@@ -269,6 +314,7 @@ async function inspect(
   url: string,
   cwd: string,
   signal: AbortSignal,
+  wallMs = 90_000,
 ): Promise<BrowserVerifyResult> {
   const page = await browser.newPage();
   const consoleErrors: string[] = [];
@@ -291,7 +337,15 @@ async function inspect(
     void dialog.dismiss().catch(() => {});
   });
 
-  await page.goto(url, { waitUntil: "load", timeout: GOTO_TIMEOUT_MS });
+  await raceAbort(
+    page.goto(url, {
+      waitUntil: "load",
+      timeout: Math.min(GOTO_TIMEOUT_MS, wallMs),
+    }),
+    signal,
+    "page navigation",
+    Math.min(GOTO_TIMEOUT_MS + 2_000, wallMs),
+  );
   try {
     await page.waitForTimeout(SETTLE_MS);
   } catch {

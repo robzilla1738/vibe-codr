@@ -100,13 +100,26 @@ export function classifyToolResults(messages: ModelMessage[]): ToolResultRef[] {
   return out;
 }
 
-/** The file path a read-like tool call targets, when it has one. Canonicalized
- * (when a canonicalizer is supplied) so an absolute-path read and a later
- * relative-path edit of the SAME file are recognized as the same path — without
- * it, supersession silently misses across path spellings. */
+/** The file path a read-like tool call targets, when it has one. Accepts the
+ * documented `path` field AND the common model aliases (`file_path` / `filePath`
+ * / `file`) — the AI SDK persists model-emitted args as-is, so supersession must
+ * not require the post-execute normalized form. Canonicalized (when a
+ * canonicalizer is supplied) so an absolute-path read and a later relative-path
+ * edit of the SAME file are recognized as the same path. */
 function targetPath(ref: ToolResultRef, canonicalize?: (p: string) => string): string | undefined {
-  const input = ref.input as { path?: unknown } | undefined;
-  const p = input && typeof input === "object" ? input.path : undefined;
+  const input = ref.input;
+  if (!input || typeof input !== "object") return undefined;
+  const o = input as Record<string, unknown>;
+  const p =
+    typeof o.path === "string" && o.path
+      ? o.path
+      : typeof o.file_path === "string" && o.file_path
+        ? o.file_path
+        : typeof o.filePath === "string" && o.filePath
+          ? o.filePath
+          : typeof o.file === "string" && o.file
+            ? o.file
+            : undefined;
   if (typeof p !== "string") return undefined;
   return canonicalize ? canonicalize(p) : p;
 }

@@ -3,6 +3,10 @@
 [test]
 # Bun's built-in test runner picks up *.test.ts across packages
 root = "./packages"
+# Multi-step Engine/gate/orchestration tests routinely need 2–8s; under full
+# suite load the default 5s flakes on otherwise-green runs. Per-test overrides
+# still win (browser real-chromium cases set 20–30s).
+timeout = 20_000
 # Isolate the user-global config (~/.config/vibe-codr) for the whole run so tests
 # that persist settings (/model, /accent, /theme, /reasoning, keys) never touch
 # the developer's real config. See test-preload.ts.

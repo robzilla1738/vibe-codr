@@ -60,6 +60,27 @@ test("planOffloads prefers superseded reads, then oldest; respects keepLiveResul
   expect(picked.map((p) => p.callId)).toEqual(["old-read", "other"]);
 });
 
+test("planOffloads supersedes a read that only used a path alias (file_path)", () => {
+  // The AI SDK persists model-emitted args as-is; models often emit file_path
+  // instead of path. Supersession must treat them as the same file.
+  const messages = [
+    call("alias-read", "read", { file_path: "src/a.ts" }),
+    result("alias-read", "read", BIG),
+    call("edit-a", "edit", { path: "src/a.ts", oldString: "x", newString: "y" }),
+    result("edit-a", "edit", "Edited"),
+    call("fresh", "read", { path: "src/b.ts" }),
+    result("fresh", "read", BIG),
+  ];
+  const picked = planOffloads(messages, {
+    maxResultBytes: 16_000,
+    keepLiveResults: 1,
+    targetChars: 25_000,
+    existing: new Set(),
+  });
+  expect(picked.map((p) => p.callId)).toContain("alias-read");
+  expect(picked[0]?.callId).toBe("alias-read"); // superseded first
+});
+
 test("planOffloads skips already-offloaded ids and stops at the target", () => {
   const messages = [
     call("a", "read", { path: "a" }),

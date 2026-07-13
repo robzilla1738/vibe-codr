@@ -32,6 +32,8 @@ export function formatKeysHelp(): string {
     lines.push(`  ${k.keys.padEnd(pad)}${k.action}`);
   }
   lines.push("");
-  lines.push("Also: /details quiet|normal|verbose · /mouse on|off · /help for all slash commands.");
+  lines.push(
+    "Also: /details quiet|normal|verbose · /mouse on|off · /keys · /help for all slash commands.",
+  );
   return lines.join("\n");
 }

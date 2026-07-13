@@ -1,4 +1,7 @@
-import { test, expect } from "bun:test";
+import { test, expect, setDefaultTimeout } from "bun:test";
+// Multi-turn Engine e2e (plan nudge, handoff, gates) routinely needs >5s under
+// parallel suite load; isolate runs finish in <1s but full-suite flakes at 5s.
+setDefaultTimeout(20_000);
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

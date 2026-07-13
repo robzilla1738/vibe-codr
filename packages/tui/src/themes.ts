@@ -59,55 +59,45 @@ export interface Palette {
   series: string[];
 }
 
-/** Graphite dark palette (the default) — white chrome, violet used sparingly. */
-// opencode's neutral scale verbatim (bg #0a0a0a / panel #141414 / elevated
-// #1e1e1e, text #eeeeee, muted #808080, border #3c3c3c) with WHITE as the
-// chrome accent: panel titles, the `❯` user marker, the active task/step, the
-// caret, and the wordmark all read in the body white — calm, monochrome-first,
-// like opencode's own dialogs. Violet (#8b5cf6) is the one signature hue,
-// reserved for the few moments that deserve emphasis: the selected menu row's
-// band, markdown headings, plan mode, and the first series hue. Green/red stay
-// functional on diffs, amber on warnings. The default must never drift light;
-// `light` exists only as an explicit `/theme light` opt-in. Override the
-// chrome accent with any hue via `accentColor` / `/accent <hex>` — the
-// wordmark sweep follows it.
+/**
+ * Graphite dark palette (the default) — monochrome white chrome.
+ *
+ * Surfaces step up in three clear layers (background → panel → elevated).
+ * Chrome, headings, menu selection, and wordmark stay near-white — no purple
+ * default. Green/red stay functional on diffs; amber on warnings; teal on tools.
+ * Override chrome via `accentColor` / `/accent <hex>` (purple still available).
+ */
 const DEFAULT: Palette = {
-  user: "#5c9cf5",
-  assistant: "#eeeeee",
-  tool: "#56b6c2",
+  user: "#7aabf5",
+  assistant: "#f2f2f2",
+  tool: "#5ec4cf",
   notice: "#f5a742",
-  plan: "#9d7cd8",
+  plan: "#9ece6a", // plan cards stay green-tinted (mode), not purple
   subagent: "#7fd88f",
   add: "#4fd6be",
   del: "#c53b53",
-  ctx: "#828bb8",
-  taskDone: "#808080",
-  taskActive: "#56b6c2",
-  taskPending: "#eeeeee",
-  accent: "#eeeeee",
-  // White chrome accent (opencode-style): titles + markers render in the body
-  // white, bold where emphasis is needed. Violet appears only where marked
-  // below. Override with a single hue via accentColor / `/accent <hex>`.
-  primary: "#eeeeee",
-  border: "#3c3c3c",
-  muted: "#808080",
-  background: "#0a0a0a",
-  panel: "#141414",
-  elevated: "#1e1e1e",
-  // The violet moment: the selected menu row is a solid violet band with dark
-  // text (the same shape as opencode's peach band) — one saturated signature
-  // stroke on an otherwise monochrome chrome.
-  selBg: "#8b5cf6",
-  selFg: "#0a0a0a",
-  addBg: "#20303b",
-  delBg: "#37222c",
-  gutter: "#484848",
-  heading: "#8b5cf6",
-  code: "#56b6c2",
-  // A calm, distinct 6-hue ramp for charts/pies/sources on graphite: violet,
-  // green, blue, amber, red, teal — spaced around the wheel so adjacent series
-  // never read as the same color, all bright enough to pop on the dark backdrop.
-  series: ["#8b5cf6", "#7fd88f", "#5c9cf5", "#f5a742", "#c53b53", "#4fd6be"],
+  ctx: "#9098c0",
+  taskDone: "#6e6e6e",
+  taskActive: "#5ec4cf",
+  taskPending: "#f2f2f2",
+  accent: "#f2f2f2",
+  // Near-white chrome: titles, markers, wordmark, headings.
+  primary: "#f2f2f2",
+  border: "#2e2e2e",
+  muted: "#8c8c8c",
+  background: "#080808",
+  panel: "#111111",
+  elevated: "#1a1a1a",
+  // Menu selection: soft elevated band (not a saturated brand stroke).
+  selBg: "#2a2a2a",
+  selFg: "#f2f2f2",
+  addBg: "#15252d",
+  delBg: "#2e1a22",
+  gutter: "#3a3a3a",
+  // Headings match body chrome — bold weight carries hierarchy, not hue.
+  heading: "#f2f2f2",
+  code: "#5ec4cf",
+  series: ["#7aabf5", "#7fd88f", "#5ec4cf", "#f5a742", "#c53b53", "#4fd6be"],
 };
 
 /** Light palette for bright terminals. */

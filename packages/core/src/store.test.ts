@@ -367,6 +367,20 @@ test("releaseLease: a missing lease is a no-op (no throw)", async () => {
   // No throw = pass
 });
 
+test("acquireLease: exclusive create — a second concurrent-style acquire fails when we hold it", async () => {
+  // After a successful acquire, a second store against the same session must
+  // see our live PID and return ok:false (not both ok:true via read-then-write).
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-lease-excl-"));
+  const a = new SessionStore(cwd);
+  const b = new SessionStore(cwd);
+  const first = await a.acquireLease("ses_excl");
+  expect(first.ok).toBe(true);
+  const second = await b.acquireLease("ses_excl");
+  expect(second.ok).toBe(false);
+  if (!second.ok) expect(second.holderPid).toBe(process.pid);
+  await a.releaseLease("ses_excl");
+});
+
 test("meta round-trips the offloaded map for --resume fidelity", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-store-offload-"));
   const store = new SessionStore(cwd);

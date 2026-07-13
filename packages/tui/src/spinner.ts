@@ -18,3 +18,13 @@ export function workingLabel(elapsedMs: number): string {
   if (elapsedMs < 100) return "Working…";
   return `Working… ${(elapsedMs / 1000).toFixed(1)}s`;
 }
+
+/**
+ * Compact elapsed for tight chrome (tool meta column, subagent rows).
+ * Sub-second returns empty so a "0s" column never appears as noise.
+ */
+export function compactElapsed(ms: number): string {
+  if (ms < 1000) return "";
+  if (ms >= 10_000) return `${Math.round(ms / 1000)}s`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}

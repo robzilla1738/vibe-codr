@@ -3,6 +3,7 @@ import {
   nextDensity,
   isTranscriptDensity,
   densityLabel,
+  densityShort,
   toolCollapsed,
   showThinkingRows,
   thinkingCollapsed,
@@ -23,6 +24,10 @@ test("isTranscriptDensity accepts only known levels", () => {
 
 test("densityLabel is non-empty for every level", () => {
   for (const d of DENSITY_LEVELS) expect(densityLabel(d).length).toBeGreaterThan(4);
+});
+
+test("densityShort is the bare level name", () => {
+  for (const d of DENSITY_LEVELS) expect(densityShort(d)).toBe(d);
 });
 
 test("toolCollapsed: quiet always collapses", () => {

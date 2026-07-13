@@ -1,9 +1,8 @@
 /**
- * Entry for the WIDE-terminal (sidebar) render smoke test: sidebar top/bottom
- * alignment with the chat column, the reasoning-only Thinking panel (no tool
- * Activity mirror), and transcript render windowing (fold row + tap-to-reveal).
- * Registers OpenTUI's Solid JSX transform before importing the JSX harness,
- * mirroring `smoke.ts`. Run with `bun run smoke:sidebar`.
+ * Wide-terminal layout smoke (sidebar removed): asserts Tasks/Subagents stay
+ * inline in the chat column — no right session column. Registers OpenTUI's
+ * Solid JSX transform before importing the JSX harness. Run with
+ * `bun run smoke:sidebar`.
  */
 const preload = "@opentui/solid/preload";
 await import(preload);

@@ -4,6 +4,58 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.1 — 2026-07-13
+
+### Fixed — production-readiness audit (BUG-110–119)
+
+Adversarial re-review of modes/approvals, providers/context, session/tools,
+orchestration, MCP, and the CLI worker path. Confirmed High/Medium defects
+fixed with fail-without-fix regressions; full suite green (1800+ tests).
+
+**Safety & permissions**
+- Bash destructive-pattern hard backstop now applies to **`background:true`**
+  as well as foreground (YOLO could previously start `rm -rf /` / force-push as
+  a job). Messaging is honest: hard-block, not "override with an allow rule".
+- `always-project` grants install into the **live** `config.permissions` array
+  so re-gating to ask (mode switch / plan accept) does not re-prompt the same
+  call until restart.
+
+**Context, resume & cost**
+- Between-turn compaction uses **`estimate + #overheadTokens`** once overhead is
+  known so a large user paste after a high `lastInputTokens` step actually
+  triggers compaction (was stuck on `max(lastInputTokens, estimate)`).
+- `--resume` restores `meta.offloaded` into the session map (prune keeps live
+  artifact paths) and **recomputes `#overheadTokens`** from
+  `lastInputTokens − message estimate` so the first post-resume projection is
+  not overhead-blind.
+- `Session.fork()` clears BUG-103 seeds **`initialActualCostUSD`** and
+  **`initialCostEstimated`** so a resumed parent cannot seed a child's hard-stop
+  budget or pollute parent `costEstimated` via `||=`.
+
+**Orchestration & store**
+- Worktree squash-merge conflicts restore **all paths this squash introduced**
+  (clean auto-merges + unmerged), not only unmerged entries — no half-merged
+  tree.
+- Session lease uses exclusive create (`O_EXCL` / `wx`) so dual `--continue`
+  processes cannot both return `ok: true` under race.
+
+**Microcompaction & browser-verify**
+- Offload supersession treats path aliases (`file_path` / `filePath` / `file`)
+  the same as `path` (AI SDK persists model-emitted args as-is).
+- browser-verify **races** chromium.launch and page.goto against the wall-clock
+  abort so a wedged browser cannot hang the gate afterTurn.
+
+**Test reliability**
+- Default bun test timeout raised to 20s; multi-step green-gate / engine-e2e
+  files also set a 20s default so suite load no longer flakes at 5s.
+
+### Changed — monochrome TUI chrome
+
+Default theme is monochrome white chrome on graphite: headings, menu selection,
+and wordmark no longer use a default violet stroke. Hierarchy is weight +
+surface; `/accent <name|hex>` still recolors chrome when desired. Plan cards
+stay mode-green. Screenshots regenerated.
+
 ## 0.5.0 — 2026-07-13
 
 ### Added — industry-leading concurrency, safety, and context improvements
@@ -62,9 +114,6 @@ tests + typecheck:
 - `session.idle` hook idempotency contract documented in HookSchema.
 - `docs/AUDIT.md` — comprehensive audit of 57 improvement areas, each
   addressed with a code fix, verification, or documented path forward.
-
-
-## 0.5.0 — 2026-07-13
 
 ## 0.4.35 — 2026-07-12
 

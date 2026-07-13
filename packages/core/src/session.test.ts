@@ -13,6 +13,7 @@ import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { SessionStore } from "./store.ts";
+import { estimateTokens } from "./compaction.ts";
 
 /** Build a provider-level stream from LanguageModelV2 stream parts. */
 function stream(chunks: unknown[]) {
@@ -193,6 +194,65 @@ test("persists after a turn and can be resumed with prior context", async () => 
   expect(resumed.messageCount).toBeGreaterThanOrEqual(4);
 });
 
+test("resume hydrates the offloaded map so prune keeps live artifact paths", async () => {
+  // meta.offloaded is persisted for --resume fidelity; without wiring it into
+  // SessionDeps.initialOffloaded the map is empty after resume and prune can
+  // delete still-referenced artifacts once the dir exceeds maxArtifactBytes.
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-resume-offload-"));
+  const store = new SessionStore(cwd);
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: "stop", usage: USAGE },
+      ]),
+  });
+  const offloaded = [
+    { callId: "call_old", path: join(cwd, "art.txt"), toolName: "read", fullChars: 50_000 },
+  ];
+  const first = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
+    cwd,
+    model: "mock/test",
+    mode: "execute",
+    store,
+    id: "ses_off",
+    initialOffloaded: offloaded,
+  });
+  // Force a persist so meta.offloaded is written.
+  await first.run("ping");
+  const persisted = await store.load("ses_off");
+  expect(persisted!.meta.offloaded).toEqual(offloaded);
+
+  const resumed = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    freshness: new FreshnessRegistry(),
+    cwd,
+    model: persisted!.meta.model,
+    mode: persisted!.meta.mode,
+    store,
+    id: persisted!.meta.id,
+    initialModelMessages: persisted!.modelMessages,
+    initialHistory: persisted!.history,
+    initialOffloaded: persisted!.meta.offloaded,
+  });
+  // Internal: the restored map must be non-empty — re-persist and assert the
+  // same callId is still listed (proves constructor hydrated #offloaded).
+  await resumed.run("pong");
+  const again = await store.load("ses_off");
+  expect(again!.meta.offloaded?.some((r) => r.callId === "call_old")).toBe(true);
+});
+
 test("resume seeds the real prior prompt size so the first turn's compaction check isn't overhead-blind", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-resume-ctx-"));
   const store = new SessionStore(cwd);
@@ -249,6 +309,188 @@ test("resume seeds the real prior prompt size so the first turn's compaction che
     initialLastInputTokens: persisted!.meta.lastInputTokens,
   });
   expect(resumed.contextTokens).toBe(90_000);
+});
+
+/**
+ * BUG-112: between-turn compaction must use estimate + #overheadTokens once
+ * overhead is known. The pre-fix formula max(lastInputTokens, estimate) stuck
+ * at the PREVIOUS step's full prompt size (which omits the just-pushed user
+ * turn) and skipped compaction that should fire when a large paste lands.
+ *
+ * Numbers chosen so the two formulas disagree:
+ *   window=10k, threshold=0.75 → fire at ≥7500
+ *   after turn 1: lastInputTokens=5000, overhead ≈ 5000 − small msg est
+ *   large paste: estimate ≈ 3k → max(5000, 3k)=5000 < 7500 (old: no compact)
+ *                 estimate + overhead ≈ 8k ≥ 7500 (new: compact)
+ */
+test("BUG-112: auto-compact uses estimate+overhead when a large paste lands after a high lastInputTokens step", async () => {
+  const WINDOW = 10_000;
+  const THRESHOLD = 0.75; // fire at 7500
+  const PRIOR_INPUT = 5_000;
+  const LARGE = "L".repeat(12_000); // ~3000 tokens of message text
+
+  let summarizeCalls = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: { inputTokens: PRIOR_INPUT, outputTokens: 5, totalTokens: PRIOR_INPUT + 5 },
+        },
+      ]) as never,
+    doGenerate: async () => {
+      summarizeCalls++;
+      return {
+        content: [
+          {
+            type: "text",
+            text: "## STATE\nprior work\n## DECISIONS\nnone\n## FILES TOUCHED\nnone\n## OPEN\nnone",
+          },
+        ],
+        finishReason: "stop" as const,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        warnings: [],
+      };
+    },
+  });
+
+  const cfg = defaultConfig();
+  cfg.compaction = { ...cfg.compaction, threshold: THRESHOLD };
+  // Keep offload from interfering with the between-turn path under test.
+  cfg.compaction.offload = { ...cfg.compaction.offload, enabled: false };
+
+  const bus = new EventBus();
+  const session = new Session({
+    config: cfg,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    freshness: new FreshnessRegistry(),
+    cwd: mkdtempSync(join(tmpdir(), "vibe-bug112-")),
+    model: "mock/test",
+    mode: "execute",
+    getContextWindow: async () => WINDOW,
+  });
+
+  // Turn 1: short prompt; provider reports PRIOR_INPUT so overhead is measured.
+  await session.run("go");
+  expect(session.contextTokens).toBe(PRIOR_INPUT);
+
+  // Preconditions for the disagreement: after push of LARGE, estimate alone
+  // stays under the fire line when max'd with lastInputTokens, but
+  // estimate+overhead crosses it. We measure against the messages that WILL be
+  // present (prior transcript + large user) via the same estimateTokens helper
+  // the session uses.
+  const priorMsgs = [
+    { role: "user" as const, content: "go" },
+    { role: "assistant" as const, content: "ok" },
+  ];
+  const afterPushEst = estimateTokens([...priorMsgs, { role: "user", content: LARGE }]);
+  const oldTrigger = Math.max(PRIOR_INPUT, afterPushEst);
+  // overhead ≈ PRIOR_INPUT − estimate(sent); lower-bound it with PRIOR_INPUT − afterPushEst
+  // is wrong — use PRIOR_INPUT − small prior estimate as a conservative floor.
+  const priorEst = estimateTokens(priorMsgs);
+  const minOverhead = Math.max(0, PRIOR_INPUT - priorEst);
+  const newTrigger = afterPushEst + minOverhead;
+  expect(oldTrigger).toBeLessThan(THRESHOLD * WINDOW); // old formula would NOT fire
+  expect(newTrigger).toBeGreaterThanOrEqual(THRESHOLD * WINDOW); // new formula MUST fire
+
+  const events = await collect(bus, () => session.run(LARGE));
+  expect(summarizeCalls).toBeGreaterThan(0);
+  expect(events.some((e) => e.type === "compacted")).toBe(true);
+});
+
+/**
+ * BUG-118: on --resume, #overheadTokens must be recomputed from
+ * lastInputTokens − estimate(messages) so the first mid-turn / between-turn
+ * projection is not overhead-blind (overhead stayed 0 until a step finished).
+ * This drives the constructor recompute + the same estimate+overhead compact
+ * path as BUG-112, seeded only via resume fields (no prior live step).
+ */
+test("BUG-118: resume recomputes overhead so a large paste auto-compacts without a prior live step", async () => {
+  const WINDOW = 10_000;
+  const THRESHOLD = 0.75;
+  const PRIOR_INPUT = 5_000;
+  const LARGE = "R".repeat(12_000);
+
+  const seedMessages: ModelMessage[] = [
+    { role: "user", content: "go" },
+    { role: "assistant", content: "ok" },
+  ];
+  const seedEst = estimateTokens(seedMessages);
+  const overhead = Math.max(0, PRIOR_INPUT - seedEst);
+  expect(overhead).toBeGreaterThan(0);
+
+  const afterPushEst = estimateTokens([...seedMessages, { role: "user", content: LARGE }]);
+  expect(Math.max(PRIOR_INPUT, afterPushEst)).toBeLessThan(THRESHOLD * WINDOW);
+  expect(afterPushEst + overhead).toBeGreaterThanOrEqual(THRESHOLD * WINDOW);
+
+  let summarizeCalls = 0;
+  const model = new MockLanguageModelV2({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        {
+          type: "finish",
+          finishReason: "stop",
+          usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
+        },
+      ]) as never,
+    doGenerate: async () => {
+      summarizeCalls++;
+      return {
+        content: [
+          {
+            type: "text",
+            text: "## STATE\nresumed\n## DECISIONS\nnone\n## FILES TOUCHED\nnone\n## OPEN\nnone",
+          },
+        ],
+        finishReason: "stop" as const,
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        warnings: [],
+      };
+    },
+  });
+
+  const cfg = defaultConfig();
+  cfg.compaction = { ...cfg.compaction, threshold: THRESHOLD };
+  cfg.compaction.offload = { ...cfg.compaction.offload, enabled: false };
+
+  const bus = new EventBus();
+  // Resume path only — no live prior step. Constructor must recompute overhead
+  // from lastInputTokens + messages or the compact trigger stays under threshold.
+  const session = new Session({
+    config: cfg,
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    freshness: new FreshnessRegistry(),
+    cwd: mkdtempSync(join(tmpdir(), "vibe-bug118-")),
+    model: "mock/test",
+    mode: "execute",
+    getContextWindow: async () => WINDOW,
+    initialModelMessages: seedMessages,
+    initialHistory: [
+      { id: "m1", role: "user", parts: [{ type: "text", text: "go" }], createdAt: 1 },
+      { id: "m2", role: "assistant", parts: [{ type: "text", text: "ok" }], createdAt: 2 },
+    ] as Message[],
+    initialLastInputTokens: PRIOR_INPUT,
+  });
+  expect(session.contextTokens).toBe(PRIOR_INPUT);
+
+  const events = await collect(bus, () => session.run(LARGE));
+  // Without constructor overhead recompute, max(5000, ~3k) never crosses 7500
+  // and summarize is never called. With recompute, estimate+overhead fires.
+  expect(summarizeCalls).toBeGreaterThan(0);
+  expect(events.some((e) => e.type === "compacted")).toBe(true);
 });
 
 test("accumulates per-step usage and prices it (no double-counting)", async () => {

@@ -33,6 +33,14 @@ export function densityLabel(d: TranscriptDensity): string {
 }
 
 /**
+ * One-word density name for status chrome / chips (no parenthetical).
+ * Prefer this when space is tight; {@link densityLabel} for menus/notices.
+ */
+export function densityShort(d: TranscriptDensity): string {
+  return d;
+}
+
+/**
  * Effective collapse for a tool row under the active density.
  * Click toggles still mutate `block.collapsed`; density is an overlay:
  *  - quiet: always collapsed

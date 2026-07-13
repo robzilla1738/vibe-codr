@@ -1,28 +1,52 @@
 # vibe-codr — Bug & Weakness Audit
 
-**Status:** Fresh full-codebase audit complete (2026-07-11) — **0 active** Critical/High/Medium  
-**HEAD:** post-fix BUG-108–109 + prior BUG-097–107 + BUG-051–096  
-**Method:** Full-codebase adversarial audit (shared/config/providers/plugins/tools/core/cli/tui/release/macos-bridge) against AGENTS.md invariants; every source file reviewed; 5× consecutive full-suite runs.  
-**Gate at close:** `bun run typecheck` 9/9 · `bun test` 1746 pass · `bun run lint` clean · `bun run format` idempotent · `bun run smoke:tui` SMOKE OK  
+**Status:** Fresh production-readiness audit complete (2026-07-13) — **0 active** Critical/High/Medium  
+**HEAD:** post-fix BUG-110–118 + prior BUG-097–109 + BUG-051–096  
+**Method:** Adversarial re-review of production-critical subsystems (modes/approvals, providers/context, session/tools/orch/MCP/CLI) against AGENTS.md invariants; confirmed defects fixed with regressions.  
+**Gate at close:** `bun run typecheck` 9/9 · `bun test` 1805+ pass · `bun run lint` clean · launch smoke OK (real config untouched)
 
 ---
 
 ## Summary
 
-| Severity | Active | Fixed 2026-07-11 | Fixed 2026-07-09 | Prior closed |
-|----------|--------|-------------------|-------------------|--------------|
-| Critical | **0** | 0 | 0 | 1 (BUG-084) |
-| High | **0** | 0 | 3 | 6 |
-| Medium | **0** | 2 | 8 | 22 |
-| Low | **0** | 0 (deferred with rationale) | 0 (deferred with rationale) | 14 |
-| **Total active** | **0** | **2** | **11** | — |
-| Prior fixed catalog | — | — | — | BUG-001–096 |
-| Refuted | 2 | — | — | BUG-033, 035 |
+| Severity | Active | Fixed 2026-07-13 | Fixed 2026-07-11 | Fixed 2026-07-09 | Prior closed |
+|----------|--------|-------------------|-------------------|-------------------|--------------|
+| Critical | **0** | 0 | 0 | 0 | 1 (BUG-084) |
+| High | **0** | 4 | 0 | 3 | 6 |
+| Medium | **0** | 5 | 2 | 8 | 22 |
+| Low | **0** | 0 (deferred with rationale) | 0 | 0 | 14 |
+| **Total active** | **0** | **9** | **2** | **11** | — |
+| Prior fixed catalog | — | — | — | — | BUG-001–096 |
+| Refuted | 2 | — | — | — | BUG-033, 035 |
 
 ---
 
 
 ---
+
+## Fixed this remediation (2026-07-13) — BUG-110+
+
+| ID | Sev | Fix |
+|----|-----|-----|
+| **BUG-110** | High | `bash` destructive-pattern backstop skipped when `background:true` — YOLO could start `rm -rf /` / force-push as a job. Unconditional hard refuse (fg + bg). |
+| **BUG-111** | High | Worktree squash-merge conflict restored only unmerged paths; clean auto-merges stayed staged (half-merged tree). Full restore of post-staged \ pre-staged ∪ unmerged. |
+| **BUG-112** | High | Between-turn compaction undercounted a just-pushed large user turn when `#lastInputTokens` was set (stuck at stale prior prompt size). Prefer `estimate + #overheadTokens`. |
+| **BUG-113** | High | `meta.offloaded` persisted but never restored on `--resume` — prune could delete live artifacts. Wire `initialOffloaded` through Session + engine resume. |
+| **BUG-114** | Medium | `always-project` wrote disk only; re-gate to ask cleared `#alwaysAllow` and re-prompted same process. Install rule into live `config.permissions`. |
+| **BUG-115** | Medium | Session lease used read-then-write (not O_EXCL); dual `--continue` race both got ok. Exclusive create + steal-if-dead. |
+| **BUG-116** | Medium | Microcompaction supersession ignored path aliases (`file_path`/`filePath`/`file`). |
+| **BUG-117** | Medium | browser-verify wall-clock abort did not cancel hung chromium.launch / page.goto. `raceAbort` helper. |
+| **BUG-118** | Medium | Resume restored `lastInputTokens` but left `#overheadTokens` at 0 (mid-turn fill under-projected). Recompute from lastInput − message estimate. |
+| **BUG-119** | Medium | `Session.fork()` cleared `initialCostUSD`/`initialOffloaded` but not BUG-103 seeds `initialActualCostUSD`/`initialCostEstimated` — resumed parent leaked hard-stop spend + estimated flag into children (`#enforceBudget` early gate is `costUSD` while stop uses `actualCostUSD`; child `costEstimated` polluted parent via `||=`). |
+
+### Deferred Low / accepted-risk (2026-07-13)
+
+| Item | Rationale |
+|------|-----------|
+| Same-step present_plan + concurrent RO tools | No write escape; next-step freeze holds |
+| Whitespace-only env credentials | Low; opaque auth failures only |
+| Hard-link file-lock aliasing | Path locks by design |
+| Lease remains advisory | Documented dual-terminal warning, non-blocking |
 
 ## Fixed this remediation (2026-07-11) — BUG-108+
 

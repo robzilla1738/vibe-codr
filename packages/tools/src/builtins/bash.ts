@@ -31,26 +31,27 @@ const DEFAULT_TIMEOUT = 120_000;
  * mode. These match the COMMAND TEXT (not the tool-name glob) and are checked
  * AFTER the permission engine but BEFORE the command runs — a final safety net
  * for commands that are almost always destructive and should never run without
- * explicit, deliberate approval. A user who truly wants one of these can add a
- * `{tool:"bash", match:"<pattern>", action:"allow"}` rule, which the permission
- * engine honors before this check runs. Each pattern is a case-insensitive
- * substring of the normalized command (whitespace-collapsed, trimmed). */
+ * explicit, deliberate approval. This hard backstop applies to BOTH foreground
+ * and `background:true` spawns (`background` is a model-controlled flag and must
+ * not be a kill-switch bypass). Each pattern is a case-insensitive substring of
+ * the normalized command (whitespace-collapsed, trimmed). */
 const DESTRUCTIVE_PATTERNS: RegExp[] = [
   /\brm\s+(-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r?)\s+\/?(\s|$)/i, // rm -rf / or rm -fr /
-  /\brm\s+(-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r?)\s+\/~/i,         // rm -rf /~
-  /\bgit\s+push\s+.*--force/i,                                   // git push --force
-  /\bgit\s+push\s+.*-f\b/i,                                     // git push -f
-  /\bgit\s+reset\s+--hard/i,                                     // git reset --hard
-  /\bgit\s+clean\s+-[a-z]*d[a-z]*[xf]/i,                         // git clean -dx/-fd
-  /\bmkfs\b/i,                                                     // mkfs (filesystem creation)
-  /\bdd\s+.*of=\/dev\//i,                                       // dd of=/dev/...
-  /\bshred\b/i,                                                    // shred (secure delete)
-  /\b:\(\)\s*\{\s*:\|:&\s*\};:/i,                          // fork bomb
+  /\brm\s+(-[a-z]*r[a-z]*f?|-[a-z]*f[a-z]*r?)\s+\/~/i, // rm -rf /~
+  /\bgit\s+push\s+.*--force/i, // git push --force
+  /\bgit\s+push\s+.*-f\b/i, // git push -f
+  /\bgit\s+reset\s+--hard/i, // git reset --hard
+  /\bgit\s+clean\s+-[a-z]*d[a-z]*[xf]/i, // git clean -dx/-fd
+  /\bmkfs\b/i, // mkfs (filesystem creation)
+  /\bdd\s+.*of=\/dev\//i, // dd of=/dev/...
+  /\bshred\b/i, // shred (secure delete)
+  /\b:\(\)\s*\{\s*:\|:&\s*\};:/i, // fork bomb
 ];
 
 /** Check if a command matches any destructive pattern. Returns the matching
- * pattern's source for a descriptive error, or null if safe. */
-function destructiveMatch(command: string): string | null {
+ * pattern's source for a descriptive error, or null if safe. Exported for
+ * unit tests of the hard backstop. */
+export function destructiveMatch(command: string): string | null {
   const normalized = command.replace(/\s+/g, " ").trim();
   for (const re of DESTRUCTIVE_PATTERNS) {
     if (re.test(normalized)) return re.source;
@@ -86,20 +87,17 @@ export function bashTool(
     readOnly: false,
     concurrencySafe: false,
     async execute({ command, timeoutMs, background, dangerouslyUnsandboxed }, ctx) {
-      // Destructive-command safety net: deny commands that match the destructive
-      // patterns list, even in YOLO mode. This is a hard backstop — a user who
-      // deliberately wants one must add a `{tool:"bash", match:"...", action:"allow"}`
-      // permission rule, which the adapter's permission check honors BEFORE this
-      // gate. If the permission engine allowed the call (explicit rule or
-      // non-YOLO approval), proceed; otherwise deny.
-      if (!background) {
-        const match = destructiveMatch(command);
-        if (match) {
-          return {
-            output: `Refused: command matches a destructive pattern (/${match}/). If this is intentional, add an explicit permission rule: {tool:"bash", match:"${command.slice(0, 40)}…", action:"allow"} to override.`,
-            isError: true,
-          };
-        }
+      // Destructive-command safety net: deny matches even in YOLO, and even when
+      // `background:true` — background is model-controlled and must not skip the
+      // hard backstop (a YOLO agent with `rm -rf /` + background would otherwise
+      // start the job immediately). This is unconditional: there is no config
+      // override at this layer (permission allow only gets past the earlier gate).
+      const match = destructiveMatch(command);
+      if (match) {
+        return {
+          output: `Refused: command matches a destructive pattern (/${match}/). This is a hard safety backstop (foreground and background) and cannot be overridden by permission rules.`,
+          isError: true,
+        };
       }
       if (background) {
         if (!jobs) {

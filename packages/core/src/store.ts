@@ -156,21 +156,42 @@ export class SessionStore {
     const leasePath = this.#leasePath(id);
     await mkdir(this.#dir(id), { recursive: true });
     try {
-      // Try to create the lease exclusively (O_CREAT|O_EXCL). If it succeeds,
-      // we're the first holder — write our PID and return.
+      // Exclusive create (O_CREAT|O_EXCL via flag "wx"): two concurrent
+      // `--continue` processes both observing "no live holder" must not both
+      // return `{ ok: true }` (a plain read-then-overwrite race). If exclusive
+      // create fails, a holder already exists — probe its PID; steal only when
+      // dead, re-racing exclusive create after removing the stale file.
+      try {
+        await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, { encoding: "utf8", flag: "wx" });
+        return { ok: true };
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code !== "EEXIST") throw err;
+      }
       const existing = await readFile(leasePath, "utf8").catch(() => null);
       if (existing) {
         const pidStr = existing.trim().split("\n")[0];
         const holderPid = pidStr ? Number(pidStr) : NaN;
         if (Number.isFinite(holderPid) && holderPid > 0 && SessionStore.#isPidAlive(holderPid)) {
-          // A live process holds the lease — warn the caller.
           return { ok: false, holderPid };
         }
-        // The holder is dead (or the PID is invalid) — steal the lease.
+        // Holder dead / invalid PID — remove stale lease and re-acquire exclusively.
+        await rm(leasePath, { force: true }).catch(() => {});
       }
-      // Write our PID + timestamp, atomically (best-effort).
-      await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, "utf8");
-      return { ok: true };
+      try {
+        await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, { encoding: "utf8", flag: "wx" });
+        return { ok: true };
+      } catch (err) {
+        // Another process won the re-acquire race — treat as held.
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "EEXIST") {
+          const again = await readFile(leasePath, "utf8").catch(() => null);
+          const pidStr = again?.trim().split("\n")[0];
+          const holderPid = pidStr ? Number(pidStr) : NaN;
+          if (Number.isFinite(holderPid) && holderPid > 0) return { ok: false, holderPid };
+        }
+        throw err;
+      }
     } catch {
       // A FS error acquiring the lease is non-fatal — proceed without it.
       return { ok: true };

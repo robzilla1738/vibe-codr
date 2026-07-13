@@ -83,7 +83,7 @@ catalog (e.g. Meta Muse Spark 1.1).
 >
 > A full slash-command surface (`/status` `/cost` `/config` `/diff` `/recall`
 > `/mcp` `/review` `/doctor` `/export` …) makes every setting and bit of session
-> state reachable. All covered by **900+ tests** (including mock-model integration
+> state reachable. All covered by **1800+ tests** (including mock-model integration
 > tests of the agent loop with zero network) plus a TUI render smoke test and a
 > compiled-binary check.
 >
@@ -94,39 +94,34 @@ catalog (e.g. Meta Muse Spark 1.1).
 An opencode-inspired terminal UI on vibe-codr's own engine, with a deliberate
 color language: a **near-black graphite background** with **filled panel cards**
 and a **thin left rail** on every block (no box-drawing borders — they gap into
-dashes on terminals with line spacing). The chrome is **white-first** (opencode's
-neutral scale): the **VIBE CODR wordmark**, panel titles, the **user-message
-rail**, the active task/step, and the input caret all read in the body white,
-while a **royal violet (`#8b5cf6`)** is saved for the few emphasis moments —
-the selected menu row's solid band (dark text on it), menu section headers, and
-markdown headings. The input's **mode
-label, rail + caret** (`AGENT ❯` in the accent · `PLAN ❯` green · `YOLO ❯` red)
-make switching mode unmistakable without repainting the screen. Swap the accent
-in one word — **`/accent blue`**, or `purple`, `orange`, `ember`, `amber`,
-`green`, `teal`, `violet`, `rose`, `white`, or any `/accent <hex>` — the swatch
-submenu previews each hue live, and the wordmark fade, markers, and input rail
-all follow it (`/theme opencode` keeps the classic peach look). The other colors are purely
-functional — green/red on diffs with subtle background tints, amber on warnings, and one **calm muted tone**
-for the tool-step / subagent rails. The layout is a **single, centered chat
-column** (ChatGPT-style): it fills a narrow terminal and centers on a wide one,
-with **no sidebar and no top header**. A fresh screen shows a **centered VIBE
-CODR wordmark**; once you start, the column is the scrolling **transcript**, the
-live status — the plan's **task list** and live **subagents** (one tidy line
-each, tap to expand) — in panels above the input, and the input itself: a
-**raised filled block with the mode-hued rail**. **All the details sit under the
-input** — cwd · git, then model · changed-files · context · cost, plus key hints
-and the goal. Each user turn sits in a filled card on the accent rail (**tap your
-message to fold the whole exchange** under it), with the calm step rails and the
-input aligned on one left edge; **assistant replies render as real Markdown** — prose
-as Markdown, with **headings in the signature violet, blockquotes with a rail bar, and code
-blocks + tables as clean native primitives** (aligned columns, accent header
-row); tool calls read as a distinct icon + action (`$` bash, `→` read, `←` edit,
-`✱` glob/grep, `◈` websearch, `±` git…) and **condense to one line you click to
-expand**, while edits fold into a single diff row with the hunk shown beneath it
-and **search steps expand to clean source cards**; a **rainbow braille spinner**
-(hue-cycling — the "model is thinking" signature) shows live work; the **slash
-menu docks flush to the input as one connected control**
-and drills into rich submenus (a searchable model picker, clickable toggles).
+dashes on terminals with line spacing). The chrome is **monochrome white-first**:
+the **VIBE CODR wordmark**, panel titles, markdown headings, the **user-message
+rail**, the active task/step, menu selection, and the input caret all read in
+near-white body chrome — hierarchy comes from **weight and surface**, not a
+default purple stroke. The input's **mode label, rail + caret** (`AGENT ❯` follows
+the live accent · `PLAN ❯` green · `YOLO ❯` red) make switching mode unmistakable
+without repainting the screen. Swap the accent in one word — **`/accent blue`**,
+or `purple`, `orange`, `ember`, `amber`, `green`, `teal`, `violet`, `rose`,
+`white`, or any `/accent <hex>` — the swatch submenu previews each hue live, and
+the wordmark fade, markers, and input rail all follow it (`/theme opencode`
+keeps the classic peach look). Functional colors stay reserved — green/red on
+diffs with subtle background tints, amber on warnings, teal on tools, and one
+**calm muted tone** for tool-step / subagent rails. The layout is a **single,
+centered chat column** (ChatGPT-style): it fills a narrow terminal and centers
+on a wide one, with a **right sidebar on wide terminals** (tasks · subagents ·
+thinking) and **no top header**. A fresh screen shows a **centered VIBE CODR
+wordmark**; once you start, the column is the scrolling **transcript**, live
+status panels when the sidebar is off, and the input itself: a **raised filled
+block with the mode-hued rail**. **All the details sit under the input** — cwd ·
+git, then model · changed-files · context · cost, plus key hints and the goal.
+Each user turn sits in a filled card on the accent rail (**tap your message to
+fold the whole exchange** under it); **assistant replies render as real
+Markdown** — prose through the native markdown renderable, blockquotes with a
+rail bar, and code blocks + tables as clean native primitives; tool calls read
+as a distinct icon + action and **condense to one line you click to expand**; a
+**rainbow braille spinner** shows live work; the **slash menu docks flush to the
+input as one connected control** and drills into rich submenus (model picker,
+clickable toggles).
 
 | Chat + tool calls | Live diff |
 |---|---|
@@ -382,17 +377,15 @@ the user accepts (plan card Enter or `/execute`) or revises.
 - **opencode-inspired terminal UI** — built on vibe-codr's own engine, with a
   deliberate color language: a **near-black graphite background** with **filled
   panel cards** and a **thin left rail** on every block (no box-drawing chrome
-  borders), **white-first chrome** (opencode's neutral scale), and a **royal
-  violet (`#8b5cf6`)** saved for emphasis — the selected menu row's solid band,
-  menu section headers, and markdown headings — around the wordmark, panel titles,
-  the **user-message rail**, the active task/step, the selected menu row, and the
-  caret; the input's **mode label, rail + caret**
-  (`AGENT ❯` in the accent / `PLAN ❯` green / `YOLO ❯` red) carry the mode;
-  green/red/amber stay reserved for diffs and warnings, and one **calm muted
-  tone** carries the tool-step / subagent rails. Swap the accent in one word —
-  `/accent blue` (or purple, ember, amber, green, teal, violet, rose, white,
-  orange, or any hex) — the swatch submenu previews each hue and the wordmark
-  fade, markers, and input rail follow.
+  borders), **monochrome white-first chrome** (titles, headings, menu selection,
+  wordmark — no default purple stroke), and a live **accent** that recolors the
+  wordmark fade, markers, and input rail when you set one; the input's **mode
+  label, rail + caret** (`AGENT ❯` follows the accent / `PLAN ❯` green /
+  `YOLO ❯` red) carry the mode; green/red/amber stay reserved for diffs and
+  warnings, teal for tools, and one **calm muted tone** for tool-step / subagent
+  rails. Swap the accent in one word — `/accent blue` (or purple, ember, amber,
+  green, teal, violet, rose, white, orange, or any hex) — the swatch submenu
+  previews each hue and the wordmark fade, markers, and input rail follow.
   A **single, centered chat column** (ChatGPT-style — no sidebar, **no top header**)
   fills a narrow terminal and centers on a wide one: a fresh screen shows the
   wordmark, then the scrolling transcript, the **task list** (windowed around the
@@ -469,7 +462,7 @@ the user accepts (plan card Enter or `/execute`) or revises.
   `n`/Esc (deny), **or type a reason**: any other text denies AND travels to the
   model as the deny reason (`denied by user — use staging instead`), so a denial
   steers the next attempt instead of leaving the model guessing. Fifteen themes
-  ship — `default` (white chrome + violet emphasis on graphite), `light`, `contrast`, `opencode`
+  ship — `default` (monochrome white chrome on graphite), `light`, `contrast`, `opencode`
   (the classic graphite + peach look), and ported classics:
   `tokyonight`, `catppuccin`, `gruvbox`, `nord`, `one-dark`, `dracula`,
   `rosepine`, `kanagawa`, `everforest`, `flexoki` (burnt orange), `vesper` (peach).
@@ -877,7 +870,7 @@ plugins, provider overrides, and MCP servers. Beyond `model`, `mode`,
   "approvalMode": "ask",                                // ask | auto
   "security": { "trustProjectConfig": false },          // honor a repo's .vibe/config.json verbatim (global-only)
   "theme": "default",                                   // default | light | contrast | opencode | tokyonight | …
-  "accentColor": "#8b5cf6",                             // chrome accent (or /accent purple in-app)
+  "accentColor": "#f2f2f2",                             // chrome accent (or /accent blue|purple|… in-app)
   "caching": { "enabled": true },                       // Anthropic prompt caching
   "reasoning": { "effort": "high", "budgetTokens": 8000 }, // thinking controls
   "budget": { "limitUSD": 5, "onExceed": "warn" },      // spend guard: warn | stop

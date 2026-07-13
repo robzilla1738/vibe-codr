@@ -109,11 +109,13 @@ const waitForText = async (needle: string, ms = 2000): Promise<string> => {
   return frame;
 };
 
-// 1) Fresh screen: the centered VIBE CODR wordmark, the mode break on the input
-// border, the model in the under-input status line, and the input placeholder.
+// 1) Fresh screen: the centered VIBE CODR wordmark alone (no tip clutter),
+// the mode break on the input, the model in the under-input status line,
+// and the input placeholder.
 let frame = t.captureCharFrame();
-// Splash: the block wordmark (░██ cells) only — suggestions were removed.
+// Splash: block wordmark (░██ cells) only — tips were removed for a clean empty state.
 check("splash renders (wordmark)", frame.includes("░"));
+check("splash has no tip clutter under wordmark", !frame.includes("cycle PLAN"));
 check("input shows the placeholder", frame.includes("Send a message"));
 check("input border shows the AGENT mode", frame.includes("AGENT"));
 check("status line shows model", frame.includes("ollama/glm-5.2"));
@@ -134,24 +136,25 @@ sent.length = 0;
 t.mockInput.pressEscape();
 await settle();
 
-// The wordmark must be a single-hue VIOLET gradient (the royal-purple brand):
-// many distinct per-column colors (a real sweep, not a flat fill) that are ALL
-// blue-dominant with red above green (violet — no rainbow, no drift back to the
-// old peach or blue). captureCharFrame is color-blind, so inspect the per-span
-// fg via captureSpans. This guards both the regression where inline fg didn't
-// paint (all white) and a reintroduction of the multi-hue rainbow.
+// The wordmark is a single-hue WHITE ramp (monochrome chrome): many distinct
+// per-column lightness steps (a real sweep, not a flat fill), with r≈g≈b so it
+// stays neutral — not a rainbow, not a purple default. captureCharFrame is
+// color-blind, so inspect per-span fg via captureSpans.
 const wordmarkColors = new Set<string>();
-let wordmarkAllViolet = true;
+let wordmarkNeutral = true;
 for (const line of t.captureSpans().lines) {
   if (!line.spans.some((s) => s.text.includes("░") || s.text.includes("█"))) continue;
   for (const s of line.spans) {
     if (!s.text.trim()) continue;
     wordmarkColors.add(`${s.fg.r},${s.fg.g},${s.fg.b}`);
-    if (s.fg.b < s.fg.r || s.fg.r < s.fg.g) wordmarkAllViolet = false;
+    // Neutral = channels within 0.12 of each other (allows ramp noise).
+    const maxc = Math.max(s.fg.r, s.fg.g, s.fg.b);
+    const minc = Math.min(s.fg.r, s.fg.g, s.fg.b);
+    if (maxc - minc > 0.12) wordmarkNeutral = false;
   }
 }
-check(`wordmark is a single-hue violet gradient (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
-check("wordmark colors are all violet-dominant (no rainbow)", wordmarkAllViolet);
+check(`wordmark is a single-hue white ramp (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
+check("wordmark colors are neutral white (no purple default)", wordmarkNeutral);
 // The default theme paints a BLACK background — guards the regression where a
 // persisted `theme: light` (or a non-black default) turned the whole UI white.
 const bgBlack = t
@@ -716,14 +719,14 @@ check("rich reply: prose before a code/table block renders", frame.includes("PRO
 check("rich reply: prose after a code/table block renders", frame.includes("PROSE_OMEGA"));
 check("rich reply: the code block renders", frame.includes("RICHCODE"));
 // The table is a box-drawing GRID (opencode-style): `┌┬┐`/`├┼┤`/`└┴┘` rules + `│`
-// column borders, header cells in the accent.
+// column borders, header cells in the chrome heading token (white by default).
 check("rich reply: the table renders (grid: header + rows)", frame.includes("Name") && frame.includes("Zustand"));
 check("rich reply: the table is a box-drawing grid", frame.includes("┌") && frame.includes("┼") && frame.includes("│"));
-const headerAccent = t
+const headerChrome = t
   .captureSpans()
   .lines.flatMap((l) => l.spans)
-  .some((s) => s.text.includes("Name") && s.fg.b >= s.fg.r && s.fg.r >= s.fg.g && s.fg.b - s.fg.g > 0.15);
-check("rich reply: the table header is accent-colored", headerAccent);
+  .some((s) => s.text.includes("Name") && (s.fg.r + s.fg.g + s.fg.b) / 3 > 0.7);
+check("rich reply: the table header is chrome-bright", headerChrome);
 // Table cells conceal inline markdown — the `**Name**` header must not leak raw
 // `**` (and the whole reply, prose + table, has no stray markers).
 check("rich reply: table cells conceal inline markdown (no raw **)", !frame.includes("**"));
@@ -736,12 +739,12 @@ const quoteBar = t
     (l) => l.spans.some((s) => s.text.includes("RICHQUOTE")) && l.spans.some((s) => s.bg.r + s.bg.g + s.bg.b > 0.1),
   );
 check("rich reply: the blockquote renders with a filled gutter bar", frame.includes("RICHQUOTE") && quoteBar);
-// The heading is painted in the violet accent (the `heading` token), not body white.
-const headingViolet = t
+// Headings use the chrome white (heading token = primary), bold — not muted.
+const headingBright = t
   .captureSpans()
   .lines.flatMap((l) => l.spans)
-  .some((s) => s.text.includes("RICHHEAD") && s.fg.b >= s.fg.r && s.fg.r >= s.fg.g && s.fg.b - s.fg.g > 0.15);
-check("rich reply: the heading is accent-violet", headingViolet);
+  .some((s) => s.text.includes("RICHHEAD") && (s.fg.r + s.fg.g + s.fg.b) / 3 > 0.7);
+check("rich reply: the heading is bright chrome (not muted)", headingBright);
 
 // 12) Rich data views: a reply with fenced chart / pie / sources blocks renders as
 // beautiful views (bars, a colored pie disc + legend, numbered source cards) rather

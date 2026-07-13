@@ -118,7 +118,7 @@ export class OrchestratorRunner {
   /** Bounds how many subagents this session runs concurrently (each fan-out).
    * Per-session, not tree-global, so a parent awaiting its children can't
    * deadlock against the cap. */
-  #childGate: <T>(fn: () => Promise<T>) => Promise<T>;
+  #childGate: <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
   /** Emit the "review degraded to a generic child" warning at most once per
    * session, not once per verified task. */
   #reviewDegradationWarned = false;
@@ -133,6 +133,11 @@ export class OrchestratorRunner {
    * runs on an isolated bus, so we subscribe to it and re-emit throttled activity
    * onto the parent bus, then stop when the child finishes. */
   #childTaps = new Map<string, () => void>();
+  /** Per-session ensemble strategy win-rate tracker: maps strategy name →
+   * { wins, runs }. Used to bias strategy selection toward winning strategies
+   * across the session, so a repo where "test-first" consistently wins gets it
+   * assigned to earlier attempts. Starts empty (original order) and adapts. */
+  #strategyStats = new Map<string, { wins: number; runs: number }>();
   /** Tree-shared registry of retained (continue_subagent) + detached (background)
    * children, created lazily by the root runner like reportStore. */
   #childRegistry: ChildRegistry;
@@ -755,9 +760,12 @@ export class OrchestratorRunner {
    * squash-merged back into the main tree, and the gate/review run on the MERGED
    * main tree (that state is what matters). A conflicting merge fails the task.
    *
-   * There is deliberately no in-worktree verify→retry loop: the worktree is
-   * squash-merged and removed once the child settles, so a red post-merge gate
-   * fails the task to be re-planned rather than retried against a discarded tree.
+   * Bounded verify→retry loop: when `check`/`verify` is set and the post-merge
+   * gate or review fails, the worktree is reset to the base ref and the child is
+   * re-run with the failure feedback (same as the shared-tree path). The
+   * worktree persists across retry attempts — only the committed changes are
+   * reset — so the child starts fresh but the worktree branch + isolation stay
+   * alive. After all attempts are exhausted, the worktree is torn down.
    */
   async #runWorktreeTask(
     spec: TaskSpec,
@@ -810,7 +818,23 @@ export class OrchestratorRunner {
       return result;
     };
 
+    const baseRef = await this.#headRef(mainCwd);
+    const maxAttempts = Math.max(
+      spec.verify ? this.#handle.deps.config.subagent.verifyMaxAttempts : 1,
+      spec.outputSchema ? this.#handle.deps.config.subagent.structuredMaxAttempts : 1,
+      1,
+    );
+    let feedback = "";
+    let attempts = 0;
     try {
+      while (attempts < maxAttempts) {
+        attempts++;
+      // On a retry (attempts > 1), reset the worktree to the base ref so the
+      // child starts fresh — the previous attempt's committed changes are
+      // discarded, and the child gets the gate/review feedback as guidance.
+      if (attempts > 1) {
+        await spawnGit(wt, ["reset", "--hard", baseRef]).catch(() => {});
+      }
       const child = this.#forkChild(named, undefined, spec.tier, wt);
       if (!child) {
         return settle({
@@ -818,7 +842,7 @@ export class OrchestratorRunner {
           objective: spec.objective,
           outcome: "failed",
           output: this.#spawnCeilingError().output,
-          attempts: 1,
+          attempts,
         });
       }
       this.#handle.deps.bus.emit({
@@ -829,7 +853,7 @@ export class OrchestratorRunner {
       });
       const { timedOut, aborted } = await this.#runChildToCompletion(
         child,
-        buildTaskKickoff(spec, depResults, ""),
+        buildTaskKickoff(spec, depResults, feedback),
         parentSignal,
         suspendParentSlot,
       );
@@ -846,7 +870,7 @@ export class OrchestratorRunner {
           objective: spec.objective,
           outcome: "failed",
           output: outcome.text,
-          attempts: 1,
+          attempts,
         });
       }
       const handoff = parseHandoff(outcome.text) ?? undefined;
@@ -860,12 +884,14 @@ export class OrchestratorRunner {
       if (spec.outputSchema) {
         const res = enforceSchema(outcome.text, spec.outputSchema);
         if (!res.ok) {
+          feedback = `Your final message must be exactly one JSON object matching the required schema:\n${res.errors.map((e) => `- ${e}`).join("\n")}`;
+          if (attempts < maxAttempts) continue;
           return settle({
             id: spec.id,
             objective: spec.objective,
             outcome: "failed",
-            output: `Structured output invalid:\n${res.errors.map((e) => `- ${e}`).join("\n")}\n\nRaw final message:\n${res.raw}`,
-            attempts: 1,
+            output: `Structured output invalid after ${attempts} attempt(s):\n${feedback}\n\nRaw final message:\n${res.raw}`,
+            attempts,
           });
         }
         reportText = res.json;
@@ -971,12 +997,14 @@ export class OrchestratorRunner {
         },
       );
       if (!verdict.ok) {
+        feedback = verdict.output;
+        if (attempts < maxAttempts) continue;
         return settle({
           id: spec.id,
           objective: spec.objective,
           outcome: "failed",
-          output: verdict.output,
-          attempts: 1,
+          output: `Checks failed after ${attempts} attempt(s):\n${verdict.output}`,
+          attempts,
           ...(handoff ? { handoff } : {}),
         });
       }
@@ -997,12 +1025,14 @@ export class OrchestratorRunner {
               () => {},
             );
           }
+          feedback = `Post-merge review found issues:\n${review.feedback}`;
+          if (attempts < maxAttempts) continue;
           return settle({
             id: spec.id,
             objective: spec.objective,
             outcome: "failed",
-            output: `Post-merge review found issues (merged changes reverted):\n${review.feedback}`,
-            attempts: 1,
+            output: `Post-merge review found issues after ${attempts} attempt(s) (merged changes reverted):\n${review.feedback}`,
+            attempts,
             ...(handoff ? { handoff } : {}),
           });
         }
@@ -1012,8 +1042,18 @@ export class OrchestratorRunner {
         objective: spec.objective,
         outcome: "completed",
         output: reportText,
-        attempts: 1,
+        attempts,
         ...(handoff ? { handoff } : {}),
+      });
+      } // end while loop
+      // Unreachable: the while loop always returns on success or exhausted
+      // attempts, but TypeScript can't prove that.
+      return settle({
+        id: spec.id,
+        objective: spec.objective,
+        outcome: "failed",
+        output: `Worktree task exhausted ${attempts} attempt(s) without a verdict.`,
+        attempts,
       });
     } catch (err) {
       return settle({
@@ -1021,7 +1061,7 @@ export class OrchestratorRunner {
         objective: spec.objective,
         outcome: "failed",
         output: `Worktree task threw: ${(err as Error)?.message ?? String(err)}`,
-        attempts: 1,
+        attempts,
       });
     } finally {
       // Always tear down the worktree — the happy path AND every early return/throw
@@ -1051,6 +1091,10 @@ export class OrchestratorRunner {
   ): Promise<TaskResult> {
     const mainCwd = this.#handle.deps.cwd;
     const n = Math.min(this.#handle.deps.config.build.ensemble.n, ENSEMBLE_STRATEGIES.length);
+    // Select strategies, biased by per-session win-rate: strategies that have
+    // won more often in prior ensembles are assigned to earlier attempts. When
+    // there's no history (first ensemble), the original order is used.
+    const strategies = this.#selectStrategies(n);
     const startedAt = Date.now();
     this.#journal({
       type: "task-started",
@@ -1079,7 +1123,7 @@ export class OrchestratorRunner {
 
     const attempts = await Promise.all(
       Array.from({ length: n }, (_, i) => i).map((i) =>
-        this.#runEnsembleAttempt(spec, depResults, parentSignal, i, baseRef, suspendParentSlot),
+        this.#runEnsembleAttempt(spec, depResults, parentSignal, i, baseRef, suspendParentSlot, strategies),
       ),
     );
 
@@ -1109,6 +1153,19 @@ export class OrchestratorRunner {
     const winner = [...attempts]
       .filter((a) => a.score === 2)
       .sort((x, y) => x.diffSize - y.diffSize)[0];
+    // Adapt: record which strategy won so future ensembles bias toward it.
+    if (winner) {
+      const stats = this.#strategyStats.get(winner.label) ?? { wins: 0, runs: 0 };
+      this.#strategyStats.set(winner.label, { wins: stats.wins + 1, runs: stats.runs + 1 });
+    }
+    // Record attempts for strategies that ran (even non-winners contribute runs).
+    for (const a of attempts) {
+      if (a.wt) {
+        const stats = this.#strategyStats.get(a.label) ?? { wins: 0, runs: 0 };
+        if (stats.runs === 0) this.#strategyStats.set(a.label, stats);
+        stats.runs++;
+      }
+    }
 
     try {
       if (!winner) {
@@ -1249,11 +1306,12 @@ export class OrchestratorRunner {
     i: number,
     baseRef: string,
     suspendParentSlot = true,
+    strategies: { name: string; directive: string }[] = ENSEMBLE_STRATEGIES,
   ): Promise<EnsembleAttempt> {
     const mainCwd = this.#handle.deps.cwd;
     const profile = this.#handle.deps.repoProfile;
     const named = spec.agent ? this.#handle.deps.agents?.get(spec.agent) : undefined;
-    const strategy = ENSEMBLE_STRATEGIES[i]!;
+    const strategy = strategies[i]!;
     const label = strategy.name;
     const wtId = `${worktreeSlug(spec.id)}-a${i}`;
     const wtPath = join(mainCwd, ".vibe", "worktrees", worktreePathName(this.#handle.id, wtId));
@@ -1789,14 +1847,18 @@ export class OrchestratorRunner {
     cwdOverride?: string,
   ): Session | null {
     // Tree-global spawn ceiling: fail closed at the cap rather than let a runaway
-    // model fan out forever (cost was previously the only backstop).
-    const counter = this.#handle.deps.spawnCounter;
-    if (counter && counter.used >= this.#handle.deps.config.subagent.maxTotal) return null;
-    if (counter) counter.used++;
-
+    // model fan out forever (cost was previously the only backstop). Read-only
+    // (plan-mode) children — reviewers, scouts — are EXEMPT from the ceiling:
+    // they don't mutate the workspace or incur heavy cost, and counting them
+    // would let a verify chain's reviewer starve the parent's subsequent
+    // executing tasks (the audit item #15 scenario).
     const childMode: Mode = this.#parentPlanning()
       ? "plan"
       : (requestedMode ?? named?.mode ?? "execute");
+    const counter = this.#handle.deps.spawnCounter;
+    if (counter && childMode !== "plan" && counter.used >= this.#handle.deps.config.subagent.maxTotal)
+      return null;
+    if (counter && childMode !== "plan") counter.used++;
     // Kickoff context injected into every child: the named agent's own system
     // block, plus the repo symbol map (engine-built, mtime-cached) so a fresh
     // child orients on the codebase's structure without re-deriving it — the
@@ -1887,6 +1949,26 @@ export class OrchestratorRunner {
       sessionId: this.#handle.id,
       subagentId: id,
       result,
+    });
+  }
+
+  /**
+   * Select N ensemble strategies, sorted by per-session win-rate (descending).
+   * Strategies with no history keep their original order. When all strategies
+   * have equal win-rate (or no history), the original order is preserved.
+   * This biases toward strategies that have won in prior ensembles on this
+   * session's repo, so a repo where "test-first" consistently wins gets it
+   * assigned to the first (and thus always-run) attempt.
+   */
+  #selectStrategies(n: number): { name: string; directive: string }[] {
+    const all = ENSEMBLE_STRATEGIES.slice(0, n);
+    if (this.#strategyStats.size === 0) return all;
+    return all.sort((a, b) => {
+      const sa = this.#strategyStats.get(a.name);
+      const sb = this.#strategyStats.get(b.name);
+      const ra = sa ? sa.wins / Math.max(1, sa.runs) : 0;
+      const rb = sb ? sb.wins / Math.max(1, sb.runs) : 0;
+      return rb - ra; // higher win-rate first
     });
   }
 
@@ -2100,17 +2182,22 @@ export class OrchestratorRunner {
     try {
       // Bound concurrent fan-out: at most `subagent.maxParallel` children run at
       // once; extras queue. Parallel calls in one step share this gate.
-      await this.#childGate(() =>
-        // When the parent AWAITS this child it makes NO provider call, so hand its
-        // tree-global limiter slot back for the child's span: a child inherits the
-        // same limiter (fork), and without releasing here the parent's held slot +
-        // the child's queued acquire is a hold-and-wait that deadlocks a deep or
-        // recursive fan-out once the wall-clock escape above is disabled
-        // (`subagent.timeoutMs:0`). Ref-counted in the Session, so N parallel
-        // children release/re-acquire the one slot exactly once. A DETACHED child
-        // is NOT awaited by a slot-holding parent, so it must NOT suspend — it
-        // takes its own slot via child.run's own limiter guard.
-        suspendParentSlot ? this.#handle.suspendLimiterSlot(invoke) : invoke(),
+      await this.#childGate(
+        () =>
+          // When the parent AWAITS this child it makes NO provider call, so hand its
+          // tree-global limiter slot back for the child's span: a child inherits the
+          // same limiter (fork), and without releasing here the parent's held slot +
+          // the child's queued acquire is a hold-and-wait that deadlocks a deep or
+          // recursive fan-out once the wall-clock escape above is disabled
+          // (`subagent.timeoutMs:0`). Ref-counted in the Session, so N parallel
+          // children release/re-acquire the one slot exactly once. A DETACHED child
+          // is NOT awaited by a slot-holding parent, so it must NOT suspend — it
+          // takes its own slot via child.run's own limiter guard.
+          suspendParentSlot ? this.#handle.suspendLimiterSlot(invoke) : invoke(),
+        // Thread the parent's abort signal so a queued child (waiting for a fan-out
+        // slot) is rejected immediately on Esc/abort, not stranded behind the
+        // in-flight child that the abort already cancelled.
+        parentSignal ?? undefined,
       );
     } finally {
       parentSignal?.removeEventListener("abort", onAbort);

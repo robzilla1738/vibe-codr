@@ -2278,6 +2278,50 @@ export class Engine implements EngineClient {
     return this.#drainPromise;
   }
 
+  /**
+   * Run a queued item under the configurable wall-clock ceiling
+   * (`config.itemTimeoutMs`). When the ceiling fires, the in-flight session
+   * turn is aborted (Esc-equivalent) so the item rejects and the drain moves on
+   * to the next queued work — a single hung item (a stalled provider stream the
+   * interactive idle-watchdog doesn't cover, a wedged MCP call that ignores its
+   * AbortSignal, a pre-stream hang in model resolution) can never strand every
+   * later prompt behind it. 0 disables (the default for interactive sessions
+   * that rely on Esc). The timeout does NOT cancel the item's promise — it
+   * aborts the session, which makes the stream reject and the turn resolve as
+   * interrupted; the drain loop catches the timeout rejection and proceeds.
+   */
+  async #runItemBounded(item: {
+    id: string;
+    label: string;
+    run: () => Promise<unknown>;
+  }): Promise<void> {
+    const ceiling = this.#config.itemTimeoutMs;
+    if (!ceiling) {
+      await item.run();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        // Abort the in-flight session turn (Esc-equivalent) so the stream
+        // rejects and item.run() resolves as interrupted. The rejection wins
+        // the race so the drain loop logs + moves on immediately.
+        (this.#loopSession ?? this.#session).abort();
+        const secs = Math.round(ceiling / 1000);
+        reject(
+          new Error(
+            `Item "${item.label}" exceeded the ${secs}s wall-clock ceiling (config.itemTimeoutMs) — aborted.`,
+          ),
+        );
+      }, ceiling);
+    });
+    try {
+      await Promise.race([item.run(), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   async #runDrain(): Promise<void> {
     // Everything after this point runs inside try/finally: a throw from
     // #emitQueue, the idle-continue frame, or any non-item path must NOT leave
@@ -2296,7 +2340,7 @@ export class Engine implements EngineClient {
             this.#active = { id: item.id, label: item.label };
             this.#emitQueue();
             try {
-              await item.run();
+              await this.#runItemBounded(item);
             } catch (err) {
               this.#log.error("turn failed", err);
               this.#bus.emit({
@@ -2359,6 +2403,12 @@ export class Engine implements EngineClient {
    * budget is spent, warn and settle regardless — a buggy always-continue hook
    * can never wedge the terminal engine-idle signal. A throwing hook is isolated
    * by the HookBus (no continue field) → returns false → idle settles.
+   *
+   * IDEMPOTENCY: this method may be called MULTIPLE times within one logical idle
+   * window. If the hook enqueues a continuation turn AND a user prompt arrives
+   * during the hook's async await, the drain loop re-fires this method after
+   * draining the new work. Hooks MUST be idempotent (safe to call multiple times
+   * for one logical idle) — see the HookSchema docstring for the full contract.
    */
   async #maybeContinueOnIdle(): Promise<boolean> {
     if (this.#shutdownRequested) return false;

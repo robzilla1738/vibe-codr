@@ -17,3 +17,5 @@ coverage/
 .vibe/memory/index.sqlite
 .vibe/memory/index.sqlite-*
 .supergoal/
+.vibe/config.json
+.vibe/ledger/

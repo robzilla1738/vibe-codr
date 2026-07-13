@@ -208,8 +208,14 @@ export function createSerialLock(): <T>(fn: () => Promise<T>) => Promise<T> {
  * most `n` running concurrently. Used to bound how many subagents one agent
  * fans out at a time. Per-parent (not tree-global) on purpose — a global
  * semaphore deadlocks when a parent holding a slot awaits a child needing one.
+ *
+ * Abort-aware: when `signal` aborts while a call is still QUEUED (waiting for a
+ * slot), the waiter is removed from the queue and rejects with an AbortError —
+ * so a parent abort (Esc) immediately cancels queued children, not just the
+ * in-flight one. An already-aborted signal rejects immediately without taking
+ * a slot.
  */
-export function createSemaphore(n: number): <T>(fn: () => Promise<T>) => Promise<T> {
+export function createSemaphore(n: number): <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T> {
   const limit = Math.max(1, Math.floor(n));
   let active = 0;
   const queue: Array<() => void> = [];
@@ -217,7 +223,13 @@ export function createSemaphore(n: number): <T>(fn: () => Promise<T>) => Promise
     active--;
     queue.shift()?.();
   };
-  return <T>(fn: () => Promise<T>): Promise<T> => {
+  const abortError = (): Error => {
+    const e = new Error("The operation was aborted.");
+    e.name = "AbortError";
+    return e;
+  };
+  return <T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (signal?.aborted) return Promise.reject(abortError());
     const start = async (): Promise<T> => {
       active++;
       try {
@@ -228,7 +240,17 @@ export function createSemaphore(n: number): <T>(fn: () => Promise<T>) => Promise
     };
     if (active < limit) return start();
     return new Promise<T>((resolve, reject) => {
-      queue.push(() => start().then(resolve, reject));
+      const waiter = (): void => {
+        if (signal) signal.removeEventListener("abort", onAbort);
+        start().then(resolve, reject);
+      };
+      const onAbort = (): void => {
+        const i = queue.indexOf(waiter);
+        if (i !== -1) queue.splice(i, 1);
+        reject(abortError());
+      };
+      queue.push(waiter);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
     });
   };
 }
@@ -372,10 +394,22 @@ export function toAISDKTool(
     // egress was ungovernable. Network reads keep their frictionless default
     // (fallback allow — no prompt), but configured rules now apply.
     if ((!def.readOnly || def.network) && base.checkPermission) {
+      // dangerouslyUnsandboxed (bash) must ALWAYS require an explicit permission
+      // rule, even in YOLO (auto-approve) mode. Without this, the frictionless
+      // default auto-allows it — a prompt-injected page could exfiltrate via
+      // `bash {command:"curl ...", dangerouslyUnsandboxed:true}` in YOLO. The
+      // scope prefix "!unsandboxed " lets a user pre-authorize it deliberately.
+      const isUnsandboxed =
+        effectiveInput && typeof effectiveInput === "object" && "dangerouslyUnsandboxed" in effectiveInput &&
+        (effectiveInput as { dangerouslyUnsandboxed?: boolean }).dangerouslyUnsandboxed === true;
       const decision = await base.checkPermission(
         def.name,
         effectiveInput,
-        def.readOnly && def.network ? { fallback: "allow" } : {},
+        def.readOnly && def.network
+          ? { fallback: "allow" }
+          : isUnsandboxed
+            ? { fallback: "deny" }
+            : {},
       );
       if (!decision.allowed) {
         const reason = decision.reason ?? "denied";

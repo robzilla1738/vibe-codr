@@ -187,9 +187,62 @@ export async function runDag(
   const anyDepNotCompleted = (s: TaskSpec): boolean =>
     s.deps.some((d) => results.get(d)?.outcome !== "completed");
 
+  // Critical-path priority: compute the longest dependency chain length for each
+  // task so the dispatch loop sends critical-path tasks first. When the downstream
+  // semaphore (per-session child gate) bounds concurrency, the dispatch order
+  // determines the queue order — so a critical-path task dispatched first gets
+  // admitted before a short off-path task, minimizing the overall makespan.
+  const criticalPathLength = new Map<string, number>();
+  const computeCPL = (id: string): number => {
+    if (criticalPathLength.has(id)) return criticalPathLength.get(id)!;
+    const spec = byId.get(id);
+    if (!spec || !spec.deps.length) {
+      criticalPathLength.set(id, 1);
+      return 1;
+    }
+    const maxDep = Math.max(...spec.deps.map(computeCPL));
+    const cpl = maxDep + 1;
+    criticalPathLength.set(id, cpl);
+    return cpl;
+  };
+  for (const s of specs) computeCPL(s.id);
+
+  // Pre-dispatch file-overlap check: if two tasks that will run in parallel
+  // (no dependency between them) declare overlapping files, emit an advisory
+  // warning via the onStatus callback. The per-file write lock still rejects
+  // concurrent writes at runtime (FileOwnedError), but warning at plan time
+  // gives the model a chance to split the work differently before a mid-flight
+  // collision wastes a turn. Called once before the dispatch loop starts.
+  const warnFileOverlaps = (): void => {
+    for (let i = 0; i < specs.length; i++) {
+      for (let j = i + 1; j < specs.length; j++) {
+        const a = specs[i]!;
+        const b = specs[j]!;
+        if (!a.files?.length || !b.files?.length) continue;
+        // Skip if there's a dependency between them (sequential = safe).
+        if (a.deps.includes(b.id) || b.deps.includes(a.id)) continue;
+        const overlap = a.files.filter((f) => b.files!.includes(f));
+        if (overlap.length) {
+          events.onStatus?.(a, "running", {
+            id: a.id,
+            objective: a.objective,
+            outcome: "failed",
+            output: `Warning: tasks "${a.id}" and "${b.id}" both declare files ${overlap.join(", ")} but have no dependency between them — concurrent writes will collide. Add a dep or split the file sets.`,
+            attempts: 0,
+          });
+        }
+      }
+    }
+  };
+  warnFileOverlaps();
+
   while (results.size < specs.length) {
-    // Dispatch every ready, not-yet-started task.
-    for (const s of specs) {
+    // Dispatch ready tasks sorted by critical-path length (descending) so the
+    // longest chain gets priority when the downstream semaphore queues.
+    const ready = specs
+      .filter((s) => !started.has(s.id) && depsAllDone(s))
+      .sort((a, b) => (criticalPathLength.get(b.id) ?? 0) - (criticalPathLength.get(a.id) ?? 0));
+    for (const s of ready) {
       if (started.has(s.id) || !depsAllDone(s)) continue;
       started.add(s.id);
       if (anyDepNotCompleted(s)) {

@@ -67,7 +67,21 @@ export class MemoryService {
     // wipe and force a full re-embed.
     let sources: MemoryDoc[];
     try {
-      sources = await gatherMemoryDocs(this.#cwd);
+      const gathered = await gatherMemoryDocs(this.#cwd);
+      sources = gathered.docs;
+      // Preserve vectors for files that failed to read (don't let the index
+      // reconciler prune them). Add their source names to the corpus as "keep"
+      // markers so pruneSourcesExcept doesn't drop them — their chunks stay
+      // indexed and searchable even though their source file is temporarily
+      // unreadable. The next successful read will reconcile them normally.
+      if (gathered.failedSources.length && this.#semantic) {
+        // Mark failed sources as "kept" by adding empty docs — the index reconciler
+        // will see them as existing sources and preserve their vectors without
+        // re-embedding (no new chunks to add from an empty doc).
+        for (const src of gathered.failedSources) {
+          sources.push({ source: src, text: "" });
+        }
+      }
     } catch {
       return searchMemory({
         cwd: this.#cwd,

@@ -591,3 +591,29 @@ test("toolsDisabled hard-refuses every tool after terminal present_plan", async 
   expect(ran).toBe(false);
   expect(String(out)).toMatch(/ERROR:.*plan already presented|disabled this turn/i);
 });
+
+test("createSemaphore: a queued call whose signal aborts rejects immediately", async () => {
+  const sem = createSemaphore(1);
+  let release!: () => void;
+  const barrier = new Promise<void>((r) => { release = r; });
+  // First call takes the only slot.
+  const first = sem(async () => { await barrier; });
+  // Second call queues (slot is taken). Give it an abort signal.
+  const ctrl = new AbortController();
+  const second = sem(async () => {}, ctrl.signal);
+  // Wait a tick so the second call is queued.
+  await new Promise((r) => setTimeout(r, 10));
+  // Abort the queued call — it should reject with an AbortError, not wait.
+  ctrl.abort();
+  await expect(second).rejects.toThrow("aborted");
+  // The first call still holds the slot — release it.
+  release();
+  await first;
+});
+
+test("createSemaphore: an already-aborted signal rejects without taking a slot", async () => {
+  const sem = createSemaphore(2);
+  const ctrl = new AbortController();
+  ctrl.abort();
+  await expect(sem(async () => "ok", ctrl.signal)).rejects.toThrow("aborted");
+});

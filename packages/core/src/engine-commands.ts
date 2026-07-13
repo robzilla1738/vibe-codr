@@ -629,6 +629,26 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "doctor":
       await handleDoctor(h);
       break;
+    case "sandbox": {
+      // Show the resolved OS-sandbox policy so a security-conscious user can audit
+      // what the kernel backstop actually permits (backend, mode, network, writable
+      // roots). The generated Seatbelt/bwrap profile is built at spawn time in
+      // wrapCommand; the policy fields here are its inputs.
+      const p = h.sandbox;
+      if (p.mode === "off") {
+        h.notice("Sandbox: off (opt-in — set sandbox.mode to workspace-write or read-only).");
+        break;
+      }
+      if (!p.available) {
+        h.notice(`Sandbox: unavailable — ${p.warning ?? "unknown reason"}`);
+        break;
+      }
+      h.notice(
+        `Sandbox: ${p.backend} · mode:${p.mode} · network:${p.network}\n` +
+          `Writable roots:\n${p.writablePaths.map((r) => `  ${r}`).join("\n")}`,
+      );
+      break;
+    }
     case "exit":
     case "quit":
       h.notice("Press Ctrl-C (or Ctrl-D) to exit.");

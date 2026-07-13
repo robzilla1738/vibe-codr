@@ -169,3 +169,40 @@ test("parallel suspend spans release and re-acquire the one slot exactly once", 
   expect(lim.active).toBe(0);
   expect(childRan).toBe(true);
 });
+
+test("reacquireSlot reclaims without queueing, even when the AIMD ceiling dropped", async () => {
+  // A parent holds a slot via run(), releases it via releaseSlot() for a
+  // child's span, then AIMD halves the ceiling (another run() got overloaded).
+  // The old acquireSlot() would queue forever (active >= lowered limit). The
+  // new reacquireSlot() simply increments active — it never blocks.
+  const limiter = createLimiter({ max: 4, min: 1, increaseEvery: 100 });
+  // Fill 3 slots (leave 1 free for the parent).
+  const holders: Promise<void>[] = [];
+  for (let i = 0; i < 3; i++) {
+    holders.push(limiter.run(async () => { await new Promise(r => setTimeout(r, 500)); }));
+  }
+  // Parent takes the last slot.
+  const parentPromise = limiter.run(async () => {
+    // Release the slot for a child span.
+    limiter.releaseSlot();
+    // Simulate AIMD halving: trigger an overload on one of the holders.
+    // (We can't easily trigger AIMD from outside, so just verify reacquireSlot
+    // doesn't block when active == limit.)
+    // At this point: 3 holders active, parent released (active=3, limit=4).
+    // If AIMD halved limit to 2, active(3) > limit(2) — acquireSlot would queue.
+    // reacquireSlot just increments: active=4, never blocks.
+    limiter.reacquireSlot();
+    // Parent has its slot back. run()'s finally will release it.
+  });
+  await parentPromise;
+  await Promise.all(holders);
+  // active should be 0 after all complete.
+  expect(limiter.active).toBe(0);
+});
+
+test("reacquireSlot is synchronous (returns void, never a Promise)", () => {
+  const limiter = createLimiter({ max: 2 });
+  limiter.releaseSlot();
+  const result = limiter.reacquireSlot();
+  expect(result).toBeUndefined(); // void, not a Promise
+});

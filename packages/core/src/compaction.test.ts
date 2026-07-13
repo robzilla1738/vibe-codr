@@ -336,3 +336,43 @@ test("emergency keep=1 folds the kept user into a NEW object (BUG-087 sameRef br
     typeof folded.content === "string" && folded.content.includes("prior turns summarized"),
   ).toBe(true);
 });
+
+test("compaction includes a compact tool-call index in the summary note", async () => {
+  const messages: ModelMessage[] = [
+    { role: "user", content: "read the config and fix the bug" },
+    { role: "assistant", content: [
+      { type: "tool-call", toolCallId: "c1", toolName: "read", input: { path: "src/config.ts" } },
+    ] },
+    { role: "tool", content: [
+      { type: "tool-result", toolCallId: "c1", toolName: "read", output: { type: "text", value: "line 1: import { z } from zod\nline 2: ..." } },
+    ] },
+    { role: "assistant", content: "I see the bug. Let me fix it." },
+    { role: "assistant", content: [
+      { type: "tool-call", toolCallId: "c2", toolName: "edit", input: { path: "src/config.ts" } },
+    ] },
+    { role: "tool", content: [
+      { type: "tool-result", toolCallId: "c2", toolName: "edit", output: { type: "text", value: "+fixed" } },
+    ] },
+    { role: "assistant", content: "Done." },
+    // These 6 recent messages are kept; the older ones are summarized.
+    { role: "user", content: "now run the tests" },
+    { role: "assistant", content: "Running tests..." },
+  ];
+  const result = await compactMessages(messages, {
+    contextWindow: 100,
+    threshold: 0.5,
+    keep: 2,
+    force: true,
+    currentTokens: 999,
+    summarize: async () => "Fixed the config bug.",
+  });
+  expect(result).not.toBeNull();
+  if (!result) return;
+  // The summary note should include the TOOL CALLS section with the tool calls.
+  const note = result.messages[0];
+  expect(note?.role).toBe("user");
+  const noteText = typeof note?.content === "string" ? note.content : "";
+  expect(noteText).toContain("TOOL CALLS");
+  expect(noteText).toContain("read src/config.ts");
+  expect(noteText).toContain("edit src/config.ts");
+});

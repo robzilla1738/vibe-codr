@@ -10,6 +10,22 @@ test("parseMentions extracts @tokens and trims trailing punctuation", () => {
   expect(parseMentions("@only")).toEqual(["only"]);
 });
 
+test("parseMentions preserves Finder paths with spaces", () => {
+  expect(parseMentions('inspect @"Screenshot 2026-07-12 at 3.18.40 PM.png" please')).toEqual([
+    "Screenshot 2026-07-12 at 3.18.40 PM.png",
+  ]);
+  expect(parseMentions("inspect @Screenshot\\ 2026.png please")).toEqual(["Screenshot 2026.png"]);
+});
+
+test("quoted image mentions still become multimodal attachments", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-quoted-"));
+  const name = "Screenshot 2026-07-12 at 3.18.40 PM.png";
+  await Bun.write(join(cwd, name), new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+  const r = await expandMentions(`describe @"${name}"`, cwd);
+  expect(r.images).toHaveLength(1);
+  expect(r.images[0]?.path).toBe(name);
+});
+
 test("expandMentions injects text-file contents as a fenced block", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-mention-"));
   await Bun.write(join(cwd, "note.txt"), "hello from file");
@@ -155,4 +171,3 @@ test("Unicode-space fallback: macOS screenshot with U+202F before PM is found vi
   expect(r.images[0]?.data.length).toBeGreaterThan(0);
   expect(r.notices.some((n) => /Attached 1 image/i.test(n))).toBe(true);
 });
-

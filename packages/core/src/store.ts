@@ -1,4 +1,4 @@
-import { mkdir, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import type { Message, Mode, Task } from "@vibe/shared";
@@ -43,6 +43,12 @@ export interface SessionMeta {
    * resumed session's existing citations still resolve and new sources continue
    * the numbering instead of restarting from [1]. */
   sources?: SourceEntry[];
+  /** Mid-turn microcompaction offload records at the last save, so a resumed
+   * session knows which tool results are already offloaded to artifacts (their
+   * previews are in the persisted messages). Without this, resume rebuilds the
+   * offload map empty and prepareStep can't tell which results were already
+   * trimmed — the artifact-prune budget also loses track of live files. */
+  offloaded?: { callId: string; path: string; toolName: string; fullChars: number }[];
   createdAt: number;
   updatedAt: number;
   /** Optional user-set display title; overrides derived history/goal labels. */
@@ -114,6 +120,72 @@ export class SessionStore {
   #dir(id: string): string {
     if (!isSafeSessionId(id)) throw new Error("invalid session id");
     return join(this.#base, id);
+  }
+
+  /** The lease file path for a session (a PID-based advisory lock so two
+   * terminals resuming the same session get a clear warning instead of silent
+   * last-writer-wins data loss). Lives inside the session directory so it's
+   * cleaned up with the session and never leaks outside it. */
+  #leasePath(id: string): string {
+    return join(this.#dir(id), ".lease");
+  }
+
+  /** Check whether a process with the given PID is still alive (POSIX signal-0
+   * liveness probe). EPERM means the process exists but we can't signal it —
+   * alive. ESRCH means dead. */
+  static #isPidAlive(pid: number): boolean {
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as { code?: string }).code === "EPERM";
+    }
+  }
+
+  /** Acquire a PID-based lease on a session so two `--continue` terminals on
+   * the same session are detected, not silently racing. Returns `{ ok: true }`
+   * when the lease was acquired (no prior holder, or the prior holder's process
+   * is dead), or `{ ok: false, holderPid }` when a live process already holds it.
+   * The caller should warn the user and proceed (the lease is advisory, not
+   * blocking — a second terminal CAN still run, it just knows it's racing).
+   * Call {@link releaseLease} on graceful exit so the next `--continue` is
+   * instant instead of waiting for PID-probe + stale-time. */
+  async acquireLease(id: string): Promise<{ ok: true } | { ok: false; holderPid: number }> {
+    if (!isSafeSessionId(id)) return { ok: true };
+    const leasePath = this.#leasePath(id);
+    await mkdir(this.#dir(id), { recursive: true });
+    try {
+      // Try to create the lease exclusively (O_CREAT|O_EXCL). If it succeeds,
+      // we're the first holder — write our PID and return.
+      const existing = await readFile(leasePath, "utf8").catch(() => null);
+      if (existing) {
+        const pidStr = existing.trim().split("\n")[0];
+        const holderPid = pidStr ? Number(pidStr) : NaN;
+        if (Number.isFinite(holderPid) && holderPid > 0 && SessionStore.#isPidAlive(holderPid)) {
+          // A live process holds the lease — warn the caller.
+          return { ok: false, holderPid };
+        }
+        // The holder is dead (or the PID is invalid) — steal the lease.
+      }
+      // Write our PID + timestamp, atomically (best-effort).
+      await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, "utf8");
+      return { ok: true };
+    } catch {
+      // A FS error acquiring the lease is non-fatal — proceed without it.
+      return { ok: true };
+    }
+  }
+
+  /** Release the session lease (best-effort — a crash leaves a stale lease
+   * that the next `acquireLease` detects via PID-probe and steals). */
+  async releaseLease(id: string): Promise<void> {
+    if (!isSafeSessionId(id)) return;
+    try {
+      await rm(this.#leasePath(id), { force: true });
+    } catch {
+      /* best-effort */
+    }
   }
 
   async save(meta: SessionMeta, modelMessages: ModelMessage[], history: Message[]): Promise<void> {

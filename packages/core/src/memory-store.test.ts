@@ -54,7 +54,7 @@ test("each saved fact becomes its own chunk (no day-blob dilution)", async () =>
 test("gatherMemoryDocs reads saved project memory as indexable docs", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mstore2-"));
   await appendMemory(dir, { fact: "uses turborepo and bun" }, new Date("2026-01-01T00:00:00Z"));
-  const docs = await gatherMemoryDocs(dir);
+  const { docs } = await gatherMemoryDocs(dir);
   expect(docs.length).toBeGreaterThan(0);
   expect(docs[0]!.source).toContain(".vibe/memory");
   expect(docs[0]!.text).toContain("turborepo");
@@ -62,7 +62,8 @@ test("gatherMemoryDocs reads saved project memory as indexable docs", async () =
 
 test("gatherMemoryDocs returns [] for a project with no saved memory", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mstore3-"));
-  expect(await gatherMemoryDocs(dir)).toEqual([]);
+  const { docs: empty } = await gatherMemoryDocs(dir);
+  expect(empty).toEqual([]);
 });
 
 test("always-injected curated files (USER/VIBE/AGENTS/CLAUDE.md) are excluded from the recall corpus", async () => {
@@ -73,7 +74,7 @@ test("always-injected curated files (USER/VIBE/AGENTS/CLAUDE.md) are excluded fr
   // already permanently in the system prompt — double-embedding wastes the budget).
   await writeFile(join(memDir, "USER.md"), "# user preferences\nalways-injected curated notes");
   await writeFile(join(memDir, "2026-01-01.md"), "# fact\nan actual saved fact about turborepo");
-  const docs = await gatherMemoryDocs(dir);
+  const { docs } = await gatherMemoryDocs(dir);
   const sources = docs.map((d) => d.source);
   expect(sources.some((s) => s.endsWith("USER.md"))).toBe(false);
   expect(sources.some((s) => s.endsWith("2026-01-01.md"))).toBe(true);

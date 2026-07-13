@@ -328,6 +328,44 @@ test("checkpoint metadata save clears a stale cross-process lock", async () => {
   expect(existsSync(join(state, "checkpoints.json.lock"))).toBe(false);
 });
 
+
+test("checkpoint metadata save steals a dead-process lock immediately via PID liveness check", async () => {
+  const dir = await initRepo();
+  const { globalStateDir } = await import("./state-dir.ts");
+  const { writeFileSync } = await import("node:fs");
+  const state = globalStateDir(dir);
+  const lockDir = join(state, "checkpoints.json.lock");
+  mkdirSync(lockDir, { recursive: true });
+  // Write an owner file with a PID that is almost certainly dead (max PID + 1
+  // on any real system). The PID-based liveness check must steal this lock
+  // immediately, without waiting for the 60s stale timeout.
+  writeFileSync(join(lockDir, "owner"), "999999\n" + Date.now() + "\n", "utf8");
+
+  const cp = new CheckpointManager(dir);
+  const snap = await cp.snapshot("after-dead-pid-lock");
+  expect(snap).not.toBeNull();
+  expect(existsSync(lockDir)).toBe(false);
+});
+
+test("checkpoint metadata save waits for a live-process lock (PID is alive)", async () => {
+  const dir = await initRepo();
+  const { globalStateDir } = await import("./state-dir.ts");
+  const { writeFileSync, rmSync } = await import("node:fs");
+  const state = globalStateDir(dir);
+  const lockDir = join(state, "checkpoints.json.lock");
+  mkdirSync(lockDir, { recursive: true });
+  // Write an owner file with OUR OWN PID — the liveness check will see it as
+  // alive, so the lock must NOT be stolen. The snapshot should wait, then
+  // eventually succeed once we clean up the lock ourselves (simulating the
+  // owner releasing). We pre-clean the lock in a setTimeout to avoid a hang.
+  writeFileSync(join(lockDir, "owner"), process.pid + "\n" + Date.now() + "\n", "utf8");
+  setTimeout(() => rmSync(lockDir, { recursive: true, force: true }), 100);
+
+  const cp = new CheckpointManager(dir);
+  const snap = await cp.snapshot("after-live-pid-lock");
+  expect(snap).not.toBeNull();
+  expect(existsSync(lockDir)).toBe(false);
+});
 test("/undo restores THIS session's checkpoint, never a concurrent session's (no #list pollution)", async () => {
   // The merge fold is disk-only: it must NOT leak another session's entries into
   // this session's in-memory list, or undo would revert to the OTHER session's

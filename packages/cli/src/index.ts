@@ -231,7 +231,11 @@ export async function run(argv: string[]): Promise<number> {
   }
 
   // Resume a persisted session with --continue (latest) or --resume <id>.
+  // Acquire a PID-based lease so two --continue terminals on the same session
+  // get a clear warning instead of silently racing (last-writer-wins data loss).
   let resume: PersistedSession | undefined;
+  let leaseStore: SessionStore | undefined;
+  let leaseId: string | undefined;
   if (values.continue || values.resume) {
     const store = new SessionStore(cwd);
     const id = values.resume ?? (await store.latestId());
@@ -241,6 +245,18 @@ export async function run(argv: string[]): Promise<number> {
       for (const warning of loaded.warnings ?? []) {
         process.stderr.write(`Warning: ${warning}\n`);
       }
+      // Acquire the lease BEFORE proceeding — a live holder means another
+      // terminal is running this session. Warn and proceed (advisory, not
+      // blocking — the user may intend to take over).
+      const lease = await store.acquireLease(loaded.meta.id);
+      if (!lease.ok) {
+        process.stderr.write(
+          `Warning: session ${loaded.meta.id} may be active in another process (PID ${lease.holderPid}).\n` +
+            "Two terminals on the same session can lose work — proceed with caution.\n",
+        );
+      }
+      leaseStore = store;
+      leaseId = loaded.meta.id;
     } else process.stderr.write("No session to resume; starting fresh.\n");
   }
 
@@ -275,6 +291,7 @@ export async function run(argv: string[]): Promise<number> {
     await engine.bootstrap();
     process.stdout.write(`${formatModelList(await engine.listModels())}\n`);
     await engine.finalize();
+    if (leaseStore && leaseId) await leaseStore.releaseLease(leaseId);
     return 0;
   }
 
@@ -304,6 +321,7 @@ export async function run(argv: string[]): Promise<number> {
     });
     // Finalize (write the session digest when enabled, then tear down) before exit.
     await engine.finalize();
+    if (leaseStore && leaseId) await leaseStore.releaseLease(leaseId);
     // Propagate failure so `vibecodr -p … && next` and CI behave correctly.
     return ok ? 0 : 1;
   }
@@ -352,6 +370,7 @@ export async function run(argv: string[]): Promise<number> {
   // own teardown. Optional `?.()` because the EngineClient interface marks
   // finalize optional (tests pass a mock without it).
   await client.finalize?.();
+  if (leaseStore && leaseId) await leaseStore.releaseLease(leaseId);
   return 0;
 }
 

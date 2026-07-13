@@ -54,6 +54,16 @@ export interface Limiter {
    * none — the re-acquire must complete to keep `active` balanced.
    */
   acquireSlot(signal?: AbortSignal): Promise<void>;
+  /**
+   * Reclaim a slot previously handed back by {@link releaseSlot}, WITHOUT
+   * queueing behind the ceiling. The caller already held a slot (it was released
+   * for a child's span), so this simply increments `active` back — it never
+   * blocks, never waits, and never over-subscribes beyond the count the caller
+   * originally held. Use this in {@link Session.suspendLimiterSlot}'s finally
+   * instead of {@link acquireSlot} so an AIMD ceiling drop between release and
+   * re-acquire can't wedge the parent's turn forever in a queued acquire.
+   */
+  reacquireSlot(): void;
   /** Current concurrency ceiling. */
   readonly limit: number;
   /** Currently in-flight count. */
@@ -156,6 +166,16 @@ export function createLimiter(opts: LimiterOptions = {}): Limiter {
     },
     acquireSlot(signal?: AbortSignal): Promise<void> {
       return acquire(signal);
+    },
+    reacquireSlot(): void {
+      // Reclaim a slot we already held — increment active without queueing.
+      // The caller released it via releaseSlot() for a child's span; this just
+      // takes it back. Briefly active may exceed limit (a waiter admitted during
+      // the release window), but the caller makes no provider call during the
+      // suspension, so the over-subscription is harmless and self-corrects when
+      // run()'s finally releases.
+      active++;
+      pump();
     },
     async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
       await acquire(signal);

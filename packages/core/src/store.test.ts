@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
@@ -325,4 +325,68 @@ test("meta round-trips the recalled-context block for --resume fidelity", async 
   );
   const loaded = await store.load("ses_r");
   expect(loaded?.meta.recalledContext).toBe("- we decided to use bun everywhere");
+});
+
+test("acquireLease: a fresh session acquires the lease (ok:true)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-lease-1-"));
+  const store = new SessionStore(cwd);
+  const lease = await store.acquireLease("ses_lease1");
+  expect(lease.ok).toBe(true);
+  // Releasing cleans up the lease file.
+  await store.releaseLease("ses_lease1");
+  expect(existsSync(join(globalStateDir(cwd), "sessions", "ses_lease1", ".lease"))).toBe(false);
+});
+
+test("acquireLease: a live PID holder blocks (ok:false, holderPid returned)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-lease-2-"));
+  const store = new SessionStore(cwd);
+  const dir = join(globalStateDir(cwd), "sessions", "ses_lease2");
+  mkdirSync(dir, { recursive: true });
+  // Write a lease with OUR OWN PID — the liveness check will see it as alive.
+  writeFileSync(join(dir, ".lease"), process.pid + "\n" + Date.now() + "\n", "utf8");
+  const lease = await store.acquireLease("ses_lease2");
+  expect(lease.ok).toBe(false);
+  if (!lease.ok) expect(lease.holderPid).toBe(process.pid);
+});
+
+test("acquireLease: a dead PID holder is stolen (ok:true)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-lease-3-"));
+  const store = new SessionStore(cwd);
+  const dir = join(globalStateDir(cwd), "sessions", "ses_lease3");
+  mkdirSync(dir, { recursive: true });
+  // Write a lease with a PID that is almost certainly dead.
+  writeFileSync(join(dir, ".lease"), "999999\n" + Date.now() + "\n", "utf8");
+  const lease = await store.acquireLease("ses_lease3");
+  expect(lease.ok).toBe(true);
+});
+
+test("releaseLease: a missing lease is a no-op (no throw)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-lease-4-"));
+  const store = new SessionStore(cwd);
+  await store.releaseLease("nonexistent");
+  // No throw = pass
+});
+
+test("meta round-trips the offloaded map for --resume fidelity", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-offload-"));
+  const store = new SessionStore(cwd);
+  const offloaded = [
+    { callId: "call_1", path: "/tmp/artifact1.txt", toolName: "read", fullChars: 5000 },
+    { callId: "call_2", path: "/tmp/artifact2.txt", toolName: "grep", fullChars: 12000 },
+  ];
+  await store.save(
+    {
+      id: "ses_off",
+      model: "m/x",
+      mode: "execute",
+      goal: null,
+      offloaded,
+      createdAt: 1,
+      updatedAt: 2,
+    },
+    [],
+    [],
+  );
+  const loaded = await store.load("ses_off");
+  expect(loaded?.meta.offloaded).toEqual(offloaded);
 });

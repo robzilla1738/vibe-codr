@@ -749,10 +749,10 @@ export class Session {
    * invariant, since the parent isn't calling the provider anyway.
    *
    * Ref-counted so N parallel spawns in one step map to exactly one release +
-   * re-acquire. The re-acquire deliberately takes NO abort signal: the release/
-   * acquire pairing MUST complete or `run()`'s finally over-decrements the
-   * limiter's `active`; a pending abort still unwinds via the child's own abort and
-   * the next `streamText` step observing the signal. No-op when no limiter is wired.
+   * re-acquire. The re-acquire uses `reacquireSlot()` (a bypass-queue reclaim)
+   * rather than `acquireSlot()`: the parent already held the slot, so the reclaim
+   * simply increments `active` without queueing — an AIMD ceiling drop between
+   * release and re-acquire can't wedge the parent's turn. No-op when no limiter.
    */
   async suspendLimiterSlot<T>(fn: () => Promise<T>): Promise<T> {
     const limiter = this.#deps.limiter;
@@ -761,7 +761,13 @@ export class Session {
     try {
       return await fn();
     } finally {
-      if (--this.#limiterSuspends === 0) await limiter.acquireSlot();
+      // Reclaim the slot WITHOUT queueing: the parent already held it (it was
+      // released for the child's span), so reacquireSlot() simply increments
+      // `active` back — it never blocks, so an AIMD ceiling drop between release
+      // and re-acquire can't wedge the parent's turn in a queued acquire. The
+      // active count stays balanced: releaseSlot decremented, reacquireSlot
+      // increments, and run()'s finally releases as normal.
+      if (--this.#limiterSuspends === 0) limiter.reacquireSlot();
     }
   }
 
@@ -1885,6 +1891,16 @@ export class Session {
           ...(this.#lastInputTokens > 0 ? { lastInputTokens: this.#lastInputTokens } : {}),
           ...(this.#recalledContext ? { recalledContext: this.#recalledContext } : {}),
           ...(this.#sources.size ? { sources: [...this.#sources.list()] } : {}),
+          ...(this.#offloaded.size
+            ? {
+                offloaded: [...this.#offloaded.entries()].map(([callId, rec]) => ({
+                  callId,
+                  path: rec.path,
+                  toolName: rec.toolName,
+                  fullChars: rec.fullChars,
+                })),
+              }
+            : {}),
           createdAt: this.#createdAt,
           updatedAt: Date.now(),
         },

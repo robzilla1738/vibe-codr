@@ -4,6 +4,68 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.0 — 2026-07-13
+
+### Added — industry-leading concurrency, safety, and context improvements
+
+17 code fixes from a thorough logic audit (`docs/AUDIT.md`), each verified with
+tests + typecheck:
+
+**Concurrency & correctness:**
+- CheckpointManager cross-process lock now uses PID-based liveness detection to
+  steal dead-process locks immediately (no 60s stale-time wait).
+- Session lease (`.lease` file) detects and warns when two terminals resume the
+  same session id (`--continue`), preventing silent last-writer-wins data loss.
+- Drain loop has a configurable `itemTimeoutMs` wall-clock ceiling (default 30min)
+  so a single hung queued item can never strand the entire FIFO queue forever.
+- Limiter `reacquireSlot()` bypasses the queue on re-acquire so an AIMD ceiling
+  drop between release and re-acquire can't wedge a parent's turn in a deadlock.
+- `createSemaphore` is now abort-aware: queued children reject immediately on
+  Esc/abort, not just the in-flight one.
+
+**Context & compaction:**
+- Mid-turn offload map now persists in `meta.json.offloaded` so `--resume`
+  reconstructs the preview/full-text split (crash-safe).
+- Compaction summary includes a compact tool-call index (one line per call,
+  capped at 40) so the model retains what it investigated after summarization.
+- `estimateTokens` now counts CJK characters at ~1 token each (vs the flat
+  4 chars/token that under-counted CJK by 4×).
+
+**Orchestration:**
+- Worktree tasks now have a bounded verify→retry loop (same `verifyMaxAttempts`
+  as shared-tree): on a red gate or failed review, the worktree resets to the
+  base ref and the child re-runs with feedback.
+- Ensemble strategy selection adapts per-session: strategies with higher win-rates
+  are assigned to earlier attempts.
+- `spawn_tasks` DAG dispatches ready tasks by critical-path length (descending)
+  for minimal makespan when `maxParallel < ready`.
+- Pre-dispatch file-overlap warning: two parallel tasks declaring overlapping
+  files get an advisory warning before a mid-flight `FileOwnedError`.
+- Plan-mode (read-only) children (reviewers, scouts) are exempt from the
+  `subagent.maxTotal` spawn ceiling so a verify chain can't starve the parent.
+
+**Tool safety:**
+- Bash destructive-command denylist: `rm -rf /`, `git push --force`, `git reset
+  --hard`, `mkfs`, `dd of=/dev/`, `shred`, and fork bombs are hard-denied even in
+  YOLO mode. A user who deliberately wants one must add an explicit allow rule.
+- `dangerouslyUnsandboxed` now ALWAYS requires an explicit permission rule (the
+  adapter passes `fallback: "deny"`), so YOLO can't auto-allow it — a
+  prompt-injected page can't exfiltrate via `bash {dangerouslyUnsandboxed:true}`.
+- `/sandbox` command shows the resolved OS-sandbox policy (backend, mode,
+  network, writable roots) for security auditing.
+
+**Memory:**
+- Memory reconcile tolerates per-file read failures (EACCES, transient IO):
+  failed files' vectors are preserved while the rest of the corpus is reconciled.
+
+**Documentation:**
+- `session.idle` hook idempotency contract documented in HookSchema.
+- `docs/AUDIT.md` — comprehensive audit of 57 improvement areas, each
+  addressed with a code fix, verification, or documented path forward.
+
+
+## 0.5.0 — 2026-07-13
+
 ## 0.4.35 — 2026-07-12
 
 ## 0.4.34 — 2026-07-12
@@ -1489,6 +1551,66 @@ keyless Ollama end-to-end) passes with zero manual fixes. Highlights:
   `packages/cli/src/version.ts` is the single source of truth;
   `scripts/release/set-version.ts` stamps the pushed tag across `version.ts` +
   every workspace `package.json` and promotes the changelog's `## Unreleased
+
+## 0.5.0 — 2026-07-13
+
+### Added — industry-leading concurrency, safety, and context improvements
+
+17 code fixes from a thorough logic audit (`docs/AUDIT.md`), each verified with
+tests + typecheck:
+
+**Concurrency & correctness:**
+- CheckpointManager cross-process lock now uses PID-based liveness detection to
+  steal dead-process locks immediately (no 60s stale-time wait).
+- Session lease (`.lease` file) detects and warns when two terminals resume the
+  same session id (`--continue`), preventing silent last-writer-wins data loss.
+- Drain loop has a configurable `itemTimeoutMs` wall-clock ceiling (default 30min)
+  so a single hung queued item can never strand the entire FIFO queue forever.
+- Limiter `reacquireSlot()` bypasses the queue on re-acquire so an AIMD ceiling
+  drop between release and re-acquire can't wedge a parent's turn in a deadlock.
+- `createSemaphore` is now abort-aware: queued children reject immediately on
+  Esc/abort, not just the in-flight one.
+
+**Context & compaction:**
+- Mid-turn offload map now persists in `meta.json.offloaded` so `--resume`
+  reconstructs the preview/full-text split (crash-safe).
+- Compaction summary includes a compact tool-call index (one line per call,
+  capped at 40) so the model retains what it investigated after summarization.
+- `estimateTokens` now counts CJK characters at ~1 token each (vs the flat
+  4 chars/token that under-counted CJK by 4×).
+
+**Orchestration:**
+- Worktree tasks now have a bounded verify→retry loop (same `verifyMaxAttempts`
+  as shared-tree): on a red gate or failed review, the worktree resets to the
+  base ref and the child re-runs with feedback.
+- Ensemble strategy selection adapts per-session: strategies with higher win-rates
+  are assigned to earlier attempts.
+- `spawn_tasks` DAG dispatches ready tasks by critical-path length (descending)
+  for minimal makespan when `maxParallel < ready`.
+- Pre-dispatch file-overlap warning: two parallel tasks declaring overlapping
+  files get an advisory warning before a mid-flight `FileOwnedError`.
+- Plan-mode (read-only) children (reviewers, scouts) are exempt from the
+  `subagent.maxTotal` spawn ceiling so a verify chain can't starve the parent.
+
+**Tool safety:**
+- Bash destructive-command denylist: `rm -rf /`, `git push --force`, `git reset
+  --hard`, `mkfs`, `dd of=/dev/`, `shred`, and fork bombs are hard-denied even in
+  YOLO mode. A user who deliberately wants one must add an explicit allow rule.
+- `dangerouslyUnsandboxed` now ALWAYS requires an explicit permission rule (the
+  adapter passes `fallback: "deny"`), so YOLO can't auto-allow it — a
+  prompt-injected page can't exfiltrate via `bash {dangerouslyUnsandboxed:true}`.
+- `/sandbox` command shows the resolved OS-sandbox policy (backend, mode,
+  network, writable roots) for security auditing.
+
+**Memory:**
+- Memory reconcile tolerates per-file read failures (EACCES, transient IO):
+  failed files' vectors are preserved while the rest of the corpus is reconciled.
+
+**Documentation:**
+- `session.idle` hook idempotency contract documented in HookSchema.
+- `docs/AUDIT.md` — comprehensive audit of 57 improvement areas, each
+  addressed with a code fix, verification, or documented path forward.
+
 
 ### Fixed — full-codebase audit hardening
 

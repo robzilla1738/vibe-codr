@@ -1,4 +1,4 @@
-import { mkdir, rm, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, rename, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createId, type GateSummary } from "@vibe/shared";
@@ -19,10 +19,16 @@ let checkpointWriteSeq = 0;
 /** Serializes #save across CheckpointManagers sharing one checkpoints.json (two
  * sessions in ONE process, e.g. a subagent tree): both re-read + merge + rename,
  * so without a shared per-file lock they read the same stale snapshot and the
- * later rename clobbers the earlier merge. Keyed by the file path. (A separate
- * OS process is a rarer race the merge narrows but can't fully close.) */
+ * later rename clobbers the earlier merge. Keyed by the file path. Cross-process
+ * safety is handled by {@link withCheckpointFileLock}, which uses PID-based
+ * liveness detection to steal a crashed process's lock immediately. */
 const checkpointSaveLocks = new Map<string, Promise<void>>();
 
+/** Maximum age before a lock dir is considered stale (belt-and-braces fallback
+ * for when the PID-based liveness check can't run — e.g. the owner file is
+ * unreadable or the PID is 0/NaN). PID-based detection steals a dead process's
+ * lock immediately; this timer only catches the edge case where the owner file
+ * was never written or got corrupted. */
 const CHECKPOINT_LOCK_STALE_MS = 60_000;
 const CHECKPOINT_LOCK_RETRY_MS = 25;
 
@@ -30,25 +36,78 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Check whether a process with the given PID is still alive on this machine.
+ * Uses `process.kill(pid, 0)` (signal 0 = liveness probe, no actual signal sent):
+ *   - No throw → process exists and we can signal it → alive.
+ *   - EPERM   → process exists but we lack permission to signal it → alive.
+ *   - ESRCH   → no such process → dead.
+ * This is the POSIX-standard liveness check (used by systemd, apt, flock-based
+ * services). On Windows `process.kill` is not supported the same way, but this
+ * codepath is git-repo-only (macOS/Linux), so the edge case doesn't arise. */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM = the process exists but we don't have permission to signal it —
+    // it's alive (a different user's process, or elevated). ESRCH = dead.
+    return (err as { code?: string }).code === "EPERM";
+  }
+}
+
+/** Try to read the PID from the lock dir's owner file. Returns the PID, or
+ * undefined when the file is missing/corrupt/unreadable. */
+async function readLockOwnerPid(lockDir: string): Promise<number | undefined> {
+  try {
+    const content = await readFile(join(lockDir, "owner"), "utf8");
+    const pidStr = content.trim().split("\n")[0];
+    const pid = pidStr ? Number(pidStr) : NaN;
+    return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A cross-process advisory lock on `file` via an atomic `mkdir` of a sibling
+ * lock directory. The lock carries the owner's PID so a crashed process's lock
+ * is stolen immediately (PID-based liveness check) rather than waiting for the
+ * time-based stale guard. The stale guard remains as a fallback for the edge
+ * case where the owner file is unreadable. The lock is auto-released on process
+ * exit via the `finally`'s `rm`; a crash (SIGKILL/power loss) leaves the stale
+ * dir, which the next acquirer detects via PID-probe + stale-time fallback. */
 async function withCheckpointFileLock<T>(file: string, fn: () => Promise<T>): Promise<T> {
   const lockDir = `${file}.lock`;
   await mkdir(dirname(file), { recursive: true });
   for (;;) {
     try {
       await mkdir(lockDir);
-      break;
+      break; // acquired
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code !== "EEXIST") throw err;
-      try {
-        const s = await stat(lockDir);
-        if (Date.now() - s.mtimeMs > CHECKPOINT_LOCK_STALE_MS) {
-          await rm(lockDir, { recursive: true, force: true });
+      // Lock exists — check if the owner process is still alive. PID-based
+      // detection steals a dead process's lock IMMEDIATELY (no 60s wait),
+      // which is the primary fix for the cross-process race the old
+      // time-only stale guard left open.
+      const ownerPid = await readLockOwnerPid(lockDir);
+      if (ownerPid !== undefined && !isPidAlive(ownerPid)) {
+        await rm(lockDir, { recursive: true, force: true });
+        continue; // re-attempt mkdir
+      }
+      // Belt-and-braces: if the owner file was unreadable (corrupt, never
+      // written, or the PID is 0/NaN), fall back to the time-based stale guard.
+      if (ownerPid === undefined) {
+        try {
+          const s = await stat(lockDir);
+          if (Date.now() - s.mtimeMs > CHECKPOINT_LOCK_STALE_MS) {
+            await rm(lockDir, { recursive: true, force: true });
+            continue;
+          }
+        } catch {
+          // It disappeared between mkdir/stat; retry acquisition.
           continue;
         }
-      } catch {
-        // It disappeared between mkdir/stat; retry acquisition.
-        continue;
       }
       await sleep(CHECKPOINT_LOCK_RETRY_MS);
     }

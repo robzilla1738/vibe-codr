@@ -62,7 +62,10 @@ const ALWAYS_INJECTED = new Set(["USER.md", "VIBE.md", "AGENTS.md", "CLAUDE.md"]
 
 /** Read every saved-fact `*.md` in `dir` as a MemoryDoc (skipping the sqlite
  * index and the always-injected curated files). */
-async function readMarkdownDocs(dir: string, label: string): Promise<MemoryDoc[]> {
+async function readMarkdownDocs(
+  dir: string,
+  label: string,
+): Promise<{ docs: MemoryDoc[]; failedSources: string[] }> {
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -71,26 +74,42 @@ async function readMarkdownDocs(dir: string, label: string): Promise<MemoryDoc[]
     // (permission, transient FS fault) must PROPAGATE: returning [] here would tell
     // the index reconciler "this scope has no docs" and it would prune every vector
     // for the scope, forcing a full re-embed once the read recovers.
-    if ((err as { code?: string })?.code === "ENOENT") return [];
+    if ((err as { code?: string })?.code === "ENOENT") return { docs: [], failedSources: [] };
     throw err;
   }
   const docs: MemoryDoc[] = [];
+  const failedSources: string[] = [];
   for (const name of entries.sort()) {
     if (!name.endsWith(".md")) continue;
     if (ALWAYS_INJECTED.has(name)) continue;
-    const text = await Bun.file(join(dir, name)).text();
-    if (text.trim()) docs.push({ source: `${label}/${name}`, text });
+    const source = `${label}/${name}`;
+    try {
+      const text = await Bun.file(join(dir, name)).text();
+      if (text.trim()) docs.push({ source, text });
+    } catch {
+      // A per-file read failure (EACCES, transient IO) must NOT propagate and
+      // force the whole gather to fail (which would skip index reconciliation
+      // entirely). Instead, skip the file and report it as failed so the caller
+      // can preserve its existing vectors (not prune them) while still
+      // reconciling the rest of the corpus.
+      failedSources.push(source);
+    }
   }
-  return docs;
+  return { docs, failedSources };
 }
 
 /** Gather the full searchable memory corpus (project + global saved facts). */
-export async function gatherMemoryDocs(cwd: string): Promise<MemoryDoc[]> {
+export async function gatherMemoryDocs(
+  cwd: string,
+): Promise<{ docs: MemoryDoc[]; failedSources: string[] }> {
   const [project, global] = await Promise.all([
     readMarkdownDocs(projectMemoryDir(cwd), ".vibe/memory"),
     readMarkdownDocs(globalMemoryDir(), "global-memory"),
   ]);
-  return [...project, ...global];
+  return {
+    docs: [...project.docs, ...global.docs],
+    failedSources: [...project.failedSources, ...global.failedSources],
+  };
 }
 
 /**

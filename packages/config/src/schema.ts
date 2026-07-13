@@ -98,6 +98,12 @@ export const WebfetchConfigSchema = z.object({
  *   - session.idle        — `{continue:true}` (+optional `{reason}`) injects one more turn built from
  *                           `reason` instead of settling idle (Stop-equivalent). Bounded per user
  *                           prompt by the engine, so a runaway hook cannot loop forever.
+ *                           IDEMPOTENCY CONTRACT: `session.idle` may fire MULTIPLE times within
+ *                           one logical idle window — if the hook enqueues a continuation turn
+ *                           AND a user prompt arrives during the hook's async await, the drain
+ *                           loop re-fires `session.idle` after draining the new work. Hooks MUST
+ *                           be idempotent (safe to call multiple times for one logical idle). A
+ *                           hook that e.g. sends a notification should guard against duplicates.
  *   - session.start / step.finish / assistant.message / session.end — observe-only (response ignored). */
 export const HookSchema = z
   .object({
@@ -314,6 +320,15 @@ export const ConfigSchema = z.object({
    * `subagent.timeoutMs` (a sync subagent legitimately silences the parent
    * stream). 0 disables. */
   streamIdleTimeoutMs: z.number().int().min(0).default(600_000),
+  /** Ultimate safety net on the FIFO drain loop: if a queued item (a prompt
+   * turn, a gate-fix, a goal round, an idle-continue) hasn't settled within
+   * this many ms, the engine aborts the in-flight session turn, logs the stuck
+   * item, and moves on to the next queued work — so a single hung item can never
+   * strand every later prompt behind it. 0 disables (interactive sessions rely
+   * on Esc; headless relies on streamIdleTimeoutMs). A generous default (30
+   * min) is below the threshold of legitimate long work (big gate builds, long
+   * tool chains, subagent fan-out) but catches a truly stuck item. */
+  itemTimeoutMs: z.number().int().min(0).default(1_800_000),
   /** Per-provider credential/baseURL overrides (env vars take precedence). */
   providers: z.record(z.string(), ProviderConfigSchema).default({}),
   /** Tool permission rules. Among matching rules: deny > ask > allow. */

@@ -124,6 +124,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "commands", description: "List custom slash commands" },
       { name: "mcp", description: "Show connected MCP servers" },
       { name: "doctor", description: "Run an environment health check" },
+      { name: "sandbox", description: "Show the resolved OS-sandbox policy" },
     ],
   },
 ];

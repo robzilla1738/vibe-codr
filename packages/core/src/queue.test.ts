@@ -283,3 +283,65 @@ test("a prompt submitted DURING an async session.idle hook's await is not strand
   // The second prompt must not be stranded — it runs after the hook settles.
   expect(prompts).toEqual(["first", "second"]);
 });
+
+test("itemTimeoutMs: a stuck item is aborted and the queue continues", async () => {
+  // A model whose stream NEVER resolves (no chunks, no error, no finish) — the
+  // interactive stream-idle watchdog is off (it's only for headless), so without
+  // itemTimeoutMs this would hang forever. The ceiling aborts the session turn,
+  // the drain catches the timeout error, and the next prompt runs.
+  // A model whose stream NEVER produces a chunk after stream-start and never
+  // ends — a truly hung provider stream that the interactive idle-watchdog
+  // doesn't cover (it's off for interactive). Without itemTimeoutMs the drain
+  // loop would hang forever on `await item.run()`.
+  const stuckModel = new MockLanguageModelV2({
+    doStream: async () => ({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: "stream-start", warnings: [] });
+          // Never enqueue another chunk or close — the stream hangs.
+        },
+      }),
+    }),
+  });
+  const config = { ...defaultConfig(), model: "mock/test", itemTimeoutMs: 200 };
+  const registry = new ProviderRegistry([
+    {
+      id: "mock",
+      auth: { env: [], keyless: true },
+      create: () => stuckModel,
+      listModels: async () => [],
+    },
+  ]);
+  const engine = new Engine({
+    config,
+    registry,
+    toolset: new Toolset([]),
+  });
+  await engine.bootstrap();
+  const events: UIEvent[] = [];
+  (async () => {
+    for await (const e of engine.events()) events.push(e);
+  })();
+
+  engine.start();
+  engine.send({ type: "submit-prompt", text: "stuck" });
+
+  // Wait for the timeout to fire (200ms ceiling + overhead). The item should be
+  // aborted and an engine-error emitted.
+  await engine.whenIdle();
+  // Let the event consumer process the engine-idle event (microtask hop).
+  await new Promise((r) => setTimeout(r, 10));
+
+  const errors = events.filter((e) => e.type === "engine-error");
+  expect(errors.length).toBeGreaterThan(0);
+  if (errors[0]?.type === "engine-error") {
+    expect(errors[0].message).toContain("wall-clock ceiling");
+  }
+
+  // The queue should be idle (not stuck).
+  expect(events.some((e) => e.type === "engine-idle")).toBe(true);
+
+  // A second prompt should run normally (the queue wasn't wedged).
+  expect(engine.queueState().active).toBeNull();
+  expect(engine.queueState().pending).toHaveLength(0);
+});

@@ -11,22 +11,6 @@ import type { ModelMessage } from "ai";
  */
 const BINARY_PART_CHARS = 1_500;
 
-/** Char weight of one message's content, treating binary parts as a flat cost. */
-function messageChars(m: ModelMessage): number {
-  const content = (m as { content?: unknown }).content;
-  if (typeof content === "string") return content.length + 16;
-  if (Array.isArray(content)) {
-    let chars = 16;
-    for (const part of content) {
-      const type = (part as { type?: string })?.type;
-      if (type === "image" || type === "file") chars += BINARY_PART_CHARS;
-      else chars += JSON.stringify(part).length;
-    }
-    return chars;
-  }
-  return JSON.stringify(m).length;
-}
-
 /** Count characters in CJK Unicode ranges (Han, Hiragana, Katakana, Hangul,
  * CJK punctuation/symbols). CJK text tokenizes at ~1.5 chars/token on most
  * providers (vs ~4 chars/token for Latin), so the flat 4-chars/token estimate
@@ -40,13 +24,13 @@ function countCJK(text: string): number {
     // CJK Unified Ideographs + Extensions A-F, Hiragana, Katakana, Hangul,
     // CJK Compatibility, CJK punctuation/symbols, Fullwidth forms.
     if (
-      (cp >= 0x3000 && cp <= 0x30ff) ||  // CJK symbols, Hiragana, Katakana
-      (cp >= 0x3400 && cp <= 0x4dbf) ||  // CJK Ext A
-      (cp >= 0x4e00 && cp <= 0x9fff) ||  // CJK Unified
-      (cp >= 0xac00 && cp <= 0xd7af) ||  // Hangul Syllables
-      (cp >= 0xf900 && cp <= 0xfaff) ||  // CJK Compatibility Ideographs
-      (cp >= 0xff00 && cp <= 0xffef) ||  // Fullwidth forms
-      (cp >= 0x20000 && cp <= 0x2ffff)   // CJK Ext B-F
+      (cp >= 0x3000 && cp <= 0x30ff) || // CJK symbols, Hiragana, Katakana
+      (cp >= 0x3400 && cp <= 0x4dbf) || // CJK Ext A
+      (cp >= 0x4e00 && cp <= 0x9fff) || // CJK Unified
+      (cp >= 0xac00 && cp <= 0xd7af) || // Hangul Syllables
+      (cp >= 0xf900 && cp <= 0xfaff) || // CJK Compatibility Ideographs
+      (cp >= 0xff00 && cp <= 0xffef) || // Fullwidth forms
+      (cp >= 0x20000 && cp <= 0x2ffff) // CJK Ext B-F
     ) {
       count++;
       // Skip the surrogate pair if this is a supplementary character.
@@ -248,14 +232,17 @@ export async function compactMessages(
 function buildToolCallIndex(messages: ModelMessage[]): string {
   const lines: string[] = [];
   // Collect tool-call inputs by callId so we can pair them with their results.
-  const calls = new Map<
-    string,
-    { tool: string; input: string }
-  >();
+  const calls = new Map<string, { tool: string; input: string }>();
   for (const m of messages) {
     if (!Array.isArray(m.content)) continue;
     for (const part of m.content) {
-      const p = part as { type?: string; toolCallId?: string; toolName?: string; input?: unknown; args?: unknown };
+      const p = part as {
+        type?: string;
+        toolCallId?: string;
+        toolName?: string;
+        input?: unknown;
+        args?: unknown;
+      };
       if (p?.type === "tool-call" && p.toolCallId) {
         const inp = (p.input ?? p.args) as Record<string, unknown> | undefined;
         let inputStr = "";
@@ -283,11 +270,12 @@ function buildToolCallIndex(messages: ModelMessage[]): string {
       const call = calls.get(p.toolCallId);
       if (!call) continue;
       // Extract a short result digest (first meaningful line, capped).
-      const outText = typeof p.output === "string"
-        ? p.output
-        : typeof (p.output as { value?: unknown })?.value === "string"
-          ? String((p.output as { value: string }).value)
-          : "";
+      const outText =
+        typeof p.output === "string"
+          ? p.output
+          : typeof (p.output as { value?: unknown })?.value === "string"
+            ? String((p.output as { value: string }).value)
+            : "";
       const digest = outText.trim().split("\n")[0]?.slice(0, 80) ?? "";
       lines.push(`- ${call.tool} ${call.input}${digest ? ` — ${digest}` : ""}`);
       if (lines.length >= 40) return lines.join("\n");

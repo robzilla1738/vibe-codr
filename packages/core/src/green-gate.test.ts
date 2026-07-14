@@ -309,6 +309,14 @@ test("dirty review: NOT REVIEW-CLEAN enqueues one fix; a 2nd review is bounded b
   // Exactly one fix turn was enqueued carrying the reviewer's concrete feedback.
   expect(prompts.some((p) => p.includes("src/x.ts:3 dead handler"))).toBe(true);
   expect(notices(events).some((n) => n.message.includes("Diff review flagged issues"))).toBe(true);
+  expect(
+    events.some(
+      (event) =>
+        event.type === "user-message" &&
+        event.origin === "engine" &&
+        event.label === "Automatic review follow-up",
+    ),
+  ).toBe(true);
   // The review ran ONCE — the re-gated fix turn does not review again past maxRounds.
   expect(reviewCalls()).toBe(1);
 });

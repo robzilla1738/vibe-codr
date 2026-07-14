@@ -94,12 +94,7 @@ import { McpHub, type McpConnect } from "./mcp.ts";
 import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
 import { withRetry } from "./retry.ts";
 import { expandMentions, type ImageAttachment } from "./mentions.ts";
-import {
-  captionImages,
-  captionsToContextBlock,
-  shouldRelay,
-  type CaptionResult,
-} from "./vision-relay.ts";
+import { captionImages, captionsToContextBlock, shouldRelay } from "./vision-relay.ts";
 import { cleanProactiveRecallSeed } from "./proactive-recall.ts";
 import {
   handleSlash,
@@ -605,9 +600,7 @@ export class Engine implements EngineClient {
             ...(resume.meta.lastInputTokens
               ? { initialLastInputTokens: resume.meta.lastInputTokens }
               : {}),
-            ...(resume.meta.offloaded?.length
-              ? { initialOffloaded: resume.meta.offloaded }
-              : {}),
+            ...(resume.meta.offloaded?.length ? { initialOffloaded: resume.meta.offloaded } : {}),
           }
         : {}),
     });
@@ -1132,6 +1125,10 @@ export class Engine implements EngineClient {
       reasoning: this.#config.reasoning.effort,
       ...(this.#gitState ? { git: this.#gitState } : {}),
     };
+  }
+
+  transcriptState(): ReturnType<Session["transcriptState"]> {
+    return this.#session.transcriptState();
   }
 
   /** Every invocable slash name — built-ins, custom/plugin commands, and skills
@@ -1828,7 +1825,10 @@ export class Engine implements EngineClient {
         async () => {
           this.#loopSession = this.#session;
           try {
-            await this.#handlePrompt(text);
+            await this.#handlePrompt(text, {
+              origin: "engine",
+              label: "Loop iteration",
+            });
             resolve(this.#session.lastAssistantText());
           } catch (err) {
             // Without this reject, a job that throws before resolve() would leave
@@ -2166,7 +2166,10 @@ export class Engine implements EngineClient {
       clearAlwaysAllow: () => engine.#alwaysAllow.clear(),
       persistConfig: (patch) => engine.#persistConfig(patch),
       handlePrompt: async (text, opts) => {
-        await engine.#handlePrompt(text, opts);
+        await engine.#handlePrompt(
+          text,
+          engine.#loopSession ? { ...opts, origin: "engine", label: "Loop iteration" } : opts,
+        );
       },
       resetTurnBudgets: () => engine.#resetPromptBudgets(),
       runVerifyCommand: (command) => engine.#runVerifyCommand(command),
@@ -2450,7 +2453,9 @@ export class Engine implements EngineClient {
     const prompt = reason
       ? reason
       : "A session.idle hook requested another turn — continue the work you were doing.";
-    this.#enqueue("session.idle continue", () => this.#handlePrompt(prompt));
+    this.#enqueue("session.idle continue", () =>
+      this.#handlePrompt(prompt, { origin: "engine", label: "Idle continuation" }),
+    );
     return true;
   }
 
@@ -2460,7 +2465,12 @@ export class Engine implements EngineClient {
    * still reaches the model untouched. */
   async #handlePrompt(
     text: string,
-    opts: { handoff?: boolean; display?: string } = {},
+    opts: {
+      handoff?: boolean;
+      display?: string;
+      origin?: "user" | "engine";
+      label?: string;
+    } = {},
   ): Promise<"denied" | undefined> {
     // A prompt hook can veto the turn outright — run it FIRST, on the raw incoming
     // text, BEFORE any handoff rewrite / plan-state mutation and BEFORE the
@@ -2593,7 +2603,10 @@ export class Engine implements EngineClient {
         relayedText = block ? `${expanded.text}\n\n${block}` : expanded.text;
         relayedImages = []; // primary model gets text, not bytes
         if (result.allSucceeded) {
-          this.#notice(`Vision relay: all ${result.captions.length} image(s) captioned successfully.`, "info");
+          this.#notice(
+            `Vision relay: all ${result.captions.length} image(s) captioned successfully.`,
+            "info",
+          );
         } else {
           const degraded = result.captions.filter((c) => c.degraded).length;
           this.#notice(
@@ -2605,11 +2618,15 @@ export class Engine implements EngineClient {
         this.#notice(`${this.#session.model} may not accept image input; sending anyway.`, "warn");
       }
     }
-    await this.#session.run(
-      relayedText,
-      relayedImages,
-      isHandoff ? { display: null } : opts.display !== undefined ? { display: opts.display } : {},
-    );
+    await this.#session.run(relayedText, relayedImages, {
+      ...(isHandoff
+        ? { display: null }
+        : opts.display !== undefined
+          ? { display: opts.display }
+          : {}),
+      ...(isHandoff ? { origin: "engine" as const } : opts.origin ? { origin: opts.origin } : {}),
+      ...(isHandoff ? { label: "Plan approved" } : opts.label ? { label: opts.label } : {}),
+    });
     await this.#afterTurn();
     // The turn may have touched the working tree — refresh the header's git state.
     void this.#emitGit();
@@ -2759,7 +2776,9 @@ export class Engine implements EngineClient {
       "and harvested sources (when the request needed web/version research). " +
       'Do NOT implement, load skill init/setup workflows, or announce "next steps" work. ' +
       "After present_plan succeeds, STOP and wait for the user to approve.";
-    this.#enqueue("present plan", () => this.#handlePrompt(prompt));
+    this.#enqueue("present plan", () =>
+      this.#handlePrompt(prompt, { origin: "engine", label: "Plan continuation" }),
+    );
   }
 
   /**
@@ -2851,7 +2870,10 @@ export class Engine implements EngineClient {
           this.#planExecutionActive = true;
           return this.#runGoalTurn(continuePrompt, display ?? "★ goal — continuing tasks");
         }
-        return this.#handlePrompt(continuePrompt);
+        return this.#handlePrompt(continuePrompt, {
+          origin: "engine",
+          label: "Plan continuation",
+        });
       },
       inGoalRun ? { origin: "goal" } : {},
     );
@@ -2946,8 +2968,11 @@ export class Engine implements EngineClient {
    * hook-denied fix turn never reaches #afterTurn — during a goal run that
    * would strand the run armed with nothing queued, so the deny pauses it
    * (a no-op outside a run). */
-  async #runFixTurn(text: string): Promise<void> {
-    const result = await this.#handlePrompt(text);
+  async #runFixTurn(text: string, label: string): Promise<void> {
+    const result = await this.#handlePrompt(text, {
+      origin: "engine",
+      label,
+    });
     if (result === "denied") {
       this.#pauseGoalRun("a prompt hook blocked the fix turn", { level: "warn" });
     }
@@ -2961,7 +2986,11 @@ export class Engine implements EngineClient {
   async #runGoalTurn(text: string, display: string): Promise<"denied" | undefined> {
     let result: "denied" | undefined;
     try {
-      result = await this.#handlePrompt(text, { display });
+      result = await this.#handlePrompt(text, {
+        display,
+        origin: "engine",
+        label: "Goal run",
+      });
     } catch (err) {
       // The throw can come from anywhere in the turn pipeline (pre-run prep OR
       // #afterTurn — e.g. a gate crash), so the reason stays non-committal.
@@ -3516,7 +3545,7 @@ export class Engine implements EngineClient {
       this.#gateRounds += 1;
       this.#notice(formatGateOutcome(summary), "warn");
       this.#enqueueFix("gate-fix", () =>
-        this.#runFixTurn(formatGateFailure(summary, gate.maxRounds)),
+        this.#runFixTurn(formatGateFailure(summary, gate.maxRounds), "Automatic gate fix"),
       );
       return summary.outcome;
     }
@@ -3751,7 +3780,10 @@ export class Engine implements EngineClient {
       "warn",
     );
     this.#enqueueFix("review-fix", () =>
-      this.#runFixTurn(buildReviewFixPrompt(reviewFlagged, visualFindings)),
+      this.#runFixTurn(
+        buildReviewFixPrompt(reviewFlagged, visualFindings),
+        "Automatic review follow-up",
+      ),
     );
   }
 
@@ -3800,6 +3832,7 @@ export class Engine implements EngineClient {
       this.#runFixTurn(
         `The verification command \`${command}\` failed:\n\n${result.output}\n\n` +
           `Fix the cause and keep changes minimal.`,
+        "Automatic verification fix",
       ),
     );
     return { ran: true, ok: false, fixEnqueued: true, exhaustedFail: false };

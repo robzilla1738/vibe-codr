@@ -147,7 +147,12 @@ test("beforeTool hook can veto a tool call; afterTool observes output", async ()
 function afterToolHarness(
   toolOutput: string,
   afterTool: NonNullable<Parameters<Toolset["aiTools"]>[1]["afterTool"]>,
-  recorded?: Array<{ id: string; isError: boolean }>,
+  recorded?: Array<{
+    id: string;
+    isError: boolean;
+    rawOutput?: unknown;
+    additionalContext?: string;
+  }>,
 ) {
   const tool: ToolDefinition = {
     name: "annotate",
@@ -167,7 +172,17 @@ function afterToolHarness(
     freshness,
     afterTool,
     ...(recorded
-      ? { recordToolResult: (id: string, isError: boolean) => recorded.push({ id, isError }) }
+      ? {
+          recordToolResult: (...args) => {
+            const [id, isError, rawOutput, additionalContext] = args;
+            recorded.push({
+              id,
+              isError,
+              ...(args.length >= 3 ? { rawOutput } : {}),
+              ...(typeof additionalContext === "string" ? { additionalContext } : {}),
+            });
+          },
+        }
       : {}),
   });
   return (
@@ -178,14 +193,35 @@ function afterToolHarness(
 }
 
 test("afterTool additionalContext is appended (delimited) to the tool result output", async () => {
-  const out = await afterToolHarness("wrote 3 lines", () => ({
-    additionalContext: "prettier reformatted it",
-  }));
+  const recorded: Array<{
+    id: string;
+    isError: boolean;
+    rawOutput?: unknown;
+    additionalContext?: string;
+  }> = [];
+  const out = await afterToolHarness(
+    "wrote 3 lines",
+    () => ({ additionalContext: "prettier reformatted it" }),
+    recorded,
+  );
   expect(out).toBe("wrote 3 lines\n\n[hook: tool.after.execute] prettier reformatted it");
+  expect(recorded).toEqual([
+    {
+      id: "1",
+      isError: false,
+      rawOutput: "wrote 3 lines",
+      additionalContext: "prettier reformatted it",
+    },
+  ]);
 });
 
 test("afterTool deny yields an isError result carrying the reason (result already produced)", async () => {
-  const recorded: Array<{ id: string; isError: boolean }> = [];
+  const recorded: Array<{
+    id: string;
+    isError: boolean;
+    rawOutput?: unknown;
+    additionalContext?: string;
+  }> = [];
   const out = await afterToolHarness(
     "the secret is AKIA…",
     () => ({ deny: true, reason: "leaked a credential" }),
@@ -595,9 +631,13 @@ test("toolsDisabled hard-refuses every tool after terminal present_plan", async 
 test("createSemaphore: a queued call whose signal aborts rejects immediately", async () => {
   const sem = createSemaphore(1);
   let release!: () => void;
-  const barrier = new Promise<void>((r) => { release = r; });
+  const barrier = new Promise<void>((r) => {
+    release = r;
+  });
   // First call takes the only slot.
-  const first = sem(async () => { await barrier; });
+  const first = sem(async () => {
+    await barrier;
+  });
   // Second call queues (slot is taken). Give it an abort signal.
   const ctrl = new AbortController();
   const second = sem(async () => {}, ctrl.signal);

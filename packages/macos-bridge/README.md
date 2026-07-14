@@ -44,7 +44,7 @@ One JSON object per line on **stdin** (desktop client → host) and **stdout** (
 
 | Method | Needs engine | Returns |
 |--------|--------------|---------|
-| `snapshot` | yes | `EngineSnapshot` |
+| `snapshot` | yes | `EngineSnapshot`; persisted sessions include sanitized structured history rebuilt from host-owned state |
 | `listModels` | yes | `ModelSummary[]` |
 | `listProviders` | yes | `ProviderInfo[]` |
 | `listAgents` | yes | `AgentInfo[]` |

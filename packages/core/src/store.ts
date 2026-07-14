@@ -162,7 +162,10 @@ export class SessionStore {
       // create fails, a holder already exists — probe its PID; steal only when
       // dead, re-racing exclusive create after removing the stale file.
       try {
-        await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, { encoding: "utf8", flag: "wx" });
+        await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, {
+          encoding: "utf8",
+          flag: "wx",
+        });
         return { ok: true };
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
@@ -179,7 +182,10 @@ export class SessionStore {
         await rm(leasePath, { force: true }).catch(() => {});
       }
       try {
-        await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, { encoding: "utf8", flag: "wx" });
+        await writeFile(leasePath, `${process.pid}\n${Date.now()}\n`, {
+          encoding: "utf8",
+          flag: "wx",
+        });
         return { ok: true };
       } catch (err) {
         // Another process won the re-acquire race — treat as held.

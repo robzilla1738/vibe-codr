@@ -31,6 +31,41 @@ describe("macOS bridge protocol runtime validation", () => {
       ),
     ).not.toBeNull();
     expect(
+      decodeOutbound(
+        JSON.stringify({
+          type: "event",
+          event: {
+            type: "user-message",
+            sessionId: "ses_1",
+            text: "Continue",
+            origin: "engine",
+            label: "Goal",
+          },
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      decodeOutbound(
+        JSON.stringify({
+          type: "event",
+          event: { type: "user-message", sessionId: "ses_1", text: "Continue", origin: "other" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeOutbound(
+        JSON.stringify({
+          type: "event",
+          event: {
+            type: "user-message",
+            sessionId: "ses_1",
+            text: "Continue",
+            label: { text: "Goal" },
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(
       decodeOutbound(JSON.stringify({ type: "event", event: { type: "notice", level: "info" } })),
     ).toBeNull();
     expect(

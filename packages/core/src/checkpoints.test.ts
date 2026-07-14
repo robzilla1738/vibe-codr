@@ -328,7 +328,6 @@ test("checkpoint metadata save clears a stale cross-process lock", async () => {
   expect(existsSync(join(state, "checkpoints.json.lock"))).toBe(false);
 });
 
-
 test("checkpoint metadata save steals a dead-process lock immediately via PID liveness check", async () => {
   const dir = await initRepo();
   const { globalStateDir } = await import("./state-dir.ts");
@@ -339,7 +338,7 @@ test("checkpoint metadata save steals a dead-process lock immediately via PID li
   // Write an owner file with a PID that is almost certainly dead (max PID + 1
   // on any real system). The PID-based liveness check must steal this lock
   // immediately, without waiting for the 60s stale timeout.
-  writeFileSync(join(lockDir, "owner"), "999999\n" + Date.now() + "\n", "utf8");
+  writeFileSync(join(lockDir, "owner"), `999999\n${Date.now()}\n`, "utf8");
 
   const cp = new CheckpointManager(dir);
   const snap = await cp.snapshot("after-dead-pid-lock");
@@ -358,7 +357,7 @@ test("checkpoint metadata save waits for a live-process lock (PID is alive)", as
   // alive, so the lock must NOT be stolen. The snapshot should wait, then
   // eventually succeed once we clean up the lock ourselves (simulating the
   // owner releasing). We pre-clean the lock in a setTimeout to avoid a hang.
-  writeFileSync(join(lockDir, "owner"), process.pid + "\n" + Date.now() + "\n", "utf8");
+  writeFileSync(join(lockDir, "owner"), `${process.pid}\n${Date.now()}\n`, "utf8");
   setTimeout(() => rmSync(lockDir, { recursive: true, force: true }), 100);
 
   const cp = new CheckpointManager(dir);

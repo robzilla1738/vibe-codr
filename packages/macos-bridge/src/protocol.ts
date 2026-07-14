@@ -277,7 +277,11 @@ export function isUIEvent(value: unknown): value is UIEvent {
     case "session-start":
       return typeof event.model === "string" && (event.mode === "plan" || event.mode === "execute");
     case "user-message":
-      return typeof event.text === "string";
+      return (
+        typeof event.text === "string" &&
+        (event.origin === undefined || event.origin === "user" || event.origin === "engine") &&
+        optionalString(event.label)
+      );
     case "assistant-text-delta":
     case "reasoning-delta":
       return typeof event.delta === "string" && optionalString(event.subagentId);

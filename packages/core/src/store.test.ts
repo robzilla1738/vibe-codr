@@ -343,7 +343,7 @@ test("acquireLease: a live PID holder blocks (ok:false, holderPid returned)", as
   const dir = join(globalStateDir(cwd), "sessions", "ses_lease2");
   mkdirSync(dir, { recursive: true });
   // Write a lease with OUR OWN PID — the liveness check will see it as alive.
-  writeFileSync(join(dir, ".lease"), process.pid + "\n" + Date.now() + "\n", "utf8");
+  writeFileSync(join(dir, ".lease"), `${process.pid}\n${Date.now()}\n`, "utf8");
   const lease = await store.acquireLease("ses_lease2");
   expect(lease.ok).toBe(false);
   if (!lease.ok) expect(lease.holderPid).toBe(process.pid);
@@ -355,7 +355,7 @@ test("acquireLease: a dead PID holder is stolen (ok:true)", async () => {
   const dir = join(globalStateDir(cwd), "sessions", "ses_lease3");
   mkdirSync(dir, { recursive: true });
   // Write a lease with a PID that is almost certainly dead.
-  writeFileSync(join(dir, ".lease"), "999999\n" + Date.now() + "\n", "utf8");
+  writeFileSync(join(dir, ".lease"), `999999\n${Date.now()}\n`, "utf8");
   const lease = await store.acquireLease("ses_lease3");
   expect(lease.ok).toBe(true);
 });

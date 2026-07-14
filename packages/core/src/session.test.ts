@@ -1393,6 +1393,12 @@ test("an interrupted turn keeps completed tool steps in the transcript (a resume
   expect(roles[0]).not.toBe("tool");
   // Exactly one echo tool-result (no duplication from cumulative step buffering).
   expect(json.split("echoed: remember-this").length - 1).toBe(1);
+  const persistedHistory = JSON.stringify(persisted!.history);
+  expect(persistedHistory).toContain('"type":"tool-call"');
+  expect(persistedHistory).toContain('"type":"tool-result"');
+  expect(persistedHistory).toContain("remember-this");
+  expect(persistedHistory).not.toContain('"toolCallId":"c2"');
+  expect(persistedHistory).not.toContain('"toolName":"stop_now"');
 });
 
 test("a persisted session stamps the SessionMeta schema version", async () => {

@@ -19,6 +19,7 @@ import {
   listProjectSummaries,
   renameProject,
 } from "./project-index.ts";
+import { fitTranscriptPayload, structuredTranscript } from "./transcript-history.ts";
 
 function write(msg: HostOutbound): void {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -218,7 +219,22 @@ export async function runHost(): Promise<void> {
 
       switch (method) {
         case "snapshot":
-          write({ type: "resp", id, ok: true, value: engine.snapshot() });
+          {
+            const snapshot = engine.snapshot();
+            let history = fitTranscriptPayload(snapshot.history);
+            try {
+              history = structuredTranscript(engine.transcriptState());
+            } catch {
+              // Snapshot is authoritative and already valid. Legacy transcript
+              // enrichment is optional presentation work only.
+            }
+            write({
+              type: "resp",
+              id,
+              ok: true,
+              value: history === snapshot.history ? snapshot : { ...snapshot, history },
+            });
+          }
           return;
         case "listModels":
           write({ type: "resp", id, ok: true, value: await engine.listModels() });

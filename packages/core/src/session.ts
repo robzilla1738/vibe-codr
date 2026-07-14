@@ -93,6 +93,7 @@ const COMPACT_OVERHEAD_MARGIN = 12_000;
  * Compaction fires when context is near-full, so an uncapped transcript would
  * make the summarize call itself risk the window. */
 const SUMMARY_INPUT_CAP = 24_000;
+const HISTORY_TOOL_OUTPUT_MAX = 512 * 1024;
 /** Wall-clock bound on the auxiliary (summarize / digest) provider calls so a
  * stalled stream can't hang the turn that triggered compaction, or shutdown. */
 const AUX_CALL_TIMEOUT_MS = 120_000;
@@ -303,6 +304,8 @@ export class Session {
    * error flag; this side-channel lets `#consume` mark them correctly. Keyed by
    * toolCallId; populated by the tool adapter before the result part is emitted. */
   #toolCallErrors = new Map<string, boolean>();
+  #toolCallOutputs = new Map<string, unknown>();
+  #toolCallAnnotations = new Map<string, string>();
   /** webfetch tool-call id → the URL it was asked to fetch. `webfetch`'s OUTPUT is
    * the page BODY, so harvesting URLs from it records arbitrary in-page links
    * (ads, "related", footnotes) as if the agent fetched them, while the URL it
@@ -502,6 +505,13 @@ export class Session {
       // Filled by the engine, which owns the command/skill registries + git.
       commandNames: [],
     };
+  }
+
+  /** In-memory conversation source for presentation adapters that need to
+   * upgrade legacy flat history. This avoids re-reading and reviving the full
+   * persisted transcript (including image bytes) during every snapshot RPC. */
+  transcriptState(): { history: Message[]; modelMessages: ModelMessage[] } {
+    return { history: this.#history, modelMessages: this.#modelMessages };
   }
 
   /** Current cumulative token + accrued-cost view for the UI. */
@@ -998,7 +1008,7 @@ export class Session {
   async run(
     input: string,
     images: ImageAttachment[] = [],
-    opts: { display?: string | null } = {},
+    opts: { display?: string | null; origin?: "user" | "engine"; label?: string } = {},
   ): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;
     this.busy = true;
@@ -1008,6 +1018,8 @@ export class Session {
     this.#interrupted = false;
     this.#streamStalled = false;
     this.#toolCallErrors.clear();
+    this.#toolCallOutputs.clear();
+    this.#toolCallAnnotations.clear();
     this.#committedSteps = [];
     // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
     // cancel that arrives mid-turn aborts this turn's signal and the NEXT turn
@@ -1052,7 +1064,7 @@ export class Session {
         sources: this.#sources.size ? this.#sources.format() : undefined,
         ...(backgroundFinished?.length ? { backgroundFinished } : {}),
       });
-      this.#pushUser(input, images, opts.display, stateReminder);
+      this.#pushUser(input, images, opts.display, stateReminder, opts.origin, opts.label);
       userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
       histRef = this.#history[this.#history.length - 1];
 
@@ -1162,8 +1174,14 @@ export class Session {
         cwd: this.#deps.cwd,
         sessionId: this.id,
         emit: (e: UIEvent) => bus.emit(e),
-        recordToolResult: (toolCallId: string, isError: boolean) =>
-          this.#toolCallErrors.set(toolCallId, isError),
+        recordToolResult: (...args) => {
+          const [toolCallId, isError, rawOutput, additionalContext] = args;
+          this.#toolCallErrors.set(toolCallId, isError);
+          if (args.length >= 3) this.#toolCallOutputs.set(toolCallId, rawOutput);
+          if (typeof additionalContext === "string") {
+            this.#toolCallAnnotations.set(toolCallId, additionalContext);
+          }
+        },
         // Mutation latches only after a successful non-readOnly execute (adapter
         // calls this) — not on tool-call intent, so denied writes don't trip the
         // green-gate. Covers session-only tools outside the Toolset map too.
@@ -1559,12 +1577,35 @@ export class Session {
             }
             if (assistant) {
               // Record the partial assistant tail to BOTH lists or NEITHER, so they
-              // stay consistent for the orphan-rollback below. An EMPTY partial (an
-              // empty text-delta before abort makes `assistant` truthy while its
-              // text is "") goes to neither.
-              const text = messageText(assistant);
+              // stay consistent for the orphan-rollback below. Completed structured
+              // activity is already represented by #committedSteps in model history,
+              // so retain its native UI parts even when the provider failed before
+              // emitting final text. A genuinely empty partial goes to neither.
+              const completedToolCalls = new Set<string>();
+              for (const message of this.#committedSteps) {
+                if (!Array.isArray(message.content)) continue;
+                for (const part of message.content) {
+                  if (part.type === "tool-result" && typeof part.toolCallId === "string") {
+                    completedToolCalls.add(part.toolCallId);
+                  }
+                }
+              }
+              const completedAssistant: Message = {
+                ...assistant,
+                parts: assistant.parts.filter(
+                  (part) =>
+                    (part.type !== "tool-call" && part.type !== "tool-result") ||
+                    completedToolCalls.has(part.toolCallId),
+                ),
+              };
+              const text = messageText(completedAssistant);
+              const hasCompletedStructure =
+                completedToolCalls.size > 0 &&
+                completedAssistant.parts.some((part) => part.type !== "text");
+              if (text || hasCompletedStructure) {
+                this.#history.push(completedAssistant);
+              }
               if (text) {
-                this.#history.push(assistant);
                 this.#modelMessages.push({ role: "assistant", content: text });
               }
             }
@@ -1992,6 +2033,8 @@ export class Session {
     images: ImageAttachment[] = [],
     display?: string | null,
     stateReminder?: string,
+    origin: "user" | "engine" = "user",
+    label?: string,
   ): void {
     // The model-facing text: the user's input, then (when present) the workspace
     // state block APPENDED so the user's own words lead and the ambient state
@@ -2022,12 +2065,18 @@ export class Session {
       role: "user",
       parts,
       createdAt: Date.now(),
+      ...(origin === "engine" ? { metadata: { origin, ...(label ? { label } : {}) } } : {}),
     });
     // `display === null` suppresses the visible user bubble (e.g. the internal
     // plan→execute handoff directive, which the model needs but the user shouldn't
     // see as a message they "sent"); otherwise show `display` (or the raw input).
     if (display !== null) {
-      this.#deps.bus.emit({ type: "user-message", sessionId: this.id, text: display ?? input });
+      this.#deps.bus.emit({
+        type: "user-message",
+        sessionId: this.id,
+        text: display ?? input,
+        ...(origin === "engine" ? { origin, ...(label ? { label } : {}) } : {}),
+      });
     }
   }
 
@@ -2098,6 +2147,7 @@ export class Session {
           }
           case "reasoning-delta": {
             const delta: string = part.text ?? part.textDelta ?? "";
+            appendReasoning(ensure(), delta);
             bus.emit({ type: "reasoning-delta", sessionId: this.id, delta });
             break;
           }
@@ -2113,6 +2163,12 @@ export class Session {
               if (inp && typeof inp.url === "string")
                 this.#fetchInputUrls.set(part.toolCallId, inp.url);
             }
+            ensure().parts.push({
+              type: "tool-call",
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              input: part.input ?? part.args,
+            });
             bus.emit({
               type: "tool-call-started",
               sessionId: this.id,
@@ -2161,6 +2217,21 @@ export class Session {
               }
             }
             this.#fetchInputUrls.delete(part.toolCallId);
+            const hasRawOutput = this.#toolCallOutputs.has(part.toolCallId);
+            const historyOutput = hasRawOutput
+              ? this.#toolCallOutputs.get(part.toolCallId)
+              : part.output;
+            ensure().parts.push({
+              type: "tool-result",
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              output: historyToolOutput(
+                historyOutput,
+                !hasRawOutput,
+                this.#toolCallAnnotations.get(part.toolCallId),
+              ),
+              ...(isError ? { isError: true } : {}),
+            });
             bus.emit({
               type: "tool-call-finished",
               sessionId: this.id,
@@ -2172,12 +2243,20 @@ export class Session {
             break;
           }
           case "tool-error": {
+            const output = historyToolOutput(String((part.error as Error)?.message ?? part.error));
+            ensure().parts.push({
+              type: "tool-result",
+              toolCallId: part.toolCallId,
+              toolName: part.toolName,
+              output,
+              isError: true,
+            });
             bus.emit({
               type: "tool-call-finished",
               sessionId: this.id,
               toolCallId: part.toolCallId,
               toolName: part.toolName,
-              output: String((part.error as Error)?.message ?? part.error),
+              output,
               isError: true,
             });
             break;
@@ -2270,6 +2349,101 @@ function appendText(message: Message, delta: string): void {
   } else {
     message.parts.push({ type: "text", text: delta });
   }
+}
+
+function appendReasoning(message: Message, delta: string): void {
+  const last = message.parts[message.parts.length - 1] as Part | undefined;
+  if (last?.type === "reasoning") {
+    last.text = `${last.text}${delta}`.slice(-256 * 1024);
+  } else {
+    message.parts.push({ type: "reasoning", text: delta.slice(-256 * 1024) });
+  }
+}
+
+function sanitizeHistoryToolValue(value: unknown, depth = 0): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (depth >= 20) return "[nested value omitted]";
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeHistoryToolValue(item, depth + 1));
+  }
+  const input = value as Record<string, unknown>;
+  if (input.type === "media") return "[media omitted]";
+  const hasBinaryPayload = "data" in input || "image" in input;
+  if (
+    hasBinaryPayload &&
+    (input.type === "file" ||
+      input.type === "file-data" ||
+      input.type === "image" ||
+      input.type === "image-data" ||
+      input.type === "audio" ||
+      input.type === "audio-data" ||
+      input.type === "video" ||
+      input.type === "video-data")
+  ) {
+    return "[binary omitted]";
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(input)) {
+    output[key] = sanitizeHistoryToolValue(item, depth + 1);
+  }
+  return output;
+}
+
+function historyToolOutput(
+  output: unknown,
+  providerEnvelope = false,
+  additionalContext?: string,
+): string {
+  let text: string;
+  if (typeof output === "string") {
+    text = output;
+  } else {
+    try {
+      const envelope =
+        output && typeof output === "object" ? (output as Record<string, unknown>) : null;
+      const envelopeType = typeof envelope?.type === "string" ? envelope.type : "";
+      const isEnvelope =
+        providerEnvelope &&
+        envelope !== null &&
+        ["text", "error-text", "json", "error-json", "content"].includes(envelopeType) &&
+        "value" in envelope &&
+        Object.keys(envelope).every(
+          (key) => key === "type" || key === "value" || key === "providerOptions",
+        );
+      if (
+        isEnvelope &&
+        (envelopeType === "text" || envelopeType === "error-text") &&
+        typeof envelope.value === "string"
+      ) {
+        text = envelope.value;
+      } else if (isEnvelope && envelopeType === "content" && Array.isArray(envelope.value)) {
+        text = envelope.value
+          .map((part) => {
+            if (!part || typeof part !== "object") return String(part ?? "");
+            const item = part as Record<string, unknown>;
+            if (item.type === "text" && typeof item.text === "string") return item.text;
+            const sanitized = sanitizeHistoryToolValue(item);
+            return typeof sanitized === "string"
+              ? sanitized
+              : (JSON.stringify(sanitized) ?? String(sanitized));
+          })
+          .filter(Boolean)
+          .join("\n");
+      } else {
+        const value = isEnvelope ? envelope.value : output;
+        const sanitized = sanitizeHistoryToolValue(value);
+        text = JSON.stringify(sanitized) ?? String(sanitized);
+      }
+    } catch {
+      text = String(output);
+    }
+  }
+  if (additionalContext) {
+    text = `${text}\n\n[hook: tool.after.execute] ${additionalContext}`;
+  }
+  if (text.length <= HISTORY_TOOL_OUTPUT_MAX) return text;
+  const marker = "… earlier tool output omitted …\n";
+  return `${marker}${text.slice(-(HISTORY_TOOL_OUTPUT_MAX - marker.length))}`;
 }
 
 /**

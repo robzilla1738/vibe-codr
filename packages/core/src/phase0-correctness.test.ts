@@ -52,13 +52,88 @@ test("a tool's isError result is reported as a failed tool call (not a success)"
     inputSchema: z.object({}),
     readOnly: true,
     concurrencySafe: true,
-    execute: async () => ({ output: "it broke", isError: true }),
+    execute: async () => ({ output: { value: 1, unit: "ms" }, isError: true }),
+  } as unknown as ToolDefinition;
+  const mediaResult = {
+    name: "media_result",
+    description: "returns content-form output",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({
+      output: {
+        type: "content",
+        value: [
+          { type: "text", text: "Readable result" },
+          { type: "media", data: "base64-secret", mediaType: "image/png" },
+        ],
+      },
+    }),
+  } as unknown as ToolDefinition;
+  const nestedMediaResult = {
+    name: "nested_media_result",
+    description: "returns nested media inside JSON output",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({
+      output: {
+        type: "json",
+        value: {
+          content: [
+            { type: "text", text: "Readable nested result" },
+            { type: "media", data: "nested-base64-secret", mediaType: "image/png" },
+            { type: "file-data", data: "file-base64-secret", mediaType: "application/pdf" },
+          ],
+        },
+      },
+    }),
+  } as unknown as ToolDefinition;
+  const wrapperShapedResult = {
+    name: "wrapper_shaped_result",
+    description: "returns a raw object that resembles a provider envelope",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({ output: { type: "text", value: "literal payload" } }),
+  } as unknown as ToolDefinition;
+  const fileStatusResult = {
+    name: "file_status_result",
+    description: "returns a non-binary domain object with a file discriminator",
+    inputSchema: z.object({}),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => ({ output: { type: "file", path: "src/a.ts", status: "changed" } }),
   } as unknown as ToolDefinition;
 
   const steps = [
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: "f1", toolName: "flaky", input: JSON.stringify({}) },
+      {
+        type: "tool-call",
+        toolCallId: "m1",
+        toolName: "media_result",
+        input: JSON.stringify({}),
+      },
+      {
+        type: "tool-call",
+        toolCallId: "m2",
+        toolName: "nested_media_result",
+        input: JSON.stringify({}),
+      },
+      {
+        type: "tool-call",
+        toolCallId: "m3",
+        toolName: "wrapper_shaped_result",
+        input: JSON.stringify({}),
+      },
+      {
+        type: "tool-call",
+        toolCallId: "m4",
+        toolName: "file_status_result",
+        input: JSON.stringify({}),
+      },
       { type: "finish", finishReason: "tool-calls", usage: USAGE },
     ]),
     stream([
@@ -71,18 +146,31 @@ test("a tool's isError result is reported as a failed tool call (not a success)"
   ];
   let call = 0;
   const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const hooks = new HookBus();
+  hooks.on("tool.after.execute", (payload) =>
+    payload.toolName === "media_result"
+      ? { ...payload, additionalContext: "verified by the post-tool hook" }
+      : payload,
+  );
 
   const bus = new EventBus();
   const { events, done } = collect(bus);
   const session = new Session({
     config: defaultConfig(),
     registry: mockRegistry(model),
-    toolset: new Toolset([flaky]),
+    toolset: new Toolset([
+      flaky,
+      mediaResult,
+      nestedMediaResult,
+      wrapperShapedResult,
+      fileStatusResult,
+    ]),
     bus,
     freshness: new FreshnessRegistry(),
     cwd: process.cwd(),
     model: "mock/test",
     mode: "execute",
+    hooks,
   });
   await session.run("call the flaky tool");
   bus.close();
@@ -90,6 +178,54 @@ test("a tool's isError result is reported as a failed tool call (not a success)"
 
   const finished = events.find((e) => e.type === "tool-call-finished" && e.toolName === "flaky");
   expect(finished && finished.type === "tool-call-finished" && finished.isError).toBe(true);
+  const persistedResult = session
+    .snapshot()
+    .history.flatMap((message) => message.parts)
+    .find((part) => part.type === "tool-result" && part.toolCallId === "f1");
+  expect(persistedResult?.type === "tool-result" && persistedResult.isError).toBe(true);
+  expect(persistedResult?.type === "tool-result" ? String(persistedResult.output) : "").toContain(
+    "unit",
+  );
+  const persistedMedia = session
+    .snapshot()
+    .history.flatMap((message) => message.parts)
+    .find((part) => part.type === "tool-result" && part.toolCallId === "m1");
+  const persistedMediaOutput =
+    persistedMedia?.type === "tool-result" ? String(persistedMedia.output) : "";
+  expect(persistedMediaOutput).toContain("Readable result");
+  expect(persistedMediaOutput).toContain("[media omitted]");
+  expect(persistedMediaOutput).not.toContain("base64-secret");
+  expect(persistedMediaOutput).toContain("verified by the post-tool hook");
+  const persistedNestedMedia = session
+    .snapshot()
+    .history.flatMap((message) => message.parts)
+    .find((part) => part.type === "tool-result" && part.toolCallId === "m2");
+  expect(
+    persistedNestedMedia?.type === "tool-result" ? String(persistedNestedMedia.output) : "",
+  ).toContain("[media omitted]");
+  expect(
+    persistedNestedMedia?.type === "tool-result" ? String(persistedNestedMedia.output) : "",
+  ).not.toContain("nested-base64-secret");
+  expect(
+    persistedNestedMedia?.type === "tool-result" ? String(persistedNestedMedia.output) : "",
+  ).not.toContain("file-base64-secret");
+  expect(
+    persistedNestedMedia?.type === "tool-result" ? String(persistedNestedMedia.output) : "",
+  ).toContain("[binary omitted]");
+  const persistedWrapper = session
+    .snapshot()
+    .history.flatMap((message) => message.parts)
+    .find((part) => part.type === "tool-result" && part.toolCallId === "m3");
+  expect(persistedWrapper?.type === "tool-result" ? persistedWrapper.output : null).toBe(
+    '{"type":"text","value":"literal payload"}',
+  );
+  const persistedFileStatus = session
+    .snapshot()
+    .history.flatMap((message) => message.parts)
+    .find((part) => part.type === "tool-result" && part.toolCallId === "m4");
+  expect(persistedFileStatus?.type === "tool-result" ? persistedFileStatus.output : null).toBe(
+    '{"type":"file","path":"src/a.ts","status":"changed"}',
+  );
 });
 
 test("under budget=stop, a second prompt is refused without an orphan user turn", async () => {

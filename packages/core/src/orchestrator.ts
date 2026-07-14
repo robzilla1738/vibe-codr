@@ -196,7 +196,7 @@ export async function runDag(
   const computeCPL = (id: string): number => {
     if (criticalPathLength.has(id)) return criticalPathLength.get(id)!;
     const spec = byId.get(id);
-    if (!spec || !spec.deps.length) {
+    if (!spec?.deps.length) {
       criticalPathLength.set(id, 1);
       return 1;
     }

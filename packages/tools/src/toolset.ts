@@ -68,7 +68,12 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
    * AI-SDK `tool-result` stream part carries no error flag; the consumer reads
    * this side-channel to mark the call correctly in the UI.
    */
-  recordToolResult?: (toolCallId: string, isError: boolean) => void;
+  recordToolResult?: (
+    toolCallId: string,
+    isError: boolean,
+    rawOutput?: unknown,
+    additionalContext?: string,
+  ) => void;
   /**
    * Mark the current turn as having successfully mutated the workspace (or
    * other non-readOnly side effects). Called only AFTER a non-readOnly tool
@@ -215,7 +220,9 @@ export function createSerialLock(): <T>(fn: () => Promise<T>) => Promise<T> {
  * in-flight one. An already-aborted signal rejects immediately without taking
  * a slot.
  */
-export function createSemaphore(n: number): <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T> {
+export function createSemaphore(
+  n: number,
+): <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T> {
   const limit = Math.max(1, Math.floor(n));
   let active = 0;
   const queue: Array<() => void> = [];
@@ -400,7 +407,9 @@ export function toAISDKTool(
       // `bash {command:"curl ...", dangerouslyUnsandboxed:true}` in YOLO. The
       // scope prefix "!unsandboxed " lets a user pre-authorize it deliberately.
       const isUnsandboxed =
-        effectiveInput && typeof effectiveInput === "object" && "dangerouslyUnsandboxed" in effectiveInput &&
+        effectiveInput &&
+        typeof effectiveInput === "object" &&
+        "dangerouslyUnsandboxed" in effectiveInput &&
         (effectiveInput as { dangerouslyUnsandboxed?: boolean }).dangerouslyUnsandboxed === true;
       const decision = await base.checkPermission(
         def.name,
@@ -449,8 +458,8 @@ export function toAISDKTool(
       base.recordToolResult?.(options.toolCallId, true);
       return `ERROR: ${after.reason ?? `tool "${def.name}" result was denied by a tool.after.execute hook`}`;
     }
-    base.recordToolResult?.(options.toolCallId, result.isError === true);
     if (result.isError) {
+      base.recordToolResult?.(options.toolCallId, true, result.output);
       const text =
         typeof result.output === "string" ? result.output : JSON.stringify(result.output);
       return `ERROR: ${text}`;
@@ -464,8 +473,11 @@ export function toAISDKTool(
     if (after?.additionalContext) {
       const text =
         typeof result.output === "string" ? result.output : JSON.stringify(result.output);
-      return `${text}\n\n[hook: tool.after.execute] ${after.additionalContext}`;
+      const decorated = `${text}\n\n[hook: tool.after.execute] ${after.additionalContext}`;
+      base.recordToolResult?.(options.toolCallId, false, result.output, after.additionalContext);
+      return decorated;
     }
+    base.recordToolResult?.(options.toolCallId, false, result.output);
     return result.output;
   };
 

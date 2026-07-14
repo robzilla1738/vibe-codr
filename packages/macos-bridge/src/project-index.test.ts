@@ -109,6 +109,30 @@ describe("project index", () => {
     expect(projects[0]!.sessions[0]!.title).toBe("Recent project task");
   });
 
+  test("pre-bootstrap discovery excludes an unregistered host launch directory", async () => {
+    const launchCwd = join(root, "host-launch-cwd");
+    const persisted = join(root, "persisted-project");
+    mkdirSync(launchCwd, { recursive: true });
+    mkdirSync(persisted, { recursive: true });
+    const store = new SessionStore(persisted);
+    await store.save(
+      {
+        id: "persisted",
+        model: "openai/gpt",
+        mode: "execute",
+        goal: null,
+        createdAt: 1,
+        updatedAt: 2,
+      },
+      [],
+      userHistory("Persisted project"),
+    );
+
+    const projects = await listProjectSummaries(undefined);
+    expect(projects.map((project) => project.cwd)).toEqual([persisted]);
+    expect(projects.some((project) => project.cwd === launchCwd)).toBe(false);
+  });
+
   test("keeps an active project with no sessions and ignores missing registrations", async () => {
     const active = join(root, "empty-project");
     mkdirSync(active, { recursive: true });

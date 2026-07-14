@@ -160,11 +160,11 @@ export async function deleteProject(cwd: string): Promise<{ cwd: string } | null
 
 /** Read-only desktop index over all registered vibe-codr project state. */
 export async function listProjectSummaries(
-  activeCwd: string,
+  activeCwd?: string,
   root = stateRoot(),
 ): Promise<ProjectSummary[]> {
   const paths = await discoveredProjectPaths(root);
-  const ordered = [resolve(activeCwd), ...paths];
+  const ordered = activeCwd ? [resolve(activeCwd), ...paths] : paths;
   const unique = [...new Set(ordered)];
   const projects = (await Promise.all(unique.map((cwd) => summarizeProject(cwd)))).filter(
     (project): project is ProjectSummary => project !== null,

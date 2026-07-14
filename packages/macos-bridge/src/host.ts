@@ -147,7 +147,9 @@ export async function runHost(): Promise<void> {
         return;
       }
       if (method === "listProjects") {
-        const projects = await listProjectSummaries(lastCwd);
+        // Before bootstrap, process.cwd() is only the host launch directory and
+        // must not be presented to desktop clients as a persisted project/capability.
+        const projects = await listProjectSummaries(engine ? lastCwd : undefined);
         write({ type: "resp", id, ok: true, value: projects });
         return;
       }

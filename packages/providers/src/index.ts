@@ -1,28 +1,29 @@
-export type {
-  ModelInfo,
-  PricingTier,
-  ProviderDef,
-  ProviderAuth,
-  ProviderCreateOptions,
-  ModelRef,
-} from "./types.ts";
-export { parseModelString, formatModelString } from "./resolve.ts";
-export { ProviderRegistry } from "./registry.ts";
-export { builtinProviders } from "./defs.ts";
+export { expandHome, readTokenFile } from "./auth-file.ts";
 export {
   CatalogService,
+  type PricingResult,
   parseModelsDev,
   resolveCatalogPrice,
   resolveCatalogWindow,
-  type PricingResult,
 } from "./catalog.ts";
+export { builtinProviders } from "./defs.ts";
 export {
   KNOWN_MODEL_DEFAULTS,
+  type KnownModelDefaults,
   knownModelDefaults,
   knownModelInfo,
-  type KnownModelDefaults,
 } from "./known-models.ts";
-export { probeOllamaContextWindow, extractContextLength } from "./ollama-probe.ts";
-export { probeLmStudioContextWindow, extractLmStudioContext } from "./lmstudio-probe.ts";
+export { extractLmStudioContext, probeLmStudioContextWindow } from "./lmstudio-probe.ts";
+export { extractContextLength, probeOllamaContextWindow } from "./ollama-probe.ts";
 export { listOpenAICompatibleModels } from "./openai-compat.ts";
-export { readTokenFile, expandHome } from "./auth-file.ts";
+export { PROVIDER_MANIFEST, type ProviderManifestEntry } from "./provider-manifest.ts";
+export { ProviderRegistry } from "./registry.ts";
+export { formatModelString, parseModelString } from "./resolve.ts";
+export type {
+  ModelInfo,
+  ModelRef,
+  PricingTier,
+  ProviderAuth,
+  ProviderCreateOptions,
+  ProviderDef,
+} from "./types.ts";

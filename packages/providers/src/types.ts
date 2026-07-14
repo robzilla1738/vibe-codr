@@ -1,5 +1,5 @@
-import type { LanguageModel, EmbeddingModel } from "ai";
 import type { ProviderConfig } from "@vibe/config";
+import type { EmbeddingModel, LanguageModel } from "ai";
 
 /**
  * One long-context pricing tier from models.dev `cost.tiers`: once a request's
@@ -58,6 +58,11 @@ export interface ProviderAuth {
   baseURLEnv?: string;
   /** True when keyless auth is allowed but an endpoint URL is still required. */
   requiresBaseURL?: boolean;
+  /** Environment-variable groups that can construct the endpoint without an
+   * explicit base URL. A provider is ready when every name in any group is set. */
+  endpointEnvGroups?: readonly (readonly string[])[];
+  /** External credential chain whose readiness is not represented by apiKey. */
+  externalAuth?: "aws" | "google-adc";
   /** True for providers that need no key (e.g. LM Studio on localhost). */
   keyless?: boolean;
   /** Default credential file to read a token from (e.g. Codex's auth.json). */

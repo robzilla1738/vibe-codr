@@ -1,8 +1,9 @@
-import type { LanguageModel, EmbeddingModel } from "ai";
-import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { VibeError } from "@vibe/shared";
-import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
+import type { EmbeddingModel, LanguageModel } from "ai";
+import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
+import { PROVIDER_MANIFEST } from "./provider-manifest.ts";
+import type { ModelInfo, ProviderCreateOptions, ProviderDef } from "./types.ts";
 
 /** Wall-clock bound on the `/v1/models` listing fetch. Without it a blackholed
  * custom baseURL hangs `/models`, `--models`, the model picker, and onboarding
@@ -24,6 +25,10 @@ const PROVIDER_MODULES: Record<string, () => Promise<unknown>> = {
   "@ai-sdk/openai": () => import("@ai-sdk/openai"),
   "@ai-sdk/deepseek": () => import("@ai-sdk/deepseek"),
   "@ai-sdk/openai-compatible": () => import("@ai-sdk/openai-compatible"),
+  "@ai-sdk/amazon-bedrock": () => import("@ai-sdk/amazon-bedrock"),
+  "@ai-sdk/azure": () => import("@ai-sdk/azure"),
+  "@ai-sdk/google-vertex": () => import("@ai-sdk/google-vertex"),
+  "@ai-sdk/google-vertex/anthropic": () => import("@ai-sdk/google-vertex/anthropic"),
 };
 
 /**
@@ -52,6 +57,7 @@ interface BuiltinSpec {
   baseURL: string;
   baseURLEnv?: string;
   requiresBaseURL?: boolean;
+  endpointEnvGroups?: readonly (readonly string[])[];
   keyless?: boolean;
   /**
    * Hosted endpoint used automatically when an API key is present and no base
@@ -61,9 +67,13 @@ interface BuiltinSpec {
   cloudBaseURL?: string;
   /** Default credential file (e.g. a subscription/OAuth token from another CLI). */
   tokenFile?: string;
+  tokenPath?: string;
   /** SDK package + factory export name. */
   module?: string;
   factory?: string;
+  /** Native cloud SDK whose auth/URL construction is not API-key compatible. */
+  native?: "bedrock" | "azure" | "vertex";
+  externalAuth?: "aws" | "google-adc";
 }
 
 const BUILTINS: BuiltinSpec[] = [
@@ -405,6 +415,296 @@ const BUILTINS: BuiltinSpec[] = [
   },
 ];
 
+const SUPPORTED_MANIFEST_SDKS: Record<string, Pick<BuiltinSpec, "module" | "factory">> = {
+  "@ai-sdk/anthropic": { module: "@ai-sdk/anthropic", factory: "createAnthropic" },
+  "@ai-sdk/deepseek": { module: "@ai-sdk/deepseek", factory: "createDeepSeek" },
+  "@ai-sdk/openai": { module: "@ai-sdk/openai", factory: "createOpenAI" },
+  "@ai-sdk/openai-compatible": {
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+};
+
+/** Hermes provider slugs that differ from models.dev/vibe-codr ids. These are
+ * real aliases with their own documented credentials and regional endpoints,
+ * not UI-only names, so model strings copied from Hermes work unchanged. */
+const HERMES_COMPAT_SPECS: BuiltinSpec[] = [
+  {
+    id: "nous",
+    env: ["NOUS_API_KEY"],
+    baseURL: "https://inference.nousresearch.com/v1",
+    tokenFile: "~/.hermes/auth.json",
+    tokenPath: "providers.nous.tokens.access_token",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "arcee",
+    env: ["ARCEEAI_API_KEY"],
+    baseURL: "https://api.arcee.ai/api/v1",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "azure-foundry",
+    env: ["AZURE_FOUNDRY_API_KEY"],
+    baseURL: "",
+    baseURLEnv: "AZURE_FOUNDRY_BASE_URL",
+    requiresBaseURL: true,
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "copilot",
+    env: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
+    baseURL: "https://api.githubcopilot.com",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "gmi",
+    env: ["GMI_API_KEY", "GMICLOUD_API_KEY"],
+    baseURL: "https://api.gmi-serving.com/v1",
+    baseURLEnv: "GMI_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "kilocode",
+    env: ["KILOCODE_API_KEY", "KILO_API_KEY"],
+    baseURL: "https://api.kilo.ai/api/gateway",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "kimi-coding",
+    env: ["KIMI_API_KEY", "KIMI_CODING_API_KEY", "MOONSHOT_API_KEY"],
+    baseURL: "https://api.moonshot.ai/v1",
+    baseURLEnv: "KIMI_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "kimi-coding-cn",
+    env: ["KIMI_CN_API_KEY", "MOONSHOT_API_KEY"],
+    baseURL: "https://api.moonshot.cn/v1",
+    baseURLEnv: "KIMI_CN_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "minimax-cn",
+    env: ["MINIMAX_CN_API_KEY", "MINIMAX_API_KEY"],
+    baseURL: "https://api.minimaxi.com/anthropic/v1",
+    baseURLEnv: "MINIMAX_CN_BASE_URL",
+    module: "@ai-sdk/anthropic",
+    factory: "createAnthropic",
+  },
+  {
+    id: "minimax-oauth",
+    env: ["MINIMAX_API_KEY"],
+    baseURL: "https://api.minimax.io/anthropic/v1",
+    tokenFile: "~/.hermes/auth.json",
+    tokenPath: "providers.minimax-oauth.tokens.access_token",
+    module: "@ai-sdk/anthropic",
+    factory: "createAnthropic",
+  },
+  {
+    id: "novita",
+    env: ["NOVITA_API_KEY"],
+    baseURL: "https://api.novita.ai/openai/v1",
+    baseURLEnv: "NOVITA_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "ollama-cloud",
+    env: ["OLLAMA_API_KEY"],
+    baseURL: "https://ollama.com/v1",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "openai-codex",
+    env: ["CODEX_API_KEY", "OPENAI_API_KEY"],
+    baseURL: "https://chatgpt.com/backend-api/codex",
+    baseURLEnv: "CODEX_BASE_URL",
+    tokenFile: "~/.codex/auth.json",
+    module: "@ai-sdk/openai",
+    factory: "createOpenAI",
+  },
+  {
+    id: "openai-api",
+    env: ["OPENAI_API_KEY"],
+    baseURL: "https://api.openai.com/v1",
+    baseURLEnv: "OPENAI_BASE_URL",
+    module: "@ai-sdk/openai",
+    factory: "createOpenAI",
+  },
+  {
+    id: "gemini",
+    env: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+    baseURLEnv: "GOOGLE_BASE_URL",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "opencode-zen",
+    env: ["OPENCODE_ZEN_API_KEY", "OPENCODE_API_KEY"],
+    baseURL: "https://opencode.ai/zen/v1",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "opencode-go",
+    env: ["OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"],
+    baseURL: "https://opencode.ai/zen/go/v1",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "qwen-oauth",
+    env: ["QWEN_API_KEY"],
+    baseURL: "https://portal.qwen.ai/v1",
+    tokenFile: "~/.hermes/auth.json",
+    tokenPath: "providers.qwen-oauth.tokens.access_token",
+    module: "@ai-sdk/openai-compatible",
+    factory: "createOpenAICompatible",
+  },
+  {
+    id: "xai-oauth",
+    env: ["XAI_API_KEY"],
+    baseURL: "https://api.x.ai/v1",
+    tokenFile: "~/.hermes/auth.json",
+    tokenPath: "providers.xai-oauth.tokens.access_token",
+    module: "@ai-sdk/openai",
+    factory: "createOpenAI",
+  },
+];
+
+const NATIVE_CLOUD_SPECS: BuiltinSpec[] = [
+  {
+    id: "amazon-bedrock",
+    env: [],
+    baseURL: "",
+    keyless: true,
+    module: "@ai-sdk/amazon-bedrock",
+    factory: "createAmazonBedrock",
+    native: "bedrock",
+    externalAuth: "aws",
+  },
+  {
+    id: "bedrock",
+    env: [],
+    baseURL: "",
+    keyless: true,
+    module: "@ai-sdk/amazon-bedrock",
+    factory: "createAmazonBedrock",
+    native: "bedrock",
+    externalAuth: "aws",
+  },
+  {
+    id: "azure",
+    env: ["AZURE_API_KEY"],
+    baseURL: "",
+    requiresBaseURL: true,
+    endpointEnvGroups: [["AZURE_RESOURCE_NAME"]],
+    module: "@ai-sdk/azure",
+    factory: "createAzure",
+    native: "azure",
+  },
+  {
+    id: "azure-cognitive-services",
+    env: ["AZURE_COGNITIVE_SERVICES_API_KEY"],
+    baseURL: "",
+    requiresBaseURL: true,
+    endpointEnvGroups: [["AZURE_COGNITIVE_SERVICES_RESOURCE_NAME"]],
+    module: "@ai-sdk/azure",
+    factory: "createAzure",
+    native: "azure",
+  },
+  {
+    id: "google-vertex",
+    env: [],
+    baseURL: "",
+    keyless: true,
+    requiresBaseURL: true,
+    endpointEnvGroups: [
+      ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+      ["VERTEX_PROJECT_ID", "VERTEX_REGION"],
+    ],
+    module: "@ai-sdk/google-vertex",
+    factory: "createVertex",
+    native: "vertex",
+    externalAuth: "google-adc",
+  },
+  {
+    id: "google-vertex-anthropic",
+    env: [],
+    baseURL: "",
+    keyless: true,
+    requiresBaseURL: true,
+    endpointEnvGroups: [
+      ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+      ["VERTEX_PROJECT_ID", "VERTEX_REGION"],
+    ],
+    module: "@ai-sdk/google-vertex/anthropic",
+    factory: "createVertexAnthropic",
+    native: "vertex",
+    externalAuth: "google-adc",
+  },
+  {
+    id: "vertex",
+    env: [],
+    baseURL: "",
+    keyless: true,
+    requiresBaseURL: true,
+    endpointEnvGroups: [
+      ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION"],
+      ["VERTEX_PROJECT_ID", "VERTEX_REGION"],
+    ],
+    module: "@ai-sdk/google-vertex",
+    factory: "createVertex",
+    native: "vertex",
+    externalAuth: "google-adc",
+  },
+];
+
+/**
+ * OpenCode gets its broad provider coverage from models.dev rather than a
+ * hand-maintained switch. Mirror that architecture for every HTTP provider we
+ * can drive through the SDK families bundled by vibe-codr. Providers whose
+ * models.dev entry names a native SDK we do not bundle still get a safe
+ * OpenAI-compatible fallback when the catalog publishes an API URL; otherwise
+ * they remain configurable through an explicit baseURL instead of pretending
+ * that key-only setup is sufficient.
+ */
+function manifestSpecs(): BuiltinSpec[] {
+  const fixed = new Set(
+    [...BUILTINS, ...HERMES_COMPAT_SPECS, ...NATIVE_CLOUD_SPECS].map((spec) => spec.id),
+  );
+  return PROVIDER_MANIFEST.flatMap((provider) => {
+    if (fixed.has(provider.id)) return [];
+    const supported = SUPPORTED_MANIFEST_SDKS[provider.npm];
+    const transport = supported ?? SUPPORTED_MANIFEST_SDKS["@ai-sdk/openai-compatible"]!;
+    return [
+      {
+        id: provider.id,
+        env: [...provider.env],
+        baseURL: provider.baseURL,
+        requiresBaseURL: provider.baseURL.length === 0,
+        keyless: provider.env.length === 0,
+        ...transport,
+      },
+    ];
+  });
+}
+
+function expandEnvironmentTemplate(value: string): string {
+  return value.replace(/\$\{([A-Z0-9_]+)\}/g, (_match, name: string) => process.env[name] ?? "");
+}
+
 /** Build the AI-SDK provider instance (shared by language + embedding models). */
 async function buildProvider(
   spec: BuiltinSpec,
@@ -415,7 +715,7 @@ async function buildProvider(
   // A provider with no default base URL (the generic `custom` provider) is
   // unusable until one is set — fail with an actionable message rather than
   // letting the SDK build a broken relative URL.
-  if (!url) {
+  if (!url && !spec.native) {
     throw new VibeError(
       `Provider "${spec.id}" needs a base URL. Set config.providers.${spec.id}.baseURL or $${spec.baseURLEnv ?? "BASE_URL"}.`,
       "PROVIDER_CONFIG",
@@ -430,22 +730,66 @@ async function buildProvider(
     );
   }
   // openai-compatible needs a `name`; others ignore extra fields.
-  return factory({
-    name: spec.id,
-    apiKey: opts.apiKey ?? "not-needed",
-    baseURL: url,
-    ...(opts.headers ? { headers: opts.headers } : {}),
-  }) as (modelId: string) => unknown;
+  const settings = await (async () => {
+    if (spec.native === "bedrock") {
+      const hasStaticCredentials = Boolean(
+        process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY,
+      );
+      const credentialProvider = hasStaticCredentials
+        ? undefined
+        : (await import("@aws-sdk/credential-providers")).fromNodeProviderChain(
+            process.env.AWS_PROFILE ? { profile: process.env.AWS_PROFILE } : {},
+          );
+      return {
+        region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION,
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        sessionToken: process.env.AWS_SESSION_TOKEN,
+        ...(credentialProvider ? { credentialProvider } : {}),
+        ...(url ? { baseURL: url } : {}),
+        ...(opts.headers ? { headers: opts.headers } : {}),
+      };
+    }
+    if (spec.native === "azure") {
+      const resourceEnv =
+        spec.id === "azure-cognitive-services"
+          ? "AZURE_COGNITIVE_SERVICES_RESOURCE_NAME"
+          : "AZURE_RESOURCE_NAME";
+      return {
+        apiKey: opts.apiKey,
+        resourceName: process.env[resourceEnv],
+        ...(url ? { baseURL: url } : {}),
+        ...(opts.headers ? { headers: opts.headers } : {}),
+      };
+    }
+    if (spec.native === "vertex") {
+      return {
+        project: process.env.GOOGLE_VERTEX_PROJECT ?? process.env.VERTEX_PROJECT_ID,
+        location: process.env.GOOGLE_VERTEX_LOCATION ?? process.env.VERTEX_REGION,
+        ...(url ? { baseURL: url } : {}),
+        ...(opts.headers ? { headers: opts.headers } : {}),
+      };
+    }
+    return {
+      name: spec.id,
+      apiKey: opts.apiKey ?? "not-needed",
+      baseURL: url,
+      ...(opts.headers ? { headers: opts.headers } : {}),
+    };
+  })();
+  return factory(settings) as (modelId: string) => unknown;
 }
 
 function buildDef(spec: BuiltinSpec): ProviderDef {
   const baseURL = (opts: ProviderCreateOptions): string =>
-    opts.baseURL ??
-    (spec.baseURLEnv ? process.env[spec.baseURLEnv] : undefined) ??
-    // With a key and no explicit override, prefer the hosted cloud endpoint
-    // (e.g. Ollama Cloud) over the local default.
-    (spec.cloudBaseURL && opts.apiKey ? spec.cloudBaseURL : undefined) ??
-    spec.baseURL;
+    expandEnvironmentTemplate(
+      opts.baseURL ??
+        (spec.baseURLEnv ? process.env[spec.baseURLEnv] : undefined) ??
+        // With a key and no explicit override, prefer the hosted cloud endpoint
+        // (e.g. Ollama Cloud) over the local default.
+        (spec.cloudBaseURL && opts.apiKey ? spec.cloudBaseURL : undefined) ??
+        spec.baseURL,
+    );
 
   return {
     id: spec.id,
@@ -453,8 +797,11 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       env: spec.env,
       baseURLEnv: spec.baseURLEnv,
       requiresBaseURL: spec.requiresBaseURL,
+      endpointEnvGroups: spec.endpointEnvGroups,
+      externalAuth: spec.externalAuth,
       keyless: spec.keyless,
       tokenFile: spec.tokenFile,
+      tokenPath: spec.tokenPath,
     },
 
     async create(modelId, opts): Promise<LanguageModel> {
@@ -495,6 +842,7 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
     },
 
     async listModels(opts): Promise<ModelInfo[]> {
+      if (spec.native) return [];
       const url = baseURL(opts);
       if (!url) return []; // no endpoint configured yet (e.g. custom) → nothing to list
       return listOpenAICompatibleModels(
@@ -510,5 +858,7 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
 
 /** The full set of built-in provider definitions. */
 export function builtinProviders(): ProviderDef[] {
-  return BUILTINS.map(buildDef);
+  return [...BUILTINS, ...HERMES_COMPAT_SPECS, ...NATIVE_CLOUD_SPECS, ...manifestSpecs()].map(
+    buildDef,
+  );
 }

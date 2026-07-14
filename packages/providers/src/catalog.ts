@@ -1,8 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createLogger, type Logger } from "@vibe/shared";
-import type { ModelInfo, PricingTier } from "./types.ts";
 import { knownModelDefaults } from "./known-models.ts";
+import type { ModelInfo, PricingTier } from "./types.ts";
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
@@ -26,6 +26,22 @@ export const PROVIDER_SLUG_ALIASES: Record<string, string> = {
   // Hosted ollama.com ids (e.g. `glm-5.2`, `gpt-oss:120b`) are cataloged under
   // `ollama-cloud`; purely local tags miss and fall back as before.
   ollama: "ollama-cloud",
+  bedrock: "amazon-bedrock",
+  copilot: "github-copilot",
+  gemini: "google",
+  gmi: "gmicloud",
+  kilocode: "kilo",
+  "kimi-coding": "kimi-for-coding",
+  "kimi-coding-cn": "moonshotai-cn",
+  "minimax-oauth": "minimax",
+  nous: "openrouter",
+  novita: "novita-ai",
+  "openai-api": "openai",
+  "openai-codex": "openai",
+  "opencode-zen": "opencode",
+  "qwen-oauth": "alibaba",
+  vertex: "google-vertex",
+  "xai-oauth": "xai",
 };
 
 /** Rewrite the provider prefix of a `provider/model` key to its catalog slug. */
@@ -155,9 +171,9 @@ export function resolveCatalogWindow(
 
 /**
  * Fetches the models.dev catalog (capabilities, context window, pricing) and
- * uses it to ENRICH live `/v1/models` results. Live ids are the source of
- * truth for availability; models.dev supplies metadata. Cached to disk with a
- * 24h TTL and degraded gracefully when offline.
+ * uses it to enrich live `/v1/models` results and supply catalog models for
+ * configured providers that do not expose model discovery. Cached to disk with
+ * a 24h TTL and degraded gracefully when offline.
  */
 export class CatalogService {
   #log: Logger;
@@ -261,10 +277,16 @@ export class CatalogService {
     return undefined;
   }
 
-  /** Enrich live models with models.dev metadata (best-effort, awaits load). */
-  async enrich(live: ModelInfo[]): Promise<ModelInfo[]> {
+  /** Enrich live models with models.dev metadata. When configured provider ids
+   * are supplied, union in their catalog models as well. This matches
+   * OpenCode/Hermes behavior for APIs such as Perplexity and native clouds that
+   * have no portable `/models` endpoint. Live records still win on collision. */
+  async enrich(
+    live: ModelInfo[],
+    configuredProviderIds: readonly string[] = [],
+  ): Promise<ModelInfo[]> {
     const meta = await this.#load();
-    return live.map((m) => {
+    const enriched = live.map((m) => {
       const key = `${m.providerId}/${m.id}`;
       const extra = meta.get(aliasModelKey(key));
       const known = knownModelDefaults(key);
@@ -297,6 +319,28 @@ export class CatalogService {
       }
       return Object.keys(base).length ? { ...base, ...m } : m;
     });
+    if (configuredProviderIds.length === 0) return enriched;
+
+    const seen = new Set(enriched.map((model) => `${model.providerId}/${model.id}`));
+    for (const configuredId of configuredProviderIds) {
+      // Local Ollama must not inherit or display the paid cloud catalog merely
+      // because the keyless daemon provider is always registered.
+      const catalogId =
+        configuredId === "ollama" && !process.env.OLLAMA_API_KEY
+          ? configuredId
+          : (PROVIDER_SLUG_ALIASES[configuredId] ?? configuredId);
+      for (const model of meta.values()) {
+        if (model.providerId !== catalogId || !model.id) continue;
+        const key = `${configuredId}/${model.id}`;
+        if (seen.has(key)) continue;
+        enriched.push({ ...model, providerId: configuredId } as ModelInfo);
+        seen.add(key);
+      }
+    }
+    return enriched.sort(
+      (a, b) =>
+        a.providerId.localeCompare(b.providerId) || (a.name ?? a.id).localeCompare(b.name ?? b.id),
+    );
   }
 
   /**

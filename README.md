@@ -7,13 +7,12 @@
 
 A **model-agnostic** CLI coding agent for the terminal — in the
 class of Claude Code / Codex / opencode, but able to drive coding and agentic
-tasks on *any* model: local models via **Ollama** and **LM Studio**, aggregators
-(**OpenRouter, Fireworks, Together, Baseten, Hugging Face**), and first-party
-providers (**OpenAI, Anthropic, Google Gemini, Meta Muse Spark, Z.ai/GLM, Moonshot/Kimi,
-Alibaba/Qwen, DeepSeek, xAI/Grok, Groq, Mistral, Cerebras, Perplexity,
-MiniMax**) — plus **OpenAI Codex via your `codex login` session** and a
-generic **custom** provider for any OpenAI-compatible endpoint (your own base URL +
-key). Model context windows, pricing, and capabilities come live from
+tasks on *any* model: the complete generated **models.dev** provider registry
+(the same breadth source used by OpenCode), Hermes-compatible provider ids and
+credential files, local models through **Ollama** and **LM Studio**, and native
+**AWS Bedrock**, **Google Vertex**, and **Azure OpenAI** routes. A generic
+**custom** provider covers any additional OpenAI-compatible endpoint. Model
+context windows, pricing, capabilities, and catalog-only model listings come from
 [models.dev](https://models.dev) (24h cache; `/models refresh` to force the
 latest), with a small published fallback for brand-new APIs not yet in the
 catalog (e.g. Meta Muse Spark 1.1).
@@ -767,13 +766,13 @@ Model strings are `<provider>/<model-id>` (split on the first slash):
 
 #### Providers & subscription auth
 
-All providers run on **AI SDK v5**. anthropic/openai/deepseek use their dedicated
-v5 SDKs; every other provider (meta, google, zai, moonshot, alibaba, xai, groq,
-mistral, cerebras, together, fireworks, baseten, huggingface, openrouter,
-perplexity, minimax, nvidia, deepinfra, venice, cohere, kilo, llmgateway, zenmux,
-snowflake-cortex, cloudflare-workers-ai, ollama, lmstudio, custom) is driven through
-`@ai-sdk/openai-compatible` so it works out of the box without chasing
-incompatible SDK majors. Open reasoning models served this way (a `deepseek-r1`
+The provider manifest is generated from `models.dev/api.json`; `ProviderRegistry`
+registers every current entry, while explicit overrides preserve each provider's
+documented endpoint, environment variables, and transport. Anthropic, OpenAI,
+DeepSeek, Bedrock, Vertex, and Azure use compatible native AI SDKs; standard HTTP
+providers use the shared OpenAI-compatible driver. Providers whose vendor-only
+SDK has no portable endpoint require an explicit `providers.<id>.baseURL`.
+Open reasoning models served through the compatibility driver (a `deepseek-r1`
 or `qwen` on Ollama, say) emit their chain-of-thought inline as `<think>…</think>`
 — vibe-codr extracts it into real reasoning, so it streams to the Thinking panel
 instead of leaking into the visible reply.
@@ -791,6 +790,10 @@ instead of leaking into the visible reply.
 | `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` (or `CODEX_API_KEY`) | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
 | `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
 | `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — model ids need no `-cloud` suffix, e.g. `ollama/gpt-oss:120b`; run `vibecodr models` to list yours. Override the host with `OLLAMA_BASE_URL`. |
+| `amazon-bedrock` / `bedrock` | standard AWS credential chain | Native Bedrock Converse transport; supports profiles, access keys, IAM/web identity, container credentials, and bearer tokens. |
+| `google-vertex` / `vertex` | Google Application Default Credentials | Native Vertex transport; set project/location with `GOOGLE_VERTEX_PROJECT` + `GOOGLE_VERTEX_LOCATION` (Hermes aliases also accept `VERTEX_PROJECT_ID` + `VERTEX_REGION`). |
+| `azure` | `AZURE_API_KEY` plus resource name or base URL | Native Azure OpenAI transport. `azure-foundry` remains the explicit-endpoint Hermes-compatible route. |
+| Hermes aliases (`nous`, `openai-api`, `openai-codex`, `xai-oauth`, `kimi-coding`, `minimax-oauth`, `opencode-zen`, …) | matching Hermes env vars or token files | Model strings copied from Hermes resolve unchanged. OAuth-token aliases reuse `~/.hermes/auth.json` where the stored token path is stable. |
 
 **Any** provider can authenticate from a credential file or with extra headers —
 useful for subscription/OAuth tokens another CLI obtained:

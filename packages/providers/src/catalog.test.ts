@@ -1,11 +1,11 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import {
+  aliasModelKey,
+  CatalogService,
+  PROVIDER_SLUG_ALIASES,
   parseModelsDev,
   resolveCatalogPrice,
   resolveCatalogWindow,
-  aliasModelKey,
-  PROVIDER_SLUG_ALIASES,
-  CatalogService,
 } from "./catalog.ts";
 
 test("resolveCatalogPrice: exact match is real, base-model match is estimated", () => {
@@ -248,6 +248,59 @@ test("enrich resolves metadata through the alias (fireworks → fireworks-ai)", 
     expect(enriched?.contextWindow).toBe(160000);
     expect(enriched?.name).toBe("DeepSeek V4 Pro");
     expect(enriched?.providerId).toBe("fireworks"); // live id wins
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("enrich supplies catalog models when a configured provider has no /models endpoint", async () => {
+  const cat = new CatalogService();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        perplexity: {
+          models: {
+            "sonar-pro": {
+              name: "Sonar Pro",
+              limit: { context: 200000, output: 8192 },
+              tool_call: true,
+            },
+          },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as unknown as typeof fetch;
+  try {
+    await cat.refresh();
+    const models = await cat.enrich([], ["perplexity"]);
+    expect(models).toEqual([
+      expect.objectContaining({ id: "sonar-pro", providerId: "perplexity", name: "Sonar Pro" }),
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("catalog fallback preserves Hermes-compatible provider ids through aliases", async () => {
+  const cat = new CatalogService();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        "novita-ai": { models: { "zai-org/glm-5": { name: "GLM 5" } } },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as unknown as typeof fetch;
+  try {
+    await cat.refresh();
+    const models = await cat.enrich([], ["novita"]);
+    expect(models[0]).toEqual(
+      expect.objectContaining({
+        id: "zai-org/glm-5",
+        providerId: "novita",
+      }),
+    );
   } finally {
     globalThis.fetch = realFetch;
   }

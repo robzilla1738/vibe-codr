@@ -1,10 +1,11 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig, type Config } from "@vibe/config";
-import { ProviderRegistry } from "./registry.ts";
+import { type Config, defaultConfig } from "@vibe/config";
 import { builtinProviders } from "./defs.ts";
+import { PROVIDER_MANIFEST } from "./provider-manifest.ts";
+import { ProviderRegistry } from "./registry.ts";
 
 function withProvider(id: string, cfg: Record<string, unknown>): Config {
   const base = defaultConfig();
@@ -29,6 +30,84 @@ test("the new providers are registered", () => {
     "custom",
   ]) {
     expect(reg.has(id)).toBe(true);
+  }
+});
+
+test("the registry covers the complete generated models.dev provider manifest", () => {
+  const reg = new ProviderRegistry();
+  expect(PROVIDER_MANIFEST.length).toBeGreaterThanOrEqual(75);
+  for (const provider of PROVIDER_MANIFEST) {
+    expect(reg.has(provider.id)).toBe(true);
+  }
+});
+
+test("catalog-generated providers keep endpoint templates and credential envs", () => {
+  const reg = new ProviderRegistry();
+  expect(reg.get("novita-ai")?.auth.env).toContain("NOVITA_API_KEY");
+  expect(reg.get("github-copilot")?.auth.env).toContain("GITHUB_TOKEN");
+  expect(reg.get("alibaba-coding-plan")?.auth.env).toContain("ALIBABA_CODING_PLAN_API_KEY");
+  expect(reg.get("xiaomi")?.auth.env).toContain("XIAOMI_API_KEY");
+  expect(reg.get("stepfun")?.auth.env).toContain("STEPFUN_API_KEY");
+});
+
+test("Hermes-compatible provider ids resolve without translation", () => {
+  const reg = new ProviderRegistry();
+  for (const id of [
+    "nous",
+    "openai-api",
+    "openai-codex",
+    "xai-oauth",
+    "copilot",
+    "gemini",
+    "kimi-coding",
+    "kimi-coding-cn",
+    "minimax-cn",
+    "minimax-oauth",
+    "arcee",
+    "gmi",
+    "kilocode",
+    "novita",
+    "ollama-cloud",
+    "opencode-zen",
+    "opencode-go",
+    "qwen-oauth",
+    "bedrock",
+    "vertex",
+    "azure-foundry",
+  ]) {
+    expect(reg.has(id)).toBe(true);
+  }
+});
+
+test("native cloud providers construct the AI SDK model family they require", async () => {
+  const previous = {
+    project: process.env.GOOGLE_VERTEX_PROJECT,
+    location: process.env.GOOGLE_VERTEX_LOCATION,
+  };
+  process.env.GOOGLE_VERTEX_PROJECT = "test-project";
+  process.env.GOOGLE_VERTEX_LOCATION = "us-central1";
+  try {
+    const providers = builtinProviders();
+    const bedrock = (await providers
+      .find((provider) => provider.id === "bedrock")!
+      .create("us.anthropic.claude-sonnet-4-6", {})) as { specificationVersion?: string };
+    const vertex = (await providers
+      .find((provider) => provider.id === "vertex")!
+      .create("gemini-3.1-pro-preview", {})) as { specificationVersion?: string };
+    const azure = (await providers
+      .find((provider) => provider.id === "azure")!
+      .create("gpt-5.4", {
+        apiKey: "test",
+        baseURL: "https://example.openai.azure.com/openai",
+      })) as { specificationVersion?: string };
+    expect(bedrock.specificationVersion).toBe("v1");
+    expect(vertex.specificationVersion).toBe("v2");
+    expect(azure.specificationVersion).toBe("v2");
+  } finally {
+    if (previous.project === undefined) delete process.env.GOOGLE_VERTEX_PROJECT;
+    else process.env.GOOGLE_VERTEX_PROJECT = previous.project;
+    if (previous.location === undefined) delete process.env.GOOGLE_VERTEX_LOCATION;
+    else process.env.GOOGLE_VERTEX_LOCATION = previous.location;
   }
 });
 

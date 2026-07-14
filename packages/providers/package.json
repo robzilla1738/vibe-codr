@@ -19,15 +19,23 @@
     "ai": "^5.0.0"
   },
   "peerDependencies": {
+    "@ai-sdk/amazon-bedrock": "^2.0.0",
     "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/azure": "^2.0.0",
     "@ai-sdk/deepseek": "^1.0.0",
+    "@ai-sdk/google-vertex": "^3.0.0",
     "@ai-sdk/openai": "^2.0.0",
-    "@ai-sdk/openai-compatible": "^1.0.0"
+    "@ai-sdk/openai-compatible": "^1.0.0",
+    "@aws-sdk/credential-providers": "^3.0.0"
   },
   "peerDependenciesMeta": {
+    "@ai-sdk/amazon-bedrock": { "optional": true },
     "@ai-sdk/anthropic": { "optional": true },
+    "@ai-sdk/azure": { "optional": true },
     "@ai-sdk/deepseek": { "optional": true },
+    "@ai-sdk/google-vertex": { "optional": true },
     "@ai-sdk/openai": { "optional": true },
-    "@ai-sdk/openai-compatible": { "optional": true }
+    "@ai-sdk/openai-compatible": { "optional": true },
+    "@aws-sdk/credential-providers": { "optional": true }
   }
 }

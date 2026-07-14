@@ -1,10 +1,13 @@
-import type { LanguageModel, EmbeddingModel } from "ai";
-import { ModelResolutionError, ProviderAuthError } from "@vibe/shared";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "@vibe/config";
-import type { ProviderDef, ProviderCreateOptions, ModelInfo } from "./types.ts";
-import { parseModelString } from "./resolve.ts";
-import { builtinProviders } from "./defs.ts";
+import { ModelResolutionError, ProviderAuthError } from "@vibe/shared";
+import type { EmbeddingModel, LanguageModel } from "ai";
 import { readTokenFile } from "./auth-file.ts";
+import { builtinProviders } from "./defs.ts";
+import { parseModelString } from "./resolve.ts";
+import type { ModelInfo, ProviderCreateOptions, ProviderDef } from "./types.ts";
 
 /**
  * Holds provider definitions and turns a model string + config into a live
@@ -75,12 +78,10 @@ export class ProviderRegistry {
   isConfigured(id: string, config: Config): boolean {
     const def = this.#providers.get(id);
     if (!def) return false;
+    if (def.auth.externalAuth && !this.#hasExternalAuth(def.auth.externalAuth)) return false;
     if (def.auth.keyless) {
       if (!def.auth.requiresBaseURL) return true;
-      return Boolean(
-        config.providers[id]?.baseURL ||
-          (def.auth.baseURLEnv ? process.env[def.auth.baseURLEnv] : undefined),
-      );
+      return this.#hasRequiredEndpoint(def, config.providers[id]);
     }
     // A non-keyless provider with requiresBaseURL needs BOTH a key AND a base
     // URL to be truly usable (e.g. Snowflake Cortex, Cloudflare Workers AI —
@@ -88,9 +89,32 @@ export class ProviderRegistry {
     const hasKey = Boolean(this.#resolveKey(def, config.providers[id]));
     if (!hasKey) return false;
     if (!def.auth.requiresBaseURL) return true;
+    return this.#hasRequiredEndpoint(def, config.providers[id]);
+  }
+
+  #hasExternalAuth(kind: "aws" | "google-adc"): boolean {
+    if (kind === "aws") {
+      return Boolean(
+        process.env.AWS_BEARER_TOKEN_BEDROCK ||
+          process.env.AWS_PROFILE ||
+          process.env.AWS_WEB_IDENTITY_TOKEN_FILE ||
+          process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI ||
+          process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI ||
+          (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) ||
+          existsSync(join(homedir(), ".aws", "credentials")),
+      );
+    }
     return Boolean(
-      config.providers[id]?.baseURL ||
-        (def.auth.baseURLEnv ? process.env[def.auth.baseURLEnv] : undefined),
+      process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+        existsSync(join(homedir(), ".config", "gcloud", "application_default_credentials.json")),
+    );
+  }
+
+  #hasRequiredEndpoint(def: ProviderDef, cfg: Config["providers"][string] | undefined): boolean {
+    if (cfg?.baseURL) return true;
+    if (def.auth.baseURLEnv && process.env[def.auth.baseURLEnv]) return true;
+    return (
+      def.auth.endpointEnvGroups?.some((group) => group.every((name) => process.env[name])) ?? false
     );
   }
 

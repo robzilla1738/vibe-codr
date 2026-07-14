@@ -1987,7 +1987,11 @@ export class Engine implements EngineClient {
   /** List models for configured providers, enriched with models.dev metadata. */
   async listModels(): Promise<ModelInfo[]> {
     const live = await this.registry.listConfiguredModels(this.#config);
-    return this.catalog.enrich(live);
+    const configuredProviderIds = this.registry
+      .list()
+      .filter((provider) => this.registry.isConfigured(provider.id, this.#config))
+      .map((provider) => provider.id);
+    return this.catalog.enrich(live, configuredProviderIds);
   }
 
   /** Every known provider + whether it's configured, for the `/providers` menu.

@@ -90,6 +90,22 @@ test("snapshot.commandNames exposes built-ins, custom commands, and skills", asy
   expect(names).toContain("polish"); // skill (invocable as /polish)
 });
 
+test("snapshot restores the durable local-capability resolution surface", () => {
+  const engine = makeEngine();
+  const request = {
+    id: "cap_snapshot_1",
+    integration: "macos",
+    toolName: "open-app",
+    arguments: { application: "Finder" },
+    approvalScope: "once" as const,
+    originatingTurn: "turn_snapshot_1",
+    status: "pending" as const,
+    createdAt: Date.now(),
+  };
+  engine.requestExternalCapability(request);
+  expect(engine.snapshot().pendingCapabilities).toEqual([request]);
+});
+
 test("/accent sets the accent color and emits accent-changed", async () => {
   const engine = makeEngine();
   const { events, stop } = collect(engine);

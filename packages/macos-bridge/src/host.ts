@@ -18,7 +18,7 @@ import {
   SessionStore,
   type PersistedSession,
 } from "@vibe/core";
-import type { EngineCommand } from "@vibe/shared";
+import type { EngineCommand, ExecutionTarget } from "@vibe/shared";
 import {
   decodeInbound,
   type HostInbound,
@@ -126,6 +126,24 @@ export async function runHost(): Promise<void> {
       const id = msg.resume ?? (await store.latestId());
       const loaded = id ? await store.load(id) : null;
       if (loaded) resume = loaded;
+    }
+
+    if (resume) {
+      const cloudProvider = process.env.VIBE_CLOUD_PROVIDER;
+      let target: ExecutionTarget = { kind: "local" };
+      if (process.env.VIBE_CLOUD_RUNTIME === "1") {
+        if (cloudProvider !== "e2b" && cloudProvider !== "vercel") {
+          write({ type: "fatal", message: "cloud runtime is missing a valid VIBE_CLOUD_PROVIDER" });
+          return;
+        }
+        target = { kind: "cloud", provider: cloudProvider };
+      }
+      try {
+        await PortableSessionManager.assertOwner(cwd, resume.meta.id, target);
+      } catch (error) {
+        write({ type: "fatal", message: `session ownership check failed: ${(error as Error).message}` });
+        return;
+      }
     }
 
     const projectMemory = await loadProjectMemory(cwd);

@@ -165,6 +165,17 @@ export class PortableSessionManager {
     this.#ownershipPath = join(this.#sessionDir, OWNERSHIP_FILE);
   }
 
+  static async assertOwner(cwd: string, sessionId: string, expected: ExecutionTarget): Promise<void> {
+    const manager = new PortableSessionManager(cwd, sessionId);
+    const ownership = await readOwnership(manager.#ownershipPath);
+    if (ownership.state !== "owned") throw new Error("session handoff is prepared but not committed");
+    const sameOwner = ownership.owner.kind === expected.kind
+      && (ownership.owner.kind === "local" || ownership.owner.provider === (expected as Extract<ExecutionTarget, { kind: "cloud" }>).provider);
+    if (!sameOwner) {
+      throw new Error(`session is owned by ${ownership.owner.kind === "local" ? "local" : `cloud/${ownership.owner.provider}`}`);
+    }
+  }
+
   async prepare(target: ExecutionTarget, expectedGeneration?: number): Promise<HandoffPreparation> {
     const current = await readOwnership(this.#ownershipPath);
     if (current.state === "prepared") throw new Error("a handoff is already prepared for this session");

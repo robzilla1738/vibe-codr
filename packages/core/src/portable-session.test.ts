@@ -72,4 +72,16 @@ describe("PortableSessionManager", () => {
     const second = await manager.prepare({ kind: "cloud", provider: "vercel" }, 0);
     expect(second.ownershipGeneration).toBe(1);
   });
+
+  test("refuses bootstrap ownership mismatches and prepared generations", async () => {
+    const { source, sessionId } = await fixture();
+    const manager = new PortableSessionManager(source, sessionId);
+    await PortableSessionManager.assertOwner(source, sessionId, { kind: "local" });
+    const prepared = await manager.prepare({ kind: "cloud", provider: "e2b" }, 0);
+    await expect(PortableSessionManager.assertOwner(source, sessionId, { kind: "local" })).rejects.toThrow("prepared");
+    await manager.commit(prepared.nonce);
+    await expect(PortableSessionManager.assertOwner(source, sessionId, { kind: "local" })).rejects.toThrow("cloud/e2b");
+    await PortableSessionManager.assertOwner(source, sessionId, { kind: "cloud", provider: "e2b" });
+    await expect(PortableSessionManager.assertOwner(source, sessionId, { kind: "cloud", provider: "vercel" })).rejects.toThrow("cloud/e2b");
+  });
 });

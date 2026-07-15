@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
-import { cp, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, posix, resolve, sep } from "node:path";
 import type {
   ExecutionTarget,
@@ -76,10 +76,33 @@ function canonicalArchiveHash(files: PortableSessionFileV1[]): string {
 }
 
 async function atomicJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
+  const parent = dirname(path);
+  await mkdir(parent, { recursive: true });
   const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  await rename(tmp, path);
+  let renamed = false;
+  try {
+    const file = await open(tmp, "wx", 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(tmp, path);
+    renamed = true;
+    let directory: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      directory = await open(parent, "r");
+      await directory.sync();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR") throw error;
+    } finally {
+      await directory?.close();
+    }
+  } finally {
+    if (!renamed) await unlink(tmp).catch(() => undefined);
+  }
 }
 
 async function copyIfPresent(source: string, destination: string): Promise<boolean> {

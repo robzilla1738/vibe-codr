@@ -76,7 +76,7 @@ async function readLockOwnerPid(lockDir: string): Promise<number | undefined> {
  * case where the owner file is unreadable. The lock is auto-released on process
  * exit via the `finally`'s `rm`; a crash (SIGKILL/power loss) leaves the stale
  * dir, which the next acquirer detects via PID-probe + stale-time fallback. */
-async function withCheckpointFileLock<T>(file: string, fn: () => Promise<T>): Promise<T> {
+export async function withCheckpointFileLock<T>(file: string, fn: () => Promise<T>): Promise<T> {
   const lockDir = `${file}.lock`;
   await mkdir(dirname(file), { recursive: true });
   for (;;) {

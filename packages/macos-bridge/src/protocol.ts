@@ -18,6 +18,7 @@ export interface HostRpcParams {
   engineRevision?: string;
   archive?: PortableSessionArchiveV1;
   archivePath?: string;
+  provisional?: boolean;
 }
 
 /** Desktop client → Bun */
@@ -53,6 +54,8 @@ export type HostInbound =
         | "prepareHandoff"
         | "exportPortableSession"
         | "importPortableSession"
+        | "commitPortableImport"
+        | "abortPortableImport"
         | "commitHandoff"
         | "abortHandoff";
       params?: HostRpcParams;
@@ -105,6 +108,8 @@ const RPC_METHODS = new Set<RpcMethod>([
   "prepareHandoff",
   "exportPortableSession",
   "importPortableSession",
+  "commitPortableImport",
+  "abortPortableImport",
   "commitHandoff",
   "abortHandoff",
 ]);
@@ -236,16 +241,27 @@ function optionalSafeNonNegativeInteger(value: unknown): boolean {
 
 function executionTarget(value: unknown): boolean {
   const target = record(value);
-  return !!target && (target.kind === "local" || (target.kind === "cloud" && (target.provider === "e2b" || target.provider === "vercel")));
+  return (
+    !!target &&
+    (target.kind === "local" ||
+      (target.kind === "cloud" && (target.provider === "e2b" || target.provider === "vercel")))
+  );
 }
 
 function portableArchive(value: unknown): boolean {
   const archive = record(value);
-  return !!archive && archive.schemaVersion === 1 && typeof archive.sessionId === "string"
-    && typeof archive.sourceRoot === "string" && typeof archive.sourceStateRoot === "string"
-    && Number.isSafeInteger(archive.ownershipGeneration) && typeof archive.engineRevision === "string"
-    && executionTarget(archive.executionTarget) && Array.isArray(archive.files)
-    && typeof archive.archiveSha256 === "string";
+  return (
+    !!archive &&
+    archive.schemaVersion === 1 &&
+    typeof archive.sessionId === "string" &&
+    typeof archive.sourceRoot === "string" &&
+    typeof archive.sourceStateRoot === "string" &&
+    Number.isSafeInteger(archive.ownershipGeneration) &&
+    typeof archive.engineRevision === "string" &&
+    executionTarget(archive.executionTarget) &&
+    Array.isArray(archive.files) &&
+    typeof archive.archiveSha256 === "string"
+  );
 }
 
 function stringArray(value: unknown): boolean {
@@ -309,8 +325,11 @@ function engineCommand(value: unknown): value is EngineCommand {
     case "request-runtime-handoff":
       return executionTarget(command.target) && optionalString(command.instruction);
     case "resolve-external-capability":
-      return typeof command.id === "string" && (command.decision === "approve" || command.decision === "deny")
-        && optionalString(command.error);
+      return (
+        typeof command.id === "string" &&
+        (command.decision === "approve" || command.decision === "deny") &&
+        optionalString(command.error)
+      );
     default:
       return true;
   }
@@ -436,16 +455,29 @@ export function isUIEvent(value: unknown): value is UIEvent {
     case "compacted":
       return Number.isFinite(event.freedTokens);
     case "runtime-handoff-requested":
-      return typeof event.sessionId === "string" && executionTarget(event.target) && optionalString(event.instruction);
+      return (
+        typeof event.sessionId === "string" &&
+        executionTarget(event.target) &&
+        optionalString(event.instruction)
+      );
     case "external-capability-pending": {
       const request = record(event.request);
-      return typeof event.sessionId === "string" && !!request && typeof request.id === "string"
-        && typeof request.integration === "string" && typeof request.toolName === "string"
-        && typeof request.originatingTurn === "string" && Number.isFinite(request.createdAt);
+      return (
+        typeof event.sessionId === "string" &&
+        !!request &&
+        typeof request.id === "string" &&
+        typeof request.integration === "string" &&
+        typeof request.toolName === "string" &&
+        typeof request.originatingTurn === "string" &&
+        Number.isFinite(request.createdAt)
+      );
     }
     case "external-capability-resolved":
-      return typeof event.sessionId === "string" && typeof event.id === "string"
-        && (event.status === "denied" || event.status === "resolved");
+      return (
+        typeof event.sessionId === "string" &&
+        typeof event.id === "string" &&
+        (event.status === "denied" || event.status === "resolved")
+      );
     case "subagent-started":
       return typeof event.subagentId === "string" && typeof event.prompt === "string";
     case "subagent-activity":
@@ -509,14 +541,19 @@ export function decodeInbound(line: string): HostInbound | null {
     if (msg.params !== undefined && !params) return null;
     if (
       params &&
-      (!optionalString(params.cwd) || !optionalString(params.id) || !optionalString(params.name)
-        || !optionalString(params.title) || !optionalString(params.sessionId)
-        || !optionalString(params.nonce) || !optionalString(params.engineRevision)
-        || !optionalString(params.archivePath)
-        || !optionalSafeNonNegativeInteger(params.expectedGeneration)
-        || !optionalSafeNonNegativeInteger(params.ownershipGeneration)
-        || (params.target !== undefined && !executionTarget(params.target))
-        || (params.archive !== undefined && !portableArchive(params.archive)))
+      (!optionalString(params.cwd) ||
+        !optionalString(params.id) ||
+        !optionalString(params.name) ||
+        !optionalString(params.title) ||
+        !optionalString(params.sessionId) ||
+        !optionalString(params.nonce) ||
+        !optionalString(params.engineRevision) ||
+        !optionalString(params.archivePath) ||
+        !optionalBoolean(params.provisional) ||
+        !optionalSafeNonNegativeInteger(params.expectedGeneration) ||
+        !optionalSafeNonNegativeInteger(params.ownershipGeneration) ||
+        (params.target !== undefined && !executionTarget(params.target)) ||
+        (params.archive !== undefined && !portableArchive(params.archive)))
     )
       return null;
     return value as HostInbound;

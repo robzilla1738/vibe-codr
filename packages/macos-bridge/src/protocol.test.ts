@@ -13,6 +13,16 @@ describe("macOS bridge protocol runtime validation", () => {
     });
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: "1", method: "snapshot" }))).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: 1, method: "unknown" }))).toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "rpc",
+          id: 2,
+          method: "importPortableSession",
+          params: { provisional: "true" },
+        }),
+      ),
+    ).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "send", command: { type: "unknown" } }))).toBeNull();
     expect(
       decodeInbound(JSON.stringify({ op: "send", command: { type: "submit-prompt" } })),

@@ -141,7 +141,10 @@ export async function runHost(): Promise<void> {
       try {
         await PortableSessionManager.assertOwner(cwd, resume.meta.id, target);
       } catch (error) {
-        write({ type: "fatal", message: `session ownership check failed: ${(error as Error).message}` });
+        write({
+          type: "fatal",
+          message: `session ownership check failed: ${(error as Error).message}`,
+        });
         return;
       }
     }
@@ -246,14 +249,57 @@ export async function runHost(): Promise<void> {
 
       if (method === "importPortableSession") {
         if ((!params?.archive && !params?.archivePath) || !params.engineRevision) {
-          write({ type: "resp", id, ok: false, error: "archive path and engine revision required" });
+          write({
+            type: "resp",
+            id,
+            ok: false,
+            error: "archive path and engine revision required",
+          });
           return;
         }
         const archive = params.archive ?? JSON.parse(await readFile(params.archivePath!, "utf8"));
         const cwd = params.cwd?.trim() || lastCwd;
-        await PortableSessionManager.import(cwd, archive, params.engineRevision);
+        await PortableSessionManager.import(cwd, archive, params.engineRevision, {
+          provisional: params.provisional === true,
+        });
         lastCwd = cwd;
         write({ type: "resp", id, ok: true, value: { sessionId: archive.sessionId } });
+        return;
+      }
+
+      if (method === "commitPortableImport" || method === "abortPortableImport") {
+        const sessionId = params?.sessionId?.trim();
+        const generation = params?.ownershipGeneration;
+        if (
+          !sessionId ||
+          typeof generation !== "number" ||
+          !Number.isSafeInteger(generation) ||
+          generation < 1
+        ) {
+          write({
+            type: "resp",
+            id,
+            ok: false,
+            error: "session id and ownership generation required",
+          });
+          return;
+        }
+        const cwd = params?.cwd?.trim() || lastCwd;
+        if (method === "commitPortableImport") {
+          await PortableSessionManager.commitImport(cwd, sessionId, generation);
+        } else {
+          if (engine) {
+            write({
+              type: "resp",
+              id,
+              ok: false,
+              error: "portable import abort requires the engine to be shut down",
+            });
+            return;
+          }
+          await PortableSessionManager.abortImport(cwd, sessionId, generation);
+        }
+        write({ type: "resp", id, ok: true, value: null });
         return;
       }
 
@@ -344,7 +390,12 @@ export async function runHost(): Promise<void> {
         }
         case "exportPortableSession": {
           if (!params?.engineRevision || params.ownershipGeneration === undefined) {
-            write({ type: "resp", id, ok: false, error: "engine revision and ownership generation required" });
+            write({
+              type: "resp",
+              id,
+              ok: false,
+              error: "engine revision and ownership generation required",
+            });
             return;
           }
           const value = await engine.exportPortableSession(

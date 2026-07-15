@@ -6,6 +6,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import type { Handoff } from "@vibe/shared";
 import type { TaskResult, TaskSpec } from "../orchestrator.ts";
@@ -100,15 +101,33 @@ export function appendOrchestrationEvent(
  * task ids can't collide. A short hash of the RAW id disambiguates ids that
  * sanitize-equal (`a.b` vs `a_b` → same slug), so the second no longer silently
  * overwrites the first's report on persist/resume. */
-function reportFileName(sessionId: string, taskId: string): string {
+export function sessionReportFilePrefix(sessionId: string): string {
+  const digest = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
+  return `${sanitize(sessionId)}-${digest}--`;
+}
+
+function legacyReportFileName(sessionId: string, taskId: string): string {
   return `${sessionId}-${sanitize(taskId)}-${shortHash(taskId)}.md`;
+}
+
+function reportFileName(sessionId: string, taskId: string): string {
+  return `${sessionReportFilePrefix(sessionId)}${sanitize(taskId)}-${shortHash(taskId)}.md`;
+}
+
+export function isTaskReportFileName(sessionId: string, taskId: string, name: string): boolean {
+  return (
+    name === reportFileName(sessionId, taskId) || name === legacyReportFileName(sessionId, taskId)
+  );
 }
 
 /** The ABSOLUTE path a task's persisted report lives at (under the global state
  * dir). Exposed (not just internal to persistTaskReport) so the ReportStore can
  * locate a report on a resumed session, where its in-memory map is empty. */
 export function taskReportPath(cwd: string, sessionId: string, taskId: string): string {
-  return join(reportsDir(cwd), reportFileName(sessionId, taskId));
+  const modern = join(reportsDir(cwd), reportFileName(sessionId, taskId));
+  if (existsSync(modern)) return modern;
+  const legacy = join(reportsDir(cwd), legacyReportFileName(sessionId, taskId));
+  return existsSync(legacy) ? legacy : modern;
 }
 
 /** Deterministic 8-char hex hash of a string (FNV-1a). Dependency-free and
@@ -132,7 +151,7 @@ export function persistTaskReport(
 ): string | undefined {
   try {
     mkdirSync(reportsDir(cwd), { recursive: true });
-    const abs = taskReportPath(cwd, sessionId, taskId);
+    const abs = join(reportsDir(cwd), reportFileName(sessionId, taskId));
     writeFileSync(abs, report, "utf8");
     return abs;
   } catch {

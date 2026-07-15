@@ -1149,6 +1149,7 @@ export class Engine implements EngineClient {
       commandNames: this.#commandNames(),
       subagentModel: this.#config.subagent.model,
       reasoning: this.#config.reasoning.effort,
+      pendingCapabilities: this.pendingCapabilities(),
       ...(this.#gitState ? { git: this.#gitState } : {}),
     };
   }

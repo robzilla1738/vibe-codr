@@ -1,3 +1,5 @@
+import type { PendingCapabilityRequest } from "./handoff.ts";
+
 /**
  * Core domain types shared across every vibe-codr package.
  * This module is intentionally dependency-light (only `zod`) so it can sit at
@@ -202,4 +204,6 @@ export interface EngineSnapshot {
   reasoning?: string;
   /** Working-tree git state, when in a repo. */
   git?: GitInfo;
+  /** Durable machine-bound requests waiting for the originating desktop. */
+  pendingCapabilities?: PendingCapabilityRequest[];
 }

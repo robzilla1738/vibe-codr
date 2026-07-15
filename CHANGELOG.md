@@ -4,6 +4,16 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.2 — 2026-07-15
+
+### Fixed — seamless desktop-to-cloud continuity
+
+- Cloud bootstrap now proves the imported session resumes with the exact session
+  ID, model, mode, subagent model, and conversation history before reporting it
+  ready, preventing a handoff from silently starting a replacement chat.
+- The desktop theme contract now exposes the warm Vibe Dark palette as the
+  canonical default while preserving legacy theme compatibility.
+
 ## 0.5.1 — 2026-07-13
 
 ### Fixed — production-readiness audit (BUG-110–119)

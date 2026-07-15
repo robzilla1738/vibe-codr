@@ -43,6 +43,7 @@ let branch: string | null = null;
 let bundlePath: string | undefined;
 let stagedPatchPath: string | undefined;
 let worktreePatchPath: string | undefined;
+const submodules: Array<{ path: string; head: string | null; bundlePath?: string }> = [];
 try {
   head = (await exec("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" })).stdout.trim();
   branch = (await exec("git", ["branch", "--show-current"], { cwd: root, encoding: "utf8" })).stdout.trim() || null;
@@ -55,8 +56,23 @@ try {
   const worktree = (await exec("git", ["diff", "--binary", "--full-index"], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })).stdout;
   if (worktree) { worktreePatchPath = "git/worktree.patch"; files.push({ path: worktreePatchPath, contentBase64: Buffer.from(worktree).toString("base64") }); }
 } catch { /* non-git or unborn */ }
+if (head) {
+  const status = (await exec("git", ["submodule", "status", "--recursive"], { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })).stdout;
+  for (const line of status.split("\n")) {
+    const match = line.match(/^[ +-U]?([0-9a-f]{40,64})\s+([^\s]+)(?:\s|$)/);
+    if (!match?.[1] || !match[2]) continue;
+    const path = portable(match[2]);
+    const submoduleRoot = safeJoin(root, path);
+    const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: submoduleRoot, encoding: "utf8" })).stdout.trim() || match[1];
+    const submoduleBundle = `${outputPath}.submodule-${hash(path).slice(0, 12)}.bundle`;
+    await exec("git", ["bundle", "create", submoduleBundle, "--all"], { cwd: submoduleRoot, maxBuffer: 16 * 1024 * 1024 });
+    const submoduleBundlePath = `git/submodules/${hash(path).slice(0, 12)}.bundle`;
+    files.push({ path: submoduleBundlePath, contentBase64: (await readFile(submoduleBundle)).toString("base64") });
+    submodules.push({ path, head, bundlePath: submoduleBundlePath });
+  }
+}
 await mkdir(dirname(outputPath), { recursive: true });
-await writeFile(outputPath, `${JSON.stringify({ entries, files, git: { isRepository: !!head, head, branch, deleted, submodules: [], ...(bundlePath ? { bundlePath } : {}), ...(stagedPatchPath ? { stagedPatchPath } : {}), ...(worktreePatchPath ? { worktreePatchPath } : {}) } })}\n`);
+await writeFile(outputPath, `${JSON.stringify({ entries, files, git: { isRepository: !!head, head, branch, deleted, submodules, ...(bundlePath ? { bundlePath } : {}), ...(stagedPatchPath ? { stagedPatchPath } : {}), ...(worktreePatchPath ? { worktreePatchPath } : {}) } })}\n`);
 
 async function candidates(cwd: string): Promise<string[]> {
   try {

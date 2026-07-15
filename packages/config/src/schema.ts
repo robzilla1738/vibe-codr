@@ -254,7 +254,6 @@ export const LspConfigSchema = z.object({
   servers: z.record(z.string(), LspServerSchema).default({}),
 });
 
-
 /**
  * Vision relay: when the active model does NOT support image input, attached
  * images are captioned by a SEPARATE vision-capable model and the text
@@ -377,10 +376,15 @@ export const ConfigSchema = z.object({
   security: z
     .object({ trustProjectConfig: z.boolean().default(false) })
     .default({ trustProjectConfig: false }),
-  /** UI theme name. */
-  theme: z.string().default("default"),
+  /** UI theme name. The retired `opencode` name maps to the palette that is now
+   * canonical `default`, so existing user configs upgrade without an invalid
+   * theme selection. */
+  theme: z
+    .string()
+    .transform((theme) => (theme === "opencode" ? "default" : theme))
+    .default("default"),
   /** Accent hue (hex) for UI chrome that OVERRIDES the active theme's `primary`.
-   * Empty by default so the theme's own brand (`#8b5cf6` on the default theme)
+   * Empty by default so the theme's own warm brand (`#fab283` on the default theme)
    * shows through; set a hex via config or `/accent <hex>` to override. */
   accentColor: z.string().default(""),
   /**

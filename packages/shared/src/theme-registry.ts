@@ -26,7 +26,6 @@ export const THEME_NAMES: string[] = [
   "dark",
   "light",
   "contrast",
-  "opencode",
   "tokyonight",
   "catppuccin",
   "gruvbox",

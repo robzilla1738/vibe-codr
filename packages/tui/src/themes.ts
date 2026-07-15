@@ -59,45 +59,35 @@ export interface Palette {
   series: string[];
 }
 
-/**
- * Graphite dark palette (the default) — monochrome white chrome.
- *
- * Surfaces step up in three clear layers (background → panel → elevated).
- * Chrome, headings, menu selection, and wordmark stay near-white — no purple
- * default. Green/red stay functional on diffs; amber on warnings; teal on tools.
- * Override chrome via `accentColor` / `/accent <hex>` (purple still available).
- */
+/** Vibe dark palette (the default) — warm peach chrome on near-black surfaces. */
 const DEFAULT: Palette = {
-  user: "#7aabf5",
-  assistant: "#f2f2f2",
-  tool: "#5ec4cf",
+  user: "#5c9cf5",
+  assistant: "#eeeeee",
+  tool: "#56b6c2",
   notice: "#f5a742",
-  plan: "#9ece6a", // plan cards stay green-tinted (mode), not purple
+  plan: "#9d7cd8",
   subagent: "#7fd88f",
   add: "#4fd6be",
   del: "#c53b53",
-  ctx: "#9098c0",
-  taskDone: "#6e6e6e",
-  taskActive: "#5ec4cf",
-  taskPending: "#f2f2f2",
-  accent: "#f2f2f2",
-  // Near-white chrome: titles, markers, wordmark, headings.
-  primary: "#f2f2f2",
-  border: "#2e2e2e",
-  muted: "#8c8c8c",
-  background: "#080808",
-  panel: "#111111",
-  elevated: "#1a1a1a",
-  // Menu selection: soft elevated band (not a saturated brand stroke).
+  ctx: "#828bb8",
+  taskDone: "#808080",
+  taskActive: "#56b6c2",
+  taskPending: "#eeeeee",
+  accent: "#fab283",
+  primary: "#fab283",
+  border: "#3c3c3c",
+  muted: "#808080",
+  background: "#0a0a0a",
+  panel: "#141414",
+  elevated: "#1e1e1e",
   selBg: "#2a2a2a",
-  selFg: "#f2f2f2",
-  addBg: "#15252d",
-  delBg: "#2e1a22",
-  gutter: "#3a3a3a",
-  // Headings match body chrome — bold weight carries hierarchy, not hue.
-  heading: "#f2f2f2",
-  code: "#5ec4cf",
-  series: ["#7aabf5", "#7fd88f", "#5ec4cf", "#f5a742", "#c53b53", "#4fd6be"],
+  selFg: "#eeeeee",
+  addBg: "#20303b",
+  delBg: "#37222c",
+  gutter: "#544c44",
+  heading: "#fab283",
+  code: "#56b6c2",
+  series: ["#fab283", "#7fd88f", "#9d7cd8", "#5c9cf5", "#c53b53", "#4fd6be"],
 };
 
 /** Light palette for bright terminals. */
@@ -162,42 +152,6 @@ const CONTRAST: Palette = {
   code: "#87e5ff",
   // Maximum-separation bright hues for the high-contrast theme.
   series: ["#00d7ff", "#5fff00", "#ff87ff", "#ffd700", "#ff3b3b", "#00ffaf"],
-};
-
-/**
- * The opencode palette — a warm "peach on neutral graphite" scheme ported from
- * opencode's default theme. Its signature is the `#fab283` primary used for the
- * user-message gutter and menu selection.
- */
-const OPENCODE: Palette = {
-  user: "#5c9cf5",
-  assistant: "#eeeeee",
-  tool: "#56b6c2",
-  notice: "#f5a742",
-  plan: "#9d7cd8",
-  subagent: "#7fd88f",
-  add: "#4fd6be",
-  del: "#c53b53",
-  ctx: "#828bb8",
-  taskDone: "#808080",
-  taskActive: "#56b6c2",
-  taskPending: "#eeeeee",
-  accent: "#fab283",
-  primary: "#fab283",
-  border: "#3c3c3c",
-  muted: "#808080",
-  background: "#0a0a0a",
-  panel: "#141414",
-  elevated: "#1e1e1e",
-  selBg: "#2a2a2a",
-  selFg: "#eeeeee",
-  addBg: "#20303b",
-  delBg: "#37222c",
-  gutter: "#544c44",
-  heading: "#fab283",
-  code: "#56b6c2",
-  // Peach-forward ramp echoing the opencode signature, kept distinct per hue.
-  series: ["#fab283", "#7fd88f", "#9d7cd8", "#5c9cf5", "#c53b53", "#4fd6be"],
 };
 
 // ── Ported classics ───────────────────────────────────────────────────────────
@@ -552,7 +506,6 @@ export const THEMES: Record<string, Palette> = {
   dark: DEFAULT,
   light: LIGHT,
   contrast: CONTRAST,
-  opencode: OPENCODE,
   tokyonight: TOKYONIGHT,
   catppuccin: CATPPUCCIN,
   gruvbox: GRUVBOX,

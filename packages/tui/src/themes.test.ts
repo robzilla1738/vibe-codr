@@ -1,13 +1,4 @@
-import { test, expect } from "bun:test";
-import {
-  ACCENT_NAMES,
-  ACCENT_PRESETS,
-  accentNameOf,
-  getTheme,
-  isKnownTheme,
-  THEMES,
-  THEME_NAMES,
-} from "./themes.ts";
+import { expect, test } from "bun:test";
 // The engine consumes the SAME registry across the core/TUI boundary. Importing
 // it from @vibe/shared here (not re-exported by themes.ts) proves the two paths
 // resolve one object, and lets the parity test below assert the palettes cover it.
@@ -15,6 +6,15 @@ import {
   ACCENT_PRESETS as SHARED_ACCENT_PRESETS,
   THEME_NAMES as SHARED_THEME_NAMES,
 } from "@vibe/shared";
+import {
+  ACCENT_NAMES,
+  ACCENT_PRESETS,
+  accentNameOf,
+  getTheme,
+  isKnownTheme,
+  THEME_NAMES,
+  THEMES,
+} from "./themes.ts";
 
 test("themes.ts re-exports the SHARED registry — one source, no hand-synced copy", () => {
   // themes.ts's THEME_NAMES / ACCENT_PRESETS are the shared module's exports, so
@@ -50,32 +50,31 @@ test("getTheme falls back to default for unknown or missing names", () => {
 test("isKnownTheme reflects the registry", () => {
   expect(isKnownTheme("default")).toBe(true);
   expect(isKnownTheme("light")).toBe(true);
-  expect(isKnownTheme("opencode")).toBe(true);
+  expect(isKnownTheme("opencode")).toBe(false);
   expect(isKnownTheme("nope")).toBe(false);
 });
 
-test("the opencode theme ships with its signature warm primary", () => {
-  const oc = getTheme("opencode");
-  expect(oc).not.toBe(getTheme("default"));
-  expect(oc.primary).toBe("#fab283");
+test("the former opencode palette is now the unnamed default", () => {
+  const d = getTheme("default");
+  expect(getTheme("opencode")).toBe(d);
+  expect(d.primary).toBe("#fab283");
   // The diff backgrounds are real tints, distinct from the panel surface.
-  expect(oc.addBg).not.toBe(oc.panel);
-  expect(oc.delBg).not.toBe(oc.panel);
+  expect(d.addBg).not.toBe(d.panel);
+  expect(d.delBg).not.toBe(d.panel);
 });
 
-test("the default theme is white-chromed, DARK, no purple default accent", () => {
+test("the default theme is warm-chromed, DARK, no purple default accent", () => {
   const d = getTheme("default");
-  // Near-white chrome: titles, markers, headings, wordmark.
-  expect(d.primary).toBe("#f2f2f2");
-  expect(d.accent).toBe("#f2f2f2");
-  expect(d.heading).toBe("#f2f2f2");
+  expect(d.primary).toBe("#fab283");
+  expect(d.accent).toBe("#fab283");
+  expect(d.heading).toBe("#fab283");
   // Menu selection is a soft elevated band (not a saturated purple stroke).
   expect(d.selBg).toBe("#2a2a2a");
-  expect(d.selFg).toBe("#f2f2f2");
+  expect(d.selFg).toBe("#eeeeee");
   expect(d.selBg).not.toBe("#8b5cf6");
   expect(d.heading).not.toBe("#8b5cf6");
   // The default must never drift light — its surfaces stay near-black.
-  expect(d.background).toBe("#080808");
+  expect(d.background).toBe("#0a0a0a");
   expect(d.background).not.toBe(getTheme("light").background);
   // Three-layer surfaces: background / panel / elevated must be distinct steps.
   expect(d.panel).not.toBe(d.background);

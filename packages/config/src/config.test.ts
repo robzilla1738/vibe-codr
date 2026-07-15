@@ -1,18 +1,18 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  ConfigSchema,
-  defaultConfig,
-  loadConfig,
-  configUnknownKeys,
-  configSecurityNotices,
-  writeGlobalConfig,
   appendProjectPermission,
-  projectConfigPath,
+  ConfigSchema,
+  configSecurityNotices,
+  configUnknownKeys,
+  defaultConfig,
   globalConfigPath,
+  loadConfig,
+  projectConfigPath,
+  writeGlobalConfig,
 } from "./index.ts";
 
 test("defaultConfig is valid and carries the documented defaults", () => {
@@ -126,6 +126,10 @@ test("invalid values are rejected with a descriptive issue", () => {
     expect(paths).toContain("mode");
     expect(paths).toContain("maxSteps");
   }
+});
+
+test("the retired opencode theme name migrates to default", () => {
+  expect(ConfigSchema.parse({ theme: "opencode" }).theme).toBe("default");
 });
 
 test("loadConfig throws a ConfigError-style message on an invalid project file", async () => {

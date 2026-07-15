@@ -10,13 +10,22 @@ const [rootArg, baseBundlePath, outputPath] = process.argv.slice(2);
 if (!rootArg || !baseBundlePath || !outputPath) throw new Error("usage: vibe-cloud-export <workspace> <outbound-bundle.json> <output.json>");
 const root = resolve(rootArg);
 const base = JSON.parse(await readFile(baseBundlePath, "utf8")) as { manifest?: { entries?: Array<{ path: string }> } };
-const paths = await candidates(root);
+const paths = [...new Set(await candidates(root))].sort();
+const queuedPaths = new Set(paths);
 const entries: Array<{ path: string; type: "file" | "symlink"; bytes: number; mode: number; sha256: string; linkTarget?: string }> = [];
 const files: Array<{ path: string; contentBase64: string }> = [];
-for (const path of paths.sort()) {
+for (let pathIndex = 0; pathIndex < paths.length; pathIndex += 1) {
+  const path = paths[pathIndex]!;
   const absolute = safeJoin(root, path);
   const stat = await lstat(absolute);
-  if (stat.isSymbolicLink()) {
+  if (stat.isDirectory()) {
+    for (const nested of await walk(absolute)) {
+      const candidate = posix.join(path, nested);
+      if (queuedPaths.has(candidate)) continue;
+      queuedPaths.add(candidate);
+      paths.push(candidate);
+    }
+  } else if (stat.isSymbolicLink()) {
     const target = await readlink(absolute);
     const resolved = resolve(dirname(absolute), target);
     if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) continue;

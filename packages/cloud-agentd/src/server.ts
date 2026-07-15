@@ -39,6 +39,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
   const workspaceRoot = resolve(options.workspaceRoot ?? process.env.VIBE_WORKSPACE_ROOT ?? "/workspace");
   const engineHost = options.engineHost ?? process.env.VIBE_ENGINE_HOST ?? "vibecodr-engine-host";
   if (!accessToken || accessToken.length < 32) throw new Error("VIBE_CLOUD_ACCESS_TOKEN must contain at least 32 characters");
+  const childEnvironment = environmentWithoutControlSecrets(process.env);
 
   const state: AgentState = { host: null, sessionId: null, hostClients: new Set(), terminals: new Map() };
 
@@ -46,7 +47,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
     if (state.host && state.host.exitCode === null) return state.host;
     const host = spawn(engineHost, [], {
       cwd: workspaceRoot,
-      env: { ...process.env, VIBE_CLOUD_RUNTIME: "1" },
+      env: { ...childEnvironment, VIBE_CLOUD_RUNTIME: "1" },
       stdio: ["pipe", "pipe", "pipe"],
     });
     state.host = host;
@@ -125,7 +126,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
           if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error("engine frame too large");
           host.stdin.write(line);
         } else if (frame.channel === "file") await handleFile(socket, frame, workspaceRoot);
-        else if (frame.channel === "terminal") await handleTerminal(socket, frame, state, workspaceRoot);
+        else if (frame.channel === "terminal") await handleTerminal(socket, frame, state, workspaceRoot, childEnvironment);
         else if (frame.channel === "ping") send(socket, { channel: "pong", at: Date.now() });
         else throw new Error("unknown channel");
       } catch (error) {
@@ -162,7 +163,13 @@ async function handleFile(socket: ServerSocket, frame: Record<string, unknown>, 
   } else throw new Error("unknown file operation");
 }
 
-async function handleTerminal(socket: ServerSocket, frame: Record<string, unknown>, state: AgentState, root: string): Promise<void> {
+async function handleTerminal(
+  socket: ServerSocket,
+  frame: Record<string, unknown>,
+  state: AgentState,
+  root: string,
+  childEnvironment: Record<string, string>,
+): Promise<void> {
   if (frame.op === "create") {
     const id = typeof frame.id === "string" ? frame.id : randomUUID();
     if (state.terminals.has(id)) throw new Error("terminal already exists");
@@ -171,7 +178,7 @@ async function handleTerminal(socket: ServerSocket, frame: Record<string, unknow
       cwd,
       cols: boundedInt(frame.cols, 80, 20, 400),
       rows: boundedInt(frame.rows, 24, 5, 200),
-      env: { ...globalThis.process.env, TERM: "xterm-256color" } as Record<string, string>,
+      env: { ...childEnvironment, TERM: "xterm-256color" },
     });
     const terminal: TerminalSession = { id, process, replay: "", subscribers: new Set([socket]) };
     state.terminals.set(id, terminal);
@@ -229,6 +236,12 @@ function safeEqual(value: string, expected: string): boolean {
   const a = Buffer.from(value);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export function environmentWithoutControlSecrets(environment: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(environment).filter(([key, value]) => key !== "VIBE_CLOUD_ACCESS_TOKEN" && typeof value === "string"),
+  ) as Record<string, string>;
 }
 
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number {

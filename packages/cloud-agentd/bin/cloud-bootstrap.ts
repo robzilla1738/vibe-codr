@@ -16,7 +16,15 @@ interface Bundle {
     archiveSha256: string;
     engineRevision: string;
     entries: Entry[];
-    git: { isRepository: boolean; head: string | null; bundlePath?: string; stagedPatchPath?: string; worktreePatchPath?: string; deleted: string[] };
+    git: {
+      isRepository: boolean;
+      head: string | null;
+      bundlePath?: string;
+      stagedPatchPath?: string;
+      worktreePatchPath?: string;
+      deleted: string[];
+      submodules: Array<{ path: string; head: string | null; bundlePath?: string }>;
+    };
     [key: string]: unknown;
   };
   files: Array<{ path: string; contentBase64: string }>;
@@ -43,6 +51,26 @@ if (bundle.manifest.git.isRepository && bundle.manifest.git.bundlePath) {
   try { await exec("git", ["clone", localBundle, target], { maxBuffer: 16 * 1024 * 1024 }); }
   finally { await rm(localBundle, { force: true }); }
 } else await mkdir(target, { recursive: true });
+
+for (const submodule of [...(bundle.manifest.git.submodules ?? [])].sort((a, b) => {
+  const depth = a.path.split("/").length - b.path.split("/").length;
+  return depth || a.path.localeCompare(b.path);
+})) {
+  if (!submodule.bundlePath) continue;
+  const data = content.get(submodule.bundlePath);
+  if (!data) throw new Error(`submodule bundle content missing: ${submodule.path}`);
+  const out = safeJoin(target, submodule.path);
+  const localBundle = `${target}.submodule-${sha256(submodule.path).slice(0, 12)}.bundle`;
+  await rm(out, { recursive: true, force: true });
+  await mkdir(dirname(out), { recursive: true });
+  await writeFile(localBundle, data);
+  try {
+    await exec("git", ["clone", localBundle, out], { maxBuffer: 16 * 1024 * 1024 });
+    if (submodule.head) await exec("git", ["checkout", "--detach", submodule.head], { cwd: out, maxBuffer: 16 * 1024 * 1024 });
+  } finally {
+    await rm(localBundle, { force: true });
+  }
+}
 
 if (bundle.manifest.git.isRepository) {
   for (const [path, args] of [

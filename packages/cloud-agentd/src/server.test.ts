@@ -2,12 +2,20 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveCloudPath } from "./server.ts";
+import { environmentWithoutControlSecrets, resolveCloudPath } from "./server.ts";
 
 const roots: string[] = [];
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+test("cloud control credentials are not inherited by engine or terminal children", () => {
+  expect(environmentWithoutControlSecrets({
+    PATH: "/usr/bin",
+    VIBE_CLOUD_ACCESS_TOKEN: "not-for-workloads",
+    OPTIONAL: undefined,
+  })).toEqual({ PATH: "/usr/bin" });
 });
 
 describe("resolveCloudPath", () => {

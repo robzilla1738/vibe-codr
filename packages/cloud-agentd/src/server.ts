@@ -93,6 +93,13 @@ export function startCloudAgent(options: AgentOptions = {}) {
       }
     });
     host.stderr.on("data", (chunk) => broadcast(state.hostClients, { channel: "diagnostic", stream: "stderr", data: chunk.toString("utf8").slice(-16_384) }));
+    host.on("error", (error) => {
+      if (state.host === host) {
+        broadcast(state.hostClients, { channel: "fatal", message: `engine host could not start: ${error.message}` });
+        state.host = null;
+        state.sessionId = null;
+      }
+    });
     host.on("exit", (code, signal) => {
       if (state.host === host) {
         broadcast(state.hostClients, { channel: "fatal", message: `engine host exited (${signal ?? code ?? "unknown"})` });

@@ -71,12 +71,13 @@ export VIBE_CLOUD_WORKLOAD_UID VIBE_CLOUD_WORKLOAD_GID VIBE_CLOUD_WORKLOAD_HOME
 export VIBE_CLOUD_REQUIRE_ISOLATION=1
 mkdir -p "$VIBE_WORKSPACE_ROOT" "$VIBE_STATE_DIR"
 chown -R "$VIBE_CLOUD_WORKLOAD_UID:$VIBE_CLOUD_WORKLOAD_GID" "$VIBE_WORKSPACE_ROOT" "$VIBE_STATE_DIR"
-install -d -m 0700 /run/vibe-cloud
+install -d -m 0755 /run/vibe-cloud
+install -m 0755 "$PWD/vibecodr-engine-host" /run/vibe-cloud/vibecodr-engine-host
 umask 077
 printf '%s' "$VIBE_CLOUD_ACCESS_TOKEN" > /run/vibe-cloud/access-token
 unset VIBE_CLOUD_ACCESS_TOKEN
 export VIBE_CLOUD_ACCESS_TOKEN_FILE=/run/vibe-cloud/access-token
-export VIBE_ENGINE_HOST="$PWD/vibecodr-engine-host"
+export VIBE_ENGINE_HOST=/run/vibe-cloud/vibecodr-engine-host
 exec "$PWD/bin/node" cloud-agentd.mjs
 `, { mode: 0o755 });
 

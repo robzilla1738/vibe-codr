@@ -9,10 +9,22 @@
  * in a separate process, so the TUI freeze class does not apply.
  */
 import { createInterface } from "node:readline";
+import { readFile } from "node:fs/promises";
 import { loadConfig, type Config } from "@vibe/config";
-import { Engine, loadProjectMemory, SessionStore, type PersistedSession } from "@vibe/core";
+import {
+  Engine,
+  loadProjectMemory,
+  PortableSessionManager,
+  SessionStore,
+  type PersistedSession,
+} from "@vibe/core";
 import type { EngineCommand } from "@vibe/shared";
-import { decodeInbound, type HostInbound, type HostOutbound } from "./protocol.ts";
+import {
+  decodeInbound,
+  type HostInbound,
+  type HostOutbound,
+  type HostRpcParams,
+} from "./protocol.ts";
 import {
   archiveProject,
   deleteProject,
@@ -138,7 +150,7 @@ export async function runHost(): Promise<void> {
   const handleRpc = async (
     id: number,
     method: Extract<HostInbound, { op: "rpc" }>["method"],
-    params?: Extract<HostInbound, { op: "rpc" }>["params"],
+    params?: HostRpcParams,
   ) => {
     try {
       if (method === "listSessions") {
@@ -214,6 +226,32 @@ export async function runHost(): Promise<void> {
         return;
       }
 
+      if (method === "importPortableSession") {
+        if ((!params?.archive && !params?.archivePath) || !params.engineRevision) {
+          write({ type: "resp", id, ok: false, error: "archive path and engine revision required" });
+          return;
+        }
+        const archive = params.archive ?? JSON.parse(await readFile(params.archivePath!, "utf8"));
+        const cwd = params.cwd?.trim() || lastCwd;
+        await PortableSessionManager.import(cwd, archive, params.engineRevision);
+        lastCwd = cwd;
+        write({ type: "resp", id, ok: true, value: { sessionId: archive.sessionId } });
+        return;
+      }
+
+      if (method === "commitHandoff" || method === "abortHandoff") {
+        const sessionId = params?.sessionId?.trim() || engine?.snapshot().sessionId;
+        if (!sessionId || !params?.nonce) {
+          write({ type: "resp", id, ok: false, error: "session id and nonce required" });
+          return;
+        }
+        const manager = new PortableSessionManager(params.cwd?.trim() || lastCwd, sessionId);
+        if (method === "commitHandoff") await manager.commit(params.nonce);
+        else await manager.abort(params.nonce);
+        write({ type: "resp", id, ok: true, value: null });
+        return;
+      }
+
       if (!engine) {
         write({ type: "resp", id, ok: false, error: "not bootstrapped" });
         return;
@@ -277,6 +315,27 @@ export async function runHost(): Promise<void> {
           await engine.finalize?.();
           write({ type: "resp", id, ok: true, value: null });
           return;
+        case "prepareHandoff": {
+          if (!params?.target) {
+            write({ type: "resp", id, ok: false, error: "handoff target required" });
+            return;
+          }
+          const value = await engine.prepareHandoff(params.target, params.expectedGeneration);
+          write({ type: "resp", id, ok: true, value });
+          return;
+        }
+        case "exportPortableSession": {
+          if (!params?.engineRevision || params.ownershipGeneration === undefined) {
+            write({ type: "resp", id, ok: false, error: "engine revision and ownership generation required" });
+            return;
+          }
+          const value = await engine.exportPortableSession(
+            params.engineRevision,
+            params.ownershipGeneration,
+          );
+          write({ type: "resp", id, ok: true, value });
+          return;
+        }
         default:
           write({ type: "resp", id, ok: false, error: `unknown method ${method}` });
       }

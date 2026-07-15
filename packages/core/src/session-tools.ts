@@ -43,6 +43,44 @@ export const PLAN_MODE_SKILL_PREFIX =
   "ask multi-step skill questionnaires, write skill artifacts (e.g. `.svvarm/`), " +
   "or begin implementation until the user approves via present_plan.\n\n";
 
+/** Request a runtime handoff without performing transfer work. The UI owns the
+ * mandatory preflight confirmation and all provider/security decisions. */
+export function buildHandoffSessionTool(): ToolDefinition<{
+  target: "local" | "cloud";
+  provider?: "e2b" | "vercel";
+  instruction?: string;
+}> {
+  return {
+    name: "handoff_session",
+    description:
+      "Request that the current session continue locally or in a connected cloud sandbox. " +
+      "This only opens the app-owned confirmation preflight; it never transfers files itself.",
+    inputSchema: z.object({
+      target: z.enum(["local", "cloud"]),
+      provider: z.enum(["e2b", "vercel"]).optional(),
+      instruction: z.string().max(4_000).optional(),
+    }),
+    readOnly: false,
+    modes: ["execute"],
+    execute: async ({ target, provider, instruction }, ctx) => {
+      if (target === "cloud" && !provider) {
+        return { output: "Choose provider e2b or vercel before requesting a cloud handoff.", isError: true };
+      }
+      ctx.emit({
+        type: "runtime-handoff-requested",
+        sessionId: ctx.sessionId,
+        target: target === "local" ? { kind: "local" } : { kind: "cloud", provider: provider! },
+        ...(instruction?.trim() ? { instruction: instruction.trim() } : {}),
+      });
+      return {
+        output:
+          "Handoff requested. The desktop app will show a required preflight confirmation; " +
+          "no files or credentials have been transferred yet.",
+      };
+    },
+  };
+}
+
 /** Build the `use_skill` tool that loads a skill's full body into context. */
 export function buildUseSkillTool(handle: SessionToolsHandle): ToolDefinition<{ name: string }> {
   const skills = handle.deps.skills;

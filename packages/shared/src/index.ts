@@ -22,6 +22,15 @@ export type {
 // UI events (engine -> UI)
 export type { UIEvent, UIEventType } from "./events.ts";
 
+export type {
+  ExecutionTarget,
+  CloudSessionStatus,
+  PendingCapabilityRequest,
+  PortableSessionFileV1,
+  PortableSessionArchiveV1,
+  HandoffPreparation,
+} from "./handoff.ts";
+
 // Engine commands (UI -> engine) + client contract
 export type {
   EngineCommand,

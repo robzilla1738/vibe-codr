@@ -31,6 +31,10 @@ import {
   type QueuedItem,
   type RepoProfile,
   type UIEvent,
+  type ExecutionTarget,
+  type HandoffPreparation,
+  type PendingCapabilityRequest,
+  type PortableSessionArchiveV1,
 } from "@vibe/shared";
 import type { Config, PermissionRule } from "@vibe/config";
 import { appendProjectPermission, configSecurityNotices, writeGlobalConfig } from "@vibe/config";
@@ -83,6 +87,7 @@ import {
 } from "./loaders.ts";
 import { LoopCancelledError, LoopController, parseLoopArgs } from "./loop.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
+import { PortableSessionManager } from "./portable-session.ts";
 import { MemoryService } from "./memory-service.ts";
 import { createLimiter, type Limiter } from "./limiter.ts";
 import { createBlackboard } from "./blackboard.ts";
@@ -331,6 +336,7 @@ export class Engine implements EngineClient {
     string,
     (d: "once" | "always" | "always-project" | "deny", feedback?: string) => void
   >();
+  #pendingCapabilityRequests = new Map<string, PendingCapabilityRequest>();
   #store: SessionStore;
   #checkpoints: CheckpointManager;
   #mcp: McpHub;
@@ -650,6 +656,7 @@ export class Engine implements EngineClient {
             goalCleanPasses: this.#goalCleanPasses,
             goalPauseReason: this.#goalPauseReason ?? null,
             goalMet: this.#goalMet,
+            pendingCapabilityRequests: [...this.#pendingCapabilityRequests.values()],
           }),
         );
       } catch {
@@ -671,6 +678,7 @@ export class Engine implements EngineClient {
         goalCleanPasses?: number;
         goalPauseReason?: string | null;
         goalMet?: boolean;
+        pendingCapabilityRequests?: PendingCapabilityRequest[];
       };
       if (state.pendingHandoff) this.#pendingHandoff = true;
       // Phase / pause / met are restored even when the run is NOT active: a
@@ -683,6 +691,11 @@ export class Engine implements EngineClient {
         this.#goalRunActive = true;
         this.#goalContinueRounds = state.goalContinueRounds ?? 0;
         this.#goalCleanPasses = state.goalCleanPasses ?? 0;
+      }
+      for (const request of state.pendingCapabilityRequests ?? []) {
+        if (request.status === "pending" || request.status === "approved") {
+          this.#pendingCapabilityRequests.set(request.id, request);
+        }
       }
     } catch {
       /* absent/corrupt → nothing to restore */
@@ -973,6 +986,19 @@ export class Engine implements EngineClient {
     // user-global (~/.config/vibe-codr/{skills,commands}) first, then plugins,
     // then project-local (.vibe/) LAST — so a project file of the same name
     // overrides both a global one and anything a plugin registered.
+    this.skills.register({
+      name: "handoff",
+      description: "Prepare a concise continuation note and request a confirmed Local or Cloud session handoff",
+      whenToUse: "the user asks to continue this session locally or in cloud",
+      dir: "",
+      load: async () => [
+        "Write a short operational continuation note: current objective, completed work, active state, and exact next action.",
+        "Check whether the requested destination is Local or Cloud; for Cloud choose only a provider the user named or already configured.",
+        "Call the privileged `handoff_session` tool with that destination and the continuation note.",
+        "The tool is request-only. Defer file selection, credentials, security policy, relay approval, conflicts, and final confirmation to the desktop app.",
+        "Never claim a transfer occurred until the app reports it completed.",
+      ].join("\n"),
+    });
     for (const cmd of await loadCommandsFrom(globalCommandsDir())) {
       this.commands.register(cmd);
     }
@@ -1230,6 +1256,50 @@ export class Engine implements EngineClient {
   whenIdle(): Promise<void> {
     if (!this.#draining && this.#pending.length === 0) return Promise.resolve();
     return new Promise<void>((resolve) => this.#idleResolvers.push(resolve));
+  }
+
+  /** Quiesce and acquire the next ownership generation. The desktop invokes
+   * this only after authoritative engine-idle; the guard makes that invariant
+   * enforceable for every future client too. */
+  async prepareHandoff(
+    target: ExecutionTarget,
+    expectedGeneration?: number,
+  ): Promise<HandoffPreparation> {
+    if (this.#draining || this.#active || this.#pending.length || this.#session.busy) {
+      throw new Error("engine is busy; handoff must wait for engine-idle");
+    }
+    await this.#session.flushPortableState();
+    await this.#persistEngineStateChain;
+    await this.#store.releaseLease(this.#session.id);
+    return new PortableSessionManager(this.#cwd, this.#session.id).prepare(
+      target,
+      expectedGeneration,
+    );
+  }
+
+  async exportPortableSession(
+    engineRevision: string,
+    ownershipGeneration: number,
+  ): Promise<PortableSessionArchiveV1> {
+    return new PortableSessionManager(this.#cwd, this.#session.id).export(
+      engineRevision,
+      ownershipGeneration,
+      [...this.#pendingCapabilityRequests.values()],
+    );
+  }
+
+  pendingCapabilities(): PendingCapabilityRequest[] {
+    return [...this.#pendingCapabilityRequests.values()].map((request) => ({ ...request }));
+  }
+
+  requestExternalCapability(request: PendingCapabilityRequest): void {
+    this.#pendingCapabilityRequests.set(request.id, request);
+    void this.#persistEngineState();
+    this.#bus.emit({
+      type: "external-capability-pending",
+      sessionId: this.#session.id,
+      request,
+    });
   }
 
   /** Emit the initial session-start event (call once after subscribing). */
@@ -1505,6 +1575,27 @@ export class Engine implements EngineClient {
       case "compact":
         this.#enqueue("/compact", () => this.#session.compact());
         break;
+      case "request-runtime-handoff":
+        this.#bus.emit({
+          type: "runtime-handoff-requested",
+          sessionId: this.#session.id,
+          target: command.target,
+          ...(command.instruction ? { instruction: command.instruction } : {}),
+        });
+        break;
+      case "resolve-external-capability": {
+        const request = this.#pendingCapabilityRequests.get(command.id);
+        if (!request) break;
+        this.#pendingCapabilityRequests.delete(command.id);
+        void this.#persistEngineState();
+        this.#bus.emit({
+          type: "external-capability-resolved",
+          sessionId: this.#session.id,
+          id: command.id,
+          status: command.decision === "deny" ? "denied" : "resolved",
+        });
+        break;
+      }
       case "resolve-permission": {
         const resolve = this.#pendingPermissions.get(command.id);
         if (resolve) {

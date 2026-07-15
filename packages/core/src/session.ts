@@ -70,6 +70,7 @@ import { type ReportStore, buildReadReportTool } from "./orchestration/report-st
 import type { ChildRegistry } from "./orchestration/child-registry.ts";
 import type { Diagnostics } from "./diagnostics.ts";
 import {
+  buildHandoffSessionTool,
   buildUseSkillTool,
   buildRecallTool,
   buildRunCheckTool,
@@ -505,6 +506,12 @@ export class Session {
       // Filled by the engine, which owns the command/skill registries + git.
       commandNames: [],
     };
+  }
+
+  /** Force the complete portable session record to stable storage. Handoff
+   * calls this only after engine-idle; normal turn persistence is unchanged. */
+  async flushPortableState(): Promise<void> {
+    await this.#persist();
   }
 
   /** In-memory conversation source for presentation adapters that need to
@@ -1260,6 +1267,11 @@ export class Session {
       // (save_memory, run_check) must serialize with edit/write/bash, not race them.
       const serialize = createSerialLock();
       const tools = toolset.aiTools(this.mode, base, serialize);
+      // Handoff is a privileged request, not a transfer. Interactive UIs must
+      // still show their own confirmation sheet before any bytes move.
+      if (this.#deps.interactive && this.mode !== "plan") {
+        tools.handoff_session = toAISDKTool(buildHandoffSessionTool(), base, serialize);
+      }
       // The task list is available in both modes: the model can lay out tasks
       // while planning, and they carry over into execution.
       tools.update_tasks = toAISDKTool(buildTasksTool(this.#handle), base, serialize);

@@ -48,6 +48,7 @@ export {
   type PersistedSession,
 } from "./store.ts";
 export { globalStateDir, stateRoot } from "./state-dir.ts";
+export { PortableSessionManager } from "./portable-session.ts";
 export { addUsage, computeCost, type TokenTotals } from "./usage.ts";
 export {
   expandMentions,

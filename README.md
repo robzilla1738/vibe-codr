@@ -176,6 +176,7 @@ the engine is fully testable headless.
 | `@vibe/plugins` | `HookBus`, `PluginApi`, slash-command + skill runtimes; config hooks accept stdout logs only before a final-line JSON directive |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers |
 | `@vibe/macos-bridge` | Runtime-validated NDJSON stdio host for the SwiftUI and Electron desktop shells (`bun run macos-bridge` / `build:macos-bridge`) |
+| `@vibe/cloud-agentd` | Authenticated cloud host multiplexer for the unchanged NDJSON engine, reconnectable PTYs, file transfer, previews, and capability events |
 | `@vibe/cli` | `bin/vibe` entrypoint (argv, config, headless `-p` vs TUI) |
 
 ## Install
@@ -912,7 +913,13 @@ bun run smoke:tui     # drive the real OpenTUI app (mock engine) — input, stre
                       # the permission card — via the test renderer
 bun packages/tui/scripts/screenshot.ts docs/screenshots  # regenerate README shots
 bun run build:binary  # standalone binary -> dist/vibecodr (bun --compile)
+bun run build:cloud-runtime # revision-locked Linux host + cloud-agentd + checksums + SBOM
 ```
+
+Portable session export/import, ownership generations, `/handoff`, and the
+privileged request-only `handoff_session` tool live in core. Desktop/provider
+transfer policy remains owned by the presentation shell; core never reconstructs
+portable state outside its exporter.
 
 `vibecodr sessions` lists saved sessions (resume one with `--resume <id>`).
 `vibecodr setup` re-runs the guided provider/model setup at any time.

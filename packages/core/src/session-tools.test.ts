@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import type { ToolContext } from "@vibe/shared";
 import {
+  buildHandoffSessionTool,
   buildUseSkillTool,
   PLAN_MODE_SKILL_PREFIX,
   type SessionToolsHandle,
@@ -39,6 +40,16 @@ function handleWithSkill(
 }
 
 const ctx = {} as ToolContext;
+
+test("handoff_session emits a request only and requires an explicit cloud provider", async () => {
+  const events: unknown[] = [];
+  const context = { sessionId: "s1", emit: (event: unknown) => { events.push(event); } } as unknown as ToolContext;
+  const tool = buildHandoffSessionTool();
+  expect((await tool.execute({ target: "cloud" }, context)).isError).toBe(true);
+  const result = await tool.execute({ target: "cloud", provider: "e2b", instruction: "continue tests" }, context);
+  expect(result.isError).not.toBe(true);
+  expect(events).toEqual([{ type: "runtime-handoff-requested", sessionId: "s1", target: { kind: "cloud", provider: "e2b" }, instruction: "continue tests" }]);
+});
 
 test("use_skill caps a huge SKILL.md body and points at the file", async () => {
   const big = "x".repeat(50_000); // > MAX_SKILL_BODY (32k)

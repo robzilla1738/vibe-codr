@@ -125,6 +125,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "mcp", description: "Show connected MCP servers" },
       { name: "doctor", description: "Run an environment health check" },
       { name: "sandbox", description: "Show the resolved OS-sandbox policy" },
+      { name: "handoff", description: "Request /handoff cloud <e2b|vercel> or /handoff local" },
     ],
   },
 ];

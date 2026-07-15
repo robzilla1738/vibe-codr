@@ -7,6 +7,7 @@ import type {
   SkillInfo,
 } from "./types.ts";
 import type { UIEvent } from "./events.ts";
+import type { ExecutionTarget } from "./handoff.ts";
 
 /**
  * Commands sent from a UI (TUI or CLI) into the engine. This is the only way
@@ -45,6 +46,14 @@ export type EngineCommand =
   // it runs next — redirect the agent now instead of waiting for the queue.
   | { type: "steer"; id: string }
   | { type: "compact" }
+  | { type: "request-runtime-handoff"; target: ExecutionTarget; instruction?: string }
+  | {
+      type: "resolve-external-capability";
+      id: string;
+      decision: "approve" | "deny";
+      result?: unknown;
+      error?: string;
+    }
   | {
       type: "resolve-permission";
       id: string;

@@ -334,6 +334,22 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     return;
   }
 
+  if (name === "handoff") {
+    const [target, provider, ...rest] = args.trim().split(/\s+/).filter(Boolean);
+    if (target === "local") {
+      h.send({ type: "request-runtime-handoff", target: { kind: "local" }, ...(rest.length ? { instruction: rest.join(" ") } : {}) });
+      h.notice("Local handoff requested — confirm the preflight in the desktop app.");
+      return;
+    }
+    if (target === "cloud" && (provider === "e2b" || provider === "vercel")) {
+      h.send({ type: "request-runtime-handoff", target: { kind: "cloud", provider }, ...(rest.length ? { instruction: rest.join(" ") } : {}) });
+      h.notice(`Cloud handoff requested for ${provider === "e2b" ? "E2B" : "Vercel"} — confirm the preflight in the desktop app.`);
+      return;
+    }
+    h.notice("Usage: /handoff cloud <e2b|vercel> [continue with…] or /handoff local", "warn");
+    return;
+  }
+
   switch (name) {
     case "help":
       h.notice(helpText(h.commands.list()));

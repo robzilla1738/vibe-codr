@@ -104,8 +104,8 @@ for (const entry of bundle.manifest.entries) {
   }
 }
 for (const path of bundle.manifest.git.deleted) await rm(safeJoin(target, path), { recursive: true, force: true });
-await importPortableSession(target, bundle.engine, expectedRevision);
-process.stdout.write(`${JSON.stringify({ ok: true, sessionId: bundle.engine.sessionId, target })}\n`);
+const resumed = await importPortableSession(target, bundle.engine, expectedRevision);
+process.stdout.write(`${JSON.stringify({ ok: true, target, ...resumed })}\n`);
 
 function verify(value: Bundle, revision: string): void {
   if (value.manifest.schemaVersion !== 1 || value.manifest.engineRevision !== revision || value.engine.engineRevision !== revision) {
@@ -132,23 +132,87 @@ function sha256(data: string | Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
-async function importPortableSession(cwd: string, archive: PortableSessionArchiveV1, revision: string): Promise<void> {
+interface PortableResumeSummary {
+  sessionId: string;
+  model: string;
+  mode: string;
+  subagentModel?: string;
+  historyCount: number;
+}
+
+async function importPortableSession(
+  cwd: string,
+  archive: PortableSessionArchiveV1,
+  revision: string,
+): Promise<PortableResumeSummary> {
+  if (archive.executionTarget.kind !== "cloud") throw new Error("portable cloud import has no cloud owner");
+  const expectedMeta = portableJson(archive, "session/meta.json") as { id?: unknown; model?: unknown; mode?: unknown };
+  if (expectedMeta.id !== archive.sessionId || typeof expectedMeta.model !== "string" || typeof expectedMeta.mode !== "string") {
+    throw new Error("portable cloud import has invalid session metadata");
+  }
+  const expectedHistoryCount = portableJsonLines(archive, "session/history.jsonl").length;
   const host = resolve(import.meta.dirname, "vibecodr-engine-host");
-  const child = spawn(host, [], { cwd, stdio: ["pipe", "pipe", "inherit"] });
+  const child = spawn(host, [], {
+    cwd,
+    env: {
+      ...process.env,
+      VIBE_CLOUD_PROVIDER: archive.executionTarget.provider,
+      VIBE_CLOUD_RUNTIME: "1",
+    },
+    stdio: ["pipe", "pipe", "inherit"],
+  });
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const archivePath = resolve(cwd, ".vibe-portable-import.json");
   await writeFile(archivePath, JSON.stringify(archive), { mode: 0o600 });
   child.stdin.write(`${JSON.stringify({ op: "rpc", id: 1, method: "importPortableSession", params: { cwd, archivePath, engineRevision: revision } })}\n`);
+  let imported = false;
   try {
     for await (const line of lines) {
-      const message = JSON.parse(line) as { type?: string; id?: number; ok?: boolean; error?: string };
-      if (message.type !== "resp" || message.id !== 1) continue;
-      if (!message.ok) throw new Error(message.error ?? "portable import failed");
+      const message = JSON.parse(line) as {
+        type?: string;
+        id?: number;
+        ok?: boolean;
+        error?: string;
+        message?: string;
+        sessionId?: string;
+        value?: unknown;
+      };
+      if (message.type === "fatal") throw new Error(message.message ?? "portable resume verification failed");
+      if (message.type === "resp" && message.id === 1) {
+        if (!message.ok) throw new Error(message.error ?? "portable import failed");
+        imported = true;
+        child.stdin.write(`${JSON.stringify({ op: "bootstrap", cwd, resume: archive.sessionId })}\n`);
+        continue;
+      }
+      if (message.type === "ready" && imported) {
+        if (message.sessionId !== archive.sessionId) {
+          throw new Error(`portable resume mismatch: expected ${archive.sessionId}, received ${message.sessionId ?? "unknown"}`);
+        }
+        child.stdin.write(`${JSON.stringify({ op: "rpc", id: 2, method: "snapshot" })}\n`);
+        continue;
+      }
+      if (message.type !== "resp" || message.id !== 2) continue;
+      if (!message.ok) throw new Error(message.error ?? "portable resume snapshot failed");
+      const snapshot = message.value as Partial<PortableResumeSummary> & { history?: unknown };
+      if (snapshot.sessionId !== archive.sessionId) {
+        throw new Error(`portable snapshot mismatch: expected ${archive.sessionId}, received ${snapshot.sessionId ?? "unknown"}`);
+      }
+      if (snapshot.model !== expectedMeta.model || snapshot.mode !== expectedMeta.mode) {
+        throw new Error("portable resume changed the session model or mode");
+      }
+      if (!Array.isArray(snapshot.history) || snapshot.history.length !== expectedHistoryCount) {
+        throw new Error("portable resume changed the conversation history");
+      }
+      const summary: PortableResumeSummary = {
+        sessionId: snapshot.sessionId,
+        model: snapshot.model,
+        mode: snapshot.mode,
+        ...(typeof snapshot.subagentModel === "string" ? { subagentModel: snapshot.subagentModel } : {}),
+        historyCount: snapshot.history.length,
+      };
       child.stdin.write(`${JSON.stringify({ op: "shutdown" })}\n`);
-      await new Promise<void>((resolveExit, rejectExit) => {
-        child.once("exit", (code) => code === 0 ? resolveExit() : rejectExit(new Error(`engine import host exited ${code}`)));
-      });
-      return;
+      await waitForExit(child);
+      return summary;
     }
     throw new Error("engine import host closed without a response");
   } finally {
@@ -156,4 +220,31 @@ async function importPortableSession(cwd: string, archive: PortableSessionArchiv
     if (child.exitCode === null) child.kill("SIGKILL");
     await rm(archivePath, { force: true });
   }
+}
+
+function portableJson(archive: PortableSessionArchiveV1, path: string): unknown {
+  const file = archive.files.find((item) => item.path === path);
+  if (!file) throw new Error(`portable archive is missing ${path}`);
+  return JSON.parse(Buffer.from(file.contentBase64, "base64").toString("utf8"));
+}
+
+function portableJsonLines(archive: PortableSessionArchiveV1, path: string): unknown[] {
+  const file = archive.files.find((item) => item.path === path);
+  if (!file) return [];
+  return Buffer.from(file.contentBase64, "base64").toString("utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line));
+}
+
+async function waitForExit(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null) {
+    if (child.exitCode !== 0) throw new Error(`engine import host exited ${child.exitCode}`);
+    return;
+  }
+  await new Promise<void>((resolveExit, rejectExit) => {
+    child.once("exit", (code) => code === 0
+      ? resolveExit()
+      : rejectExit(new Error(`engine import host exited ${code}`)));
+  });
 }

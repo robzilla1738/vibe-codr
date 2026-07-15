@@ -94,8 +94,11 @@ export function startCloudAgent(options: AgentOptions = {}) {
     });
     host.stderr.on("data", (chunk) => broadcast(state.hostClients, { channel: "diagnostic", stream: "stderr", data: chunk.toString("utf8").slice(-16_384) }));
     host.on("exit", (code, signal) => {
-      broadcast(state.hostClients, { channel: "fatal", message: `engine host exited (${signal ?? code ?? "unknown"})` });
-      if (state.host === host) { state.host = null; state.sessionId = null; }
+      if (state.host === host) {
+        broadcast(state.hostClients, { channel: "fatal", message: `engine host exited (${signal ?? code ?? "unknown"})` });
+        state.host = null;
+        state.sessionId = null;
+      }
     });
     return host;
   };
@@ -138,7 +141,8 @@ export function startCloudAgent(options: AgentOptions = {}) {
         if (frame.channel === "agent" && frame.op === "detach-engine") {
           const host = state.host;
           state.host = null;
-          if (host?.exitCode === null) host.kill("SIGTERM");
+          state.sessionId = null;
+          if (host) await terminateHost(host);
           send(socket, { channel: "agent", type: "detached" });
         } else if (frame.channel === "engine") {
           const host = ensureHost();
@@ -288,6 +292,26 @@ async function mkdirForWorkload(root: string, destination: string, workload: Wor
 
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number {
   return typeof value === "number" && Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
+}
+
+async function terminateHost(host: ChildProcessWithoutNullStreams): Promise<void> {
+  if (host.exitCode !== null || host.signalCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    const hardTimeout = setTimeout(() => reject(new Error("engine host did not exit after forced detach")), 5_000);
+    const forceTimeout = setTimeout(() => {
+      host.kill("SIGKILL");
+    }, 2_000);
+    host.once("exit", () => {
+      clearTimeout(forceTimeout);
+      clearTimeout(hardTimeout);
+      resolve();
+    });
+    if (!host.kill("SIGTERM")) {
+      clearTimeout(forceTimeout);
+      clearTimeout(hardTimeout);
+      reject(new Error("engine host could not be detached"));
+    }
+  });
 }
 
 function send(socket: ServerSocket, value: unknown): void {

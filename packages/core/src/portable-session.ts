@@ -573,6 +573,32 @@ export class PortableSessionManager {
     );
   }
 
+  async recoverLostCloudOwnership(provider: "e2b" | "vercel", expectedGeneration: number): Promise<number> {
+    return withCheckpointFileLock(
+      PortableSessionManager.#importLock(this.#state, this.#sessionId),
+      async () => {
+        if (await PortableSessionManager.#hasPendingImport(this.#state, this.#sessionId)) {
+          throw new Error("portable import recovery is pending for this session");
+        }
+        const current = await readOwnership(this.#ownershipPath);
+        if (current.state !== "owned" || current.owner.kind !== "cloud" || current.owner.provider !== provider) {
+          throw new Error("lost-cloud recovery does not match the current session owner");
+        }
+        if (current.generation !== expectedGeneration) {
+          throw new Error(`stale ownership generation: expected ${expectedGeneration}, current ${current.generation}`);
+        }
+        const generation = current.generation + 1;
+        await atomicJson(this.#ownershipPath, {
+          generation,
+          owner: { kind: "local" },
+          state: "owned",
+          updatedAt: Date.now(),
+        } satisfies OwnershipRecord);
+        return generation;
+      },
+    );
+  }
+
   async export(
     engineRevision: string,
     ownershipGeneration: number,

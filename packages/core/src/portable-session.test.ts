@@ -105,6 +105,17 @@ describe("PortableSessionManager", () => {
     ).rejects.toThrow("cloud/e2b");
   });
 
+  test("explicitly recovers a provider-confirmed missing cloud owner to the local base", async () => {
+    const { source, sessionId } = await fixture();
+    const manager = new PortableSessionManager(source, sessionId);
+    const prepared = await manager.prepare({ kind: "cloud", provider: "e2b" }, 0);
+    await manager.commit(prepared.nonce);
+    await expect(manager.recoverLostCloudOwnership("vercel", 1)).rejects.toThrow("does not match");
+    await expect(manager.recoverLostCloudOwnership("e2b", 0)).rejects.toThrow("stale ownership");
+    expect(await manager.recoverLostCloudOwnership("e2b", 1)).toBe(2);
+    await PortableSessionManager.assertOwner(source, sessionId, { kind: "local" });
+  });
+
   test("provisional return can abort to the exact prior local session or commit atomically", async () => {
     const { source, target, sessionId } = await fixture();
     const sourceState = globalStateDir(source);

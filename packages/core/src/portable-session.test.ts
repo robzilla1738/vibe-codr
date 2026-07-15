@@ -162,6 +162,8 @@ describe("PortableSessionManager", () => {
     const returning = await targetManager.prepare({ kind: "local" }, 1);
     const returnArchive = await targetManager.export("engine-rev", returning.ownershipGeneration);
 
+    await PortableSessionManager.abortImport(source, sessionId, returning.ownershipGeneration);
+
     await PortableSessionManager.import(source, returnArchive, "engine-rev", { provisional: true });
     await PortableSessionManager.assertOwner(source, sessionId, { kind: "local" });
     await expect(sourceManager.prepare({ kind: "cloud", provider: "e2b" })).rejects.toThrow(
@@ -198,6 +200,7 @@ describe("PortableSessionManager", () => {
     await PortableSessionManager.assertOwner(source, sessionId, { kind: "cloud", provider: "e2b" });
 
     await PortableSessionManager.import(source, returnArchive, "engine-rev", { provisional: true });
+    await PortableSessionManager.commitImport(source, sessionId, returning.ownershipGeneration);
     await PortableSessionManager.commitImport(source, sessionId, returning.ownershipGeneration);
     expect(
       await readFile(join(sourceState, "sessions", sessionId, "messages.jsonl"), "utf8"),

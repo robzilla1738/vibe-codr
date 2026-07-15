@@ -853,12 +853,18 @@ export class PortableSessionManager {
   ): Promise<void> {
     const state = globalStateDir(resolve(targetRoot));
     const journal = PortableSessionManager.#importJournal(state, sessionId, ownershipGeneration);
-    await PortableSessionManager.#readImportJournal(journal, sessionId, ownershipGeneration);
+    let journalPresent = true;
+    try {
+      await PortableSessionManager.#readImportJournal(journal, sessionId, ownershipGeneration);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      journalPresent = false;
+    }
     const ownership = await readOwnership(join(state, "sessions", sessionId, OWNERSHIP_FILE));
     if (ownership.state !== "owned" || ownership.generation !== ownershipGeneration) {
       throw new Error("portable import generation is no longer current");
     }
-    await PortableSessionManager.#retireImportJournal(state, sessionId);
+    if (journalPresent) await PortableSessionManager.#retireImportJournal(state, sessionId);
   }
 
   static async abortImport(
@@ -881,11 +887,22 @@ export class PortableSessionManager {
   ): Promise<void> {
     const state = globalStateDir(resolve(targetRoot));
     const journal = PortableSessionManager.#importJournal(state, sessionId, ownershipGeneration);
-    const record = await PortableSessionManager.#readImportJournal(
-      journal,
-      sessionId,
-      ownershipGeneration,
-    );
+    let record: ImportJournalV1;
+    try {
+      record = await PortableSessionManager.#readImportJournal(
+        journal,
+        sessionId,
+        ownershipGeneration,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const ownership = await readOwnership(join(state, "sessions", sessionId, OWNERSHIP_FILE));
+      if (
+        ownership.generation < ownershipGeneration ||
+        (ownership.generation === ownershipGeneration - 1 && ownership.owner.kind === "cloud")
+      ) return;
+      throw new Error("portable import journal is unavailable for rollback");
+    }
     const rollbackPath = join(journal, "rollback.json");
     let rollbackStarted = false;
     let rollbackReportNames: string[] = [];

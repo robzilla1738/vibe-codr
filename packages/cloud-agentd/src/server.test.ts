@@ -14,6 +14,7 @@ test("cloud control credentials are not inherited by engine or terminal children
   expect(environmentWithoutControlSecrets({
     PATH: "/usr/bin",
     VIBE_CLOUD_ACCESS_TOKEN: "not-for-workloads",
+    VIBE_CLOUD_ACCESS_TOKEN_FILE: "/run/vibe-cloud/access-token",
     OPTIONAL: undefined,
   })).toEqual({ PATH: "/usr/bin" });
 });

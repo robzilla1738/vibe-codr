@@ -913,8 +913,16 @@ bun run smoke:tui     # drive the real OpenTUI app (mock engine) — input, stre
                       # the permission card — via the test renderer
 bun packages/tui/scripts/screenshot.ts docs/screenshots  # regenerate README shots
 bun run build:binary  # standalone binary -> dist/vibecodr (bun --compile)
-bun run build:cloud-runtime # revision-locked Linux host + cloud-agentd + checksums + SBOM
+bun run build:cloud-runtime # pinned Linux/Node 24 host + cloud-agentd + production deps + checksums/SBOM
+bun run smoke:cloud-runtime # network-disabled archive/bootstrap/health/clean-stop smoke
 ```
+
+The cloud runtime build always uses the digest-pinned
+`node:24.18.0-bookworm` target container to compile the Linux `node-pty` addon.
+The resulting revision-keyed archive is complete: it includes Node 24.18.0 and
+sandbox installation verifies its checksum, Linux x64 ABI, `node-pty`, and `ws`
+without registry access or native compilation. CI publishes this Linux artifact for macOS and Windows
+desktop packaging; `VIBE_CLOUD_RUNTIME_IMAGE` can override the local build image.
 
 Portable session export/import, ownership generations, `/handoff`, and the
 privileged request-only `handoff_session` tool live in core. Desktop/provider

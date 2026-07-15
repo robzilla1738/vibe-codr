@@ -7,7 +7,8 @@ const root = resolve(import.meta.dirname, "..");
 const output = join(root, "dist", "cloud-runtime");
 const stage = join(output, "stage");
 const revision = run("git", ["rev-parse", "HEAD"], root).trim();
-const expected = readFileSync(join(root, "..", "vbcode-electron", "ENGINE_COMMIT"), "utf8").trim();
+const expected = process.env.VIBE_ENGINE_COMMIT?.trim()
+  || readFileSync(join(root, "..", "vbcode-electron", "ENGINE_COMMIT"), "utf8").trim();
 if (revision !== expected) throw new Error(`ENGINE_COMMIT mismatch: runtime ${revision}, desktop ${expected}`);
 
 rmSync(output, { recursive: true, force: true });

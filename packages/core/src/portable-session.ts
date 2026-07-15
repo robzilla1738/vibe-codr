@@ -576,7 +576,10 @@ export class PortableSessionManager {
   async abortInterrupted(
     target: ExecutionTarget,
     expectedGeneration?: number,
-  ): Promise<number> {
+  ): Promise<
+    | { outcome: "aborted"; generation: number }
+    | { outcome: "already-committed"; generation: number }
+  > {
     return withCheckpointFileLock(
       PortableSessionManager.#importLock(this.#state, this.#sessionId),
       async () => {
@@ -585,13 +588,16 @@ export class PortableSessionManager {
           current.owner.kind === target.kind &&
           (current.owner.kind !== "cloud" ||
             (target.kind === "cloud" && current.owner.provider === target.provider));
-        if (current.state !== "prepared" || !targetMatches) {
+        if (!targetMatches) {
           throw new Error("interrupted handoff does not match the prepared owner");
         }
         if (expectedGeneration !== undefined && current.generation !== expectedGeneration) {
           throw new Error(
             `stale ownership generation: expected ${expectedGeneration}, current ${current.generation}`,
           );
+        }
+        if (current.state === "owned") {
+          return { outcome: "already-committed", generation: current.generation };
         }
         const generation = current.generation - 1;
         await atomicJson(this.#ownershipPath, {
@@ -600,7 +606,7 @@ export class PortableSessionManager {
           state: "owned",
           updatedAt: Date.now(),
         } satisfies OwnershipRecord);
-        return generation;
+        return { outcome: "aborted", generation };
       },
     );
   }

@@ -94,8 +94,22 @@ describe("PortableSessionManager", () => {
     await expect(
       manager.abortInterrupted({ kind: "cloud", provider: "vercel" }, 1),
     ).rejects.toThrow("does not match");
-    expect(await manager.abortInterrupted({ kind: "cloud", provider: "e2b" }, 1)).toBe(0);
+    expect(await manager.abortInterrupted({ kind: "cloud", provider: "e2b" }, 1)).toEqual({
+      outcome: "aborted",
+      generation: 0,
+    });
     await PortableSessionManager.assertOwner(source, sessionId, { kind: "local" });
+  });
+
+  test("reports a committed interrupted handoff structurally", async () => {
+    const { source, sessionId } = await fixture();
+    const manager = new PortableSessionManager(source, sessionId);
+    const prepared = await manager.prepare({ kind: "cloud", provider: "e2b" }, 0);
+    await manager.commit(prepared.nonce);
+    expect(await manager.abortInterrupted({ kind: "cloud", provider: "e2b" }, 1)).toEqual({
+      outcome: "already-committed",
+      generation: 1,
+    });
   });
 
   test("refuses bootstrap ownership mismatches and prepared generations", async () => {

@@ -51,6 +51,19 @@ function host(stateDir = mkdtempSync(join(tmpdir(), "vibe-host-state-"))) {
 }
 
 describe("engine host protocol boundary", () => {
+  test("fails closed when an explicit resume session is unavailable", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-host-project-"));
+    roots.push(cwd);
+    const proc = host();
+
+    proc.send({ op: "bootstrap", cwd, resume: "ses_missing" });
+
+    expect(await proc.next((value) => value.type === "fatal")).toEqual({
+      type: "fatal",
+      message: "requested session not found: ses_missing",
+    });
+  });
+
   test("rejects malformed messages and answers valid pre-bootstrap RPCs", async () => {
     const proc = host();
     proc.send({ op: "rpc", id: 1, method: "snapshot" });

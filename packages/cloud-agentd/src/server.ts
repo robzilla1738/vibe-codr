@@ -23,6 +23,7 @@ interface TerminalSession {
 interface AgentState {
   host: ChildProcessWithoutNullStreams | null;
   sessionId: string | null;
+  startupError: string | null;
   hostClients: Set<ServerSocket>;
   terminals: Map<string, TerminalSession>;
 }
@@ -32,6 +33,7 @@ interface AgentOptions {
   accessToken?: string;
   workspaceRoot?: string;
   engineHost?: string;
+  expectedSessionId?: string;
   workloadUid?: number;
   workloadGid?: number;
 }
@@ -45,6 +47,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
     ?? (tokenFile ? readFileSync(tokenFile, "utf8") : process.env.VIBE_CLOUD_ACCESS_TOKEN);
   const workspaceRoot = resolve(options.workspaceRoot ?? process.env.VIBE_WORKSPACE_ROOT ?? "/workspace");
   const engineHost = options.engineHost ?? process.env.VIBE_ENGINE_HOST ?? "vibecodr-engine-host";
+  const expectedSessionId = options.expectedSessionId ?? process.env.VIBE_CLOUD_EXPECTED_SESSION_ID;
   if (!accessToken || accessToken.length < 32) throw new Error("VIBE_CLOUD_ACCESS_TOKEN must contain at least 32 characters");
   if (tokenFile) rmSync(tokenFile, { force: true });
   delete process.env.VIBE_CLOUD_ACCESS_TOKEN;
@@ -60,7 +63,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
     childEnvironment.LOGNAME = "vibe-workload";
   }
 
-  const state: AgentState = { host: null, sessionId: null, hostClients: new Set(), terminals: new Map() };
+  const state: AgentState = { host: null, sessionId: null, startupError: null, hostClients: new Set(), terminals: new Map() };
 
   const ensureHost = () => {
     if (state.host && state.host.exitCode === null) return state.host;
@@ -71,6 +74,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
       ...(workload ? { uid: workload.uid, gid: workload.gid } : {}),
     });
     state.host = host;
+    state.startupError = null;
     let stdout = "";
     host.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
@@ -85,8 +89,14 @@ export function startCloudAgent(options: AgentOptions = {}) {
           break;
         }
         try {
-          const payload = JSON.parse(line) as { type?: string; sessionId?: string };
-          if (payload.type === "ready" && typeof payload.sessionId === "string") state.sessionId = payload.sessionId;
+          const payload = JSON.parse(line) as { type?: string; sessionId?: string; message?: string };
+          if (payload.type === "fatal") state.startupError = payload.message ?? "engine bootstrap failed";
+          if (payload.type === "ready" && typeof payload.sessionId === "string") {
+            if (expectedSessionId && payload.sessionId !== expectedSessionId) {
+              state.startupError = `cloud engine resumed ${payload.sessionId} instead of ${expectedSessionId}`;
+              host.kill("SIGKILL");
+            } else state.sessionId = payload.sessionId;
+          }
           broadcast(state.hostClients, { channel: "engine", payload });
         }
         catch { broadcast(state.hostClients, { channel: "fatal", message: "engine emitted malformed JSON" }); }
@@ -118,8 +128,17 @@ export function startCloudAgent(options: AgentOptions = {}) {
       return;
     }
     if (request.url === "/health") {
+      const sessionReady = !expectedSessionId || state.sessionId === expectedSessionId;
+      const healthy = sessionReady && !state.startupError;
+      response.statusCode = healthy ? 200 : 503;
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ ok: true, engine: state.host?.exitCode === null, terminals: state.terminals.size }));
+      response.end(JSON.stringify({
+        ok: healthy,
+        engine: state.host?.exitCode === null,
+        sessionId: state.sessionId,
+        ...(state.startupError ? { error: state.startupError } : {}),
+        terminals: state.terminals.size,
+      }));
       return;
     }
     response.writeHead(426).end("upgrade required");
@@ -169,7 +188,11 @@ export function startCloudAgent(options: AgentOptions = {}) {
       for (const terminal of state.terminals.values()) terminal.subscribers.delete(socket);
     });
   });
-  server.listen(port, "0.0.0.0");
+  server.listen(port, "0.0.0.0", () => {
+    if (!expectedSessionId) return;
+    const host = ensureHost();
+    host.stdin.write(`${JSON.stringify({ op: "bootstrap", cwd: workspaceRoot, resume: expectedSessionId })}\n`);
+  });
   return server;
 }
 

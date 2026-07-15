@@ -4,6 +4,19 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.3 — 2026-07-15
+
+## 0.5.3 — 2026-07-15
+
+### Fixed — fail-closed Cloud resume
+
+- An explicit session resume now fails when the requested session is missing
+  instead of silently creating a replacement session with a new ID.
+- The production Cloud daemon now resumes and verifies the imported session
+  under its final isolated workload identity before its health endpoint can
+  report ready. Desktop reconnects attach only after that exact session ID is
+  active.
+
 ## 0.5.2 — 2026-07-15
 
 ### Fixed — seamless desktop-to-cloud continuity

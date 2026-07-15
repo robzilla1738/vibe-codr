@@ -24,6 +24,10 @@ One JSON object per line on **stdin** (desktop client → host) and **stdout** (
 {"op":"shutdown"}
 ```
 
+An explicit `resume` is fail-closed: if that session is unavailable in the
+selected workspace state, the host emits `fatal` and never creates a
+replacement session. `continue` without a saved session still starts fresh.
+
 ### Outbound (`HostOutbound`)
 
 | `type` | Meaning |

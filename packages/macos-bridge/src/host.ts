@@ -126,6 +126,10 @@ export async function runHost(): Promise<void> {
       const id = msg.resume ?? (await store.latestId());
       const loaded = id ? await store.load(id) : null;
       if (loaded) resume = loaded;
+      else if (msg.resume) {
+        write({ type: "fatal", message: `requested session not found: ${msg.resume}` });
+        return;
+      }
     }
 
     if (resume) {

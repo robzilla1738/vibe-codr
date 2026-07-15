@@ -57,6 +57,7 @@ export type HostInbound =
         | "commitPortableImport"
         | "abortPortableImport"
         | "recoverLostCloudOwnership"
+        | "abortInterruptedHandoff"
         | "commitHandoff"
         | "abortHandoff";
       params?: HostRpcParams;
@@ -112,6 +113,7 @@ const RPC_METHODS = new Set<RpcMethod>([
   "commitPortableImport",
   "abortPortableImport",
   "recoverLostCloudOwnership",
+  "abortInterruptedHandoff",
   "commitHandoff",
   "abortHandoff",
 ]);

@@ -573,6 +573,38 @@ export class PortableSessionManager {
     );
   }
 
+  async abortInterrupted(
+    target: ExecutionTarget,
+    expectedGeneration?: number,
+  ): Promise<number> {
+    return withCheckpointFileLock(
+      PortableSessionManager.#importLock(this.#state, this.#sessionId),
+      async () => {
+        const current = await readOwnership(this.#ownershipPath);
+        const targetMatches =
+          current.owner.kind === target.kind &&
+          (current.owner.kind !== "cloud" ||
+            (target.kind === "cloud" && current.owner.provider === target.provider));
+        if (current.state !== "prepared" || !targetMatches) {
+          throw new Error("interrupted handoff does not match the prepared owner");
+        }
+        if (expectedGeneration !== undefined && current.generation !== expectedGeneration) {
+          throw new Error(
+            `stale ownership generation: expected ${expectedGeneration}, current ${current.generation}`,
+          );
+        }
+        const generation = current.generation - 1;
+        await atomicJson(this.#ownershipPath, {
+          generation,
+          owner: current.previousOwner ?? { kind: "local" },
+          state: "owned",
+          updatedAt: Date.now(),
+        } satisfies OwnershipRecord);
+        return generation;
+      },
+    );
+  }
+
   async recoverLostCloudOwnership(provider: "e2b" | "vercel", expectedGeneration: number): Promise<number> {
     return withCheckpointFileLock(
       PortableSessionManager.#importLock(this.#state, this.#sessionId),

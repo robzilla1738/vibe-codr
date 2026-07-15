@@ -87,6 +87,17 @@ describe("PortableSessionManager", () => {
     expect(second.ownershipGeneration).toBe(1);
   });
 
+  test("recovers an interrupted preparation without relying on the returned nonce", async () => {
+    const { source, sessionId } = await fixture();
+    const manager = new PortableSessionManager(source, sessionId);
+    await manager.prepare({ kind: "cloud", provider: "e2b" }, 0);
+    await expect(
+      manager.abortInterrupted({ kind: "cloud", provider: "vercel" }, 1),
+    ).rejects.toThrow("does not match");
+    expect(await manager.abortInterrupted({ kind: "cloud", provider: "e2b" }, 1)).toBe(0);
+    await PortableSessionManager.assertOwner(source, sessionId, { kind: "local" });
+  });
+
   test("refuses bootstrap ownership mismatches and prepared generations", async () => {
     const { source, sessionId } = await fixture();
     const manager = new PortableSessionManager(source, sessionId);

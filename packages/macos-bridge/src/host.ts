@@ -330,6 +330,26 @@ export async function runHost(): Promise<void> {
         return;
       }
 
+      if (method === "abortInterruptedHandoff") {
+        const sessionId = params?.sessionId?.trim();
+        const target = params?.target;
+        const generation = params?.expectedGeneration;
+        const cwd = params?.cwd?.trim() || lastCwd;
+        if (
+          !sessionId ||
+          !target ||
+          (target.kind !== "local" && target.kind !== "cloud") ||
+          (target.kind === "cloud" && target.provider !== "e2b" && target.provider !== "vercel") ||
+          (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 1))
+        ) {
+          write({ type: "resp", id, ok: false, error: "cwd, session id, target, and optional ownership generation required" });
+          return;
+        }
+        const value = await new PortableSessionManager(cwd, sessionId).abortInterrupted(target, generation);
+        write({ type: "resp", id, ok: true, value });
+        return;
+      }
+
       if (!engine) {
         write({ type: "resp", id, ok: false, error: "not bootstrapped" });
         return;

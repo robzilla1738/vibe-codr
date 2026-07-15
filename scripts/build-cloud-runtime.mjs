@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -25,6 +26,8 @@ for (const spec of ["node-pty@1.1.0", "node-addon-api@7.1.1", "ws@8.18.3"]) {
   const packed = run("npm", ["pack", "--silent", spec, "--pack-destination", join(stage, "packages")], root).trim().split("\n").at(-1);
   if (!packed) throw new Error(`npm pack produced no artifact for ${spec}`);
 }
+
+sanitizeLinuxPackage("node-pty-1.1.0.tgz");
 
 const verifiedPackages = ["node-pty-1.1.0.tgz", "node-addon-api-7.1.1.tgz", "ws-8.18.3.tgz"];
 writeFileSync(join(stage, "package.json"), `${JSON.stringify({
@@ -155,6 +158,33 @@ function assertLinuxRuntime() {
   if (!existsSync(addon)) throw new Error("Linux node-pty native addon was not produced");
   const magic = readFileSync(addon).subarray(0, 4).toString("hex");
   if (magic !== "7f454c46") throw new Error("Cloud runtime node-pty addon is not a Linux ELF binary");
+
+  const foreignPrebuild = walk(stage).find((name) => /(^|\/)prebuilds\/(darwin|win32)-/.test(name));
+  if (foreignPrebuild) throw new Error(`Cloud runtime contains a foreign native prebuild: ${foreignPrebuild}`);
+
+  const foreignBinary = walk(stage).find((name) => {
+    const header = readFileSync(join(stage, name)).subarray(0, 4).toString("hex");
+    return header.startsWith("4d5a") || ["cafebabe", "feedface", "feedfacf", "cefaedfe", "cffaedfe"].includes(header);
+  });
+  if (foreignBinary) throw new Error(`Cloud runtime contains a macOS or Windows binary: ${foreignBinary}`);
+}
+
+function sanitizeLinuxPackage(name) {
+  const archive = join(stage, "packages", name);
+  const temporary = mkdtempSync(join(tmpdir(), "vibe-cloud-package-"));
+  try {
+    run("tar", ["-xzf", archive, "-C", temporary], root);
+    rmSync(join(temporary, "package", "prebuilds"), { recursive: true, force: true });
+    rmSync(join(temporary, "package", "third_party", "conpty"), { recursive: true, force: true });
+    rmSync(archive, { force: true });
+    run("tar", ["--no-xattrs", "-czf", archive, "-C", temporary, "package"], root);
+    const foreignEntry = run("tar", ["-tzf", archive], root)
+      .split("\n")
+      .find((entry) => /(^|\/)(prebuilds\/(darwin|win32)-|third_party\/conpty\/)/.test(entry));
+    if (foreignEntry) throw new Error(`Sanitized Linux package still contains ${foreignEntry}`);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 }
 
 function walk(directory, prefix = "") {

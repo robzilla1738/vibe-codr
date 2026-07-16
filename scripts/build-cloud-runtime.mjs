@@ -9,8 +9,13 @@ const DEFAULT_RUNTIME_IMAGE = "node:24.18.0-bookworm@sha256:5711a0d445a1af54af95
 const output = join(root, "dist", "cloud-runtime");
 const stage = join(output, "stage");
 const revision = run("git", ["rev-parse", "HEAD"], root).trim();
+const desktopLock = [
+  join(root, "..", "electron", "ENGINE_COMMIT"),
+  join(root, "..", "vbcode-electron", "ENGINE_COMMIT"),
+].find(existsSync);
 const expected = process.env.VIBE_ENGINE_COMMIT?.trim()
-  || readFileSync(join(root, "..", "vbcode-electron", "ENGINE_COMMIT"), "utf8").trim();
+  || (desktopLock ? readFileSync(desktopLock, "utf8").trim() : "");
+if (!expected) throw new Error("ENGINE_COMMIT is unavailable; set VIBE_ENGINE_COMMIT or place the Electron checkout beside the engine");
 if (revision !== expected) throw new Error(`ENGINE_COMMIT mismatch: runtime ${revision}, desktop ${expected}`);
 
 rmSync(output, { recursive: true, force: true });
@@ -53,6 +58,50 @@ fi
 sha256sum --quiet -c checksums.sha256
 ./bin/node -e 'if (process.versions.node !== "24.18.0") throw new Error("Bundled Node 24.18.0 is required, found " + process.version); require("node-pty"); require("ws")'
 `, { mode: 0o755 });
+writeFileSync(join(stage, "restore-session.sh"), `#!/bin/sh
+set -eu
+if [ "$(id -u)" -ne 0 ]; then
+  echo "cloud session restore must run as root so it can enter the isolated workload identity" >&2
+  exit 1
+fi
+if [ "$#" -ne 3 ]; then
+  echo "usage: restore-session.sh <bundle.json> <target-root> <engine-revision>" >&2
+  exit 1
+fi
+if ! command -v runuser >/dev/null 2>&1; then
+  echo "cloud runtime requires runuser to restore under the isolated workload identity" >&2
+  exit 1
+fi
+if ! id -u vibe-workload >/dev/null 2>&1; then
+  if command -v useradd >/dev/null 2>&1; then
+    useradd --create-home --shell /bin/bash vibe-workload
+  else
+    echo "cloud runtime cannot create the isolated workload user" >&2
+    exit 1
+  fi
+fi
+VIBE_CLOUD_WORKLOAD_UID="$(id -u vibe-workload)"
+VIBE_CLOUD_WORKLOAD_GID="$(id -g vibe-workload)"
+VIBE_CLOUD_WORKLOAD_HOME="$(getent passwd vibe-workload | cut -d: -f6)"
+BUNDLE="$1"
+TARGET="$2"
+REVISION="$3"
+TARGET_PARENT="$(dirname "$TARGET")"
+mkdir -p "$TARGET_PARENT" "$VIBE_STATE_DIR"
+chown "$VIBE_CLOUD_WORKLOAD_UID:$VIBE_CLOUD_WORKLOAD_GID" "$TARGET_PARENT" "$VIBE_STATE_DIR" "$BUNDLE"
+chmod 0400 "$BUNDLE"
+RUNTIME_PARENT="$PWD"
+while [ "$RUNTIME_PARENT" != "/" ]; do
+  chmod o+x "$RUNTIME_PARENT"
+  RUNTIME_PARENT="$(dirname "$RUNTIME_PARENT")"
+done
+exec runuser -u vibe-workload --preserve-environment -- env \
+  HOME="$VIBE_CLOUD_WORKLOAD_HOME" \
+  USER=vibe-workload \
+  LOGNAME=vibe-workload \
+  VIBE_STATE_DIR="$VIBE_STATE_DIR" \
+  "$PWD/bin/node" "$PWD/vibe-cloud-bootstrap.mjs" "$BUNDLE" "$TARGET" "$REVISION"
+`, { mode: 0o755 });
 writeFileSync(join(stage, "start.sh"), `#!/bin/sh
 set -eu
 if [ "$(id -u)" -ne 0 ]; then
@@ -93,7 +142,7 @@ writeFileSync(join(stage, "checksums.sha256"), `${checksumFiles
   .map((name) => `${sha256(readFileSync(join(stage, name)))}  ${name}`)
   .join("\n")}\n`);
 
-const files = ["bin/node", "vibecodr-engine-host", "vibe-cloud-bootstrap.mjs", "vibe-cloud-export.mjs", "cloud-agentd.mjs", "package.json", "package-lock.json", "checksums.sha256", "install-runtime.sh", "start.sh"]
+const files = ["bin/node", "vibecodr-engine-host", "vibe-cloud-bootstrap.mjs", "vibe-cloud-export.mjs", "cloud-agentd.mjs", "package.json", "package-lock.json", "checksums.sha256", "install-runtime.sh", "restore-session.sh", "start.sh"]
   .map((name) => ({ name, sha256: sha256(readFileSync(join(stage, name))) }));
 const packages = verifiedPackages.map((name) => ({ name, sha256: sha256(readFileSync(join(stage, "packages", name))) }));
 writeFileSync(join(stage, "runtime.json"), `${JSON.stringify({

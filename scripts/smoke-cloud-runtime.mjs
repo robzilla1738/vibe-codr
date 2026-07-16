@@ -70,7 +70,7 @@ execFileSync("docker", [
     "NODE",
     "REVISION=\"$(./bin/node -p \"require('./runtime.json').engineRevision\")\"",
     "export VIBE_STATE_DIR=/tmp/cloud-state",
-    "./bin/node vibe-cloud-bootstrap.mjs /tmp/handoff.json /tmp/project \"$REVISION\"",
+    "sh restore-session.sh /tmp/handoff.json /tmp/project \"$REVISION\"",
     "test \"$(cat /tmp/project/README.md)\" = 'offline cloud runtime smoke'",
     "export VIBE_CLOUD_ACCESS_TOKEN='offline-smoke-access-token-0000000000000000'",
     "export VIBE_CLOUD_PROVIDER=e2b",

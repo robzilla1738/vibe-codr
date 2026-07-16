@@ -924,9 +924,10 @@ sandbox installation verifies its checksum, Linux x64 ABI, `node-pty`, and `ws`
 without registry access or native compilation. CI publishes this Linux artifact for macOS and Windows
 desktop packaging; `VIBE_CLOUD_RUNTIME_IMAGE` can override the local build image.
 
-The production daemon preflights the imported session under its final isolated
-workload identity before health can report ready. Explicit resume is
-fail-closed: missing state never falls through to a replacement session ID.
+Portable restore, resume verification, and the permanent engine all run under
+the same isolated workload identity before health can report ready. Explicit
+resume is fail-closed: missing state never falls through to a replacement
+session ID.
 
 Portable session export/import, ownership generations, `/handoff`, and the
 privileged request-only `handoff_session` tool live in core. Desktop/provider

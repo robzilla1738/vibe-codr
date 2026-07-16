@@ -4,7 +4,16 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
-## 0.5.3 — 2026-07-15
+## 0.5.4 — 2026-07-15
+
+### Fixed — Cloud restore identity
+
+- Portable Cloud restore now imports and verifies session state as the same
+  isolated workload identity that runs the permanent engine. This prevents a
+  live sandbox from validating state as root and then losing the requested
+  session when the non-root daemon starts.
+- The offline Cloud runtime smoke now exercises the production identity
+  boundary before proving the exact session ID, model, and transcript survive.
 
 ## 0.5.3 — 2026-07-15
 

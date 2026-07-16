@@ -1,0 +1,262 @@
+#!/usr/bin/env node
+import { createInterface } from "node:readline";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const sessionId = "fixture-session";
+let mode = "execute";
+let approvalMode = "ask";
+let theme = "default";
+// The real host reads its persisted project index before bootstrap. Seed the
+// fixture with its saved project so cold-start recents exercise that contract.
+let currentCwd = resolve(dirname(fileURLToPath(import.meta.url)), "../../project");
+let savedSessions = [
+  { id: sessionId, title: "Fixture session", model: "fixture/model", mode: "execute", goal: null, createdAt: 1, updatedAt: 3 },
+  { id: "saved-one", title: "Saved one", model: "fixture/model", mode: "execute", goal: null, createdAt: 1, updatedAt: 2 },
+  { id: "saved-two", title: "Saved two", model: "fixture/model", mode: "plan", goal: "Plan", createdAt: 1, updatedAt: 1 },
+];
+
+const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+const event = (value) => write({ type: "event", event: value });
+const sessionEvent = (value) => event({ sessionId, ...value });
+
+const snapshot = () => ({
+  sessionId,
+  model: "fixture/model",
+  mode,
+  goal: null,
+  history: [],
+  tasks: [],
+  usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+  busy: false,
+  theme,
+  accentColor: "",
+  details: "normal",
+  mouse: false,
+  approvalMode,
+  commandNames: ["clear", "new", "theme", "fixture-command"],
+});
+
+function finish(gate = undefined) {
+  sessionEvent({ type: "turn-finished" });
+  sessionEvent({ type: "session-idle" });
+  sessionEvent({ type: "engine-idle", ...(gate ? { gate } : {}) });
+}
+
+function submit(text) {
+  sessionEvent({ type: "user-message", text });
+  if (text === "fixture:stream") {
+    sessionEvent({ type: "reasoning-delta", delta: "Inspecting the fixture." });
+    sessionEvent({
+      type: "tool-call-started",
+      toolCallId: "tool-1",
+      toolName: "edit",
+      input: { path: "src/example.ts", oldString: "old", newString: "new" },
+    });
+    sessionEvent({ type: "tool-call-progress", toolCallId: "tool-1", chunk: "editing…" });
+    sessionEvent({
+      type: "tool-call-finished",
+      toolCallId: "tool-1",
+      toolName: "edit",
+      output: "updated src/example.ts",
+      isError: false,
+    });
+    sessionEvent({
+      type: "file-changed",
+      toolCallId: "tool-1",
+      path: "src/example.ts",
+      action: "edit",
+      diff: "- old\n+ new",
+      added: 1,
+      removed: 1,
+    });
+    sessionEvent({
+      type: "tool-call-started",
+      toolCallId: "tool-error",
+      toolName: "bash",
+      input: { command: "exit 1" },
+    });
+    sessionEvent({
+      type: "tool-call-finished",
+      toolCallId: "tool-error",
+      toolName: "bash",
+      output: "fixture command failed",
+      isError: true,
+    });
+    sessionEvent({ type: "assistant-text-delta", delta: "Done with **markdown**." });
+    sessionEvent({
+      type: "usage-updated",
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUSD: 0.001 },
+    });
+    sessionEvent({ type: "context-updated", usedTokens: 100, contextWindow: 1000 });
+    finish("green");
+    return;
+  }
+  if (text === "fixture:markdown") {
+    sessionEvent({
+      type: "assistant-text-delta",
+      delta: "[unsafe](javascript:alert('no')) [safe](https://example.com/path) <script>window.fixtureInjected=true</script>",
+    });
+    finish();
+    return;
+  }
+  if (text === "fixture:permission") {
+    sessionEvent({
+      type: "permission-request",
+      id: "perm-1",
+      toolName: "bash",
+      input: { command: "pwd" },
+    });
+    return;
+  }
+  if (text === "fixture:plan") {
+    sessionEvent({
+      type: "plan-presented",
+      plan: "1. Inspect\n2. Implement\n3. Verify",
+      sources: [{ url: "https://example.com/reference", title: "Fixture reference" }],
+      assumptions: ["The fixture is writable"],
+      ungrounded: true,
+    });
+    return;
+  }
+  if (text === "fixture:queue") {
+    event({
+      type: "queue-changed",
+      active: { id: "active", label: "Current fixture" },
+      pending: [
+        { id: "q1", label: "Queued one" },
+        { id: "q2", label: "Queued two" },
+      ],
+    });
+    return;
+  }
+  if (text === "fixture:slow") {
+    setTimeout(() => sessionEvent({ type: "assistant-text-delta", delta: "STALE OUTPUT" }), 600);
+    setTimeout(() => finish(), 700);
+    return;
+  }
+  if (text === "fixture:fatal") {
+    write({ type: "fatal", message: "fixture host failure" });
+    return;
+  }
+  if (text === "fixture:activity") {
+    sessionEvent({ type: "tasks-updated", tasks: [{ id: "task-1", title: "Inspect fixture", status: "in_progress" }] });
+    sessionEvent({ type: "orchestration-task", taskId: "dag-1", objective: "Run fixture child", status: "running" });
+    sessionEvent({ type: "subagent-started", subagentId: "sub-1", prompt: "Review the fixture" });
+    sessionEvent({ type: "subagent-activity", subagentId: "sub-1", label: "reading README.md" });
+    sessionEvent({ type: "assistant-text-delta", subagentId: "sub-1", delta: "Subagent report: looks healthy." });
+    sessionEvent({ type: "subagent-finished", subagentId: "sub-1", result: "review complete" });
+    event({ type: "jobs-changed", sessionId, jobs: [{ id: "job-1", command: "npm run dev", status: "running", exitCode: null, servers: ["http://localhost:4310"], outputTail: "ready" }] });
+    event({ type: "checkpoint-created", id: "checkpoint-1", label: "Before fixture change" });
+    sessionEvent({ type: "tool-call-started", toolCallId: "search-1", toolName: "web_search", input: { query: "fixture" } });
+    sessionEvent({ type: "tool-call-finished", toolCallId: "search-1", toolName: "web_search", output: "1. Fixture search\nhttps://example.com/search\nUseful result", isError: false });
+    sessionEvent({ type: "assistant-text-delta", delta: "Fixture activity complete." });
+    finish();
+    return;
+  }
+  sessionEvent({ type: "assistant-text-delta", delta: `Echo: ${text}` });
+  finish();
+}
+
+function send(command) {
+  switch (command.type) {
+    case "submit-prompt":
+      submit(command.text);
+      break;
+    case "resolve-permission":
+      event({ type: "notice", level: "info", message: `permission ${command.decision}` });
+      finish();
+      break;
+    case "resolve-plan":
+      event({ type: "notice", level: "info", message: `plan ${command.decision}` });
+      finish();
+      break;
+    case "set-mode":
+      mode = command.mode === "plan" ? "plan" : "execute";
+      sessionEvent({ type: "mode-changed", mode });
+      break;
+    case "set-approvals":
+      approvalMode = command.mode;
+      event({ type: "approvals-changed", mode: approvalMode });
+      break;
+    case "steer":
+    case "dequeue":
+      event({
+        type: "queue-changed",
+        active: { id: "active", label: "Current fixture" },
+        pending: command.id === "q1" ? [{ id: "q2", label: "Queued two" }] : [{ id: "q1", label: "Queued one" }],
+      });
+      break;
+    case "run-slash":
+      if (command.name === "theme" && command.args) {
+        theme = command.args;
+        event({ type: "theme-changed", theme });
+      }
+      break;
+    case "shutdown":
+      process.exit(0);
+  }
+}
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const line of rl) {
+  const message = JSON.parse(line);
+  if (message.op === "bootstrap") {
+    currentCwd = message.cwd;
+    write({ type: "ready", sessionId });
+    sessionEvent({ type: "session-start", model: "fixture/model", mode });
+  } else if (message.op === "send") {
+    send(message.command);
+  } else if (message.op === "rpc") {
+    if (["renameSession", "deleteSession", "archiveSession"].includes(message.method)) {
+      const id = message.params?.id;
+      const index = savedSessions.findIndex((session) => session.id === id);
+      if (index < 0) {
+        write({ type: "resp", id: message.id, ok: false, error: "session not found" });
+        continue;
+      }
+      if (message.method === "renameSession") {
+        savedSessions[index] = { ...savedSessions[index], title: message.params.title.trim() };
+      } else {
+        savedSessions.splice(index, 1);
+      }
+      write({ type: "resp", id: message.id, ok: true, value: { id } });
+      continue;
+    }
+    if (["renameProject", "archiveProject", "deleteProject"].includes(message.method)) {
+      const cwd = message.params?.cwd;
+      if (typeof cwd !== "string" || !cwd) {
+        write({ type: "resp", id: message.id, ok: false, error: "cwd required" });
+        continue;
+      }
+      if (message.method === "renameProject") {
+        if (typeof message.params?.name !== "string" || !message.params.name.trim()) {
+          write({ type: "resp", id: message.id, ok: false, error: "name required" });
+          continue;
+        }
+        write({ type: "resp", id: message.id, ok: true, value: { cwd, name: message.params.name.trim() } });
+      } else {
+        write({ type: "resp", id: message.id, ok: true, value: { cwd } });
+      }
+      continue;
+    }
+    const values = {
+      snapshot: snapshot(),
+      listModels: [{ id: "model", providerId: "fixture", name: "Fixture Model", contextWindow: 1000 }],
+      listProviders: [{ id: "fixture", configured: true, keyless: true, env: [] }],
+      listAgents: [{ name: "reviewer", description: "Fixture reviewer", model: null, mode: "execute" }],
+      listSkills: [{ name: "fixture-skill", description: "Fixture skill" }],
+      listMcp: [{ name: "fixture-mcp", connected: true, configured: true, toolCount: 2, resourceCount: 0, promptCount: 0 }],
+      listSessions: [],
+      listProjects: [{ cwd: currentCwd, name: "project", updatedAt: 3, sessions: savedSessions }],
+      finalize: null,
+    };
+    if (!Object.prototype.hasOwnProperty.call(values, message.method)) {
+      write({ type: "resp", id: message.id, ok: false, error: `unknown method: ${message.method}` });
+      continue;
+    }
+    write({ type: "resp", id: message.id, ok: true, value: values[message.method] });
+  } else if (message.op === "shutdown") {
+    process.exit(0);
+  }
+}

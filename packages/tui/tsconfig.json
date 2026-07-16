@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src/**/*.ts"],
+  "comment": "app.tsx is intentionally excluded: it depends on OpenTUI, an optional native peer dep. It is type-checked only when OpenTUI is installed.",
+  "exclude": ["node_modules", "dist", "src/app.tsx"]
+}

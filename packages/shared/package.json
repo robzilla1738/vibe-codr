@@ -1,0 +1,19 @@
+{
+  "name": "@vibe/shared",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "lint": "echo \"(no lint configured)\"",
+    "build": "echo \"(bun runs from source)\"",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "zod": "^4.0.0"
+  }
+}

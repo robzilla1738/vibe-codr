@@ -1,0 +1,185 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    name: Engine and CLI (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - run: bun run verify
+      - run: bun run build:binary
+      - run: ./dist/vibecodr models
+
+  engine-windows:
+    name: Engine and CLI (Windows advisory)
+    continue-on-error: true
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+
+  cloud-runtime:
+    name: Locked cloud runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - name: Materialize the desktop's locked engine
+        run: git worktree add --detach .engine "$(tr -d '[:space:]' < apps/desktop/ENGINE_COMMIT)"
+      - name: Build and smoke runtime
+        working-directory: .engine
+        run: |
+          bun install --frozen-lockfile
+          VIBE_ENGINE_COMMIT="$(git rev-parse HEAD)" bun run build:cloud-runtime
+          bun run smoke:cloud-runtime
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloud-runtime
+          path: .engine/dist/cloud-runtime/vibe-cloud-runtime-*
+          if-no-files-found: error
+
+  desktop-quality:
+    name: Desktop quality and E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Materialize and build the locked engine
+        run: |
+          git worktree add --detach .engine "$(tr -d '[:space:]' < apps/desktop/ENGINE_COMMIT)"
+          cd .engine
+          bun install --frozen-lockfile
+          bun run build:macos-bridge
+      - run: npm ci
+        working-directory: apps/desktop
+      - run: npm run verify
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}/.engine
+      - run: npm run test:coverage
+        working-directory: apps/desktop
+      - run: npm run smoke:bridge
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}/.engine
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/desktop
+      - run: xvfb-run -a npm run test:e2e
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}/.engine
+
+  desktop-macos-smoke:
+    name: Desktop packaged smoke (macOS)
+    needs: cloud-runtime
+    runs-on: macos-14
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Materialize and build the locked engine
+        run: |
+          git worktree add --detach .engine "$(tr -d '[:space:]' < apps/desktop/ENGINE_COMMIT)"
+          cd .engine
+          bun install --frozen-lockfile
+          bun run build:macos-bridge
+      - run: npm ci
+        working-directory: apps/desktop
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cloud-runtime
+          path: .artifacts/cloud-runtime
+      - run: npm run pack && npm run smoke:packaged
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}/.engine
+          VIBE_CLOUD_RUNTIME_DIR: ${{ github.workspace }}/.artifacts/cloud-runtime
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+  desktop-windows-smoke:
+    name: Desktop packaged smoke (Windows)
+    needs: cloud-runtime
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Materialize and build the locked engine
+        shell: pwsh
+        run: |
+          $revision = (Get-Content apps/desktop/ENGINE_COMMIT -Raw).Trim()
+          git worktree add --detach .engine $revision
+          Push-Location .engine
+          bun install --frozen-lockfile
+          bun run build:macos-bridge
+          if (Test-Path dist/vibecodr-engine-host) { Move-Item dist/vibecodr-engine-host dist/vibecodr-engine-host.exe }
+          if (!(Test-Path dist/vibecodr-engine-host.exe)) { throw "Windows engine host was not produced" }
+          Pop-Location
+      - run: npm ci
+        working-directory: apps/desktop
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cloud-runtime
+          path: .artifacts/cloud-runtime
+      - run: npm run pack:win && npm run smoke:packaged
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}\.engine
+          VIBE_CLOUD_RUNTIME_DIR: ${{ github.workspace }}\.artifacts\cloud-runtime
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+

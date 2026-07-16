@@ -1,0 +1,41 @@
+export {
+  ConfigSchema,
+  ProviderConfigSchema,
+  PermissionRuleSchema,
+  SearchConfigSchema,
+  ModelPriceSchema,
+  McpServerSchema,
+  McpOAuthSchema,
+  LspConfigSchema,
+  LspServerSchema,
+} from "./schema.ts";
+export type {
+  Config,
+  ProviderConfig,
+  PermissionRule,
+  SearchConfig,
+  WebfetchConfig,
+  MemoryConfig,
+  HookConfig,
+  ModelPrice,
+  McpServer,
+  McpOAuth,
+  LspConfig,
+  LspServer,
+} from "./schema.ts";
+export {
+  loadConfig,
+  defaultConfig,
+  configLocations,
+  configUnknownKeys,
+  configSecurityNotices,
+  SECURITY_NOTICES_KEY,
+  stripSecurityNotices,
+  writeGlobalConfig,
+  appendProjectPermission,
+  globalConfigPath,
+  projectConfigPath,
+  type LoadOptions,
+} from "./load.ts";
+export { VisionRelayConfigSchema } from "./schema.ts";
+export type { VisionRelayConfig } from "./schema.ts";

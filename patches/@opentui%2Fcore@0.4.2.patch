@@ -1,0 +1,90 @@
+diff --git a/index-x7n320jr.js b/index-x7n320jr.js
+index 3b2b340f6f2cc2e95b78bd2698d97dd10aff4748..b786381c6b577306e3dee5e96356f4924e4a7956 100644
+--- a/index-x7n320jr.js
++++ b/index-x7n320jr.js
+@@ -6409,8 +6409,11 @@ class StdinParser {
+   cursor = 0;
+   unitStart = 0;
+   paste = null;
++  pasteSinceMs = null;
++  pasteTimeoutMs;
+   constructor(options = {}) {
+     this.timeoutMs = normalizePositiveOption(options.timeoutMs, DEFAULT_TIMEOUT_MS);
++    this.pasteTimeoutMs = Math.max(this.timeoutMs * 50, 1e3);
+     this.maxPendingBytes = normalizePositiveOption(options.maxPendingBytes, DEFAULT_MAX_PENDING_BYTES);
+     this.armTimeouts = options.armTimeouts ?? true;
+     this.onTimeoutFlush = options.onTimeoutFlush ?? null;
+@@ -6836,6 +6839,7 @@ class StdinParser {
+               this.state = { tag: "ground" };
+               this.consumePrefix(end);
+               this.paste = createPasteCollector();
++              this.markPastePending();
+               continue;
+             }
+             if (isMouseSgrSequence(rawBytes)) {
+@@ -7427,6 +7431,7 @@ class StdinParser {
+         bytes: joinPasteBytes(paste.parts, paste.totalLength)
+       });
+       this.paste = null;
++      this.pasteSinceMs = null;
+       return combined.subarray(endIndex + BRACKETED_PASTE_END.length);
+     }
+     const keep = Math.min(BRACKETED_PASTE_END.length - 1, combined.length);
+@@ -7435,8 +7440,21 @@ class StdinParser {
+       this.pushPasteBytes(combined.subarray(0, stableLength));
+     }
+     paste.tail = Uint8Array.from(combined.subarray(stableLength));
++    this.markPastePending();
++    if (paste.totalLength + paste.tail.length > this.maxPendingBytes) {
++      this.abandonPaste();
++    }
+     return EMPTY_BYTES;
+   }
++  markPastePending() {
++    this.pasteSinceMs = this.clock.now();
++  }
++  abandonPaste() {
++    this.paste = null;
++    this.pasteSinceMs = null;
++    this.pendingSinceMs = null;
++    this.forceFlush = false;
++  }
+   pushPasteBytes(bytes) {
+     if (bytes.length === 0) {
+       return;
+@@ -7466,6 +7484,27 @@ class StdinParser {
+     if (!this.armTimeouts) {
+       return;
+     }
++    if (this.paste) {
++      if (this.pasteSinceMs === null) {
++        this.markPastePending();
++      }
++      this.clearTimeout();
++      this.timeoutId = this.clock.setTimeout(() => {
++        this.timeoutId = null;
++        if (this.destroyed) {
++          return;
++        }
++        try {
++          if (this.paste && this.pasteSinceMs !== null && this.clock.now() - this.pasteSinceMs >= this.pasteTimeoutMs) {
++            this.abandonPaste();
++          }
++          this.onTimeoutFlush?.();
++        } catch (error) {
++          console.error("stdin parser paste timeout recovery failed", error);
++        }
++      }, this.pasteTimeoutMs);
++      return;
++    }
+     if (this.paste || this.pendingSinceMs === null || this.pending.length === 0) {
+       this.clearTimeout();
+       return;
+@@ -7501,6 +7540,7 @@ class StdinParser {
+     this.cursor = 0;
+     this.unitStart = 0;
+     this.paste = null;
++    this.pasteSinceMs = null;
+     this.mouseParser.reset();
+   }
+ }

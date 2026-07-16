@@ -1,0 +1,26 @@
+node_modules
+out
+dist
+!test/fixtures/vibe-codr/dist/
+!test/fixtures/vibe-codr/dist/vibecodr-engine-host
+release
+resources/vibecodr-engine-host
+resources/vibecodr-engine-host.exe
+resources/cloud-runtime/
+*.tsbuildinfo
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+test-results/
+playwright-report/
+.svvarm/
+.taste/
+
+# UI preview harness artifacts
+tools/ui-preview/.vite-cache/
+tools/ui-preview/shots/
+
+# Agent goal-tracking artifacts
+.goalgraph/

@@ -1,0 +1,133 @@
+import type { ProjectSessionSummary, ProjectSummary } from "./protocol";
+import { isChatsCwd, projectLabel } from "./project-index";
+
+export type SessionBoardStatus = "active" | "review" | "done";
+export type SessionBoardView = "board" | "list";
+export type SessionBoardSort = "updated" | "oldest" | "title" | "project";
+
+export interface SessionBoardItem {
+  key: string;
+  cwd: string;
+  project: string;
+  isChat: boolean;
+  session: ProjectSessionSummary;
+  status: SessionBoardStatus;
+}
+
+export interface SessionBoardPreferences {
+  view: SessionBoardView;
+  status: "all" | SessionBoardStatus;
+  project: string;
+  mode: "all" | ProjectSessionSummary["mode"];
+  sort: SessionBoardSort;
+  statuses: Record<string, SessionBoardStatus>;
+}
+
+export const SESSION_BOARD_STORAGE_KEY = "vibe.session-board.v1";
+
+export const DEFAULT_SESSION_BOARD_PREFERENCES: SessionBoardPreferences = {
+  view: "board",
+  status: "all",
+  project: "all",
+  mode: "all",
+  sort: "updated",
+  statuses: {},
+};
+
+const STATUS_VALUES = new Set<SessionBoardStatus>(["active", "review", "done"]);
+const VIEW_VALUES = new Set<SessionBoardView>(["board", "list"]);
+const SORT_VALUES = new Set<SessionBoardSort>(["updated", "oldest", "title", "project"]);
+
+export function sessionBoardKey(cwd: string, sessionId: string): string {
+  return `${cwd}\u0000${sessionId}`;
+}
+
+export function readSessionBoardPreferences(
+  storage: Pick<Storage, "getItem">,
+): SessionBoardPreferences {
+  try {
+    const raw = storage.getItem(SESSION_BOARD_STORAGE_KEY);
+    if (!raw) return DEFAULT_SESSION_BOARD_PREFERENCES;
+    const value = JSON.parse(raw) as Partial<SessionBoardPreferences>;
+    const statuses = Object.fromEntries(
+      Object.entries(value.statuses ?? {}).filter(
+        (entry): entry is [string, SessionBoardStatus] => STATUS_VALUES.has(entry[1] as SessionBoardStatus),
+      ),
+    );
+    return {
+      view: VIEW_VALUES.has(value.view as SessionBoardView) ? value.view as SessionBoardView : "board",
+      status: value.status === "all" || STATUS_VALUES.has(value.status as SessionBoardStatus)
+        ? value.status as SessionBoardPreferences["status"]
+        : "all",
+      project: typeof value.project === "string" && value.project ? value.project : "all",
+      mode: value.mode === "plan" || value.mode === "execute" ? value.mode : "all",
+      sort: SORT_VALUES.has(value.sort as SessionBoardSort) ? value.sort as SessionBoardSort : "updated",
+      statuses,
+    };
+  } catch {
+    return DEFAULT_SESSION_BOARD_PREFERENCES;
+  }
+}
+
+export function writeSessionBoardPreferences(
+  storage: Pick<Storage, "setItem">,
+  preferences: SessionBoardPreferences,
+): void {
+  storage.setItem(SESSION_BOARD_STORAGE_KEY, JSON.stringify(preferences));
+}
+
+export function flattenSessionBoard(
+  projects: readonly ProjectSummary[],
+  chatsCwd: string | null,
+  statuses: Readonly<Record<string, SessionBoardStatus>>,
+): SessionBoardItem[] {
+  return projects.flatMap((project) => {
+    const isChat = Boolean(chatsCwd && isChatsCwd(project.cwd, chatsCwd));
+    const label = isChat ? "Chats" : projectLabel(project, projects);
+    return project.sessions.map((session) => {
+      const key = sessionBoardKey(project.cwd, session.id);
+      return {
+        key,
+        cwd: project.cwd,
+        project: label,
+        isChat,
+        session,
+        status: statuses[key] ?? "active",
+      };
+    });
+  });
+}
+
+export function filterSessionBoard(
+  items: readonly SessionBoardItem[],
+  options: {
+    query: string;
+    status: SessionBoardPreferences["status"];
+    project: string;
+    mode: SessionBoardPreferences["mode"];
+    sort: SessionBoardSort;
+    workingKeys?: ReadonlySet<string>;
+  },
+): SessionBoardItem[] {
+  const query = options.query.trim().toLocaleLowerCase();
+  const workingKeys = options.workingKeys ?? new Set<string>();
+  const filtered = items.filter((item) => {
+    const effectiveStatus = workingKeys.has(item.key) ? "active" : item.status;
+    if (options.status !== "all" && effectiveStatus !== options.status) return false;
+    if (options.project !== "all" && item.cwd !== options.project) return false;
+    if (options.mode !== "all" && item.session.mode !== options.mode) return false;
+    if (!query) return true;
+    return `${item.session.title} ${item.session.goal ?? ""} ${item.session.model} ${item.project} ${item.cwd}`
+      .toLocaleLowerCase()
+      .includes(query);
+  });
+
+  return [...filtered].sort((a, b) => {
+    if (options.sort === "oldest") return a.session.updatedAt - b.session.updatedAt;
+    if (options.sort === "title") return a.session.title.localeCompare(b.session.title);
+    if (options.sort === "project") {
+      return a.project.localeCompare(b.project) || b.session.updatedAt - a.session.updatedAt;
+    }
+    return b.session.updatedAt - a.session.updatedAt;
+  });
+}

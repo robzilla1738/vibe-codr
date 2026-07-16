@@ -1,0 +1,275 @@
+import { ACCENT_NAMES, THEME_NAMES } from "./themes";
+
+/**
+ * Slash-command catalogue for the in-TUI command menu (the palette that opens
+ * when you type `/`). This is presentation metadata owned by the UI — the engine
+ * stays the source of truth for execution. Mirrors `COMMAND_GROUPS` in
+ * @vibe/core; keep them roughly in sync when commands are added.
+ */
+export interface PaletteCommand {
+  name: string;
+  description: string;
+  /** Enum argument values shown as a second-level menu (e.g. ask|auto). */
+  values?: string[];
+  /** Plain-language context for enum values in the second-level menu. */
+  valueDescriptions?: Record<string, string>;
+  /** Free-form argument hint (e.g. "<id>"); no value menu. */
+  arg?: string;
+}
+
+export type PaletteGroup = "commands" | "skills" | "system";
+
+export const PALETTE_GROUPS: readonly PaletteGroup[] = ["commands", "skills", "system"];
+export const PALETTE_GROUP_META: Record<PaletteGroup, { label: string; description: string }> = {
+  commands: { label: "Commands", description: "Session and project actions" },
+  skills: { label: "Skills", description: "Installed skills and custom commands" },
+  system: { label: "System", description: "Configuration, diagnostics, and appearance" },
+};
+
+const SKILL_COMMAND_NAMES = new Set(["skill", "skills"]);
+// Legacy aliases remain dispatchable when typed, but their canonical command
+// owns discovery so the palette never presents duplicate actions.
+const HIDDEN_PALETTE_NAMES = new Set(["models", "new", "quit"]);
+const SYSTEM_COMMAND_NAMES = new Set([
+  "status", "cost", "context", "init", "approvals", "mouse", "keys",
+  "settings", "git", "branches", "theme", "accent", "config", "memory",
+  "permissions", "tools", "agents", "commands", "mcp", "doctor", "sandbox", "exit",
+]);
+
+export const PALETTE_COMMANDS: PaletteCommand[] = [
+  // Session
+  { name: "help", description: "Show available commands" },
+  { name: "status", description: "Model, mode, cwd, tokens, cost" },
+  { name: "cost", description: "Token usage and estimated cost" },
+  { name: "context", description: "Context-window usage" },
+  { name: "clear", description: "Clear the conversation (alias /new)" },
+  { name: "jobs", description: "Show background shell jobs + localhost servers" },
+  { name: "compact", description: "Compact the conversation to free context" },
+  { name: "resume", description: "List saved sessions to resume" },
+  { name: "recall", description: "Search past sessions", arg: "<text>" },
+  { name: "sources", description: "Web sources gathered this session (citations)" },
+  { name: "export", description: "Export the conversation to Markdown", arg: "[path]" },
+  { name: "init", description: "Scaffold .vibe/config.json and VIBE.md" },
+  // Model & mode
+  { name: "model", description: "Choose the main or subagent model", arg: "[filter]" },
+  { name: "providers", description: "Connect or configure a model provider", arg: "[filter]" },
+  { name: "plan", description: "Read-only plan mode — present a plan for approval" },
+  { name: "execute", description: "Gated execute — every action asks (AGENT chip)" },
+  { name: "yolo", description: "Execute with approvals off — no prompts" },
+  {
+    name: "approvals",
+    description: "Choose when actions need approval",
+    values: ["ask", "auto"],
+    valueDescriptions: {
+      ask: "Ask before side-effecting actions",
+      auto: "Approve safe actions automatically",
+    },
+  },
+  {
+    name: "reasoning",
+    description: "Choose reasoning effort",
+    values: ["low", "medium", "high", "off"],
+    valueDescriptions: {
+      low: "Fastest, light reasoning",
+      medium: "Balanced reasoning",
+      high: "Most thorough reasoning",
+      off: "Use the provider default",
+    },
+  },
+  {
+    name: "details",
+    description: "Transcript density (quiet · normal · verbose)",
+    values: ["quiet", "normal", "verbose"],
+    valueDescriptions: {
+      quiet: "Show final answers and essential tool state",
+      normal: "Balanced transcript detail",
+      verbose: "Show full reasoning and tool detail",
+    },
+  },
+  {
+    name: "mouse",
+    description: "Mouse capture in the terminal app",
+    values: ["on", "off"],
+    valueDescriptions: { on: "Capture mouse input in the TUI", off: "Keep native terminal selection" },
+  },
+  {
+    name: "vision",
+    description: "Vision relay for non-visual models",
+    values: ["on", "off"],
+    valueDescriptions: { on: "Relay images through the configured visual model", off: "Disable vision relay" },
+  },
+  { name: "keys", description: "Essential keyboard shortcuts" },
+  { name: "settings", description: "Open the settings panel (models, providers, MCP, permissions)" },
+  { name: "git", description: "Open the git panel (branches, changes, history, PRs)" },
+  { name: "branches", description: "Alias for /git" },
+  {
+    name: "handoff",
+    description: "Move this session between Local and Cloud",
+    values: ["cloud", "local"],
+    valueDescriptions: {
+      cloud: "Continue this session in an isolated sandbox",
+      local: "Verify and resume this session on your Mac",
+    },
+  },
+  // Values derive from the palette registry so a new theme/accent shows up here
+  // automatically ("dark" is an alias of default — hidden to keep the menu tight).
+  { name: "theme", description: "Set the UI theme", values: THEME_NAMES.filter((n) => n !== "dark") },
+  { name: "accent", description: "Set the accent color (or /accent <hex>)", values: ACCENT_NAMES },
+  // Steering
+  {
+    name: "goal",
+    description: "North-star run (text · resume · clear · max 15 · plan first off · settings)",
+    arg: "[text|resume|clear|max N|settings]",
+  },
+  {
+    name: "loop",
+    description: "Recurring prompt (stop · defaults · default max 20)",
+    arg: "[interval] <prompt> [--max N] | defaults | default max N",
+  },
+  { name: "queue", description: "Show the prompt queue" },
+  // Code & safety
+  { name: "diff", description: "Show the working-tree diff" },
+  { name: "review", description: "Review the working-tree changes" },
+  { name: "verify", description: "Run the configured verify command" },
+  { name: "undo", description: "Revert to the last checkpoint (or /undo <n> to jump)" },
+  { name: "redo", description: "Re-apply the most recently undone checkpoint" },
+  { name: "checkpoints", description: "List workspace checkpoints" },
+  // Extensions & config
+  {
+    name: "config",
+    description: "Show or set config (goal max rounds 15 · loop default max 20 · plan …)",
+    arg: "[phrase|show goal|loop|plan]",
+  },
+  { name: "memory", description: "Show loaded memory files" },
+  { name: "permissions", description: "Show tool permission rules" },
+  { name: "tools", description: "List tools in the current mode" },
+  { name: "agents", description: "Named subagents — set a model or create one", arg: "[new <name>]" },
+  { name: "skills", description: "Browse skills — searchable menu", arg: "[filter]" },
+  { name: "skill", description: "Run a skill by name (never shadowed by built-ins)", arg: "<name> [task]" },
+  { name: "commands", description: "List custom slash commands" },
+  { name: "mcp", description: "Show connected MCP servers" },
+  { name: "doctor", description: "Run an environment health check" },
+  { name: "sandbox", description: "Show the active OS sandbox policy" },
+  { name: "exit", description: "Exit vibe-codr (alias /quit)" },
+];
+
+/**
+ * `/skills [filter]` picker query — the PLURAL only. The singular
+ * `/skill <name>` is the invocation the menu itself prefills; if the picker
+ * matched it too, choosing a skill would re-open the menu and Enter would
+ * re-prefill forever instead of submitting. Returns the filter text ("" for a
+ * bare `/skills`), or null when the draft isn't the skills picker.
+ */
+export function skillsPickerFilter(draft: string): string | null {
+  const m = /^\/skills(?:\s+(.*))?$/is.exec(draft);
+  return m ? (m[1] ?? "").trim() : null;
+}
+
+/**
+ * True when the draft is a slash line whose command word exactly matches a known
+ * invocable name (with or without trailing args). `names` is the authoritative
+ * set from the engine snapshot (built-ins + custom commands + skills), lowercased.
+ * Drives the input's "command registered" color cue — distinct from
+ * `paletteState`, which stays open on partial prefixes too.
+ */
+export function isExactCommand(draft: string, names: ReadonlySet<string>): boolean {
+  if (!draft.startsWith("/")) return false;
+  const space = draft.indexOf(" ");
+  const name = (space === -1 ? draft.slice(1) : draft.slice(1, space)).toLowerCase();
+  return name.length > 0 && names.has(name);
+}
+
+export type PaletteState =
+  | { open: false }
+  | { open: true; mode: "command"; group: PaletteGroup; query: string; items: PaletteCommand[] }
+  | { open: true; mode: "value"; command: PaletteCommand; query: string; items: string[] };
+
+/**
+ * Derive the palette from the current draft text. Opens while the draft is a
+ * slash line: a command list before the first space, then (for enum commands) a
+ * value list after it. Returns closed for plain prompts or free-form args.
+ *
+ * Command matching is tiered fuzzy, not prefix-only: name-PREFIX matches rank
+ * first (muscle memory stays deterministic), then name-substring, then
+ * description words — so `/sessions` surfaces `/resume` ("List saved sessions")
+ * and `/oal` still finds `/goal` instead of dead-ending. Stable within a tier
+ * (catalog order).
+ */
+/**
+ * Derive the palette from the current draft text. Opens while the draft is a
+ * slash line: a command list before the first space, then (for enum commands) a
+ * value list after it. Returns closed for plain prompts or free-form args.
+ *
+ * When `extraNames` is provided (engine snapshot.commandNames), custom commands
+ * and skills not in PALETTE_COMMANDS are appended so the menu matches the engine.
+ */
+export function paletteState(
+  draft: string,
+  extraNames: readonly string[] = [],
+  group: PaletteGroup = "commands",
+): PaletteState {
+  if (!draft.startsWith("/")) return { open: false };
+  const space = draft.indexOf(" ");
+  if (space === -1) {
+    const query = draft.slice(1).toLowerCase();
+    const known = new Set(PALETTE_COMMANDS.map((c) => c.name));
+    const extras: PaletteCommand[] = extraNames
+      .filter((n) => n && !known.has(n) && !HIDDEN_PALETTE_NAMES.has(n))
+      .map((name) => ({ name, description: "Installed skill or custom command" }));
+    const catalog = [...PALETTE_COMMANDS, ...extras].filter((command) => {
+      if (group === "skills") return SKILL_COMMAND_NAMES.has(command.name) || extras.includes(command);
+      if (group === "system") return SYSTEM_COMMAND_NAMES.has(command.name);
+      return !extras.includes(command) && !SKILL_COMMAND_NAMES.has(command.name) && !SYSTEM_COMMAND_NAMES.has(command.name);
+    });
+    const tier = (c: PaletteCommand): number => {
+      const name = c.name.toLowerCase();
+      if (!query || name.startsWith(query)) return 0;
+      if (name.includes(query)) return 1;
+      if (c.description.toLowerCase().includes(query)) return 2;
+      return 3;
+    };
+    const items = catalog
+      .map((c) => ({ c, t: tier(c) }))
+      .filter(({ t }) => t < 3)
+      .sort((a, b) => a.t - b.t)
+      .map(({ c }) => c);
+    return { open: true, mode: "command", group, query, items };
+  }
+  const name = draft.slice(1, space).toLowerCase();
+  const command = PALETTE_COMMANDS.find((c) => c.name === name);
+  if (!command?.values) return { open: false };
+  const query = draft.slice(space + 1).trim().toLowerCase();
+  const tier = (v: string): number => {
+    const n = v.toLowerCase();
+    if (!query || n.startsWith(query)) return 0;
+    if (n.includes(query)) return 1;
+    return 3;
+  };
+  const items = command.values
+    .map((v) => ({ v, t: tier(v) }))
+    .filter(({ t }) => t < 3)
+    .sort((a, b) => a.t - b.t)
+    .map(({ v }) => v);
+  return items.length ? { open: true, mode: "value", command, query, items } : { open: false };
+}
+
+/**
+ * Apply the highlighted entry. Returns the new draft text and whether it's a
+ * complete command ready to run (`done`). Completing a no-arg command or a value
+ * is done; completing a command that still needs an argument is not.
+ */
+export function applyPalette(
+  state: PaletteState,
+  selIdx: number,
+): { draft: string; done: boolean } | null {
+  if (!state.open) return null;
+  if (state.mode === "command") {
+    const cmd = state.items[selIdx];
+    if (!cmd) return null;
+    if (cmd.values || cmd.arg) return { draft: `/${cmd.name} `, done: false };
+    return { draft: `/${cmd.name}`, done: true };
+  }
+  const value = state.items[selIdx];
+  if (!value) return null;
+  return { draft: `/${state.command.name} ${value}`, done: true };
+}

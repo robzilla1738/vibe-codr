@@ -1,0 +1,289 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Verify unified version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          test "$(node -p "require('./package.json').version")" = "$VERSION"
+          test "$(node -p "require('./apps/desktop/package.json').version")" = "$VERSION"
+          test "$(node -p "require('./apps/desktop/package-lock.json').version")" = "$VERSION"
+
+  cli-binaries:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { target: bun-darwin-arm64, os: darwin, arch: arm64 }
+          - { target: bun-darwin-x64, os: darwin, arch: x64 }
+          - { target: bun-linux-x64, os: linux, arch: x64 }
+          - { target: bun-linux-arm64, os: linux, arch: arm64 }
+          - { target: bun-windows-x64, os: windows, arch: x64, ext: .exe }
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - name: Compile CLI and worker
+        run: |
+          bun build --compile --target=${{ matrix.target }} packages/cli/bin/vibecodr.ts --outfile vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          bun build --compile --target=${{ matrix.target }} packages/cli/src/engine-worker-entry.ts --outfile vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          bun scripts/release/build-app.ts vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+            vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+            vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js
+          if-no-files-found: error
+
+  npm:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/release/build-npm.ts
+      - name: Publish npm package
+        working-directory: dist/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-rc* ]]; then
+            npm publish --access public --dry-run
+          else
+            npm publish --access public
+          fi
+
+  cloud-runtime:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - run: git worktree add --detach .engine "$(tr -d '[:space:]' < apps/desktop/ENGINE_COMMIT)"
+      - name: Build and smoke locked runtime
+        working-directory: .engine
+        run: |
+          bun install --frozen-lockfile
+          VIBE_ENGINE_COMMIT="$(git rev-parse HEAD)" bun run build:cloud-runtime
+          bun run smoke:cloud-runtime
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloud-runtime
+          path: .engine/dist/cloud-runtime/vibe-cloud-runtime-*
+          if-no-files-found: error
+
+  desktop-macos:
+    needs: [version, cloud-runtime]
+    runs-on: macos-14
+    timeout-minutes: 50
+    environment: release
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Build locked engine host
+        run: |
+          git worktree add --detach .engine "$(tr -d '[:space:]' < apps/desktop/ENGINE_COMMIT)"
+          cd .engine
+          bun install --frozen-lockfile
+          bun run build:macos-bridge
+      - run: npm ci
+        working-directory: apps/desktop
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cloud-runtime
+          path: .artifacts/cloud-runtime
+      - name: Verify desktop release source
+        run: npm run verify:ci
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}/.engine
+      - name: Prepare notarization key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          test -n "$APPLE_API_KEY_P8"
+          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$APPLE_API_KEY_P8" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
+      - name: Build, sign, and notarize
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}/.engine
+          VIBE_CLOUD_RUNTIME_DIR: ${{ github.workspace }}/.artifacts/cloud-runtime
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npm run dist:mac -- --config.mac.notarize=true --config.forceCodeSigning=true
+      - name: Staple and validate
+        working-directory: apps/desktop
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          DMG_PATH="$(find release -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$DMG_PATH"
+          xcrun notarytool submit "$DMG_PATH" --key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple "$DMG_PATH"
+          codesign --verify --deep --strict --verbose=2 "release/mac-arm64/Vibe Codr.app"
+          spctl --assess --type execute --verbose=2 "release/mac-arm64/Vibe Codr.app"
+          xcrun stapler validate "release/mac-arm64/Vibe Codr.app"
+          xcrun stapler validate "$DMG_PATH"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-macos
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest-mac.yml
+          if-no-files-found: error
+
+  desktop-windows:
+    needs: [version, cloud-runtime]
+    runs-on: windows-2025
+    timeout-minutes: 50
+    environment: release
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Build locked Windows engine host
+        shell: pwsh
+        run: |
+          $revision = (Get-Content apps/desktop/ENGINE_COMMIT -Raw).Trim()
+          git worktree add --detach .engine $revision
+          Push-Location .engine
+          bun install --frozen-lockfile
+          bun run build:macos-bridge
+          if (Test-Path dist/vibecodr-engine-host) { Move-Item dist/vibecodr-engine-host dist/vibecodr-engine-host.exe }
+          if (!(Test-Path dist/vibecodr-engine-host.exe)) { throw "Windows engine host was not produced" }
+          Pop-Location
+      - run: npm ci
+        working-directory: apps/desktop
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cloud-runtime
+          path: .artifacts/cloud-runtime
+      - name: Verify and package
+        working-directory: apps/desktop
+        env:
+          VIBE_CODR_ROOT: ${{ github.workspace }}\.engine
+          VIBE_CLOUD_RUNTIME_DIR: ${{ github.workspace }}\.artifacts\cloud-runtime
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          FORCE_CODE_SIGNING: ${{ secrets.WIN_CSC_LINK != '' }}
+        run: |
+          npm run lint
+          npm run verify:source-parity
+          npm run verify:config-shape
+          npm run typecheck
+          npm run build
+          npm run verify:bundle
+          npm run smoke:bridge
+          npm run dist:win -- --config.forceCodeSigning=$env:FORCE_CODE_SIGNING
+      - name: Validate installer
+        working-directory: apps/desktop
+        shell: pwsh
+        env:
+          FORCE_CODE_SIGNING: ${{ secrets.WIN_CSC_LINK != '' }}
+        run: |
+          $installer = @(Get-ChildItem release -File -Filter *.exe)
+          if ($installer.Count -ne 1) { throw "Expected one NSIS installer" }
+          if (!(Test-Path release/latest.yml)) { throw "Missing Windows update metadata" }
+          if ($env:FORCE_CODE_SIGNING -eq "true") {
+            if ((Get-AuthenticodeSignature $installer[0].FullName).Status -ne "Valid") { throw "Invalid Windows signature" }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-windows
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+
+  publish:
+    needs: [version, cli-binaries, npm, desktop-macos, desktop-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.11
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: cli-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+      - name: Build checksums and release notes
+        run: |
+          cd release-assets
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          cd ..
+          bun -e 'const { extractChangelogSection } = await import("./scripts/release/set-version.ts"); const { readFileSync } = await import("node:fs"); process.stdout.write(extractChangelogSection(readFileSync("CHANGELOG.md", "utf8"), process.env.VERSION) || "See CHANGELOG.md.");' > RELEASE_NOTES.md
+        env:
+          VERSION: ${{ github.ref_name }}
+      - name: Publish one Vibe Codr release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE=""
+          [[ "$GITHUB_REF_NAME" == *-rc* ]] && PRERELEASE="--prerelease"
+          gh release create "$GITHUB_REF_NAME" $PRERELEASE release-assets/* --verify-tag --title "Vibe Codr $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md

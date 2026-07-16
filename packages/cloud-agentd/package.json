@@ -1,0 +1,33 @@
+{
+  "name": "@vibe/cloud-agentd",
+  "version": "0.6.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "cloud-agentd": "./bin/cloud-agentd.ts",
+    "vibe-cloud-bootstrap": "./bin/cloud-bootstrap.ts",
+    "vibe-cloud-export": "./bin/cloud-export.ts"
+  },
+  "exports": {
+    ".": "./src/server.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "build": "echo \"(compiled by cloud runtime builder)\"",
+    "lint": "echo \"(no lint configured)\"",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@vibe/config": "workspace:*",
+    "@vibe/macos-bridge": "workspace:*",
+    "@vibe/providers": "workspace:*",
+    "@vibe/shared": "workspace:*",
+    "ai": "^5.0.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

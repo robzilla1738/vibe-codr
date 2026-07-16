@@ -1,0 +1,162 @@
+import { parseModelString } from "@vibe/providers";
+import type { Config } from "@vibe/config";
+
+/**
+ * Per-provider call tuning derived from config: reasoning/thinking options and
+ * whether the stable system prefix should be delivered with cache markers.
+ * Pure and provider-agnostic so it can be unit-tested without the AI SDK.
+ */
+export interface ModelTuning {
+  /** AI-SDK `providerOptions` (keyed by provider id), or undefined if none. */
+  providerOptions?: Record<string, Record<string, unknown>>;
+  /** Deliver the system prompt as a cached message (Anthropic prompt caching). */
+  cacheSystem: boolean;
+  /** Mark the tool block with a cache breakpoint (tools are large and stable —
+   * without this every step re-bills every schema). Anthropic only. */
+  cacheTools: boolean;
+  /** Mark the trailing conversation message so each turn's prefix is a cache
+   * hit for the next. Anthropic only. */
+  cacheConversation: boolean;
+}
+
+/** Marker the AI SDK forwards as Anthropic `cache_control: {type:"ephemeral"}`. */
+export const ANTHROPIC_CACHE_CONTROL = {
+  anthropic: { cacheControl: { type: "ephemeral" } },
+} as const;
+
+function modelParts(modelString: string): { providerId: string; modelId: string } {
+  try {
+    return parseModelString(modelString);
+  } catch {
+    return { providerId: "", modelId: "" };
+  }
+}
+
+function providerOf(modelString: string): string {
+  return modelParts(modelString).providerId;
+}
+
+/**
+ * Providers whose reasoning-effort hint vibe-codr actually FORWARDS on the wire:
+ * `buildModelTuning` emits a `providerOptions` block the AI SDK translates into
+ * the provider's native reasoning control (Anthropic thinking budget, OpenAI
+ * `reasoningEffort`). Only these can honestly confirm `/reasoning <tier>` took.
+ */
+const REASONING_FORWARDED = new Set(["anthropic", "openai", "meta"]);
+
+/**
+ * Providers whose models reason NATIVELY but whose transport carries no forwarded
+ * effort hint — either a built-in reasoner (codex, deepseek-reasoner) or a model
+ * routed through `@ai-sdk/openai-compatible` (openrouter and pre-4.5 xAI chat
+ * models), which doesn't accept the native reasoning options. `/reasoning`
+ * changes nothing on the wire for these; the model reasons at its own default,
+ * so we must caveat rather than confirm. Grok 4.5 is handled model-specifically
+ * through Responses above this fallback category.
+ *
+ * Note: `meta` is in REASONING_FORWARDED — openai-compatible forwards
+ * `reasoningEffort` as top-level `reasoning_effort` for Muse Spark.
+ */
+const REASONING_NATIVE = new Set(["codex", "deepseek", "xai", "xai-oauth", "openrouter"]);
+
+/** How a model's provider treats a reasoning-effort hint. */
+export type ReasoningSupport = "forwarded" | "native" | "none";
+
+/**
+ * Which reasoning category a model's provider falls in: `"forwarded"` (the effort
+ * hint is sent and honored), `"native"` (the model reasons on its own but the
+ * hint is dropped by its transport), or `"none"` (no reasoning at all — local
+ * Ollama / LM Studio and other non-reasoning models). `/reasoning` uses this to
+ * tell the truth: confirm only for `"forwarded"`, caveat for `"native"`, warn for
+ * `"none"`.
+ */
+export function reasoningCategory(modelString: string): ReasoningSupport {
+  const { providerId: provider, modelId } = modelParts(modelString);
+  if ((provider === "xai" || provider === "xai-oauth") && modelId === "grok-4.5") {
+    return "forwarded";
+  }
+  if (REASONING_FORWARDED.has(provider)) return "forwarded";
+  if (REASONING_NATIVE.has(provider)) return "native";
+  return "none";
+}
+
+/** Map an effort tier to an Anthropic thinking budget (tokens). */
+const EFFORT_BUDGET: Record<"low" | "medium" | "high", number> = {
+  low: 2_048,
+  medium: 8_192,
+  high: 16_384,
+};
+
+/**
+ * Whether the model's provider reasons at all (forwarded OR native). Used to warn
+ * only when `/reasoning` is set on a model that ignores it entirely (e.g. local
+ * Ollama / LM Studio). It does NOT distinguish "hint forwarded" from "reasons
+ * natively but the hint is dropped" — {@link reasoningCategory} makes that call.
+ */
+export function reasoningSupported(modelString: string): boolean {
+  return reasoningCategory(modelString) !== "none";
+}
+
+/**
+ * Whether the provider reports cached-prompt tokens DISJOINT from `inputTokens`
+ * (input EXCLUDES the cached read) rather than as a subset of it. Anthropic does
+ * this — `input_tokens` is the new/uncached input and `cache_read_input_tokens`
+ * is separate — so a cache hit would understate cost (the flat-input pricing in
+ * `computeCost` assumes cached ⊆ input), the live context %, and the compaction
+ * trigger unless the caller folds the two into a superset. OpenAI-family
+ * providers already include cached in input, so no fold is needed there.
+ */
+export function cacheTokensDisjointFromInput(modelString: string): boolean {
+  return providerOf(modelString) === "anthropic";
+}
+
+export function buildModelTuning(modelString: string, config: Config): ModelTuning {
+  const { providerId: provider, modelId } = modelParts(modelString);
+  const { effort, budgetTokens } = config.reasoning;
+  const opts: Record<string, Record<string, unknown>> = {};
+
+  switch (provider) {
+    case "anthropic": {
+      // Anthropic uses an explicit thinking budget (tokens). Honor an explicit
+      // budget, else derive one from the effort tier so `/reasoning <tier>`
+      // works uniformly across providers.
+      const budget = budgetTokens ?? (effort ? EFFORT_BUDGET[effort] : undefined);
+      if (budget) {
+        opts.anthropic = { thinking: { type: "enabled", budgetTokens: budget } };
+      }
+      break;
+    }
+    // OpenAI takes an effort tier directly. Codex/DeepSeek reason natively;
+    // model-specific xAI Responses routing is handled below.
+    case "openai": {
+      if (effort) opts[provider] = { reasoningEffort: effort };
+      break;
+    }
+    case "xai":
+    case "xai-oauth": {
+      if (modelId === "grok-4.5") {
+        opts.openai = { store: false, ...(effort ? { reasoningEffort: effort } : {}) };
+      }
+      break;
+    }
+    // Meta Model API (Muse Spark): openai-compatible maps providerOptions.meta
+    // .reasoningEffort → top-level reasoning_effort. Muse Spark ALWAYS reasons;
+    // sending "none" is HTTP 400 — only forward when a real tier is set.
+    case "meta": {
+      if (effort) opts.meta = { reasoningEffort: effort };
+      break;
+    }
+    default:
+      break;
+  }
+
+  // Caching markers are an Anthropic feature; other providers cache server-side.
+  // Budget check: system(1) + tools(1) + conversation(1) = 3 of Anthropic's 4
+  // allowed breakpoints — the validator never has to drop one.
+  const anthropicCaching = config.caching.enabled && provider === "anthropic";
+  return {
+    providerOptions: Object.keys(opts).length ? opts : undefined,
+    cacheSystem: anthropicCaching,
+    cacheTools: anthropicCaching && config.caching.cacheTools,
+    cacheConversation: anthropicCaching && config.caching.cacheConversation,
+  };
+}

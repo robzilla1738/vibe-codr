@@ -17,7 +17,12 @@ const files: Array<{ path: string; contentBase64: string }> = [];
 for (let pathIndex = 0; pathIndex < paths.length; pathIndex += 1) {
   const path = paths[pathIndex]!;
   const absolute = safeJoin(root, path);
-  const stat = await lstat(absolute);
+  const stat = await lstatIfPresent(absolute);
+  // `git ls-files -c` intentionally includes tracked files that were deleted
+  // in the worktree. Files can also disappear between enumeration and capture
+  // while an idle agent tears down temporary output. Both are ordinary return
+  // state and are represented by `git.deleted` below, not fatal export errors.
+  if (!stat) continue;
   if (stat.isDirectory()) {
     for (const nested of await walk(absolute)) {
       const candidate = posix.join(path, nested);
@@ -31,7 +36,8 @@ for (let pathIndex = 0; pathIndex < paths.length; pathIndex += 1) {
     if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) continue;
     entries.push({ path, type: "symlink", bytes: Buffer.byteLength(target), mode: stat.mode & 0o777, sha256: hash(target), linkTarget: target });
   } else if (stat.isFile() && stat.size <= 64 * 1024 * 1024) {
-    const data = await readFile(absolute);
+    const data = await readFileIfPresent(absolute);
+    if (!data) continue;
     entries.push({ path, type: "file", bytes: data.byteLength, mode: stat.mode & 0o777, sha256: hash(data) });
     files.push({ path: `workspace/${path}`, contentBase64: data.toString("base64") });
   }
@@ -102,3 +108,19 @@ function safeJoin(cwd: string, path: string): string {
   return out;
 }
 function hash(value: string | Uint8Array): string { return createHash("sha256").update(value).digest("hex"); }
+
+async function lstatIfPresent(path: string) {
+  try { return await lstat(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function readFileIfPresent(path: string) {
+  try { return await readFile(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}

@@ -115,5 +115,8 @@ execFileSync("docker", [
     "set -e",
     "trap - EXIT INT TERM",
     "if [ \"$AGENT_STATUS\" -ne 0 ] && [ \"$AGENT_STATUS\" -ne 143 ]; then cat /tmp/cloud-agent.log >&2; echo \"cloud agent exited unexpectedly: $AGENT_STATUS\" >&2; exit 1; fi",
+    "install -d -o vibe-workload -g vibe-workload -m 0700 /tmp/return-dir",
+    "sh export-workspace.sh /tmp/project /tmp/handoff.json /tmp/return-dir/return.json",
+    "./bin/node -e \"const value=JSON.parse(require('node:fs').readFileSync('/tmp/return-dir/return.json','utf8')); if(!value.entries.some((entry)=>entry.path==='README.md')) throw new Error('cloud return export omitted workspace state')\"",
   ].join("\n"),
 ], { stdio: "inherit" });

@@ -4,6 +4,17 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.8 — 2026-07-15
+
+### Fixed — complete Cloud execution and return path
+
+- The Cloud runtime now probes exact Ollama Cloud model access from inside the
+  sandbox before desktop ownership can commit, preventing a successful handoff
+  into an unreachable or unavailable model route.
+- Cloud-to-Local workspace export re-enters the same isolated workload identity
+  that owns the restored project, tolerates tracked/concurrent deletions, and is
+  exercised by the offline round-trip runtime smoke.
+
 ## 0.5.7 — 2026-07-15
 
 ### Fixed — explicit engine bootstrap ownership

@@ -26,6 +26,7 @@ run("bun", ["build", "packages/macos-bridge/bin/engine-host.ts", "--compile", "-
 run("bun", ["build", "packages/cloud-agentd/bin/cloud-agentd.ts", "--target=node", "--external", "node-pty", "--external", "ws", "--outfile", join(stage, "cloud-agentd.mjs")], root);
 run("bun", ["build", "packages/cloud-agentd/bin/cloud-bootstrap.ts", "--target=node", "--outfile", join(stage, "vibe-cloud-bootstrap.mjs")], root);
 run("bun", ["build", "packages/cloud-agentd/bin/cloud-export.ts", "--target=node", "--outfile", join(stage, "vibe-cloud-export.mjs")], root);
+run("bun", ["build", "packages/cloud-agentd/bin/cloud-model-probe.ts", "--target=node", "--outfile", join(stage, "vibe-cloud-model-probe.mjs")], root);
 
 for (const spec of ["node-pty@1.1.0", "node-addon-api@7.1.1", "ws@8.18.3"]) {
   const packed = run("npm", ["pack", "--silent", spec, "--pack-destination", join(stage, "packages")], root).trim().split("\n").at(-1);
@@ -142,12 +143,34 @@ export VIBE_ENGINE_HOST="$PWD/vibecodr-engine-host"
 exec "$PWD/bin/node" cloud-agentd.mjs "$CLOUD_PROVIDER"
 `, { mode: 0o755 });
 
+writeFileSync(join(stage, "export-workspace.sh"), `#!/bin/sh
+set -eu
+if [ "$(id -u)" -ne 0 ]; then
+  echo "cloud workspace export must run as root so it can enter the isolated workload identity" >&2
+  exit 1
+fi
+if [ "$#" -ne 3 ]; then
+  echo "usage: export-workspace.sh <workspace> <outbound-bundle.json> <output.json>" >&2
+  exit 1
+fi
+if ! id -u vibe-workload >/dev/null 2>&1; then
+  echo "cloud workspace export cannot find the isolated workload user" >&2
+  exit 1
+fi
+VIBE_CLOUD_WORKLOAD_HOME="$(getent passwd vibe-workload | cut -d: -f6)"
+exec runuser -u vibe-workload --preserve-environment -- env \
+  HOME="$VIBE_CLOUD_WORKLOAD_HOME" \
+  USER=vibe-workload \
+  LOGNAME=vibe-workload \
+  "$PWD/bin/node" "$PWD/vibe-cloud-export.mjs" "$1" "$2" "$3"
+`, { mode: 0o755 });
+
 const checksumFiles = walk(stage).filter((name) => !["checksums.sha256", "runtime.json", "sbom.spdx.json"].includes(name));
 writeFileSync(join(stage, "checksums.sha256"), `${checksumFiles
   .map((name) => `${sha256(readFileSync(join(stage, name)))}  ${name}`)
   .join("\n")}\n`);
 
-const files = ["bin/node", "vibecodr-engine-host", "vibe-cloud-bootstrap.mjs", "vibe-cloud-export.mjs", "cloud-agentd.mjs", "package.json", "package-lock.json", "checksums.sha256", "install-runtime.sh", "restore-session.sh", "start.sh"]
+const files = ["bin/node", "vibecodr-engine-host", "vibe-cloud-bootstrap.mjs", "vibe-cloud-export.mjs", "vibe-cloud-model-probe.mjs", "cloud-agentd.mjs", "package.json", "package-lock.json", "checksums.sha256", "install-runtime.sh", "restore-session.sh", "start.sh", "export-workspace.sh"]
   .map((name) => ({ name, sha256: sha256(readFileSync(join(stage, name))) }));
 const packages = verifiedPackages.map((name) => ({ name, sha256: sha256(readFileSync(join(stage, "packages", name))) }));
 writeFileSync(join(stage, "runtime.json"), `${JSON.stringify({

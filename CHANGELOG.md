@@ -4,6 +4,18 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.5 — 2026-07-15
+
+### Fixed — imported Cloud ownership authorization
+
+- The verification host now authorizes the exact session, workspace, and Cloud
+  target directly from the portable archive it successfully imported. Resume no
+  longer depends on Cloud ownership environment variables surviving the sandbox
+  identity boundary.
+- Portable imports reject unknown execution targets before installing ownership
+  state, and the offline runtime smoke now verifies restore with the ambient
+  Cloud ownership environment removed.
+
 ## 0.5.4 — 2026-07-15
 
 ### Fixed — Cloud restore identity

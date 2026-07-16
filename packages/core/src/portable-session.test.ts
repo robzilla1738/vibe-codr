@@ -76,6 +76,13 @@ describe("PortableSessionManager", () => {
     await expect(PortableSessionManager.import(target, tampered, "engine-rev")).rejects.toThrow(
       "manifest hash mismatch",
     );
+    const invalidTarget = {
+      ...archive,
+      executionTarget: { kind: "cloud", provider: "unknown" },
+    } as unknown as typeof archive;
+    await expect(
+      PortableSessionManager.import(target, invalidTarget, "engine-rev"),
+    ).rejects.toThrow("invalid execution target");
   });
 
   test("abort restores the prior generation and owner", async () => {

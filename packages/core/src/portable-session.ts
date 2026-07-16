@@ -751,6 +751,14 @@ export class PortableSessionManager {
       throw new Error("engine revision mismatch");
     if (!Number.isSafeInteger(archive.ownershipGeneration) || archive.ownershipGeneration < 1)
       throw new Error("invalid ownership generation");
+    if (
+      !archive.executionTarget ||
+      (archive.executionTarget.kind !== "local" &&
+        (archive.executionTarget.kind !== "cloud" ||
+          (archive.executionTarget.provider !== "e2b" &&
+            archive.executionTarget.provider !== "vercel")))
+    )
+      throw new Error("invalid execution target");
     if (canonicalArchiveHash(archive.files) !== archive.archiveSha256)
       throw new Error("portable archive manifest hash mismatch");
     const cwd = resolve(targetRoot);

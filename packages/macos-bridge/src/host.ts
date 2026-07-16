@@ -61,6 +61,11 @@ export async function runHost(): Promise<void> {
   let eventLoop: Promise<void> | null = null;
   let shuttingDown = false;
   let lastCwd: string = process.cwd();
+  let importedResumeAuthorization: {
+    cwd: string;
+    sessionId: string;
+    target: ExecutionTarget;
+  } | null = null;
   // TypeScript does not carry assignments made inside `bootstrap` into the
   // outer stdin loop's control-flow graph. Read through a typed accessor so the
   // loop can narrow the real mutable runtime state without unsafe `never` casts.
@@ -135,7 +140,15 @@ export async function runHost(): Promise<void> {
     if (resume) {
       const cloudProvider = process.env.VIBE_CLOUD_PROVIDER;
       let target: ExecutionTarget = { kind: "local" };
-      if (process.env.VIBE_CLOUD_RUNTIME === "1") {
+      const importedTarget =
+        importedResumeAuthorization?.cwd === cwd &&
+        importedResumeAuthorization.sessionId === resume.meta.id
+          ? importedResumeAuthorization.target
+          : null;
+      if (importedTarget) {
+        target = importedTarget;
+        importedResumeAuthorization = null;
+      } else if (process.env.VIBE_CLOUD_RUNTIME === "1") {
         if (cloudProvider !== "e2b" && cloudProvider !== "vercel") {
           write({ type: "fatal", message: "cloud runtime is missing a valid VIBE_CLOUD_PROVIDER" });
           return;
@@ -267,6 +280,11 @@ export async function runHost(): Promise<void> {
           provisional: params.provisional === true,
         });
         lastCwd = cwd;
+        importedResumeAuthorization = {
+          cwd,
+          sessionId: archive.sessionId,
+          target: archive.executionTarget,
+        };
         write({ type: "resp", id, ok: true, value: { sessionId: archive.sessionId } });
         return;
       }

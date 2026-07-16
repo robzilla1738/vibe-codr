@@ -154,11 +154,10 @@ async function importPortableSession(
   const host = resolve(import.meta.dirname, "vibecodr-engine-host");
   const child = spawn(host, [], {
     cwd,
-    env: {
-      ...process.env,
-      VIBE_CLOUD_PROVIDER: archive.executionTarget.provider,
-      VIBE_CLOUD_RUNTIME: "1",
-    },
+    // The verification host must authorize this exact resume from the archive
+    // it just imported, not from ambient process environment. Production cloud
+    // launchers are free to scrub environment variables at identity boundaries.
+    env: process.env,
     stdio: ["pipe", "pipe", "inherit"],
   });
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });

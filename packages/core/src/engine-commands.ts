@@ -265,10 +265,10 @@ export async function handleModelCommand(h: EngineHandle, args: string): Promise
       h.notice("Usage: /model key <provider> <api-key>", "warn");
       return;
     }
-    if (!h.registry.list().some((d) => d.id === provider)) {
+    if (!h.registry.list(h.config).some((d) => d.id === provider)) {
       h.notice(
         `Unknown provider "${provider}". Known providers: ${h.registry
-          .list()
+          .list(h.config)
           .map((d) => d.id)
           .join(", ")}.`,
         "warn",
@@ -376,7 +376,7 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       // lands on — without it, a palette-advertised command errored "Unknown".
       const filter = args.trim().toLowerCase();
       const rows = h.registry
-        .list()
+        .list(h.config)
         .map((d) => ({
           id: d.id,
           configured: h.registry.isConfigured(d.id, h.config),

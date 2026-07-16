@@ -342,6 +342,45 @@ test("the generic `custom` provider requires a base URL but works once given one
   }
 });
 
+test("arbitrary config provider ids use Chat Completions and explicit models", async () => {
+  const reg = new ProviderRegistry();
+  const config = withProvider("acme-gateway", {
+    baseURL: "https://models.acme.test/v1",
+    apiKey: "secret",
+    models: ["acme-code", "acme-fast"],
+  });
+  expect(reg.list(config).some((provider) => provider.id === "acme-gateway")).toBe(true);
+  expect(reg.isConfigured("acme-gateway", config)).toBe(true);
+  const model = await reg.resolveModel("acme-gateway/acme-code", config) as { specificationVersion?: string };
+  expect(model.specificationVersion).toBe("v2");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("not found", { status: 404 })) as unknown as typeof fetch;
+  try {
+    const listed = await reg.listConfiguredModels(config);
+    expect(listed.filter((entry) => entry.providerId === "acme-gateway").map((entry) => entry.id)).toEqual([
+      "acme-code",
+      "acme-fast",
+    ]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("arbitrary config provider ids can select the OpenAI Responses transport", async () => {
+  const reg = new ProviderRegistry();
+  const config = withProvider("responses-gateway", {
+    baseURL: "https://responses.acme.test/v1",
+    apiKey: "secret",
+    transport: "openai-responses",
+  });
+  const model = await reg.resolveModel("responses-gateway/codex-like", config) as {
+    specificationVersion?: string;
+    provider?: string;
+  };
+  expect(model.specificationVersion).toBe("v2");
+  expect(model.provider).toContain("responses-gateway");
+});
+
 test("listModels forwards custom headers to the /models probe", async () => {
   const def = builtinProviders().find((d) => d.id === "openrouter");
   if (!def) throw new Error("openrouter provider missing");

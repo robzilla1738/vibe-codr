@@ -1049,7 +1049,7 @@ export const PROVIDER_MANIFEST: readonly ProviderManifestEntry[] = [
     ],
     "baseURL": "https://ollama.com/v1",
     "npm": "@ai-sdk/openai-compatible",
-    "defaultModel": "deepseek-v3.1:671b"
+    "defaultModel": "deepseek-v4-flash"
   },
   {
     "id": "openai",
@@ -1169,7 +1169,7 @@ export const PROVIDER_MANIFEST: readonly ProviderManifestEntry[] = [
     ],
     "baseURL": "http://localhost:8080/v1",
     "npm": "@ai-sdk/openai-compatible",
-    "defaultModel": "gemma-3-27b"
+    "defaultModel": "gpt-oss-120b"
   },
   {
     "id": "qihang-ai",
@@ -1499,7 +1499,7 @@ export const PROVIDER_MANIFEST: readonly ProviderManifestEntry[] = [
     ],
     "baseURL": "",
     "npm": "venice-ai-sdk-provider",
-    "defaultModel": "aion-labs-aion-2-0"
+    "defaultModel": "aion-labs-aion-3-0"
   },
   {
     "id": "vercel",

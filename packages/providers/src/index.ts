@@ -6,7 +6,17 @@ export {
   resolveCatalogPrice,
   resolveCatalogWindow,
 } from "./catalog.ts";
-export { builtinProviders } from "./defs.ts";
+export { builtinProviders, configDefinedProvider, configProviderEnvironmentName } from "./defs.ts";
+export {
+  ProviderAuthManager,
+  ensureSubscriptionToken,
+  subscriptionFetch,
+  xaiDevicePollDecision,
+  type SubscriptionAuthMethod,
+  type SubscriptionAuthStart,
+  type SubscriptionAuthStatus,
+  type SubscriptionProviderId,
+} from "./oauth.ts";
 export {
   KNOWN_MODEL_DEFAULTS,
   type KnownModelDefaults,

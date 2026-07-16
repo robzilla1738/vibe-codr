@@ -19,6 +19,7 @@ import {
   type PersistedSession,
 } from "@vibe/core";
 import type { EngineCommand, ExecutionTarget } from "@vibe/shared";
+import { ProviderAuthManager } from "@vibe/providers";
 import {
   decodeInbound,
   type HostInbound,
@@ -66,6 +67,7 @@ export async function runHost(): Promise<void> {
     sessionId: string;
     target: ExecutionTarget;
   } | null = null;
+  const providerAuth = new ProviderAuthManager();
   // TypeScript does not carry assignments made inside `bootstrap` into the
   // outer stdin loop's control-flow graph. Read through a typed accessor so the
   // loop can narrow the real mutable runtime state without unsafe `never` casts.
@@ -193,6 +195,42 @@ export async function runHost(): Promise<void> {
     params?: HostRpcParams,
   ) => {
     try {
+      if (method === "providerAuthStatus" || method === "beginProviderAuth" || method === "cancelProviderAuth" || method === "logoutProviderAuth" || method === "exportProviderAuth") {
+        const providerId = params?.providerId;
+        if (providerId !== "openai-codex" && providerId !== "xai-oauth") {
+          write({ type: "resp", id, ok: false, error: "supported subscription provider required" });
+          return;
+        }
+        if (method === "providerAuthStatus") {
+          write({ type: "resp", id, ok: true, value: await providerAuth.status(providerId, params?.authSessionId) });
+          return;
+        }
+        if (method === "beginProviderAuth") {
+          const authMethod = params?.authMethod;
+          if (authMethod !== "browser" && authMethod !== "device") {
+            write({ type: "resp", id, ok: false, error: "auth method required" });
+            return;
+          }
+          write({ type: "resp", id, ok: true, value: await providerAuth.begin(providerId, authMethod) });
+          return;
+        }
+        if (method === "exportProviderAuth") {
+          write({ type: "resp", id, ok: true, value: await providerAuth.exportCredential(providerId) });
+          return;
+        }
+        if (method === "cancelProviderAuth") {
+          if (!params?.authSessionId) {
+            write({ type: "resp", id, ok: false, error: "auth session id required" });
+            return;
+          }
+          await providerAuth.cancel(params.authSessionId);
+          write({ type: "resp", id, ok: true, value: null });
+          return;
+        }
+        await providerAuth.logout(providerId);
+        write({ type: "resp", id, ok: true, value: null });
+        return;
+      }
       if (method === "listSessions") {
         const metas = await new SessionStore(lastCwd).list();
         write({ type: "resp", id, ok: true, value: metas });

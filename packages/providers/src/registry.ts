@@ -5,7 +5,7 @@ import type { Config } from "@vibe/config";
 import { ModelResolutionError, ProviderAuthError } from "@vibe/shared";
 import type { EmbeddingModel, LanguageModel } from "ai";
 import { readTokenFile } from "./auth-file.ts";
-import { builtinProviders } from "./defs.ts";
+import { builtinProviders, configDefinedProvider } from "./defs.ts";
 import { parseModelString } from "./resolve.ts";
 import type { ModelInfo, ProviderCreateOptions, ProviderDef } from "./types.ts";
 
@@ -37,8 +37,23 @@ export class ProviderRegistry {
     return this.#providers.get(id);
   }
 
-  list(): ProviderDef[] {
-    return [...this.#providers.values()];
+  list(config?: Config): ProviderDef[] {
+    const definitions = new Map(this.#providers);
+    if (config) {
+      for (const [id, provider] of Object.entries(config.providers)) {
+        if (!definitions.has(id) && provider.baseURL) {
+          definitions.set(id, configDefinedProvider(id, provider.transport));
+        }
+      }
+    }
+    return [...definitions.values()];
+  }
+
+  #definition(id: string, config: Config): ProviderDef | undefined {
+    return this.#providers.get(id)
+      ?? (config.providers[id]?.baseURL
+        ? configDefinedProvider(id, config.providers[id]?.transport)
+        : undefined);
   }
 
   /**
@@ -46,7 +61,7 @@ export class ProviderRegistry {
    * Returns `undefined` apiKey for keyless providers (e.g. LM Studio).
    */
   resolveAuth(id: string, config: Config): ProviderCreateOptions {
-    const def = this.#providers.get(id);
+    const def = this.#definition(id, config);
     if (!def) throw new ModelResolutionError(id, "unknown provider");
     const apiKey = this.#resolveKey(def, config.providers[id]);
     const baseURL = config.providers[id]?.baseURL;
@@ -70,13 +85,22 @@ export class ProviderRegistry {
     if (fromEnv) return fromEnv;
     if (cfg?.apiKey) return cfg.apiKey;
     const tokenFile = cfg?.tokenFile ?? def.auth.tokenFile;
-    if (tokenFile) return readTokenFile(tokenFile, cfg?.tokenPath ?? def.auth.tokenPath);
+    if (tokenFile) {
+      const token = readTokenFile(tokenFile, cfg?.tokenPath ?? def.auth.tokenPath);
+      if (token) return token;
+    }
+    if (!cfg?.tokenFile) {
+      for (const fallback of def.auth.fallbackTokenFiles ?? []) {
+        const token = readTokenFile(fallback.path, fallback.tokenPath);
+        if (token) return token;
+      }
+    }
     return undefined;
   }
 
   /** Whether a provider has usable credentials (or is keyless). */
   isConfigured(id: string, config: Config): boolean {
-    const def = this.#providers.get(id);
+    const def = this.#definition(id, config);
     if (!def) return false;
     if (def.auth.externalAuth && !this.#hasExternalAuth(def.auth.externalAuth)) return false;
     if (def.auth.keyless) {
@@ -121,7 +145,7 @@ export class ProviderRegistry {
   /** Resolve a full model string to a live `LanguageModel`. */
   async resolveModel(modelString: string, config: Config): Promise<LanguageModel> {
     const { providerId, modelId } = parseModelString(modelString);
-    const def = this.#providers.get(providerId);
+    const def = this.#definition(providerId, config);
     if (!def) {
       throw new ModelResolutionError(modelString, `unknown provider "${providerId}"`);
     }
@@ -134,7 +158,7 @@ export class ProviderRegistry {
    * embedding support — the caller catches and degrades to lexical recall. */
   async embeddingModel(modelString: string, config: Config): Promise<EmbeddingModel<string>> {
     const { providerId, modelId } = parseModelString(modelString);
-    const def = this.#providers.get(providerId);
+    const def = this.#definition(providerId, config);
     if (!def) {
       throw new ModelResolutionError(modelString, `unknown provider "${providerId}"`);
     }
@@ -154,16 +178,22 @@ export class ProviderRegistry {
     // and then calling resolveAuth would read a token file (a sync disk read,
     // e.g. codex's ~/.codex/auth.json) twice per provider. resolveAuth throws
     // exactly when isConfigured is false, so the catch is the filter.
-    const configured = this.list().flatMap((d) => {
+    const configured = this.list(config).flatMap((d) => {
       try {
         return [{ def: d, auth: this.resolveAuth(d.id, config) }];
       } catch {
         return [];
       }
     });
-    const results = await Promise.all(
-      configured.map(({ def, auth }) => def.listModels(auth).catch(() => [])),
-    );
+    const results = await Promise.all(configured.map(async ({ def, auth }) => {
+      const live = await def.listModels(auth).catch(() => []);
+      const explicit = config.providers[def.id]?.models ?? [];
+      const seen = new Set(live.map((model) => model.id));
+      return [
+        ...live,
+        ...explicit.filter((id) => !seen.has(id)).map((id) => ({ id, providerId: def.id })),
+      ];
+    }));
     return results.flat();
   }
 }

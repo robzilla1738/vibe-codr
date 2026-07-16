@@ -35,6 +35,10 @@ const expandableHttpUrl = () =>
 export const ProviderConfigSchema = z.object({
   apiKey: z.string().optional(),
   baseURL: httpUrl().optional(),
+  /** HTTP dialect for arbitrary compatible providers. Built-in providers ignore it. */
+  transport: z.enum(["openai-compatible", "openai-responses"]).optional(),
+  /** Explicit model IDs for endpoints that do not expose /models. */
+  models: z.array(z.string().min(1)).optional(),
   /**
    * Path to a credential file to read the key/token from (supports `~`). Used to
    * reuse a subscription/OAuth token another CLI already obtained — e.g. Codex's

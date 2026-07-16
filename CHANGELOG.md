@@ -4,6 +4,22 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.9 — 2026-07-15
+
+### Added — complete provider and subscription authentication
+
+- Added built-in ChatGPT/Codex authorization-code login with PKCE, automatic
+  refresh, ChatGPT account routing, the Codex Responses backend, secure sign-out,
+  and fallback compatibility with the official Codex CLI credential.
+- Added xAI browser and RFC 8628 device authorization, including slow-down,
+  denial, expiry, refresh-token rotation, and `xai-oauth/grok-build-0.1`.
+- Arbitrary provider IDs now support either OpenAI-compatible Chat Completions or
+  OpenAI Responses transport, explicit model lists, live model merging, headers,
+  base URLs, and deterministic environment aliases.
+- Synchronized the generated 166-provider models.dev manifest against the pinned
+  current OpenCode source and extended the desktop bridge with guarded provider
+  authentication RPCs.
+
 ## 0.5.8 — 2026-07-15
 
 ### Fixed — complete Cloud execution and return path

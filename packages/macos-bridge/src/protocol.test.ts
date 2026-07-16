@@ -26,6 +26,18 @@ describe("macOS bridge protocol runtime validation", () => {
       id: 1,
       method: "snapshot",
     });
+    expect(decodeInbound(JSON.stringify({
+      op: "rpc",
+      id: 2,
+      method: "beginProviderAuth",
+      params: { providerId: "xai-oauth", authMethod: "device" },
+    }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "rpc",
+      id: 3,
+      method: "beginProviderAuth",
+      params: { providerId: "unknown", authMethod: "device" },
+    }))).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: "1", method: "snapshot" }))).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: 1, method: "unknown" }))).toBeNull();
     expect(

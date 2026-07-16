@@ -10,8 +10,9 @@ class of Claude Code / Codex / opencode, but able to drive coding and agentic
 tasks on *any* model: the complete generated **models.dev** provider registry
 (the same breadth source used by OpenCode), Hermes-compatible provider ids and
 credential files, local models through **Ollama** and **LM Studio**, and native
-**AWS Bedrock**, **Google Vertex**, and **Azure OpenAI** routes. A generic
-**custom** provider covers any additional OpenAI-compatible endpoint. Model
+**AWS Bedrock**, **Google Vertex**, and **Azure OpenAI** routes. Arbitrary named
+custom providers cover additional Chat Completions or Responses-compatible
+endpoints. Model
 context windows, pricing, capabilities, and catalog-only model listings come from
 [models.dev](https://models.dev) (24h cache; `/models refresh` to force the
 latest), with a small published fallback for brand-new APIs not yet in the
@@ -281,33 +282,45 @@ With a key set, vibecodr automatically targets `https://ollama.com/v1`. Run
 `ollama/glm-5.2`, `ollama/kimi-k2.7-code`, `ollama/deepseek-v4-pro`,
 `ollama/gpt-oss:120b`).
 
-### OpenAI Codex (reuse your ChatGPT login)
+### OpenAI Codex (built-in ChatGPT sign-in)
 
-If you've logged in with the official Codex CLI (`codex login`), vibecodr reuses
-its credentials — no API key to paste:
+The desktop app signs in with ChatGPT directly using the official Codex PKCE
+flow. The engine also reuses an existing official Codex CLI login when Vibe has
+no stored credential:
 
 ```bash
 codex login                    # once, with the official OpenAI Codex CLI
 vibecodr setup                 # pick "OpenAI · Codex (ChatGPT login)" — it's auto-detected
-vibecodr --model codex/gpt-5.3-codex
+vibecodr --model openai-codex/gpt-5.3-codex
 ```
 
-It reads `~/.codex/auth.json` (API key or ChatGPT OAuth token) and re-reads it each
-turn, so refreshes are picked up. For ChatGPT-subscription use, point
-`CODEX_BASE_URL` at the right backend and add any required `headers` under
-`config.providers.codex`. Any provider can reuse another CLI's token via
-`config.providers.<id>.tokenFile` / `tokenPath`.
+Vibe-owned tokens are stored in `~/.vibe-codr/auth.json` with user-only
+permissions, refresh automatically, and route Responses calls to the Codex
+subscription backend with the required account identity. Use
+`openai-codex/gpt-5.3-codex`; availability and quota depend on the signed-in
+plan. See [providers and subscription authentication](docs/providers.md).
 
-### Any OpenAI-compatible endpoint (`custom`)
+### xAI subscription and Grok Build
 
-Point vibecodr at any OpenAI-style API — a gateway, a self-hosted server, a
-provider not listed above:
+The desktop app can connect an eligible xAI subscription using browser sign-in
+or a device code. Use `xai-oauth/grok-build-0.1` for Grok Build. API-key users
+can continue to use `xai/<model>` with `XAI_API_KEY`.
 
-```bash
-vibecodr setup                 # pick "Custom · OpenAI-compatible endpoint"
-# or set it directly in ~/.config/vibe-codr/config.json:
-#   "providers": { "custom": { "baseURL": "https://my-endpoint/v1", "apiKey": "…" } }
-vibecodr --model custom/my-model-id
+### Any compatible endpoint (arbitrary provider IDs)
+
+Add as many named gateways or self-hosted endpoints as needed. Each can select
+`openai-compatible` or `openai-responses` transport and declare models when it
+does not expose `/models`:
+
+```jsonc
+"providers": {
+  "my-gateway": {
+    "transport": "openai-compatible",
+    "baseURL": "https://my-endpoint/v1",
+    "apiKey": "…",
+    "models": ["my-model-id"]
+  }
+}
 ```
 
 ### Keeping models current
@@ -762,7 +775,7 @@ the user accepts (plan card Enter or `/execute`) or revises.
 Model strings are `<provider>/<model-id>` (split on the first slash):
 `anthropic/claude-opus-4-8`, `openai/gpt-...`, `meta/muse-spark-1.1`, `zai/glm-...`,
 `moonshot/kimi-...`, `alibaba/qwen...`, `deepseek/...`, `xai/grok-...`,
-`minimax/MiniMax-M3`, `codex/gpt-...`, `openrouter/anthropic/claude-...`,
+`minimax/MiniMax-M3`, `openai-codex/gpt-...`, `openrouter/anthropic/claude-...`,
 `fireworks/...`, `baseten/...`, `huggingface/...`, `lmstudio/<id>`, `ollama/glm-5.2`.
 
 #### Providers & subscription auth
@@ -788,13 +801,14 @@ instead of leaking into the visible reply.
 | `huggingface` | `HF_TOKEN` | Inference Providers router (`router.huggingface.co/v1`) — one token, open models auto-routed to live providers |
 | `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | OpenAI-compatible; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
-| `codex` (**OpenAI Codex**) | reuses `~/.codex/auth.json` (or `CODEX_API_KEY`) | uses the credential the Codex CLI already stored — an OpenAI API key works directly; for **ChatGPT-subscription OAuth** set `CODEX_BASE_URL` (and any `providers.codex.headers`) to your Codex backend, since that token targets a different endpoint than `api.openai.com` |
+| `openai-codex` (**OpenAI Codex**) | built-in ChatGPT PKCE sign-in; fallback `~/.codex/auth.json` | refreshes automatically and calls the Codex Responses subscription backend with ChatGPT account routing |
+| `xai-oauth` (**Grok subscription**) | built-in xAI browser or device sign-in | supports eligible subscription models, including `xai-oauth/grok-build-0.1` |
 | `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
 | `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — model ids need no `-cloud` suffix, e.g. `ollama/gpt-oss:120b`; run `vibecodr models` to list yours. Override the host with `OLLAMA_BASE_URL`. |
 | `amazon-bedrock` / `bedrock` | standard AWS credential chain | Native Bedrock Converse transport; supports profiles, access keys, IAM/web identity, container credentials, and bearer tokens. |
 | `google-vertex` / `vertex` | Google Application Default Credentials | Native Vertex transport; set project/location with `GOOGLE_VERTEX_PROJECT` + `GOOGLE_VERTEX_LOCATION` (Hermes aliases also accept `VERTEX_PROJECT_ID` + `VERTEX_REGION`). |
 | `azure` | `AZURE_API_KEY` plus resource name or base URL | Native Azure OpenAI transport. `azure-foundry` remains the explicit-endpoint Hermes-compatible route. |
-| Hermes aliases (`nous`, `openai-api`, `openai-codex`, `xai-oauth`, `kimi-coding`, `minimax-oauth`, `opencode-zen`, …) | matching Hermes env vars or token files | Model strings copied from Hermes resolve unchanged. OAuth-token aliases reuse `~/.hermes/auth.json` where the stored token path is stable. |
+| Hermes aliases (`nous`, `openai-api`, `kimi-coding`, `minimax-oauth`, `opencode-zen`, …) | matching Hermes env vars or token files | Model strings copied from Hermes resolve unchanged. OAuth-token aliases reuse `~/.hermes/auth.json` where the stored token path is stable. |
 
 **Any** provider can authenticate from a credential file or with extra headers —
 useful for subscription/OAuth tokens another CLI obtained:
@@ -810,6 +824,10 @@ useful for subscription/OAuth tokens another CLI obtained:
 A JSON `tokenFile` is searched for common fields (`OPENAI_API_KEY`,
 `tokens.access_token`, `api_key`, …) or a `tokenPath` you specify; a plain-text
 file is used verbatim. Resolution order is **env → `apiKey` → `tokenFile`**.
+
+The full provider matrix, subscription flows, arbitrary provider configuration,
+deterministic environment names, and Cloud boundary are documented in
+[docs/providers.md](docs/providers.md).
 
 Provider SDKs (`@ai-sdk/*`, `@openrouter/ai-sdk-provider`) and OpenTUI are
 **optional** peer deps — install the ones you use; a missing one yields a clear

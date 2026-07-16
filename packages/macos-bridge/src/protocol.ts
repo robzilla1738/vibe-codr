@@ -19,6 +19,9 @@ export interface HostRpcParams {
   archive?: PortableSessionArchiveV1;
   archivePath?: string;
   provisional?: boolean;
+  providerId?: "openai-codex" | "xai-oauth";
+  authMethod?: "browser" | "device";
+  authSessionId?: string;
 }
 
 /** Desktop client → Bun */
@@ -43,6 +46,11 @@ export type HostInbound =
         | "listAgents"
         | "listSkills"
         | "listMcp"
+        | "providerAuthStatus"
+        | "beginProviderAuth"
+        | "cancelProviderAuth"
+        | "logoutProviderAuth"
+        | "exportProviderAuth"
         | "finalize"
         | "listSessions"
         | "listProjects"
@@ -99,6 +107,11 @@ const RPC_METHODS = new Set<RpcMethod>([
   "listAgents",
   "listSkills",
   "listMcp",
+  "providerAuthStatus",
+  "beginProviderAuth",
+  "cancelProviderAuth",
+  "logoutProviderAuth",
+  "exportProviderAuth",
   "finalize",
   "listSessions",
   "listProjects",
@@ -555,6 +568,9 @@ export function decodeInbound(line: string): HostInbound | null {
         !optionalString(params.nonce) ||
         !optionalString(params.engineRevision) ||
         !optionalString(params.archivePath) ||
+        (params.providerId !== undefined && params.providerId !== "openai-codex" && params.providerId !== "xai-oauth") ||
+        (params.authMethod !== undefined && params.authMethod !== "browser" && params.authMethod !== "device") ||
+        !optionalString(params.authSessionId) ||
         !optionalBoolean(params.provisional) ||
         !optionalSafeNonNegativeInteger(params.expectedGeneration) ||
         !optionalSafeNonNegativeInteger(params.ownershipGeneration) ||

@@ -2,6 +2,7 @@ import { VibeError } from "@vibe/shared";
 import type { EmbeddingModel, LanguageModel } from "ai";
 import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { listOpenAICompatibleModels } from "./openai-compat.ts";
+import { subscriptionFetch, type SubscriptionProviderId } from "./oauth.ts";
 import { PROVIDER_MANIFEST } from "./provider-manifest.ts";
 import type { ModelInfo, ProviderCreateOptions, ProviderDef } from "./types.ts";
 
@@ -74,6 +75,7 @@ interface BuiltinSpec {
   /** Native cloud SDK whose auth/URL construction is not API-key compatible. */
   native?: "bedrock" | "azure" | "vertex";
   externalAuth?: "aws" | "google-adc";
+  subscriptionAuth?: SubscriptionProviderId;
 }
 
 const BUILTINS: BuiltinSpec[] = [
@@ -529,7 +531,9 @@ const HERMES_COMPAT_SPECS: BuiltinSpec[] = [
     env: ["CODEX_API_KEY", "OPENAI_API_KEY"],
     baseURL: "https://chatgpt.com/backend-api/codex",
     baseURLEnv: "CODEX_BASE_URL",
-    tokenFile: "~/.codex/auth.json",
+    tokenFile: "~/.vibe-codr/auth.json",
+    tokenPath: "providers.openai-codex.access",
+    subscriptionAuth: "openai-codex",
     module: "@ai-sdk/openai",
     factory: "createOpenAI",
   },
@@ -576,8 +580,9 @@ const HERMES_COMPAT_SPECS: BuiltinSpec[] = [
     id: "xai-oauth",
     env: ["XAI_API_KEY"],
     baseURL: "https://api.x.ai/v1",
-    tokenFile: "~/.hermes/auth.json",
-    tokenPath: "providers.xai-oauth.tokens.access_token",
+    tokenFile: "~/.vibe-codr/auth.json",
+    tokenPath: "providers.xai-oauth.access",
+    subscriptionAuth: "xai-oauth",
     module: "@ai-sdk/openai",
     factory: "createOpenAI",
   },
@@ -774,7 +779,15 @@ async function buildProvider(
       name: spec.id,
       apiKey: opts.apiKey ?? "not-needed",
       baseURL: url,
-      ...(opts.headers ? { headers: opts.headers } : {}),
+      ...(spec.subscriptionAuth ? { fetch: subscriptionFetch(spec.subscriptionAuth) } : {}),
+      ...((opts.headers || spec.subscriptionAuth === "openai-codex") ? {
+        headers: {
+          ...(spec.subscriptionAuth === "openai-codex" && process.env.CODEX_ACCOUNT_ID
+            ? { "ChatGPT-Account-Id": process.env.CODEX_ACCOUNT_ID, originator: "vibe-codr" }
+            : {}),
+          ...opts.headers,
+        },
+      } : {}),
     };
   })();
   return factory(settings) as (modelId: string) => unknown;
@@ -802,6 +815,11 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       keyless: spec.keyless,
       tokenFile: spec.tokenFile,
       tokenPath: spec.tokenPath,
+      fallbackTokenFiles: spec.subscriptionAuth === "openai-codex"
+        ? [{ path: "~/.codex/auth.json" }]
+        : spec.subscriptionAuth === "xai-oauth"
+          ? [{ path: "~/.hermes/auth.json", tokenPath: "providers.xai-oauth.tokens.access_token" }]
+          : undefined,
     },
 
     async create(modelId, opts): Promise<LanguageModel> {
@@ -845,13 +863,18 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       if (spec.native) return [];
       const url = baseURL(opts);
       if (!url) return []; // no endpoint configured yet (e.g. custom) → nothing to list
-      return listOpenAICompatibleModels(
+      const live = await listOpenAICompatibleModels(
         spec.id,
         url,
         opts.apiKey,
         AbortSignal.timeout(LIST_MODELS_TIMEOUT_MS),
         opts.headers,
+        spec.subscriptionAuth ? subscriptionFetch(spec.subscriptionAuth) : globalThis.fetch,
       );
+      if (spec.subscriptionAuth === "xai-oauth" && !live.some((model) => model.id === "grok-build-0.1")) {
+        live.unshift({ id: "grok-build-0.1", providerId: spec.id, name: "Grok Build 0.1" });
+      }
+      return live;
     },
   };
 }
@@ -861,4 +884,28 @@ export function builtinProviders(): ProviderDef[] {
   return [...BUILTINS, ...HERMES_COMPAT_SPECS, ...NATIVE_CLOUD_SPECS, ...manifestSpecs()].map(
     buildDef,
   );
+}
+
+/** Build a config-defined provider with an arbitrary ID. This is the same
+ * compatibility escape hatch OpenCode exposes: Chat Completions by default,
+ * or the OpenAI Responses transport when explicitly selected. */
+export function configDefinedProvider(
+  id: string,
+  transport: "openai-compatible" | "openai-responses" = "openai-compatible",
+): ProviderDef {
+  return buildDef({
+    id,
+    env: [configProviderEnvironmentName(id, "API_KEY")],
+    baseURL: "",
+    baseURLEnv: configProviderEnvironmentName(id, "BASE_URL"),
+    requiresBaseURL: true,
+    keyless: true,
+    module: transport === "openai-responses" ? "@ai-sdk/openai" : "@ai-sdk/openai-compatible",
+    factory: transport === "openai-responses" ? "createOpenAI" : "createOpenAICompatible",
+  });
+}
+
+export function configProviderEnvironmentName(id: string, suffix: "API_KEY" | "BASE_URL"): string {
+  const normalized = id.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "CUSTOM";
+  return `VIBE_PROVIDER_${normalized}_${suffix}`;
 }

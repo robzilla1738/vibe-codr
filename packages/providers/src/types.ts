@@ -69,6 +69,8 @@ export interface ProviderAuth {
   tokenFile?: string;
   /** Default dot-path into a JSON token file. */
   tokenPath?: string;
+  /** Additional credential files tried after tokenFile (for CLI interoperability). */
+  fallbackTokenFiles?: readonly { path: string; tokenPath?: string }[];
 }
 
 /** A registered provider: how to create models and list what's available. */

@@ -2080,7 +2080,7 @@ export class Engine implements EngineClient {
   async listModels(): Promise<ModelInfo[]> {
     const live = await this.registry.listConfiguredModels(this.#config);
     const configuredProviderIds = this.registry
-      .list()
+      .list(this.#config)
       .filter((provider) => this.registry.isConfigured(provider.id, this.#config))
       .map((provider) => provider.id);
     return this.catalog.enrich(live, configuredProviderIds);
@@ -2090,7 +2090,7 @@ export class Engine implements EngineClient {
    * Configured (usable) providers sort first, then alphabetically. */
   listProviders(): ProviderInfo[] {
     return this.registry
-      .list()
+      .list(this.#config)
       .map((d) => ({
         id: d.id,
         configured: this.registry.isConfigured(d.id, this.#config),

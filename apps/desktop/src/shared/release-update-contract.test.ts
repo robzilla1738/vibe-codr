@@ -41,6 +41,7 @@ describe("direct release and update contract", () => {
     expect(releaseWorkflow).toContain('git merge-base --is-ancestor "$ENGINE_COMMIT" "$GITHUB_SHA"');
     expect(releaseWorkflow).toContain('[[ "${' + 'GITHUB_REF_NAME#v}" == *-* ]]');
     expect(releaseWorkflow).toContain('npm publish "$PACKAGE" --access public --tag next');
+    expect(releaseWorkflow).toContain('find "$GITHUB_WORKSPACE/release-assets"');
     expect(releaseWorkflow).toContain('gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft');
     expect(releaseWorkflow).toContain("Refusing to replace assets on an already-public release");
     expect(releaseWorkflow).toContain('printf \'%s\\n\' "$GITHUB_SHA" > SOURCE_COMMIT');

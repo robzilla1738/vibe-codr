@@ -324,7 +324,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          PACKAGE="$(find release-assets -maxdepth 1 -name 'vibe-codr-*.tgz' -print -quit)"
+          PACKAGE="$(find "$GITHUB_WORKSPACE/release-assets" -maxdepth 1 -name 'vibe-codr-*.tgz' -print -quit)"
           test -n "$PACKAGE"
           if npm view "vibe-codr@$VERSION" version >/dev/null 2>&1; then
             LOCAL_INTEGRITY="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`);' "$PACKAGE")"

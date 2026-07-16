@@ -104,6 +104,11 @@ exec runuser -u vibe-workload --preserve-environment -- env \
 `, { mode: 0o755 });
 writeFileSync(join(stage, "start.sh"), `#!/bin/sh
 set -eu
+if [ "$#" -ne 1 ] || { [ "$1" != "e2b" ] && [ "$1" != "vercel" ]; }; then
+  echo "usage: start.sh <e2b|vercel>" >&2
+  exit 1
+fi
+CLOUD_PROVIDER="$1"
 if [ "$(id -u)" -ne 0 ]; then
   echo "cloud-agentd must start as root so project workloads can run under an isolated identity" >&2
   exit 1
@@ -134,7 +139,7 @@ printf '%s' "$VIBE_CLOUD_ACCESS_TOKEN" > /run/vibe-cloud/access-token
 unset VIBE_CLOUD_ACCESS_TOKEN
 export VIBE_CLOUD_ACCESS_TOKEN_FILE=/run/vibe-cloud/access-token
 export VIBE_ENGINE_HOST="$PWD/vibecodr-engine-host"
-exec "$PWD/bin/node" cloud-agentd.mjs
+exec "$PWD/bin/node" cloud-agentd.mjs "$CLOUD_PROVIDER"
 `, { mode: 0o755 });
 
 const checksumFiles = walk(stage).filter((name) => !["checksums.sha256", "runtime.json", "sbom.spdx.json"].includes(name));

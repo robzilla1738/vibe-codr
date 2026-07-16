@@ -36,6 +36,7 @@ interface AgentOptions {
   expectedSessionId?: string;
   workloadUid?: number;
   workloadGid?: number;
+  cloudProvider?: "e2b" | "vercel";
 }
 
 interface WorkloadIdentity { uid: number; gid: number; home: string }
@@ -48,6 +49,10 @@ export function startCloudAgent(options: AgentOptions = {}) {
   const workspaceRoot = resolve(options.workspaceRoot ?? process.env.VIBE_WORKSPACE_ROOT ?? "/workspace");
   const engineHost = options.engineHost ?? process.env.VIBE_ENGINE_HOST ?? "vibecodr-engine-host";
   const expectedSessionId = options.expectedSessionId ?? process.env.VIBE_CLOUD_EXPECTED_SESSION_ID;
+  const cloudProvider = options.cloudProvider;
+  if (cloudProvider !== "e2b" && cloudProvider !== "vercel") {
+    throw new Error("Cloud agent requires an explicit e2b or vercel provider identity");
+  }
   if (!accessToken || accessToken.length < 32) throw new Error("VIBE_CLOUD_ACCESS_TOKEN must contain at least 32 characters");
   if (tokenFile) rmSync(tokenFile, { force: true });
   delete process.env.VIBE_CLOUD_ACCESS_TOKEN;
@@ -69,7 +74,11 @@ export function startCloudAgent(options: AgentOptions = {}) {
     if (state.host && state.host.exitCode === null) return state.host;
     const host = spawn(engineHost, [], {
       cwd: workspaceRoot,
-      env: { ...childEnvironment, VIBE_CLOUD_RUNTIME: "1" },
+      env: {
+        ...childEnvironment,
+        VIBE_CLOUD_RUNTIME: "1",
+        VIBE_CLOUD_PROVIDER: cloudProvider,
+      },
       stdio: ["pipe", "pipe", "pipe"],
       ...(workload ? { uid: workload.uid, gid: workload.gid } : {}),
     });

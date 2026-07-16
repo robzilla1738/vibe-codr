@@ -4,6 +4,17 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.6 — 2026-07-15
+
+### Fixed — permanent Cloud daemon ownership
+
+- The permanent Cloud daemon now receives its non-secret `e2b` or `vercel`
+  execution identity as a validated startup argument and passes it explicitly
+  to the engine host. Resume no longer depends on E2B preserving background
+  command environment variables.
+- The offline runtime smoke unsets the ambient Cloud provider before starting
+  the daemon and still proves the exact session ID, model, mode, and transcript.
+
 ## 0.5.5 — 2026-07-15
 
 ### Fixed — imported Cloud ownership authorization

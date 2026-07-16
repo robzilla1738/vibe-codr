@@ -200,7 +200,12 @@ export function startCloudAgent(options: AgentOptions = {}) {
   server.listen(port, "0.0.0.0", () => {
     if (!expectedSessionId) return;
     const host = ensureHost();
-    host.stdin.write(`${JSON.stringify({ op: "bootstrap", cwd: workspaceRoot, resume: expectedSessionId })}\n`);
+    host.stdin.write(`${JSON.stringify({
+      op: "bootstrap",
+      cwd: workspaceRoot,
+      resume: expectedSessionId,
+      executionTarget: { kind: "cloud", provider: cloudProvider },
+    })}\n`);
   });
   return server;
 }

@@ -148,6 +148,8 @@ export async function runHost(): Promise<void> {
       if (importedTarget) {
         target = importedTarget;
         importedResumeAuthorization = null;
+      } else if (msg.executionTarget) {
+        target = msg.executionTarget;
       } else if (process.env.VIBE_CLOUD_RUNTIME === "1") {
         if (cloudProvider !== "e2b" && cloudProvider !== "vercel") {
           write({ type: "fatal", message: "cloud runtime is missing a valid VIBE_CLOUD_PROVIDER" });
@@ -160,7 +162,7 @@ export async function runHost(): Promise<void> {
       } catch (error) {
         write({
           type: "fatal",
-          message: `session ownership check failed: ${(error as Error).message}`,
+          message: `session ownership check failed for ${target.kind === "local" ? "local" : `cloud/${target.provider}`}: ${(error as Error).message}`,
         });
         return;
       }

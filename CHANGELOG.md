@@ -4,6 +4,17 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.7 — 2026-07-15
+
+### Fixed — explicit engine bootstrap ownership
+
+- Cloud agent bootstrap now sends the validated execution target directly in
+  the engine protocol. The permanent host compares that explicit `cloud/e2b`
+  or `cloud/vercel` target against imported ownership instead of reconstructing
+  its authority from process environment.
+- Ownership failures now report both the expected and recorded owner, and an
+  integration test resumes a Cloud-owned session with no Cloud environment.
+
 ## 0.5.6 — 2026-07-15
 
 ### Fixed — permanent Cloud daemon ownership

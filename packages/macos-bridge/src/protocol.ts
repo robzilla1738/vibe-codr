@@ -30,6 +30,7 @@ export type HostInbound =
       continue?: boolean;
       model?: string;
       mode?: "plan" | "execute" | "yolo";
+      executionTarget?: ExecutionTarget;
     }
   | { op: "send"; command: EngineCommand }
   | {
@@ -517,7 +518,8 @@ export function decodeInbound(line: string): HostInbound | null {
       typeof msg.cwd !== "string" ||
       !msg.cwd.trim() ||
       !optionalString(msg.resume) ||
-      !optionalString(msg.model)
+      !optionalString(msg.model) ||
+      (msg.executionTarget !== undefined && !executionTarget(msg.executionTarget))
     )
       return null;
     if (msg.continue !== undefined && typeof msg.continue !== "boolean") return null;

@@ -4,7 +4,7 @@ import { createInterface } from "node:readline";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { SessionStore } from "@vibe/core";
+import { PortableSessionManager, SessionStore } from "@vibe/core";
 
 const children: ChildProcessWithoutNullStreams[] = [];
 const roots: string[] = [];
@@ -51,6 +51,43 @@ function host(stateDir = mkdtempSync(join(tmpdir(), "vibe-host-state-"))) {
 }
 
 describe("engine host protocol boundary", () => {
+  test("resumes a cloud-owned session from an explicit bootstrap target without cloud environment", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-host-project-"));
+    const stateDir = mkdtempSync(join(tmpdir(), "vibe-host-state-"));
+    roots.push(cwd);
+    const previousStateDir = process.env.VIBE_STATE_DIR;
+    process.env.VIBE_STATE_DIR = stateDir;
+    const sessionId = "ses_explicit_cloud_owner";
+    const store = new SessionStore(cwd);
+    await store.save({
+      id: sessionId,
+      model: "ollama/glm-5.2",
+      mode: "execute",
+      goal: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }, [], []);
+    const manager = new PortableSessionManager(cwd, sessionId);
+    const prepared = await manager.prepare({ kind: "cloud", provider: "e2b" });
+    await manager.commit(prepared.nonce);
+    if (previousStateDir === undefined) delete process.env.VIBE_STATE_DIR;
+    else process.env.VIBE_STATE_DIR = previousStateDir;
+
+    const proc = host(stateDir);
+    proc.send({
+      op: "bootstrap",
+      cwd,
+      resume: sessionId,
+      executionTarget: { kind: "cloud", provider: "e2b" },
+    });
+
+    expect(await proc.next((value) => value.type === "ready")).toEqual({
+      type: "ready",
+      sessionId,
+    });
+    proc.send({ op: "shutdown" });
+  });
+
   test("fails closed when an explicit resume session is unavailable", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-host-project-"));
     roots.push(cwd);

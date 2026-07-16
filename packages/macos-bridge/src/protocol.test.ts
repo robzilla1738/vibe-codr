@@ -6,6 +6,21 @@ describe("macOS bridge protocol runtime validation", () => {
     expect(
       decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "/tmp/project", mode: "plan" })),
     ).toMatchObject({ op: "bootstrap", cwd: "/tmp/project" });
+    expect(
+      decodeInbound(JSON.stringify({
+        op: "bootstrap",
+        cwd: "/tmp/project",
+        resume: "ses_cloud",
+        executionTarget: { kind: "cloud", provider: "e2b" },
+      })),
+    ).toMatchObject({ executionTarget: { kind: "cloud", provider: "e2b" } });
+    expect(
+      decodeInbound(JSON.stringify({
+        op: "bootstrap",
+        cwd: "/tmp/project",
+        executionTarget: { kind: "cloud", provider: "unknown" },
+      })),
+    ).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: 1, method: "snapshot" }))).toEqual({
       op: "rpc",
       id: 1,

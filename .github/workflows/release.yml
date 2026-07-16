@@ -17,45 +17,57 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          fetch-depth: 0
       - name: Verify unified version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          test "$(node -p "require('./package.json').version")" = "$VERSION"
-          test "$(node -p "require('./apps/desktop/package.json').version")" = "$VERSION"
+          for MANIFEST in package.json packages/*/package.json apps/desktop/package.json; do
+            test "$(node -p "require('./$MANIFEST').version")" = "$VERSION"
+          done
           test "$(node -p "require('./apps/desktop/package-lock.json').version")" = "$VERSION"
+          test "$(sed -n 's/^export const VERSION = "\([^"]*\)";$/\1/p' packages/cli/src/version.ts)" = "$VERSION"
+          ENGINE_COMMIT="$(tr -d '[:space:]' < apps/desktop/ENGINE_COMMIT)"
+          git merge-base --is-ancestor "$ENGINE_COMMIT" "$GITHUB_SHA" || {
+            echo "ENGINE_COMMIT must be an ancestor of the release tag" >&2
+            exit 1
+          }
 
   cli-binaries:
     needs: version
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - { target: bun-darwin-arm64, os: darwin, arch: arm64 }
-          - { target: bun-darwin-x64, os: darwin, arch: x64 }
-          - { target: bun-linux-x64, os: linux, arch: x64 }
-          - { target: bun-linux-arm64, os: linux, arch: arm64 }
-          - { target: bun-windows-x64, os: windows, arch: x64, ext: .exe }
+          - { target: bun-darwin-arm64, os: darwin, arch: arm64, runner: macos-14, archive: tar.gz }
+          - { target: bun-darwin-x64, os: darwin, arch: x64, runner: macos-15-intel, archive: tar.gz }
+          - { target: bun-linux-x64, os: linux, arch: x64, runner: ubuntu-24.04, archive: tar.gz }
+          - { target: bun-linux-arm64, os: linux, arch: arm64, runner: ubuntu-24.04-arm, archive: tar.gz }
+          - { target: bun-windows-x64, os: windows, arch: x64, runner: windows-2025, archive: zip }
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.11
       - run: bun install --frozen-lockfile
-      - name: Compile CLI and worker
+      - name: Build and smoke platform-complete CLI
         run: |
-          bun build --compile --target=${{ matrix.target }} packages/cli/bin/vibecodr.ts --outfile vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
-          bun build --compile --target=${{ matrix.target }} packages/cli/src/engine-worker-entry.ts --outfile vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
-          bun scripts/release/build-app.ts vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js
+          bun scripts/release/build-standalone.ts dist/standalone/vibe-codr --target=${{ matrix.target }}
+      - name: Archive standalone CLI
+        if: runner.os != 'Windows'
+        run: tar -C dist/standalone -czf vibe-codr-${{ matrix.os }}-${{ matrix.arch }}.tar.gz vibe-codr
+      - name: Archive standalone CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/standalone/vibe-codr -DestinationPath vibe-codr-${{ matrix.os }}-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cli-${{ matrix.os }}-${{ matrix.arch }}
-          path: |
-            vibecodr-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
-            vibecodr-engine-worker-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
-            vibecodr-app-${{ matrix.os }}-${{ matrix.arch }}.js
+          path: vibe-codr-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.archive }}
           if-no-files-found: error
 
-  npm:
+  npm-package:
     needs: version
     runs-on: ubuntu-latest
     steps:
@@ -69,16 +81,12 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: bun install --frozen-lockfile
       - run: bun scripts/release/build-npm.ts
-      - name: Publish npm package
-        working-directory: dist/npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [[ "$GITHUB_REF_NAME" == *-rc* ]]; then
-            npm publish --access public --dry-run
-          else
-            npm publish --access public
-          fi
+      - run: mkdir -p dist/release && npm pack ./dist/npm --pack-destination dist/release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          path: dist/release/*.tgz
+          if-no-files-found: error
 
   cloud-runtime:
     needs: version
@@ -255,13 +263,17 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [version, cli-binaries, npm, desktop-macos, desktop-windows]
+    needs: [version, cli-binaries, npm-package, cloud-runtime, desktop-macos, desktop-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.3.11
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: cli-*
@@ -272,18 +284,62 @@ jobs:
           pattern: desktop-*
           path: release-assets
           merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: release-assets
       - name: Build checksums and release notes
         run: |
           cd release-assets
+          printf '%s\n' "$GITHUB_SHA" > SOURCE_COMMIT
           find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
           cd ..
           bun -e 'const { extractChangelogSection } = await import("./scripts/release/set-version.ts"); const { readFileSync } = await import("node:fs"); process.stdout.write(extractChangelogSection(readFileSync("CHANGELOG.md", "utf8"), process.env.VERSION) || "See CHANGELOG.md.");' > RELEASE_NOTES.md
         env:
           VERSION: ${{ github.ref_name }}
-      - name: Publish one Vibe Codr release
+      - name: Prepare draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           PRERELEASE=""
-          [[ "$GITHUB_REF_NAME" == *-rc* ]] && PRERELEASE="--prerelease"
-          gh release create "$GITHUB_REF_NAME" $PRERELEASE release-assets/* --verify-tag --title "Vibe Codr $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+          [[ "${GITHUB_REF_NAME#v}" == *-* ]] && PRERELEASE="--prerelease"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = "true" || {
+              echo "Refusing to replace assets on an already-public release" >&2
+              exit 1
+            }
+            mkdir -p existing-release
+            gh release download "$GITHUB_REF_NAME" --pattern SOURCE_COMMIT --dir existing-release
+            test "$(tr -d '[:space:]' < existing-release/SOURCE_COMMIT)" = "$GITHUB_SHA" || {
+              echo "Refusing to resume a draft created from a different source commit" >&2
+              exit 1
+            }
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+            gh release edit "$GITHUB_REF_NAME" $PRERELEASE --title "Vibe Codr $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$GITHUB_REF_NAME" $PRERELEASE --draft release-assets/* --verify-tag --title "Vibe Codr $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+          fi
+      - name: Publish npm only after every product gate
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE="$(find release-assets -maxdepth 1 -name 'vibe-codr-*.tgz' -print -quit)"
+          test -n "$PACKAGE"
+          if npm view "vibe-codr@$VERSION" version >/dev/null 2>&1; then
+            LOCAL_INTEGRITY="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); process.stdout.write(`sha512-${createHash("sha512").update(readFileSync(process.argv[1])).digest("base64")}`);' "$PACKAGE")"
+            REMOTE_INTEGRITY="$(npm view "vibe-codr@$VERSION" dist.integrity)"
+            test "$LOCAL_INTEGRITY" = "$REMOTE_INTEGRITY" || {
+              echo "Existing npm package does not match this release artifact" >&2
+              exit 1
+            }
+            echo "vibe-codr@$VERSION matches the local package; continuing idempotently"
+          elif [[ "$VERSION" == *-* ]]; then
+            npm publish "$PACKAGE" --access public --tag next
+          else
+            npm publish "$PACKAGE" --access public
+          fi
+      - name: Publish one Vibe Codr release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

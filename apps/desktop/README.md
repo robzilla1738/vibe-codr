@@ -389,13 +389,14 @@ Manual smoke steps: **[VERIFICATION.md](./VERIFICATION.md)**. Agent notes:
 npm run verify && npm run smoke:bridge && npm run test:e2e
 ```
 
-Current baseline: **606 unit tests**, **12 Electron E2E scenarios**, 21 source
+Current baseline: **611 unit tests**, **12 Electron E2E scenarios**, 21 source
 parity pairs, 40 top-level config fields, Biome, typecheck, production build,
 and renderer bundle budget pass in the current checkout. Settings, Terminal,
 Git, and Changes are isolated from the initial renderer chunk. CI runs `verify` +
 coverage floors + bridge smoke + E2E on Linux and unsigned native-host pack
 smokes on macOS and Windows; the tag workflow signs, notarizes, verifies, and
-publishes both platform artifacts as one release.
+publishes the desktop, platform-complete CLI archives, and npm package as one
+release only after every product gate succeeds.
 Prefer live `npm test` counts over frozen numbers in prose. The deterministic preview matrix covers
 attachments, settings, Git, Session review, light mode, and alternate themes.
 Hardening backlog: [plans/IMPROVEMENT-AUDIT.md](./plans/IMPROVEMENT-AUDIT.md).

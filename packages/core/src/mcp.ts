@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { McpServer } from "@vibe/config";
 import {
   capText,
@@ -43,6 +46,51 @@ export const MCP_CALL_TIMEOUT_MS = 120_000;
  * an untrusted server can't dump a multi-MB blob that blows context accounting
  * and 400s the next turn. head+tail keeps a trailing error/summary line. */
 export const MCP_MAX_OUTPUT = 100_000;
+const STANDALONE_RUNTIME_ENV = "VIBE_INTERNAL_STANDALONE_RUNTIME_DIR";
+
+function standaloneMcpModule(runtimeDir: string, module: string): string {
+  return join(runtimeDir, "runtime", `mcp-client-${module}.js`);
+}
+
+/** Detect and record the archive root from the actual executable path. The CLI
+ * calls this before spawning its engine worker, which forwards the validated
+ * path in its environment snapshot. */
+export function configureStandaloneMcpRuntime(execPath = process.execPath): string | null {
+  const runtimeDir = dirname(execPath);
+  const index = standaloneMcpModule(runtimeDir, "index");
+  if (!existsSync(index)) {
+    delete process.env[STANDALONE_RUNTIME_ENV];
+    return null;
+  }
+  process.env[STANDALONE_RUNTIME_ENV] = runtimeDir;
+  return runtimeDir;
+}
+
+/** Resolve an MCP client module from an extracted standalone archive first,
+ * then fall back to normal package resolution for source/npm installs. */
+export function resolveMcpSdkClientModule(
+  module: "index" | "stdio" | "sse" | "streamableHttp",
+  options: { execPath?: string; runtimeDir?: string } = {},
+): string {
+  const runtimeDirs = [
+    options.runtimeDir,
+    process.env[STANDALONE_RUNTIME_ENV],
+    dirname(options.execPath ?? process.execPath),
+  ].filter((value): value is string => Boolean(value));
+  for (const runtimeDir of new Set(runtimeDirs)) {
+    const path = standaloneMcpModule(runtimeDir, module);
+    if (existsSync(path)) return pathToFileURL(path).href;
+  }
+  return `@modelcontextprotocol/sdk/client/${module}.js`;
+}
+
+/** Release smoke that exercises the same resolver used by real MCP connects. */
+export async function verifyMcpSdkRuntime(): Promise<void> {
+  await import(resolveMcpSdkClientModule("index"));
+  await import(resolveMcpSdkClientModule("stdio"));
+  await import(resolveMcpSdkClientModule("sse"));
+  await import(resolveMcpSdkClientModule("streamableHttp"));
+}
 
 /** Cap a rendered MCP result the same way built-ins cap their output. */
 function capMcpOutput(text: string): string {
@@ -885,7 +933,6 @@ const defaultConnect: McpConnect = async (name, config) => {
   let ClientCtor: new (info: { name: string; version: string }) => McpSdkClient;
   let makeTransport: () => Promise<unknown>;
   // Non-literal specifiers so tsc does not try to resolve the optional peer dep.
-  const sdk = "@modelcontextprotocol/sdk/client";
   // Build the remote URL + transport options OUTSIDE the sdk-import try, so a bad
   // url (e.g. a `${VAR}` that expanded to an invalid URL) or an oauth-provider
   // error surfaces VERBATIM instead of being mislabeled "MCP requires the sdk
@@ -905,12 +952,12 @@ const defaultConnect: McpConnect = async (name, config) => {
     if (config.oauth) options.authProvider = createMcpOAuthProvider(name, config.oauth);
   }
   try {
-    const clientMod = (await import(`${sdk}/index.js`)) as {
+    const clientMod = (await import(resolveMcpSdkClientModule("index"))) as {
       Client: typeof ClientCtor;
     };
     ClientCtor = clientMod.Client;
     if ("command" in config) {
-      const stdioMod = (await import(`${sdk}/stdio.js`)) as {
+      const stdioMod = (await import(resolveMcpSdkClientModule("stdio"))) as {
         StdioClientTransport: new (o: unknown) => unknown;
       };
       makeTransport = async () =>
@@ -925,12 +972,12 @@ const defaultConnect: McpConnect = async (name, config) => {
     } else {
       // Streamable HTTP is the modern default transport; "sse" selects the legacy one.
       if (config.transport === "sse") {
-        const sseMod = (await import(`${sdk}/sse.js`)) as {
+        const sseMod = (await import(resolveMcpSdkClientModule("sse"))) as {
           SSEClientTransport: new (url: URL, o?: unknown) => unknown;
         };
         makeTransport = async () => new sseMod.SSEClientTransport(url as URL, options);
       } else {
-        const httpMod = (await import(`${sdk}/streamableHttp.js`)) as {
+        const httpMod = (await import(resolveMcpSdkClientModule("streamableHttp"))) as {
           StreamableHTTPClientTransport: new (url: URL, o?: unknown) => unknown;
         };
         makeTransport = async () => new httpMod.StreamableHTTPClientTransport(url as URL, options);

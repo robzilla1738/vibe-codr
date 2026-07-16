@@ -1,7 +1,7 @@
 # UI.md — Current interaction and visual contract
 
 > **Status:** current-state handoff  
-> **Updated:** 2026-07-15 (continuity-safe Cloud handoff, grouped commands, and presence motion)
+> **Updated:** 2026-07-16 (unified source, Sessions workspace, and continuity-safe Cloud handoff)
 > **Source:** [`apps/desktop` in Vibe Codr](https://github.com/robzilla1738/vibe-codr/tree/main/apps/desktop)
 
 This is the renderer-facing design contract for the Electron shell. Re-check the

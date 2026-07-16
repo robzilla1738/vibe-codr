@@ -2,7 +2,7 @@
 
 Manual smoke against OpenTUI / `vibecodr` in the **same project cwd**. Automated:
 `npm test` (current live suite), `npm run test:e2e` (12 scenarios),
-`npm run verify:source-parity` (19 declaration pairs),
+`npm run verify:source-parity` (21 declaration pairs),
 `npm run verify:config-shape` (40 top-level engine fields), and CI
 coverage/bridge/packaged-host gates.
 
@@ -218,7 +218,7 @@ npm run dev
 - [x] subagent-activity only touches running subagents
 - [x] plan-presented finalizes assistant text before showing card
 - [x] flushDeltas before tool-finish and file-changed (TUI enqueue→landPending parity)
-- [x] Source parity check covers themes, glyphs, wordmark (19 pairs)
+- [x] Source parity check covers themes, glyphs, wordmark, provider/session contracts (21 pairs)
 - [x] Session chrome state tests: mode/plan dismissal, user-message reset, subagent-activity guard
 - [x] Session bootstrap preserves the active workspace tool and restores transcript scroll per session instead of resetting the editing view
 

@@ -4,11 +4,13 @@ import { dirname, join } from "node:path";
 import { loadConfig, defaultConfig, type Config } from "@vibe/config";
 import {
   Engine,
+  configureStandaloneMcpRuntime,
   formatModelList,
   handleCrash,
   loadProjectMemory,
   SessionStore,
   type PersistedSession,
+  verifyMcpSdkRuntime,
 } from "@vibe/core";
 import { checkForUpdate, isNewer, readUpdateCache } from "@vibe/core";
 import { ProviderRegistry } from "@vibe/providers";
@@ -119,6 +121,12 @@ export function applyCliModeOverride(overrides: Partial<Config>, mode: string): 
 }
 
 export async function run(argv: string[]): Promise<number> {
+  configureStandaloneMcpRuntime();
+  if (process.env.VIBE_RELEASE_RUNTIME_SMOKE === "mcp") {
+    await verifyMcpSdkRuntime();
+    process.stdout.write("standalone MCP runtime ok\n");
+    return 0;
+  }
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,

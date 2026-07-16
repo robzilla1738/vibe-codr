@@ -36,6 +36,17 @@ describe("direct release and update contract", () => {
     expect(releaseWorkflow).toContain("release/*.blockmap");
     expect(releaseWorkflow).toContain("release/*.exe");
     expect(releaseWorkflow).not.toContain("appxupload");
+    expect(releaseWorkflow).toContain("packages/*/package.json");
+    expect(releaseWorkflow).toContain("packages/cli/src/version.ts");
+    expect(releaseWorkflow).toContain('git merge-base --is-ancestor "$ENGINE_COMMIT" "$GITHUB_SHA"');
+    expect(releaseWorkflow).toContain('[[ "${' + 'GITHUB_REF_NAME#v}" == *-* ]]');
+    expect(releaseWorkflow).toContain('npm publish "$PACKAGE" --access public --tag next');
+    expect(releaseWorkflow).toContain('gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft');
+    expect(releaseWorkflow).toContain("Refusing to replace assets on an already-public release");
+    expect(releaseWorkflow).toContain('printf \'%s\\n\' "$GITHUB_SHA" > SOURCE_COMMIT');
+    expect(releaseWorkflow).toContain("Refusing to resume a draft created from a different source commit");
+    expect(releaseWorkflow).toContain('npm view "vibe-codr@$VERSION" dist.integrity');
+    expect(releaseWorkflow).toContain("Existing npm package does not match this release artifact");
   });
 
   it("requires consent and completes owned-process cleanup before install", () => {

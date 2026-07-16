@@ -85,7 +85,7 @@ vibecodr
 
 The shorter `vibe` command is included as an alias.
 
-Standalone binaries for macOS, Linux, and Windows are attached to every release. Keep the matching `vibecodr-engine-worker-*` and `vibecodr-app-*` files beside the binary for the full interactive experience.
+Platform-complete standalone archives for macOS, Linux, and Windows are attached to every release. Extract the matching archive and keep its contents together: the stable `vibecodr` executable, isolated engine worker, TUI bundle, and native OpenTUI runtime are already laid out for the full interactive experience.
 
 ## First run
 
@@ -231,7 +231,7 @@ See [docs/AUDIT.md](docs/AUDIT.md), [apps/desktop/VERIFICATION.md](apps/desktop/
 
 ## Release model
 
-Vibe Codr uses one version and one tag for the entire product. A `vX.Y.Z` tag verifies the committed version, builds every CLI target, publishes npm, builds the revision-locked cloud runtime, signs/notarizes Desktop, builds the Windows installer, and creates one GitHub release with all assets and checksums.
+Vibe Codr uses one version and one tag for the entire product. A `vX.Y.Z` tag verifies the committed version, builds every CLI target, builds the revision-locked cloud runtime, signs/notarizes Desktop, and builds the Windows installer. Only after every gate succeeds does it create a draft GitHub release, publish npm, and make the single release public with all assets and checksums.
 
 The desktop engine lock is `apps/desktop/ENGINE_COMMIT`. It must name a commit in this repository. CI materializes that commit as an internal worktree, which preserves reproducible desktop/runtime pairing without a second source repository.
 

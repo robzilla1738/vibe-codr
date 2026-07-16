@@ -63,7 +63,7 @@ Electron **presentation shell** in `apps/desktop`. Do **not** reimplement `@vibe
 
 ```bash
 npm run dev            # launch Electron
-npm test               # unit tests (Vitest; 606 at the current baseline)
+npm test               # unit tests (Vitest; 611 at the current baseline)
 npm run test:coverage  # coverage floors (shared + bridge)
 npm run typecheck
 npm run verify         # lint + unit + source/config parity + typecheck + build + bundle

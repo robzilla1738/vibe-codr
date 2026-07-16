@@ -30,7 +30,10 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // The cross-project Sessions manager is deferred into its own ~33 KB chunk;
 // only route ownership and the rail destination stay in startup. Account for
 // that intentional product surface with the same narrow ~2 KB regression room.
-const totalBudget = 2_874_000;
+// Fail-closed Cloud recovery mutation guards now live in both the startup rail
+// and deferred Sessions chunk. Allow their measured <2 KB aggregate cost while
+// keeping the startup/largest-chunk ceiling unchanged.
+const totalBudget = 2_876_000;
 const chunkBudget = 2_120_000;
 
 if (total > totalBudget || largest > chunkBudget) {

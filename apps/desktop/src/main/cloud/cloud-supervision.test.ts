@@ -1,8 +1,12 @@
 import { createServer } from "node:http";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { CloudCommandHandle, CloudCommandResult, SandboxProvider } from "../../shared/cloud";
 import {
   awaitRemoteEngineReady,
+  CloudManager,
   createFreshNamedSandbox,
   retryTransient,
   rollbackProvisionalHandoff,
@@ -15,6 +19,20 @@ const servers: Array<ReturnType<typeof createServer>> = [];
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+});
+
+test("history mutations hold the same mutex that excludes ownership handoffs", async () => {
+  const manager = new CloudManager({} as never, await mkdtemp(join(tmpdir(), "vibe-cloud-history-lock-")));
+  let release: (() => void) | undefined;
+  const mutation = manager.runHistoryMutation("/workspace", undefined, () => new Promise<void>((resolve) => {
+    release = resolve;
+  }));
+  await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+
+  await expect(manager.handoffToCloud({ cwd: "/workspace", provider: "e2b" }))
+    .rejects.toThrow("A session handoff is already in progress");
+  release?.();
+  await mutation;
 });
 
 describe("cloud command supervision", () => {

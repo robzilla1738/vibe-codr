@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 describe("handoff IPC boundary", () => {
   const source = readFileSync(join(process.cwd(), "src", "main", "index.ts"), "utf8");
+  const manager = readFileSync(join(process.cwd(), "src", "main", "cloud", "manager.ts"), "utf8");
 
   it("blocks bootstrap before transport replacement while a handoff is active", () => {
     const handler = source.slice(source.indexOf('ipcMain.handle(\n    "engine:bootstrap"'), source.indexOf('ipcMain.handle("engine:send"'));
@@ -34,6 +35,17 @@ describe("handoff IPC boundary", () => {
     const handler = source.slice(source.indexOf('ipcMain.handle("cloud:reconnect"'), source.indexOf('ipcMain.handle("cloud:resumeLocal"'));
     expect(handler).toContain("cloudManager.ownershipTransitionActive");
     expect(handler.indexOf("cloudManager.ownershipTransitionActive")).toBeLessThan(handler.indexOf("cloudManager.reconnect"));
+  });
+
+  it("enforces Cloud recovery ownership before main-process history mutations", () => {
+    const handler = source.slice(source.indexOf('ipcMain.handle("engine:rpc"'), source.indexOf('ipcMain.handle("settings:dirty"'));
+    expect(handler).toContain("cloudManager.runHistoryMutation");
+    expect(handler).toContain("SESSION_HISTORY_MUTATIONS.has(message.method)");
+    expect(handler).toContain("PROJECT_RECOVERY_MUTATIONS.has(message.method)");
+    expect(handler).toContain('const sessionId = typeof rawSessionId === "string" ? rawSessionId.trim() : undefined');
+    expect(handler).toContain("rpcParams = { ...message.params, id: sessionId }");
+    expect(handler).toContain("() => bridge.projectIndexRpc(message.method, rpcParams)");
+    expect(manager).toContain("Return Cloud-owned or interrupted sessions to Local");
   });
 });
 
@@ -109,6 +121,9 @@ describe("cloud release invariants", () => {
     expect(manager).toContain("this.#ownershipUnresolved = true");
     expect(manager).toContain("Session ownership recovery is required before continuing");
     expect(manager).toContain("entry.status === \"handoff-interrupted\"");
+    expect(manager).toContain("isCloudSessionMutationLocked(entry.status)");
+    expect(manager).toContain("async runHistoryMutation");
+    expect(manager).toContain("return this.#withOwnershipTransition(async () =>");
   });
 
   it("allows only the dedicated reconnect path through unresolved recovery", () => {

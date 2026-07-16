@@ -55,6 +55,9 @@
     "format": "biome format --write packages",
     "clean": "turbo run clean && rm -rf node_modules dist"
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
   "devDependencies": {
     "@ai-sdk/amazon-bedrock": "2.2.12",
     "@ai-sdk/anthropic": "^2.0.83",

@@ -23,6 +23,13 @@ export function isCloudSessionRemoteOwned(status: CloudSessionStatus): boolean {
   return status !== "suspended" && status !== "cleanup-pending" && status !== "handoff-interrupted" && status !== "lost";
 }
 
+/** Local recovery records are immutable while Cloud owns them or ownership is
+ * ambiguous after an interrupted commit/rollback. Only explicit recovery may
+ * clear `handoff-interrupted`; ordinary project/session menus must fail closed. */
+export function isCloudSessionMutationLocked(status: CloudSessionStatus): boolean {
+  return isCloudSessionRemoteOwned(status) || status === "handoff-interrupted" || status === "lost";
+}
+
 export interface PendingCapabilityRequest {
   id: string;
   integration: string;

@@ -3,7 +3,7 @@ import { mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises
 import { dirname, join, resolve } from "node:path";
 import { app } from "electron";
 import { globalConfigPath, projectConfigPath, readConfigFile } from "../../shared/config-io";
-import { isCloudSessionRemoteOwned } from "../../shared/cloud";
+import { isCloudSessionMutationLocked, isCloudSessionRemoteOwned } from "../../shared/cloud";
 import type {
   CloudCommandHandle,
   CloudCommandResult,
@@ -153,6 +153,27 @@ export class CloudManager {
     this.#ownershipUnresolved = sessions.some((entry) =>
       entry.status === "handoff-interrupted" && entry.handoffTransition !== undefined);
     return sessions;
+  }
+
+  /** Main-process authority for project/session history mutations. The check
+   * and mutation share the ownership-transition mutex, closing both directions
+   * of the check-then-handoff race. Renderer guards remain UX only. */
+  async runHistoryMutation<T>(
+    cwd: string,
+    sessionId: string | undefined,
+    mutation: () => Promise<T>,
+  ): Promise<T> {
+    return this.#withOwnershipTransition(async () => {
+      const sourceRoot = resolve(cwd);
+      const locked = (await this.#catalog.list()).some((entry) =>
+        resolve(entry.sourceRoot) === sourceRoot
+        && (sessionId === undefined || entry.sessionId === sessionId)
+        && isCloudSessionMutationLocked(entry.status));
+      if (locked) {
+        throw new Error("Return Cloud-owned or interrupted sessions to Local before changing their recovery history");
+      }
+      return mutation();
+    });
   }
 
   get ownershipTransitioning(): boolean { return this.#ownershipTransitionDepth > 0 || this.#ownershipUnresolved; }

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const app = readFileSync(join(process.cwd(), "src/renderer/App.tsx"), "utf8");
+const main = readFileSync(join(process.cwd(), "src/main/index.ts"), "utf8");
+const cloudManager = readFileSync(join(process.cwd(), "src/main/cloud/manager.ts"), "utf8");
 const rail = readFileSync(join(process.cwd(), "src/renderer/layout/ProjectRail.tsx"), "utf8");
 const workspace = readFileSync(join(process.cwd(), "src/renderer/sessions/SessionsWorkspace.tsx"), "utf8");
 
@@ -31,5 +33,14 @@ describe("sessions workspace contract", () => {
     expect(workspace).toContain('entry.status === "running"');
     expect(workspace).toContain("workingKeys.has(item.key)");
     expect(workspace).not.toContain('label: "Running"');
+  });
+
+  it("does not mutate the local recovery record while cloud owns a session", () => {
+    expect(workspace).toContain("isCloudSessionMutationLocked(entry.status)");
+    expect(workspace).toContain("renamePending || cloudOwned.has(item.session.id)");
+    expect(workspace).toContain("actionPending || cloudOwned.has(item.session.id)");
+    expect(workspace).toContain("disabled={remoteOwned || (busy && active)}");
+    expect(main).toContain("cloudManager.runHistoryMutation");
+    expect(cloudManager).toContain("Return Cloud-owned or interrupted sessions to Local");
   });
 });

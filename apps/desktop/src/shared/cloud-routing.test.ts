@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { latestRemoteOwnedCloudSession, type CloudSessionCatalogEntry } from "./cloud";
+import { isCloudSessionMutationLocked, latestRemoteOwnedCloudSession, type CloudSessionCatalogEntry } from "./cloud";
 
 function cloud(sessionId: string, updatedAt: number): CloudSessionCatalogEntry {
   return {
@@ -29,5 +29,14 @@ describe("latestRemoteOwnedCloudSession", () => {
   it("keeps cloud ownership when the same indexed session is remote", () => {
     const remote = cloud("shared", 20);
     expect(latestRemoteOwnedCloudSession([remote], [{ id: "shared", updatedAt: 25 }])).toBe(remote);
+  });
+});
+
+describe("Cloud history mutation lock", () => {
+  it("fails closed for remote ownership and interrupted ownership commits", () => {
+    expect(isCloudSessionMutationLocked("running")).toBe(true);
+    expect(isCloudSessionMutationLocked("handoff-interrupted")).toBe(true);
+    expect(isCloudSessionMutationLocked("suspended")).toBe(false);
+    expect(isCloudSessionMutationLocked("lost")).toBe(true);
   });
 });

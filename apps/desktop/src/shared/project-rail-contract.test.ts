@@ -24,7 +24,7 @@ describe("project rail mutation contract", () => {
   });
 
   it("preserves rename drafts until the backing operation succeeds", () => {
-    expect(source).toContain("if (!renaming || renamePendingRef.current) return");
+    expect(source).toContain("if (!renaming || renamePendingRef.current || remoteOwnedSessionIds.has(renaming.id)) return");
     expect(source).toContain("ok = await onRenameSession(cwd, id, title)");
     expect(source).toMatch(/if \(ok\) \{\s*setRenaming\(null\);/);
     expect(source).toContain("ok = await onRenameProject(cwd, name)");
@@ -39,5 +39,14 @@ describe("project rail mutation contract", () => {
     expect(source).toContain("void runSessionAction(cwd, session.id, mode)");
     expect(source).toMatch(/if \(ok\) \{\s*setMenu\(null\);\s*setConfirmProjectAction\(null\);/);
     expect(source).toMatch(/if \(ok\) \{\s*setMenu\(null\);\s*setConfirmAction\(null\);/);
+  });
+
+  it("blocks local recovery mutations while Cloud owns a session or project", () => {
+    expect(source).toContain("isCloudSessionMutationLocked(entry.status)");
+    expect(source).toContain("remoteOwnedSessionIds.has(session.id)");
+    expect(source).toContain("remoteOwnedSessionIds.has(renaming.id)");
+    expect(source).toContain("remoteOwnedSessionIds.has(id)");
+    expect(source).toContain("remoteOwnedProjectCwds.has(normalizeCwd(cwd))");
+    expect(source).toContain("Return this session to Local to manage it");
   });
 });

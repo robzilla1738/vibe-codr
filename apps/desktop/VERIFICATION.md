@@ -144,7 +144,8 @@ A `v<package-version>` tag triggers
 `../../.github/workflows/release.yml`, which gates publication on engine/CLI and both desktop platform jobs:
 it signs and notarizes the hardened arm64 app/DMG/ZIP, validates Gatekeeper and
 stapling, builds a Windows x64 NSIS installer, validates both updater feeds,
-emits `SHA256SUMS`, and publishes both platforms to GitHub Releases. The protected `release`
+emits `SHA256SUMS`, prepares a draft GitHub release, publishes npm only after
+every artifact gate succeeds, and then makes the unified release public. The protected `release`
 environment must provide `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`,
 `APPLE_API_KEY_P8` (the `.p8` contents), `APPLE_API_KEY_ID`,
 and `APPLE_API_ISSUER`. `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` enable
@@ -152,7 +153,7 @@ Authenticode signing; without them the workflow clearly warns and produces an
 unsigned installer that may trigger Windows SmartScreen. Local crash
 breadcrumbs remain enabled without upload.
 
-The v0.6.0 source baseline is 606 unit tests and 12 Electron E2E
+The v0.6.0 source baseline is 611 unit tests and 12 Electron E2E
 scenarios. The packaged smoke also stops the active host and proves that an idle
 project-index request transparently starts and reaps the bundled helper host;
 the bridge suite applies the same lifecycle to an exact session mutation.

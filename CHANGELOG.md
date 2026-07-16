@@ -16,9 +16,18 @@ All notable changes to vibe-codr are documented here.
 - Combined CI now gates engine/CLI on Linux and macOS, desktop quality and E2E
   on Linux, revision-locked cloud runtime construction, and packaged macOS and
   Windows smokes.
-- Combined release automation publishes npm, standalone CLI/worker/TUI assets,
+- Combined release automation builds and smokes platform-complete standalone
+  CLI archives (stable executable/worker/TUI names plus native dependencies),
   the signed and notarized macOS app, Windows installer, updater metadata, and
-  one aggregate checksum manifest.
+  one aggregate checksum manifest. npm publication happens only after every
+  product gate succeeds and before the draft GitHub release becomes public;
+  every semver prerelease uses GitHub prerelease state and npm's `next` tag.
+  Draft recovery verifies the exact source commit and npm tarball integrity,
+  and the desktop engine lock must be an ancestor of the release tag.
+- Platform-complete CLI archives include and smoke the pinned MCP SDK as well
+  as OpenTUI. The compiled CLI resolves MCP modules relative to its extracted
+  executable and passes that validated runtime root to the engine worker, so
+  standalone installs retain configured MCP servers from any working directory.
 - Desktop development now resolves the monorepo engine first. Release builds
   still materialize the exact `apps/desktop/ENGINE_COMMIT` revision, keeping
   host, cloud runtime, source parity, and package contents reproducible.
@@ -31,6 +40,15 @@ All notable changes to vibe-codr are documented here.
   Done organization, and honest Local/Cloud working signals.
 - Added complete open, rename, archive, and delete flows using the existing
   engine-host session APIs, including safe confirmation and retry states.
+  Rename/archive/delete remain locked while Cloud owns the session so the
+  local recovery record cannot diverge from the remote catalog, across both
+  the Sessions workspace and project rail. Project archive/delete is likewise
+  blocked while any of its sessions is remotely owned, and interrupted
+  ownership commits remain fail-closed until explicit recovery completes. The
+  main process serializes the ownership check and history mutation under the
+  same handoff mutex, closing the check-then-transition race. Provider-confirmed
+  lost sessions remain locked until their explicit local-base recovery returns
+  ownership safely.
 - Matched the desktop's compact Liquid Glass control grammar at wide, tablet,
   and mobile widths without changing the established shell design.
 

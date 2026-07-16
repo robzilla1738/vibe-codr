@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { CloudSessionCatalogEntry } from "../../shared/cloud";
+import { isCloudSessionMutationLocked, type CloudSessionCatalogEntry } from "../../shared/cloud";
 import {
   chatSessions,
   filterChatSessions,
@@ -8,6 +8,7 @@ import {
   isChatsCwd,
   limitProjectRailProjects,
   limitProjectRailSessions,
+  normalizeCwd,
   normalizeProjectName,
   normalizeSessionTitle,
   PROJECT_NAME_LIMIT,
@@ -82,8 +83,8 @@ export function ProjectRail({
   settingsActive,
 }: {
   projects: ProjectSummary[];
-  /** Catalog entries used only to mark sessions actively running in Cloud. */
-  cloudSessions: Pick<CloudSessionCatalogEntry, "sessionId" | "status">[];
+  /** Catalog entries used for honest Cloud state and mutation ownership. */
+  cloudSessions: Pick<CloudSessionCatalogEntry, "sessionId" | "sourceRoot" | "status">[];
   /** Absolute path of the one-off chats workspace (`~/.vibe/chats`). */
   chatsCwd: string | null;
   activeCwd: string | null;
@@ -162,6 +163,18 @@ export function ProjectRail({
   const runningCloudSessionIds = useMemo(
     () => new Set(cloudSessions.filter((entry) => entry.status === "running").map((entry) => entry.sessionId)),
     [cloudSessions],
+  );
+  const remoteOwnedCloudSessions = useMemo(
+    () => cloudSessions.filter((entry) => isCloudSessionMutationLocked(entry.status)),
+    [cloudSessions],
+  );
+  const remoteOwnedSessionIds = useMemo(
+    () => new Set(remoteOwnedCloudSessions.map((entry) => entry.sessionId)),
+    [remoteOwnedCloudSessions],
+  );
+  const remoteOwnedProjectCwds = useMemo(
+    () => new Set(remoteOwnedCloudSessions.map((entry) => normalizeCwd(entry.sourceRoot))),
+    [remoteOwnedCloudSessions],
   );
   // While filtering, keep both sections open so matches stay visible.
   const showProjectsBody = projectsOpen || query.length > 0;
@@ -323,6 +336,7 @@ export function ProjectRail({
   ) => {
     event.preventDefault();
     event.stopPropagation();
+    if (remoteOwnedSessionIds.has(session.id)) return;
     const trigger = event.currentTarget as HTMLButtonElement;
     if (menu?.kind === "session" && menu.session.id === session.id && !menuClosing) {
       closeMenu(true);
@@ -351,7 +365,7 @@ export function ProjectRail({
   };
 
   const commitRename = async () => {
-    if (!renaming || renamePendingRef.current) return;
+    if (!renaming || renamePendingRef.current || remoteOwnedSessionIds.has(renaming.id)) return;
     const title = normalizeSessionTitle(renaming.title);
     const { cwd, id } = renaming;
     if (!title) {
@@ -399,7 +413,7 @@ export function ProjectRail({
   };
 
   const runProjectAction = async (cwd: string, mode: "archive" | "delete") => {
-    if (menuActionPendingRef.current) return;
+    if (menuActionPendingRef.current || remoteOwnedProjectCwds.has(normalizeCwd(cwd))) return;
     menuActionPendingRef.current = true;
     setMenuActionPending(true);
     let ok = false;
@@ -420,7 +434,7 @@ export function ProjectRail({
     id: string,
     mode: "archive" | "delete",
   ) => {
-    if (menuActionPendingRef.current) return;
+    if (menuActionPendingRef.current || remoteOwnedSessionIds.has(id)) return;
     menuActionPendingRef.current = true;
     setMenuActionPending(true);
     let ok = false;
@@ -660,6 +674,7 @@ export function ProjectRail({
                     const isRenaming = renaming?.cwd === project.cwd && renaming.id === session.id;
                     const isActive = session.id === activeSessionId;
                     const isRunningInCloud = runningCloudSessionIds.has(session.id);
+                    const isRemoteOwned = remoteOwnedSessionIds.has(session.id);
                     return (
                       <div
                         key={session.id}
@@ -743,8 +758,8 @@ export function ProjectRail({
                               menu.session.id === session.id &&
                               !menuClosing
                             }
-                            disabled={busy}
-                            title={busy ? busyTitle : undefined}
+                            disabled={busy || isRemoteOwned}
+                            title={isRemoteOwned ? "Return this session to Local to manage it" : busy ? busyTitle : undefined}
                             onClick={(event) => openMenu(event, project.cwd, session)}
                           >
                             <IconMore size={14} />
@@ -811,6 +826,7 @@ export function ProjectRail({
                 const isRenaming = renaming?.cwd === chatsRoot && renaming.id === session.id;
                 const isActive = inChats && session.id === activeSessionId;
                 const isRunningInCloud = runningCloudSessionIds.has(session.id);
+                const isRemoteOwned = remoteOwnedSessionIds.has(session.id);
                 return (
                   <div
                     key={session.id}
@@ -887,8 +903,8 @@ export function ProjectRail({
                           menu.session.id === session.id &&
                           !menuClosing
                         }
-                        disabled={busy}
-                        title={busy ? busyTitle : undefined}
+                        disabled={busy || isRemoteOwned}
+                        title={isRemoteOwned ? "Return this session to Local to manage it" : busy ? busyTitle : undefined}
                         onClick={(event) => openMenu(event, chatsRoot, session)}
                       >
                         <IconMore size={14} />
@@ -980,7 +996,7 @@ export function ProjectRail({
                   <button
                     type="button"
                     className={`session-menu-confirm-go${confirmProjectAction === "delete" ? " danger" : ""}`}
-                    disabled={menuActionPending}
+                    disabled={menuActionPending || remoteOwnedProjectCwds.has(normalizeCwd(menu.cwd))}
                     onClick={() => {
                       const { cwd } = menu;
                       const mode = confirmProjectAction;
@@ -1009,6 +1025,8 @@ export function ProjectRail({
                 <button
                   type="button"
                   role="menuitem"
+                  disabled={remoteOwnedProjectCwds.has(normalizeCwd(menu.cwd))}
+                  title={remoteOwnedProjectCwds.has(normalizeCwd(menu.cwd)) ? "Return this project’s Cloud sessions to Local first" : undefined}
                   onClick={() => setConfirmProjectAction("archive")}
                 >
                   <IconArchive size={14} />
@@ -1018,6 +1036,8 @@ export function ProjectRail({
                   type="button"
                   role="menuitem"
                   className="danger"
+                  disabled={remoteOwnedProjectCwds.has(normalizeCwd(menu.cwd))}
+                  title={remoteOwnedProjectCwds.has(normalizeCwd(menu.cwd)) ? "Return this project’s Cloud sessions to Local first" : undefined}
                   onClick={() => setConfirmProjectAction("delete")}
                 >
                   <IconDelete size={14} />
@@ -1053,7 +1073,7 @@ export function ProjectRail({
                 <button
                   type="button"
                   className={`session-menu-confirm-go${confirmAction === "delete" ? " danger" : ""}`}
-                  disabled={menuActionPending}
+                  disabled={menuActionPending || remoteOwnedSessionIds.has(menu.session.id)}
                   onClick={() => {
                     const { cwd, session } = menu;
                     const mode = confirmAction;
@@ -1071,6 +1091,7 @@ export function ProjectRail({
               <button
                 type="button"
                 role="menuitem"
+                disabled={remoteOwnedSessionIds.has(menu.session.id)}
                 onClick={() => {
                   setRenaming({ cwd: menu.cwd, id: menu.session.id, title: menu.session.title });
                   setMenu(null);
@@ -1082,6 +1103,7 @@ export function ProjectRail({
               <button
                 type="button"
                 role="menuitem"
+                disabled={remoteOwnedSessionIds.has(menu.session.id)}
                 onClick={() => setConfirmAction("archive")}
               >
                 <IconArchive size={14} />
@@ -1091,6 +1113,7 @@ export function ProjectRail({
                 type="button"
                 role="menuitem"
                 className="danger"
+                disabled={remoteOwnedSessionIds.has(menu.session.id)}
                 onClick={() => setConfirmAction("delete")}
               >
                 <IconDelete size={14} />

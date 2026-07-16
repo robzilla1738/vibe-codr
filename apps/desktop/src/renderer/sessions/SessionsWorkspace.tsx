@@ -8,7 +8,7 @@ import {
   MessagesSquare as IconSessions,
   SlidersHorizontal as IconFilter,
 } from "lucide-react";
-import type { CloudSessionCatalogEntry } from "../../shared/cloud";
+import { isCloudSessionMutationLocked, type CloudSessionCatalogEntry } from "../../shared/cloud";
 import { normalizeSessionTitle, relativeSessionTime, SESSION_TITLE_LIMIT } from "../../shared/project-index";
 import type { ProjectSummary } from "../../shared/protocol";
 import {
@@ -84,12 +84,14 @@ function SessionStatusSelect({
 function SessionActions({
   item,
   disabled,
+  disabledReason,
   onRename,
   onArchive,
   onDelete,
 }: {
   item: SessionBoardItem;
   disabled: boolean;
+  disabledReason?: string;
   onRename: () => void;
   onArchive: () => void;
   onDelete: () => void;
@@ -127,7 +129,7 @@ function SessionActions({
         ref={summaryRef}
         role="button"
         aria-label={`Actions for ${item.session.title}`}
-        title="Session actions"
+        title={disabledReason ?? "Session actions"}
         aria-disabled={disabled}
         onClick={(event) => {
           if (disabled) event.preventDefault();
@@ -328,6 +330,10 @@ export function SessionsWorkspace({
     () => new Set(cloudSessions.filter((entry) => entry.status === "running").map((entry) => entry.sessionId)),
     [cloudSessions],
   );
+  const cloudOwned = useMemo(
+    () => new Set(cloudSessions.filter((entry) => isCloudSessionMutationLocked(entry.status)).map((entry) => entry.sessionId)),
+    [cloudSessions],
+  );
   const workingKeys = useMemo(() => {
     const keys = new Set<string>();
     for (const item of items) {
@@ -365,7 +371,7 @@ export function SessionsWorkspace({
   };
 
   const commitRename = async (item: SessionBoardItem, title: string) => {
-    if (renamePending) return;
+    if (renamePending || cloudOwned.has(item.session.id)) return;
     setRenamePending(true);
     try {
       if (await onRename(item.cwd, item.session.id, title)) setEditingKey(null);
@@ -375,7 +381,7 @@ export function SessionsWorkspace({
   };
 
   const runDestructiveAction = async (item: SessionBoardItem, mode: "archive" | "delete") => {
-    if (actionPending) return;
+    if (actionPending || cloudOwned.has(item.session.id)) return;
     setActionPending(true);
     const ok = mode === "delete"
       ? await onDelete(item.cwd, item.session.id)
@@ -394,6 +400,7 @@ export function SessionsWorkspace({
   const renderSession = (item: SessionBoardItem, surface: "card" | "row") => {
     const working = workingKeys.has(item.key);
     const cloudWorking = cloudRunning.has(item.session.id);
+    const remoteOwned = cloudOwned.has(item.session.id);
     const effectiveStatus = working ? "active" : item.status;
     const active = item.cwd === activeCwd && item.session.id === activeSessionId;
     return (
@@ -433,7 +440,12 @@ export function SessionsWorkspace({
           />
           <SessionActions
             item={item}
-            disabled={busy && active}
+            disabled={remoteOwned || (busy && active)}
+            disabledReason={remoteOwned
+              ? "Return this session to Local to rename, archive, or delete it"
+              : busy && active
+                ? "Wait for the current turn to finish"
+                : undefined}
             onRename={() => setEditingKey(item.key)}
             onArchive={() => setConfirming({ item, mode: "archive" })}
             onDelete={() => setConfirming({ item, mode: "delete" })}

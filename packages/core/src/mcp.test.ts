@@ -1,17 +1,38 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: the expandServerConfig tests assert literal ${VAR} syntax
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { McpServer } from "@vibe/config";
 import type { ToolDefinition } from "@vibe/shared";
 import { FreshnessRegistry } from "@vibe/tools";
 import {
   expandServerConfig,
+  configureStandaloneMcpRuntime,
   MCP_MAX_OUTPUT,
   type McpClient,
   McpHub,
   mcpToolName,
   renderContent,
+  resolveMcpSdkClientModule,
   toToolDefinition,
 } from "./mcp.ts";
+
+test("standalone MCP resolution is executable-relative and worker-forwardable", () => {
+  const runtime = mkdtempSync(join(tmpdir(), "vibe-mcp-runtime-"));
+  const module = join(runtime, "runtime", "mcp-client-index.js");
+  mkdirSync(join(module, ".."), { recursive: true });
+  writeFileSync(module, "export class Client {}\n");
+
+  try {
+    expect(configureStandaloneMcpRuntime(join(runtime, "vibecodr"))).toBe(runtime);
+    expect(resolveMcpSdkClientModule("index", { execPath: "/virtual/bunfs/worker" }))
+      .toBe(pathToFileURL(module).href);
+  } finally {
+    configureStandaloneMcpRuntime("/missing/vibecodr");
+  }
+});
 
 /** A fake MCP server exposing one echo tool. */
 function fakeClient(calls: { name: string; args: unknown }[]): McpClient {

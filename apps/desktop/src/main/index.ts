@@ -67,6 +67,12 @@ const PROJECT_INDEX_MUTATIONS = new Set<RpcMethod>([
   "deleteSession",
   "archiveSession",
 ]);
+const SESSION_HISTORY_MUTATIONS = new Set<RpcMethod>([
+  "renameSession",
+  "deleteSession",
+  "archiveSession",
+]);
+const PROJECT_RECOVERY_MUTATIONS = new Set<RpcMethod>(["archiveProject", "deleteProject"]);
 const HANDOFF_CONTROL_COMMANDS = new Set<EngineCommand["type"]>([
   "abort",
   "resolve-permission",
@@ -563,12 +569,27 @@ function registerIpc(): void {
       return { ok: false as const, error: "This engine RPC is restricted to the main-process handoff controller" };
     }
     try {
+      let historyMutation: { cwd: string; sessionId?: string } | null = null;
+      let rpcParams = message.params;
       if (PROJECT_INDEX_MUTATIONS.has(message.method)) {
         const cwd = message.params?.cwd;
         if (typeof cwd !== "string" || !isAllowedProjectRoot(cwd)) {
           return {
             ok: false as const,
             error: "Project history changes are limited to opened or recent projects",
+          };
+        }
+        if (SESSION_HISTORY_MUTATIONS.has(message.method) || PROJECT_RECOVERY_MUTATIONS.has(message.method)) {
+          const rawSessionId = SESSION_HISTORY_MUTATIONS.has(message.method)
+            ? message.params?.id
+            : undefined;
+          const sessionId = typeof rawSessionId === "string" ? rawSessionId.trim() : undefined;
+          if (sessionId !== undefined) {
+            rpcParams = { ...message.params, id: sessionId };
+          }
+          historyMutation = {
+            cwd,
+            ...(sessionId !== undefined ? { sessionId } : {}),
           };
         }
       }
@@ -579,10 +600,16 @@ function registerIpc(): void {
         || message.method === "cancelProviderAuth"
         || message.method === "logoutProviderAuth";
       const rawValue = isProviderAuthRpc
-        ? await bridge.providerAuthRpc(message.method, message.params)
+        ? await bridge.providerAuthRpc(message.method, rpcParams)
         : isProjectIndexRpc
-          ? await bridge.projectIndexRpc(message.method, message.params)
-          : await bridge.rpc(message.method, message.params);
+          ? historyMutation
+            ? await cloudManager.runHistoryMutation(
+                historyMutation.cwd,
+                historyMutation.sessionId,
+                () => bridge.projectIndexRpc(message.method, rpcParams),
+              )
+            : await bridge.projectIndexRpc(message.method, rpcParams)
+          : await bridge.rpc(message.method, rpcParams);
       const value = message.method === "listProjects"
         ? authorizeProjectIndex(rawValue)
         : rawValue;

@@ -1,6 +1,7 @@
 import * as readline from "node:readline";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { EngineClient } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
@@ -19,13 +20,13 @@ import { permissionPreview, toolLabel } from "./tool-icons.ts";
  *       runtime after the Solid transform plugin is registered).
  * Returns the module specifier to dynamic-import, or null when none exists.
  */
-function resolveAppPath(): string | null {
-  const here = import.meta.dir;
+export function resolveAppPath(opts?: { moduleDir?: string; execPath?: string }): string | null {
+  const here = opts?.moduleDir ?? import.meta.dir;
   // (1) npm bundle — app.js shipped next to vibecodr.js
   const npmApp = join(here, "app.js");
   if (existsSync(npmApp)) return npmApp;
   // (2) compiled binary — vibecodr-app.js sibling of the executable
-  const execDir = dirname(process.execPath);
+  const execDir = dirname(opts?.execPath ?? process.execPath);
   for (const name of ["vibecodr-app.js", "vibecodr-app"]) {
     const binarySibling = join(execDir, name);
     if (existsSync(binarySibling)) return binarySibling;
@@ -36,6 +37,16 @@ function resolveAppPath(): string | null {
   return null;
 }
 
+/** Resolve the preload shipped inside an extracted standalone archive.
+ * npm/source installs use normal package resolution; standalone archives keep
+ * their platform-complete dependency tree beside `vibecodr-app.js`. */
+export function resolveOpenTuiPreload(appPath: string): string {
+  const standalonePreload = join(dirname(appPath), "node_modules", "@opentui", "solid", "scripts", "preload.js");
+  return existsSync(standalonePreload)
+    ? pathToFileURL(standalonePreload).href
+    : "@opentui/solid/preload";
+}
+
 /**
  * Start the interactive UI. Tries the OpenTUI app first; if OpenTUI isn't
  * installed (it's an optional native peer dep), falls back to a readline REPL
@@ -43,18 +54,18 @@ function resolveAppPath(): string | null {
  */
 export async function startTui(engine: EngineClient): Promise<void> {
   try {
+    const appPath = resolveAppPath();
+    if (!appPath) throw new Error("OpenTUI app module not found (app.js / app.tsx)");
     // app.tsx is Solid JSX. Register OpenTUI's Solid transform plugin before
     // importing it, otherwise Bun compiles the JSX with its default (React)
     // runtime — which isn't installed — and the import throws. Registering at
     // runtime (rather than via bunfig `preload`) keeps the rich UI working no
     // matter which directory `vibecodr` is launched from.
-    const preloadModule = "@opentui/solid/preload";
+    const preloadModule = resolveOpenTuiPreload(appPath);
     await import(preloadModule);
     // Resolve the app module: a pre-built bundle (npm/binary) or the source
     // .tsx (dev). Non-literal specifiers keep these optional native peer deps
     // out of the tsc program and out of the main bundle.
-    const appPath = resolveAppPath();
-    if (!appPath) throw new Error("OpenTUI app module not found (app.js / app.tsx)");
     const mod = (await import(appPath)) as {
       mountApp: (engine: EngineClient) => Promise<void>;
     };

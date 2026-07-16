@@ -103,7 +103,7 @@ const candidates = [
 const src = candidates.find((p) => p && existsSync(p));
 if (!src) {
   console.error(
-    "vibecodr-engine-host not found. Build the sibling vibe-codr checkout or set VIBE_CODR_ROOT.",
+    "vibecodr-engine-host not found. Build the monorepo engine host or set VIBE_CODR_ROOT.",
   );
   process.exit(1);
 }

@@ -1,7 +1,7 @@
 # Acceptance Spec
 
-> Reference: sibling [vibe-codr](https://github.com/robzilla1738/vibe-codr) CLI TUI and `packages/macos-bridge`
-> Last updated: 2026-07-15 (v0.1.16 provider and subscription auth release)
+> Reference: this monorepo's CLI TUI and `packages/macos-bridge`
+> Last updated: 2026-07-16 (unified v0.6.0 source and release)
 > Status: shell product complete for P0 acceptance rows; residual risks and verification methods documented below — do not treat frozen unit/e2e counts as a live baseline
 
 ## Summary

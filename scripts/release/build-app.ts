@@ -13,7 +13,7 @@
  *
  *   bun scripts/release/build-app.ts <outfile>
  */
-import { join, dirname, dirname as pathDirname } from "node:path";
+import { basename, join, dirname, dirname as pathDirname } from "node:path";
 
 // Resolve the @opentui/solid package directory, then import the plugin factory
 // from its scripts/ subdirectory (not in exports — must use a file path).
@@ -23,7 +23,7 @@ const { createSolidTransformPlugin } = await import(pluginPath);
 
 const outfile = process.argv[2] ?? "dist/vibecodr-app.js";
 const outdir = dirname(outfile);
-const outName = outfile.split("/").pop()!;
+const outName = basename(outfile);
 
 const result = await Bun.build({
   entrypoints: [join(import.meta.dir, "..", "..", "packages", "tui", "src", "app.tsx")],

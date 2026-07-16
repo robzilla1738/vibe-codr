@@ -143,6 +143,29 @@ export VIBE_ENGINE_HOST="$PWD/vibecodr-engine-host"
 exec "$PWD/bin/node" cloud-agentd.mjs "$CLOUD_PROVIDER"
 `, { mode: 0o755 });
 
+writeFileSync(join(stage, "probe-models.sh"), `#!/bin/sh
+set -eu
+if [ "$(id -u)" -ne 0 ]; then
+  echo "cloud model verification must run as root so it can enter the isolated workload identity" >&2
+  exit 1
+fi
+if [ "$#" -ne 2 ]; then
+  echo "usage: probe-models.sh <models-json> <workspace>" >&2
+  exit 1
+fi
+if ! id -u vibe-workload >/dev/null 2>&1; then
+  echo "cloud model verification cannot find the isolated workload user" >&2
+  exit 1
+fi
+VIBE_CLOUD_WORKLOAD_HOME="$(getent passwd vibe-workload | cut -d: -f6)"
+exec runuser -u vibe-workload --preserve-environment -- env \
+  HOME="$VIBE_CLOUD_WORKLOAD_HOME" \
+  USER=vibe-workload \
+  LOGNAME=vibe-workload \
+  VIBE_STATE_DIR="$VIBE_STATE_DIR" \
+  "$PWD/bin/node" "$PWD/vibe-cloud-model-probe.mjs" "$1" "$2"
+`, { mode: 0o755 });
+
 writeFileSync(join(stage, "export-workspace.sh"), `#!/bin/sh
 set -eu
 if [ "$(id -u)" -ne 0 ]; then
@@ -170,7 +193,7 @@ writeFileSync(join(stage, "checksums.sha256"), `${checksumFiles
   .map((name) => `${sha256(readFileSync(join(stage, name)))}  ${name}`)
   .join("\n")}\n`);
 
-const files = ["bin/node", "vibecodr-engine-host", "vibe-cloud-bootstrap.mjs", "vibe-cloud-export.mjs", "vibe-cloud-model-probe.mjs", "cloud-agentd.mjs", "package.json", "package-lock.json", "checksums.sha256", "install-runtime.sh", "restore-session.sh", "start.sh", "export-workspace.sh"]
+const files = ["bin/node", "vibecodr-engine-host", "vibe-cloud-bootstrap.mjs", "vibe-cloud-export.mjs", "vibe-cloud-model-probe.mjs", "cloud-agentd.mjs", "package.json", "package-lock.json", "checksums.sha256", "install-runtime.sh", "restore-session.sh", "probe-models.sh", "start.sh", "export-workspace.sh"]
   .map((name) => ({ name, sha256: sha256(readFileSync(join(stage, name))) }));
 const packages = verifiedPackages.map((name) => ({ name, sha256: sha256(readFileSync(join(stage, "packages", name))) }));
 writeFileSync(join(stage, "runtime.json"), `${JSON.stringify({

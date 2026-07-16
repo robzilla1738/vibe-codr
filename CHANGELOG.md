@@ -4,6 +4,26 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.10 — 2026-07-16
+
+### Fixed — provider-neutral Cloud model verification
+
+- Cloud handoff now performs a bounded real generation through the same
+  `ProviderRegistry` used by the imported agent for every active main, plan,
+  subagent, vision, build, named-agent, and usable fallback model. A public
+  model-list response can no longer falsely authenticate a sandbox that fails
+  on its first real message.
+- The exact-generation check runs after restore under the final isolated
+  workload identity and before desktop ownership commits. Credential, endpoint,
+  egress, transport, or exact-model failures leave the task Local and allow the
+  provisional E2B or Vercel sandbox to be cleaned up safely.
+- Arbitrary providers now reconstruct from deterministic Cloud key, endpoint,
+  and Chat Completions/Responses transport bindings even when the Mac-global
+  config file is intentionally absent from the sandbox.
+- The Linux runtime smoke now executes the bundled Node 24 probe against two
+  exact models on a network-isolated mock endpoint, in addition to exact session
+  restore, daemon health, transcript continuity, and return export.
+
 ## 0.5.9 — 2026-07-15
 
 ### Added — complete provider and subscription authentication

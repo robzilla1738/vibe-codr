@@ -67,10 +67,12 @@ test("content-scoped rules: bash command globs allow/deny specific commands", as
 test("deny beats allow regardless of rule order", async () => {
   const checker = new PermissionChecker([
     { tool: "edit", action: "allow" },
-    { tool: "edit", match: "*prod*", action: "deny" },
+    { tool: "edit", match: "*__permission_test_denied__*", action: "deny" },
   ]);
   expect((await checker.check("edit", { path: "src/dev.ts" })).allowed).toBe(true);
-  expect((await checker.check("edit", { path: "config/prod.env" })).allowed).toBe(false);
+  expect(
+    (await checker.check("edit", { path: "config/__permission_test_denied__.env" })).allowed,
+  ).toBe(false);
 });
 
 test("path-scoped write rules and URL-scoped fetch rules", async () => {

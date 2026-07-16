@@ -1,6 +1,6 @@
 {
   "name": "@vibe/cloud-agentd",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "private": true,
   "type": "module",
   "bin": {
@@ -19,8 +19,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@vibe/config": "workspace:*",
     "@vibe/macos-bridge": "workspace:*",
+    "@vibe/providers": "workspace:*",
     "@vibe/shared": "workspace:*",
+    "ai": "^5.0.0",
     "node-pty": "^1.1.0",
     "ws": "^8.18.3"
   },

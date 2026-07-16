@@ -780,14 +780,16 @@ async function buildProvider(
       apiKey: opts.apiKey ?? "not-needed",
       baseURL: url,
       ...(spec.subscriptionAuth ? { fetch: subscriptionFetch(spec.subscriptionAuth) } : {}),
-      ...((opts.headers || spec.subscriptionAuth === "openai-codex") ? {
-        headers: {
-          ...(spec.subscriptionAuth === "openai-codex" && process.env.CODEX_ACCOUNT_ID
-            ? { "ChatGPT-Account-Id": process.env.CODEX_ACCOUNT_ID, originator: "vibe-codr" }
-            : {}),
-          ...opts.headers,
-        },
-      } : {}),
+      ...(opts.headers || spec.subscriptionAuth === "openai-codex"
+        ? {
+            headers: {
+              ...(spec.subscriptionAuth === "openai-codex" && process.env.CODEX_ACCOUNT_ID
+                ? { "ChatGPT-Account-Id": process.env.CODEX_ACCOUNT_ID, originator: "vibe-codr" }
+                : {}),
+              ...opts.headers,
+            },
+          }
+        : {}),
     };
   })();
   return factory(settings) as (modelId: string) => unknown;
@@ -815,11 +817,17 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       keyless: spec.keyless,
       tokenFile: spec.tokenFile,
       tokenPath: spec.tokenPath,
-      fallbackTokenFiles: spec.subscriptionAuth === "openai-codex"
-        ? [{ path: "~/.codex/auth.json" }]
-        : spec.subscriptionAuth === "xai-oauth"
-          ? [{ path: "~/.hermes/auth.json", tokenPath: "providers.xai-oauth.tokens.access_token" }]
-          : undefined,
+      fallbackTokenFiles:
+        spec.subscriptionAuth === "openai-codex"
+          ? [{ path: "~/.codex/auth.json" }]
+          : spec.subscriptionAuth === "xai-oauth"
+            ? [
+                {
+                  path: "~/.hermes/auth.json",
+                  tokenPath: "providers.xai-oauth.tokens.access_token",
+                },
+              ]
+            : undefined,
     },
 
     async create(modelId, opts): Promise<LanguageModel> {
@@ -871,7 +879,10 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
         opts.headers,
         spec.subscriptionAuth ? subscriptionFetch(spec.subscriptionAuth) : globalThis.fetch,
       );
-      if (spec.subscriptionAuth === "xai-oauth" && !live.some((model) => model.id === "grok-build-0.1")) {
+      if (
+        spec.subscriptionAuth === "xai-oauth" &&
+        !live.some((model) => model.id === "grok-build-0.1")
+      ) {
         live.unshift({ id: "grok-build-0.1", providerId: spec.id, name: "Grok Build 0.1" });
       }
       return live;
@@ -905,7 +916,14 @@ export function configDefinedProvider(
   });
 }
 
-export function configProviderEnvironmentName(id: string, suffix: "API_KEY" | "BASE_URL"): string {
-  const normalized = id.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "CUSTOM";
+export function configProviderEnvironmentName(
+  id: string,
+  suffix: "API_KEY" | "BASE_URL" | "TRANSPORT",
+): string {
+  const normalized =
+    id
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "CUSTOM";
   return `VIBE_PROVIDER_${normalized}_${suffix}`;
 }

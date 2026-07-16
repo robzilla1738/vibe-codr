@@ -241,6 +241,36 @@ test("custom headers flow through resolveAuth", () => {
   expect(reg.resolveAuth("codex", config).headers).toEqual({ "chatgpt-account-id": "acct_1" });
 });
 
+test("cloud environment restores an arbitrary provider without a local config file", async () => {
+  const names = {
+    key: "VIBE_PROVIDER_ACME_GATEWAY_API_KEY",
+    base: "VIBE_PROVIDER_ACME_GATEWAY_BASE_URL",
+    transport: "VIBE_PROVIDER_ACME_GATEWAY_TRANSPORT",
+  } as const;
+  const previous = Object.fromEntries(
+    Object.entries(names).map(([key, name]) => [key, process.env[name]]),
+  );
+  process.env[names.key] = "cloud-key";
+  process.env[names.base] = "https://models.acme.example/v1";
+  process.env[names.transport] = "openai-responses";
+  try {
+    const registry = new ProviderRegistry();
+    expect(registry.isConfigured("acme-gateway", defaultConfig())).toBe(true);
+    expect(registry.resolveAuth("acme-gateway", defaultConfig())).toEqual({
+      apiKey: "cloud-key",
+    });
+    await expect(
+      registry.resolveModel("acme-gateway/code", defaultConfig()),
+    ).resolves.toBeDefined();
+  } finally {
+    for (const [key, name] of Object.entries(names)) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 test("ollama hits the cloud endpoint with a key and localhost without one", async () => {
   const ollama = builtinProviders().find((d) => d.id === "ollama");
   if (!ollama) throw new Error("ollama provider missing");
@@ -351,16 +381,18 @@ test("arbitrary config provider ids use Chat Completions and explicit models", a
   });
   expect(reg.list(config).some((provider) => provider.id === "acme-gateway")).toBe(true);
   expect(reg.isConfigured("acme-gateway", config)).toBe(true);
-  const model = await reg.resolveModel("acme-gateway/acme-code", config) as { specificationVersion?: string };
+  const model = (await reg.resolveModel("acme-gateway/acme-code", config)) as {
+    specificationVersion?: string;
+  };
   expect(model.specificationVersion).toBe("v2");
   const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("not found", { status: 404 })) as unknown as typeof fetch;
+  globalThis.fetch = (async () =>
+    new Response("not found", { status: 404 })) as unknown as typeof fetch;
   try {
     const listed = await reg.listConfiguredModels(config);
-    expect(listed.filter((entry) => entry.providerId === "acme-gateway").map((entry) => entry.id)).toEqual([
-      "acme-code",
-      "acme-fast",
-    ]);
+    expect(
+      listed.filter((entry) => entry.providerId === "acme-gateway").map((entry) => entry.id),
+    ).toEqual(["acme-code", "acme-fast"]);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -373,7 +405,7 @@ test("arbitrary config provider ids can select the OpenAI Responses transport", 
     apiKey: "secret",
     transport: "openai-responses",
   });
-  const model = await reg.resolveModel("responses-gateway/codex-like", config) as {
+  const model = (await reg.resolveModel("responses-gateway/codex-like", config)) as {
     specificationVersion?: string;
     provider?: string;
   };

@@ -945,7 +945,11 @@ desktop packaging; `VIBE_CLOUD_RUNTIME_IMAGE` can override the local build image
 Portable restore, resume verification, and the permanent engine all run under
 the same isolated workload identity before health can report ready. Explicit
 resume is fail-closed: missing state never falls through to a replacement
-session ID.
+session ID. Before desktop ownership commits, that workload also performs a
+bounded real generation through the engine provider registry for every active
+model. This catches invalid credentials, blocked egress, wrong endpoints,
+unsupported exact models, and arbitrary-provider transport mismatches equally
+on E2B and Vercel.
 
 Portable session export/import, ownership generations, `/handoff`, and the
 privileged request-only `handoff_session` tool live in core. Desktop/provider

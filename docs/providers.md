@@ -87,7 +87,9 @@ For headless configuration, an arbitrary provider ID also has deterministic
 environment aliases. Uppercase the ID, replace punctuation with `_`, and prefix
 it with `VIBE_PROVIDER_`: `company-gateway` becomes
 `VIBE_PROVIDER_COMPANY_GATEWAY_API_KEY` and
-`VIBE_PROVIDER_COMPANY_GATEWAY_BASE_URL`.
+`VIBE_PROVIDER_COMPANY_GATEWAY_BASE_URL`. Cloud handoff also carries
+`VIBE_PROVIDER_COMPANY_GATEWAY_TRANSPORT` when the provider uses the OpenAI
+Responses transport.
 
 ## Cloud handoff
 
@@ -98,12 +100,19 @@ binds only that token plus non-secret account routing metadata. Refresh tokens
 never enter renderer IPC, project config, the transcript, or the Cloud catalog.
 If the credential cannot be prepared, ownership stays Local.
 
+The restored sandbox performs a tiny real generation with every active model
+through `ProviderRegistry` before ownership can commit. This verifies the exact
+generation route and credential—not merely a public model-list endpoint—and is
+shared by the E2B and Vercel desktop adapters. An arbitrary provider can be
+reconstructed from its deterministic Cloud environment bindings even when its
+original global config file is not present in the sandbox.
+
 ## Compatibility verification
 
 Focused provider/auth checks:
 
 ```bash
-bun test packages/providers/src/oauth.test.ts packages/providers/src/registry.test.ts
+bun test packages/providers/src/oauth.test.ts packages/providers/src/registry.test.ts packages/cloud-agentd/src/cloud-model-probe.test.ts
 bun test packages/macos-bridge/src/protocol.test.ts packages/macos-bridge/src/host.integration.test.ts
 bun run typecheck
 ```

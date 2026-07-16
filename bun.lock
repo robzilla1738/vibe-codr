@@ -28,7 +28,7 @@
     },
     "packages/cli": {
       "name": "@vibe/cli",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "bin": {
         "vibecodr": "./bin/vibecodr.ts",
         "vibe": "./bin/vibecodr.ts",
@@ -43,15 +43,18 @@
     },
     "packages/cloud-agentd": {
       "name": "@vibe/cloud-agentd",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "bin": {
         "cloud-agentd": "./bin/cloud-agentd.ts",
         "vibe-cloud-bootstrap": "./bin/cloud-bootstrap.ts",
+        "vibe-cloud-export": "./bin/cloud-export.ts",
       },
       "dependencies": {
-        "@vibe/core": "workspace:*",
+        "@vibe/config": "workspace:*",
         "@vibe/macos-bridge": "workspace:*",
+        "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
+        "ai": "^5.0.0",
         "node-pty": "^1.1.0",
         "ws": "^8.18.3",
       },
@@ -61,7 +64,7 @@
     },
     "packages/config": {
       "name": "@vibe/config",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "dependencies": {
         "@vibe/shared": "workspace:*",
         "zod": "^4.0.0",
@@ -69,7 +72,7 @@
     },
     "packages/core": {
       "name": "@vibe/core",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/plugins": "workspace:*",
@@ -82,7 +85,7 @@
     },
     "packages/macos-bridge": {
       "name": "@vibe/macos-bridge",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "bin": {
         "vibecodr-engine-host": "./bin/engine-host.ts",
       },
@@ -95,7 +98,7 @@
     },
     "packages/plugins": {
       "name": "@vibe/plugins",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "dependencies": {
         "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
@@ -103,7 +106,7 @@
     },
     "packages/providers": {
       "name": "@vibe/providers",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/shared": "workspace:*",
@@ -132,14 +135,14 @@
     },
     "packages/shared": {
       "name": "@vibe/shared",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "dependencies": {
         "zod": "^4.0.0",
       },
     },
     "packages/tools": {
       "name": "@vibe/tools",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "dependencies": {
         "@vibe/shared": "workspace:*",
         "ai": "^5.0.0",
@@ -148,7 +151,7 @@
     },
     "packages/tui": {
       "name": "@vibe/tui",
-      "version": "0.5.1",
+      "version": "0.5.9",
       "dependencies": {
         "@vibe/shared": "workspace:*",
       },

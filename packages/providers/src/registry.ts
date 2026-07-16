@@ -5,7 +5,7 @@ import type { Config } from "@vibe/config";
 import { ModelResolutionError, ProviderAuthError } from "@vibe/shared";
 import type { EmbeddingModel, LanguageModel } from "ai";
 import { readTokenFile } from "./auth-file.ts";
-import { builtinProviders, configDefinedProvider } from "./defs.ts";
+import { builtinProviders, configDefinedProvider, configProviderEnvironmentName } from "./defs.ts";
 import { parseModelString } from "./resolve.ts";
 import type { ModelInfo, ProviderCreateOptions, ProviderDef } from "./types.ts";
 
@@ -50,10 +50,14 @@ export class ProviderRegistry {
   }
 
   #definition(id: string, config: Config): ProviderDef | undefined {
-    return this.#providers.get(id)
-      ?? (config.providers[id]?.baseURL
+    return (
+      this.#providers.get(id) ??
+      (config.providers[id]?.baseURL
         ? configDefinedProvider(id, config.providers[id]?.transport)
-        : undefined);
+        : process.env[configProviderEnvironmentName(id, "BASE_URL")]
+          ? configDefinedProvider(id, cloudTransport(id))
+          : undefined)
+    );
   }
 
   /**
@@ -185,15 +189,23 @@ export class ProviderRegistry {
         return [];
       }
     });
-    const results = await Promise.all(configured.map(async ({ def, auth }) => {
-      const live = await def.listModels(auth).catch(() => []);
-      const explicit = config.providers[def.id]?.models ?? [];
-      const seen = new Set(live.map((model) => model.id));
-      return [
-        ...live,
-        ...explicit.filter((id) => !seen.has(id)).map((id) => ({ id, providerId: def.id })),
-      ];
-    }));
+    const results = await Promise.all(
+      configured.map(async ({ def, auth }) => {
+        const live = await def.listModels(auth).catch(() => []);
+        const explicit = config.providers[def.id]?.models ?? [];
+        const seen = new Set(live.map((model) => model.id));
+        return [
+          ...live,
+          ...explicit.filter((id) => !seen.has(id)).map((id) => ({ id, providerId: def.id })),
+        ];
+      }),
+    );
     return results.flat();
   }
+}
+
+function cloudTransport(id: string): "openai-compatible" | "openai-responses" {
+  return process.env[configProviderEnvironmentName(id, "TRANSPORT")] === "openai-responses"
+    ? "openai-responses"
+    : "openai-compatible";
 }

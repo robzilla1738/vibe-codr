@@ -37,6 +37,9 @@ await runBounded(models, 2, async (model) => {
       maxOutputTokens: 8,
       maxRetries: 0,
       abortSignal: AbortSignal.timeout(60_000),
+      ...(model.endsWith("/grok-4.5")
+        ? { providerOptions: { openai: { store: false, reasoningEffort: "low" } } }
+        : {}),
     });
   } catch (error) {
     throw new Error(formatProbeError(model, error), { cause: error });

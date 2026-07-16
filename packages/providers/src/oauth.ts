@@ -343,7 +343,11 @@ export class ProviderAuthManager {
         accept: "application/json",
         "user-agent": "vibe-codr",
       },
-      body: new URLSearchParams({ client_id: XAI_CLIENT_ID, scope: XAI_SCOPE }),
+      body: new URLSearchParams({
+        client_id: XAI_CLIENT_ID,
+        scope: XAI_SCOPE,
+        referrer: "vibe-codr",
+      }),
     });
     const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok || typeof json.device_code !== "string" || typeof json.user_code !== "string") {

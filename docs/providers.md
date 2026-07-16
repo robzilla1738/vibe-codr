@@ -34,6 +34,11 @@ Use model IDs under `openai-codex/`, for example:
 openai-codex/gpt-5.3-codex
 ```
 
+The compatibility alias `codex/gpt-5.3-codex` uses the same ChatGPT backend.
+Public OpenAI API keys use `openai/` instead; they are never treated as ChatGPT
+subscription credentials. When reusing `~/.codex/auth.json`, Vibe forwards both
+the access token and its `tokens.account_id` routing identity.
+
 If Vibe's own credential is absent, the engine can still read the official
 Codex CLI credential from `~/.codex/auth.json`. Eligibility, available models,
 and usage limits remain controlled by the user's ChatGPT plan.
@@ -45,12 +50,16 @@ browser PKCE and RFC 8628 device authorization. Device polling honors
 `authorization_pending`, `slow_down`, denial, and expiry responses. Refresh
 tokens rotate atomically in the same user-only auth store.
 
-The subscription route uses the `xai-oauth` provider. Grok Build is always
-discoverable even if xAI's live model endpoint omits it:
+The subscription route uses the `xai-oauth` provider. Grok 4.5 and Grok Build
+are always discoverable even if xAI's live model endpoint omits them:
 
 ```text
+xai-oauth/grok-4.5
 xai-oauth/grok-build-0.1
 ```
+
+Grok 4.5 uses xAI Responses with low/medium/high reasoning and `store: false`.
+Grok Build and older xAI models continue through Chat Completions.
 
 Eligibility and quota remain controlled by the user's xAI plan. API-key users
 can continue to use `xai/<model>` with `XAI_API_KEY`.

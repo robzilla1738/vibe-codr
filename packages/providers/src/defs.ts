@@ -101,15 +101,15 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createDeepSeek",
   },
   {
-    // xAI (Grok) serves an OpenAI-compatible API; the dedicated `@ai-sdk/xai`
-    // package has no `ai@5` (spec v2) release, so we drive it through
-    // `@ai-sdk/openai-compatible`.
+    // xAI uses Chat Completions for its existing catalog, but Grok 4.5 requires
+    // the Responses API. `@ai-sdk/openai` exposes both transports from one
+    // provider instance, so buildDef can route per model below.
     id: "xai",
     env: ["XAI_API_KEY"],
     baseURL: "https://api.x.ai/v1",
     baseURLEnv: "XAI_BASE_URL",
-    module: "@ai-sdk/openai-compatible",
-    factory: "createOpenAICompatible",
+    module: "@ai-sdk/openai",
+    factory: "createOpenAI",
   },
   {
     // Meta Model API — Muse Spark via OpenAI-compatible Chat Completions.
@@ -134,14 +134,16 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // Codex: reuse the token the Codex CLI stored at ~/.codex/auth.json (API key
-    // or ChatGPT OAuth access token). Point CODEX_BASE_URL at the right backend
-    // for OAuth-subscription use; an API key works against OpenAI directly.
+    // Friendly compatibility alias for ChatGPT/Codex subscription auth. Public
+    // OpenAI API keys belong to the `openai` provider; sending one to the
+    // ChatGPT backend produces the misleading api.responses.write error.
     id: "codex",
-    env: ["CODEX_API_KEY", "OPENAI_API_KEY"],
-    baseURL: "https://api.openai.com/v1",
+    env: ["VIBE_CODEX_OAUTH_TOKEN"],
+    baseURL: "https://chatgpt.com/backend-api/codex",
     baseURLEnv: "CODEX_BASE_URL",
-    tokenFile: "~/.codex/auth.json",
+    tokenFile: "~/.vibe-codr/auth.json",
+    tokenPath: "providers.openai-codex.access",
+    subscriptionAuth: "openai-codex",
     module: "@ai-sdk/openai",
     factory: "createOpenAI",
   },
@@ -528,7 +530,7 @@ const HERMES_COMPAT_SPECS: BuiltinSpec[] = [
   },
   {
     id: "openai-codex",
-    env: ["CODEX_API_KEY", "OPENAI_API_KEY"],
+    env: ["VIBE_CODEX_OAUTH_TOKEN"],
     baseURL: "https://chatgpt.com/backend-api/codex",
     baseURLEnv: "CODEX_BASE_URL",
     tokenFile: "~/.vibe-codr/auth.json",
@@ -715,7 +717,10 @@ async function buildProvider(
   spec: BuiltinSpec,
   baseURL: (opts: ProviderCreateOptions) => string,
   opts: ProviderCreateOptions,
-): Promise<(modelId: string) => unknown> {
+): Promise<((modelId: string) => unknown) & {
+  chat?: (modelId: string) => unknown;
+  responses?: (modelId: string) => unknown;
+}> {
   const url = baseURL(opts);
   // A provider with no default base URL (the generic `custom` provider) is
   // unusable until one is set — fail with an actionable message rather than
@@ -792,7 +797,24 @@ async function buildProvider(
         : {}),
     };
   })();
-  return factory(settings) as (modelId: string) => unknown;
+  return factory(settings) as ((modelId: string) => unknown) & {
+    chat?: (modelId: string) => unknown;
+    responses?: (modelId: string) => unknown;
+  };
+}
+
+function createTextModel(
+  provider: ((modelId: string) => unknown) & {
+    chat?: (modelId: string) => unknown;
+    responses?: (modelId: string) => unknown;
+  },
+  spec: BuiltinSpec,
+  modelId: string,
+): unknown {
+  const xai = spec.id === "xai" || spec.subscriptionAuth === "xai-oauth";
+  if (xai && modelId !== "grok-4.5" && provider.chat) return provider.chat(modelId);
+  if (xai && modelId === "grok-4.5" && provider.responses) return provider.responses(modelId);
+  return provider(modelId);
 }
 
 function buildDef(spec: BuiltinSpec): ProviderDef {
@@ -832,8 +854,7 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
 
     async create(modelId, opts): Promise<LanguageModel> {
       const provider = await buildProvider(spec, baseURL, opts);
-      // Provider instances are callable: provider(modelId) -> LanguageModel.
-      const model = provider(modelId) as LanguageModel;
+      const model = createTextModel(provider, spec, modelId) as LanguageModel;
       // OpenAI-compatible endpoints have no first-class reasoning channel:
       // hosted open reasoning models (qwen, deepseek-r1 via ollama, …) emit
       // their chain-of-thought INLINE as <think>…</think>, which would leak
@@ -885,6 +906,12 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       ) {
         live.unshift({ id: "grok-build-0.1", providerId: spec.id, name: "Grok Build 0.1" });
       }
+      if (
+        spec.subscriptionAuth === "xai-oauth" &&
+        !live.some((model) => model.id === "grok-4.5")
+      ) {
+        live.unshift({ id: "grok-4.5", providerId: spec.id, name: "Grok 4.5" });
+      }
       return live;
     },
   };
@@ -918,7 +945,7 @@ export function configDefinedProvider(
 
 export function configProviderEnvironmentName(
   id: string,
-  suffix: "API_KEY" | "BASE_URL" | "TRANSPORT",
+  suffix: "API_KEY" | "BASE_URL" | "TRANSPORT" | "HEADERS_JSON",
 ): string {
   const normalized =
     id

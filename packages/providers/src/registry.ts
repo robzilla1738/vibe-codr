@@ -69,7 +69,11 @@ export class ProviderRegistry {
     if (!def) throw new ModelResolutionError(id, "unknown provider");
     const apiKey = this.#resolveKey(def, config.providers[id]);
     const baseURL = config.providers[id]?.baseURL;
-    const headers = config.providers[id]?.headers;
+    let headers = config.providers[id]?.headers ?? cloudProviderHeaders(id);
+    if ((id === "codex" || id === "openai-codex") && !hasHeader(headers, "chatgpt-account-id")) {
+      const accountId = process.env.CODEX_ACCOUNT_ID ?? this.#resolveCodexAccountId(def, config.providers[id]);
+      if (accountId) headers = { ...headers, "ChatGPT-Account-Id": accountId };
+    }
     if (!apiKey && !def.auth.keyless) {
       throw new ProviderAuthError(id, def.auth.env);
     }
@@ -90,13 +94,41 @@ export class ProviderRegistry {
     if (cfg?.apiKey) return cfg.apiKey;
     const tokenFile = cfg?.tokenFile ?? def.auth.tokenFile;
     if (tokenFile) {
-      const token = readTokenFile(tokenFile, cfg?.tokenPath ?? def.auth.tokenPath);
+      // A custom token file must not inherit the built-in file's JSON path.
+      // Without this, pointing Codex at ~/.codex/auth.json still looked for
+      // providers.openai-codex.access from Vibe's own store.
+      const tokenPath = cfg?.tokenFile
+        ? cfg.tokenPath
+        : cfg?.tokenPath ?? def.auth.tokenPath;
+      const token = readTokenFile(tokenFile, tokenPath);
       if (token) return token;
     }
     if (!cfg?.tokenFile) {
       for (const fallback of def.auth.fallbackTokenFiles ?? []) {
         const token = readTokenFile(fallback.path, fallback.tokenPath);
         if (token) return token;
+      }
+    }
+    return undefined;
+  }
+
+  #resolveCodexAccountId(
+    def: ProviderDef,
+    cfg: Config["providers"][string] | undefined,
+  ): string | undefined {
+    const candidates = cfg?.tokenFile
+      ? [cfg.tokenFile]
+      : [def.auth.tokenFile, ...(def.auth.fallbackTokenFiles ?? []).map((item) => item.path)]
+          .filter((path): path is string => Boolean(path));
+    for (const path of candidates) {
+      for (const field of [
+        "providers.openai-codex.accountId",
+        "tokens.account_id",
+        "account_id",
+        "chatgpt_account_id",
+      ]) {
+        const accountId = readTokenFile(path, field);
+        if (accountId) return accountId;
       }
     }
     return undefined;
@@ -204,8 +236,25 @@ export class ProviderRegistry {
   }
 }
 
+function hasHeader(headers: Record<string, string> | undefined, name: string): boolean {
+  return Object.keys(headers ?? {}).some((key) => key.toLowerCase() === name.toLowerCase());
+}
+
 function cloudTransport(id: string): "openai-compatible" | "openai-responses" {
   return process.env[configProviderEnvironmentName(id, "TRANSPORT")] === "openai-responses"
     ? "openai-responses"
     : "openai-compatible";
+}
+
+function cloudProviderHeaders(id: string): Record<string, string> | undefined {
+  const raw = process.env[configProviderEnvironmentName(id, "HEADERS_JSON")];
+  if (!raw) return undefined;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)
+      || Object.values(value).some((item) => typeof item !== "string")) throw new Error();
+    return value as Record<string, string>;
+  } catch {
+    throw new ModelResolutionError(id, "invalid cloud provider headers");
+  }
 }

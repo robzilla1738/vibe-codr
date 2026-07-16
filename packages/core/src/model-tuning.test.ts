@@ -76,11 +76,18 @@ test("Anthropic effort tier derives a thinking budget", () => {
   });
 });
 
-test("xAI/Grok routes via openai-compatible, so no native reasoningEffort is forwarded", () => {
-  // grok reasons natively; xai is driven through openai-compatible which doesn't
-  // take the reasoningEffort option, so we don't emit it.
+test("older xAI/Grok chat models keep native reasoning without an effort option", () => {
   const t = buildModelTuning("xai/grok-4", cfg({ reasoning: { effort: "low" } }));
   expect(t.providerOptions?.xai).toBeUndefined();
+});
+
+test("Grok 4.5 uses Responses tuning for API-key and subscription routes", () => {
+  for (const model of ["xai/grok-4.5", "xai-oauth/grok-4.5"]) {
+    expect(reasoningCategory(model)).toBe("forwarded");
+    expect(buildModelTuning(model, cfg({ reasoning: { effort: "high" } })).providerOptions?.openai)
+      .toEqual({ store: false, reasoningEffort: "high" });
+    expect(buildModelTuning(model, cfg()).providerOptions?.openai).toEqual({ store: false });
+  }
 });
 
 test("reasoningSupported is true for reasoning providers, false for local models", () => {
@@ -97,6 +104,7 @@ test("reasoningCategory splits forwarded, native, and none per provider", () => 
   expect(reasoningCategory("meta/muse-spark-1.1")).toBe("forwarded");
   // Native: reasons on its own, but the transport drops the hint — no affirmation.
   expect(reasoningCategory("xai/grok-4")).toBe("native");
+  expect(reasoningCategory("xai-oauth/grok-4.5")).toBe("forwarded");
   expect(reasoningCategory("openrouter/anthropic/claude")).toBe("native");
   expect(reasoningCategory("codex/gpt-5.2-codex")).toBe("native");
   expect(reasoningCategory("deepseek/deepseek-reasoner")).toBe("native");

@@ -79,6 +79,69 @@ test("Hermes-compatible provider ids resolve without translation", () => {
   }
 });
 
+test("Codex subscription aliases never mistake a public OpenAI key for ChatGPT auth", () => {
+  const reg = new ProviderRegistry();
+  const previous = {
+    openai: process.env.OPENAI_API_KEY,
+    codex: process.env.CODEX_API_KEY,
+    oauth: process.env.VIBE_CODEX_OAUTH_TOKEN,
+  };
+  process.env.OPENAI_API_KEY = "public-openai-key";
+  process.env.CODEX_API_KEY = "legacy-codex-key";
+  delete process.env.VIBE_CODEX_OAUTH_TOKEN;
+  try {
+    expect(() => reg.resolveAuth("codex", withProvider("codex", {
+      tokenFile: "/definitely/missing/codex-auth.json",
+    }))).toThrow(/VIBE_CODEX_OAUTH_TOKEN/);
+  } finally {
+    if (previous.openai === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous.openai;
+    if (previous.codex === undefined) delete process.env.CODEX_API_KEY;
+    else process.env.CODEX_API_KEY = previous.codex;
+    if (previous.oauth === undefined) delete process.env.VIBE_CODEX_OAUTH_TOKEN;
+    else process.env.VIBE_CODEX_OAUTH_TOKEN = previous.oauth;
+  }
+});
+
+test("Codex CLI OAuth supplies its access token and ChatGPT account routing header", async () => {
+  const reg = new ProviderRegistry();
+  const path = join(mkdtempSync(join(tmpdir(), "vibe-codex-auth-")), "auth.json");
+  await Bun.write(path, JSON.stringify({
+    auth_mode: "chatgpt",
+    tokens: { access_token: "oauth-access", account_id: "account-123" },
+  }));
+  const auth = reg.resolveAuth("codex", withProvider("codex", { tokenFile: path }));
+  expect(auth.apiKey).toBe("oauth-access");
+  expect(auth.headers?.["ChatGPT-Account-Id"]).toBe("account-123");
+});
+
+test("xAI routes only Grok 4.5 through Responses", async () => {
+  for (const id of ["xai", "xai-oauth"]) {
+    const def = builtinProviders().find((provider) => provider.id === id);
+    if (!def) throw new Error(`${id} provider missing`);
+    const grok45 = await def.create("grok-4.5", { apiKey: "test-token" }) as { provider?: string };
+    const grokBuild = await def.create("grok-build-0.1", { apiKey: "test-token" }) as { provider?: string };
+    expect(grok45.provider).toBe(`${id}.responses`);
+    expect(grokBuild.provider).toBe(`${id}.chat`);
+  }
+});
+
+test("xAI subscription catalog always exposes Grok 4.5 and Grok Build", async () => {
+  const def = builtinProviders().find((provider) => provider.id === "xai-oauth");
+  if (!def) throw new Error("xai-oauth provider missing");
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ data: [] }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })) as unknown as typeof fetch;
+  try {
+    expect((await def.listModels({ apiKey: "test-token" })).map((model) => model.id))
+      .toEqual(["grok-4.5", "grok-build-0.1"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("native cloud providers construct the AI SDK model family they require", async () => {
   const previous = {
     project: process.env.GOOGLE_VERTEX_PROJECT,
@@ -216,19 +279,16 @@ test("a token file supplies the credential and marks the provider configured", a
   await Bun.write(path, JSON.stringify({ tokens: { access_token: "oauth-token-xyz" } }));
   const config = withProvider("codex", { tokenFile: path });
 
-  // codex resolves env (CODEX_API_KEY, OPENAI_API_KEY) before the tokenFile, so
-  // clear both for this test — otherwise a real key in the dev shell wins.
-  const prev = { codex: process.env.CODEX_API_KEY, openai: process.env.OPENAI_API_KEY };
-  delete process.env.CODEX_API_KEY;
-  delete process.env.OPENAI_API_KEY;
+  // The dedicated Cloud OAuth binding wins over token files, so clear it to
+  // prove the configured file is the credential source.
+  const prev = process.env.VIBE_CODEX_OAUTH_TOKEN;
+  delete process.env.VIBE_CODEX_OAUTH_TOKEN;
   try {
     expect(reg.isConfigured("codex", config)).toBe(true);
     expect(reg.resolveAuth("codex", config).apiKey).toBe("oauth-token-xyz");
   } finally {
-    if (prev.codex === undefined) delete process.env.CODEX_API_KEY;
-    else process.env.CODEX_API_KEY = prev.codex;
-    if (prev.openai === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = prev.openai;
+    if (prev === undefined) delete process.env.VIBE_CODEX_OAUTH_TOKEN;
+    else process.env.VIBE_CODEX_OAUTH_TOKEN = prev;
   }
 });
 
@@ -246,6 +306,7 @@ test("cloud environment restores an arbitrary provider without a local config fi
     key: "VIBE_PROVIDER_ACME_GATEWAY_API_KEY",
     base: "VIBE_PROVIDER_ACME_GATEWAY_BASE_URL",
     transport: "VIBE_PROVIDER_ACME_GATEWAY_TRANSPORT",
+    headers: "VIBE_PROVIDER_ACME_GATEWAY_HEADERS_JSON",
   } as const;
   const previous = Object.fromEntries(
     Object.entries(names).map(([key, name]) => [key, process.env[name]]),
@@ -253,11 +314,13 @@ test("cloud environment restores an arbitrary provider without a local config fi
   process.env[names.key] = "cloud-key";
   process.env[names.base] = "https://models.acme.example/v1";
   process.env[names.transport] = "openai-responses";
+  process.env[names.headers] = JSON.stringify({ "x-team": "platform" });
   try {
     const registry = new ProviderRegistry();
     expect(registry.isConfigured("acme-gateway", defaultConfig())).toBe(true);
     expect(registry.resolveAuth("acme-gateway", defaultConfig())).toEqual({
       apiKey: "cloud-key",
+      headers: { "x-team": "platform" },
     });
     await expect(
       registry.resolveModel("acme-gateway/code", defaultConfig()),

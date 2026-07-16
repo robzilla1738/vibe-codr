@@ -145,6 +145,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
         ok: healthy,
         engine: state.host?.exitCode === null,
         sessionId: state.sessionId,
+        environment: Object.keys(childEnvironment).sort(),
         ...(state.startupError ? { error: state.startupError } : {}),
         terminals: state.terminals.size,
       }));

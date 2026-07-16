@@ -81,20 +81,27 @@ await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, `${JSON.stringify({ entries, files, git: { isRepository: !!head, head, branch, deleted, submodules, ...(bundlePath ? { bundlePath } : {}), ...(stagedPatchPath ? { stagedPatchPath } : {}), ...(worktreePatchPath ? { worktreePatchPath } : {}) } })}\n`);
 
 async function candidates(cwd: string): Promise<string[]> {
-  try {
-    const { stdout } = await exec("git", ["ls-files", "-co", "--exclude-standard", "-z"], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    return stdout.split("\0").filter(Boolean).map(portable);
-  } catch { return walk(cwd); }
+  return walk(cwd);
 }
 
 async function walk(cwd: string, prefix = ""): Promise<string[]> {
   const out: string[] = [];
   for (const entry of await readdir(join(cwd, prefix), { withFileTypes: true })) {
     const path = posix.join(prefix, entry.name);
-    if (/(^|\/)(?:\.git|node_modules|\.ssh|\.aws|\.azure|\.kube|\.docker)(?:\/|$)/.test(path) || /(^|\/)\.env(?:\.|$)/.test(path)) continue;
+    if (isHardExcluded(path)) continue;
     if (entry.isDirectory()) out.push(...await walk(cwd, path)); else out.push(path);
   }
   return out;
+}
+
+function isHardExcluded(path: string): boolean {
+  return /(^|\/)(?:\.git|node_modules|\.ssh|\.aws|\.azure|\.kube|\.docker)(?:\/|$)/.test(path)
+    || /(^|\/)\.env[^/]*(?:\/|$)/.test(path)
+    || /(^|\/)(?:\.npmrc|\.netrc|\.pypirc|\.git-credentials|\.gitcookies)$/.test(path)
+    || /(^|\/)credentials(?:\.json)?$/i.test(path)
+    || /(^|\/)(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.[^/]*)?$/i.test(path)
+    || /(^|\/)[^/]+\.(?:pem|key|p12|pfx)$/i.test(path)
+    || /(^|\/)\.DS_Store$/.test(path);
 }
 
 function portable(value: string): string {

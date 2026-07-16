@@ -4,6 +4,26 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.5.11 — 2026-07-16
+
+- Cloud agent health now reports inherited environment names through its
+  authenticated endpoint so desktop handoff can reject a workload that dropped
+  reviewed model credentials before ownership moves.
+
+### Fixed — subscription routing and Grok 4.5
+
+- The `codex/` compatibility alias and `openai-codex/` now both route ChatGPT
+  OAuth credentials to the account-routed Codex Responses backend. Public
+  OpenAI API keys no longer falsely configure the subscription provider, and
+  official Codex CLI account IDs are forwarded automatically.
+- xAI API-key and subscription providers route `grok-4.5` through Responses
+  with `store: false` and supported reasoning effort, while Grok Build and older
+  models remain on Chat Completions. The subscription catalog always exposes
+  both Grok 4.5 and Grok Build.
+- Cloud handoff exports Codex access through a dedicated OAuth-only environment
+  binding, preserving the same provider/model route without exposing refresh
+  tokens or confusing it with `OPENAI_API_KEY`.
+
 ## 0.5.10 — 2026-07-16
 
 ### Fixed — provider-neutral Cloud model verification

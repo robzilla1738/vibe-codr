@@ -24,12 +24,16 @@ export const ANTHROPIC_CACHE_CONTROL = {
   anthropic: { cacheControl: { type: "ephemeral" } },
 } as const;
 
-function providerOf(modelString: string): string {
+function modelParts(modelString: string): { providerId: string; modelId: string } {
   try {
-    return parseModelString(modelString).providerId;
+    return parseModelString(modelString);
   } catch {
-    return "";
+    return { providerId: "", modelId: "" };
   }
+}
+
+function providerOf(modelString: string): string {
+  return modelParts(modelString).providerId;
 }
 
 /**
@@ -43,15 +47,16 @@ const REASONING_FORWARDED = new Set(["anthropic", "openai", "meta"]);
 /**
  * Providers whose models reason NATIVELY but whose transport carries no forwarded
  * effort hint — either a built-in reasoner (codex, deepseek-reasoner) or a model
- * routed through `@ai-sdk/openai-compatible` (xai, openrouter), which doesn't
- * accept the native reasoning options. `/reasoning` changes nothing on the wire
- * for these; the model reasons at its own default, so we must caveat rather than
- * confirm.
+ * routed through `@ai-sdk/openai-compatible` (openrouter and pre-4.5 xAI chat
+ * models), which doesn't accept the native reasoning options. `/reasoning`
+ * changes nothing on the wire for these; the model reasons at its own default,
+ * so we must caveat rather than confirm. Grok 4.5 is handled model-specifically
+ * through Responses above this fallback category.
  *
  * Note: `meta` is in REASONING_FORWARDED — openai-compatible forwards
  * `reasoningEffort` as top-level `reasoning_effort` for Muse Spark.
  */
-const REASONING_NATIVE = new Set(["codex", "deepseek", "xai", "openrouter"]);
+const REASONING_NATIVE = new Set(["codex", "deepseek", "xai", "xai-oauth", "openrouter"]);
 
 /** How a model's provider treats a reasoning-effort hint. */
 export type ReasoningSupport = "forwarded" | "native" | "none";
@@ -65,7 +70,10 @@ export type ReasoningSupport = "forwarded" | "native" | "none";
  * `"none"`.
  */
 export function reasoningCategory(modelString: string): ReasoningSupport {
-  const provider = providerOf(modelString);
+  const { providerId: provider, modelId } = modelParts(modelString);
+  if ((provider === "xai" || provider === "xai-oauth") && modelId === "grok-4.5") {
+    return "forwarded";
+  }
   if (REASONING_FORWARDED.has(provider)) return "forwarded";
   if (REASONING_NATIVE.has(provider)) return "native";
   return "none";
@@ -102,7 +110,7 @@ export function cacheTokensDisjointFromInput(modelString: string): boolean {
 }
 
 export function buildModelTuning(modelString: string, config: Config): ModelTuning {
-  const provider = providerOf(modelString);
+  const { providerId: provider, modelId } = modelParts(modelString);
   const { effort, budgetTokens } = config.reasoning;
   const opts: Record<string, Record<string, unknown>> = {};
 
@@ -117,11 +125,17 @@ export function buildModelTuning(modelString: string, config: Config): ModelTuni
       }
       break;
     }
-    // OpenAI takes an effort tier directly. (Codex/DeepSeek reason natively, and
-    // xai/openrouter now route through openai-compatible, which doesn't accept the
-    // native reasoning options — so for those the model reasons at its default.)
+    // OpenAI takes an effort tier directly. Codex/DeepSeek reason natively;
+    // model-specific xAI Responses routing is handled below.
     case "openai": {
       if (effort) opts[provider] = { reasoningEffort: effort };
+      break;
+    }
+    case "xai":
+    case "xai-oauth": {
+      if (modelId === "grok-4.5") {
+        opts.openai = { store: false, ...(effort ? { reasoningEffort: effort } : {}) };
+      }
       break;
     }
     // Meta Model API (Muse Spark): openai-compatible maps providerOptions.meta

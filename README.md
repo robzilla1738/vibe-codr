@@ -297,13 +297,15 @@ vibecodr --model openai-codex/gpt-5.3-codex
 Vibe-owned tokens are stored in `~/.vibe-codr/auth.json` with user-only
 permissions, refresh automatically, and route Responses calls to the Codex
 subscription backend with the required account identity. Use
-`openai-codex/gpt-5.3-codex`; availability and quota depend on the signed-in
+`openai-codex/gpt-5.3-codex` (or the compatible `codex/` alias); availability
+and quota depend on the signed-in
 plan. See [providers and subscription authentication](docs/providers.md).
 
 ### xAI subscription and Grok Build
 
 The desktop app can connect an eligible xAI subscription using browser sign-in
-or a device code. Use `xai-oauth/grok-build-0.1` for Grok Build. API-key users
+or a device code. Use `xai-oauth/grok-4.5` for Grok 4.5 through Responses, or
+`xai-oauth/grok-build-0.1` for Grok Build through Chat Completions. API-key users
 can continue to use `xai/<model>` with `XAI_API_KEY`.
 
 ### Any compatible endpoint (arbitrary provider IDs)
@@ -801,8 +803,8 @@ instead of leaking into the visible reply.
 | `huggingface` | `HF_TOKEN` | Inference Providers router (`router.huggingface.co/v1`) — one token, open models auto-routed to live providers |
 | `xai` (**Grok**) | `XAI_API_KEY` (console.x.ai) | OpenAI-compatible; point `XAI_BASE_URL` at a gateway if your subscription is brokered elsewhere |
 | `minimax` (**MiniMax**) | `MINIMAX_API_KEY` | OpenAI-compatible; your MiniMax subscription token. `MINIMAX_BASE_URL` overrides region |
-| `openai-codex` (**OpenAI Codex**) | built-in ChatGPT PKCE sign-in; fallback `~/.codex/auth.json` | refreshes automatically and calls the Codex Responses subscription backend with ChatGPT account routing |
-| `xai-oauth` (**Grok subscription**) | built-in xAI browser or device sign-in | supports eligible subscription models, including `xai-oauth/grok-build-0.1` |
+| `openai-codex` / `codex` (**OpenAI Codex**) | built-in ChatGPT PKCE sign-in; fallback `~/.codex/auth.json` | refreshes automatically and calls the Codex Responses subscription backend with ChatGPT account routing; public API keys use `openai/` |
+| `xai-oauth` (**Grok subscription**) | built-in xAI browser or device sign-in | supports `xai-oauth/grok-4.5` through Responses and `xai-oauth/grok-build-0.1` through Chat Completions when eligible |
 | `lmstudio` | none (keyless) | local; `LMSTUDIO_BASE_URL` (default `:1234`) |
 | `ollama` | none (local) or `OLLAMA_API_KEY` (cloud) | **Local:** run `ollama serve` (`OLLAMA_BASE_URL`, default `:11434`); keyless. **Ollama Cloud:** set `OLLAMA_API_KEY` (from ollama.com/settings/keys) and it auto-targets `https://ollama.com/v1` — model ids need no `-cloud` suffix, e.g. `ollama/gpt-oss:120b`; run `vibecodr models` to list yours. Override the host with `OLLAMA_BASE_URL`. |
 | `amazon-bedrock` / `bedrock` | standard AWS credential chain | Native Bedrock Converse transport; supports profiles, access keys, IAM/web identity, container credentials, and bearer tokens. |

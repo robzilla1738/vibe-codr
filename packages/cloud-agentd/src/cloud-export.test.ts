@@ -64,6 +64,30 @@ test("cloud export records tracked deletions instead of failing the return", asy
   expect(value.git.deleted).toContain("removed.txt");
 });
 
+test("cloud export returns Git-ignored project files but not hard credential paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "vibe-cloud-export-ignored-"));
+  roots.push(root);
+  await gitInit(root);
+  await writeFile(join(root, ".gitignore"), "generated.txt\n");
+  await writeFile(join(root, "generated.txt"), "keep this workspace input\n");
+  await writeFile(join(root, ".env.local"), "SECRET=stay-out\n");
+  await Bun.$`git -C ${root} add .gitignore`.quiet();
+  await Bun.$`git -C ${root} commit -m base`.quiet();
+
+  const base = join(root, "handoff.json");
+  const output = join(root, "return.json");
+  await writeFile(base, JSON.stringify({ manifest: { entries: [] } }));
+  await runExport(root, base, output);
+
+  const value = JSON.parse(await readFile(output, "utf8")) as {
+    entries: Array<{ path: string }>;
+    files: Array<{ path: string }>;
+  };
+  expect(value.entries.map((entry) => entry.path)).toContain("generated.txt");
+  expect(value.files.map((file) => file.path)).toContain("workspace/generated.txt");
+  expect(value.entries.map((entry) => entry.path)).not.toContain(".env.local");
+});
+
 async function gitInit(root: string): Promise<void> {
   await Bun.$`git -C ${root} init`.quiet();
   await Bun.$`git -C ${root} config user.name "Vibe Test"`.quiet();

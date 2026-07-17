@@ -9,6 +9,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import type { SubscriptionAuthStatus, SubscriptionProviderId } from "../../shared/provider-auth";
 import {
   buildOnboardingPatch,
   configuredCredentialProviderIds,
@@ -19,11 +21,10 @@ import {
   providerChoiceDefaultBaseURL,
   providerChoiceNeedsApiKey,
 } from "../../shared/providers-catalog";
+import { subscriptionProviderForRegistryId } from "../../shared/subscription-providers";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { IconClose, IconExternalLink } from "../icons";
 import { SubscriptionAuthCard } from "../providers/SubscriptionAuthCard";
-import type { SubscriptionAuthStatus, SubscriptionProviderId } from "../../shared/provider-auth";
-import { subscriptionProviderForRegistryId } from "../../shared/subscription-providers";
 
 export interface ProviderStatus {
   id: string;
@@ -154,7 +155,7 @@ export function OnboardingModal({
     void onSave(patch);
   };
 
-  return (
+  return createPortal(
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-modal-title">
       <div className="onboarding-modal" ref={dialogRef}>
         <header className="onboarding-modal-header">
@@ -392,6 +393,7 @@ export function OnboardingModal({
           </button>
         </footer>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

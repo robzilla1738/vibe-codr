@@ -34,6 +34,12 @@ describe("onboarding completion contract", () => {
     expect(modalSource).toContain('saving ? "Saving & starting…" : "Save & start"');
   });
 
+  it("portals the provider dialog above the composer stacking context", () => {
+    expect(modalSource).toContain('import { createPortal } from "react-dom"');
+    expect(modalSource).toContain("return createPortal(");
+    expect(modalSource).toContain("document.body");
+  });
+
   it("requires the selected subscription provider to be connected before save", () => {
     expect(modalSource).toContain("connectedSubscriptionId === subscriptionProvider.id");
     expect(modalSource).toContain("onStatusChange={handleSubscriptionStatus}");

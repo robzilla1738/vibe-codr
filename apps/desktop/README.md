@@ -10,7 +10,7 @@ gates in [CLOUD-THREAT-MODEL.md](./CLOUD-THREAT-MODEL.md). Handoff includes the
 complete usable project tree (including Git-ignored files) and automatically
 snapshots configured model access before Local ownership is released.
 
-**Repo:** [github.com/robzilla1738/vbcode-electron](https://github.com/robzilla1738/vbcode-electron)
+**Repo:** [github.com/robzilla1738/vibe-codr](https://github.com/robzilla1738/vibe-codr)
 
 **Privacy:** [PRIVACY.md](./PRIVACY.md)
 
@@ -45,13 +45,12 @@ Config/state are **shared with the CLI**:
 ## Requirements (development)
 
 - Node 22.12+ (required by the Electron 43 development runtime)
-- A sibling [vibe-codr](https://github.com/robzilla1738/vibe-codr) checkout
-  (`../cli` in the combined workspace, `../vibe-codr` for separate clones, or
-  `~/Code/vibe-codr`), or an explicit `VIBE_CODR_ROOT`
+- Bun 1.3+
 - Compiled host preferred:
 
 ```bash
-cd ../vibe-codr && bun install && bun run build:macos-bridge
+bun install
+bun run build:macos-bridge
 ```
 
 Packaged release builds bundle the revision-locked engine host; end users do
@@ -60,7 +59,7 @@ not need Node, Bun, `VIBE_CODR_ROOT`, or a sibling vibe-codr checkout.
 ## Install
 
 Download the latest direct installer from
-[GitHub Releases](https://github.com/robzilla1738/vbcode-electron/releases):
+[GitHub Releases](https://github.com/robzilla1738/vibe-codr/releases):
 
 - macOS Apple Silicon: open the signed and notarized `.dmg`, then drag Vibe Codr
   to Applications.
@@ -71,36 +70,25 @@ Installed macOS and Windows builds check GitHub Releases after launch. Updates
 are never installed silently: Vibe Codr asks before downloading and again
 before restarting, and safely stops the engine and terminal processes first.
 
-### What’s new in 0.6.4
+### What’s new in 0.6.5
 
-- Cloud handoff keeps the same theme, accent, transcript density, session,
-  history, model, and ownership across handoff, reconnect, return, and restart.
-- Provider keys and connected Codex/Grok access move in a sealed session
-  envelope, are validated by the actual resumed engine, and never enter Cloud
-  terminal environments. Removing a later Settings binding does not invalidate
-  the frozen protected snapshot for an existing Cloud session.
-- Existing 0.6.2 Cloud sessions repair in place on reconnect after an
-  authenticated engine-idle checkpoint and graceful shutdown. Active terminals
-  defer repair instead of being killed. Because those sessions had no trusted
-  appearance profile, the Mac preference is the migration source of truth and
-  replaces the accidental remote dark default. If repair cannot complete, Cloud
-  ownership remains authoritative and Settings offers an
-  explicit Return Local recovery path without replaying the failed prompt.
+- Model-provider setup remains above the composer at compact window heights.
+  The complete footer stays visible while provider choices and details scroll
+  inside the dialog.
 
 ## Clone
 
 ```bash
-git clone https://github.com/robzilla1738/vbcode-electron.git
-cd vbcode-electron
+git clone https://github.com/robzilla1738/vibe-codr.git
+cd vibe-codr
 ```
 
 ## Dev
 
 ```bash
-cd ../vibe-codr && bun run build:macos-bridge   # once / after engine changes
-cd ../vbcode-electron                           # or this clone
-npm install
-npm run dev
+bun install
+bun run build:macos-bridge   # once / after engine changes
+bun run desktop:dev
 ```
 
 The app opens directly into the main workspace. It restores the last authorized

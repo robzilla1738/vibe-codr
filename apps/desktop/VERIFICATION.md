@@ -184,6 +184,12 @@ health must report model-access version 1, `validated: true`, required model and
 credential names only. Confirm the model envelope is deleted after startup and
 that a Cloud terminal cannot read any reviewed model credential name.
 
+For the v0.6.5 provider-dialog containment fix, run the focused onboarding
+contract and desktop typecheck, then inspect the light-theme provider setup at
+743 × 717 CSS pixels. The footer must remain inside the modal and viewport,
+both actions must be fully visible, and the modal overlay must paint above the
+composer while the provider columns retain their own scrolling.
+
 For interaction motion, the renderer preview must prove slash, mode/catalog,
 and activity-sidebar surfaces enter `is-closing`, remain inert during the short
 exit, and unmount afterward. Repeat with `prefers-reduced-motion: reduce` and

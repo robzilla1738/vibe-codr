@@ -4,6 +4,15 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.5 — 2026-07-16
+
+### Fixed
+
+- Kept the model-provider setup footer fully visible above the composer at
+  compact window heights. The dialog now renders in the application overlay
+  layer, bounds its internal scrolling, and preserves non-shrinking header and
+  action regions.
+
 ## 0.6.4 — 2026-07-16
 
 ### Fixed — seamless Cloud handoff

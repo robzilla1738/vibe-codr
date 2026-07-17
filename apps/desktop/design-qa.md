@@ -44,6 +44,58 @@ The source and preview contain different transcript copy, so the comparison is l
 
 final result: passed
 
+## Provider dialog footer containment — 2026-07-16
+
+### Evidence
+
+- Source visual truth: `/var/folders/f4/7r6qlts50lj6_rncg4jffq140000gn/T/TemporaryItems/NSIRD_screencaptureui_uLJoDb/Screenshot 2026-07-16 at 9.13.41 PM.png`
+- Browser-rendered implementation: `tools/ui-preview/shots/qa-onboarding-footer-fixed.png`
+- Combined full-view comparison: `tools/ui-preview/shots/qa-onboarding-footer-comparison.png`
+- Viewport: 743 × 717 CSS pixels
+- State: light theme, compact-height chat workspace, focused CrofAI provider setup
+
+The combined comparison uses the source and implementation at the same rendered
+height. The footer, composer, and complete dialog frame are all legible in that
+view, so a separate focused crop was unnecessary.
+
+### Findings and comparison history
+
+- User-reported P1: the composer painted above the dialog footer because the
+  fixed overlay was mounted inside the composer-adjacent panels stacking and
+  overflow context. The footer actions were visually cut off and difficult to
+  use.
+- Fix: the provider dialog now portals to the document overlay layer. Its modal
+  clips internal overflow, the body owns scrolling, and the header and footer
+  remain non-shrinking flex regions.
+- Post-fix evidence: at 743 × 717, the dialog footer ended at 662px inside a
+  663px modal boundary and below the 717px viewport boundary. The modal overlay
+  reported z-index 100 above the composer's z-index 10. Both Cancel and Save &
+  start were fully visible.
+
+### Required fidelity surfaces
+
+- Fonts and typography: existing font family, sizes, weights, wrapping, and
+  labels are unchanged.
+- Spacing and layout rhythm: existing modal width, 85dvh/640px maximum height,
+  padding, borders, radii, and column proportions are preserved; only ownership
+  of overflow and stacking changed.
+- Colors and visual tokens: the light-theme scrim, modal surface, borders, and
+  controls continue to use the existing theme tokens.
+- Image quality and asset fidelity: no image assets or icons changed.
+- Copy and content: provider copy and actions are unchanged.
+
+### Interaction and runtime checks
+
+- The model catalog opened the focused provider workflow and CrofAI selection.
+- The provider columns remain independently scrollable while the footer stays
+  fixed within the modal.
+- Browser console warnings/errors: none.
+- Focused onboarding contract test and desktop TypeScript checks passed.
+
+No actionable P0, P1, or P2 mismatch remains.
+
+final result: passed
+
 ## Overlay and sidebar motion audit — 2026-07-15
 
 - Implementation screenshot: `tools/ui-preview/shots/motion-slash-open.png`

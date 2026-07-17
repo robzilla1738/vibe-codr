@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.6.5 — 2026-07-16
+
+### Fixed
+
+- Provider setup now renders above the composer instead of inside its panel
+  stacking context. Short windows keep Cancel and Save & start fully visible
+  while the provider list and detail area scroll within the bounded dialog.
+
 ## 0.6.4 — 2026-07-16
 
 ### Fixed

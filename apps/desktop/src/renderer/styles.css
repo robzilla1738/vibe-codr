@@ -10317,9 +10317,10 @@ html[data-scheme="light"] .brand-mark-image { filter: invert(1); }
   position: relative;
   z-index: 1;
   width: min(720px, 100%);
-  max-height: min(85vh, 640px);
+  max-height: min(85dvh, 640px);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-lg);
   background: var(--bg-menu);
@@ -10588,6 +10589,7 @@ html[data-scheme="light"] .brand-mark-image { filter: invert(1); }
 
 .onboarding-modal-header {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-base);
@@ -10610,6 +10612,7 @@ html[data-scheme="light"] .brand-mark-image { filter: invert(1); }
   display: flex;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   border-bottom: 1px solid var(--border-soft);
 }
 
@@ -10766,6 +10769,7 @@ html[data-scheme="light"] .brand-mark-image { filter: invert(1); }
 
 .onboarding-modal-footer {
   display: flex;
+  flex: 0 0 auto;
   justify-content: flex-end;
   gap: var(--space-sm);
   padding: var(--space-sm) var(--space-base);

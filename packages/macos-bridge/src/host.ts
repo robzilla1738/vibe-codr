@@ -112,13 +112,16 @@ export async function runHost(): Promise<void> {
     const overrides: Partial<Config> = {};
     if (msg.model) overrides.model = msg.model;
     if (msg.runtimeProfile) {
-      if (process.env.VIBE_CLOUD_RUNTIME !== "1") {
-        write({ type: "fatal", message: "runtime-profile-mismatch: runtimeProfile is only accepted by the Cloud runtime" });
-        return;
+      // The runtime profile is appearance-only (theme/accent/details). A Cloud
+      // runtime applies it; any other runtime must ignore it and continue rather
+      // than fail the handoff over a cosmetic preference. The Cloud agent always
+      // sets VIBE_CLOUD_RUNTIME=1 when sending this profile, so a mismatch here
+      // is a deployment skew — degrade gracefully instead of blocking the user.
+      if (process.env.VIBE_CLOUD_RUNTIME === "1") {
+        overrides.theme = msg.runtimeProfile.theme;
+        overrides.accentColor = msg.runtimeProfile.accentColor;
+        overrides.details = msg.runtimeProfile.details;
       }
-      overrides.theme = msg.runtimeProfile.theme;
-      overrides.accentColor = msg.runtimeProfile.accentColor;
-      overrides.details = msg.runtimeProfile.details;
     }
     if (msg.mode !== undefined && !applyModeOverride(overrides, msg.mode)) {
       write({ type: "fatal", message: `invalid mode "${msg.mode}"` });

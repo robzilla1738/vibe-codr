@@ -100,6 +100,45 @@ describe("engine host protocol boundary", () => {
       message: "requested session not found: ses_missing",
     });
   });
+  test("ignores a runtime profile on a non-cloud runtime instead of failing the handoff", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-host-project-"));
+    const stateDir = mkdtempSync(join(tmpdir(), "vibe-host-state-"));
+    roots.push(cwd, stateDir);
+    const previousStateDir = process.env.VIBE_STATE_DIR;
+    process.env.VIBE_STATE_DIR = stateDir;
+    const sessionId = "ses_runtime_profile_skipped";
+    const store = new SessionStore(cwd);
+    await store.save({
+      id: sessionId,
+      model: "ollama/glm-5.2",
+      mode: "execute",
+      goal: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }, [], []);
+    const manager = new PortableSessionManager(cwd, sessionId);
+    const prepared = await manager.prepare({ kind: "cloud", provider: "e2b" });
+    await manager.commit(prepared.nonce);
+    if (previousStateDir === undefined) delete process.env.VIBE_STATE_DIR;
+    else process.env.VIBE_STATE_DIR = previousStateDir;
+
+    // The host helper spawns without VIBE_CLOUD_RUNTIME=1, so a runtimeProfile
+    // in the bootstrap must be ignored (appearance-only) and not fatal.
+    const proc = host(stateDir);
+    proc.send({
+      op: "bootstrap",
+      cwd,
+      resume: sessionId,
+      executionTarget: { kind: "cloud", provider: "e2b" },
+      runtimeProfile: { schemaVersion: 1, theme: "light", accentColor: "#e6e6e6", details: "normal" },
+    });
+
+    expect(await proc.next((value) => value.type === "ready")).toEqual({
+      type: "ready",
+      sessionId,
+    });
+    proc.send({ op: "shutdown" });
+  });
 
   test("rejects malformed messages and answers valid pre-bootstrap RPCs", async () => {
     const proc = host();

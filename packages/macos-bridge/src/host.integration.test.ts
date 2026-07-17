@@ -139,6 +139,46 @@ describe("engine host protocol boundary", () => {
     });
     proc.send({ op: "shutdown" });
   });
+  test("validates required models without the cloud runtime flag instead of failing the handoff", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-host-project-"));
+    const stateDir = mkdtempSync(join(tmpdir(), "vibe-host-state-"));
+    roots.push(cwd, stateDir);
+    const previousStateDir = process.env.VIBE_STATE_DIR;
+    process.env.VIBE_STATE_DIR = stateDir;
+    const sessionId = "ses_required_models_validated";
+    const store = new SessionStore(cwd);
+    await store.save({
+      id: sessionId,
+      model: "ollama/glm-5.2",
+      mode: "execute",
+      goal: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }, [], []);
+    const manager = new PortableSessionManager(cwd, sessionId);
+    const prepared = await manager.prepare({ kind: "cloud", provider: "e2b" });
+    await manager.commit(prepared.nonce);
+    if (previousStateDir === undefined) delete process.env.VIBE_STATE_DIR;
+    else process.env.VIBE_STATE_DIR = previousStateDir;
+
+    // The host helper spawns without VIBE_CLOUD_RUNTIME=1, so requiredModels
+    // must be validated (not rejected with the cloud-only fatal). ollama is
+    // keyless, so it resolves and the handoff completes.
+    const proc = host(stateDir);
+    proc.send({
+      op: "bootstrap",
+      cwd,
+      resume: sessionId,
+      executionTarget: { kind: "cloud", provider: "e2b" },
+      requiredModels: ["ollama/glm-5.2"],
+    });
+
+    expect(await proc.next((value) => value.type === "ready")).toEqual({
+      type: "ready",
+      sessionId,
+    });
+    proc.send({ op: "shutdown" });
+  });
 
   test("rejects malformed messages and answers valid pre-bootstrap RPCs", async () => {
     const proc = host();

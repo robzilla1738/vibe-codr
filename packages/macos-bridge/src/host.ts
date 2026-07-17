@@ -140,10 +140,11 @@ export async function runHost(): Promise<void> {
     }
 
     if (msg.requiredModels) {
-      if (process.env.VIBE_CLOUD_RUNTIME !== "1") {
-        write({ type: "fatal", message: "runtime-profile-mismatch: requiredModels is only accepted by the Cloud runtime" });
-        return;
-      }
+      // requiredModels is a Cloud-handoff field; the Cloud agent is its only
+      // sender. Validate every model regardless of the VIBE_CLOUD_RUNTIME flag so
+      // a deployment skew that drops the flag cannot block the handoff with a
+      // confusing "only accepted by the Cloud runtime" fatal. A genuinely
+      // unresolvable model still fails fast with an actionable missing-credential.
       const registry = new ProviderRegistry();
       try {
         for (const model of msg.requiredModels) await registry.resolveModel(model, config);

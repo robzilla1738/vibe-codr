@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.6.8 — 2026-07-17
+
+### Fixed
+
+- Cloud model credentials now reach the resumed engine through the bootstrap
+  pipe (not just the spawn environment), so a handoff no longer fails with
+  `missing-credential: Provider … is not configured` when a sandbox launcher
+  drops the host's spawn env. Model/AI access transfers seamlessly.
+
 ## 0.6.7 — 2026-07-17
 
 ### Fixed

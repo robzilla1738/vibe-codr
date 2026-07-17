@@ -4,6 +4,15 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.8 — 2026-07-17
+
+### Fixed
+
+- Cloud model credentials (e.g. `CROF_API_KEY`, `OPENAI_API_KEY`) now reach
+  the resumed engine through the bootstrap pipe as well as the spawn
+  environment, so a cloud handoff no longer fails with `missing-credential:`
+  when a sandbox launcher does not propagate the host's spawn env.
+
 ## 0.6.7 — 2026-07-17
 
 ### Fixed

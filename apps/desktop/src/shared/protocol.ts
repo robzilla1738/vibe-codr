@@ -42,6 +42,7 @@ export type HostInbound =
         accentColor?: string;
         details: "quiet" | "normal" | "verbose";
       };
+      runtimeCredentials?: Record<string, string>;
     }
   | { op: "send"; command: EngineCommand }
   | {
@@ -270,6 +271,21 @@ function optionalRuntimeIdentifier(value: unknown): boolean {
 
 function runtimeIdentifierArray(value: unknown): boolean {
   return Array.isArray(value) && value.every(isRuntimeIdentifier);
+}
+
+function optionalRuntimeCredentials(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 64) return false;
+  let bytes = 0;
+  for (const [name, val] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+    if (typeof val !== "string" || !val) return false;
+    bytes += name.length + val.length;
+    if (bytes > 256 * 1024) return false;
+  }
+  return true;
 }
 
 function optionalBoolean(value: unknown): boolean {
@@ -507,7 +523,7 @@ export function decodeInbound(line: string): HostInbound | null {
   if (!msg || typeof msg.op !== "string") return null;
   if (msg.op === "shutdown") return { op: "shutdown" };
   if (msg.op === "bootstrap") {
-    if (typeof msg.cwd !== "string" || !msg.cwd.trim() || !optionalRuntimeIdentifier(msg.resume) || !optionalString(msg.model) || !optionalRequiredModels(msg.requiredModels) || !optionalRuntimeProfile(msg.runtimeProfile) || (msg.executionTarget !== undefined && !executionTarget(msg.executionTarget))) return null;
+    if (typeof msg.cwd !== "string" || !msg.cwd.trim() || !optionalRuntimeIdentifier(msg.resume) || !optionalString(msg.model) || !optionalRequiredModels(msg.requiredModels) || !optionalRuntimeProfile(msg.runtimeProfile) || !optionalRuntimeCredentials(msg.runtimeCredentials) || (msg.executionTarget !== undefined && !executionTarget(msg.executionTarget))) return null;
     if (msg.continue !== undefined && typeof msg.continue !== "boolean") return null;
     if (msg.mode !== undefined && msg.mode !== "plan" && msg.mode !== "execute" && msg.mode !== "yolo") return null;
     return value as HostInbound;

@@ -85,7 +85,7 @@ SDK. There is no Vibe service in the data path.
   continues rather than failing the handoff; an appearance-profile mismatch
   can never block session transfer. Required models are
   validated regardless of the runtime flag, so a skew that drops it
-  surfaces a genuine missing-credential instead of aborting the handoff.
+  surfaces a genuine missing-credential instead of aborting the handoff. Model credentials also ride the bootstrap pipe (not just the spawn environment), so a sandbox that drops the host env still receives the sealed keys.
 - A missing provider sandbox is not silently forgotten. Recovery requires the
   provider-confirmed missing state, an explicit destructive confirmation, the
   matching provider, and the exact ownership generation before core returns the

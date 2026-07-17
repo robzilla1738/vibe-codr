@@ -41,6 +41,7 @@ export type HostInbound =
         accentColor?: string;
         details: "quiet" | "normal" | "verbose";
       };
+      runtimeCredentials?: Record<string, string>;
     }
   | { op: "send"; command: EngineCommand }
   | {
@@ -271,6 +272,21 @@ function optionalRuntimeProfile(value: unknown): boolean {
     && profile.theme.length <= 128
     && (profile.accentColor === undefined || typeof profile.accentColor === "string" && profile.accentColor.length <= 128)
     && (profile.details === "quiet" || profile.details === "normal" || profile.details === "verbose");
+}
+
+function optionalRuntimeCredentials(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 64) return false;
+  let bytes = 0;
+  for (const [name, val] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false;
+    if (typeof val !== "string" || !val) return false;
+    bytes += name.length + val.length;
+    if (bytes > 256 * 1024) return false;
+  }
+  return true;
 }
 
 function optionalBoolean(value: unknown): boolean {
@@ -562,6 +578,7 @@ export function decodeInbound(line: string): HostInbound | null {
       !optionalString(msg.model) ||
       !optionalRequiredModels(msg.requiredModels) ||
       !optionalRuntimeProfile(msg.runtimeProfile) ||
+      !optionalRuntimeCredentials(msg.runtimeCredentials) ||
       (msg.executionTarget !== undefined && !executionTarget(msg.executionTarget))
     )
       return null;

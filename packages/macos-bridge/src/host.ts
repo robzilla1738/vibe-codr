@@ -111,6 +111,16 @@ export async function runHost(): Promise<void> {
     lastCwd = cwd;
     const overrides: Partial<Config> = {};
     if (msg.model) overrides.model = msg.model;
+    // The Cloud agent passes the sealed model credentials in the bootstrap
+    // message itself (a stdin pipe) so they reach the resumed engine even when
+    // the sandbox launcher does not propagate the spawn environment to the
+    // host process. Apply them to process.env before config/credential
+    // resolution so requiredModels validation and live model calls succeed.
+    if (msg.runtimeCredentials) {
+      for (const [name, value] of Object.entries(msg.runtimeCredentials)) {
+        if (typeof value === "string") process.env[name] = value;
+      }
+    }
     if (msg.runtimeProfile) {
       // The runtime profile is appearance-only (theme/accent/details). A Cloud
       // runtime applies it; any other runtime must ignore it and continue rather

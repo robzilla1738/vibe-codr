@@ -251,6 +251,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
         ...(modelAccess.profile.accentColor ? { accentColor: modelAccess.profile.accentColor } : {}),
         details: modelAccess.profile.details,
       },
+      runtimeCredentials: modelAccess.environment,
     })}\n`);
   });
   return server;

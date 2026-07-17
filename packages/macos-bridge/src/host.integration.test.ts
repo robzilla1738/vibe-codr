@@ -179,6 +179,55 @@ describe("engine host protocol boundary", () => {
     });
     proc.send({ op: "shutdown" });
   });
+  test("resolves required models from bootstrap credentials when the spawn env lacks them", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-host-project-"));
+    const stateDir = mkdtempSync(join(tmpdir(), "vibe-host-state-"));
+    roots.push(cwd, stateDir);
+    const previousStateDir = process.env.VIBE_STATE_DIR;
+    process.env.VIBE_STATE_DIR = stateDir;
+    const sessionId = "ses_bootstrap_credentials";
+    const store = new SessionStore(cwd);
+    await store.save({
+      id: sessionId,
+      model: "crof/glm-5.2",
+      mode: "execute",
+      goal: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }, [], []);
+    const manager = new PortableSessionManager(cwd, sessionId);
+    const prepared = await manager.prepare({ kind: "cloud", provider: "e2b" });
+    await manager.commit(prepared.nonce);
+    const previousCrof = process.env.CROF_API_KEY;
+    delete process.env.CROF_API_KEY;
+    if (previousStateDir === undefined) delete process.env.VIBE_STATE_DIR;
+    else process.env.VIBE_STATE_DIR = previousStateDir;
+
+    // The host helper spawns WITHOUT CROF_API_KEY in its env (simulating a
+    // sandbox launcher that doesn't propagate the spawn env). The bootstrap
+    // carries the credential via the stdin pipe; the host must apply it and
+    // resolve crof, completing the handoff.
+    const proc = host(stateDir);
+    proc.send({
+      op: "bootstrap",
+      cwd,
+      resume: sessionId,
+      executionTarget: { kind: "cloud", provider: "e2b" },
+      requiredModels: ["crof/glm-5.2"],
+      runtimeCredentials: { CROF_API_KEY: "nahcrof_from_bootstrap" },
+    });
+
+    try {
+      expect(await proc.next((value) => value.type === "ready")).toEqual({
+        type: "ready",
+        sessionId,
+      });
+    } finally {
+      if (previousCrof === undefined) delete process.env.CROF_API_KEY;
+      else process.env.CROF_API_KEY = previousCrof;
+    }
+    proc.send({ op: "shutdown" });
+  });
 
   test("rejects malformed messages and answers valid pre-bootstrap RPCs", async () => {
     const proc = host();

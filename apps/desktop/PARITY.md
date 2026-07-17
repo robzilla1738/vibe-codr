@@ -2,7 +2,7 @@
 
 Manual smoke against OpenTUI / `vibecodr` in the **same project cwd**. Automated:
 `npm test` (current live suite), `npm run test:e2e` (12 scenarios),
-`npm run verify:source-parity` (21 declaration pairs),
+`npm run verify:source-parity` (19 declaration pairs),
 `npm run verify:config-shape` (40 top-level engine fields), and CI
 coverage/bridge/packaged-host gates.
 
@@ -16,12 +16,12 @@ coverage/bridge/packaged-host gates.
 - [x] Desktop close/reopen attaches to the cloud owner without starting a local writer
 - [x] Cloud import and daemon bootstrap share one canonical state root and prove the exact session ID, model, mode, subagent model, and conversation survive before ownership commits
 - [x] The permanent isolated Cloud workload preflights the imported session before health succeeds; explicit missing resume fails closed and cannot create a replacement chat
-- [x] Only the active model credential is session-scoped into Cloud; missing authentication and local-only routes fail before provisioning
+- [x] Required model credentials are session-scoped into Cloud by default (configured keys plus connected Codex/Grok access), with global/per-handoff opt-out and explicit-binding fallback; missing authentication and local-only routes fail before provisioning
 - [x] Every active model performs a bounded real generation through the imported engine provider registry inside the sandbox before ownership commit; this covers API-key, subscription, Ollama Cloud, and arbitrary Chat Completions/Responses providers on both E2B and Vercel
 - [x] Cloud return exports as the isolated workload owner and survives tracked deletions
 - [ ] Stable flag removal: fresh live suites for both providers, durable Mac relay, and Vercel broker verification
 
-Engine ownership stays in `@vibe/core`; this app is a presentation shell over NDJSON (`macos-bridge` protocol) inside the canonical [Vibe Codr repository](https://github.com/robzilla1738/vibe-codr).
+Engine ownership stays in `@vibe/core`; this app is a presentation shell over NDJSON (`macos-bridge` protocol). Public repo: [vbcode-electron](https://github.com/robzilla1738/vbcode-electron).
 
 ## Durable planning and orchestration
 
@@ -38,10 +38,10 @@ Engine ownership stays in `@vibe/core`; this app is a presentation shell over ND
   strategy-reset counters; the shell preserves the existing goal presentation.
 
 The parity scripts compare declaration/config ASTs with the exact revision in
-`ENGINE_COMMIT`, read from the repository selected by `VIBE_CODR_ROOT` or the
-canonical monorepo root. The default branch may be ahead without changing that
-contract. Packaging materializes a clean internal worktree whose HEAD equals
-the lock before it embeds the rebuilt host.
+`ENGINE_COMMIT`, read from the repository selected by `VIBE_CODR_ROOT` or
+`~/Code/vibe-codr`. A local sibling checkout may be ahead or dirty without
+changing that contract. Packaging separately requires a clean runtime checkout
+whose HEAD equals the lock before it will embed a rebuilt host.
 
 ## Automated (unit)
 
@@ -95,7 +95,7 @@ the lock before it embeds the rebuilt host.
 - [x] Assistant output streams as lightweight plain text, then finalizes into Streamdown + GFM
 - [x] Diff blocks green/red hunk coloring
 - [x] Tool icons + condensed labels; expand on click; auto-expand on error
-- [x] Consecutive tool/thinking activity groups under `Thinking · N steps`; individual rows retain click-to-expand bodies
+- [x] Each turn consolidates reasoning, tools, and intermediate progress into one `Work · N steps` disclosure; individual rows retain click-to-expand bodies and the final answer stays outside
 - [x] Turn fold (click or keyboard-activate the user bubble / ⌘O fold-all; no persistent arrow); density quiet/normal/verbose (⌘D)
 - [x] Windowed transcript (“N earlier turns”) with progressive reveal (20 at a time)
 - [x] Per-turn item windowing for long tool runs (cap 120, step 24, reveal page)
@@ -128,7 +128,7 @@ the lock before it embeds the rebuilt host.
 - [x] Catalog filtering, no-results state, current-model marker, and RPC failure feedback
 - [x] Multi-project + Chats rail with collapsible sections, section +, titles, resume/filter; Continue Latest via ⇧⌘N / menu
 - [x] Project/session rename, archive, and delete menus with in-app confirmation; project menus escape rail clipping
-- [x] Sessions workspace: persistent Board/List views across all projects and Chats, search/filter/sort, explicit Active/Review/Done organization, honest local/Cloud Working state, and open/rename/archive/delete management
+- [x] Sessions workspace: persistent Board/List views across all projects and Chats, search/filter/sort, automatic Active/Review/Done transitions for working/input-needed/settled sessions, honest Cloud ownership state, and open/rename/archive/delete management
 - [x] Workspace dock (Session / Changes / Git / Terminal / Jobs / Files) on chat surface; no topbar duplicates
 - [x] Changed-files chip after edits; dock Changes opens the dedicated master-detail review
 - [x] Host fatal / boot error: primary New session recovery
@@ -196,10 +196,9 @@ the lock before it embeds the rebuilt host.
 ## How to verify
 
 ```bash
-cd /path/to/vibe-codr
-bun run build:macos-bridge
-cd apps/desktop
-npm ci && npm test && npm run typecheck && npm run build
+cd ~/Code/vibe-codr && bun run build:macos-bridge
+cd ~/Code/vbcode-electron
+npm install && npm test && npm run typecheck && npm run build
 npm run lint && npm run verify:bundle
 npm run smoke:bridge
 npm run test:e2e
@@ -218,7 +217,7 @@ npm run dev
 - [x] subagent-activity only touches running subagents
 - [x] plan-presented finalizes assistant text before showing card
 - [x] flushDeltas before tool-finish and file-changed (TUI enqueue→landPending parity)
-- [x] Source parity check covers themes, glyphs, wordmark, provider/session contracts (21 pairs)
+- [x] Source parity check covers themes, glyphs, wordmark (19 pairs)
 - [x] Session chrome state tests: mode/plan dismissal, user-message reset, subagent-activity guard
 - [x] Session bootstrap preserves the active workspace tool and restores transcript scroll per session instead of resetting the editing view
 

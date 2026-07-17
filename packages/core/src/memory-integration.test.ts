@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
@@ -12,7 +12,7 @@ import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { MemoryService } from "./memory-service.ts";
 
-function mockRegistry(model: MockLanguageModelV2) {
+function mockRegistry(model: MockLanguageModelV3) {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -31,7 +31,7 @@ function stream(chunks: unknown[]) {
     }),
   };
 }
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 test("save_memory persists a fact that recall_memory then surfaces", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mem-int-"));
@@ -53,14 +53,14 @@ test("save_memory persists a fact that recall_memory then surfaces", async () =>
         toolName: "save_memory",
         input: JSON.stringify({ fact: "deploys to Fly.io via GitHub Actions" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "a" },
       { type: "text-delta", id: "a", delta: "saved" },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -70,18 +70,18 @@ test("save_memory persists a fact that recall_memory then surfaces", async () =>
         toolName: "recall_memory",
         input: JSON.stringify({ query: "Fly.io GitHub Actions deploy target" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "b" },
       { type: "text-delta", id: "b", delta: "recalled" },
       { type: "text-end", id: "b" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -119,7 +119,7 @@ test("save_memory persists a fact that recall_memory then surfaces", async () =>
 test("setRecalledContext is injected into the system prompt", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mem-rc-"));
   const systems: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       systems.push(JSON.stringify(options.prompt));
       return stream([
@@ -127,7 +127,7 @@ test("setRecalledContext is injected into the system prompt", async () => {
         { type: "text-start", id: "p" },
         { type: "text-delta", id: "p", delta: "ok" },
         { type: "text-end", id: "p" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -151,14 +151,14 @@ test("setRecalledContext is injected into the system prompt", async () => {
 
 test("buildDigest summarizes a worked session and skips an empty one", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-mem-dg-"));
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "a" },
         { type: "text-delta", id: "a", delta: "built the loader" },
         { type: "text-end", id: "a" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never,
     doGenerate: async () => ({
       content: [
@@ -167,8 +167,8 @@ test("buildDigest summarizes a worked session and skips an empty one", async () 
           text: "Built the JSONC config loader; chose comment-stripping; gotcha: trailing commas.",
         },
       ],
-      finishReason: "stop",
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: { unified: "stop" as const, raw: undefined },
+      usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
       warnings: [],
     }),
   });
@@ -200,7 +200,7 @@ test("save_memory is not offered in plan mode (read-only)", async () => {
   };
   const memory = await MemoryService.create(dir, config, new ProviderRegistry());
   const toolNames: string[][] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const tools = (options as { tools?: { name: string }[] }).tools ?? [];
       toolNames.push(tools.map((t) => t.name));
@@ -209,7 +209,7 @@ test("save_memory is not offered in plan mode (read-only)", async () => {
         { type: "text-start", id: "p" },
         { type: "text-delta", id: "p", delta: "planning" },
         { type: "text-end", id: "p" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });

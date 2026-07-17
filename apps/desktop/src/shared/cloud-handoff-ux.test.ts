@@ -50,6 +50,8 @@ describe("cloud handoff progress UX", () => {
     expect(sheet).toContain("Move work to Cloud");
     expect(sheet).toContain("Your complete working project moves");
     expect(sheet).toContain("All project files, including Git-ignored files");
+    expect(sheet).toContain("Include model access");
+    expect(sheet).toContain("includeModelCredentials");
     expect(sheet).toContain("Stays on this Mac");
     expect(sheet).toContain('role="radiogroup"');
   });

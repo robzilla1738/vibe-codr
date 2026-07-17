@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -10,7 +10,7 @@ import { defaultConfig } from "@vibe/config";
 import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 
-function mockRegistry(model: MockLanguageModelV2) {
+function mockRegistry(model: MockLanguageModelV3) {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -31,7 +31,7 @@ function stream(chunks: unknown[]) {
   };
 }
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 function collect(bus: EventBus): { events: UIEvent[]; done: Promise<void> } {
   const events: UIEvent[] = [];
@@ -134,18 +134,18 @@ test("a tool's isError result is reported as a failed tool call (not a success)"
         toolName: "file_status_result",
         input: JSON.stringify({}),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "noted" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const hooks = new HookBus();
   hooks.on("tool.after.execute", (payload) =>
     payload.toolName === "media_result"
@@ -234,14 +234,14 @@ test("under budget=stop, a second prompt is refused without an orphan user turn"
     budget: { limitUSD: 0.000_001, onExceed: "stop" as const },
   };
   // Price so a single token blows the tiny limit on the first turn.
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "p" },
         { type: "text-delta", id: "p", delta: "spent" },
         { type: "text-end", id: "p" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never,
   });
 
@@ -290,7 +290,7 @@ test("under budget=stop, a second prompt is refused without an orphan user turn"
 
 test("setProjectMemory is reflected in the next turn's system prompt", async () => {
   const systems: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       systems.push(JSON.stringify(options.prompt));
       return stream([
@@ -298,7 +298,7 @@ test("setProjectMemory is reflected in the next turn's system prompt", async () 
         { type: "text-start", id: "p" },
         { type: "text-delta", id: "p", delta: "ok" },
         { type: "text-end", id: "p" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -323,14 +323,14 @@ test("the step.finish hook fires at each step boundary", async () => {
   hooks.on("step.finish", (p) => {
     fires.push(p.sessionId);
   });
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "p" },
         { type: "text-delta", id: "p", delta: "done" },
         { type: "text-end", id: "p" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never,
   });
   const session = new Session({
@@ -353,7 +353,7 @@ test("a user cancel is not surfaced as an engine error", async () => {
   // The model aborts the turn mid-stream then the stream rejects (as it does on
   // a real Esc/steer). That must be classified as an interrupt, not a fault.
   let theSession: Session;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       theSession.abort();
       const err = Object.assign(new Error("Aborted"), { name: "AbortError" });

@@ -823,6 +823,7 @@ const mock = {
   onMenuAction: () => () => undefined,
   cloudSettings: async () => ({ ok: true as const, value: {
     experimentalEnabled: true,
+    transferModelCredentials: true,
     lastProvider: "e2b" as const,
     autoPauseMinutes: 10,
     deleteOnReturn: true,

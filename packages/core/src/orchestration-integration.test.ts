@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +27,7 @@ afterAll(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
-function mockRegistry(model: MockLanguageModelV2) {
+function mockRegistry(model: MockLanguageModelV3) {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -52,10 +52,10 @@ function textStep(delta: string) {
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 }
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 function orchestrationConfig() {
   const c = { ...defaultConfig() };
@@ -79,14 +79,14 @@ test("spawn_tasks runs a dependency-ordered plan and returns a consolidated repo
           ],
         }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("A is complete"), // child a
     textStep("B is complete"), // child b (runs after a)
     textStep("all orchestrated"), // parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -146,13 +146,13 @@ test("the journal plan stamp includes behavior-bearing fields (verify-pass regre
           tasks: [{ id: "a", objective: "do task A", deps: [], files: ["fa.txt"] }],
         }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("A is complete"), // child a
     textStep("all orchestrated"), // parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const cwd = tmpCwd();
   const session = new Session({
     config: orchestrationConfig(),
@@ -193,13 +193,13 @@ test("the journal plan stamp hashes worktree/hard/agent/outputSchema (BUG-002 re
           tasks: [{ id: "a", objective: "do task A", deps: [] }],
         }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("A is complete"),
     textStep("all orchestrated"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const cwd = tmpCwd();
   const session = new Session({
     config: orchestrationConfig(),
@@ -246,12 +246,12 @@ test("spawn_tasks rejects an invalid plan (dependency cycle) without running any
           ],
         }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("acknowledged the error"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -281,7 +281,7 @@ test("spawn_tasks rejects an invalid plan (dependency cycle) without running any
 
 test("spawn_tasks is only offered when orchestration is enabled", async () => {
   const toolNames: string[][] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const tools = (options as { tools?: { name: string }[] }).tools ?? [];
       toolNames.push(tools.map((t) => t.name));
@@ -360,13 +360,13 @@ test("a verify task whose retry makes no changes is NOT falsely marked completed
         toolName: "spawn_tasks",
         input: JSON.stringify({ tasks: [{ id: "t", objective: "fix the bug", verify: true }] }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // 1-2: attempt 1 child mutates then reports.
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: "c1", toolName: "touch", input: "{}" },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("made the fix"),
     // 3: reviewer rejects (mentions the token in a negative sentence).
@@ -379,7 +379,7 @@ test("a verify task whose retry makes no changes is NOT falsely marked completed
     textStep("done orchestrating"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -414,7 +414,7 @@ test("a detached spawn_tasks batch runs in the background, journals, and honors 
   // A 2-task plan detached with a tree ceiling of ONE subagent: exactly one task
   // forks a child and completes; the other hits the spawn ceiling and fails. The
   // background batch still journals both tasks and is collectable via check_task.
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       // parent step 2: the detach result ("…in the background…") is now in context.
@@ -436,7 +436,7 @@ test("a detached spawn_tasks batch runs in the background, journals, and honors 
             detach: true,
           }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -518,7 +518,7 @@ test("engine finalize aborts an outstanding detached subagent", async () => {
       },
     }),
   });
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       // Parent step 2 echoes the child's HANGWORK prompt in the spawn tool-call, so
@@ -533,7 +533,7 @@ test("engine finalize aborts an outstanding detached subagent", async () => {
           toolName: "spawn_subagent",
           input: JSON.stringify({ prompt: "do HANGWORK now", detach: true }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -574,7 +574,7 @@ test("engine finalize terminates within a wall-clock bound even when a detached 
   // MUST still return — graceful exit can't be blocked forever by a wedged child.
   // The 5_000ms bound is generous enough for real unwind but caps the wait.
   const cwd = tmpCwd();
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       if (p.includes("in the background")) return textStep("spawned") as never;
@@ -587,7 +587,7 @@ test("engine finalize terminates within a wall-clock bound even when a detached 
           toolName: "spawn_subagent",
           input: JSON.stringify({ prompt: "do WEDGEWORK now", detach: true }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -669,7 +669,7 @@ test("submit-prompt does NOT clear the blackboard while a detached child is stil
   // on the next submit-prompt would yank posted state out from under the live
   // fan-out. The lead posts a decision + spawns a hanging detached child in turn
   // 1; on turn 2's submit-prompt the note MUST survive (read_notes still sees it).
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       // The hanging background child (its own prompt has HANGWORK but not the
@@ -685,7 +685,7 @@ test("submit-prompt does NOT clear the blackboard while a detached child is stil
         return stream([
           { type: "stream-start", warnings: [] },
           { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: "{}" },
-          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+          { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
         ]) as never;
       }
       // Turn 1 step 2: post + spawn already ran (detach result in context).
@@ -705,7 +705,7 @@ test("submit-prompt does NOT clear the blackboard while a detached child is stil
           toolName: "spawn_subagent",
           input: JSON.stringify({ prompt: "do HANGWORK now", detach: true }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -740,7 +740,7 @@ test("submit-prompt clears the blackboard when no detached child is running", as
   // The other half of the invariant: with nothing detached in flight the clear
   // still fires, so a stale note from an earlier turn can't leak into a later,
   // unrelated fan-out.
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       if (p.includes("MARKER2_AGAIN")) {
@@ -748,7 +748,7 @@ test("submit-prompt clears the blackboard when no detached child is running", as
         return stream([
           { type: "stream-start", warnings: [] },
           { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: "{}" },
-          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+          { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
         ]) as never;
       }
       // Turn 1 step 2: the post result is in context.
@@ -762,7 +762,7 @@ test("submit-prompt clears the blackboard when no detached child is running", as
           toolName: "post_note",
           input: JSON.stringify({ note: "BOARD_DECISION_XYZ", kind: "decision" }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -802,7 +802,7 @@ test("a submit-prompt racing a not-yet-registered detached spawn does not wipe t
   // queued prompt's turn STARTS (FIFO ⇒ turn 1 is done and its batch is
   // registered by then), so the decision must survive into turn 2's read.
   let engine!: Engine;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       // The hanging background child (its own prompt has HANGWORK but not the
@@ -817,7 +817,7 @@ test("a submit-prompt racing a not-yet-registered detached spawn does not wipe t
         return stream([
           { type: "stream-start", warnings: [] },
           { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: "{}" },
-          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+          { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
         ]) as never;
       }
       // Turn 1 step 3: the detach handle is in context — wrap up.
@@ -834,7 +834,7 @@ test("a submit-prompt racing a not-yet-registered detached spawn does not wipe t
             toolName: "spawn_subagent",
             input: JSON.stringify({ prompt: "do HANGWORK now", detach: true }),
           },
-          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+          { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
         ]) as never;
       }
       // Turn 1 step 1: post the decision the batch depends on.
@@ -846,7 +846,7 @@ test("a submit-prompt racing a not-yet-registered detached spawn does not wipe t
           toolName: "post_note",
           input: JSON.stringify({ note: "BOARD_DECISION_RACE", kind: "decision" }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });

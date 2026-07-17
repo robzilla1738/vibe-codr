@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
@@ -22,7 +22,7 @@ function stream(chunks: unknown[]) {
     }),
   };
 }
-const USAGE = { inputTokens: 5, outputTokens: 5, totalTokens: 10 };
+const USAGE = { inputTokens: { total: 5, noCache: 5, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 const toolCall = (id: string, name: string, input: unknown) => ({
   type: "tool-call",
   toolCallId: id,
@@ -33,7 +33,7 @@ const step = (...calls: unknown[]) =>
   stream([
     { type: "stream-start", warnings: [] },
     ...calls,
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 const textStep = (t: string) =>
   stream([
@@ -41,12 +41,12 @@ const textStep = (t: string) =>
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: t },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 
 function drive(steps: unknown[], cwd: string, config = defaultConfig()) {
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
     {
       id: "mock",

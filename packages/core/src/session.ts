@@ -314,7 +314,7 @@ export class Session {
   /** Mode captured at run() start (null before the first turn) — see turnMode. */
   #turnMode: Mode | null = null;
   /** Messages from each COMPLETED step of the current turn (buffered in
-   * onStepFinish). On an abort/error mid-turn `result.response` rejects, so these
+   * onStepEnd). On an abort/error mid-turn `result.response` rejects, so these
    * matched tool_use/tool_result pairs would otherwise be lost — a resumed
    * session wouldn't know about a completed edit. Committed on the failure path. */
   #committedSteps: ModelMessage[] = [];
@@ -1434,8 +1434,12 @@ export class Session {
           model,
           // When caching, the system prompt rides in `messages` with a cache
           // marker; otherwise it's passed plainly.
-          ...(tuning.cacheSystem ? {} : { system }),
+          ...(tuning.cacheSystem ? {} : { instructions: system }),
           messages,
+          // Cached Anthropic system content intentionally rides in `messages`
+          // so its providerOptions cache marker survives conversion. AI SDK 7
+          // rejects system-role messages unless this is explicitly enabled.
+          ...(tuning.cacheSystem ? { allowSystemInMessages: true } : {}),
           tools,
           toolChoice: "auto",
           stopWhen: stepCountIs(config.maxSteps),
@@ -1523,33 +1527,33 @@ export class Session {
                 >,
               }
             : {}),
-          onStepFinish: async ({ usage, providerMetadata, response }) => {
+          onStepEnd: async ({ usage, providerMetadata, response }) => {
             // Buffer this completed step's messages (assistant tool_use + its tool
             // results — matched pairs, since the step FINISHED). response.messages
             // is cumulative across the turn, so REPLACE rather than append: the last
-            // onStepFinish before an abort holds every completed step. On success
+            // onStepEnd before an abort holds every completed step. On success
             // we use result.response.messages instead and ignore this buffer.
             if (response?.messages) this.#committedSteps = [...response.messages];
             const stepUsage = normalizeUsage(usage);
-            // Cache WRITES are a third disjoint slice on Anthropic — invisible in
-            // normalized usage, only in providerMetadata. Without folding them the
-            // first (cache-creating) step under-reports both context fill and cost.
+            // Cache writes are a separately-priced slice of the prompt total.
+            // AI SDK 7 exposes them in inputTokenDetails; retain the provider
+            // metadata fallback for adapters that have not populated that field.
+            const sdkCacheWrites = usageDetailNumber(usage, "inputTokenDetails", "cacheWriteTokens");
             const cacheWrites = foldCachedIntoInput
-              ? Number(
-                  (
-                    providerMetadata as
-                      | { anthropic?: { cacheCreationInputTokens?: unknown } }
-                      | undefined
-                  )?.anthropic?.cacheCreationInputTokens ?? 0,
-                ) || 0
+              ? sdkCacheWrites ?? (
+                  Number(
+                    (
+                      providerMetadata as
+                        | { anthropic?: { cacheCreationInputTokens?: unknown } }
+                        | undefined
+                    )?.anthropic?.cacheCreationInputTokens ?? 0,
+                  ) || 0
+                )
               : 0;
-            // Restore the `cached ⊆ input` invariant for providers (Anthropic) that
-            // report the two disjoint, so the accounting below (cost, context fill,
-            // compaction) sees the full prompt size instead of only the new tokens.
-            if (foldCachedIntoInput && stepUsage && (stepUsage.cachedInputTokens || cacheWrites)) {
-              stepUsage.inputTokens =
-                (stepUsage.inputTokens ?? 0) + (stepUsage.cachedInputTokens ?? 0) + cacheWrites;
-            }
+            // AI SDK 7 normalizes inputTokens to the complete prompt total and
+            // exposes cache slices in inputTokenDetails. Do not add cache reads or
+            // writes again here: they are already included in that total. We keep
+            // the slices separately so pricing can peel them back out.
             bus.emit({
               type: "step-finished",
               sessionId: this.id,
@@ -2118,8 +2122,8 @@ export class Session {
       ? [
           { type: "text" as const, text: modelText },
           ...images.map((img) => ({
-            type: "image" as const,
-            image: img.data,
+            type: "file" as const,
+            data: { type: "data" as const, data: img.data },
             mediaType: img.mediaType,
           })),
         ]
@@ -2165,6 +2169,27 @@ export class Session {
         };
       }
       return assistant;
+    };
+    const pendingTools = new Map<string, string>();
+    const closePendingTools = (reason: string): void => {
+      for (const [toolCallId, toolName] of pendingTools) {
+        ensure().parts.push({
+          type: "tool-result",
+          toolCallId,
+          toolName,
+          output: reason,
+          isError: true,
+        });
+        bus.emit({
+          type: "tool-call-finished",
+          sessionId: this.id,
+          toolCallId,
+          toolName,
+          output: reason,
+          isError: true,
+        });
+      }
+      pendingTools.clear();
     };
 
     // Stalled-stream watchdog (headless only). A half-open provider stream that
@@ -2224,6 +2249,7 @@ export class Session {
           }
           case "tool-call": {
             this.#usedTools.add(part.toolName);
+            pendingTools.set(part.toolCallId, part.toolName);
             // Mutation is latched in the tool adapter AFTER a successful non-
             // readOnly execute (recordMutation) — not here on tool-call intent —
             // so a permission-denied write does not trip green-gate / auto-verify.
@@ -2251,6 +2277,7 @@ export class Session {
             break;
           }
           case "tool-result": {
+            pendingTools.delete(part.toolCallId);
             // A handled error (permission deny, plugin veto, `isError` execute
             // result) comes back as an ordinary string result, so the SDK reports
             // it here, not as `tool-error`. Recover the real status from the
@@ -2315,6 +2342,7 @@ export class Session {
             break;
           }
           case "tool-error": {
+            pendingTools.delete(part.toolCallId);
             const output = historyToolOutput(String((part.error as Error)?.message ?? part.error));
             ensure().parts.push({
               type: "tool-result",
@@ -2334,6 +2362,7 @@ export class Session {
             break;
           }
           case "abort": {
+            closePendingTools("Turn aborted before the tool completed.");
             bus.emit({
               type: "notice",
               level: "warn",
@@ -2342,6 +2371,7 @@ export class Session {
             break;
           }
           case "error": {
+            closePendingTools("Provider stream failed before the tool completed.");
             bus.emit({
               type: "engine-error",
               sessionId: this.id,
@@ -2354,6 +2384,7 @@ export class Session {
         }
       }
     } finally {
+      closePendingTools("Provider stream ended before the tool completed.");
       // Release the iterator on every exit (normal end, stall, or a throw while
       // processing a part) so a partially-consumed SDK stream is cleaned up.
       void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
@@ -2543,11 +2574,28 @@ function markConversationTail(messages: ModelMessage[]): ModelMessage[] {
 
 function normalizeUsage(usage: unknown): Usage | undefined {
   if (!usage || typeof usage !== "object") return undefined;
-  const u = usage as Record<string, number | undefined>;
+  const u = usage as Record<string, unknown>;
+  const details =
+    u.inputTokenDetails && typeof u.inputTokenDetails === "object"
+      ? (u.inputTokenDetails as Record<string, unknown>)
+      : undefined;
+  const number = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined;
   return {
-    inputTokens: u.inputTokens ?? u.promptTokens,
-    outputTokens: u.outputTokens ?? u.completionTokens,
-    totalTokens: u.totalTokens,
-    cachedInputTokens: u.cachedInputTokens ?? u.cachedPromptTokens,
+    inputTokens: number(u.inputTokens) ?? number(u.promptTokens),
+    outputTokens: number(u.outputTokens) ?? number(u.completionTokens),
+    totalTokens: number(u.totalTokens),
+    cachedInputTokens:
+      number(details?.cacheReadTokens) ??
+      number(u.cachedInputTokens) ??
+      number(u.cachedPromptTokens),
   };
+}
+
+function usageDetailNumber(usage: unknown, group: string, field: string): number | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const detail = (usage as Record<string, unknown>)[group];
+  if (!detail || typeof detail !== "object") return undefined;
+  const value = (detail as Record<string, unknown>)[field];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

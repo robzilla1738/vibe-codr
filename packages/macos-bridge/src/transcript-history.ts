@@ -76,6 +76,7 @@ function normalizeToolOutput(value: unknown): unknown {
         const item = record(part);
         if (item?.type === "text" && typeof item.text === "string") return item.text;
         if (item?.type === "media") return "[media omitted]";
+        if (sanitizeJsonMedia(part) === "[binary omitted]") return "[binary omitted]";
         return "";
       })
       .filter(Boolean)

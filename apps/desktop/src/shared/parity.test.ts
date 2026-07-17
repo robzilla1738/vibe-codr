@@ -747,9 +747,9 @@ describe("theme palette parity", () => {
     expect(d.elevated).toBe("#1e1e1e");
     expect(d.border).toBe("#3c3c3c");
     expect(d.code).toBe("#56b6c2");
-    expect(d.primary).toBe("#fab283");
+    expect(d.primary).toBe("#e6e6e6");
     expect(d.selBg).toBe("#2a2a2a");
-    expect(d.heading).toBe("#fab283");
+    expect(d.heading).toBe("#e6e6e6");
   });
 
   it("removes the former OpenCode palette name", async () => {

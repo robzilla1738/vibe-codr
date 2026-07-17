@@ -2,28 +2,27 @@
 
 ## Unreleased
 
-## 0.6.0 — 2026-07-16
+## 0.6.1 — 2026-07-16
 
-### Added
-
-- Added the Sessions workspace with responsive Board/List views, search,
-  filters, sorting, persistent Active/Review/Done organization, and session
-  open, rename, archive, and delete actions.
-- Added honest local and cloud working state to session cards without labeling
-  idle saved sessions as running.
+- Changed the default Vibe Dark chrome accent from peach to neutral white; orange and purple remain opt-in accent presets or semantic colors.
 
 ### Improved
 
-- Moved Desktop into the canonical Vibe Codr monorepo and unified its version,
-  source links, update feed, documentation, CI, and release with the engine and
-  CLI.
-- Made monorepo engine resolution the development default while preserving the
-  exact `ENGINE_COMMIT` lock used by parity, packaging, and cloud runtime
-  artifacts.
-- Refined Sessions controls to reuse the composer's compact frosted control
-  grammar, with clean 2x2 tablet filters and stacked mobile cards.
-- Increased only the two Git/submodule integration-test timeouts that can cross
-  five seconds under coverage load, preventing false-red release runs.
+- Transcript work is now one compact, expandable phase per turn, including
+  intermediate progress notes, while the final answer remains in the primary
+  conversation flow.
+- Sessions now move automatically between Active, Review, and Done from live
+  model state; Cloud sandbox ownership is no longer mislabeled as active work.
+- Cloud handoff now shows the active model and includes configured API keys and
+  connected Codex/Grok subscription access by default, with global and
+  per-handoff opt-outs. Explicit Cloud bindings remain available when automatic
+  model access is disabled.
+
+### Fixed
+
+- xAI API keys configured for the standard `xai` provider can authenticate an
+  `xai-oauth` Grok route after handoff, and Cloud status refreshes are no longer
+  limited to the open session.
 
 ## 0.1.18 — 2026-07-16
 

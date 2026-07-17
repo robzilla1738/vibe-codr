@@ -192,7 +192,7 @@ export class ProviderRegistry {
   /** Resolve a full model string to a live text-embedding model (for semantic
    * memory). Throws if the provider is unknown, unconfigured, or has no
    * embedding support — the caller catches and degrades to lexical recall. */
-  async embeddingModel(modelString: string, config: Config): Promise<EmbeddingModel<string>> {
+  async embeddingModel(modelString: string, config: Config): Promise<EmbeddingModel> {
     const { providerId, modelId } = parseModelString(modelString);
     const def = this.#definition(providerId, config);
     if (!def) {

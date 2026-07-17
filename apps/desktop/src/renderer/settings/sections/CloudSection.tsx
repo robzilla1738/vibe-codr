@@ -4,6 +4,7 @@ import { NumberInput, SettingField, SettingSection, TextArea, TextInput, ToggleS
 
 const EMPTY_SETTINGS: CloudSettingsPublic = {
   experimentalEnabled: false,
+  transferModelCredentials: true,
   lastProvider: "e2b",
   autoPauseMinutes: 10,
   deleteOnReturn: true,
@@ -190,6 +191,9 @@ export function CloudSection({ showToast, onSessionRecovered, onDirtyChange }: {
       <SettingSection title="Cloud sessions" description="Run the same revision-locked vibe-codr engine in an isolated Linux sandbox.">
         <SettingField label="Enable experimental Cloud" description="Cloud remains experimental until both opt-in provider contract suites have a fresh green release result.">
           <ToggleSwitch checked={settings.experimentalEnabled} onChange={(experimentalEnabled) => void patchSettings({ experimentalEnabled })} />
+        </SettingField>
+        <SettingField label="Include model access by default" description="Pass the active model, configured provider keys, and connected subscription access during handoff. You can override this for each session.">
+          <ToggleSwitch checked={settings.transferModelCredentials} onChange={(transferModelCredentials) => void patchSettings({ transferModelCredentials })} />
         </SettingField>
         <SettingField label="Idle auto-pause" description="Cloud resources pause after this many idle minutes and resume on access.">
           <NumberInput value={settings.autoPauseMinutes} min={1} max={120} onChange={(autoPauseMinutes) => void patchSettings({ autoPauseMinutes: autoPauseMinutes ?? 10 })} />

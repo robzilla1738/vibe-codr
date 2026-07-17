@@ -108,7 +108,7 @@ test("shipped AI-SDK write tool executes when path is only under file_path", asy
   // (alias-normalized) input — this is the real model → tool path.
   const out = await ai.execute!(
     { file_path: "via-alias.txt", content: "hello-alias\n" },
-    { toolCallId: "t1", messages: [], abortSignal: new AbortController().signal },
+    { toolCallId: "t1", messages: [], abortSignal: new AbortController().signal, context: undefined },
   );
   expect(String(out)).toContain("via-alias.txt");
   expect(await Bun.file(join(dir, "via-alias.txt")).text()).toBe("hello-alias\n");
@@ -125,7 +125,7 @@ test("shipped AI-SDK read tool resolves filePath alias", async () => {
   });
   const out = await ai.execute!(
     { filePath: "note.md" },
-    { toolCallId: "t2", messages: [], abortSignal: new AbortController().signal },
+    { toolCallId: "t2", messages: [], abortSignal: new AbortController().signal, context: undefined },
   );
   expect(String(out)).toContain("line-one");
 });
@@ -143,7 +143,7 @@ test("shipped AI-SDK edit tool resolves file alias", async () => {
   });
   const out = await ai.execute!(
     { file: "x.ts", oldString: "const a = 1;", newString: "const a = 2;" },
-    { toolCallId: "t3", messages: [], abortSignal: new AbortController().signal },
+    { toolCallId: "t3", messages: [], abortSignal: new AbortController().signal, context: undefined },
   );
   expect(String(out)).not.toMatch(/^ERROR:/);
   expect(await Bun.file(join(dir, "x.ts")).text()).toBe("const a = 2;\n");

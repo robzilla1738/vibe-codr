@@ -16,6 +16,7 @@ import { StatusDot } from "../primitives";
 import { isSubagentTool, stripToolGlyph, ToolGlyph } from "../tool-glyph";
 import { MarkdownView } from "./MarkdownView";
 import { SourceList } from "./SourceList";
+import { groupTranscriptItems } from "./transcript-groups";
 
 /** Keep each session's reading position while the app remains open. A fresh
  * launch intentionally starts at the latest content instead of restoring a
@@ -135,6 +136,7 @@ function isActivityBlock(block: Block): block is ActivityBlock {
 }
 
 function ThinkingGroup({
+  groupId,
   blocks,
   active,
   density,
@@ -142,7 +144,8 @@ function ThinkingGroup({
   now,
   onToggle,
 }: {
-  blocks: ActivityBlock[];
+  groupId: string;
+  blocks: Block[];
   active: boolean;
   density: TranscriptDensity;
   theme: string;
@@ -151,28 +154,34 @@ function ThinkingGroup({
 }) {
   const [expanded, setExpanded] = useState(density === "verbose");
   const items = blocks.filter((block) => block.kind !== "thinking" || showThinkingRows(density));
+  const stepCount = blocks.filter(isActivityBlock).length;
   if (items.length === 0) return null;
   const open = density === "verbose" || expanded;
+  const visibleItems = open ? items : items.filter((block) => block.kind === "notice");
 
   return (
-    <details
+    <div
       className={`thinking-group${open ? " is-open" : ""}${active ? " is-live" : ""}`}
-      open={open}
-      onToggle={(event) => {
-        if (density !== "verbose") setExpanded(event.currentTarget.open);
-      }}
     >
-      <summary className="thinking-group-head">
+      <button
+        type="button"
+        className="thinking-group-head"
+        aria-expanded={open}
+        aria-controls={groupId}
+        onClick={() => {
+          if (density !== "verbose") setExpanded((current) => !current);
+        }}
+      >
         <span className="thinking-group-label">
           <IconChevron open={open} size={13} />
-          <span>Thinking</span>
+          <span>{active ? "Working" : "Work"}</span>
         </span>
         <span className="thinking-group-meta">
-          {items.length} {items.length === 1 ? "step" : "steps"}
+          {stepCount} {stepCount === 1 ? "step" : "steps"}
         </span>
-      </summary>
-      <div className="thinking-group-items">
-        {items.map((block) => (
+      </button>
+      <div className="thinking-group-items" id={groupId}>
+        {visibleItems.map((block) => (
           <BlockView
             key={block.id}
             block={block}
@@ -180,10 +189,11 @@ function ThinkingGroup({
             theme={theme}
             now={now}
             onToggle={onToggle}
+            activityContext
           />
         ))}
       </div>
-    </details>
+    </div>
   );
 }
 
@@ -193,23 +203,25 @@ const BlockView = memo(function BlockView({
   theme,
   now,
   onToggle,
+  activityContext = false,
 }: {
   block: Block;
   density: TranscriptDensity;
   theme: string;
   now: number;
   onToggle: (id: number) => void;
+  activityContext?: boolean;
 }) {
   switch (block.kind) {
     case "assistant":
       return (
-        <div className={`block-assistant${!block.streaming && block.text ? " has-actions" : ""}${block.streaming ? " streaming" : ""}`}>
+        <div className={`block-assistant${activityContext ? " is-progress" : ""}${!activityContext && !block.streaming && block.text ? " has-actions" : ""}${block.streaming ? " streaming" : ""}`}>
           <div className="md">
             <MarkdownView streaming={block.streaming} theme={theme}>
               {block.text}
             </MarkdownView>
           </div>
-          {!block.streaming && block.text ? (
+          {!activityContext && !block.streaming && block.text ? (
             <div className="assistant-actions hover-reveal" role="toolbar" aria-label="Assistant message actions">
               <CopyButton text={block.text} label="Copy answer" />
               <time className="message-time" dateTime={new Date(block.timestamp).toISOString()}>
@@ -535,50 +547,32 @@ export function TranscriptView({
           {turns.map((turn) => {
             const folded = foldedTurns.has(turn.key);
             const itemWindow = itemWindowFor(turn.key, turn.items.length);
-            const visibleItems = turn.items.slice(itemWindow.start);
-            let lastActivityIndex = -1;
-            for (let index = visibleItems.length - 1; index >= 0; index -= 1) {
-              if (isActivityBlock(visibleItems[index]!)) {
-                lastActivityIndex = index;
-                break;
-              }
-            }
-            const renderedItems: ReactNode[] = [];
-            for (let index = 0; index < visibleItems.length;) {
-              const block = visibleItems[index]!;
-              if (isActivityBlock(block)) {
-                const activity: ActivityBlock[] = [];
-                while (index < visibleItems.length) {
-                  const activityBlock = visibleItems[index]!;
-                  if (!isActivityBlock(activityBlock)) break;
-                  activity.push(activityBlock);
-                  index += 1;
-                }
-                renderedItems.push(
+            const renderedItems = groupTranscriptItems(turn.items, itemWindow.start).map((item) => {
+              if (item.kind === "activity") {
+                return (
                   <ThinkingGroup
-                    key={`thinking-${activity[0]!.id}`}
-                    blocks={activity}
-                    active={busy && turn.key === latestTurnKey && index - 1 === lastActivityIndex}
+                    key={`work-${turn.key}`}
+                    groupId={`work-items-${turn.key}`}
+                    blocks={item.blocks}
+                    active={busy && turn.key === latestTurnKey}
                     density={density}
                     theme={theme}
                     now={now}
                     onToggle={onToggleBlock}
-                  />,
+                  />
                 );
-                continue;
               }
-              renderedItems.push(
+              return (
                 <BlockView
-                  key={block.id}
-                  block={block}
+                  key={item.block.id}
+                  block={item.block}
                   density={density}
                   theme={theme}
                   now={now}
                   onToggle={onToggleBlock}
-                />,
+                />
               );
-              index += 1;
-            }
+            });
             return (
               <section
                 className="turn"

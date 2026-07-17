@@ -196,7 +196,7 @@ The first-paint fallbacks mirror the default palette in
 | Elevated surface | `--elevated` / `--surface` | `#1e1e1e` |
 | Border | `--border` | `#3c3c3c` |
 | Muted text | `--muted` | `#808080` |
-| Assistant / primary text | `--assistant` / `--primary` | `#eeeeee` / `#fab283` |
+| Assistant / primary text | `--assistant` / `--primary` | `#eeeeee` / `#e6e6e6` |
 | User semantic color | `--user` | `#5c9cf5` |
 | Tool | `--tool` | `#56b6c2` |
 | Notice | `--notice` | `#f5a742` |
@@ -340,7 +340,7 @@ their `--ease-exit` animation can finish. Closing immediately removes logical
 focus/click ownership, retains only the last rendered presentation for the exit,
 and never animates width, grid columns, or other layout properties.
 
-The latest thinking group uses one restrained text shimmer while a turn is
+The single per-turn Work disclosure uses one restrained text shimmer while a turn is
 active (`--dur-thinking-shimmer: 1800ms`); completed groups remain static and
 the global reduced-motion rule collapses the effect. Assistant streaming stays
 in the normal sans prose flow with a thin inline caret—never a temporary mono

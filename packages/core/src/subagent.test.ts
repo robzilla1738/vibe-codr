@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -14,7 +14,7 @@ import { Session } from "./session.ts";
 import { SessionStore } from "./store.ts";
 import { createLimiter } from "./limiter.ts";
 
-function mockRegistry(model: MockLanguageModelV2) {
+function mockRegistry(model: MockLanguageModelV3) {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -54,26 +54,26 @@ test("a named agent's tool allowlist restricts the child's tools", async () => {
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "scout", agent: "scout" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "scouted" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "done" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   const toolNames: string[][] = [];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const tools = (options as { tools?: { name: string }[] }).tools ?? [];
       toolNames.push(tools.map((t) => t.name));
@@ -120,7 +120,7 @@ test("a hung subagent is stopped by the wall-clock timeout and reported", async 
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "do slow work" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // Child stream stalls long past the 50ms timeout (initialDelay 3s).
     {
@@ -130,7 +130,7 @@ test("a hung subagent is stopped by the wall-clock timeout and reported", async 
           { type: "text-start", id: "c" },
           { type: "text-delta", id: "c", delta: "still going" },
           { type: "text-end", id: "c" },
-          { type: "finish", finishReason: "stop", usage: USAGE },
+          { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
         ] as never[],
         initialDelayInMs: 300, // > the 50ms timeout, so the guard fires first
         chunkDelayInMs: 0,
@@ -141,11 +141,11 @@ test("a hung subagent is stopped by the wall-clock timeout and reported", async 
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "moving on" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -192,23 +192,23 @@ test("post_note writes to the shared board and read_notes reads it back", async 
         toolName: "post_note",
         input: JSON.stringify({ note: "claimed src/auth.ts" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: "r1", toolName: "read_notes", input: JSON.stringify({}) },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "done" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -252,7 +252,7 @@ function stream(chunks: unknown[]) {
     }),
   };
 }
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 /** A single assistant text step. */
 function textStep(delta: string) {
@@ -261,7 +261,7 @@ function textStep(delta: string) {
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 
@@ -275,7 +275,7 @@ function toolStep(toolName: string, input: unknown) {
       toolName,
       input: JSON.stringify(input),
     },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 
@@ -299,25 +299,25 @@ test("spawn_subagent runs an isolated child and returns its result", async () =>
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "research the thing" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "child result" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "parent done" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => steps[call++] as never,
   });
 
@@ -395,25 +395,25 @@ test("a subagent's oversized answer is capped before it reaches the parent promp
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "produce a long report" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: huge },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "done" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => steps[call++] as never,
   });
 
@@ -462,26 +462,26 @@ test("spawn_subagent routes to a named agent (its mode + system apply)", async (
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "look at engine.ts", agent: "explore" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "explored" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "done" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   const systems: string[] = [];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       systems.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -529,26 +529,26 @@ test("a plan-mode parent's subagents are coerced read-only (even if execute is r
         // Explicitly ask for execute — the plan-mode parent must override it.
         input: JSON.stringify({ prompt: "investigate", mode: "execute" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "findings" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "plan ready" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   const systems: string[] = [];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       systems.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -584,18 +584,18 @@ test("a plan-mode parent rejects an execute-only named agent (no child runs)", a
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "add tests", agent: "test" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "plan ready" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => steps[call++] as never,
   });
 
@@ -650,25 +650,25 @@ test("a read-only subagent does NOT mark the parent turn as mutating", async () 
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "investigate" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "looked, found nothing to change" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "ok" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const session = new Session({
     config: defaultConfig(),
     registry: mockRegistry(model),
@@ -707,13 +707,13 @@ test("a subagent that mutates DOES mark the parent turn as mutating", async () =
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "make a change" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // child step 1: call the mutating tool
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: "w1", toolName: "do_write", input: JSON.stringify({}) },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // child step 2: report
     stream([
@@ -721,7 +721,7 @@ test("a subagent that mutates DOES mark the parent turn as mutating", async () =
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "done writing" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     // parent wrap-up
     stream([
@@ -729,11 +729,11 @@ test("a subagent that mutates DOES mark the parent turn as mutating", async () =
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "ok" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const session = new Session({
     config: { ...defaultConfig(), approvalMode: "auto" },
     registry: mockRegistry(model),
@@ -765,25 +765,25 @@ test("a fanning parent under a max:1 limiter with timeoutMs=0 completes (no hold
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "child work" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "child done" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "parent done" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const config = { ...defaultConfig() };
   config.subagent = { ...config.subagent, timeoutMs: 0 };
@@ -847,7 +847,7 @@ test("fork() gives a subagent a fresh context — no inherited history/usage/cos
   const dir = mkdtempSync(join(tmpdir(), "vibe-fork-"));
   const store = new SessionStore(dir);
   const prompts: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return stream([
@@ -855,7 +855,7 @@ test("fork() gives a subagent a fresh context — no inherited history/usage/cos
         { type: "text-start", id: "c" },
         { type: "text-delta", id: "c", delta: "child" },
         { type: "text-end", id: "c" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -917,7 +917,7 @@ test("continue_subagent resumes a retained child with its prior context", async 
   let call = 0;
   let childId = "";
   let continuedPrompt = "";
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const i = call++;
       if (i === 3)
@@ -986,7 +986,7 @@ test("continue_subagent honestly refuses a child whose working directory was rem
   ];
   let call = 0;
   let childId = "";
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const i = call++;
       if (i === 3)
@@ -1049,7 +1049,7 @@ test("an execute child continued during plan is coerced read-only, then restored
   let call = 0;
   let childId = "";
   const systems: Record<number, string> = {};
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const i = call++;
       systems[i] = JSON.stringify(options.prompt);
@@ -1114,7 +1114,7 @@ test("continue_subagent on an unknown id returns an error (no child runs)", asyn
     textStep("acknowledged"), // 1 parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => ordered[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => ordered[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -1154,7 +1154,7 @@ test("structured output: a valid-first-try JSON answer is returned verbatim", as
     textStep("done"), // 2 parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => ordered[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => ordered[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -1196,7 +1196,7 @@ test("structured output: an invalid answer is retried, then accepted", async () 
     textStep("done"), // 3 parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => ordered[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => ordered[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -1235,7 +1235,7 @@ test("structured output: exhausted retries return an error with the raw text, ne
     textStep("done"), // 3 parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => ordered[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => ordered[call++] as never });
 
   const bus = new EventBus();
   const events: UIEvent[] = [];
@@ -1272,7 +1272,7 @@ test("structured output: exhausted retries return an error with the raw text, ne
 test("a detached spawn returns immediately, then surfaces + is collectable next turn", async () => {
   let bgId = "";
   let turn2Prompt = "";
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       // turn 2 step 2: the check_task result is now in context.
@@ -1353,7 +1353,7 @@ test("a detached spawn returns immediately, then surfaces + is collectable next 
 });
 
 test("headless coerces detach to synchronous with a one-time notice", async () => {
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt ?? "");
       // parent step 2: the (synchronous) child result is already in context.
@@ -1430,7 +1430,7 @@ test("a mid-turn mode flip cannot un-coerce a child spawned later in the same pl
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: "f1", toolName: "flip_mode", input: "{}" },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -1440,26 +1440,26 @@ test("a mid-turn mode flip cannot un-coerce a child spawned later in the same pl
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "scout" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "c" },
       { type: "text-delta", id: "c", delta: "scouted" },
       { type: "text-end", id: "c" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "p" },
       { type: "text-delta", id: "p", delta: "done" },
       { type: "text-end", id: "p" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   const toolNames: string[][] = [];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const tools = (options as { tools?: { name: string }[] }).tools ?? [];
       toolNames.push(tools.map((t) => t.name));
@@ -1494,8 +1494,20 @@ function textStepWithUsage(delta: string, usage: { inputTokens: number; outputTo
     { type: "text-end", id: "t" },
     {
       type: "finish",
-      finishReason: "stop",
-      usage: { ...usage, totalTokens: usage.inputTokens + usage.outputTokens },
+      finishReason: { unified: "stop" as const, raw: undefined },
+      usage: {
+        inputTokens: {
+          total: usage.inputTokens,
+          noCache: usage.inputTokens,
+          cacheRead: 0,
+          cacheWrite: 0,
+        },
+        outputTokens: {
+          total: usage.outputTokens,
+          text: usage.outputTokens,
+          reasoning: 0,
+        },
+      },
     },
   ]);
 }
@@ -1508,7 +1520,7 @@ test("continue_subagent folds only THIS-run cost (no triangular double-count)", 
   const childU2 = { inputTokens: 50, outputTokens: 10 };
   let call = 0;
   let childId = "";
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const i = call++;
       if (i === 0) return toolStep("spawn_subagent", { prompt: "remember X" }) as never;
@@ -1566,7 +1578,7 @@ test("structured-output retry folds only per-attempt cost, not cumulative re-add
   const attempt1 = { inputTokens: 80, outputTokens: 15 };
   const attempt2 = { inputTokens: 40, outputTokens: 8 };
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const i = call++;
       if (i === 0) {
@@ -1603,7 +1615,7 @@ test("structured-output retry folds only per-attempt cost, not cumulative re-add
 
 test("plan-mode spawn_tasks rejects check/verify/worktree/hard (scout-only)", async () => {
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const i = call++;
       if (i === 0) {

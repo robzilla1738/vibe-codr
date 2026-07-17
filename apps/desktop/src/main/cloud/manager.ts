@@ -65,6 +65,7 @@ interface HandoffRequest {
   provider: CloudProviderId;
   instruction?: string;
   additionalInclusions?: string[];
+  includeModelCredentials?: boolean;
 }
 
 interface CloudSettingsFileV1 extends CloudSettingsPublic { schemaVersion: 1 }
@@ -103,7 +104,7 @@ export class CloudManager {
     };
   }
 
-  async updateSettings(patch: Partial<Pick<CloudSettingsPublic, "experimentalEnabled" | "lastProvider" | "autoPauseMinutes" | "deleteOnReturn" | "allowedDomains" | "additionalExclusions">>): Promise<CloudSettingsPublic> {
+  async updateSettings(patch: Partial<Pick<CloudSettingsPublic, "experimentalEnabled" | "transferModelCredentials" | "lastProvider" | "autoPauseMinutes" | "deleteOnReturn" | "allowedDomains" | "additionalExclusions">>): Promise<CloudSettingsPublic> {
     await this.#mutateSettings((current) => ({ ...current, ...patch, schemaVersion: 1 }));
     return this.settings();
   }
@@ -282,6 +283,7 @@ export class CloudManager {
         requiredModels,
         request.cwd,
         configuredCloudFallbackModels(globalResult?.config, projectResult?.config),
+        request.includeModelCredentials ?? settings.transferModelCredentials,
       );
       const models = modelAccess.models;
       const modelEnvironment = modelAccess.environment;
@@ -1240,14 +1242,38 @@ export class CloudManager {
     models: string[],
     cwd: string,
     optionalModels: string[] = [],
+    includeAutomaticCredentials = true,
   ): Promise<{ environment: Record<string, string>; models: string[]; optionalModels: string[]; domains: string[] }> {
     if (!models.length) throw new Error("Cloud handoff requires at least one configured model");
+    const requiredProviderIds = new Set(models.map((model) => model.split("/", 1)[0]));
+    if (requiredProviderIds.has("xai") && requiredProviderIds.has("xai-oauth")) {
+      throw new Error("Cloud handoff cannot mix xAI API-key and Grok subscription routes in one session. Choose one xAI credential scope before handing off.");
+    }
+    // XAI_API_KEY is shared by the API-key and subscription adapters. Pick one
+    // scope for the sandbox and discard only incompatible optional fallbacks;
+    // an optional route must never make an otherwise valid primary fail.
+    const xaiCredentialScope = requiredProviderIds.has("xai-oauth")
+      ? "xai-oauth"
+      : requiredProviderIds.has("xai")
+        ? "xai"
+        : optionalModels
+          .map((model) => model.split("/", 1)[0])
+          .find((providerId) => providerId === "xai" || providerId === "xai-oauth");
+    const compatibleOptionalModels = optionalModels.filter((model) => {
+      const providerId = model.split("/", 1)[0];
+      return (providerId !== "xai" && providerId !== "xai-oauth") || providerId === xaiCredentialScope;
+    });
     const [bound, globalResult, projectResult] = await Promise.all([
       this.#boundEnvironment(settings),
       readConfigFile(globalConfigPath()),
       readConfigFile(projectConfigPath(cwd)),
     ]);
-    for (const providerId of [...new Set(models.map((model) => model.split("/", 1)[0]))]) {
+    if (includeAutomaticCredentials) {
+      Object.assign(bound, ambientCloudModelEnvironment([...models, ...compatibleOptionalModels], process.env));
+    }
+    for (const providerId of includeAutomaticCredentials
+      ? [...new Set([...models, ...compatibleOptionalModels].map((model) => model.split("/", 1)[0]))]
+      : []) {
       const authProviderId = subscriptionAuthProviderForModelProvider(providerId);
       if (!authProviderId) continue;
       const credential = await this.transport.local.rpc("exportProviderAuth", { providerId: authProviderId }) as {
@@ -1258,53 +1284,29 @@ export class CloudManager {
       if (!credential) continue;
       Object.assign(bound, subscriptionCredentialEnvironment(authProviderId, credential));
     }
-    Object.assign(bound, ambientCloudModelEnvironment([...models, ...optionalModels], process.env));
 
-    // A Cloud sandbox is a complete continuation environment. Carry every
-    // configured provider route/key that can be represented safely so model,
-    // plan, and subagent work do not depend on a later desktop config lookup.
-    // Required models are still validated below and fail the handoff on error;
-    // unrelated unusable/local-only providers are simply not included.
-    const trustedProjectProviders = globalResult?.config?.security?.trustProjectConfig === true
-      ? projectResult?.config?.providers
-      : undefined;
-    const configuredProviderIds = new Set([
-      ...Object.keys(globalResult?.config?.providers ?? {}),
-      ...Object.keys(trustedProjectProviders ?? {}),
-    ]);
-    const configuredDomains = new Set<string>();
-    for (const providerId of configuredProviderIds) {
-      try {
-        const candidate = cloudModelEnvironment(
-          `${providerId}/__configured-cloud-access__`,
-          globalResult?.config,
-          projectResult?.config,
-          bound,
-        );
-        const hostname = cloudModelRouteHostname(
-          `${providerId}/__configured-cloud-access__`,
-          globalResult?.config,
-          projectResult?.config,
-          candidate,
-        );
-        if (!hostname) continue;
-        await assertPublicProviderDomains([hostname]);
-        Object.assign(bound, candidate);
-        configuredDomains.add(hostname);
-      } catch {
-        // An optional configured provider must not block a valid active model.
-      }
-    }
     const environment: Record<string, string> = {};
-    const domains = new Set<string>(configuredDomains);
+    const domains = new Set<string>();
     const resolveModel = (model: string): { candidate: Record<string, string>; hostname: string } => {
-      const candidate = cloudModelEnvironment(model, globalResult?.config, projectResult?.config, bound);
+      const candidate = cloudModelEnvironment(
+        model,
+        globalResult?.config,
+        projectResult?.config,
+        bound,
+        { includeConfiguredCredentials: includeAutomaticCredentials },
+      );
       for (const [name, value] of Object.entries(candidate)) {
         if (environment[name] !== undefined && environment[name] !== value) {
           throw new Error(`Configured models require conflicting values for ${name}. Return to Local and use one credential scope before handing off.`);
         }
       }
-      const hostname = cloudModelRouteHostname(model, globalResult?.config, projectResult?.config, candidate);
+      const hostname = cloudModelRouteHostname(
+        model,
+        globalResult?.config,
+        projectResult?.config,
+        candidate,
+        { includeConfiguredCredentials: includeAutomaticCredentials },
+      );
       if (!hostname) {
         throw new Error(`${model.split("/", 1)[0]} does not expose a fixed HTTPS endpoint for Cloud egress. Choose a provider with an explicit cloud endpoint before handing off.`);
       }
@@ -1325,10 +1327,19 @@ export class CloudManager {
       }
       return resolved;
     };
-    for (const model of models) mergeModel(await validateModel(model));
+    try {
+      for (const model of models) mergeModel(await validateModel(model));
+    } catch (error) {
+      if (!includeAutomaticCredentials) {
+        throw new Error(
+          `Model access was excluded from this handoff. Enable “Include model access” or add the required environment key under Settings → Cloud → Credential bindings. ${message(error)}`,
+        );
+      }
+      throw error;
+    }
     const resolvedModels = [...models];
     const resolvedOptionalModels: string[] = [];
-    for (const model of optionalModels) {
+    for (const model of compatibleOptionalModels) {
       if (resolvedModels.includes(model)) continue;
       try {
         mergeModel(await validateModel(model));
@@ -1364,12 +1375,16 @@ export class CloudManager {
     try {
       const value = JSON.parse(await readFile(this.#settingsPath, "utf8")) as CloudSettingsFileV1;
       if (value.schemaVersion !== 1) throw new Error();
-      return value;
+      return {
+        ...value,
+        transferModelCredentials: value.transferModelCredentials !== false,
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Cloud settings are corrupt");
       return {
         schemaVersion: 1,
         experimentalEnabled: false,
+        transferModelCredentials: true,
         lastProvider: "e2b",
         autoPauseMinutes: 10,
         deleteOnReturn: true,

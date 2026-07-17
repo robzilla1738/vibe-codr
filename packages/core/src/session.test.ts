@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { UIEvent, ToolDefinition, Message } from "@vibe/shared";
 import type { ModelMessage } from "ai";
@@ -26,7 +26,7 @@ function stream(chunks: unknown[]) {
   };
 }
 
-const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+const USAGE = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 
 const echoTool: ToolDefinition<{ text: string }> = {
   name: "echo",
@@ -38,7 +38,7 @@ const echoTool: ToolDefinition<{ text: string }> = {
   },
 };
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -62,7 +62,7 @@ async function collect(bus: EventBus, run: () => Promise<void>): Promise<UIEvent
 }
 
 test("runs a full tool-call -> result -> final-text turn", async () => {
-  // A counter-driven doStream avoids MockLanguageModelV2's array off-by-one.
+  // A counter-driven doStream avoids MockLanguageModelV3's array off-by-one.
   const steps = [
     // Step 1: the model calls the echo tool.
     stream([
@@ -73,7 +73,7 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
         toolName: "echo",
         input: JSON.stringify({ text: "hello" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // Step 2: the model produces the final answer.
     stream([
@@ -82,11 +82,11 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
       { type: "text-delta", id: "t1", delta: "All " },
       { type: "text-delta", id: "t1", delta: "done." },
       { type: "text-end", id: "t1" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => steps[call++] as never,
   });
 
@@ -134,6 +134,50 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
   expect(snap.busy).toBe(false);
 });
 
+test("streams reasoning and text deltas exactly once in provider order", async () => {
+  const model = new MockLanguageModelV3({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "reasoning-start", id: "r1" },
+        { type: "reasoning-delta", id: "r1", delta: "Check " },
+        { type: "reasoning-delta", id: "r1", delta: "the edge." },
+        { type: "reasoning-end", id: "r1" },
+        { type: "text-start", id: "t1" },
+        { type: "text-delta", id: "t1", delta: "Ready " },
+        { type: "text-delta", id: "t1", delta: "✓" },
+        { type: "text-end", id: "t1" },
+        { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+      ]) as never,
+  });
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  const events = await collect(bus, () => session.run("verify streaming"));
+  const deltas = events
+    .filter((event) => event.type === "reasoning-delta" || event.type === "assistant-text-delta")
+    .map((event) => `${event.type}:${event.delta}`);
+  expect(deltas).toEqual([
+    "reasoning-delta:Check ",
+    "reasoning-delta:the edge.",
+    "assistant-text-delta:Ready ",
+    "assistant-text-delta:✓",
+  ]);
+  expect(session.snapshot().history.at(-1)?.parts).toEqual([
+    { type: "reasoning", text: "Check the edge." },
+    { type: "text", text: "Ready ✓" },
+  ]);
+});
+
 test("persists after a turn and can be resumed with prior context", async () => {
   const reply = (text: string) =>
     stream([
@@ -141,11 +185,11 @@ test("persists after a turn and can be resumed with prior context", async () => 
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: text },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]);
   let call = 0;
   const replies = [reply("first answer"), reply("second answer")];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => replies[call++] as never,
   });
 
@@ -200,14 +244,14 @@ test("resume hydrates the offloaded map so prune keeps live artifact paths", asy
   // delete still-referenced artifacts once the dir exceeds maxArtifactBytes.
   const cwd = mkdtempSync(join(tmpdir(), "vibe-resume-offload-"));
   const store = new SessionStore(cwd);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]),
   });
   const offloaded = [
@@ -256,7 +300,7 @@ test("resume hydrates the offloaded map so prune keeps live artifact paths", asy
 test("resume seeds the real prior prompt size so the first turn's compaction check isn't overhead-blind", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-resume-ctx-"));
   const store = new SessionStore(cwd);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
@@ -266,8 +310,8 @@ test("resume seeds the real prior prompt size so the first turn's compaction che
         // A big REAL input count — the true context fill the estimate can't see.
         {
           type: "finish",
-          finishReason: "stop",
-          usage: { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 },
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: { inputTokens: { total: 90_000, noCache: 90_000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } },
         },
       ]),
   });
@@ -330,7 +374,7 @@ test("BUG-112: auto-compact uses estimate+overhead when a large paste lands afte
   const LARGE = "L".repeat(12_000); // ~3000 tokens of message text
 
   let summarizeCalls = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
@@ -339,8 +383,16 @@ test("BUG-112: auto-compact uses estimate+overhead when a large paste lands afte
         { type: "text-end", id: "t" },
         {
           type: "finish",
-          finishReason: "stop",
-          usage: { inputTokens: PRIOR_INPUT, outputTokens: 5, totalTokens: PRIOR_INPUT + 5 },
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: {
+            inputTokens: {
+              total: PRIOR_INPUT,
+              noCache: PRIOR_INPUT,
+              cacheRead: 0,
+              cacheWrite: 0,
+            },
+            outputTokens: { total: 5, text: 5, reasoning: 0 },
+          },
         },
       ]) as never,
     doGenerate: async () => {
@@ -352,8 +404,8 @@ test("BUG-112: auto-compact uses estimate+overhead when a large paste lands afte
             text: "## STATE\nprior work\n## DECISIONS\nnone\n## FILES TOUCHED\nnone\n## OPEN\nnone",
           },
         ],
-        finishReason: "stop" as const,
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
         warnings: [],
       };
     },
@@ -431,7 +483,7 @@ test("BUG-118: resume recomputes overhead so a large paste auto-compacts without
   expect(afterPushEst + overhead).toBeGreaterThanOrEqual(THRESHOLD * WINDOW);
 
   let summarizeCalls = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
@@ -440,8 +492,8 @@ test("BUG-118: resume recomputes overhead so a large paste auto-compacts without
         { type: "text-end", id: "t" },
         {
           type: "finish",
-          finishReason: "stop",
-          usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105 },
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: { inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } },
         },
       ]) as never,
     doGenerate: async () => {
@@ -453,8 +505,8 @@ test("BUG-118: resume recomputes overhead so a large paste auto-compacts without
             text: "## STATE\nresumed\n## DECISIONS\nnone\n## FILES TOUCHED\nnone\n## OPEN\nnone",
           },
         ],
-        finishReason: "stop" as const,
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
         warnings: [],
       };
     },
@@ -494,7 +546,7 @@ test("BUG-118: resume recomputes overhead so a large paste auto-compacts without
 });
 
 test("accumulates per-step usage and prices it (no double-counting)", async () => {
-  // Two steps, each reporting USAGE (10 in / 5 out). onStepFinish usage is
+  // Two steps, each reporting USAGE (10 in / 5 out). onStepEnd usage is
   // per-step, so the turn total must be the SUM, not a cumulative re-count.
   const steps = [
     stream([
@@ -505,18 +557,18 @@ test("accumulates per-step usage and prices it (no double-counting)", async () =
         toolName: "echo",
         input: JSON.stringify({ text: "x" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "done" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const session = new Session({
@@ -546,19 +598,17 @@ test("Anthropic's disjoint cache-read tokens are folded into input for cost + co
   // Anthropic reports input_tokens EXCLUSIVE of cache reads. The mock emits the
   // provider shape: 10 new input tokens + 90 cache-read tokens (disjoint).
   const ANTHRO_USAGE = {
-    inputTokens: 10,
-    outputTokens: 5,
-    totalTokens: 105,
-    cachedInputTokens: 90,
+    inputTokens: { total: 100, noCache: 10, cacheRead: 90, cacheWrite: 0 },
+    outputTokens: { total: 5, text: 5, reasoning: 0 },
   };
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: ANTHRO_USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: ANTHRO_USAGE },
       ]) as never,
   });
   const bus = new EventBus();
@@ -595,13 +645,57 @@ test("Anthropic's disjoint cache-read tokens are folded into input for cost + co
   expect(usage.costUSD).toBeCloseTo(0.00003 + 0.000027 + 0.000075, 12);
 });
 
+test("AI SDK 7 cache-write details are priced without double-counting prompt tokens", async () => {
+  const model = new MockLanguageModelV3({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        {
+          type: "finish",
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: {
+            inputTokens: { total: 100, noCache: 60, cacheRead: 0, cacheWrite: 40 },
+            outputTokens: { total: 5, text: 5, reasoning: 0 },
+          },
+        },
+      ]) as never,
+  });
+  const session = new Session({
+    config: defaultConfig(),
+    registry: new ProviderRegistry([
+      {
+        id: "anthropic",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
+    ]),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "anthropic/claude-x",
+    mode: "execute",
+    getPricing: async () => ({ input: 3, output: 15, cacheWrite: 3.75 }),
+  });
+
+  await session.run("go");
+  const usage = session.snapshot().usage;
+  expect(usage.inputTokens).toBe(100);
+  // 60 uncached input + 40 cache-write input + 5 output tokens.
+  expect(usage.costUSD).toBeCloseTo(0.00018 + 0.00015 + 0.000075, 12);
+});
+
 test("a turn that fails before any assistant reply rolls back its user message (no orphan turn)", async () => {
   // The first turn's model resolution fails outright; its pushed user message must
   // be rolled back so the next turn's prompt doesn't open with two user messages
   // in a row (a hard 400 on strict providers, and a corrupt --resume seed).
   let failResolve = true;
   let sentPrompt: { role: string; content: unknown }[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       sentPrompt = options.prompt as { role: string; content: unknown }[];
       return stream([
@@ -609,7 +703,7 @@ test("a turn that fails before any assistant reply rolls back its user message (
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -663,11 +757,11 @@ test("cost accrues at the price in effect per step, across a model switch", asyn
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "ok" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE }, // 10 in / 5 out
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE }, // 10 in / 5 out
     ]);
   let call = 0;
   const replies = [reply(), reply()];
-  const model = new MockLanguageModelV2({ doStream: async () => replies[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => replies[call++] as never });
 
   const prices: Record<string, { input: number; output: number }> = {
     "mock/cheap": { input: 1, output: 1 },
@@ -697,7 +791,7 @@ test("cost accrues at the price in effect per step, across a model switch", asyn
 
 test("image attachments reach the model as multimodal content", async () => {
   let captured: { prompt?: unknown[] } | null = null;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (opts: { prompt?: unknown[] }) => {
       captured = opts;
       return stream([
@@ -705,7 +799,7 @@ test("image attachments reach the model as multimodal content", async () => {
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -752,18 +846,18 @@ test("spend guard with onExceed=stop aborts after the budget is crossed", async 
         toolName: "echo",
         input: JSON.stringify({ text: "x" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "SHOULD-NOT-APPEAR" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const config = {
     ...defaultConfig(),
@@ -806,13 +900,13 @@ test("spend guard with onExceed=stop does NOT block the next turn on ESTIMATED s
       { type: "text-end", id: "t" },
       {
         type: "finish",
-        finishReason: "stop",
-        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1000, text: 1000, reasoning: 0 } },
       },
     ]);
   const replies = [reply("first"), reply("SECOND-RAN")];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => replies[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => replies[call++] as never });
   const bus = new EventBus();
   const session = new Session({
     config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
@@ -852,12 +946,12 @@ test("pre-turn spend guard blocks on prior actual spend even after switching to 
       { type: "text-end", id: "t" },
       {
         type: "finish",
-        finishReason: "stop",
-        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1000, text: 1000, reasoning: 0 } },
       },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => [reply("first"), reply("SHOULD-NOT-RUN")][call++] as never,
   });
   const bus = new EventBus();
@@ -895,12 +989,12 @@ test("pre-turn spend guard does not block estimated prior spend after switching 
       { type: "text-end", id: "t" },
       {
         type: "finish",
-        finishReason: "stop",
-        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1000, text: 1000, reasoning: 0 } },
       },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => [reply("first"), reply("SECOND-RAN")][call++] as never,
   });
   const bus = new EventBus();
@@ -943,11 +1037,11 @@ test("spend guard with onExceed=warn notifies once but completes the turn", asyn
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "done" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]);
   let call = 0;
   const replies = [reply()];
-  const model = new MockLanguageModelV2({ doStream: async () => replies[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => replies[call++] as never });
 
   const config = {
     ...defaultConfig(),
@@ -999,18 +1093,18 @@ test("a deny permission rule blocks a side-effecting tool", async () => {
         toolName: "danger",
         input: JSON.stringify({ x: "boom" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t1" },
       { type: "text-delta", id: "t1", delta: "ok" },
       { type: "text-end", id: "t1" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => steps[call++] as never,
   });
 
@@ -1064,23 +1158,23 @@ test("compaction frees the reported context immediately (no stale provider count
   // the PRE-compaction prompt size. After /compact drops most messages, the live
   // context must reflect the freed space at once — not stay pinned at the old
   // high value until the next turn runs a step.
-  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const BIG_USAGE = { inputTokens: { total: 90_000, noCache: 90_000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
   const reply = (text: string) =>
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: text },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: BIG_USAGE },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => reply(`answer ${call++}`) as never,
     // /compact summarizes the older half via generateText.
     doGenerate: async () => ({
       content: [{ type: "text", text: "earlier work summarized." }],
-      finishReason: "stop" as const,
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: { unified: "stop" as const, raw: undefined },
+      usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
       warnings: [],
     }),
   });
@@ -1127,17 +1221,17 @@ test("/clear resets token + offload accounting (no stale contextTokens or poison
   // made re-emitted previews look like duplicates (over-aggressive offload on
   // the next `prepareStep`). The fix resets every field and posts a fresh
   // `context-updated` so the UI and the next compaction see the freed space.
-  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const BIG_USAGE = { inputTokens: { total: 90_000, noCache: 90_000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
   const reply = (text: string) =>
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: text },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: BIG_USAGE },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => reply(`turn ${call++}`) as never });
+  const model = new MockLanguageModelV3({ doStream: async () => reply(`turn ${call++}`) as never });
 
   const bus = new EventBus();
   const session = new Session({
@@ -1173,17 +1267,17 @@ test("a failing summarizer skips compaction with a notice instead of failing the
   // The summarizer (generateText) is an AUXILIARY call. A transient failure on it
   // must NOT abort the turn (or mark a subagent fork as failed) — compaction is
   // skipped and the turn proceeds on the uncompacted context.
-  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const BIG_USAGE = { inputTokens: { total: 90_000, noCache: 90_000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
   const reply = (text: string) =>
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: text },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: BIG_USAGE },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => reply(`answer ${call++}`) as never,
     // The summarizer call throws (transient provider error).
     doGenerate: async () => {
@@ -1215,25 +1309,25 @@ test("a failing summarizer skips compaction with a notice instead of failing the
 });
 
 test("the compaction summarizer uses the sectioned contract and caps its input", async () => {
-  const BIG_USAGE = { inputTokens: 90_000, outputTokens: 5, totalTokens: 90_005 };
+  const BIG_USAGE = { inputTokens: { total: 90_000, noCache: 90_000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
   const reply = (text: string) =>
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: text },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: BIG_USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: BIG_USAGE },
     ]);
   const prompts: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => reply("x".repeat(9_000)) as never,
     doGenerate: async (options) => {
       const p = (options as { prompt: { content: unknown }[] }).prompt;
       prompts.push(JSON.stringify(p));
       return {
         content: [{ type: "text", text: "## STATE\nok" }],
-        finishReason: "stop" as const,
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
         warnings: [],
       };
     },
@@ -1272,14 +1366,14 @@ test("the compaction summarizer uses the sectioned contract and caps its input",
 });
 
 test("model failover: an unresolvable primary switches to the first working fallback, visibly", async () => {
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "answered on the fallback" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never,
   });
   // Registry knows only "mock" — resolving "deadprov/x" throws; fallback chain
@@ -1349,23 +1443,23 @@ test("an interrupted turn keeps completed tool steps in the transcript (a resume
         toolName: "echo",
         input: JSON.stringify({ text: "remember-this" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: "c2", toolName: "stop_now", input: "{}" },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "SHOULD-NOT-REACH" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const bus = new EventBus();
   sessionRef = new Session({
     config: defaultConfig(),
@@ -1397,22 +1491,26 @@ test("an interrupted turn keeps completed tool steps in the transcript (a resume
   expect(persistedHistory).toContain('"type":"tool-call"');
   expect(persistedHistory).toContain('"type":"tool-result"');
   expect(persistedHistory).toContain("remember-this");
-  expect(persistedHistory).not.toContain('"toolCallId":"c2"');
-  expect(persistedHistory).not.toContain('"toolName":"stop_now"');
+  // Every streamed tool start has a terminal result, even when the abort lands
+  // before AI SDK can emit the tool result part. This prevents a permanently
+  // spinning tool row in desktop/TUI clients.
+  expect(persistedHistory).toContain('"toolCallId":"c2"');
+  expect(persistedHistory).toContain('"toolName":"stop_now"');
+  expect(persistedHistory).toContain("Turn aborted before the tool completed.");
 });
 
 test("a persisted session stamps the SessionMeta schema version", async () => {
   const { SESSION_META_VERSION } = await import("./store.ts");
   const cwd = mkdtempSync(join(tmpdir(), "vibe-ver-"));
   const store = new SessionStore(cwd);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       stream([
         { type: "stream-start", warnings: [] },
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never,
   });
   const session = new Session({
@@ -1455,7 +1553,7 @@ test("rewindConversation returns the sliced-off tail and restoreConversation re-
   ];
   const session = new Session({
     config: defaultConfig(),
-    registry: mockRegistry(new MockLanguageModelV2({ doStream: async () => stream([]) as never })),
+    registry: mockRegistry(new MockLanguageModelV3({ doStream: async () => stream([]) as never })),
     toolset: new Toolset([]),
     bus: new EventBus(),
     freshness: new FreshnessRegistry(),
@@ -1491,7 +1589,7 @@ test("a NoOutputGeneratedError without an abort is a fault (lastError set, not i
   // a genuine provider no-output failure (never aborted) is a fault. Painting it
   // as interrupt would suppress lastError and leave a goal run armed-but-idle
   // behind the interrupted guard with no pause reason.
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       throw Object.assign(new Error("no output generated"), { name: "NoOutputGeneratedError" });
     },
@@ -1519,7 +1617,7 @@ test("a stalled provider stream aborts via the watchdog and surfaces lastError (
   // A half-open stream (a part arrives, then nothing — no finish, no error)
   // would hang the turn forever. In a non-interactive run the chunk-idle watchdog
   // aborts it and the catch routes to lastError (a fault), not interrupted.
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => ({
       // Emit a start part, then never close the stream — a stall.
       stream: new ReadableStream({
@@ -1558,7 +1656,7 @@ test("an interactive session does NOT arm the stream-idle watchdog", async () =>
   // waits; Esc covers a wedged turn. The watchdog must not fire and auto-abort a
   // legitimately-slow interactive turn. A slow-but-completing stream finishes
   // cleanly with no lastError even though its gap exceeds the tiny timeout.
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => ({
       stream: simulateReadableStream({
         chunks: [
@@ -1566,7 +1664,7 @@ test("an interactive session does NOT arm the stream-idle watchdog", async () =>
           { type: "text-start", id: "t" },
           { type: "text-delta", id: "t", delta: "ok" },
           { type: "text-end", id: "t" },
-          { type: "finish", finishReason: "stop", usage: USAGE },
+          { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
         ] as never[],
         initialDelayInMs: 120, // exceeds the 50ms timeout below
         chunkDelayInMs: 0,
@@ -1605,7 +1703,7 @@ test("orphan rollback after emergency compaction re-binds userMsgRef (BUG-087)",
   let failStream = true;
   let summarizeCalls = 0;
   let sentPrompt: { role: string }[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     // #summarize uses generateText → doGenerate. Must SUCCEED so emergency
     // compact actually replaces messages (otherwise rebind is never exercised).
     doGenerate: async () => {
@@ -1619,8 +1717,8 @@ test("orphan rollback after emergency compaction re-binds userMsgRef (BUG-087)",
               "## VERIFIED FACTS\nnone\n## OPEN THREADS\nnone",
           },
         ],
-        finishReason: "stop",
-        usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 10, text: 10, reasoning: 0 } },
         warnings: [],
       } as never;
     },
@@ -1632,7 +1730,7 @@ test("orphan rollback after emergency compaction re-binds userMsgRef (BUG-087)",
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -1687,12 +1785,12 @@ test("resume does not promote estimated spend into actual hard-stop (BUG-103)", 
       { type: "text-end", id: "t" },
       {
         type: "finish",
-        finishReason: "stop",
-        usage: { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1000, noCache: 1000, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1000, text: 1000, reasoning: 0 } },
       },
     ]);
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => [reply("first"), reply("AFTER-RESUME")][call++] as never,
   });
   const bus = new EventBus();
@@ -1750,7 +1848,7 @@ test("resume with costEstimated flag alone keeps actual at 0 (BUG-103 legacy met
   const s = new Session({
     config: { ...defaultConfig(), budget: { limitUSD: 0.0001, onExceed: "stop" as const } },
     registry: mockRegistry(
-      new MockLanguageModelV2({
+      new MockLanguageModelV3({
         doStream: async () =>
           stream([
             { type: "stream-start", warnings: [] },
@@ -1759,8 +1857,8 @@ test("resume with costEstimated flag alone keeps actual at 0 (BUG-103 legacy met
             { type: "text-end", id: "t" },
             {
               type: "finish",
-              finishReason: "stop",
-              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              finishReason: { unified: "stop" as const, raw: undefined },
+              usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
             },
           ]) as never,
       }),

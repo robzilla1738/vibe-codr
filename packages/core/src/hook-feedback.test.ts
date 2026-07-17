@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
@@ -14,7 +14,7 @@ import { globalStateDir } from "./state-dir.ts";
 // the handoff-deny test can inspect the persisted plan file hermetically.
 process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 function stream(chunks: unknown[]) {
   return {
@@ -31,14 +31,14 @@ const textStep = (text: string) =>
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: text },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 
 /** A text-only model (no mutations → no gate/verify), capturing every prompt it
  * receives so the number of turns the engine drove is observable. */
 function textModel() {
   const prompts: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return textStep("done") as never;
@@ -47,7 +47,7 @@ function textModel() {
   return { model, prompts };
 }
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -59,7 +59,7 @@ function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
 }
 
 async function makeEngine(
-  model: MockLanguageModelV2,
+  model: MockLanguageModelV3,
 ): Promise<{ engine: Engine; events: UIEvent[]; collector: Promise<void> }> {
   const config = defaultConfig();
   config.model = "mock/test";
@@ -92,7 +92,7 @@ function selfAbortingModel() {
   const prompts: string[] = [];
   let calls = 0;
   let engine: Engine | undefined;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       calls += 1;
@@ -288,7 +288,7 @@ const presentPlanStep = (plan: string) =>
       toolName: "present_plan",
       input: JSON.stringify({ plan }),
     },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 
 /** Does a persisted plan file survive under this cwd's state dir? */
@@ -316,7 +316,7 @@ test("a handoff denied by a user.prompt.submit hook keeps the approved plan inta
       textStep("Executing."),
     ];
     let call = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async () => (steps[call++] ?? textStep("done")) as never,
     });
     const config = defaultConfig();

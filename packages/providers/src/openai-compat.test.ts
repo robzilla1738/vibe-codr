@@ -98,10 +98,10 @@ test("returns [] when fetch throws (network error)", async () => {
 
 // ── The paired factory: providers route through @ai-sdk/openai-compatible ───────
 // This module lists models for exactly the providers built with
-// createOpenAICompatible. That factory must produce an AI-SDK spec-"v2" model
-// (the repo's pinned-to-ai@5 invariant) with the model id passed straight through.
+// createOpenAICompatible. That factory must produce an AI SDK 7 spec-"v4"
+// model with the model id passed straight through.
 
-test("createOpenAICompatible builds a spec-v2 model with id passthrough (no network)", () => {
+test("createOpenAICompatible builds an SDK 7 model with id passthrough (no network)", () => {
   const provider = createOpenAICompatible({
     name: "test-provider",
     apiKey: "sk-test",
@@ -112,7 +112,7 @@ test("createOpenAICompatible builds a spec-v2 model with id passthrough (no netw
     specificationVersion?: string;
     modelId?: string;
   };
-  expect(model.specificationVersion).toBe("v2");
+  expect(model.specificationVersion).toBe("v4");
   expect(model.modelId).toBe("vendor/model-x");
 });
 

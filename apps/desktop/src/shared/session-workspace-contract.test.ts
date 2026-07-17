@@ -30,16 +30,22 @@ describe("sessions workspace contract", () => {
 
   it("does not claim an idle card is running", () => {
     expect(workspace).toContain('active: { label: "Active", description: "Work in progress" }');
-    expect(workspace).toContain('entry.status === "running"');
+    expect(workspace).toContain("cloudAutomaticSessionState(cloudStatus)");
     expect(workspace).toContain("workingKeys.has(item.key)");
     expect(workspace).not.toContain('label: "Running"');
+  });
+
+  it("allows a recovered cloud session to enter Review again later", () => {
+    expect(workspace).toContain('if (automaticStates.get(key) !== "review") appliedAutomaticStates.current.delete(key)');
+    expect(app).toContain('event.type === "session-start"');
+    expect(app).toContain("current === event.sessionId ? null : current");
   });
 
   it("does not mutate the local recovery record while cloud owns a session", () => {
     expect(workspace).toContain("isCloudSessionMutationLocked(entry.status)");
     expect(workspace).toContain("renamePending || cloudOwned.has(item.session.id)");
     expect(workspace).toContain("actionPending || cloudOwned.has(item.session.id)");
-    expect(workspace).toContain("disabled={remoteOwned || (busy && active)}");
+    expect(workspace).toContain("disabled={remoteOwned || (interactionDisabled && active)}");
     expect(main).toContain("cloudManager.runHistoryMutation");
     expect(cloudManager).toContain("Return Cloud-owned or interrupted sessions to Local");
   });

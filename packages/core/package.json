@@ -1,6 +1,6 @@
 {
   "name": "@vibe/core",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "exports": {
@@ -19,7 +19,7 @@
     "@vibe/providers": "workspace:*",
     "@vibe/shared": "workspace:*",
     "@vibe/tools": "workspace:*",
-    "ai": "^5.0.0",
+    "ai": "^7.0.30",
     "zod": "^4.0.0"
   }
 }

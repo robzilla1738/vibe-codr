@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig, type Config } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
@@ -17,12 +17,12 @@ function stream(chunks: unknown[]) {
     }),
   };
 }
-const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+const USAGE = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 const toolStep = (id: string, name: string, input: unknown) =>
   stream([
     { type: "stream-start", warnings: [] },
     { type: "tool-call", toolCallId: id, toolName: name, input: JSON.stringify(input) },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 const textStep = (text: string) =>
   stream([
@@ -30,12 +30,12 @@ const textStep = (text: string) =>
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: text },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 
 function mockEngine(steps: unknown[], cwd: string, config: Config) {
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
     {
       id: "mock",
@@ -197,13 +197,13 @@ test("plan approval: card-accept and mode-switch share one routine (same execute
           toolName: "present_plan",
           input: JSON.stringify({ plan: PLAN }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ]),
       textStep("Plan presented."),
       textStep("Implementing the plan."),
     ];
     let call = 0;
-    const model = new MockLanguageModelV2({
+    const model = new MockLanguageModelV3({
       doStream: async (options) => {
         prompts.push(JSON.stringify(options.prompt));
         return steps[call++] as never;
@@ -333,7 +333,7 @@ test("a mid-turn mode flip cannot smuggle a mutating turn past the gate", async 
   ]);
   let call = 0;
   const steps = [toolStep("c1", "mutate_flip", {}), textStep("Done.")];
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
     {
       id: "mock",
@@ -378,7 +378,7 @@ test("a denied handoff prompt re-arms the plan approval (the next message retrie
     textStep("Implementing."),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[Math.min(call++, steps.length - 1)] as never;
@@ -434,7 +434,7 @@ test("a denied handoff prompt re-arms the plan approval (the next message retrie
 test("/loop iteration runs built-in /status without prompting the model (BUG-075)", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-loop-"));
   let modelCalls = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       modelCalls += 1;
       return textStep("model should not run for /status loop tick") as never;

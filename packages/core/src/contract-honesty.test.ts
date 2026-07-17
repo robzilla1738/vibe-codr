@@ -7,7 +7,7 @@ import { test, expect } from "bun:test";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
@@ -15,7 +15,7 @@ import { defaultConfig } from "@vibe/config";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { Engine, applyGateToVerdict } from "./engine.ts";
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 function stream(chunks: unknown[]) {
   return {
@@ -32,18 +32,18 @@ const textStep = (text: string) =>
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: text },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 const toolStep = (id: string, name: string, input: unknown = {}) =>
   stream([
     { type: "stream-start", warnings: [] },
     { type: "tool-call", toolCallId: id, toolName: name, input: JSON.stringify(input) },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 const writeStep = (id: string, path: string, content: string) =>
   toolStep(id, "write", { path, content });
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -102,7 +102,7 @@ test("mid-turn flip to plan hard-denies a later write tool in the same turn", as
   };
   let call = 0;
   const steps = [toolStep("f1", "flip_to_plan"), toolStep("w1", "force_write"), textStep("done")];
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   engineRef = new Engine({
     config: { ...defaultConfig(), model: "mock/test", mode: "execute", approvalMode: "auto" },
     cwd,
@@ -161,7 +161,7 @@ test("mid-turn re-gate to ask prompts on the next unmatched mutating tool", asyn
     toolStep("d2", "danger"),
     textStep("done"),
   ];
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   engineRef = new Engine({
     config: {
       ...defaultConfig(),
@@ -215,7 +215,7 @@ test("permission-denied mutating tools do not trip the green-gate / UNVERIFIED p
   };
   let call = 0;
   const steps = [toolStep("d1", "danger"), textStep("blocked")];
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const engine = new Engine({
     config: {
       ...defaultConfig(),
@@ -270,7 +270,7 @@ test("switching back to plan after plan approval disarms task auto-continuations
     releaseContinue = r;
   });
   let sawContinue = false;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt);
       prompts.push(p);
@@ -284,7 +284,7 @@ test("switching back to plan after plan approval disarms task auto-continuations
             toolName: "present_plan",
             input: JSON.stringify({ plan: PLAN }),
           },
-          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+          { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
         ]) as never;
       }
       if (i === 1) return textStep("Plan ready.") as never;
@@ -363,7 +363,7 @@ test("dirty adversarial review does not advance plan-task continuations before r
   const holdFix = new Promise<void>((r) => {
     releaseFix = r;
   });
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const p = JSON.stringify(options.prompt);
       prompts.push(p);
@@ -377,7 +377,7 @@ test("dirty adversarial review does not advance plan-task continuations before r
             toolName: "present_plan",
             input: JSON.stringify({ plan: PLAN }),
           },
-          { type: "finish", finishReason: "tool-calls", usage: USAGE },
+          { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
         ]) as never;
       }
       if (i === 1) return textStep("Plan ready.") as never;
@@ -406,7 +406,7 @@ test("dirty adversarial review does not advance plan-task continuations before r
       reviewCalls++;
       return {
         content: [{ type: "text", text: "NOT REVIEW-CLEAN — src.ts:1 issue" }],
-        finishReason: "stop" as const,
+        finishReason: { unified: "stop" as const, raw: undefined },
         usage: USAGE,
         warnings: [],
       };
@@ -457,7 +457,7 @@ test("quiet set-approvals auto is ignored while a plan is waiting in plan mode",
   const cwd = mkdtempSync(join(tmpdir(), "vibe-quiet-yolo-"));
   const steps = [toolStep("p1", "present_plan", { plan: "# Plan\n- [ ] step" }), textStep("ready")];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test", mode: "plan", approvalMode: "ask" },
     cwd,

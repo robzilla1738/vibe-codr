@@ -6,7 +6,7 @@ setDefaultTimeout(20_000);
 import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig, type Config } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
@@ -15,7 +15,7 @@ import { Engine } from "./engine.ts";
 import { CheckpointManager } from "./checkpoints.ts";
 import { ledgerPath } from "./build/ledger.ts";
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 function stream(chunks: unknown[]) {
   return {
@@ -35,7 +35,7 @@ const writeStep = (id: string, path: string, content: string) =>
       toolName: "write",
       input: JSON.stringify({ path, content }),
     },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 const textStep = (text: string) =>
   stream([
@@ -43,10 +43,10 @@ const textStep = (text: string) =>
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: text },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -65,7 +65,7 @@ function mutatingModel(reviewVerdict: string, opts: { reviewThrows?: boolean } =
   const prompts: string[] = [];
   let stream = 0;
   let reviewCalls = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       const i = stream++;
@@ -82,7 +82,7 @@ function mutatingModel(reviewVerdict: string, opts: { reviewThrows?: boolean } =
       if (opts.reviewThrows) throw new Error("simulated review provider failure");
       return {
         content: [{ type: "text", text: reviewVerdict }],
-        finishReason: "stop" as const,
+        finishReason: { unified: "stop" as const, raw: undefined },
         usage: USAGE,
         warnings: [],
       };
@@ -106,7 +106,7 @@ function initGitRepo(files: Record<string, string>): string {
 
 async function runEngine(
   dir: string,
-  model: MockLanguageModelV2,
+  model: MockLanguageModelV3,
   patch: (c: Config) => void,
 ): Promise<UIEvent[]> {
   const config = defaultConfig();
@@ -267,14 +267,14 @@ test("scaffold refresh: a greenfield session that CREATES a manifest re-derives 
     writeStep("w1", "src.ts", "export const x = 1;\n"),
     textStep("fixed?"),
   ];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[i++] as never;
     },
     doGenerate: async () => ({
       content: [{ type: "text", text: "REVIEW-CLEAN" }],
-      finishReason: "stop" as const,
+      finishReason: { unified: "stop" as const, raw: undefined },
       usage: USAGE,
       warnings: [],
     }),
@@ -340,7 +340,7 @@ test("branch mode + checkpoints disabled: the review sees the turn's diff BEFORE
   });
   const reviewPrompts: string[] = [];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const i = call++;
       // Prompt 1: a no-op write (tree stays clean, so gitPrepare accepts the
@@ -354,7 +354,7 @@ test("branch mode + checkpoints disabled: the review sees the turn's diff BEFORE
       reviewPrompts.push(JSON.stringify(options.prompt));
       return {
         content: [{ type: "text", text: "NOT REVIEW-CLEAN — out.txt:1 suspicious change" }],
-        finishReason: "stop" as const,
+        finishReason: { unified: "stop" as const, raw: undefined },
         usage: USAGE,
         warnings: [],
       };
@@ -498,13 +498,13 @@ async function runPlanChain(
         toolName: "present_plan",
         input: JSON.stringify({ plan: planChecklist }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("Plan presented."),
     ...handoffSteps,
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return (steps[call++] ?? textStep("idle")) as never;
@@ -539,7 +539,7 @@ const updateTasksStep = (id: string, updates: { id: string; status: string }[]) 
       toolName: "update_tasks",
       input: JSON.stringify({ updates }),
     },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 
 test("plan chain: a GREEN gate does NOT auto-complete an in-progress task the model never finished", async () => {
@@ -645,7 +645,7 @@ test("engine-idle reports GREEN when a RED gate is fixed to green (guard doesn't
     "src.ts": "export const x = 1;\n",
   });
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const i = call++;
       // Turn 1: write out.txt (no pass.txt → red). Fix turn: write pass.txt (→ green).

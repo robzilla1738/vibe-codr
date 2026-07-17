@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +37,7 @@ afterAll(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 function stream(chunks: unknown[]) {
   return {
     stream: simulateReadableStream({
@@ -53,7 +53,7 @@ function textStep(delta: string) {
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 function spawnTasksStep(tasks: unknown[]) {
@@ -65,18 +65,18 @@ function spawnTasksStep(tasks: unknown[]) {
       toolName: "spawn_tasks",
       input: JSON.stringify({ tasks }),
     },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 function toolCallStep(toolName: string, input: unknown, id = "c1") {
   return stream([
     { type: "stream-start", warnings: [] },
     { type: "tool-call", toolCallId: id, toolName, input: JSON.stringify(input) },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 
-function mockRegistry(model: MockLanguageModelV2) {
+function mockRegistry(model: MockLanguageModelV3) {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -128,8 +128,8 @@ const applyTool: ToolDefinition<{ path?: string; content: string }> = {
 
 /** Drive the mock from the prompt text so it is robust to the non-deterministic
  * interleaving of PARALLEL children (a global step counter would break). */
-function routedModel(route: (promptJson: string) => unknown): MockLanguageModelV2 {
-  return new MockLanguageModelV2({
+function routedModel(route: (promptJson: string) => unknown): MockLanguageModelV3 {
+  return new MockLanguageModelV3({
     doStream: async (options) =>
       route(JSON.stringify((options as { prompt?: unknown }).prompt ?? "")) as never,
   });
@@ -646,7 +646,7 @@ test("a worktree task with check:true fails when the merged tree is red", async 
 test("a running child's tool calls surface as subagent-activity on the PARENT bus; the tap closes on finish", async () => {
   const cwd = tmpCwd();
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const steps = [
         toolCallStep("spawn_subagent", { prompt: "child: run a command" }), // parent

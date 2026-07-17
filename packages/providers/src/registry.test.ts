@@ -163,9 +163,9 @@ test("native cloud providers construct the AI SDK model family they require", as
         apiKey: "test",
         baseURL: "https://example.openai.azure.com/openai",
       })) as { specificationVersion?: string };
-    expect(bedrock.specificationVersion).toBe("v1");
-    expect(vertex.specificationVersion).toBe("v2");
-    expect(azure.specificationVersion).toBe("v2");
+    expect(bedrock.specificationVersion).toBe("v4");
+    expect(vertex.specificationVersion).toBe("v4");
+    expect(azure.specificationVersion).toBe("v4");
   } finally {
     if (previous.project === undefined) delete process.env.GOOGLE_VERTEX_PROJECT;
     else process.env.GOOGLE_VERTEX_PROJECT = previous.project;
@@ -363,11 +363,10 @@ test("ollama hits the cloud endpoint with a key and localhost without one", asyn
   expect(calls[1]).toBe("https://ollama.com/v1/models");
 });
 
-test("openai-compatible-routed providers create ai@5 (spec v2) models", async () => {
-  // baseten/xai/openrouter/fireworks are OpenAI-compatible endpoints driven
-  // through @ai-sdk/openai-compatible. Their dedicated packages moved to spec v3+
-  // (AI SDK v6) and would be rejected by ai@5 ("unsupported model version"), so
-  // this locks in that each still produces a spec-"v2" model.
+test("openai-compatible-routed providers create AI SDK 7 spec-v4 models", async () => {
+  // These are OpenAI-compatible endpoints driven through the shared transport.
+  // Lock in the current SDK contract so one stale provider cannot break runtime
+  // model resolution with an unsupported specification version.
   for (const id of [
     "baseten",
     "xai",
@@ -405,7 +404,7 @@ test("openai-compatible-routed providers create ai@5 (spec v2) models", async ()
     const model = (await def.create("some-model", opts)) as {
       specificationVersion?: string;
     };
-    expect(model.specificationVersion).toBe("v2");
+    expect(model.specificationVersion).toBe("v4");
   }
 });
 
@@ -423,12 +422,12 @@ test("the generic `custom` provider requires a base URL but works once given one
     });
     // listing degrades gracefully (no endpoint yet → empty, never throws).
     expect(await custom.listModels({ apiKey: "k" })).toEqual([]);
-    // With a base URL it builds a normal spec-v2 model.
+    // With a base URL it builds a normal spec-v4 model.
     const model = (await custom.create("m", {
       apiKey: "k",
       baseURL: "https://my-endpoint.example.com/v1",
     })) as { specificationVersion?: string };
-    expect(model.specificationVersion).toBe("v2");
+    expect(model.specificationVersion).toBe("v4");
   } finally {
     if (prev === undefined) delete process.env.CUSTOM_BASE_URL;
     else process.env.CUSTOM_BASE_URL = prev;
@@ -447,7 +446,7 @@ test("arbitrary config provider ids use Chat Completions and explicit models", a
   const model = (await reg.resolveModel("acme-gateway/acme-code", config)) as {
     specificationVersion?: string;
   };
-  expect(model.specificationVersion).toBe("v2");
+  expect(model.specificationVersion).toBe("v4");
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response("not found", { status: 404 })) as unknown as typeof fetch;
@@ -472,7 +471,7 @@ test("arbitrary config provider ids can select the OpenAI Responses transport", 
     specificationVersion?: string;
     provider?: string;
   };
-  expect(model.specificationVersion).toBe("v2");
+  expect(model.specificationVersion).toBe("v4");
   expect(model.provider).toContain("responses-gateway");
 });
 

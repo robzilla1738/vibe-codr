@@ -1,7 +1,7 @@
 # Acceptance Spec
 
 > Reference: this monorepo's CLI TUI and `packages/macos-bridge`
-> Last updated: 2026-07-16 (unified v0.6.0 source and release)
+> Last updated: 2026-07-16 (unified v0.6.1 source and release)
 > Status: shell product complete for P0 acceptance rows; residual risks and verification methods documented below — do not treat frozen unit/e2e counts as a live baseline
 
 ## Summary
@@ -147,11 +147,12 @@ Prefer `npm run verify` / `verify:ci` + CI for automated gates; do not treat fro
 | 2026-07-15 | Codex | 36/36 | 4/4 | v0.1.8 release closeout: fresh handoffs destroy stale same-name provisional sandboxes before create; the slash palette exposes one model selector with Commands/Skills/System groups; project/activity rails and composer popovers complete inert tokenized exits with reduced-motion collapse. Release gate: 579 unit tests, coverage floors, 21 source pairs, 40 config fields, bridge smoke, production build/bundle budgets, and 12 Electron E2E scenarios. |
 | 2026-07-15 | Codex | 44/44 | 4/4 | v0.1.16 provider closeout: synchronized 166-provider models.dev/OpenCode manifest, arbitrary named Chat Completions or Responses endpoints, built-in Codex PKCE and xAI browser/device subscription auth, Grok Build, main-only Cloud credential export, user-only rotating token store, and clone-safe engine parity tooling. Focused gates: 32 engine tests, 88 Electron tests, 21 source pairs, 40 config fields, typecheck, lint, production build, bundle budget, and locked bridge smoke. Live provider entitlement turns remain the documented packaged-user check. |
 | 2026-07-16 | Codex | 44/44 | 4/4 | v0.1.18 release closeout: the complete canonical slash catalog is release-gated and grouped into compact Commands/Skills/System tabs with descriptive current-value submenus; Codex and Grok subscription setup is model-aware; Grok 4.5 uses Responses; Cloud transfers the complete usable project tree plus every safe configured provider route and verifies those bindings inside the daemon before ownership moves. Gates: 1,570 engine tests, 597 Electron tests with coverage floors, 21 source pairs, 40 config fields, typecheck, lint, production build/bundle budgets, bridge smoke, 12 Electron scenarios, cloud-runtime smoke, unsigned native package, packaged-host boot, and zero npm audit findings. Paid provider entitlement turns remain the packaged-user check. |
+| 2026-07-16 | Codex | 44/44 | 4/4 | Unified v0.6.1 closeout: AI SDK 7/provider spec v4 streaming, one expandable Work phase per turn, live Sessions state, model-aware Cloud handoff with default key/subscription inclusion and explicit opt-outs, Grok key alias continuity, and a neutral-white Vibe Dark accent. Focused regressions and 622 Electron unit tests pass; the unified release gate remains authoritative for build, coverage, bridge, E2E, and package validation. |
 
 **Current verification snapshot (2026-07-16):**
 
 ```text
-npm test                         # 597/597 pass (2 paid-provider tests skipped)
+npm test                         # 622 pass (2 paid-provider tests skipped)
 npm run test:coverage            # floors on shared + bridge modules
 npm run lint                     # clean
 npm run typecheck                # pass
@@ -164,8 +165,8 @@ npm run smoke:bridge             # pass; ready, snapshot, and project-list check
 npm run verify:ci                # verify + coverage + bridge smoke + e2e
 npm run smoke:packaged           # pass without VIBE_CODR_ROOT; no orphan host
 
-# v0.1.18 engine/provider/cloud release
-bun run test (engine workspace)   # 1,570/1,570 pass
+# unified v0.6.1 engine/provider/cloud release
+bun run test (engine workspace)   # covered by repository-root release gate
 bun run smoke:cloud-runtime       # exact session/model/history + daemon smoke
 npm audit --audit-level=low       # 0 vulnerabilities
 ```

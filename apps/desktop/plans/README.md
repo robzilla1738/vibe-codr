@@ -22,6 +22,9 @@
    reliable native assistant Copy, master-detail Changes review, session view and
    scroll preservation, contextual project/home terminals, plan-card cleanup,
    rotating loaders, uniform rail icons/type, and the equally inset grey dock
+9. Unified v0.6.1 polish: AI SDK 7 streaming, one expandable Work phase per
+   turn, live Sessions state, complete model-aware Cloud handoff with opt-outs,
+   and a neutral-white Vibe Dark default accent
 
 ## External or optional follow-up
 
@@ -33,6 +36,6 @@
 
 ## Verification snapshot (2026-07-16)
 
-606 unit tests, 12 e2e scenarios, 21 source pairs, 40 config fields, coverage
+622 passing unit tests (2 paid-provider tests skipped), 12 e2e scenarios, 21 source pairs, 40 config fields, coverage
 floors, bridge smoke, and locked-engine packaged smoke green. See root
 `VERIFICATION.md` / `ACCEPTANCE.md`.

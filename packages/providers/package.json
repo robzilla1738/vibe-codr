@@ -1,6 +1,6 @@
 {
   "name": "@vibe/providers",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "exports": {
@@ -16,16 +16,16 @@
   "dependencies": {
     "@vibe/config": "workspace:*",
     "@vibe/shared": "workspace:*",
-    "ai": "^5.0.0"
+    "ai": "^7.0.30"
   },
   "peerDependencies": {
-    "@ai-sdk/amazon-bedrock": "^2.0.0",
-    "@ai-sdk/anthropic": "^2.0.0",
-    "@ai-sdk/azure": "^2.0.0",
-    "@ai-sdk/deepseek": "^1.0.0",
-    "@ai-sdk/google-vertex": "^3.0.0",
-    "@ai-sdk/openai": "^2.0.0",
-    "@ai-sdk/openai-compatible": "^1.0.0",
+    "@ai-sdk/amazon-bedrock": "^5.0.0",
+    "@ai-sdk/anthropic": "^4.0.0",
+    "@ai-sdk/azure": "^4.0.0",
+    "@ai-sdk/deepseek": "^3.0.0",
+    "@ai-sdk/google-vertex": "^5.0.0",
+    "@ai-sdk/openai": "^4.0.0",
+    "@ai-sdk/openai-compatible": "^3.0.0",
     "@aws-sdk/credential-providers": "^3.0.0"
   },
   "peerDependenciesMeta": {

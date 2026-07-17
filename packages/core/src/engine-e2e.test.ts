@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
@@ -27,9 +27,9 @@ function stream(chunks: unknown[]) {
     }),
   };
 }
-const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+const USAGE = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -57,18 +57,18 @@ test("Engine: prompt -> real read builtin -> tool result -> final text", async (
         toolName: "read",
         input: JSON.stringify({ path: "secret.txt" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t1" },
       { type: "text-delta", id: "t1", delta: "The file says the answer is 42." },
       { type: "text-end", id: "t1" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test" },
@@ -124,14 +124,14 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
         toolName: "present_plan",
         input: JSON.stringify({ plan: "1. Refactor the loader\n2. Add tests" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "a" },
       { type: "text-delta", id: "a", delta: "Plan presented." },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     // Execute turn (after approval): capture the prompt the model receives.
     stream([
@@ -139,11 +139,11 @@ test("Engine planning: present_plan persists the plan + plan→execute injects a
       { type: "text-start", id: "b" },
       { type: "text-delta", id: "b", delta: "Implementing the plan." },
       { type: "text-end", id: "b" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -217,18 +217,18 @@ test("Engine structured question blocks the tool until a typed UI answer arrives
           allowFreeform: true,
         }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "a" },
       { type: "text-delta", id: "a", delta: "Using the safe path." },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test" },
     cwd,
@@ -267,25 +267,25 @@ test("Engine planning: resolve-plan accept switches to execute, seeds tasks, run
         toolName: "present_plan",
         input: JSON.stringify({ plan: "## Steps\n- [ ] Refactor the loader\n- [ ] Add tests" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "a" },
       { type: "text-delta", id: "a", delta: "Plan presented." },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "b" },
       { type: "text-delta", id: "b", delta: "Implementing the plan." },
       { type: "text-end", id: "b" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -355,25 +355,25 @@ async function seedPlanTasks(plan: string): Promise<{ titles: string[]; truncate
         toolName: "present_plan",
         input: JSON.stringify({ plan }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "a" },
       { type: "text-delta", id: "a", delta: "Plan presented." },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "b" },
       { type: "text-delta", id: "b", delta: "Implementing." },
       { type: "text-end", id: "b" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test", mode: "plan" },
     cwd,
@@ -438,25 +438,25 @@ test("Engine planning: accept with approvals:'auto' (the plan card's ^Y) launche
         toolName: "present_plan",
         input: JSON.stringify({ plan: "- [ ] Do the thing" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "a" },
       { type: "text-delta", id: "a", delta: "Plan presented." },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "b" },
       { type: "text-delta", id: "b", delta: "Doing it." },
       { type: "text-end", id: "b" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const engine = new Engine({
     // Gated ask baseline — the override alone must produce yolo execution.
     config: { ...defaultConfig(), model: "mock/test", mode: "plan", approvalMode: "ask" },
@@ -501,7 +501,7 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
         toolName: "present_plan",
         input: JSON.stringify({ plan: "Do the thing." }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]);
   const textStep = (t: string) =>
     stream([
@@ -509,7 +509,7 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: t },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]);
   // Calls: 0 present_plan, 1 plan-text, 2 HOLDER (blocks), 3 typed-ahead A, 4 execute-plan B.
   const steps = [
@@ -520,7 +520,7 @@ test("Engine planning: a prompt queued ahead of plan-accept can't steal the hand
     textStep("B ran"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const idx = call++;
       prompts.push(JSON.stringify(options.prompt));
@@ -578,7 +578,7 @@ test("abort during a loop iteration interrupts the loop's session (not just the 
   let signalStarted!: () => void;
   const started = new Promise<void>((r) => (signalStarted = r));
   const abortErr = () => Object.assign(new Error("aborted"), { name: "AbortError" });
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       // Announce the model call began, then block until the turn's signal aborts.
       // If abort never reaches THIS session's signal, the turn hangs forever.
@@ -593,7 +593,7 @@ test("abort during a loop iteration interrupts the loop's session (not just the 
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "SHOULD_NOT_APPEAR" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -631,7 +631,7 @@ test("loop iterations reuse the main session context", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-loopctx-"));
   const prompts: string[] = [];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       call += 1;
@@ -644,7 +644,7 @@ test("loop iterations reuse the main session context", async () => {
           delta: call === 1 ? "MEMORY_MARKER_ALPHA" : "loop saw context",
         },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -675,7 +675,7 @@ test("loop iterations reuse the main session context", async () => {
 
 test("Engine /clear emits exactly one 'Conversation cleared.' notice", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-clear-"));
-  const model = new MockLanguageModelV2({ doStream: async () => stream([]) });
+  const model = new MockLanguageModelV3({ doStream: async () => stream([]) });
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test" },
     cwd,
@@ -711,7 +711,7 @@ test("Engine planning: resolve-plan edit re-plans with feedback; keep-planning s
         toolName: "present_plan",
         input: JSON.stringify({ plan: "1. Do the thing" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]);
   const textStep = (t: string) =>
     stream([
@@ -719,11 +719,11 @@ test("Engine planning: resolve-plan edit re-plans with feedback; keep-planning s
       { type: "text-start", id: "x" },
       { type: "text-delta", id: "x", delta: t },
       { type: "text-end", id: "x" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]);
   const steps = [planStep(), textStep("first plan"), planStep(), textStep("revised plan")];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -773,7 +773,7 @@ test("Engine: a fresh top-level prompt clears the blackboard (turn-1 note gone i
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: id, toolName: name, input: JSON.stringify(input) },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]);
   const textStep = (t: string) =>
     stream([
@@ -781,7 +781,7 @@ test("Engine: a fresh top-level prompt clears the blackboard (turn-1 note gone i
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: t },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]);
   const steps = [
     // Turn 1: post a claim, then read the board back (should show the claim), then finish.
@@ -793,7 +793,7 @@ test("Engine: a fresh top-level prompt clears the blackboard (turn-1 note gone i
     textStep("turn two done"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const engine = new Engine({
     config: { ...defaultConfig(), model: "mock/test", checkpoints: { enabled: false } },
@@ -848,7 +848,7 @@ test("/skill invokes a skill even when a built-in shadows its bare name", async 
   );
 
   const prompts: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return stream([
@@ -856,7 +856,7 @@ test("/skill invokes a skill even when a built-in shadows its bare name", async 
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "ok" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ]) as never;
     },
   });
@@ -956,7 +956,7 @@ test("Engine plan mode: free-form plan without present_plan gets a present nudge
         toolName: "web_search",
         input: JSON.stringify({ query: "world cup yesterday" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -966,7 +966,7 @@ test("Engine plan mode: free-form plan without present_plan gets a present nudge
         toolName: "webfetch",
         input: JSON.stringify({ url: "https://fifa.com/match-report" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -976,7 +976,7 @@ test("Engine plan mode: free-form plan without present_plan gets a present nudge
         toolName: "package_info",
         input: JSON.stringify({ name: "next" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -987,7 +987,7 @@ test("Engine plan mode: free-form plan without present_plan gets a present nudge
         delta: "The Plan\n- [ ] Build the site\nNext Step: I'm starting svvarm init.",
       },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     // Turn 2: engine present-plan nudge — model finally calls present_plan.
     stream([
@@ -998,18 +998,18 @@ test("Engine plan mode: free-form plan without present_plan gets a present nudge
         toolName: "present_plan",
         input: JSON.stringify(grounded),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "b" },
       { type: "text-delta", id: "b", delta: "Plan presented." },
       { type: "text-end", id: "b" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -1056,11 +1056,11 @@ test("Engine plan mode: trivial self-contained plan does not get a present nudge
       { type: "text-start", id: "a" },
       { type: "text-delta", id: "a", delta: "Write a haiku about rain." },
       { type: "text-end", id: "a" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;

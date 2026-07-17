@@ -90,9 +90,18 @@ export function ambientCloudModelEnvironment(
         "AWS_DEFAULT_REGION",
       ]) names.add(name);
     }
+    if (providerId === "xai-oauth") names.add("XAI_BASE_URL");
     for (const name of names) {
       const value = source[name]?.trim();
       if (value) environment[name] = value;
+    }
+    if (providerId === "xai-oauth") {
+      // An ambient XAI_API_KEY has no provenance: it may belong to a custom
+      // standard-xAI endpoint. Never retarget it to the official subscription
+      // route. The manager adds an exported Grok token afterward, while an
+      // official Settings key is admitted separately by compatibleXaiApiKey.
+      delete environment.XAI_API_KEY;
+      delete environment.XAI_BASE_URL;
     }
   }
   return environment;
@@ -103,17 +112,18 @@ export function cloudModelEnvironment(
   globalConfig: VibeConfig | undefined,
   projectConfig: VibeConfig | undefined,
   boundEnvironment: Record<string, string>,
+  options: { includeConfiguredCredentials?: boolean } = {},
 ): Record<string, string> {
   const providerId = model.split("/", 1)[0]?.trim();
   if (!providerId) throw new Error("Cloud handoff requires a provider-qualified model");
-  const trustProjectConfig = globalConfig?.security?.trustProjectConfig === true;
-  const providerConfig: ProviderConfig = {
-    ...(globalConfig?.providers?.[providerId] ?? {}),
-    ...(trustProjectConfig ? projectConfig?.providers?.[providerId] ?? {} : {}),
-  };
+  const configuredProvider = configuredProviderForCloud(providerId, globalConfig, projectConfig, boundEnvironment);
+  const providerConfig: ProviderConfig = options.includeConfiguredCredentials === false
+    ? {}
+    : configuredProvider;
   const runtime = PROVIDER_RUNTIME_METADATA.find((item) => item.id === providerId);
   const manifest = PROVIDER_MANIFEST.find((item) => item.id === providerId);
-  const isArbitraryProvider = !runtime && !manifest && Boolean(providerConfig.baseURL);
+  const explicitArbitraryBaseUrl = boundEnvironment[configProviderEnvironmentName(providerId, "BASE_URL")];
+  const isArbitraryProvider = !runtime && !manifest && Boolean(providerConfig.baseURL || explicitArbitraryBaseUrl);
   const authEnvironment = runtime?.env ?? (isArbitraryProvider
     ? [configProviderEnvironmentName(providerId, "API_KEY")]
     : [...new Set([
@@ -126,6 +136,11 @@ export function cloudModelEnvironment(
   const baseUrlEnvironment = runtime?.baseURLEnv ?? BASE_URL_ENV[providerId]
     ?? (isArbitraryProvider ? configProviderEnvironmentName(providerId, "BASE_URL") : undefined);
   const environment = { ...boundEnvironment };
+  const hasIncompatibleXaiRoute = providerId === "xai-oauth"
+    && Boolean(boundEnvironment.XAI_BASE_URL)
+    && !isOfficialXaiBaseUrl(boundEnvironment.XAI_BASE_URL!);
+  if (providerId === "xai-oauth") delete environment.XAI_BASE_URL;
+  if (hasIncompatibleXaiRoute) delete environment.XAI_API_KEY;
   for (const name of authEnvironment) delete environment[name];
   const selectedAuthEnvironment = providerId === "amazon-bedrock"
     ? boundEnvironment.AWS_BEARER_TOKEN_BEDROCK
@@ -133,7 +148,8 @@ export function cloudModelEnvironment(
       : boundEnvironment.AWS_ACCESS_KEY_ID && boundEnvironment.AWS_SECRET_ACCESS_KEY
         ? ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
         : []
-    : [authEnvironment.find((name) => Boolean(boundEnvironment[name]))].filter((name): name is string => Boolean(name));
+    : [authEnvironment.find((name) => Boolean(boundEnvironment[name]) && !(hasIncompatibleXaiRoute && name === "XAI_API_KEY"))]
+      .filter((name): name is string => Boolean(name));
   for (const name of selectedAuthEnvironment) environment[name] = boundEnvironment[name];
   if (baseUrlEnvironment && boundEnvironment[baseUrlEnvironment]) {
     environment[baseUrlEnvironment] = boundEnvironment[baseUrlEnvironment];
@@ -203,24 +219,77 @@ export function cloudModelRouteHostname(
   globalConfig: VibeConfig | undefined,
   projectConfig: VibeConfig | undefined,
   environment: Record<string, string>,
+  options: { includeConfiguredCredentials?: boolean } = {},
 ): string | undefined {
   const providerId = model.split("/", 1)[0]?.trim();
   if (!providerId) return undefined;
-  const providerConfig: ProviderConfig = {
-    ...(globalConfig?.providers?.[providerId] ?? {}),
-    ...(globalConfig?.security?.trustProjectConfig === true
-      ? projectConfig?.providers?.[providerId] ?? {}
-      : {}),
-  };
+  const providerConfig = options.includeConfiguredCredentials === false
+    ? {}
+    : configuredProviderForCloud(providerId, globalConfig, projectConfig, environment);
   const runtime = PROVIDER_RUNTIME_METADATA.find((item) => item.id === providerId);
+  const manifest = PROVIDER_MANIFEST.find((item) => item.id === providerId);
+  const explicitArbitraryBaseUrl = !runtime && !manifest
+    ? environment[configProviderEnvironmentName(providerId, "BASE_URL")]
+    : undefined;
+  const routeProviderConfig = explicitArbitraryBaseUrl
+    ? { ...providerConfig, baseURL: explicitArbitraryBaseUrl }
+    : providerConfig;
   const route = effectiveRoute(
     providerId,
-    providerConfig,
+    routeProviderConfig,
     runtime,
-    PROVIDER_MANIFEST.find((item) => item.id === providerId)?.baseURL,
+    manifest?.baseURL,
     environment,
   );
   return route ? new URL(route).hostname : undefined;
+}
+
+function configuredProviderForCloud(
+  providerId: string,
+  globalConfig: VibeConfig | undefined,
+  projectConfig: VibeConfig | undefined,
+  environment: Record<string, string> = {},
+): ProviderConfig {
+  const trustProjectConfig = globalConfig?.security?.trustProjectConfig === true;
+  const compatibleProviderConfig = providerId === "xai-oauth"
+    ? {
+        apiKey: compatibleXaiApiKey(globalConfig, projectConfig, environment),
+      }
+    : {};
+  if (providerId === "xai-oauth") return compatibleProviderConfig;
+  return {
+    ...compatibleProviderConfig,
+    ...(globalConfig?.providers?.[providerId] ?? {}),
+    ...(trustProjectConfig ? projectConfig?.providers?.[providerId] ?? {} : {}),
+  };
+}
+
+function compatibleXaiApiKey(
+  globalConfig: VibeConfig | undefined,
+  projectConfig: VibeConfig | undefined,
+  environment: Record<string, string>,
+): string | undefined {
+  const trustProjectConfig = globalConfig?.security?.trustProjectConfig === true;
+  const config: ProviderConfig = {
+    ...(globalConfig?.providers?.xai ?? {}),
+    ...(trustProjectConfig ? projectConfig?.providers?.xai ?? {} : {}),
+  };
+  if (!config.apiKey) return undefined;
+  const route = config.baseURL ?? environment.XAI_BASE_URL;
+  if (!route) return config.apiKey;
+  try {
+    return new URL(route).hostname.toLowerCase() === "api.x.ai" ? config.apiKey : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isOfficialXaiBaseUrl(route: string): boolean {
+  try {
+    return new URL(route).hostname.toLowerCase() === "api.x.ai";
+  } catch {
+    return false;
+  }
 }
 
 function effectiveRoute(

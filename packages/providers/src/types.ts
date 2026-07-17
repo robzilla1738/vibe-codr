@@ -85,7 +85,7 @@ export interface ProviderDef {
   createEmbedding?(
     modelId: string,
     opts: ProviderCreateOptions,
-  ): EmbeddingModel<string> | Promise<EmbeddingModel<string>>;
+  ): EmbeddingModel | Promise<EmbeddingModel>;
   /** Live availability via the provider's `/v1/models` (or SDK). */
   listModels(opts: ProviderCreateOptions): Promise<ModelInfo[]>;
 }

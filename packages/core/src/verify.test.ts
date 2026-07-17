@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -19,20 +19,20 @@ test("runVerify reports success and failure with captured output", async () => {
   expect(fail.output).toContain("boom");
 });
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 // Reusable CHUNK DATA (not streams) — a fresh stream is built per doStream call,
 // since a ReadableStream can only be consumed once.
 const MUTATE_STEP = [
   { type: "stream-start", warnings: [] },
   { type: "tool-call", toolCallId: "c", toolName: "edit_stub", input: "{}" },
-  { type: "finish", finishReason: "tool-calls", usage: USAGE },
+  { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
 ];
 const FINAL_STEP = [
   { type: "stream-start", warnings: [] },
   { type: "text-start", id: "t" },
   { type: "text-delta", id: "t", delta: "ok" },
   { type: "text-end", id: "t" },
-  { type: "finish", finishReason: "stop", usage: USAGE },
+  { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
 ];
 const mutateThenDone = [MUTATE_STEP, FINAL_STEP];
 const chatOnly = [FINAL_STEP];
@@ -47,7 +47,7 @@ function makeEngine(steps: unknown[][], verify: Config["verify"]) {
     execute: async () => ({ output: "edited" }),
   };
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const chunks = steps[call++ % steps.length] as never[];
       return {

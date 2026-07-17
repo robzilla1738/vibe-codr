@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockEmbeddingModelV2 } from "ai/test";
+import { MockEmbeddingModelV3 } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig, type Config } from "@vibe/config";
 import { MemoryService } from "./memory-service.ts";
@@ -13,7 +13,7 @@ function freshDir(): string {
 
 /** A bag-of-words mock embedding so cosine reflects token overlap. */
 function bagOfWordsEmbedding(dim = 64) {
-  return new MockEmbeddingModelV2({
+  return new MockEmbeddingModelV3({
     doEmbed: async ({ values }: { values: string[] }) => ({
       embeddings: values.map((text) => {
         const v = new Array(dim).fill(0);
@@ -28,6 +28,7 @@ function bagOfWordsEmbedding(dim = 64) {
         return v;
       }),
       usage: { tokens: values.length },
+      warnings: [],
     }),
   });
 }

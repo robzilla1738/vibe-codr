@@ -705,6 +705,9 @@ function registerIpc(): void {
       return { ok: false as const, error: "Cloud handoff is limited to the active authorized project" };
     }
     if (request.provider !== "e2b" && request.provider !== "vercel") return { ok: false as const, error: "Unknown cloud provider" };
+    if (request.includeModelCredentials !== undefined && typeof request.includeModelCredentials !== "boolean") {
+      return { ok: false as const, error: "Invalid model credential transfer preference" };
+    }
     try { return { ok: true as const, value: await cloudManager.handoffToCloud(request) }; }
     catch (error) {
       const details = cloudFailureDetails(error);

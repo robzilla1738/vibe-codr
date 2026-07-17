@@ -31,6 +31,23 @@ describe("handoff IPC boundary", () => {
     expect(source).toContain("Return this session to Local before changing model access");
   });
 
+  it("keeps standard xAI credentials out of Grok subscription handoffs", () => {
+    const manager = readFileSync(join(process.cwd(), "src", "main", "cloud", "manager.ts"), "utf8");
+    expect(manager).toContain('requiredProviderIds.has("xai") && requiredProviderIds.has("xai-oauth")');
+    expect(manager).toContain('providerId === xaiCredentialScope');
+    expect(manager).toContain("compatibleOptionalModels");
+    const resolver = manager.slice(manager.indexOf("async #cloudModelEnvironment("), manager.indexOf("#emit(", manager.indexOf("async #cloudModelEnvironment(")));
+    expect(resolver.indexOf("ambientCloudModelEnvironment")).toBeLessThan(resolver.indexOf('rpc("exportProviderAuth"'));
+    expect(manager).toContain("new Set([...models, ...compatibleOptionalModels]");
+    expect(resolver).toContain("new Set([...models, ...compatibleOptionalModels].map");
+  });
+
+  it("validates the per-handoff model credential preference", () => {
+    const handler = source.slice(source.indexOf('ipcMain.handle("cloud:handoff"'), source.indexOf('ipcMain.handle("cloud:reconnect"'));
+    expect(handler).toContain('typeof request.includeModelCredentials !== "boolean"');
+    expect(handler).toContain("Invalid model credential transfer preference");
+  });
+
   it("blocks cloud reconnect while ownership is changing", () => {
     const handler = source.slice(source.indexOf('ipcMain.handle("cloud:reconnect"'), source.indexOf('ipcMain.handle("cloud:resumeLocal"'));
     expect(handler).toContain("cloudManager.ownershipTransitionActive");

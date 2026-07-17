@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { ToolDefinition, UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset, presentPlanTool } from "@vibe/tools";
@@ -23,7 +23,7 @@ function stream(chunks: unknown[]) {
     }),
   };
 }
-const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+const USAGE = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 
 /** A fake keyless web_search: read-only, so it survives the plan-mode filter. */
 const fakeSearch: ToolDefinition<{ query: string }> = {
@@ -80,7 +80,7 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
         toolName: "present_plan",
         input: JSON.stringify({ plan: "Build a site about today's match." }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // Step 2: bounced — so it actually researches (search + fetch + package).
     stream([
@@ -91,7 +91,7 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
         toolName: "web_search",
         input: JSON.stringify({ query: "world cup match today" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -101,7 +101,7 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
         toolName: "webfetch",
         input: JSON.stringify({ url: "https://fifa.com/todays-match" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -111,7 +111,7 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
         toolName: "package_info",
         input: JSON.stringify({ name: "next" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // Step 5: presents again, grounded and citing its source.
     stream([
@@ -122,18 +122,18 @@ test("plan gate: ungrounded present_plan is rejected, research + sources make it
         toolName: "present_plan",
         input: JSON.stringify(groundedPlan),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "Plan presented." },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const bus = new EventBus();
   const session = new Session({
     config: defaultConfig(),
@@ -197,7 +197,7 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
         toolName: "web_search",
         input: JSON.stringify({ query: "world cup match today" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -207,7 +207,7 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
         toolName: "webfetch",
         input: JSON.stringify({ url: "https://fifa.com/todays-match" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -217,7 +217,7 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
         toolName: "package_info",
         input: JSON.stringify({ name: "next" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -227,18 +227,18 @@ test("plan gate survives a mid-turn mode switch away from plan", async () => {
         toolName: "present_plan",
         input: JSON.stringify(groundedPlan),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "Plan presented." },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const bus = new EventBus();
   let session: Session;
   const flippingSearch: ToolDefinition<{ query: string }> = {
@@ -302,7 +302,7 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
         toolName: "web_search",
         input: JSON.stringify({ query: "zzz qqq" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // Step 2: try to present with a fabricated source — must be REJECTED.
     stream([
@@ -316,18 +316,18 @@ test("plan gate: a zero-result web_search does not satisfy the grounding require
           sources: [{ url: "https://example.com/made-up" }],
         }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "done" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const bus = new EventBus();
   const session = new Session({
     config: defaultConfig(),
@@ -388,7 +388,7 @@ test("successful present_plan disables further tools this turn", async () => {
         toolName: "web_search",
         input: JSON.stringify({ query: "world cup match today" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -398,7 +398,7 @@ test("successful present_plan disables further tools this turn", async () => {
         toolName: "webfetch",
         input: JSON.stringify({ url: "https://fifa.com/todays-match" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -408,7 +408,7 @@ test("successful present_plan disables further tools this turn", async () => {
         toolName: "package_info",
         input: JSON.stringify({ name: "next" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
@@ -418,7 +418,7 @@ test("successful present_plan disables further tools this turn", async () => {
         toolName: "present_plan",
         input: JSON.stringify(groundedPlan),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // Post-present: model tries another tool (the failure mode we hard-stop).
     stream([
@@ -429,18 +429,18 @@ test("successful present_plan disables further tools this turn", async () => {
         toolName: "web_search",
         input: JSON.stringify({ query: "should-not-run" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "Waiting for approval." },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const bus = new EventBus();
   const session = new Session({
     config: defaultConfig(),
@@ -478,6 +478,8 @@ test("successful present_plan disables further tools this turn", async () => {
   );
   if (s2) {
     expect(s2.isError).toBe(true);
-    expect(String(s2.output)).toMatch(/plan already presented|disabled this turn/i);
+    expect(String(s2.output)).toMatch(
+      /plan already presented|disabled this turn|unavailable tool|no such tool/i,
+    );
   }
 });

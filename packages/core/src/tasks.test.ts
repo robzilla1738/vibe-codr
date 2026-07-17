@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
@@ -18,9 +18,9 @@ function stream(chunks: unknown[]) {
   };
 }
 
-const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+const USAGE = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -58,18 +58,18 @@ test("update_tasks records the task list and emits tasks-updated", async () => {
         toolName: "update_tasks",
         input: JSON.stringify({ tasks }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t1" },
       { type: "text-delta", id: "t1", delta: "On it." },
       { type: "text-end", id: "t1" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => steps[call++] as never,
   });
 
@@ -114,18 +114,18 @@ test("update_tasks id-addressed patches flip statuses without resending the list
           add: ["Ship it"],
         }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t1" },
       { type: "text-delta", id: "t1", delta: "Patched." },
       { type: "text-end", id: "t1" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
 
   const bus = new EventBus();
   const session = new Session({

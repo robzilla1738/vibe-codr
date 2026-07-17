@@ -1,16 +1,16 @@
 # Verification
 
-Quick gate before shipping desktop changes from [`apps/desktop`](https://github.com/robzilla1738/vibe-codr/tree/main/apps/desktop).
+Quick gate before shipping Electron shell changes. Repo: [vbcode-electron](https://github.com/robzilla1738/vbcode-electron).
 
 ## Experimental cloud gate
 
-- `cd ../.. && bun test packages/core/src/portable-session.test.ts packages/core/src/session-tools.test.ts`
-- `cd ../.. && bun test packages/cloud-agentd/src/cloud-model-probe.test.ts packages/providers/src/registry.test.ts`
+- `cd ../cli && bun test packages/core/src/portable-session.test.ts packages/core/src/session-tools.test.ts`
+- `cd ../cli && bun test packages/cloud-agentd/src/cloud-model-probe.test.ts packages/providers/src/registry.test.ts`
   proves the sandbox preflight performs a bounded real generation for every
   exact model, rejects a model-list false positive, and restores arbitrary
   provider endpoint/transport bindings without a Mac-only config file.
-- `cd ../.. && bun run build:cloud-runtime`
-- `cd ../.. && bun run smoke:cloud-runtime` verifies the archive with
+- `cd ../cli && bun run build:cloud-runtime`
+- `cd ../cli && bun run smoke:cloud-runtime` verifies the archive with
   network disabled, loads `node-pty`/`ws`, exports and imports a real engine
   session into the canonical cloud state root as the isolated workload user,
   resumes that exact session ID with a non-default Ollama model and persisted
@@ -75,8 +75,8 @@ npm test -- --run src/shared/provider-auth.test.ts src/shared/renderer-rpc.test.
 npm run typecheck
 npm run verify:source-parity
 
-# Locked engine OAuth/registry/bridge contracts
-cd ../..
+# Locked sibling engine OAuth/registry/bridge contracts
+cd ../cli
 bun test packages/providers/src/oauth.test.ts packages/providers/src/registry.test.ts \
   packages/macos-bridge/src/protocol.test.ts packages/macos-bridge/src/host.integration.test.ts
 bun run typecheck
@@ -91,7 +91,7 @@ live entitlement checks are not run by CI and must not be represented as
 automated coverage.
 
 ```bash
-cd /path/to/vibe-codr/apps/desktop
+cd ~/Code/vbcode-electron   # or your clone of this repo
 npm test
 npm run test:coverage  # V8 floors on shared + bridge/host-resolver/ipc-security
 npm run lint
@@ -100,7 +100,7 @@ npm run verify:config-shape
 npm run typecheck
 npm run build
 npm run verify:bundle
-npm run smoke:bridge   # requires the locked engine worktree host or VIBE_CODR_ROOT
+npm run smoke:bridge   # requires vibe-codr dist host (sibling or VIBE_CODR_ROOT)
 npm run test:e2e       # hermetic Electron host/renderer lifecycle matrix
 ```
 
@@ -123,29 +123,30 @@ prevents parallel test workers from racing Electron 43's lazy binary download.
 | `npm run verify:ci` | verify + coverage + bridge smoke + E2E |
 
 The source and config parity commands read their upstream files directly from
-the exact revision in `ENGINE_COMMIT` with `git show`. The canonical repository
-therefore only needs to contain that commit; newer default-branch work cannot
-silently redefine the release contract. Packaging is stricter: `copy-host` requires the engine checkout HEAD
+the exact revision in `ENGINE_COMMIT` with `git show`. `VIBE_CODR_ROOT` (or the
+default `~/Code/vibe-codr`) therefore only needs to contain that fetched
+commit; uncommitted sibling work cannot silently redefine the release
+contract. Packaging is stricter: `copy-host` requires the engine checkout HEAD
 to equal `ENGINE_COMMIT`, rejects dirty runtime paths, verifies source freshness
 and host architecture, and only then embeds the host. The source parity script
 allows documented Electron-specific additions and normalizes whitespace to
 avoid false formatting drift.
 
-CI materializes the locked engine commit at repository-root `.engine` and
-points parity, bridge, cloud-runtime, and packaging gates at that worktree.
+CI checks the engine source out at `./vibe-codr`. That directory is excluded
+from this repository's Biome scope so both checkouts retain independent root
+configurations while the parity and bridge gates can still read it directly.
 The macOS-only `electron-liquid-glass` package is optional, externally bundled,
 and loaded only after a Darwin platform check; Linux CI must typecheck, build,
 and run the Electron harness without installing that native module.
 
-Repository-root GitHub CI (`../../.github/workflows/ci.yml`) runs `verify`, coverage floors,
+GitHub CI (`.github/workflows/ci.yml`) runs `verify`, coverage floors,
 `smoke:bridge`, and Electron E2E on Linux, plus explicitly unsigned native-host
 packaged smokes on macOS and Windows and a validated NSIS/update-feed build.
 A `v<package-version>` tag triggers
-`../../.github/workflows/release.yml`, which gates publication on engine/CLI and both desktop platform jobs:
+`.github/workflows/release.yml`, which gates publication on both platform jobs:
 it signs and notarizes the hardened arm64 app/DMG/ZIP, validates Gatekeeper and
 stapling, builds a Windows x64 NSIS installer, validates both updater feeds,
-emits `SHA256SUMS`, prepares a draft GitHub release, publishes npm only after
-every artifact gate succeeds, and then makes the unified release public. The protected `release`
+emits `SHA256SUMS`, and publishes both platforms to GitHub Releases. The protected `release`
 environment must provide `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`,
 `APPLE_API_KEY_P8` (the `.p8` contents), `APPLE_API_KEY_ID`,
 and `APPLE_API_ISSUER`. `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` enable
@@ -153,7 +154,8 @@ Authenticode signing; without them the workflow clearly warns and produces an
 unsigned installer that may trigger Windows SmartScreen. Local crash
 breadcrumbs remain enabled without upload.
 
-The v0.6.0 source baseline is 611 unit tests and 12 Electron E2E
+The unified v0.6.1 source baseline is 622 passing unit tests (2 paid-provider
+tests skipped) and 12 Electron E2E
 scenarios. The packaged smoke also stops the active host and proves that an idle
 project-index request transparently starts and reaps the bundled helper host;
 the bridge suite applies the same lifecycle to an exact session mutation.
@@ -277,9 +279,10 @@ npm run dev
    Keep Changes open in File mode while switching sessions, then return: the
    activity view/mode and each session's transcript position must be preserved.
    Open **Sessions** from the rail and confirm Board/List, search, project/status/
-   mode filters, and sort all persist after reopening the app. Move a card through
-   Active → Review → Done; verify only a genuinely busy local or running Cloud
-   session shows Working and temporarily appears in Active. Open, rename, archive,
+   mode filters, and sort all persist after reopening the app. Verify a busy turn
+   moves to Active, permission/question/plan/capability waits move to Review,
+   and a settled turn moves to Done. A merely running Cloud sandbox must not be
+   presented as model work. Open, rename, archive,
    and delete records from both Board and List; destructive actions must use the
    in-app confirmation dialog and the underlying project rail must refresh.
 3. Submit a short prompt — stream text + tools; the project rail spinner appears
@@ -287,40 +290,43 @@ npm run dev
    and disappears at idle.
 4. Scroll upward during streaming — output must stop following; Jump to latest restores it.
 5. Shift+Tab through PLAN → AGENT → YOLO.
-6. Trigger a permission (e.g. bash) — y / a / n / ⌘P.
+6. Open the Local → Cloud review and confirm it names the active model, defaults
+   Include model access from Settings → Cloud, and disables configured-key and
+   subscription export when unchecked while preserving explicit Cloud bindings.
+7. Trigger a permission (e.g. bash) — y / a / n / ⌘P.
    Use a command/edit longer than 200 lines and confirm Expand preview shows
    bounded head and tail content with an explicit middle-omission marker.
-7. `/plan …` then present_plan — Enter / Esc / ⌘Y. With a long plan, confirm
+8. `/plan …` then present_plan — Enter / Esc / ⌘Y. With a long plan, confirm
    the review body scrolls while the title and equal-width action footer remain
    visible directly above the composer.
    While an active goal run owns tasks, attempt Accept; the plan must remain,
    Busy must stay false, and the shell must explain that the goal must be cleared.
-8. Catalogs (TUI-faithful):
+9. Catalogs (TUI-faithful):
    - Type `/model clau` — live filter opens; Tab toggles main ⇄ sub; current marked.
    - `/providers` → configured provider prefills `/model id/`; unconfigured opens guided setup on that provider.
    - `/model` → **Set up another provider…** opens the same searchable setup; verify CrofAI fills `https://crof.ai/v1` and `crof/glm-5.2`.
    - `/agents` → agent prefills `/model agent name ` then models picker; New agent prefills without submit.
    - `/mcp` — status shows connected/disconnected · N tools (not blank).
    - `/skills` → choose prefills `/skill name ` (add args before Enter).
-9. `@` file pick; ⌘V image paste → `@.vibe/clipboard/…`.
-10. `/theme tokyonight`; `/keys`; open Session from the workspace dock (or ⇧⌘I);
+10. `@` file pick; ⌘V image paste → `@.vibe/clipboard/…`.
+11. `/theme tokyonight`; `/keys`; open Session from the workspace dock (or ⇧⌘I);
     switch through Changes, Git, Terminal, and Jobs without leaving the chat surface;
     narrow the window for drawer behavior (dock becomes a compact icon strip
     below ~960px; `/jobs` still works).
-11. Click a user message to fold/unfold its turn; confirm no persistent arrow is rendered;
+12. Click a user message to fold/unfold its turn; confirm no persistent arrow is rendered;
     hover the bubble — Copy/Edit/time appear **under** it (not beside).
     Trigger an automatic review-fix continuation; confirm its prompt appears as a collapsed
     `Automatic review follow-up` context row, not a user bubble, and has no Copy/Edit actions.
-12. Confirm approval panels and output align to the composer width; inspect source
+13. Confirm approval panels and output align to the composer width; inspect source
     cards, the collapsed `Memory · N notes` row, and its expanded note list. Scroll
     away from the bottom after edits and confirm Jump to latest sits beside the
     changed-files chip, not above it.
-13. Expand a Thinking group — compact steps, no brain icon, one surface per open
+14. Expand a Work group — compact steps, no brain icon, one surface per open
     thought; tool rows stay expandable for output.
-14. Approve a permission request for a background `npm run dev`; confirm the job starts, the host remains healthy, and the session does not show a generic host-exited failure. Trigger an unfamiliar plugin/MCP permission and confirm its bounded argument preview is visible before deciding.
+15. Approve a permission request for a background `npm run dev`; confirm the job starts, the host remains healthy, and the session does not show a generic host-exited failure. Trigger an unfamiliar plugin/MCP permission and confirm its bounded argument preview is visible before deciding.
     For synthetic large queue/job fixtures, confirm only 200 rows mount, the
     omitted count is visible, and running jobs plus queue head/tail remain present.
-15. Settings → MCP: add a stdio server with a command and one argument per line,
+16. Settings → MCP: add a stdio server with a command and one argument per line,
     switch it to Remote and back, and confirm the stdio command/args/env draft is
     restored. Confirm malformed `${VAR}` / `${VAR:-default}` references block
     Save with the exact field path. Verify an incomplete `KEY=value` or header
@@ -328,7 +334,7 @@ npm run dev
     inline error and cannot be silently discarded. For remote OAuth, verify the
     UI states that first authorization is out-of-band rather than promising an
     in-app callback flow.
-16. Settings → Behavior: switch to Project scope and confirm project trust is
+17. Settings → Behavior: switch to Project scope and confirm project trust is
     disabled there; only Global settings can opt into unsafe repo-authored code,
     credential routes, sandbox/SSRF relaxations, auto approvals, and broad
     allows. Confirm an exact “Always for this project” grant remains effective.

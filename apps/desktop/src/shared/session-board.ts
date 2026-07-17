@@ -1,4 +1,5 @@
 import type { ProjectSessionSummary, ProjectSummary } from "./protocol";
+import type { CloudSessionStatus } from "./cloud";
 import { isChatsCwd, projectLabel } from "./project-index";
 
 export type SessionBoardStatus = "active" | "review" | "done";
@@ -33,6 +34,34 @@ export const DEFAULT_SESSION_BOARD_PREFERENCES: SessionBoardPreferences = {
   sort: "updated",
   statuses: {},
 };
+
+export type AutomaticSessionState = "working" | "needs-input" | "review" | "done" | null;
+
+/** Sandbox ownership is not model activity: a healthy `running` sandbox can be
+ * waiting quietly for hours. Only handoff transitions and actionable failures
+ * imply a board state on their own. */
+export function cloudAutomaticSessionState(status: CloudSessionStatus): AutomaticSessionState {
+  if (status === "preparing" || status === "transferring" || status === "starting" || status === "syncing-back") {
+    return "working";
+  }
+  if (
+    status === "needs-local"
+    || status === "cleanup-pending"
+    || status === "handoff-interrupted"
+    || status === "lost"
+    || status === "recoverable-error"
+  ) {
+    return "needs-input";
+  }
+  return null;
+}
+
+export function automaticSessionBoardStatus(state: AutomaticSessionState): SessionBoardStatus | null {
+  if (state === "working") return "active";
+  if (state === "needs-input" || state === "review") return "review";
+  if (state === "done") return "done";
+  return null;
+}
 
 const STATUS_VALUES = new Set<SessionBoardStatus>(["active", "review", "done"]);
 const VIEW_VALUES = new Set<SessionBoardView>(["board", "list"]);
@@ -107,12 +136,14 @@ export function filterSessionBoard(
     mode: SessionBoardPreferences["mode"];
     sort: SessionBoardSort;
     workingKeys?: ReadonlySet<string>;
+    automaticStatuses?: ReadonlyMap<string, SessionBoardStatus>;
   },
 ): SessionBoardItem[] {
   const query = options.query.trim().toLocaleLowerCase();
   const workingKeys = options.workingKeys ?? new Set<string>();
   const filtered = items.filter((item) => {
-    const effectiveStatus = workingKeys.has(item.key) ? "active" : item.status;
+    const effectiveStatus = options.automaticStatuses?.get(item.key)
+      ?? (workingKeys.has(item.key) ? "active" : item.status);
     if (options.status !== "all" && effectiveStatus !== options.status) return false;
     if (options.project !== "all" && item.cwd !== options.project) return false;
     if (options.mode !== "all" && item.session.mode !== options.mode) return false;

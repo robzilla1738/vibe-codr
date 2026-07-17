@@ -13,6 +13,8 @@ import { normalizeSessionTitle, relativeSessionTime, SESSION_TITLE_LIMIT } from 
 import type { ProjectSummary } from "../../shared/protocol";
 import {
   DEFAULT_SESSION_BOARD_PREFERENCES,
+  automaticSessionBoardStatus,
+  cloudAutomaticSessionState,
   filterSessionBoard,
   flattenSessionBoard,
   readSessionBoardPreferences,
@@ -280,6 +282,10 @@ export function SessionsWorkspace({
   activeCwd,
   activeSessionId,
   busy,
+  interactionDisabled,
+  needsInput,
+  needsReview,
+  statusRevision,
   loading,
   error,
   onRetry,
@@ -296,6 +302,10 @@ export function SessionsWorkspace({
   activeCwd: string | null;
   activeSessionId: string;
   busy: boolean;
+  interactionDisabled: boolean;
+  needsInput: boolean;
+  needsReview: boolean;
+  statusRevision: number;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
@@ -313,6 +323,7 @@ export function SessionsWorkspace({
   const [renamePending, setRenamePending] = useState(false);
   const [confirming, setConfirming] = useState<{ item: SessionBoardItem; mode: "archive" | "delete" } | null>(null);
   const [actionPending, setActionPending] = useState(false);
+  const appliedAutomaticStates = useRef(new Map<string, string>());
 
   useEffect(() => {
     try {
@@ -322,26 +333,59 @@ export function SessionsWorkspace({
     }
   }, [preferences]);
 
+  useEffect(() => {
+    if (statusRevision > 0) setPreferences(loadPreferences());
+  }, [statusRevision]);
+
   const items = useMemo(
     () => flattenSessionBoard(projects, chatsCwd, preferences.statuses),
     [projects, chatsCwd, preferences.statuses],
   );
-  const cloudRunning = useMemo(
-    () => new Set(cloudSessions.filter((entry) => entry.status === "running").map((entry) => entry.sessionId)),
+  const cloudBySession = useMemo(
+    () => new Map(cloudSessions.map((entry) => [entry.sessionId, entry.status])),
     [cloudSessions],
   );
   const cloudOwned = useMemo(
     () => new Set(cloudSessions.filter((entry) => isCloudSessionMutationLocked(entry.status)).map((entry) => entry.sessionId)),
     [cloudSessions],
   );
-  const workingKeys = useMemo(() => {
-    const keys = new Set<string>();
+  const automaticStates = useMemo(() => {
+    const states = new Map<string, "working" | "needs-input" | "review" | "done">();
     for (const item of items) {
-      if (cloudRunning.has(item.session.id)) keys.add(item.key);
+      const cloudStatus = cloudBySession.get(item.session.id);
+      const cloudState = cloudStatus ? cloudAutomaticSessionState(cloudStatus) : null;
+      if (cloudState) states.set(item.key, cloudState);
     }
-    if (busy && activeCwd && activeSessionId) keys.add(sessionBoardKey(activeCwd, activeSessionId));
-    return keys;
-  }, [activeCwd, activeSessionId, busy, cloudRunning, items]);
+    if (activeCwd && activeSessionId) {
+      const key = sessionBoardKey(activeCwd, activeSessionId);
+      if (needsInput) states.set(key, "needs-input");
+      else if (needsReview) states.set(key, "review");
+      else if (busy) states.set(key, "working");
+    }
+    return states;
+  }, [activeCwd, activeSessionId, busy, cloudBySession, items, needsInput, needsReview]);
+  const workingKeys = useMemo(
+    () => new Set([...automaticStates].filter(([, state]) => state === "working").map(([key]) => key)),
+    [automaticStates],
+  );
+  const automaticStatuses = useMemo(
+    () => new Map([...automaticStates].map(([key, state]) => [key, automaticSessionBoardStatus(state)!])),
+    [automaticStates],
+  );
+
+  useEffect(() => {
+    const changes: Record<string, SessionBoardStatus> = {};
+    for (const key of appliedAutomaticStates.current.keys()) {
+      if (automaticStates.get(key) !== "review") appliedAutomaticStates.current.delete(key);
+    }
+    for (const [key, state] of automaticStates) {
+      if (state !== "review" || appliedAutomaticStates.current.get(key) === state) continue;
+      appliedAutomaticStates.current.set(key, state);
+      changes[key] = "review";
+    }
+    if (Object.keys(changes).length === 0) return;
+    setPreferences((current) => ({ ...current, statuses: { ...current.statuses, ...changes } }));
+  }, [automaticStates]);
   const visibleItems = useMemo(
     () => filterSessionBoard(items, {
       query,
@@ -350,8 +394,9 @@ export function SessionsWorkspace({
       mode: preferences.mode,
       sort: preferences.sort,
       workingKeys,
+      automaticStatuses,
     }),
-    [items, preferences.mode, preferences.project, preferences.sort, preferences.status, query, workingKeys],
+    [automaticStatuses, items, preferences.mode, preferences.project, preferences.sort, preferences.status, query, workingKeys],
   );
   const projectsForFilter = useMemo(() => {
     const seen = new Map<string, string>();
@@ -399,9 +444,9 @@ export function SessionsWorkspace({
 
   const renderSession = (item: SessionBoardItem, surface: "card" | "row") => {
     const working = workingKeys.has(item.key);
-    const cloudWorking = cloudRunning.has(item.session.id);
+    const automaticState = automaticStates.get(item.key);
     const remoteOwned = cloudOwned.has(item.session.id);
-    const effectiveStatus = working ? "active" : item.status;
+    const effectiveStatus = automaticStatuses.get(item.key) ?? item.status;
     const active = item.cwd === activeCwd && item.session.id === activeSessionId;
     return (
       <article
@@ -420,7 +465,9 @@ export function SessionsWorkspace({
           />
         </div>
         <div className="session-board-meta">
-          {working ? <span className="session-board-live"><span aria-hidden />{cloudWorking ? "Cloud working" : "Working"}</span> : null}
+          {working ? <span className="session-board-live"><span aria-hidden />Working</span> : null}
+          {automaticState === "needs-input" ? <span className="session-board-attention">Needs your input</span> : null}
+          {automaticState === "review" ? <span className="session-board-attention">Needs review</span> : null}
           {active && !working ? <span>Open</span> : null}
           <span>{item.isChat ? "Chat" : item.session.mode === "plan" ? "Plan" : "Execute"}</span>
           <span className="session-board-model" title={item.session.model}>{item.session.model}</span>
@@ -435,15 +482,15 @@ export function SessionsWorkspace({
           <SessionStatusSelect
             item={item}
             status={effectiveStatus}
-            disabled={working}
+            disabled={automaticState != null}
             onChange={(status) => updateStatus(item, status)}
           />
           <SessionActions
             item={item}
-            disabled={remoteOwned || (busy && active)}
+            disabled={remoteOwned || (interactionDisabled && active)}
             disabledReason={remoteOwned
               ? "Return this session to Local to rename, archive, or delete it"
-              : busy && active
+              : interactionDisabled && active
                 ? "Wait for the current turn to finish"
                 : undefined}
             onRename={() => setEditingKey(item.key)}
@@ -509,7 +556,7 @@ export function SessionsWorkspace({
           >
             <IconFilter size={14} strokeWidth={1.5} aria-hidden /> Filters{activeFilterCount ? ` · ${activeFilterCount}` : ""}
           </button>
-          <button type="button" className="sessions-new" disabled={busy} onClick={onNewChat}>
+          <button type="button" className="sessions-new" disabled={interactionDisabled} onClick={onNewChat}>
             <IconPlus size={14} /> New chat
           </button>
         </div>
@@ -621,7 +668,7 @@ export function SessionsWorkspace({
         {visibleItems.length > 0 && preferences.view === "board" ? (
           <div className="session-board" aria-label="Sessions board">
             {STATUS_ORDER.map((status) => {
-              const columnItems = visibleItems.filter((item) => (workingKeys.has(item.key) ? "active" : item.status) === status);
+              const columnItems = visibleItems.filter((item) => (automaticStatuses.get(item.key) ?? item.status) === status);
               if (preferences.status !== "all" && preferences.status !== status) return null;
               return (
                 <section className="session-board-column" key={status} data-status={status} aria-labelledby={`sessions-${status}`}>

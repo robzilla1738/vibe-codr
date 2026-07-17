@@ -100,7 +100,7 @@ test("renames, archives, and deletes saved sessions through host RPC", async () 
 test("streams reasoning, tools, diffs, markdown, telemetry, and engine-idle", async () => {
   await submit("fixture:stream");
   await expect(page.getByText("Done with markdown.")).toBeVisible();
-  await page.locator("details.thinking-group > summary").first().click();
+  await page.locator(".thinking-group > .thinking-group-head").first().click();
   await expect(page.getByRole("button", { name: /edited src\/example\.ts/ })).toBeVisible();
   await expect(page.getByText("fixture:stream")).toBeVisible();
   await expect(page.locator(".composer-metric", { hasText: "15 tok · $0.0010" })).toBeAttached();
@@ -200,7 +200,7 @@ test("renders task, subagent, source, job, and checkpoint activity in the correc
   await expect(page.getByRole("region", { name: "Session", exact: true })).toBeHidden();
   // Opening Session closes Jobs; leave Jobs closed so the transcript is interactive.
   await expect(page.getByRole("button", { name: "Dismiss jobs" })).toHaveCount(0);
-  await page.locator("details.thinking-group > summary").last().click();
+  await page.locator(".thinking-group > .thinking-group-head").last().click();
   await page.getByRole("button", { name: /Expand.*search.*fixture/ }).click();
   await expect(page.getByRole("link", { name: "Fixture search" })).toBeVisible();
 });

@@ -8,8 +8,8 @@
   --border: #3c3c3c;
   --muted: #808080;
   --assistant: #eeeeee;
-  --primary: #fab283;
-  --accent: #fab283;
+  --primary: #e6e6e6;
+  --accent: #e6e6e6;
   --user: #5c9cf5;
   --tool: #56b6c2;
   --notice: #f5a742;
@@ -23,8 +23,8 @@
   --diff-del: #ff4d4f;
   --diff-add-bg: #123522;
   --diff-del-bg: #3b1d22;
-  --gutter: #544c44;
-  --heading: #fab283;
+  --gutter: #505050;
+  --heading: #e6e6e6;
   --code: #56b6c2;
   --sel-bg: #2a2a2a;
   --sel-fg: #eeeeee;
@@ -35,7 +35,7 @@
   --task-skipped: var(--muted);
   --ctx: #828bb8;
   --mode: var(--accent);
-  --ring: #fab283;
+  --ring: #e6e6e6;
   --shadow-ink: #000000;
   /* opencode-inspired semantic tokens */
   --thinking-opacity: 0.82;
@@ -2914,13 +2914,16 @@ html[data-scheme="light"] .md .md-streaming-pre {
   justify-content: flex-start;
   gap: var(--space-xs);
   padding: 3px var(--space-xs) 3px 0;
+  border: 0;
   border-radius: var(--radius-sm);
   color: var(--muted);
   cursor: pointer;
+  background: transparent;
   font-family: var(--font-sans);
   font-size: var(--text-caption);
   font-weight: var(--weight-medium);
   line-height: var(--leading-ui);
+  text-align: left;
   list-style: none;
   transition: color var(--dur-fast) var(--ease-standard), background-color var(--dur-fast) var(--ease-standard);
 }
@@ -2995,6 +2998,23 @@ html[data-scheme="light"] .md .md-streaming-pre {
   /* Nested thoughts/tools keep the same transcript edge as prose. */
   margin: 4px 0 0;
   padding: 0 0 2px;
+}
+
+.thinking-group-items:empty { display: none; }
+
+/* Progress narration belongs to the expandable work trace, not the primary
+   answer hierarchy. It stays readable when requested without creating another
+   full-width transcript beat between every tool call. */
+.thinking-group-items > .block-assistant.is-progress {
+  width: 100%;
+  padding: 2px var(--space-sm) 2px calc(13px + var(--space-xs) + 2px);
+  color: var(--text-muted);
+  font-size: var(--text-ui);
+  line-height: 1.45;
+}
+
+.thinking-group-items > .block-assistant.is-progress .md p {
+  margin-block: 0.25em;
 }
 
 .thinking-head {
@@ -11483,6 +11503,7 @@ html.electron-transparent .sessions-filters {
 .session-board-model { overflow: hidden; max-width: 18ch; text-overflow: ellipsis; white-space: nowrap; }
 .session-board-live { display: inline-flex; align-items: center; gap: var(--space-2xs); color: var(--accent); }
 .session-board-live > span { width: var(--space-2xs); height: var(--space-2xs); border-radius: var(--radius-pill); background: currentColor; animation: engine-pulse 1.4s var(--ease-standard) infinite; }
+.session-board-attention { color: var(--warn); font-weight: var(--weight-medium); }
 
 .session-board-controls {
   display: flex;

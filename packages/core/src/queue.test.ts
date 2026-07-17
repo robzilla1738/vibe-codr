@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { UIEvent } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
@@ -10,11 +10,11 @@ import { HookBus } from "@vibe/plugins";
 import { defaultConfig } from "@vibe/config";
 import { Engine } from "./engine.ts";
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 /** A model that replies with a fixed line, after an optional delay. */
-function replyModel(delayMs = 0): MockLanguageModelV2 {
-  return new MockLanguageModelV2({
+function replyModel(delayMs = 0): MockLanguageModelV3 {
+  return new MockLanguageModelV3({
     doStream: async () => ({
       stream: simulateReadableStream({
         chunks: [
@@ -22,7 +22,7 @@ function replyModel(delayMs = 0): MockLanguageModelV2 {
           { type: "text-start", id: "t" },
           { type: "text-delta", id: "t", delta: "ok" },
           { type: "text-end", id: "t" },
-          { type: "finish", finishReason: "stop", usage: USAGE },
+          { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
         ] as never[],
         initialDelayInMs: delayMs,
         chunkDelayInMs: 0,
@@ -32,7 +32,7 @@ function replyModel(delayMs = 0): MockLanguageModelV2 {
 }
 
 function mockEngine(
-  model: MockLanguageModelV2,
+  model: MockLanguageModelV3,
   hooks?: HookBus,
 ): { engine: Engine; events: UIEvent[] } {
   const registry = new ProviderRegistry([
@@ -293,7 +293,7 @@ test("itemTimeoutMs: a stuck item is aborted and the queue continues", async () 
   // ends — a truly hung provider stream that the interactive idle-watchdog
   // doesn't cover (it's off for interactive). Without itemTimeoutMs the drain
   // loop would hang forever on `await item.run()`.
-  const stuckModel = new MockLanguageModelV2({
+  const stuckModel = new MockLanguageModelV3({
     doStream: async () => ({
       stream: new ReadableStream({
         start(controller) {

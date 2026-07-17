@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { z } from "zod";
-import { MockLanguageModelV2 } from "ai/test";
+import { MockLanguageModelV3 } from "ai/test";
 import { extractJsonObject, generateStructuredObject } from "./structured-object.ts";
 
 test("extractJsonObject parses bare JSON", () => {
@@ -28,11 +28,11 @@ test("extractJsonObject returns undefined for non-JSON", () => {
 });
 
 test("generateStructuredObject uses native path when supported (doGenerate JSON)", async () => {
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doGenerate: async () => ({
       content: [{ type: "text" as const, text: JSON.stringify({ done: true, reason: "native" }) }],
-      finishReason: "stop" as const,
-      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      finishReason: { unified: "stop" as const, raw: undefined },
+      usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
       warnings: [],
     }),
   });
@@ -47,7 +47,7 @@ test("generateStructuredObject uses native path when supported (doGenerate JSON)
 
 test("generateStructuredObject falls back to prompt-JSON when structured outputs are disabled", async () => {
   let calls = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doGenerate: async () => {
       calls++;
       // Free-form style with fence — what local models often emit without response_format.
@@ -58,8 +58,8 @@ test("generateStructuredObject falls back to prompt-JSON when structured outputs
             text: '```json\n{"met":false,"gaps":["missing tests"],"reason":"incomplete"}\n```',
           },
         ],
-        finishReason: "stop" as const,
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
         warnings: [],
       };
     },
@@ -85,15 +85,15 @@ test("generateStructuredObject falls back to prompt-JSON when structured outputs
 
 test("generateStructuredObject falls back when native generateObject fails", async () => {
   let n = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doGenerate: async () => {
       n++;
       if (n === 1) {
         // First call is native generateObject — return unparseable text so it fails validation.
         return {
           content: [{ type: "text" as const, text: "I cannot do JSON today." }],
-          finishReason: "stop" as const,
-          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
           warnings: [],
         };
       }
@@ -104,8 +104,8 @@ test("generateStructuredObject falls back when native generateObject fails", asy
             text: JSON.stringify({ done: true, reason: "recovered" }),
           },
         ],
-        finishReason: "stop" as const,
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
         warnings: [],
       };
     },
@@ -122,7 +122,7 @@ test("generateStructuredObject falls back when native generateObject fails", asy
 
 test("generateStructuredObject does not fall through to a second call on AbortError", async () => {
   let n = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doGenerate: async () => {
       n++;
       throw Object.assign(new Error("aborted"), { name: "AbortError" });
@@ -142,13 +142,13 @@ test("generateStructuredObject does not fall through to a second call on AbortEr
 
 test("generateStructuredObject respects a pre-aborted signal without calling the model", async () => {
   let n = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doGenerate: async () => {
       n++;
       return {
         content: [{ type: "text" as const, text: "{}" }],
-        finishReason: "stop" as const,
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        finishReason: { unified: "stop" as const, raw: undefined },
+        usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
         warnings: [],
       };
     },

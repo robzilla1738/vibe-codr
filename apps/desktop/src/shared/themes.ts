@@ -59,7 +59,7 @@ export interface Palette {
   series: string[];
 }
 
-/** Vibe dark palette (the default) — warm peach chrome on near-black surfaces. */
+/** Vibe dark palette (the default) — neutral white chrome on near-black surfaces. */
 const DEFAULT: Palette = {
   user: "#5c9cf5",
   assistant: "#eeeeee",
@@ -73,8 +73,8 @@ const DEFAULT: Palette = {
   taskDone: "#808080",
   taskActive: "#56b6c2",
   taskPending: "#eeeeee",
-  accent: "#fab283",
-  primary: "#fab283",
+  accent: "#e6e6e6",
+  primary: "#e6e6e6",
   border: "#3c3c3c",
   muted: "#808080",
   background: "#0a0a0a",
@@ -84,10 +84,10 @@ const DEFAULT: Palette = {
   selFg: "#eeeeee",
   addBg: "#20303b",
   delBg: "#37222c",
-  gutter: "#544c44",
-  heading: "#fab283",
+  gutter: "#505050",
+  heading: "#e6e6e6",
   code: "#56b6c2",
-  series: ["#fab283", "#7fd88f", "#9d7cd8", "#5c9cf5", "#c53b53", "#4fd6be"],
+  series: ["#e6e6e6", "#7fd88f", "#5c9cf5", "#fab283", "#c53b53", "#4fd6be"],
 };
 
 /** Light palette for bright terminals. */

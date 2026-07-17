@@ -94,8 +94,8 @@ async function captionOne(
           content: [
             { type: "text", text: captionPrompt(maxChars) },
             {
-              type: "image",
-              image: img.data,
+              type: "file",
+              data: { type: "data", data: img.data },
               mediaType: img.mediaType as
                 | "image/png"
                 | "image/jpeg"

@@ -392,7 +392,7 @@ describe("structuredTranscript", () => {
     });
   });
 
-  test("normalizes content-form tool output without retaining media payloads", () => {
+  test("normalizes content-form tool output without retaining binary payloads", () => {
     const value = session();
     value.modelMessages[2] = {
       role: "tool",
@@ -405,7 +405,7 @@ describe("structuredTranscript", () => {
             type: "content",
             value: [
               { type: "text", text: "Readable result" },
-              { type: "media", data: "a".repeat(1024), mediaType: "image/png" },
+              { type: "image-data", data: "a".repeat(1024), mediaType: "image/png" },
             ],
           },
         },
@@ -415,7 +415,7 @@ describe("structuredTranscript", () => {
       (part) => part.type === "tool-result",
     );
     expect(result?.type === "tool-result" ? result.output : null).toBe(
-      "Readable result\n[media omitted]",
+      "Readable result\n[binary omitted]",
     );
   });
 

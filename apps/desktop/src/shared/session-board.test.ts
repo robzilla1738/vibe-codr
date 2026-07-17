@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ProjectSummary } from "./protocol";
 import {
   DEFAULT_SESSION_BOARD_PREFERENCES,
+  automaticSessionBoardStatus,
+  cloudAutomaticSessionState,
   filterSessionBoard,
   flattenSessionBoard,
   readSessionBoardPreferences,
@@ -30,6 +32,15 @@ const projects: ProjectSummary[] = [
 ];
 
 describe("session board projection", () => {
+  it("distinguishes sandbox ownership from actual model activity", () => {
+    expect(cloudAutomaticSessionState("running")).toBeNull();
+    expect(cloudAutomaticSessionState("starting")).toBe("working");
+    expect(cloudAutomaticSessionState("needs-local")).toBe("needs-input");
+    expect(cloudAutomaticSessionState("suspended")).toBeNull();
+    expect(automaticSessionBoardStatus("needs-input")).toBe("review");
+    expect(automaticSessionBoardStatus("done")).toBe("done");
+  });
+
   it("flattens projects and chats while preserving user-managed status", () => {
     const reviewKey = sessionBoardKey("/work/alpha", "plan");
     const items = flattenSessionBoard(projects, "/home/.vibe/chats", { [reviewKey]: "review" });
@@ -44,6 +55,7 @@ describe("session board projection", () => {
       [sessionBoardKey("/work/alpha", "new")]: "done",
     });
     const working = new Set([sessionBoardKey("/work/alpha", "new")]);
+    const automaticStatuses = new Map([[sessionBoardKey("/work/alpha", "plan"), "review" as const]]);
     expect(filterSessionBoard(items, {
       query: "ship the manager",
       status: "active",
@@ -58,6 +70,14 @@ describe("session board projection", () => {
       project: "/work/alpha",
       mode: "plan",
       sort: "oldest",
+    }).map((item) => item.session.id)).toEqual(["plan"]);
+    expect(filterSessionBoard(items, {
+      query: "",
+      status: "review",
+      project: "all",
+      mode: "all",
+      sort: "updated",
+      automaticStatuses,
     }).map((item) => item.session.id)).toEqual(["plan"]);
   });
 });

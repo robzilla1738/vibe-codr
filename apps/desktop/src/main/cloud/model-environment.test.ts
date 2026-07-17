@@ -20,10 +20,11 @@ describe("cloud model environment", () => {
         OPENAI_API_KEY: "unrelated-secret",
         SSH_AUTH_SOCK: "/private/socket",
       },
-    )).toEqual({
-      CROF_API_KEY: "crof-secret",
-      XAI_API_KEY: "xai-secret",
-    });
+    )).toEqual({ CROF_API_KEY: "crof-secret" });
+    expect(ambientCloudModelEnvironment(["xai-oauth/grok-4.5"], {
+      XAI_API_KEY: "custom-route-key",
+      XAI_BASE_URL: "https://grok.example.com/v1",
+    })).toEqual({});
   });
 
   it("maps both Codex aliases and xAI to transferable subscription bindings", () => {
@@ -40,6 +41,40 @@ describe("cloud model environment", () => {
     });
     expect(subscriptionCredentialEnvironment("xai-oauth", { access: "xai-access" }))
       .toEqual({ XAI_API_KEY: "xai-access" });
+    expect(cloudModelEnvironment(
+      "xai-oauth/grok-4.5",
+      undefined,
+      undefined,
+      subscriptionCredentialEnvironment("xai-oauth", { access: "xai-access" }),
+    )).toEqual({ XAI_API_KEY: "xai-access" });
+  });
+
+  it("lets the xAI API key configured in Settings authenticate a Grok subscription route in Cloud", () => {
+    const config = {
+      providers: { xai: { apiKey: "xai-settings-key" } },
+    };
+    expect(cloudModelEnvironment("xai-oauth/grok-4.5", config, undefined, {}))
+      .toEqual({ XAI_API_KEY: "xai-settings-key" });
+    expect(cloudModelRouteHostname("xai-oauth/grok-4.5", config, undefined, { XAI_API_KEY: "xai-settings-key" }))
+      .toBe("api.x.ai");
+    const customConfig = {
+      providers: { xai: { apiKey: "xai-settings-key", baseURL: "https://grok.example.com/v1" } },
+    };
+    expect(() => cloudModelEnvironment("xai-oauth/grok-4.5", customConfig, undefined, {}))
+      .toThrow("needs a xai-oauth model credential");
+    expect(() => cloudModelEnvironment("xai-oauth/grok-4.5", customConfig, undefined, {
+      XAI_API_KEY: "subscription-token",
+      XAI_BASE_URL: "https://grok.example.com/v1",
+    })).toThrow("needs a xai-oauth model credential");
+    expect(() => cloudModelEnvironment("xai-oauth/grok-4.5", config, undefined, {
+      XAI_BASE_URL: "https://custom.example/v1",
+    })).toThrow("needs a xai-oauth model credential");
+    expect(cloudModelEnvironment("xai-oauth/grok-4.5", {
+      providers: {
+        xai: { apiKey: "approved-standard-key" },
+        "xai-oauth": { apiKey: "legacy-oauth-key", baseURL: "https://untrusted.example/v1" },
+      },
+    }, undefined, {})).toEqual({ XAI_API_KEY: "approved-standard-key" });
   });
   it("injects only the active provider credential", () => {
     expect(cloudModelEnvironment("ollama/glm-5.2", {
@@ -62,6 +97,42 @@ describe("cloud model environment", () => {
     }, undefined, { OPENAI_API_KEY: "bound-secret" })).toEqual({
       OPENAI_API_KEY: "bound-secret",
     });
+  });
+
+  it("supports the handoff opt-out while preserving explicit Cloud bindings", () => {
+    expect(() => cloudModelEnvironment("openai/gpt-5.5", {
+      providers: { openai: { apiKey: "config-secret" } },
+    }, undefined, {}, { includeConfiguredCredentials: false }))
+      .toThrow("needs a openai model credential");
+    expect(cloudModelEnvironment("openai/gpt-5.5", {
+      providers: { openai: { apiKey: "config-secret", baseURL: "https://configured.example/v1" } },
+    }, undefined, { OPENAI_API_KEY: "explicit-cloud-secret" }, { includeConfiguredCredentials: false }))
+      .toEqual({ OPENAI_API_KEY: "explicit-cloud-secret" });
+    expect(cloudModelRouteHostname(
+      "openai/gpt-5.5",
+      { providers: { openai: { baseURL: "https://configured.example/v1" } } },
+      undefined,
+      { OPENAI_API_KEY: "explicit-cloud-secret" },
+      { includeConfiguredCredentials: false },
+    )).toBe("api.openai.com");
+    const arbitraryBindings = {
+      VIBE_PROVIDER_ACME_GATEWAY_API_KEY: "explicit-acme-secret",
+      VIBE_PROVIDER_ACME_GATEWAY_BASE_URL: "https://models.acme.example/v1",
+    };
+    expect(cloudModelEnvironment(
+      "acme-gateway/code",
+      undefined,
+      undefined,
+      arbitraryBindings,
+      { includeConfiguredCredentials: false },
+    )).toEqual(arbitraryBindings);
+    expect(cloudModelRouteHostname(
+      "acme-gateway/code",
+      undefined,
+      undefined,
+      arbitraryBindings,
+      { includeConfiguredCredentials: false },
+    )).toBe("models.acme.example");
   });
 
   it("keeps documented provider aliases and rejects local credential chains", () => {

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
 import { FreshnessRegistry } from "@vibe/tools";
@@ -24,19 +24,19 @@ function stream(chunks: unknown[]) {
     }),
   };
 }
-const USAGE = { inputTokens: 100, outputTokens: 5, totalTokens: 105 };
+const USAGE = { inputTokens: { total: 100, noCache: 100, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 const reply = () =>
   stream([
     { type: "stream-start", warnings: [] },
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: "ok" },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 
 /** A registry that serves the mock model under the ANTHROPIC provider id, so the
  * Anthropic-gated caching path (cacheSystem / cacheConversation) actually runs. */
-function anthropicRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function anthropicRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "anthropic",
@@ -56,7 +56,7 @@ test("the system prompt is byte-stable across turns even when the task list chan
   const prompts: { role: string; content: unknown }[][] = [];
   let call = 0;
   const replies = [reply(), reply()];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (opts: { prompt?: unknown[] }) => {
       prompts.push((opts.prompt ?? []) as { role: string; content: unknown }[]);
       return replies[call++] as never;
@@ -104,7 +104,7 @@ test("the system prompt is byte-stable across turns even when the task list chan
 
 test("exactly one conversation cache breakpoint rides the trailing message (plus the system one)", async () => {
   let captured: { role: string; providerOptions?: unknown }[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (opts: { prompt?: unknown[] }) => {
       captured = (opts.prompt ?? []) as { role: string; providerOptions?: unknown }[];
       return reply() as never;

@@ -1,8 +1,8 @@
-# Vibe Codr Desktop
+# Vibe Codr (Electron)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
-Native-feeling macOS and Windows **Electron** interface for Vibe Codr, with **1:1 engine parity** through the repository's NDJSON `vibecodr-engine-host`. The agent loop stays in `@vibe/core`; presentation and platform chrome live here.
+macOS-first **Electron** shell for [vibe-codr](https://github.com/robzilla1738/vibe-codr) with **1:1 engine parity** via the existing NDJSON `vibecodr-engine-host`. Same brain as the CLI TUI — presentation and chrome only live here.
 
 Experimental BYO E2B/Vercel execution and verified Local ↔ Cloud handoff are
 documented in [CLOUD.md](./CLOUD.md), with trust boundaries and remaining stable
@@ -10,13 +10,15 @@ gates in [CLOUD-THREAT-MODEL.md](./CLOUD-THREAT-MODEL.md). Handoff includes the
 complete usable project tree (including Git-ignored files) and automatically
 snapshots configured model access before Local ownership is released.
 
-**Source:** [`apps/desktop` in github.com/robzilla1738/vibe-codr](https://github.com/robzilla1738/vibe-codr/tree/main/apps/desktop)
+**Repo:** [github.com/robzilla1738/vbcode-electron](https://github.com/robzilla1738/vbcode-electron)
 
 **Privacy:** [PRIVACY.md](./PRIVACY.md)
 
 **Release history:** [CHANGELOG.md](./CHANGELOG.md)
 
 **Visual target:** Codex / Cursor-inspired desktop shell with OpenTUI-faithful behavior — multi-project + chats rail, seamless right workspace dock (Session / Changes / Git / Terminal / Jobs / Files), quiet empty home, terminal themes/accents, resizable sidebars, changed-files chip + master-detail Diff/File review, and one structural activity sidebar for Session / Changes / Git / Terminal / Jobs.
+
+Sibling native shell: [`vbcodrmacos`](https://github.com/robzilla1738/vbcodrmacos) (SwiftUI). This repo is the Electron equivalent.
 
 ## Architecture
 
@@ -33,7 +35,7 @@ snapshots configured model access before Local ownership is released.
 | Preload | `src/preload/` | `window.vibe` bridge API, including terminal IPC and native dropped-file path resolution |
 | Main | `src/main/` | Host spawn, NDJSON, persistent contextual PTYs, folder picker, bounded clipboard I/O, `@` file walk |
 | Shared UI logic | `src/shared/` | Ported from `@vibe/tui`: reducer, slash, themes, modes, file-fuzzy |
-| Engine host | repository-root `packages/macos-bridge` | In-process Engine over stdio |
+| Engine host | vibe-codr `packages/macos-bridge` | In-process Engine over stdio |
 
 Config/state are **shared with the CLI**:
 
@@ -43,23 +45,22 @@ Config/state are **shared with the CLI**:
 ## Requirements (development)
 
 - Node 22.12+ (required by the Electron 43 development runtime)
-- Bun 1.3.11 at the repository root
+- A sibling [vibe-codr](https://github.com/robzilla1738/vibe-codr) checkout
+  (`../cli` in the combined workspace, `../vibe-codr` for separate clones, or
+  `~/Code/vibe-codr`), or an explicit `VIBE_CODR_ROOT`
 - Compiled host preferred:
 
 ```bash
-cd ../..
-bun install --frozen-lockfile
-bun run build:macos-bridge
-npm --prefix apps/desktop ci
+cd ../vibe-codr && bun install && bun run build:macos-bridge
 ```
 
 Packaged release builds bundle the revision-locked engine host; end users do
-not need Node, Bun, `VIBE_CODR_ROOT`, or a source checkout.
+not need Node, Bun, `VIBE_CODR_ROOT`, or a sibling vibe-codr checkout.
 
 ## Install
 
 Download the latest direct installer from
-[GitHub Releases](https://github.com/robzilla1738/vibe-codr/releases):
+[GitHub Releases](https://github.com/robzilla1738/vbcode-electron/releases):
 
 - macOS Apple Silicon: open the signed and notarized `.dmg`, then drag Vibe Codr
   to Applications.
@@ -70,29 +71,33 @@ Installed macOS and Windows builds check GitHub Releases after launch. Updates
 are never installed silently: Vibe Codr asks before downloading and again
 before restarting, and safely stops the engine and terminal processes first.
 
-### What’s new in 0.6.0
+### What’s new in 0.1.16
 
-- Desktop and CLI now ship from one canonical repository, one version, and one
-  release, while retaining an exact engine revision lock for reproducibility.
-- Sessions is a first-class workspace with Board/List views, search, filters,
-  sorting, Active/Review/Done organization, and complete session actions.
-- Planning, durable questions, jobs, detached agents, task DAGs, cloud handoff,
-  provider setup, and subscription routing are release-gated end to end.
+- ChatGPT/Codex and xAI/Grok subscriptions can now be connected directly in the
+  app, including browser PKCE, xAI device code, refresh, cancel, and sign-out.
+- Grok Build is available as `xai-oauth/grok-build-0.1`, while Codex subscription
+  calls use the official account-routed Responses backend.
+- Grok 4.5 is available to eligible xAI subscriptions as
+  `xai-oauth/grok-4.5` through the Responses API with configurable reasoning.
+- The synchronized OpenCode/models.dev catalog contains 166 provider IDs, and
+  arbitrary custom IDs can choose Chat Completions or Responses transport.
+- Cloud receives only the selected session's current access token; refresh
+  tokens remain in the local user-only auth store.
 
 ## Clone
 
 ```bash
-git clone https://github.com/robzilla1738/vibe-codr.git
-cd vibe-codr
+git clone https://github.com/robzilla1738/vbcode-electron.git
+cd vbcode-electron
 ```
 
 ## Dev
 
 ```bash
-bun install --frozen-lockfile
-bun run build:macos-bridge
-npm --prefix apps/desktop ci
-bun run desktop:dev
+cd ../vibe-codr && bun run build:macos-bridge   # once / after engine changes
+cd ../vbcode-electron                           # or this clone
+npm install
+npm run dev
 ```
 
 The app opens directly into the main workspace. It restores the last authorized
@@ -115,16 +120,15 @@ npm run ui:shots -- tools/ui-preview/shots
 Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 `permission`, `plan`, `gate`, `mode`, `queue`, `onboarding`, `slash`, `catalog`,
 `catalog-draft`, `mention`, `attachments`, `jobs`, `inspector`, `changes`, `toast`,
-`density-quiet`, `density-verbose`, `ctx-hot`, `settings`, `sessions`, `git` — plus
+`density-quiet`, `density-verbose`, `ctx-hot`, `settings`, `git` — plus
 `&theme=<name>` for any TUI theme. See
 [tools/ui-preview/README.md](./tools/ui-preview/README.md).
 
 ### Host resolution order
 
-1. `$VIBE_CODR_ROOT/dist/vibecodr-engine-host` (`.exe` on Windows) when explicitly set and fresh against its runtime source
-2. The canonical repository root (`../..` from `apps/desktop`), compiled host first and Bun source second
-3. Conventional `~/Code/vibe-codr` development checkouts for backward compatibility
-4. Bundled `resources/vibecodr-engine-host` (`.exe` on Windows; after `npm run copy-host` / pack)
+1. `$VIBE_CODR_ROOT/dist/vibecodr-engine-host` (`.exe` on Windows) when fresh against the runtime source tree (otherwise Bun source under that root)
+2. `~/Code/vibe-codr` (and conventional siblings)
+3. Bundled `resources/vibecodr-engine-host` (`.exe` on Windows; after `npm run copy-host` / pack)
 
 ## Scripts
 
@@ -169,7 +173,7 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 
 - Content max ~130ch; transcript prose, tool activity, notices, approval panels, and the composer share the font-independent `--transcript-measure: 40rem` reading measure
 - **Left rail:** first-class Sessions workspace plus collapsible Projects + Chats sections; project rows reveal icon-only new-chat and ⋯ actions on hover/focus; Settings stays in the footer
-- **Sessions workspace:** persistent Board/List management across every project and Chat, with search/filter/sort, explicit Active/Review/Done organization, honest Working/Cloud signals, and open/rename/archive/delete actions backed by the existing host APIs
+- **Sessions workspace:** persistent Board/List management across every project and Chat, with search/filter/sort, automatic Active/Review/Done transitions from live model state, and open/rename/archive/delete actions backed by the existing host APIs
 - **Right workspace dock:** full-label Session / Changes / Git / Terminal / Jobs / Files in an equally inset, quietly grey rounded enclosure on the chat surface; compact below ~960px
 - **Shared activity sidebar:** Session, Changes, Git, Terminal, and Jobs open in one full-height, edge-attached right pane with equal switcher tabs, one compact Workspace header, a shared resize handle, and responsive drawer behavior. Horizontal divider rules are omitted; spacing and quiet surface shifts organize the chrome. Changes pairs a recursively expandable file tree with numbered Diff/File review and saturated semantic change colors. It is a structural sibling of chat, never a floating card or overlay on desktop. Files remains a Finder reveal.
 - **Persistent contextual terminal:** project sessions open at the project root;
@@ -187,7 +191,7 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 - Projects and session titles come from the host's read-only `listProjects` index; Electron never parses vibe-codr state directly
 - Themes via `/theme` (same 16 palettes as OpenTUI); accents via `/accent`
 - Modes: explained **Plan / Agent / Yolo** menu with neutral icons and a current check in the composer (Shift+Tab still cycles)
-- Execution: **Local / Cloud** selection in the composer; changing it opens the same reviewed handoff as `/handoff local|cloud`
+- Execution: **Local / Cloud** selection in the composer; changing it opens the same reviewed handoff as `/handoff local|cloud`, names the active model, and includes configured model/subscription access by default with an explicit opt-out
 - Slash discovery: one model selector and the complete canonical command set,
   with compact Commands / Skills / System groups cycled by Tab or selected
   directly; descriptive value submenus show the current setting and support
@@ -366,7 +370,7 @@ Shell-owned surfaces:
   the chat workspace
 - Project rail and right-side activity panels are responsive, with persisted
   desktop widths where resize handles are present
-- Theme-faithful selection colors, headings, and user-message accent (warm Vibe Dark default; `/accent` remaps)
+- Theme-faithful selection colors, headings, and user-message accent (neutral-white Vibe Dark default; `/accent` remaps)
 - Empty-home splash: the same stylized, fluidly scaled ASCII wordmark at every window size, centered composer, and no automatic prompt suggestions
 - Project rail: rename/archive/delete on hover, titled sessions, working-only spinner for the active busy session
 - Host fatal recovery: **New session** on the boot-error card
@@ -389,14 +393,13 @@ Manual smoke steps: **[VERIFICATION.md](./VERIFICATION.md)**. Agent notes:
 npm run verify && npm run smoke:bridge && npm run test:e2e
 ```
 
-Current baseline: **611 unit tests**, **12 Electron E2E scenarios**, 21 source
+Current baseline: **622 passing unit tests** (2 paid-provider tests skipped), **12 Electron E2E scenarios**, 21 source
 parity pairs, 40 top-level config fields, Biome, typecheck, production build,
 and renderer bundle budget pass in the current checkout. Settings, Terminal,
 Git, and Changes are isolated from the initial renderer chunk. CI runs `verify` +
 coverage floors + bridge smoke + E2E on Linux and unsigned native-host pack
 smokes on macOS and Windows; the tag workflow signs, notarizes, verifies, and
-publishes the desktop, platform-complete CLI archives, and npm package as one
-release only after every product gate succeeds.
+publishes both platform artifacts as one release.
 Prefer live `npm test` counts over frozen numbers in prose. The deterministic preview matrix covers
 attachments, settings, Git, Session review, light mode, and alternate themes.
 Hardening backlog: [plans/IMPROVEMENT-AUDIT.md](./plans/IMPROVEMENT-AUDIT.md).
@@ -407,7 +410,7 @@ contract, and release gates.
 ## Project layout
 
 ```
-apps/desktop/
+vbcode-electron/
   src/main/           # Electron main + EngineBridge + host resolver + PTY owner
   src/preload/        # contextBridge API, including terminal IPC
   src/renderer/       # React UI, activity sidebar, and xterm renderer
@@ -424,7 +427,8 @@ apps/desktop/
   LICENSE
 ```
 
-## Canonical source
+## Related
 
-Engine, CLI, terminal UI, cloud runtime, and Desktop are maintained together in
-[Vibe Codr](https://github.com/robzilla1738/vibe-codr).
+- Engine / CLI TUI: [vibe-codr](https://github.com/robzilla1738/vibe-codr) (`packages/macos-bridge` NDJSON host)
+- Native macOS shell: [vbcodrmacos](https://github.com/robzilla1738/vbcodrmacos)
+- This Electron shell: [vbcode-electron](https://github.com/robzilla1738/vbcode-electron)

@@ -33,7 +33,10 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // Fail-closed Cloud recovery mutation guards now live in both the startup rail
 // and deferred Sessions chunk. Allow their measured <2 KB aggregate cost while
 // keeping the startup/largest-chunk ceiling unchanged.
-const totalBudget = 2_876_000;
+// Live session-state derivation and reviewed model-credential handoff add under
+// 8 KB across deferred surfaces. Cloud handoff remains off the startup path;
+// retain a narrow 2 KB allowance over the measured v0.6.1 aggregate.
+const totalBudget = 2_886_000;
 const chunkBudget = 2_120_000;
 
 if (total > totalBudget || largest > chunkBudget) {

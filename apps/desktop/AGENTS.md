@@ -63,7 +63,7 @@ Electron **presentation shell** in `apps/desktop`. Do **not** reimplement `@vibe
 
 ```bash
 npm run dev            # launch Electron
-npm test               # unit tests (Vitest; 611 at the current baseline)
+npm test               # unit tests (Vitest; prefer the live count over frozen prose)
 npm run test:coverage  # coverage floors (shared + bridge)
 npm run typecheck
 npm run verify         # lint + unit + source/config parity + typecheck + build + bundle
@@ -91,6 +91,9 @@ cd ../.. && bun run build:macos-bridge
   - Session inspector is explicitly toggled (dock / ⇧⌘I / Review); not auto-opened on send.
   - Project menus: rename/archive/delete; subagent rows are static status summaries.
   - User turns fold from the message itself; **user Copy/Edit/time sit under the bubble**; assistant Copy stays below assistant output.
+  - Each turn consolidates intermediate reasoning, tools, and progress into one expandable Work phase; the final answer stays in the primary flow.
+  - Sessions derive Working, Needs input, Review, and Done from live local/Cloud state, while manual organization remains available when idle.
+  - Cloud handoff includes the active model plus configured key/subscription access by default, with explicit global and per-handoff opt-outs.
   - Finder drops resolve native paths with URI/plain-text fallback.
   - Changed files: footer chip beside Jump to latest + dedicated master-detail Diff/File review + Reveal.
   - Desktop rails resize with pointer/keyboard and persisted widths.

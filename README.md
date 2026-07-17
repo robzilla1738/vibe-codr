@@ -46,12 +46,12 @@ Both interfaces share the same sessions, configuration, providers, tools, permis
 
 ## What Vibe Codr does
 
-- **Works with your models.** Connect OpenAI, Anthropic, xAI, OpenRouter, Bedrock, Vertex, Azure OpenAI, Ollama, LM Studio, or any compatible endpoint. The live catalog is backed by [models.dev](https://models.dev), not a stale hardcoded list.
+- **Works with your models.** AI SDK 7 provides one current streaming and tool-calling contract across OpenAI, Anthropic, xAI, OpenRouter, Bedrock, Vertex, Azure OpenAI, Ollama, LM Studio, and compatible endpoints. The live catalog is backed by [models.dev](https://models.dev), not a stale hardcoded list.
 - **Plans before it changes code.** Plan mode researches and inspects without write tools, presents an explicit approval gate, and hands accepted plans into the same task spine used by execution.
 - **Orchestrates real parallel work.** A dependency-aware task DAG, named agents, model tiers, structured handoffs, worktree isolation, review-and-retry, detached tasks, continuation, and a typed coordination blackboard are built into the engine.
 - **Proves the work.** Repository recon finds the real checks; the green gate runs them after mutations, reviews the actual diff, scans for stubs, and creates recoverable green checkpoints.
 - **Keeps sessions useful.** Resume, rename, archive, delete, search, filter, and organize sessions across projects. The desktop Board and List views show honest active, review, done, local, cloud, and working state.
-- **Moves between local and cloud safely.** Reviewed handoff transfers the exact workspace and engine-owned session, verifies identity and model access before ownership changes, and preserves a recovery path.
+- **Moves between local and cloud safely.** Reviewed handoff transfers the exact workspace and engine-owned session, includes the active model and configured key/subscription access by default with explicit opt-outs, verifies identity and model access before ownership changes, and preserves a recovery path.
 - **Remembers without taking your data.** Project notes, global preferences, session digests, BM25 recall, and optional local semantic recall stay on your machine.
 - **Keeps you in control.** Plan / Agent / Yolo modes, scoped allow/ask/deny rules, stale-write guards, optional OS sandboxing, bounded tool output, redacted crash logs, and no telemetry.
 - **Connects to your tools.** MCP over stdio and HTTP/SSE, OAuth 2.1, tools, resources, prompts, skills, commands, hooks, Git, terminal jobs, web research, PDFs, and language diagnostics.
@@ -124,12 +124,12 @@ Useful commands:
 The desktop app is a presentation shell over the engine’s NDJSON host protocol. It does not fork or reimplement the agent loop.
 
 - **Project rail:** Projects, Chats, and a first-class Sessions workspace.
-- **Sessions workspace:** Board/List views, search, project/mode/status filters, sorting, user-managed Active/Review/Done state, and open/rename/archive/delete actions.
+- **Sessions workspace:** Board/List views, search, project/mode/status filters, sorting, automatic live Working/Needs input/Review/Done transitions, and open/rename/archive/delete actions.
 - **Conversation:** streaming Markdown, reasoning, tool progress, plans, approvals, queue steering, source cards, attachments, and changed-file summaries.
 - **Workspace dock:** Session, Changes, Git, Terminal, Jobs, and Files stay beside the conversation rather than replacing it.
 - **Changes:** a master-detail file tree with numbered Diff/File review, semantic additions/deletions, copy, and reveal actions.
 - **Terminal:** main-process-owned PTYs persist across view changes and keep each project’s working directory.
-- **Themes:** the same theme and accent semantics as the terminal interface, rendered through a token-first desktop design system with restrained Liquid Glass chrome.
+- **Themes:** the same theme and accent semantics as the terminal interface, rendered through a token-first desktop design system with restrained Liquid Glass chrome; Vibe Dark defaults to a neutral-white accent.
 - **Recovery:** authoritative engine history is enhanced by a bounded, validated presentation cache; corrupt or unavailable browser storage never blocks startup.
 
 Desktop behavior and visual contracts are documented in [apps/desktop/UI.md](apps/desktop/UI.md), [apps/desktop/PARITY.md](apps/desktop/PARITY.md), and [apps/desktop/design-system.md](apps/desktop/design-system.md).

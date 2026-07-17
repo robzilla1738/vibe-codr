@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
@@ -13,7 +13,7 @@ import { globalStateDir } from "./state-dir.ts";
 // root so tests never touch ~/.vibe/state (same setup as engine-e2e.test.ts).
 process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
 
-const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+const USAGE = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 
 function stream(chunks: unknown[]) {
   return {
@@ -31,11 +31,11 @@ function textStep(t: string) {
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: t },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -62,7 +62,7 @@ function assessments(verdicts: { met: boolean; gaps: string[]; reason: string }[
           text: JSON.stringify(verdicts[Math.min(i++, verdicts.length - 1)]),
         },
       ],
-      finishReason: "stop" as const,
+      finishReason: { unified: "stop" as const, raw: undefined },
       usage: USAGE,
       warnings: [],
     };
@@ -75,7 +75,7 @@ function toolCall(id: string, name: string, input: unknown) {
   return stream([
     { type: "stream-start", warnings: [] },
     { type: "tool-call", toolCallId: id, toolName: name, input: JSON.stringify(input) },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 
@@ -95,7 +95,7 @@ test("/goal starts a run, continues past gaps, and finishes only after 2 clean p
     { met: true, gaps: [], reason: "work looks complete" },
     { met: true, gaps: [], reason: "verified clean" },
   ]);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return textStep(`turn ${prompts.length} done`) as never;
@@ -150,7 +150,7 @@ test("/goal run stops at goal.maxRounds with a warn — the ★ stays set", asyn
   const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-bound-"));
   const prompts: string[] = [];
   const assess = assessments([{ met: false, gaps: ["still not done"], reason: "nope" }]);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return textStep("working") as never;
@@ -198,7 +198,7 @@ test("/goal clear mid-run sweeps queued goal turns but NOT a queued loop iterati
   const loopRan = new Promise<void>((r) => (signalLoopRan = r));
 
   const assess = assessments([{ met: false, gaps: ["more polish needed"], reason: "not yet" }]);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const idx = prompts.length;
       prompts.push(JSON.stringify(options.prompt));
@@ -255,7 +255,7 @@ test("Esc (abort) mid-run stops the goal run; the ★ goal stays set", async () 
   const started = new Promise<void>((r) => (signalStarted = r));
   const abortErr = () => Object.assign(new Error("aborted"), { name: "AbortError" });
   const assess = assessments([{ met: true, gaps: [], reason: "irrelevant" }]);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       signalStarted();
@@ -310,7 +310,7 @@ test("a typed prompt mid-run STEERS the goal run instead of killing it", async (
     { met: true, gaps: [], reason: "done now" },
     { met: true, gaps: [], reason: "verified" },
   ]);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const idx = prompts.length;
       prompts.push(JSON.stringify(options.prompt));
@@ -388,7 +388,7 @@ test("pipeline: plan turn seeds tasks, execute turn drives them, verify converge
     textStep("verified clean"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -443,7 +443,7 @@ test("pipeline: a prose plan with no checklist falls back to a single goal task"
     textStep("verified"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => steps[call++] as never,
     doGenerate: assess.doGenerate,
   });
@@ -483,7 +483,7 @@ test("pipeline: unfinished tasks drive task continuations — no assessment unti
     textStep("verified"), // adversarial verify
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -524,7 +524,7 @@ test("pipeline: task continuations charge the UNIFIED goal budget and exhaust wi
   // Plan seeds one task; execute and every continuation never touch it.
   const steps = [textStep("- [ ] impossible thing")];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const step = steps[call];
       call++;
@@ -599,7 +599,7 @@ test("pipeline: a live run persists to engine.json and --resume re-enters it", a
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   let callA = 0;
-  const modelA = new MockLanguageModelV2({
+  const modelA = new MockLanguageModelV3({
     doStream: async () => {
       const idx = callA++;
       if (idx === 0) return textStep("- [ ] the work") as never; // plan
@@ -661,7 +661,7 @@ test("pipeline: a live run persists to engine.json and --resume re-enters it", a
   // assessment-driven — met + met converges without any fresh drive/plan turn.
   const assessB = assessments([{ met: true, gaps: [], reason: "done" }]);
   const promptsB: string[] = [];
-  const modelB = new MockLanguageModelV2({
+  const modelB = new MockLanguageModelV3({
     doStream: async (options) => {
       promptsB.push(JSON.stringify(options.prompt));
       return textStep("verified") as never;
@@ -717,7 +717,7 @@ test("/goal from plan mode flips to execute WITHOUT hijacking a presented plan",
     textStep("verified"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify(options.prompt));
       return steps[call++] as never;
@@ -780,7 +780,7 @@ test("pipeline: a steer folds in and the task chain re-arms after it", async () 
     textStep("verified"), // adversarial verify
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const idx = call++;
       prompts.push(JSON.stringify(options.prompt));
@@ -837,7 +837,7 @@ test("pipeline: Esc pause is ANNOUNCED and /goal resume re-arms at the paused ph
     textStep("verified"), // adversarial verify
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const idx = call++;
       if (idx === 1) {
@@ -907,7 +907,7 @@ test("pipeline: /goal <new text> mid-run SWEEPS the old run's queued continuatio
     textStep("verified"), // adversarial verify for B
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const idx = call++;
       prompts.push(JSON.stringify(options.prompt));
@@ -965,7 +965,7 @@ test("pipeline: /clear pauses the run (swept queue) and /goal resume RE-PLANS on
     textStep("verified"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const idx = call++;
       if (idx === 1) {
@@ -1029,7 +1029,7 @@ test("pipeline: checked checkboxes in the plan text are narration, not seeded ta
     textStep("verified"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const idx = call++;
       return (steps[idx] ?? textStep("noop")) as never;
@@ -1061,7 +1061,7 @@ test("an Esc landing DURING the self-assessment does not launch one more turn", 
   let releaseAssess!: () => void;
   const assessGate = new Promise<void>((r) => (releaseAssess = r));
   let streamCalls = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       streamCalls++;
       return textStep("worked on it") as never;
@@ -1078,7 +1078,7 @@ test("an Esc landing DURING the self-assessment does not launch one more turn", 
             text: JSON.stringify({ met: false, gaps: ["more"], reason: "keep going" }),
           },
         ],
-        finishReason: "stop" as const,
+        finishReason: { unified: "stop" as const, raw: undefined },
         usage: USAGE,
         warnings: [],
       };
@@ -1122,7 +1122,7 @@ test("a steer's round-budget re-grant is PERSISTED (a kill mid-steer resumes wit
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const idx = call++;
       if (idx === 1) {
@@ -1201,7 +1201,7 @@ test("pipeline: tasks left over from BEFORE the run never hijack its spine", asy
     textStep("verified"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const idx = call++;
       prompts.push(JSON.stringify(options.prompt));
@@ -1260,7 +1260,7 @@ test("a gate that exhausts its fix budget STILL RED pauses the run instead of we
   await Bun.write(join(cwd, "bun.lock"), "");
   const assess = assessments([{ met: true, gaps: [], reason: "unreachable" }]);
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       // Every turn mutates (write) then finishes — so the gate always runs.
       const idx = call++;
@@ -1318,7 +1318,7 @@ test("dequeuing the run's queued turn pauses the run instead of leaving it armed
     textStep("steer noted"), // steer turn (held → continuation sits queued)
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const idx = call++;
       if (idx === 1) {
@@ -1390,7 +1390,7 @@ test("/queue clear pauses the run when it drops the run's queued turn", async ()
     textStep("steer noted"), // steer turn (held → continuation sits queued)
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const idx = call++;
       if (idx === 1) {
@@ -1440,7 +1440,7 @@ test("a hook-denied goal turn pauses the run; a denied PLAN turn never fabricate
   const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-hookdeny-"));
   const assess = assessments([{ met: true, gaps: [], reason: "unreachable" }]);
   let streamCalls = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       streamCalls++;
       return textStep("should never run") as never;
@@ -1486,7 +1486,7 @@ test("switching to plan mode mid-goal-run pauses the run (no read-only continuat
   // now pauses the run instead (resume re-ensures execute).
   const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-planflip-"));
   const assess = assessments([{ met: false, gaps: ["more"], reason: "not done" }]);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => textStep("done") as never,
     doGenerate: assess.doGenerate,
   });
@@ -1521,7 +1521,7 @@ test("a resolve-plan accept during an active goal run cannot reseed the task spi
   // not #seedTasksFromPlan over it and enqueue a competing execute-plan driver.
   const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-planaccept-"));
   const assess = assessments([{ met: false, gaps: ["more"], reason: "not done" }]);
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => textStep("done") as never,
     doGenerate: assess.doGenerate,
   });

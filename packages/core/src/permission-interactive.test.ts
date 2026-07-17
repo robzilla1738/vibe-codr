@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { UIEvent, ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -10,7 +10,7 @@ import { Toolset } from "@vibe/tools";
 import { defaultConfig } from "@vibe/config";
 import { Engine } from "./engine.ts";
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 function toolCall(id: string) {
   return {
@@ -18,7 +18,7 @@ function toolCall(id: string) {
       chunks: [
         { type: "stream-start", warnings: [] },
         { type: "tool-call", toolCallId: id, toolName: "danger", input: "{}" },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ] as never[],
       initialDelayInMs: 0,
       chunkDelayInMs: 0,
@@ -33,7 +33,7 @@ function finalText() {
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "done" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: "stop", usage: USAGE },
+        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
       ] as never[],
       initialDelayInMs: 0,
       chunkDelayInMs: 0,
@@ -59,7 +59,7 @@ function makeEngine(
     },
   };
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
     {
       id: "mock",
@@ -91,7 +91,7 @@ function toolCallCmd(id: string, command: string) {
           toolName: "danger",
           input: JSON.stringify({ command }),
         },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ] as never[],
       initialDelayInMs: 0,
       chunkDelayInMs: 0,
@@ -151,7 +151,7 @@ test("interactive: two tool calls in one step each get a distinct prompt", async
         { type: "stream-start", warnings: [] },
         { type: "tool-call", toolCallId: "c1", toolName: "danger", input: "{}" },
         { type: "tool-call", toolCallId: "c2", toolName: "danger", input: "{}" },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ] as never[],
       initialDelayInMs: 0,
       chunkDelayInMs: 0,
@@ -345,7 +345,7 @@ function makePathEngine(steps: unknown[], cwdOverride?: string) {
     },
   };
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const registry = new ProviderRegistry([
     {
       id: "mock",
@@ -372,7 +372,7 @@ function writerCall(id: string, path: string) {
       chunks: [
         { type: "stream-start", warnings: [] },
         { type: "tool-call", toolCallId: id, toolName: "writer", input: JSON.stringify({ path }) },
-        { type: "finish", finishReason: "tool-calls", usage: USAGE },
+        { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
       ] as never[],
       initialDelayInMs: 0,
       chunkDelayInMs: 0,

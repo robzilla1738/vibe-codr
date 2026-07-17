@@ -148,8 +148,8 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAI",
   },
   {
-    // Fireworks serves an OpenAI-compatible API; use openai-compatible so it
-    // works under `ai@5` without the dedicated (spec v3+) package.
+    // Fireworks serves an OpenAI-compatible API; keep it on the shared transport
+    // so endpoint behavior and auth match the rest of the compatible catalog.
     id: "fireworks",
     env: ["FIREWORKS_API_KEY"],
     baseURL: "https://api.fireworks.ai/inference/v1",
@@ -157,10 +157,8 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // Baseten exposes an OpenAI-compatible Model API, so we drive it through
-    // `@ai-sdk/openai-compatible` (AI-SDK spec v2). The dedicated `@ai-sdk/baseten`
-    // package tracks AI-SDK v6 (spec v3) and is incompatible with our pinned
-    // `ai@5`, so it would reject every request with an "unsupported version".
+    // Baseten exposes an OpenAI-compatible Model API, so use the shared SDK 7
+    // compatible transport and preserve its endpoint-specific model ids.
     id: "baseten",
     env: ["BASETEN_API_KEY"],
     baseURL: "https://inference.baseten.co/v1",
@@ -168,10 +166,8 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // OpenRouter is OpenAI-compatible; the dedicated `@openrouter/ai-sdk-provider`
-    // now peers `ai@^6`, so we route through `@ai-sdk/openai-compatible` to stay
-    // on the pinned `ai@5`. (Unified reasoning options are not forwarded — the
-    // model still reasons natively.)
+    // OpenRouter is OpenAI-compatible; the shared transport keeps its broad model
+    // catalog on the same streaming/tool contract as the other gateways.
     id: "openrouter",
     env: ["OPENROUTER_API_KEY"],
     baseURL: "https://openrouter.ai/api/v1",
@@ -179,9 +175,8 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // Google Gemini via its OpenAI-compatible endpoint — keeps us on `ai@5` /
-    // openai-compatible (no `@ai-sdk/google`, which needs `ai@6`). Use a Google AI
-    // Studio key. models.dev slug is `google` (enrichment lands directly).
+    // Google Gemini via its OpenAI-compatible endpoint. Use a Google AI Studio
+    // key. models.dev slug is `google` (enrichment lands directly).
     id: "google",
     env: ["GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"],
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -288,9 +283,8 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // DeepInfra — OpenAI-compatible endpoint for hosted open models. The
-    // dedicated `@ai-sdk/deepinfra` package tracks AI SDK v6+ (spec v3), so we
-    // drive it through `@ai-sdk/openai-compatible` to stay on the pinned `ai@5`.
+    // DeepInfra — OpenAI-compatible endpoint for hosted open models. The shared
+    // transport keeps its stream and tool behavior aligned with other gateways.
     id: "deepinfra",
     env: ["DEEPINFRA_API_KEY"],
     baseURL: "https://api.deepinfra.com/v1/openai",
@@ -299,9 +293,7 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // Venice AI — OpenAI-compatible endpoint. The dedicated
-    // `venice-ai-sdk-provider` may track newer AI SDK specs, so route through
-    // `@ai-sdk/openai-compatible` for spec-v2 stability.
+    // Venice AI — OpenAI-compatible endpoint on the shared SDK 7 transport.
     id: "venice",
     env: ["VENICE_API_KEY"],
     baseURL: "https://api.venice.ai/api/v1",
@@ -310,9 +302,8 @@ const BUILTINS: BuiltinSpec[] = [
     factory: "createOpenAICompatible",
   },
   {
-    // Cohere — OpenAI-compatible "compatibility-mode" endpoint. The dedicated
-    // `@ai-sdk/cohere` package has moved to AI SDK v6+ (spec v3+), so we route
-    // through `@ai-sdk/openai-compatible` to stay on the pinned `ai@5`.
+    // Cohere — OpenAI-compatible "compatibility-mode" endpoint on the shared
+    // SDK 7 transport.
     id: "cohere",
     env: ["COHERE_API_KEY"],
     baseURL: "https://api.cohere.com/compatibility/v1",
@@ -872,11 +863,11 @@ function buildDef(spec: BuiltinSpec): ProviderDef {
       return model;
     },
 
-    async createEmbedding(modelId, opts): Promise<EmbeddingModel<string>> {
+    async createEmbedding(modelId, opts): Promise<EmbeddingModel> {
       const provider = await buildProvider(spec, baseURL, opts);
       const embed = (
         provider as {
-          textEmbeddingModel?: (id: string) => EmbeddingModel<string>;
+          textEmbeddingModel?: (id: string) => EmbeddingModel;
         }
       ).textEmbeddingModel;
       if (typeof embed !== "function") {

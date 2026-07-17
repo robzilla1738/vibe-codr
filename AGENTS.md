@@ -6,7 +6,7 @@ memory; `CLAUDE.md` exists as the Claude Code bridge and points back here.
 
 ## Stack & layout
 
-- **Runtime:** Bun (workspaces + Turbo). **Models:** Vercel AI SDK v5.
+- **Runtime:** Bun (workspaces + Turbo). **Models:** Vercel AI SDK v7.
 - Hard **core/TUI boundary:** the engine emits a typed `UIEvent` stream and
   accepts `EngineCommand`s; no UI type leaks into core, so the engine is fully
   testable headless.
@@ -17,7 +17,7 @@ memory; `CLAUDE.md` exists as the Claude Code bridge and points back here.
 | `@vibe/config` | Zod config schema, file discovery + deep-merge, auth resolution |
 | `@vibe/providers` | `ProviderRegistry`, `resolveModel`, `CatalogService` (models.dev + `/v1/models`) |
 | `@vibe/tools` | Built-in tools (`read`/`edit`/`bash`/`grep`/`repo_map`/`git_*`/…) + the AI-SDK `tool()` adapter; the file-write lock is an **exclusive-ownership claim registry** (`createFileLock`) so parallel subagents can't clobber one file. Web search is **keyless** and **fans out across DuckDuckGo + Bing** (`search-engines.ts`), then dedupes by canonical URL + quality-ranks the merge (`searchcore.ts`); TinyFish is an optional booster. Search HTML parsers must keep result/snippet association local to each result row so malformed skipped rows cannot shift later snippets. `webfetch` extracts PDFs (`pdftext.ts`, zero-dep) + optional Readability, backed by a cache-through store (`fetch-cache.ts`). **OS sandbox** (`sandbox.ts`, opt-in): a pure Seatbelt(macOS)/bwrap(Linux) policy every command spawn (`bash`, jobs, and core's `exec`/`verify`) routes through — the permission engine stays the policy brain, the sandbox is the kernel backstop |
-| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD limiter (`limiter.ts`), the default-ON task-DAG scheduler (`orchestrator.ts` + `orchestration/orchestrator-runner.ts`: structured handoffs, `read_report`, model tiers, executable verify, worktree isolation, ensemble, journal resume), continuation + background spawns (`continue_subagent`/`check_task` over a bounded-LRU `orchestration/child-registry.ts`; `detach:true`), schema-validated child output (`orchestration/structured-output.ts` — a real JSON-Schema validator, since ai@5's `jsonSchema()` doesn't validate — `outputSchema` enforced on the inline, worktree, AND ensemble/`hard` paths: validated JSON or an honest failure, never silently dropped; a `continue_subagent` that coerced a child to plan mode restores its registry-remembered original mode when continued in execute), and a typed coordination blackboard (`blackboard.ts`); (2b) **build intelligence** (`build/` — deterministic recon → `RepoProfile`, `run_check` parsing, the green-gate, green checkpoints, stub scan, gitops/worktrees, browser verify); (2c) **diagnostics** — the `diagnose()` seam behind a composite of the in-process TS fast path and a multi-language `lsp/` client (stdio JSON-RPC, lazy per-language spawn, deadline-bounded, advisory-only); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`) — both network-flagged so permission rules govern them — `${VAR}`/`${VAR:-default}` expansion over connect-time config, OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/`/`resources/`/`prompts/list_changed` live re-registration; (4) **production** — crash handlers + redacted crash log (`crash.ts`), a keyless update check (`update-check.ts`) |
+| `@vibe/core` | Agent loop (`Session.run`), `Engine`, slash commands, checkpoints, context-window tracking, plus three pillars: (1) **long-term memory** — injected project/global notes (`memory.ts`), a `save_memory` write-path (`memory-store.ts`), and hybrid recall — BM25 (`bm25.ts`) fused with optional semantic search (`embeddings.ts` + `vector-store.ts` over `bun:sqlite` + `semantic-memory.ts`) and session recall via RRF (`memory-search.ts`), behind `MemoryService`; (2) **orchestration** — a tree-global AIMD limiter (`limiter.ts`), the default-ON task-DAG scheduler (`orchestrator.ts` + `orchestration/orchestrator-runner.ts`: structured handoffs, `read_report`, model tiers, executable verify, worktree isolation, ensemble, journal resume), continuation + background spawns (`continue_subagent`/`check_task` over a bounded-LRU `orchestration/child-registry.ts`; `detach:true`), schema-validated child output (`orchestration/structured-output.ts` — deterministic local JSON-Schema validation with `outputSchema` enforced on the inline, worktree, AND ensemble/`hard` paths: validated JSON or an honest failure, never silently dropped; a `continue_subagent` that coerced a child to plan mode restores its registry-remembered original mode when continued in execute), and a typed coordination blackboard (`blackboard.ts`); (2b) **build intelligence** (`build/` — deterministic recon → `RepoProfile`, `run_check` parsing, the green-gate, green checkpoints, stub scan, gitops/worktrees, browser verify); (2c) **diagnostics** — the `diagnose()` seam behind a composite of the in-process TS fast path and a multi-language `lsp/` client (stdio JSON-RPC, lazy per-language spawn, deadline-bounded, advisory-only); (3) **MCP** (`mcp.ts`) — stdio + Streamable-HTTP/SSE transports, tools, resources (`read_mcp_resource`), prompts (`get_mcp_prompt`) — both network-flagged so permission rules govern them — `${VAR}`/`${VAR:-default}` expansion over connect-time config, OAuth 2.1 (`mcp-oauth.ts`), and auto-reconnect + `tools/`/`resources/`/`prompts/list_changed` live re-registration; (4) **production** — crash handlers + redacted crash log (`crash.ts`), a keyless update check (`update-check.ts`) |
 | `@vibe/plugins` | `HookBus`, slash-command + skill runtimes (`SkillRegistry`: progressive disclosure, `disable-model-invocation` / `user-invocable` frontmatter), `PluginHost`; declarative shell/HTTP hooks are layered on via `core/config-hooks.ts` from the config `hooks` block |
 | `@vibe/tui` | OpenTUI app + headless/REPL renderers, themes, tool icons, spinner |
 | `@vibe/macos-bridge` | Runtime-validated NDJSON stdio host for desktop shells: in-process `Engine`, same `EngineCommand`/`UIEvent` contracts as the TUI. Run `bun run macos-bridge`; compile with `bun run build:macos-bridge` → `dist/vibecodr-engine-host` |
@@ -103,19 +103,16 @@ npm --prefix apps/desktop run verify:ci
   typescript/linkedom/readability into the binary. Semantic memory degrades to
   lexical BM25 recall when no embedder (local dep or configured cloud model) is
   available, so `bun add @huggingface/transformers` is opt-in.
-- **Provider spec invariant:** the repo is pinned to **AI SDK v5** (provider spec
-  `"v2"`). Only providers with a v2-compatible dedicated SDK use it directly
-  (anthropic `^2`, openai `^2`, deepseek `^1`, codex via openai); **every other
-  provider routes through `@ai-sdk/openai-compatible` (`^1`, spec v2)** —
+- **Provider spec invariant:** the repo is pinned to **AI SDK v7** and current
+  provider packages (language-model spec `"v4"`). Providers with first-party
+  SDKs use them directly (Anthropic, OpenAI, DeepSeek, Bedrock, Vertex, Azure);
+  **OpenAI-compatible endpoints route through `@ai-sdk/openai-compatible` (`^3`)** —
   meta, minimax, ollama, lmstudio, baseten, xai, openrouter, fireworks, google,
   groq, mistral, together, cerebras, perplexity, nvidia, deepinfra, venice,
   cohere, kilo, llmgateway, zenmux, snowflake-cortex, cloudflare-workers-ai,
-  custom. Their dedicated packages
-  have moved to AI SDK v6/v7 (spec v3/v4) and `ai@5` rejects those with
-  "unsupported model version". Don't wire a provider to a dedicated SDK unless
-  you confirm it resolves `@ai-sdk/provider@^2`; otherwise use openai-compatible
-  with its base URL. `registry.test.ts` asserts the rerouted providers stay
-  spec-`v2`.
+  custom. Keep an endpoint on this shared transport unless a dedicated SDK adds
+  behavior the endpoint actually needs; `registry.test.ts` asserts every routed
+  provider resolves to the SDK 7-compatible spec-`v4` contract.
 - **Adding a provider = one `BuiltinSpec`** in `packages/providers/src/defs.ts`
   (`id`, `env`, `baseURL`, optional `baseURLEnv`/`keyless`/`requiresBaseURL`/`tokenFile`,
   `module:"@ai-sdk/openai-compatible"`, `factory:"createOpenAICompatible"`). No new

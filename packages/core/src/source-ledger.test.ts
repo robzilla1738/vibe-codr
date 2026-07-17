@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import type { ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
@@ -160,9 +160,9 @@ function stream(chunks: unknown[]) {
   };
 }
 
-const USAGE = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+const USAGE = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
 
-function mockRegistry(model: MockLanguageModelV2): ProviderRegistry {
+function mockRegistry(model: MockLanguageModelV3): ProviderRegistry {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -200,7 +200,7 @@ test("session harvests URLs from a web_search result and injects them into the n
         toolName: "web_search",
         input: JSON.stringify({ query: "x" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     // …then answers.
     stream([
@@ -208,7 +208,7 @@ test("session harvests URLs from a web_search result and injects them into the n
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "done" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
     // Turn 2: plain answer — we capture its prompt.
     stream([
@@ -216,12 +216,12 @@ test("session harvests URLs from a web_search result and injects them into the n
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "follow up" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
   let lastPrompt: { role: string; content: unknown }[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (opts: { prompt?: unknown[] }) => {
       lastPrompt = (opts.prompt ?? []) as { role: string; content: unknown }[];
       return steps[call++] as never;
@@ -288,18 +288,18 @@ test("webfetch records the URL it FETCHED, not links found inside the page body"
         toolName: "webfetch",
         input: JSON.stringify({ url: "https://blog.example.com/post" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     stream([
       { type: "stream-start", warnings: [] },
       { type: "text-start", id: "t" },
       { type: "text-delta", id: "t", delta: "done" },
       { type: "text-end", id: "t" },
-      { type: "finish", finishReason: "stop", usage: USAGE },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
     ]),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({ doStream: async () => steps[call++] as never });
+  const model = new MockLanguageModelV3({ doStream: async () => steps[call++] as never });
   const session = new Session({
     config: defaultConfig(),
     registry: mockRegistry(model),

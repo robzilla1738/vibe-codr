@@ -1,8 +1,8 @@
 # UI.md — Current interaction and visual contract
 
 > **Status:** current-state handoff  
-> **Updated:** 2026-07-16 (unified source, Sessions workspace, and continuity-safe Cloud handoff)
-> **Source:** [`apps/desktop` in Vibe Codr](https://github.com/robzilla1738/vibe-codr/tree/main/apps/desktop)
+> **Updated:** 2026-07-15 (continuity-safe Cloud handoff, grouped commands, and presence motion)
+> **Repository:** [vbcode-electron](https://github.com/robzilla1738/vbcode-electron)
 
 This is the renderer-facing design contract for the Electron shell. Re-check the
 live code before changing behavior; the engine remains owned by
@@ -29,8 +29,11 @@ an explicit Moves/Stays boundary, an optional next-task field, and one billing
 note. It does not use a grid of rounded selection cards or repeat policy prose.
 The complete usable project tree, including Git-ignored files, moves by default;
 hard machine-secret and generated-dependency exclusions remain explicit in the
-review. Configured Cloud-capable provider access is encrypted for that session,
-while unrelated process environment and machine credential stores remain Local.
+review. The active model is named and configured Cloud-capable provider access
+is encrypted for that session by default. An Include model access checkbox can
+override the Settings → Cloud default; when disabled, only explicit Cloud
+credential bindings move. Unrelated process environment and machine credential
+stores remain Local.
 Missing Cloud authentication and local-only providers are rejected before a
 sandbox is created, with a direct setup action. Authenticated daemon health also
 proves every reviewed environment binding survived startup before ownership moves.
@@ -120,8 +123,9 @@ The shell has these primary surfaces:
 5. **Changed-files footer chip** — after edits, a compact summary shares the
    transcript footer row with Jump to latest and opens the Changes workspace.
 6. **Sessions workspace** — a full main-stage Board/List view over the host-owned
-   project index. Active / Review / Done are user-managed desktop organization;
-   only a truly busy local session or running Cloud session is labeled Working.
+   project index. Live local and Cloud state automatically drives Working,
+   Needs input, Review, and Done; users retain manual organization when no live
+   state applies.
    Search, project/status/mode filters, sorting, inline rename, status movement,
    archive, delete, and resume all operate on the existing session APIs.
 
@@ -205,8 +209,9 @@ without changing the active chat or scroll position.
   filters, sort, and per-session Active/Review/Done status across app restarts.
 - Cards keep project identity, title, goal, model, mode, relative activity time,
   status, and actions scannable without turning each metadata value into a badge.
-- Actual local/Cloud execution temporarily places a card in Active and shows
-  Working; it does not overwrite the user's saved organization state.
+- Actual model execution or an ownership transition places a card in Active and
+  shows Working. Permission, question, plan, and local-capability waits move to
+  Review with “Needs your input”; a settled active turn moves to Done.
 - Rename stays inline. Archive and Delete use a keyboard-safe in-app confirmation
   dialog, then reuse the same host mutations and transcript-cache cleanup as the rail.
 - Below 48rem, board columns stack and list rows collapse without horizontal scroll;
@@ -266,8 +271,9 @@ without changing the active chat or scroll position.
 
 - Assistant output, tool output, approval panels, and the composer share the
   same reading width.
-- Tool and thinking rows share one compact sans/icon scale. Consecutive
-  activity groups under `Thinking · N steps`. Each open thought is **one
+- Tool and thinking rows share one compact sans/icon scale. A turn's reasoning,
+  tools, and intermediate progress live under one `Work · N steps` disclosure;
+  the final answer stays outside it. Each open thought is **one
   quiet surface** (label + prose; no brain icon; no stacked empty cards).
   Copy for thinking sits on the head row.
 - Thinking groups, nested tool/thought rows, and assistant prose share the same

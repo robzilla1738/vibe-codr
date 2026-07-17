@@ -1,18 +1,19 @@
 import { test, expect } from "bun:test";
-import { MockEmbeddingModelV2 } from "ai/test";
+import { MockEmbeddingModelV3 } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
 import { aiSdkEmbedder, resolveEmbedder, cosineSimilarity, withTimeout } from "./embeddings.ts";
 
 /** Deterministic 3-dim mock: vector keyed by the input's first char code. */
 function mockEmbedding(dim = 3) {
-  return new MockEmbeddingModelV2({
+  return new MockEmbeddingModelV3({
     doEmbed: async ({ values }: { values: string[] }) => ({
       embeddings: values.map((v) => {
         const c = (v.charCodeAt(0) || 1) % 7;
         return Array.from({ length: dim }, (_, i) => Math.sin(c + i));
       }),
       usage: { tokens: values.length },
+      warnings: [],
     }),
   });
 }
@@ -83,10 +84,14 @@ test("aiSdkEmbedder bounds the embedding call with an abort signal (no unbounded
   // path via proactive recall, so a stalled embedding endpoint wedged the turn.
   // The embedder must now pass a (timeout-backed) AbortSignal into doEmbed.
   let captured: AbortSignal | undefined;
-  const model = new MockEmbeddingModelV2({
+  const model = new MockEmbeddingModelV3({
     doEmbed: async ({ values, abortSignal }: { values: string[]; abortSignal?: AbortSignal }) => {
       captured = abortSignal;
-      return { embeddings: values.map(() => [0, 0, 0]), usage: { tokens: values.length } };
+      return {
+        embeddings: values.map(() => [0, 0, 0]),
+        usage: { tokens: values.length },
+        warnings: [],
+      };
     },
   });
   const e = aiSdkEmbedder("mock/embed", model);

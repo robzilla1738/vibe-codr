@@ -7,7 +7,7 @@ import { join } from "node:path";
 // Machine state (sessions, offload artifacts) goes to the per-project GLOBAL
 // state dir — pin it to a temp root so tests never touch ~/.vibe/state.
 process.env.VIBE_STATE_DIR ??= mkdtempSync(join(tmpdir(), "vibe-state-"));
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import type { RepoProfile, ToolDefinition } from "@vibe/shared";
 import { ProviderRegistry } from "@vibe/providers";
 import { Toolset } from "@vibe/tools";
@@ -17,7 +17,7 @@ import { EventBus } from "./event-bus.ts";
 import { Session } from "./session.ts";
 import { Engine } from "./engine.ts";
 
-function mockRegistry(model: MockLanguageModelV2) {
+function mockRegistry(model: MockLanguageModelV3) {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -34,7 +34,7 @@ function stream(chunks: unknown[]) {
   };
 }
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 const textStep = (text: string) =>
   stream([
@@ -42,7 +42,7 @@ const textStep = (text: string) =>
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta: text },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 
 const profile = (commands: RepoProfile["commands"]): RepoProfile => ({
@@ -71,7 +71,7 @@ test("engine bootstrap recon: detects real commands, fills verify.command, injec
   writeFileSync(join(cwd, "src.ts"), "export function fixture() {}\n");
 
   const systems: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const prompt = (options as { prompt: { role: string; content: unknown }[] }).prompt;
       const sys = prompt.find((m) => m.role === "system");
@@ -108,7 +108,7 @@ test("run_check: offered only in execute mode with detected commands; parses PAS
         toolName: "run_check",
         input: JSON.stringify({ check: "test" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("done"),
     // Turn 2 (plan mode): just text.
@@ -116,7 +116,7 @@ test("run_check: offered only in execute mode with detected commands; parses PAS
   ];
   let call = 0;
   const outputs: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const o = options as {
         tools?: { name: string }[];
@@ -163,13 +163,13 @@ test("run_check on an undetected command errors with the detected list", async (
         toolName: "run_check",
         input: JSON.stringify({ check: "lint" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("done"),
   ];
   let call = 0;
   const outputs: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const o = options as { prompt: { role: string; content: unknown }[] };
       for (const m of o.prompt) if (m.role === "tool") outputs.push(JSON.stringify(m.content));
@@ -205,13 +205,13 @@ test("subagent forks inherit the repo profile and get the symbol map injected", 
         toolName: "spawn_subagent",
         input: JSON.stringify({ prompt: "scout the code" }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("child done"), // the child's turn
     textStep("parent done"),
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const prompt = (options as { prompt: { role: string; content: unknown }[] }).prompt;
       const sys = prompt.find((m) => m.role === "system");
@@ -257,13 +257,13 @@ test("an edit that breaks the types surfaces TS diagnostics in the SAME tool res
         toolName: "edit",
         input: JSON.stringify({ path: "app.ts", oldString: "= 1;", newString: '= "one";' }),
       },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]),
     textStep("done"),
   ];
   let call = 0;
   const outputs: string[] = [];
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       const o = options as { prompt: { role: string; content: unknown }[] };
       for (const m of o.prompt) if (m.role === "tool") outputs.push(JSON.stringify(m.content));
@@ -299,12 +299,12 @@ test("mid-turn microcompaction: older bulky results are offloaded, previewed, an
     stream([
       { type: "stream-start", warnings: [] },
       { type: "tool-call", toolCallId: id, toolName: "big_read", input: JSON.stringify({ path }) },
-      { type: "finish", finishReason: "tool-calls", usage: USAGE },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
     ]);
   const prompts: string[] = [];
   const steps = [toolCall("big1", "a.txt"), toolCall("big2", "b.txt"), textStep("done reading")];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify((options as { prompt: unknown }).prompt));
       return steps[call++] as never;

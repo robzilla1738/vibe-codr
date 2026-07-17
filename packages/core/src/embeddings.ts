@@ -30,7 +30,7 @@ const DEFAULT_LOCAL_MODEL = "Xenova/bge-small-en-v1.5";
 const EMBED_TIMEOUT_MS = 30_000;
 
 /** Wrap an AI-SDK embedding model (cloud provider) as an Embedder. */
-export function aiSdkEmbedder(id: string, model: EmbeddingModel<string>): Embedder {
+export function aiSdkEmbedder(id: string, model: EmbeddingModel): Embedder {
   return {
     id,
     dimensions: 0,

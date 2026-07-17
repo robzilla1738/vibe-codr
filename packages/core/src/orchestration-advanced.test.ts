@@ -1,5 +1,5 @@
 import { test, expect, afterAll } from "bun:test";
-import { MockLanguageModelV2, simulateReadableStream } from "ai/test";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,7 +27,7 @@ afterAll(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
-const USAGE = { inputTokens: 1, outputTokens: 1, totalTokens: 2 };
+const USAGE = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
 
 function stream(chunks: unknown[]) {
   return {
@@ -44,7 +44,7 @@ function textStep(delta: string) {
     { type: "text-start", id: "t" },
     { type: "text-delta", id: "t", delta },
     { type: "text-end", id: "t" },
-    { type: "finish", finishReason: "stop", usage: USAGE },
+    { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 function spawnTasksStep(tasks: unknown[]) {
@@ -56,18 +56,18 @@ function spawnTasksStep(tasks: unknown[]) {
       toolName: "spawn_tasks",
       input: JSON.stringify({ tasks }),
     },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 function toolCallStep(toolName: string, input: unknown, id = "c1") {
   return stream([
     { type: "stream-start", warnings: [] },
     { type: "tool-call", toolCallId: id, toolName, input: JSON.stringify(input) },
-    { type: "finish", finishReason: "tool-calls", usage: USAGE },
+    { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
   ]);
 }
 
-function mockRegistry(model: MockLanguageModelV2, recordedIds?: string[]) {
+function mockRegistry(model: MockLanguageModelV3, recordedIds?: string[]) {
   return new ProviderRegistry([
     {
       id: "mock",
@@ -135,7 +135,7 @@ test("a dependency's handoff propagates verbatim into the dependent's kickoff (n
     textStep("wrapped"), // parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? ""));
       return steps[call++] as never;
@@ -220,7 +220,7 @@ test("ReportStore disk fallback preserves the journaled task objective on resume
 test("tier resolves to the configured tier model; absent tier falls back to subagent.model", async () => {
   const ids: string[] = [];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       (call++ === 0
         ? spawnTasksStep([
@@ -257,7 +257,7 @@ test("tier resolves to the configured tier model; absent tier falls back to suba
 
 test("check:true with a red gate fails the attempt on PASS/FAIL text, with no LLM review call", async () => {
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       (call++ === 0
         ? spawnTasksStep([{ id: "t", objective: "make a change", check: true }])
@@ -303,7 +303,7 @@ test("verify task: an Esc during the gate settles the task failed, with no retry
   // mid-run; releasing lets the aborted check exit cleanly (no wedged reader).
   const cwd = tmpCwd();
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       (call++ === 0
         ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
@@ -359,7 +359,7 @@ test("check:true on a repo with no detected checks fails the task as unverified 
   // task that explicitly requested machine verification must FAIL when the repo
   // has no detected commands — not journal `completed` with zero verification.
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       (call++ === 0
         ? spawnTasksStep([{ id: "t", objective: "make a change", check: true }])
@@ -400,7 +400,7 @@ test("check:true on a repo with no detected checks fails the task as unverified 
 
 test("verify:true with no detected checks fails the task as unverified (BUG-047)", async () => {
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       (call++ === 0
         ? spawnTasksStep([{ id: "t", objective: "make a change", verify: true }])
@@ -468,7 +468,7 @@ test("a verify task's reviewer prompt contains the real git diff of the task's f
     textStep("wrapped"), // parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? ""));
       return steps[call++] as never;
@@ -505,7 +505,7 @@ test("a verify task that does not mutate still runs the reviewer", async () => {
     textStep("wrapped"), // parent wrap
   ];
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async (options) => {
       prompts.push(JSON.stringify((options as { prompt?: unknown }).prompt ?? ""));
       return steps[call++] as never;
@@ -536,7 +536,7 @@ test("a verify task that does not mutate still runs the reviewer", async () => {
 
 test("the spawn ceiling errors the task that would exceed subagent.maxTotal", async () => {
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () =>
       (call++ === 0
         ? spawnTasksStep([
@@ -583,7 +583,7 @@ test("a re-submitted plan re-runs only unfinished tasks (journal seed)", async (
   // Same tasks submitted twice in the same session. Turn 1 completes both and
   // journals them; turn 2 seeds from the journal and re-runs neither.
   let call = 0;
-  const model = new MockLanguageModelV2({
+  const model = new MockLanguageModelV3({
     doStream: async () => {
       const c = call++;
       // Turn 1: call0 = spawn_tasks, calls 1-2 = children, call3 = wrap.

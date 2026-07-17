@@ -4,6 +4,31 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.1 — 2026-07-16
+
+### AI SDK 7 streaming
+
+- Migrated the engine and provider layer to AI SDK 7 and provider specification
+  v4, with one current streaming contract across supported model providers.
+- Preserved exact reasoning, text, and tool ordering; normalized SDK 7 usage and
+  step completion; closed in-flight tool lifecycles on abort or stream failure;
+  and retained multimodal file parts through model conversion.
+
+### Desktop experience
+
+- Consolidated each turn's intermediate reasoning, progress, tools, and changes
+  into one compact **Work** disclosure. It expands on demand while the final
+  answer remains in the primary conversation flow.
+- Made the Sessions workspace react to live local and Cloud state, including
+  Working, Needs input, Review, and Done transitions, without weakening the
+  ownership locks that protect Cloud-held recovery records.
+- Made Cloud handoff include the active model plus configured API keys and
+  connected Codex/Grok subscription access by default. Global and per-handoff
+  controls can exclude model access, keys, or subscription tokens, and xAI key
+  aliases now follow Grok routes correctly.
+- Changed Vibe Dark's default chrome accent to neutral white. Orange and purple
+  remain available as opt-in accent presets or semantic colors.
+
 ## 0.6.0 — 2026-07-16
 
 ### One Vibe Codr repository and release

@@ -250,6 +250,9 @@ export function latestRemoteOwnedCloudSession(
 
 export interface CloudSettingsPublic {
   experimentalEnabled: boolean;
+  /** Default-on. Users can disable automatic export of configured provider
+   * keys and subscription access, then rely on explicit Cloud bindings. */
+  transferModelCredentials: boolean;
   lastProvider: CloudProviderId;
   autoPauseMinutes: number;
   deleteOnReturn: boolean;

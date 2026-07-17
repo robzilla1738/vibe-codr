@@ -85,7 +85,7 @@ export interface VibeApi {
   listCloudSessions(): Promise<{ ok: true; value: CloudSessionCatalogEntry[] } | { ok: false; error: string }>;
   deleteCloudSessionCopy(sessionId: string): Promise<{ ok: true } | { ok: false; error: string }>;
   recoverLostCloudSession(sessionId: string): Promise<{ ok: true; value: { sessionId: string; cwd: string } } | { ok: false; error: string }>;
-  handoffToCloud(request: { cwd: string; provider: CloudProviderId; instruction?: string }): Promise<{ ok: true; value: CloudSessionCatalogEntry } | { ok: false; error: string; details?: CloudFailureDetails }>;
+  handoffToCloud(request: { cwd: string; provider: CloudProviderId; instruction?: string; includeModelCredentials?: boolean }): Promise<{ ok: true; value: CloudSessionCatalogEntry } | { ok: false; error: string; details?: CloudFailureDetails }>;
   reconnectCloudSession(sessionId: string): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }>;
   resumeCloudSessionLocally(sessionId: string, keepCloudCopy?: boolean): Promise<{ ok: true; value: { sessionId: string; cwd: string; divergent: boolean; recoveryPath?: string } } | { ok: false; error: string }>;
   onCloudStatus(cb: (event: CloudStatusEvent) => void): () => void;

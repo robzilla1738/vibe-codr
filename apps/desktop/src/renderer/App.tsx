@@ -33,6 +33,12 @@ import {
 } from "../shared/protocol";
 import { hasUsableOnboardingProvider } from "../shared/provider-readiness";
 import { isProjectSummaryArray } from "../shared/runtime-guards";
+import {
+  readSessionBoardPreferences,
+  sessionBoardKey,
+  type SessionBoardStatus,
+  writeSessionBoardPreferences,
+} from "../shared/session-board";
 import { lineToCommands, routePendingPermLine } from "../shared/slash";
 import { classifySubmitLine } from "../shared/submit-routing";
 import type {
@@ -66,7 +72,6 @@ import { KeysOverlay } from "./panels/KeysOverlay";
 import { PermissionCard, PlanCard, QuestionCard, QueuePanel } from "./panels/LivePanels";
 import type { ProviderStatus } from "./panels/OnboardingModal";
 import { ChangedFilesPill } from "./panels/TurnChangesCard";
-import { CloudHandoffSheet } from "./panels/CloudHandoffSheet";
 import { type CatalogChoice, CatalogModal, type CatalogPickerState } from "./pickers/CatalogModal";
 import {
   formatChromeSummary,
@@ -97,6 +102,9 @@ const SessionsWorkspace = lazy(() =>
 );
 const OnboardingModal = lazy(() =>
   import("./panels/OnboardingModal").then((module) => ({ default: module.OnboardingModal })),
+);
+const CloudHandoffSheet = lazy(() =>
+  import("./panels/CloudHandoffSheet").then((module) => ({ default: module.CloudHandoffSheet })),
 );
 
 function pickerMatchesDraft(picker: Picker, draft: string, modelTarget: "main" | "sub"): boolean {
@@ -162,12 +170,18 @@ export function App() {
   const [keysOpen, setKeysOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [sessionStatusRevision, setSessionStatusRevision] = useState(0);
+  const busySessionRef = useRef<string | null>(null);
   const [cloudSheetOpen, setCloudSheetOpen] = useState(false);
   const [cloudTransitioning, setCloudTransitioning] = useState(false);
   const [cloudRequest, setCloudRequest] = useState<{ target?: "cloud" | "local"; provider?: CloudProviderId; instruction?: string } | null>(null);
   const [cloudSessions, setCloudSessions] = useState<CloudSessionCatalogEntry[]>([]);
   const [cloudProgress, setCloudProgress] = useState<CloudStatusEvent | null>(null);
   const [pendingLocalCapability, setPendingLocalCapability] = useState<PendingCapabilityRequest | null>(null);
+  const [pendingLocalCapabilitySessionId, setPendingLocalCapabilitySessionId] = useState<string | null>(null);
+  const pendingLocalCapabilityRef = useRef<PendingCapabilityRequest | null>(null);
+  pendingLocalCapabilityRef.current = pendingLocalCapability;
+  const [failedSessionId, setFailedSessionId] = useState<string | null>(null);
   /** Bumped on N so PermissionCard can open deny-reason then confirm (card parity). */
   const [permDenyKick, setPermDenyKick] = useState(0);
   const [gitOpen, setGitOpen] = useState(false);
@@ -206,11 +220,12 @@ export function App() {
   activeSessionIdRef.current = session.chrome.sessionId;
   const cloudSessionsRef = useRef(cloudSessions);
   cloudSessionsRef.current = cloudSessions;
+  const cloudStatusRefreshRef = useRef(new Map<string, string>());
 
   useEffect(() => {
-    setPendingLocalCapability(
-      session.pendingCapabilities.find((request) => request.status === "pending") ?? null,
-    );
+    const request = session.pendingCapabilities.find((candidate) => candidate.status === "pending") ?? null;
+    setPendingLocalCapability(request);
+    setPendingLocalCapabilitySessionId(request ? activeSessionIdRef.current : null);
   }, [session.pendingCapabilities]);
 
   const refreshCloudSessions = useCallback(async () => {
@@ -221,21 +236,39 @@ export function App() {
   useEffect(() => {
     void refreshCloudSessions();
     return window.vibe.onCloudStatus((event) => {
-      if (!cloudStatusBelongsToSession(event, activeSessionIdRef.current)) return;
-      setCloudProgress(event);
-      if (event.status === "running" || event.status === "needs-local" || event.status === "suspended" || event.status === "cleanup-pending" || event.status === "handoff-interrupted" || event.status === "lost" || event.status === "recoverable-error") void refreshCloudSessions();
+      if (cloudStatusBelongsToSession(event, activeSessionIdRef.current)) setCloudProgress(event);
+      const statusKey = event.sessionId ?? "active";
+      if (cloudStatusRefreshRef.current.get(statusKey) !== event.status) {
+        cloudStatusRefreshRef.current.set(statusKey, event.status);
+        void refreshCloudSessions();
+      }
     });
   }, [refreshCloudSessions]);
 
   useEffect(() => window.vibe.onEvent((event) => {
     if (!isUIEvent(event)) return;
+    if (event.type === "engine-error") {
+      const failedId = event.sessionId ?? activeSessionIdRef.current;
+      if (failedId) setFailedSessionId(failedId);
+      return;
+    }
+    if (event.type === "session-start") {
+      setFailedSessionId((current) => current === event.sessionId ? null : current);
+    }
+    if (event.type === "user-message") {
+      setFailedSessionId((current) => current === event.sessionId ? null : current);
+    }
     if (event.type === "external-capability-pending") {
       setPendingLocalCapability(event.request);
+      setPendingLocalCapabilitySessionId(event.sessionId ?? activeSessionIdRef.current);
       setCloudProgress({ status: "needs-local", message: `Needs your Mac for ${event.request.integration}` });
       return;
     }
     if (event.type === "external-capability-resolved") {
-      setPendingLocalCapability((current) => current?.id === event.id ? null : current);
+      if (pendingLocalCapabilityRef.current?.id === event.id) {
+        setPendingLocalCapabilitySessionId(null);
+        setPendingLocalCapability(null);
+      }
       return;
     }
     if (event.type !== "runtime-handoff-requested") return;
@@ -1907,6 +1940,43 @@ export function App() {
   ].join(" · ");
   const questionPending = !!chrome.question && !chrome.perms.length;
   const planPending = !!chrome.plan && !chrome.perms.length && !questionPending;
+  const sessionNeedsInput = chrome.perms.length > 0
+    || questionPending
+    || planPending
+    || (pendingLocalCapability !== null && pendingLocalCapabilitySessionId === chrome.sessionId);
+  const sessionNeedsReview = !chrome.busy && (chrome.lastGate === "red" || failedSessionId === chrome.sessionId);
+  const persistSessionStatus = useCallback((statusCwd: string, sessionId: string, status: SessionBoardStatus) => {
+    try {
+      const preferences = readSessionBoardPreferences(window.localStorage);
+      writeSessionBoardPreferences(window.localStorage, {
+        ...preferences,
+        statuses: { ...preferences.statuses, [sessionBoardKey(statusCwd, sessionId)]: status },
+      });
+      setSessionStatusRevision((revision) => revision + 1);
+    } catch {
+      /* Session organization remains usable in-memory when storage is unavailable. */
+    }
+  }, []);
+  useEffect(() => {
+    if (!chrome.sessionId) return;
+    if (sessionNeedsInput) {
+      busySessionRef.current = chrome.sessionId;
+      if (cwd) persistSessionStatus(cwd, chrome.sessionId, "review");
+      return;
+    }
+    if (chrome.busy) {
+      busySessionRef.current = chrome.sessionId;
+      return;
+    }
+    if (
+      busySessionRef.current === chrome.sessionId
+      && session.ready
+    ) {
+      if (!cwd) return;
+      persistSessionStatus(cwd, chrome.sessionId, sessionNeedsReview ? "review" : "done");
+      busySessionRef.current = null;
+    }
+  }, [chrome.busy, chrome.sessionId, cwd, persistSessionStatus, session.ready, sessionNeedsInput, sessionNeedsReview]);
   const showGateBanner = chrome.lastGate === "red" && !chrome.busy;
   const contextSummary = formatChromeSummary({
     git: formatGitLine(chrome.git),
@@ -2056,7 +2126,11 @@ export function App() {
                 chatsCwd={chatsCwd}
                 activeCwd={cwd}
                 activeSessionId={chrome.sessionId}
-                busy={chrome.busy || session.booting || cloudTransitioning}
+                busy={chrome.busy || cloudTransitioning}
+                interactionDisabled={chrome.busy || session.booting || cloudTransitioning}
+                needsInput={sessionNeedsInput}
+                needsReview={sessionNeedsReview}
+                statusRevision={sessionStatusRevision}
                 loading={projectsLoading}
                 error={projectsError}
                 onRetry={() => void refreshProjects()}
@@ -2595,34 +2669,37 @@ export function App() {
       {keysOpen && <KeysOverlay onClose={() => setKeysOpen(false)} />}
 
       {cloudSheetOpen && cwd && chrome.sessionId && (
-        <CloudHandoffSheet
-          cwd={cwd}
-          sessionId={chrome.sessionId}
-          cloudSession={currentCloudSession}
-          busy={chrome.busy}
-          requestedTarget={cloudRequest?.target}
-          requestedProvider={cloudRequest?.provider}
-          initialInstruction={cloudRequest?.instruction}
-          progress={cloudProgress?.sessionId === chrome.sessionId ? cloudProgress : null}
-          onWorkingChange={setCloudTransitioning}
-          onClose={() => { setCloudSheetOpen(false); setCloudRequest(null); }}
-          onComplete={async ({ message, executionTarget, cwd: resumedCwd, cloudSession }) => {
-            setCloudSheetOpen(false);
-            setCloudRequest(null);
-            setCloudProgress(null);
-            setCloudSessions((current) => executionTarget === "cloud" && cloudSession
-              ? [cloudSession, ...current.filter((item) => item.sessionId !== cloudSession.sessionId)]
-              : current.filter((item) => item.sessionId !== chrome.sessionId));
-            const activeCwd = resumedCwd ?? cwd;
-            if (normalizeCwd(activeCwd) !== normalizeCwd(cwd)) setCwd(activeCwd);
-            const attached = await session.attachCurrent(activeCwd);
-            session.showToast(
-              attached ? message : "Handoff completed, but the session view needs to reconnect",
-              attached ? "info" : "error",
-            );
-            await Promise.all([refreshCloudSessions(), refreshProjects()]);
-          }}
-        />
+        <Suspense fallback={<div className="modal-overlay cloud-handoff-backdrop" aria-label="Loading Cloud handoff" />}>
+          <CloudHandoffSheet
+            cwd={cwd}
+            sessionId={chrome.sessionId}
+            model={chrome.model}
+            cloudSession={currentCloudSession}
+            busy={chrome.busy}
+            requestedTarget={cloudRequest?.target}
+            requestedProvider={cloudRequest?.provider}
+            initialInstruction={cloudRequest?.instruction}
+            progress={cloudProgress?.sessionId === chrome.sessionId ? cloudProgress : null}
+            onWorkingChange={setCloudTransitioning}
+            onClose={() => { setCloudSheetOpen(false); setCloudRequest(null); }}
+            onComplete={async ({ message, executionTarget, cwd: resumedCwd, cloudSession }) => {
+              setCloudSheetOpen(false);
+              setCloudRequest(null);
+              setCloudProgress(null);
+              setCloudSessions((current) => executionTarget === "cloud" && cloudSession
+                ? [cloudSession, ...current.filter((item) => item.sessionId !== cloudSession.sessionId)]
+                : current.filter((item) => item.sessionId !== chrome.sessionId));
+              const activeCwd = resumedCwd ?? cwd;
+              if (normalizeCwd(activeCwd) !== normalizeCwd(cwd)) setCwd(activeCwd);
+              const attached = await session.attachCurrent(activeCwd);
+              session.showToast(
+                attached ? message : "Handoff completed, but the session view needs to reconnect",
+                attached ? "info" : "error",
+              );
+              await Promise.all([refreshCloudSessions(), refreshProjects()]);
+            }}
+          />
+        </Suspense>
       )}
 
       {session.toast && (

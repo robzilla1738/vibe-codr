@@ -12,6 +12,7 @@ import { IconArrowRight, IconCheck, IconCloud, IconLaptop } from "../icons";
 export function CloudHandoffSheet({
   cwd,
   sessionId,
+  model,
   cloudSession,
   busy,
   requestedTarget,
@@ -24,6 +25,7 @@ export function CloudHandoffSheet({
 }: {
   cwd: string;
   sessionId: string;
+  model: string;
   cloudSession: CloudSessionCatalogEntry | null;
   busy: boolean;
   requestedTarget?: "cloud" | "local";
@@ -43,6 +45,7 @@ export function CloudHandoffSheet({
   const [provider, setProvider] = useState<CloudProviderId>("e2b");
   const [instruction, setInstruction] = useState(initialInstruction ?? "");
   const [keepCloudCopy, setKeepCloudCopy] = useState(false);
+  const [includeModelCredentials, setIncludeModelCredentials] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failure, setFailure] = useState<CloudFailureDetails | null>(null);
@@ -69,6 +72,7 @@ export function CloudHandoffSheet({
     void window.vibe.cloudSettings().then((result) => {
       if (!result.ok) { setError(result.error); return; }
       setSettings(result.value);
+      setIncludeModelCredentials(result.value.transferModelCredentials);
       setProvider(requestedProvider ?? result.value.lastProvider);
       if (resumeLocal && cloudSession) setKeepCloudCopy(!result.value.deleteOnReturn);
     });
@@ -101,7 +105,12 @@ export function CloudHandoffSheet({
       return;
     }
     try {
-      const result = await window.vibe.handoffToCloud({ cwd, provider, instruction: instruction.trim() || undefined });
+      const result = await window.vibe.handoffToCloud({
+        cwd,
+        provider,
+        instruction: instruction.trim() || undefined,
+        includeModelCredentials,
+      });
       if (!result.ok) {
         setError(result.error);
         setFailure(result.details ?? null);
@@ -196,10 +205,19 @@ export function CloudHandoffSheet({
               <section className="cloud-handoff-section cloud-boundary-section" aria-labelledby="cloud-boundary-title">
                 <div className="cloud-section-heading"><div><span className="cloud-section-kicker">Transfer boundary</span><h3 id="cloud-boundary-title">Your complete working project moves</h3></div></div>
                 <div className="cloud-boundary-columns">
-                  <div><strong>Moves to Cloud</strong><ul><li>Conversation and session state</li><li>All project files, including Git-ignored files</li><li>Configured provider access and Cloud bindings</li><li>Git state and portable job commands</li></ul></div>
+                  <div><strong>Moves to Cloud</strong><ul><li>Conversation and session state</li><li>All project files, including Git-ignored files</li><li>{includeModelCredentials ? `Model ${model} and its configured access` : "Explicit Cloud credential bindings only"}</li><li>Git state and portable job commands</li></ul></div>
                   <div><strong>Stays on this Mac</strong><ul><li>.env files and machine credential stores</li><li>SSH/private keys and generated dependencies</li><li>Mac-only processes and tools</li></ul></div>
                 </div>
               </section>
+              <label className="cloud-check-row">
+                <input type="checkbox" checked={includeModelCredentials} onChange={(event) => setIncludeModelCredentials(event.target.checked)} />
+                <span>
+                  <strong>Include model access</strong>
+                  <small>{includeModelCredentials
+                    ? "Pass configured provider keys and connected Codex/Grok subscription access for this handoff."
+                    : "Use only explicit Cloud credential bindings. Handoff stops before upload if the model cannot authenticate."}</small>
+                </span>
+              </label>
               <label className="setting-field cloud-instruction-field">
                 <span className="setting-label">Next task in Cloud <small>Optional</small></span>
                 <textarea className="setting-textarea" rows={3} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="What should Vibe do after the handoff?" />

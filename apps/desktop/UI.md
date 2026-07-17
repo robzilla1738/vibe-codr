@@ -1,7 +1,7 @@
 # UI.md — Current interaction and visual contract
 
 > **Status:** current-state handoff  
-> **Updated:** 2026-07-15 (continuity-safe Cloud handoff, grouped commands, and presence motion)
+> **Updated:** 2026-07-16 (appearance-stable, credential-complete Cloud handoff)
 > **Repository:** [vbcode-electron](https://github.com/robzilla1738/vbcode-electron)
 
 This is the renderer-facing design contract for the Electron shell. Re-check the
@@ -30,13 +30,17 @@ note. It does not use a grid of rounded selection cards or repeat policy prose.
 The complete usable project tree, including Git-ignored files, moves by default;
 hard machine-secret and generated-dependency exclusions remain explicit in the
 review. The active model is named and configured Cloud-capable provider access
-is encrypted for that session by default. An Include model access checkbox can
+is sealed for that session by default. An Include model access checkbox can
 override the Settings → Cloud default; when disabled, only explicit Cloud
 credential bindings move. Unrelated process environment and machine credential
-stores remain Local.
+stores remain Local. The remote runtime decrypts the one-shot envelope inside
+the root-owned agent, injects the reviewed names only into the engine host, and
+deletes the transient file. Cloud terminals use a separate environment and
+cannot inherit model credentials.
 Missing Cloud authentication and local-only providers are rejected before a
 sandbox is created, with a direct setup action. Authenticated daemon health also
-proves every reviewed environment binding survived startup before ownership moves.
+proves the actual resumed engine resolved every required model before ownership
+moves; health and catalog metadata contain key names only, never values.
 Changing main, subagent, or named-agent model access requires returning Local so
 the running cloud daemon never gains an undisclosed credential mid-session.
 Returning to Local mirrors the route and explains verified sync plus the safe
@@ -54,7 +58,13 @@ with fresh progress, and reconnect failures persist a degraded catalog state
 instead of appearing healthy. Success is accepted only after the remote snapshot
 matches the local session identity, model, mode, subagent model, and conversation;
 the composer adopts the returned Cloud catalog entry immediately and reconnects
-that existing session automatically.
+that existing session automatically. Theme, accent, and transcript density are
+part of the versioned runtime profile, so handoff never flashes a remote default;
+intentional Cloud appearance changes become the application-wide Mac preference.
+Legacy 0.6.2 sessions repair in place on reconnect only after the old engine is
+authenticated, idle, and gracefully shut down. Active terminals defer repair.
+A failed repair keeps Cloud ownership authoritative, never replays a prompt,
+and presents Return Local in Settings → Cloud recovery.
 Fresh provisioning removes a stale same-name provisional sandbox before create;
 it never reconnects to an abandoned daemon from an earlier failed attempt.
 The permanent isolated workload must preflight the exact imported session before

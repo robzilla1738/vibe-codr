@@ -2,20 +2,23 @@
 import { defaultConfig } from "@vibe/config";
 import { ProviderRegistry } from "@vibe/providers";
 import { generateText } from "ai";
+import { openCloudModelAccess } from "@vibe/shared/cloud-runtime";
+import { readFileSync } from "node:fs";
 
-const [rawModels, workspace] = process.argv.slice(2);
-if (!rawModels || !workspace) {
-  throw new Error("usage: vibe-cloud-model-probe <models-json> <workspace>");
+const [envelopePath, workspace, expectedSessionId] = process.argv.slice(2);
+if (!envelopePath || !workspace || !expectedSessionId) {
+  throw new Error("usage: vibe-cloud-model-probe <model-access-envelope> <workspace> <session-id>");
 }
-const parsed = JSON.parse(rawModels) as unknown;
-if (
-  !Array.isArray(parsed) ||
-  !parsed.every((model) => typeof model === "string" && model.includes("/"))
-) {
-  throw new Error("cloud model probe requires provider-qualified model strings");
-}
-
-const models = [...new Set(parsed)];
+const accessToken = process.env.VIBE_CLOUD_ACCESS_TOKEN;
+if (!accessToken) throw new Error("missing-credential: cloud model probe access token is unavailable");
+const modelAccess = openCloudModelAccess(
+  JSON.parse(readFileSync(envelopePath, "utf8")),
+  accessToken,
+  expectedSessionId,
+);
+for (const [name, value] of Object.entries(modelAccess.environment)) process.env[name] = value;
+delete process.env.VIBE_CLOUD_ACCESS_TOKEN;
+const models = modelAccess.profile.requiredModels;
 // Provider credentials, endpoint overrides, and arbitrary-provider transport
 // are already reduced to reviewed environment bindings by the desktop. Avoid
 // reading Mac-global config here: it is intentionally absent in Cloud, and the

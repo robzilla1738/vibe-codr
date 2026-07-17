@@ -19,7 +19,7 @@ import {
   type PersistedSession,
 } from "@vibe/core";
 import type { EngineCommand, ExecutionTarget } from "@vibe/shared";
-import { ProviderAuthManager } from "@vibe/providers";
+import { ProviderAuthManager, ProviderRegistry } from "@vibe/providers";
 import {
   decodeInbound,
   type HostInbound,
@@ -111,6 +111,15 @@ export async function runHost(): Promise<void> {
     lastCwd = cwd;
     const overrides: Partial<Config> = {};
     if (msg.model) overrides.model = msg.model;
+    if (msg.runtimeProfile) {
+      if (process.env.VIBE_CLOUD_RUNTIME !== "1") {
+        write({ type: "fatal", message: "runtime-profile-mismatch: runtimeProfile is only accepted by the Cloud runtime" });
+        return;
+      }
+      overrides.theme = msg.runtimeProfile.theme;
+      overrides.accentColor = msg.runtimeProfile.accentColor;
+      overrides.details = msg.runtimeProfile.details;
+    }
     if (msg.mode !== undefined && !applyModeOverride(overrides, msg.mode)) {
       write({ type: "fatal", message: `invalid mode "${msg.mode}"` });
       return;
@@ -125,6 +134,23 @@ export async function runHost(): Promise<void> {
         message: `config load failed: ${(err as Error).message}`,
       });
       return;
+    }
+
+    if (msg.requiredModels) {
+      if (process.env.VIBE_CLOUD_RUNTIME !== "1") {
+        write({ type: "fatal", message: "runtime-profile-mismatch: requiredModels is only accepted by the Cloud runtime" });
+        return;
+      }
+      const registry = new ProviderRegistry();
+      try {
+        for (const model of msg.requiredModels) await registry.resolveModel(model, config);
+      } catch (error) {
+        write({
+          type: "fatal",
+          message: `missing-credential: resumed engine could not resolve required model: ${(error as Error).message}`,
+        });
+        return;
+      }
     }
 
     let resume: PersistedSession | undefined;

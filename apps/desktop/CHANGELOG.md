@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.6.3 — 2026-07-16
+
+### Fixed
+
+- Local appearance now survives Cloud handoff, reconnect, return, and restart;
+  intentional Cloud theme, accent, and density changes synchronize back to the
+  application-wide Mac preference.
+- Model keys and Codex/Grok subscription access now cross the final process
+  boundary in a sealed session envelope, are injected only into the resumed
+  engine, and are removed from the transient transfer file after startup. Cloud
+  terminals cannot inherit them.
+- Authenticated health now depends on the actual resumed engine resolving every
+  required provider model. Network generation preflight remains required, and
+  missing/invalid access fails before ownership commit with stable diagnostics.
+- Existing 0.6.2 sessions repair in place on reconnect from their protected
+  credential snapshot after an authenticated engine-idle checkpoint and
+  graceful shutdown. The Mac appearance replaces the untrusted legacy remote
+  default; active terminals defer repair. Failures preserve Cloud ownership and
+  expose Return Local without replaying the failed message.
+
 ## 0.6.2 — 2026-07-16
 
 ### Fixed

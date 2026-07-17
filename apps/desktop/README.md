@@ -71,18 +71,21 @@ Installed macOS and Windows builds check GitHub Releases after launch. Updates
 are never installed silently: Vibe Codr asks before downloading and again
 before restarting, and safely stops the engine and terminal processes first.
 
-### What’s new in 0.1.16
+### What’s new in 0.6.3
 
-- ChatGPT/Codex and xAI/Grok subscriptions can now be connected directly in the
-  app, including browser PKCE, xAI device code, refresh, cancel, and sign-out.
-- Grok Build is available as `xai-oauth/grok-build-0.1`, while Codex subscription
-  calls use the official account-routed Responses backend.
-- Grok 4.5 is available to eligible xAI subscriptions as
-  `xai-oauth/grok-4.5` through the Responses API with configurable reasoning.
-- The synchronized OpenCode/models.dev catalog contains 166 provider IDs, and
-  arbitrary custom IDs can choose Chat Completions or Responses transport.
-- Cloud receives only the selected session's current access token; refresh
-  tokens remain in the local user-only auth store.
+- Cloud handoff keeps the same theme, accent, transcript density, session,
+  history, model, and ownership across handoff, reconnect, return, and restart.
+- Provider keys and connected Codex/Grok access move in a sealed session
+  envelope, are validated by the actual resumed engine, and never enter Cloud
+  terminal environments. Removing a later Settings binding does not invalidate
+  the frozen protected snapshot for an existing Cloud session.
+- Existing 0.6.2 Cloud sessions repair in place on reconnect after an
+  authenticated engine-idle checkpoint and graceful shutdown. Active terminals
+  defer repair instead of being killed. Because those sessions had no trusted
+  appearance profile, the Mac preference is the migration source of truth and
+  replaces the accidental remote dark default. If repair cannot complete, Cloud
+  ownership remains authoritative and Settings offers an
+  explicit Return Local recovery path without replaying the failed prompt.
 
 ## Clone
 

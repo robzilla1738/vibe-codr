@@ -14,6 +14,21 @@ describe("macOS bridge protocol runtime validation", () => {
         executionTarget: { kind: "cloud", provider: "e2b" },
       })),
     ).toMatchObject({ executionTarget: { kind: "cloud", provider: "e2b" } });
+    expect(decodeInbound(JSON.stringify({
+      op: "bootstrap",
+      cwd: "/tmp/project",
+      requiredModels: ["crof/glm-5.2"],
+    }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "bootstrap",
+      cwd: "/tmp/project",
+      requiredModels: ["glm-5.2"],
+    }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "bootstrap",
+      cwd: "/tmp/project",
+      runtimeProfile: { schemaVersion: 1, theme: "light", accentColor: "#e6e6e6", details: "normal" },
+    }))).not.toBeNull();
     expect(
       decodeInbound(JSON.stringify({
         op: "bootstrap",

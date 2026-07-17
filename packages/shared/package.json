@@ -1,10 +1,11 @@
 {
   "name": "@vibe/shared",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./cloud-runtime": "./src/cloud-runtime.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

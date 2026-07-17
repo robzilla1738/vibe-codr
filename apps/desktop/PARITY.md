@@ -18,6 +18,9 @@ coverage/bridge/packaged-host gates.
 - [x] The permanent isolated Cloud workload preflights the imported session before health succeeds; explicit missing resume fails closed and cannot create a replacement chat
 - [x] Required model credentials are session-scoped into Cloud by default (configured keys plus connected Codex/Grok access), with global/per-handoff opt-out and explicit-binding fallback; missing authentication and local-only routes fail before provisioning
 - [x] Every active model performs a bounded real generation through the imported engine provider registry inside the sandbox before ownership commit; this covers API-key, subscription, Ollama Cloud, and arbitrary Chat Completions/Responses providers on both E2B and Vercel
+- [x] A versioned runtime profile preserves and synchronizes theme, accent, and transcript density; renderer attach cannot replace an established appearance with a remote default
+- [x] Model access crosses Cloud as a sealed session envelope, is validated by the actual resumed engine, and is excluded from terminal environments, logs, catalog values, and health values
+- [x] Legacy 0.6.2 Cloud catalog rows repair their runtime in place from the frozen protected credential snapshot only after authenticated engine-idle and graceful shutdown; active terminals defer repair, while failure preserves Cloud ownership and exposes Return Local without prompt replay
 - [x] Cloud return exports as the isolated workload owner and survives tracked deletions
 - [ ] Stable flag removal: fresh live suites for both providers, durable Mac relay, and Vercel broker verification
 

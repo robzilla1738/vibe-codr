@@ -42,7 +42,7 @@ import {
   transcriptConversationSignature,
 } from "../transcript-cache";
 import { RequestGate } from "./request-gate";
-import { initialChrome, reduceChrome } from "./session-state";
+import { initialChrome, reduceChrome, snapshotWithAttachedAppearance, type AttachedAppearance } from "./session-state";
 
 export type { OrchestrationRow, SessionChrome } from "./session-state";
 
@@ -723,7 +723,7 @@ export function useSession(cwd: string | null) {
 
   /** Hydrate the renderer from an already-running transport (cloud reconnect).
    * Unlike bootstrap this never starts or replaces the engine owner. */
-  const attachCurrent = useCallback(async (attachCwd: string): Promise<boolean> => {
+  const attachCurrent = useCallback(async (attachCwd: string, appearance?: AttachedAppearance): Promise<boolean> => {
     const request = bootstrapGate.current.begin();
     bootstrapHandoff.current = true;
     bootstrapEvents.current = [];
@@ -736,7 +736,7 @@ export function useSession(cwd: string | null) {
       if (!bootstrapGate.current.isCurrent(request)) return false;
       if (!response.ok) throw new Error(response.error);
       if (!isEngineSnapshot(response.value)) throw new Error("Engine snapshot failed validation");
-      const snap = response.value;
+      const snap = snapshotWithAttachedAppearance(response.value, appearance);
       lastSnap.current = snap;
       activeSessionId.current = snap.sessionId;
       setPendingCapabilities(snap.pendingCapabilities ?? []);

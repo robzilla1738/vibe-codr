@@ -214,7 +214,7 @@ export function CloudHandoffSheet({
                 <span>
                   <strong>Include model access</strong>
                   <small>{includeModelCredentials
-                    ? "Pass configured provider keys and connected Codex/Grok subscription access for this handoff."
+                    ? "Seal configured provider keys and connected Codex/Grok subscription access for this session’s engine only. Cloud terminals cannot inherit it."
                     : "Use only explicit Cloud credential bindings. Handoff stops before upload if the model cannot authenticate."}</small>
                 </span>
               </label>

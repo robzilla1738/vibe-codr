@@ -151,6 +151,18 @@ export function CloudSection({ showToast, onSessionRecovered, onDirtyChange }: {
     await load();
   };
 
+  const returnRecoverableSessionLocal = async (session: CloudSessionCatalogEntry) => {
+    setWorking("settings");
+    const result = await window.vibe.resumeCloudSessionLocally(session.sessionId, true);
+    setWorking(null);
+    if (!result.ok) showToast(result.error, "error");
+    else {
+      await onSessionRecovered?.(session.sessionId, result.value.cwd);
+      showToast("Cloud work returned safely to this Mac", "info");
+    }
+    await load();
+  };
+
   const retryHandoffRecovery = async (session: CloudSessionCatalogEntry) => {
     setWorking("settings");
     const listed = await window.vibe.listCloudSessions();
@@ -192,7 +204,7 @@ export function CloudSection({ showToast, onSessionRecovered, onDirtyChange }: {
         <SettingField label="Enable experimental Cloud" description="Cloud remains experimental until both opt-in provider contract suites have a fresh green release result.">
           <ToggleSwitch checked={settings.experimentalEnabled} onChange={(experimentalEnabled) => void patchSettings({ experimentalEnabled })} />
         </SettingField>
-        <SettingField label="Include model access by default" description="Pass the active model, configured provider keys, and connected subscription access during handoff. You can override this for each session.">
+        <SettingField label="Include model access by default" description="Seal a session-scoped snapshot of the active model, configured provider keys, and connected subscription access for the remote engine. Cloud terminals never receive it. You can override this for each session.">
           <ToggleSwitch checked={settings.transferModelCredentials} onChange={(transferModelCredentials) => void patchSettings({ transferModelCredentials })} />
         </SettingField>
         <SettingField label="Idle auto-pause" description="Cloud resources pause after this many idle minutes and resume on access.">
@@ -203,22 +215,24 @@ export function CloudSection({ showToast, onSessionRecovered, onDirtyChange }: {
         </SettingField>
       </SettingSection>
 
-      {sessions.some((session) => session.status === "suspended" || session.status === "cleanup-pending" || session.status === "handoff-interrupted" || session.status === "lost") && (
-        <SettingSection title="Cloud recovery" description="Manage suspended copies, cleanup retries, and provider-confirmed missing sandboxes.">
+      {sessions.some((session) => session.status === "suspended" || session.status === "cleanup-pending" || session.status === "handoff-interrupted" || session.status === "lost" || session.status === "recoverable-error") && (
+        <SettingSection title="Cloud recovery" description="Return degraded sessions safely, manage suspended copies, and finish cleanup without changing ownership implicitly.">
           <div className="setting-list">
-            {sessions.filter((session) => session.status === "suspended" || session.status === "cleanup-pending" || session.status === "handoff-interrupted" || session.status === "lost").map((session) => (
+            {sessions.filter((session) => session.status === "suspended" || session.status === "cleanup-pending" || session.status === "handoff-interrupted" || session.status === "lost" || session.status === "recoverable-error").map((session) => (
               <div className="setting-card" key={session.sessionId}>
                 <div className="setting-card-header">
                   <span className="setting-card-title">{session.sourceRoot}</span>
                   {session.status === "handoff-interrupted" ? (
                     <button type="button" className="button" disabled={working === "settings"} onClick={() => void retryHandoffRecovery(session)}>Retry recovery</button>
+                  ) : session.status === "recoverable-error" ? (
+                    <button type="button" className="button primary" disabled={working === "settings"} onClick={() => void returnRecoverableSessionLocal(session)}>Return Local</button>
                   ) : session.status === "lost" ? (
                     <button type="button" className="button danger" disabled={working === "settings"} onClick={() => void recoverLostSession(session)}>Recover local base</button>
                   ) : (
                     <button type="button" className="button danger" disabled={working === "settings"} onClick={() => void deleteCloudCopy(session)}>{session.localImportPending ? "Finish cleanup" : "Delete cloud copy"}</button>
                   )}
                 </div>
-                <p className="setting-empty">{session.provider === "e2b" ? "E2B" : "Vercel"} · {session.status === "lost" ? "sandbox missing" : session.status === "handoff-interrupted" ? "handoff recovery pending" : session.status === "cleanup-pending" ? "cleanup needs retry" : "suspended"}</p>
+                <p className="setting-empty">{session.provider === "e2b" ? "E2B" : "Vercel"} · {session.status === "lost" ? "sandbox missing" : session.status === "handoff-interrupted" ? "handoff recovery pending" : session.status === "recoverable-error" ? "Cloud ownership preserved · local recovery available" : session.status === "cleanup-pending" ? "cleanup needs retry" : "suspended"}</p>
                 {session.error && <p className="settings-save-error" role="alert">{session.error}</p>}
               </div>
             ))}
@@ -288,7 +302,7 @@ export function CloudSection({ showToast, onSessionRecovered, onDirtyChange }: {
         <button type="button" className="button" disabled={working === "settings" || !policyDirty} onClick={() => void saveTransferPolicy()}>Save network and transfer policy</button>
       </SettingSection>
 
-      <SettingSection title="Credential bindings" description="Explicitly expose narrowly scoped keys to the remote engine. Local token files and credential folders are never copied automatically.">
+      <SettingSection title="Credential bindings" description="Approve narrowly scoped keys for sealed, session-only remote engine access. Values are deleted from the transfer file after startup and never reach Cloud terminals. Local token files and credential folders are never copied.">
         {settings.credentialBindings.length > 0 ? (
           <div className="setting-list">
             {settings.credentialBindings.map((binding) => (

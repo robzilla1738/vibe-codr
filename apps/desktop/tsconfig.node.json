@@ -22,6 +22,7 @@
     "src/preload/**/*",
     "src/shared/**/*",
     "scripts/**/*"
+    ,"../../packages/shared/src/cloud-runtime.ts"
     ,"test/**/*"
     ,"playwright.config.ts"
   ]

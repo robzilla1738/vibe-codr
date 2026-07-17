@@ -35,6 +35,13 @@ export type HostInbound =
       model?: string;
       mode?: "plan" | "execute" | "yolo";
       executionTarget?: ExecutionTarget;
+      requiredModels?: string[];
+      runtimeProfile?: {
+        schemaVersion: 1;
+        theme: string;
+        accentColor?: string;
+        details: "quiet" | "normal" | "verbose";
+      };
     }
   | { op: "send"; command: EngineCommand }
   | {
@@ -223,6 +230,27 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function optionalString(value: unknown): boolean {
   return value === undefined || typeof value === "string";
+}
+
+function optionalRequiredModels(value: unknown): boolean {
+  return value === undefined || (
+    Array.isArray(value)
+    && value.length > 0
+    && value.length <= 32
+    && value.every((model) => typeof model === "string" && model.length <= 512 && /^[^/\s]+\/\S+$/.test(model))
+  );
+}
+
+function optionalRuntimeProfile(value: unknown): boolean {
+  if (value === undefined) return true;
+  const profile = record(value);
+  return !!profile
+    && profile.schemaVersion === 1
+    && typeof profile.theme === "string"
+    && profile.theme.length > 0
+    && profile.theme.length <= 128
+    && (profile.accentColor === undefined || typeof profile.accentColor === "string" && profile.accentColor.length <= 128)
+    && (profile.details === "quiet" || profile.details === "normal" || profile.details === "verbose");
 }
 
 export const RUNTIME_IDENTIFIER_MAX_CHARS = 1_024;
@@ -479,7 +507,7 @@ export function decodeInbound(line: string): HostInbound | null {
   if (!msg || typeof msg.op !== "string") return null;
   if (msg.op === "shutdown") return { op: "shutdown" };
   if (msg.op === "bootstrap") {
-    if (typeof msg.cwd !== "string" || !msg.cwd.trim() || !optionalRuntimeIdentifier(msg.resume) || !optionalString(msg.model) || (msg.executionTarget !== undefined && !executionTarget(msg.executionTarget))) return null;
+    if (typeof msg.cwd !== "string" || !msg.cwd.trim() || !optionalRuntimeIdentifier(msg.resume) || !optionalString(msg.model) || !optionalRequiredModels(msg.requiredModels) || !optionalRuntimeProfile(msg.runtimeProfile) || (msg.executionTarget !== undefined && !executionTarget(msg.executionTarget))) return null;
     if (msg.continue !== undefined && typeof msg.continue !== "boolean") return null;
     if (msg.mode !== undefined && msg.mode !== "plan" && msg.mode !== "execute" && msg.mode !== "yolo") return null;
     return value as HostInbound;

@@ -19,9 +19,12 @@ SDK. There is no Vibe service in the data path.
   stale-generation rejection, and rollback prevent dual writers.
 - A random 288-bit per-session bearer token authenticates bounded 32 MiB frames.
   The provider launches `cloud-agentd` as root and the bearer crosses startup
-  through a root-only one-shot file. Engine-host, PTYs, tools, and project
-  commands run as a dedicated non-root `vibe-workload` identity without the
-  token or file path; startup fails if this OS boundary cannot be established.
+  through a root-only one-shot file. Engine-host and tools run as non-root
+  `vibe-workload`; PTYs run as a distinct non-root `vibe-terminal` identity so
+  they cannot inspect the credential-bearing engine process. A shared project
+  group preserves workspace collaboration while the engine state and both home
+  directories remain private. Startup fails if these OS boundaries cannot be
+  established.
 - Runtime outer and internal SHA-256 checksums, engine revision equality,
   workspace/file hashes, and portable archive hashes are checked before use.
 - Packaging refuses a revision-locked runtime when any engine build input is
@@ -32,10 +35,15 @@ SDK. There is no Vibe service in the data path.
   files are opened without following symlinks, then rechecked by canonical path
   and inode before their actual bytes are counted.
 - Transfer policy includes Git-ignored project inputs but still excludes likely
-  machine secrets and generated dependency trees by default. Provider bindings
-  are scoped to configured routes, independently encrypted, and never returned
-  through preload; authenticated daemon health proves their names survived the
-  workload identity boundary before ownership commits.
+  machine secrets and generated dependency trees by default. Reviewed model
+  access is encrypted locally with OS-protected storage, then uploaded only as
+  an authenticated session-bound envelope. The root agent decrypts it, deletes
+  the transient file, and injects values only into the engine host. Terminals
+  receive a separately filtered environment and distinct Unix identity. Probe
+  diagnostics are sanitized against the decrypted values even though those
+  values never enter the probe launch environment. Preload, logs, catalog, and
+  health expose key names at most; authenticated health also proves the actual
+  resumed engine resolved every required model before ownership commits.
 - Hard and user-configured exclusions are enforced on upload, return entries,
   deletions, and paths reachable from transferred Git history, including
   workspace-relative patterns inside every recursive submodule.
@@ -65,6 +73,14 @@ SDK. There is no Vibe service in the data path.
   resumed the exact imported session ID. Explicit resume is fail-closed in the
   engine host, so missing or unreadable state cannot create a second writer or
   replacement chat.
+- The non-secret runtime profile is versioned and restricted to appearance and
+  required model identifiers. Existing sessions with older runtime metadata are
+  repaired in place from their frozen protected snapshot only after the old
+  agent is authenticated, terminals are absent, and the engine reaches idle and
+  exits through protocol shutdown. Their remote appearance has no intent
+  provenance and may be the known accidental dark default, so the Mac's global
+  preference is the one-time migration authority. Repair failure cannot transfer
+  ownership or automatically replay user input.
 - A missing provider sandbox is not silently forgotten. Recovery requires the
   provider-confirmed missing state, an explicit destructive confirmation, the
   matching provider, and the exact ownership generation before core returns the

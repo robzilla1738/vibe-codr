@@ -140,7 +140,7 @@ export interface CloudStatusEvent {
 }
 
 export interface CloudFailureDetails {
-  code: "provider-unavailable" | "runtime-incompatible" | "setup-failed" | "daemon-exited" | "health-timeout" | "cleanup-pending";
+  code: "provider-unavailable" | "runtime-incompatible" | "setup-failed" | "daemon-exited" | "health-timeout" | "cleanup-pending" | "missing-credential" | "invalid-credential" | "runtime-profile-mismatch" | "legacy-session-repair-failed";
   stage: CloudStartupStage;
   retryable: boolean;
   diagnostic?: string;
@@ -191,6 +191,14 @@ export interface CloudSessionCatalogEntry {
   optionalModels?: string[];
   credentialEnvironment?: string[];
   providerDomains?: string[];
+  runtimeRevision?: string;
+  runtimeProfileVersion?: 1;
+  modelAccessVersion?: 1;
+  appearance?: {
+    theme: string;
+    accentColor: string;
+    details: "quiet" | "normal" | "verbose";
+  };
   workspaceId: string;
   sourceRoot: string;
   provider: CloudProviderId;
@@ -218,6 +226,17 @@ export interface CloudSessionCatalogEntry {
     startedAt: number;
   };
   updatedAt: number;
+}
+
+export function cloudSessionNeedsRuntimeRepair(
+  entry: CloudSessionCatalogEntry,
+  runtimeRevision: string,
+  runtimeProfileVersion = 1,
+  modelAccessVersion = 1,
+): boolean {
+  return entry.runtimeRevision !== runtimeRevision
+    || entry.runtimeProfileVersion !== runtimeProfileVersion
+    || entry.modelAccessVersion !== modelAccessVersion;
 }
 
 /**

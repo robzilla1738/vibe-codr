@@ -240,6 +240,9 @@ The desktop engine lock is `apps/desktop/ENGINE_COMMIT`. It must name a commit i
 - No telemetry is collected.
 - Source files, sessions, memory, config, and credentials stay local unless you explicitly invoke a network provider, web/MCP tool, Git remote, or reviewed cloud handoff.
 - Provider and subscription secrets are held in the main process or engine. The desktop renderer receives redacted state, not raw credentials.
+- Reviewed Cloud model access moves only as a sealed, session-bound envelope,
+  is deleted after remote startup, and is injected into the engine—not Cloud
+  terminals. Health, logs, and catalog records expose names only.
 - Tool output and protocol frames are bounded. Web fetches block private-network targets and pin verified DNS results across redirects.
 - Project config cannot silently enable hooks, plugins, permissive rules, arbitrary provider redirects, or unsafe MCP transports unless global trust allows it.
 - Crash logs are local and redacted.

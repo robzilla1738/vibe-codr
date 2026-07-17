@@ -655,7 +655,7 @@ export function App() {
         if (connected.ok) {
           setCwd(path);
           setCloudSessions(cloudList);
-          await session.attachCurrent(path);
+          await session.attachCurrent(path, cloudOwned.appearance);
           await refreshProjects();
           return true;
         }
@@ -879,7 +879,7 @@ export function App() {
           setSessionsOpen(false);
           setCwd(projectCwd);
           setCloudSessions(cloudList);
-          await session.attachCurrent(projectCwd);
+          await session.attachCurrent(projectCwd, cloudOwned.appearance);
           await refreshProjects();
         } else session.showToast(connected.error, "error");
         return;
@@ -920,7 +920,7 @@ export function App() {
       if (!connected.ok) session.showToast(connected.error, "error");
       else {
         setCloudSessions(cloud.value);
-        await session.attachCurrent(cwd);
+        await session.attachCurrent(cwd, cloudOwned.appearance);
         await refreshProjects();
       }
       return;
@@ -2691,7 +2691,10 @@ export function App() {
                 : current.filter((item) => item.sessionId !== chrome.sessionId));
               const activeCwd = resumedCwd ?? cwd;
               if (normalizeCwd(activeCwd) !== normalizeCwd(cwd)) setCwd(activeCwd);
-              const attached = await session.attachCurrent(activeCwd);
+              const attached = await session.attachCurrent(
+                activeCwd,
+                cloudSession?.appearance ?? currentCloudSession?.appearance,
+              );
               session.showToast(
                 attached ? message : "Handoff completed, but the session view needs to reconnect",
                 attached ? "info" : "error",

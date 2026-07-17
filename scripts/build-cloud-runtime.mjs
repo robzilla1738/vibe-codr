@@ -106,11 +106,12 @@ exec runuser -u vibe-workload --preserve-environment -- env \
 `, { mode: 0o755 });
 writeFileSync(join(stage, "start.sh"), `#!/bin/sh
 set -eu
-if [ "$#" -ne 1 ] || { [ "$1" != "e2b" ] && [ "$1" != "vercel" ]; }; then
-  echo "usage: start.sh <e2b|vercel>" >&2
+if [ "$#" -ne 2 ] || { [ "$1" != "e2b" ] && [ "$1" != "vercel" ]; }; then
+  echo "usage: start.sh <e2b|vercel> <model-access-envelope>" >&2
   exit 1
 fi
 CLOUD_PROVIDER="$1"
+MODEL_ACCESS_FILE="$2"
 if [ "$(id -u)" -ne 0 ]; then
   echo "cloud-agentd must start as root so project workloads can run under an isolated identity" >&2
   exit 1
@@ -123,13 +124,27 @@ if ! id -u vibe-workload >/dev/null 2>&1; then
     exit 1
   fi
 fi
+if ! getent group vibe-project >/dev/null 2>&1; then groupadd vibe-project; fi
+usermod -g vibe-project vibe-workload
+if ! id -u vibe-terminal >/dev/null 2>&1; then
+  useradd --create-home --shell /bin/bash --gid vibe-project vibe-terminal
+else
+  usermod -g vibe-project vibe-terminal
+fi
 VIBE_CLOUD_WORKLOAD_UID="$(id -u vibe-workload)"
-VIBE_CLOUD_WORKLOAD_GID="$(id -g vibe-workload)"
+VIBE_CLOUD_WORKLOAD_GID="$(getent group vibe-project | cut -d: -f3)"
 VIBE_CLOUD_WORKLOAD_HOME="$(getent passwd vibe-workload | cut -d: -f6)"
+VIBE_CLOUD_TERMINAL_UID="$(id -u vibe-terminal)"
+VIBE_CLOUD_TERMINAL_GID="$VIBE_CLOUD_WORKLOAD_GID"
+VIBE_CLOUD_TERMINAL_HOME="$(getent passwd vibe-terminal | cut -d: -f6)"
 export VIBE_CLOUD_WORKLOAD_UID VIBE_CLOUD_WORKLOAD_GID VIBE_CLOUD_WORKLOAD_HOME
+export VIBE_CLOUD_TERMINAL_UID VIBE_CLOUD_TERMINAL_GID VIBE_CLOUD_TERMINAL_HOME
 export VIBE_CLOUD_REQUIRE_ISOLATION=1
 mkdir -p "$VIBE_WORKSPACE_ROOT" "$VIBE_STATE_DIR"
 chown -R "$VIBE_CLOUD_WORKLOAD_UID:$VIBE_CLOUD_WORKLOAD_GID" "$VIBE_WORKSPACE_ROOT" "$VIBE_STATE_DIR"
+chmod 0700 "$VIBE_CLOUD_WORKLOAD_HOME" "$VIBE_CLOUD_TERMINAL_HOME" "$VIBE_STATE_DIR"
+find "$VIBE_WORKSPACE_ROOT" -type d -exec chmod g+rwxs {} +
+find "$VIBE_WORKSPACE_ROOT" -type f -exec chmod g+rw {} +
 RUNTIME_PARENT="$PWD"
 while [ "$RUNTIME_PARENT" != "/" ]; do
   chmod o+x "$RUNTIME_PARENT"
@@ -140,6 +155,7 @@ umask 077
 printf '%s' "$VIBE_CLOUD_ACCESS_TOKEN" > /run/vibe-cloud/access-token
 unset VIBE_CLOUD_ACCESS_TOKEN
 export VIBE_CLOUD_ACCESS_TOKEN_FILE=/run/vibe-cloud/access-token
+export VIBE_CLOUD_MODEL_ACCESS_FILE="$MODEL_ACCESS_FILE"
 export VIBE_ENGINE_HOST="$PWD/vibecodr-engine-host"
 exec "$PWD/bin/node" cloud-agentd.mjs "$CLOUD_PROVIDER"
 `, { mode: 0o755 });
@@ -150,8 +166,8 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "cloud model verification must run as root so it can enter the isolated workload identity" >&2
   exit 1
 fi
-if [ "$#" -ne 2 ]; then
-  echo "usage: probe-models.sh <models-json> <workspace>" >&2
+if [ "$#" -ne 3 ]; then
+  echo "usage: probe-models.sh <model-access-envelope> <workspace> <session-id>" >&2
   exit 1
 fi
 if ! id -u vibe-workload >/dev/null 2>&1; then
@@ -159,12 +175,14 @@ if ! id -u vibe-workload >/dev/null 2>&1; then
   exit 1
 fi
 VIBE_CLOUD_WORKLOAD_HOME="$(getent passwd vibe-workload | cut -d: -f6)"
+chown "$(id -u vibe-workload):$(id -g vibe-workload)" "$1"
+chmod 0400 "$1"
 exec runuser -u vibe-workload --preserve-environment -- env \
   HOME="$VIBE_CLOUD_WORKLOAD_HOME" \
   USER=vibe-workload \
   LOGNAME=vibe-workload \
   VIBE_STATE_DIR="$VIBE_STATE_DIR" \
-  "$PWD/bin/node" "$PWD/vibe-cloud-model-probe.mjs" "$1" "$2"
+  "$PWD/bin/node" "$PWD/vibe-cloud-model-probe.mjs" "$1" "$2" "$3"
 `, { mode: 0o755 });
 
 writeFileSync(join(stage, "export-workspace.sh"), `#!/bin/sh

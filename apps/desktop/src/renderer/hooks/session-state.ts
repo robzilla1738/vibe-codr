@@ -26,6 +26,19 @@ import type {
   StructuredQuestion,
 } from "../../shared/types";
 
+export interface AttachedAppearance {
+  theme: string;
+  accentColor: string;
+  details: "quiet" | "normal" | "verbose";
+}
+
+export function snapshotWithAttachedAppearance(
+  snapshot: EngineSnapshot,
+  appearance?: AttachedAppearance,
+): EngineSnapshot {
+  return appearance ? { ...snapshot, ...appearance } : snapshot;
+}
+
 const PLAN_MAX_CHARS = 2 * 1024 * 1024;
 const PLAN_MAX_SOURCES = 500;
 const PLAN_SOURCE_URL_MAX_CHARS = 64 * 1024;

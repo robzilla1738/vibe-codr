@@ -2,8 +2,17 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { app } from "electron";
-import { globalConfigPath, projectConfigPath, readConfigFile } from "../../shared/config-io";
-import { isCloudSessionMutationLocked, isCloudSessionRemoteOwned } from "../../shared/cloud";
+import {
+  CLOUD_MODEL_ACCESS_VERSION,
+  CLOUD_RUNTIME_PROFILE_VERSION,
+  CLOUD_RUNTIME_REVISION,
+  createCloudRuntimeProfile,
+  sealCloudModelAccess,
+  type CloudRuntimeProfileV1,
+} from "../../../../../packages/shared/src/cloud-runtime";
+import { globalConfigPath, projectConfigPath, readConfigFile, writeConfigFileValidated } from "../../shared/config-io";
+import { validateConfig } from "../../shared/config-validate";
+import { cloudSessionNeedsRuntimeRepair, isCloudSessionMutationLocked, isCloudSessionRemoteOwned } from "../../shared/cloud";
 import type {
   CloudCommandHandle,
   CloudCommandResult,
@@ -50,6 +59,7 @@ const MAX_RETURN_SNAPSHOT_BYTES = 256 * 1024 * 1024;
 const PROVIDER_REQUEST_TIMEOUT_MS = 60_000;
 const SETUP_TIMEOUT_MS = 5 * 60_000;
 const AGENT_HEALTH_TIMEOUT_MS = 120_000;
+const CLOUD_APPEARANCE_SYNC_ERROR_PREFIX = "Cloud appearance could not sync to this Mac:";
 const DEFAULT_DOMAINS = [
   "registry.npmjs.org",
   "nodejs.org",
@@ -82,6 +92,8 @@ export class CloudManager {
   #ownershipUnresolved = false;
   #idleWaiters = new Map<string, Set<() => void>>();
   #settingsMutationChain = Promise.resolve();
+  #appearanceMutationChain = Promise.resolve();
+  #remoteSessionId: string | null = null;
 
   onStatus: ((event: CloudStatusEvent) => void) | null = null;
 
@@ -208,6 +220,20 @@ export class CloudManager {
     const typed = event as { type?: unknown; sessionId?: unknown };
     const type = typed.type;
     const sessionId = typeof typed.sessionId === "string" ? typed.sessionId : null;
+    if (this.transport.isRemote && this.#remoteSessionId && (type === "theme-changed" || type === "accent-changed" || type === "details-changed")) {
+      const appearanceEvent = event as Record<string, unknown>;
+      const appearancePatch = type === "theme-changed" && typeof appearanceEvent.theme === "string"
+        ? { theme: appearanceEvent.theme }
+        : type === "accent-changed" && typeof appearanceEvent.accent === "string"
+          ? { accentColor: appearanceEvent.accent }
+          : type === "details-changed" && ["quiet", "normal", "verbose"].includes(String(appearanceEvent.details))
+            ? { details: appearanceEvent.details as "quiet" | "normal" | "verbose" }
+            : null;
+      if (appearancePatch) {
+        const appearanceSessionId = this.#remoteSessionId;
+        void this.#mirrorCloudAppearance(appearanceSessionId, appearancePatch).catch(() => undefined);
+      }
+    }
     if (sessionId) this.#engineEventSequence += 1;
     if (type === "external-capability-pending" && sessionId) {
       const request = (event as { request?: { integration?: unknown; toolName?: unknown } }).request;
@@ -278,15 +304,21 @@ export class CloudManager {
           ? agents.map((agent) => agent && typeof agent === "object" && "model" in agent && typeof agent.model === "string" ? agent.model : undefined)
           : []),
       ].filter((model): model is string => Boolean(model)))];
-      const modelAccess = await this.#cloudModelEnvironment(
+      const modelAccess = await stageOperation("verifying", "missing-credential", () => this.#cloudModelEnvironment(
         settings,
         requiredModels,
         request.cwd,
         configuredCloudFallbackModels(globalResult?.config, projectResult?.config),
         request.includeModelCredentials ?? settings.transferModelCredentials,
-      );
+      ));
       const models = modelAccess.models;
       const modelEnvironment = modelAccess.environment;
+      const runtimeProfile = createCloudRuntimeProfile({
+        theme: snapshot.theme,
+        accentColor: snapshot.accentColor,
+        details: snapshot.details,
+        requiredModels: models,
+      });
       const prior = await this.#catalog.get(snapshot.sessionId);
       if (prior) {
         const action = isCloudSessionRemoteOwned(prior.status) ? "reconnect or resume it locally" : "delete the retained cloud copy";
@@ -299,6 +331,10 @@ export class CloudManager {
         optionalModels: modelAccess.optionalModels,
         credentialEnvironment: Object.keys(modelEnvironment).sort(),
         providerDomains: modelAccess.domains,
+        runtimeRevision: CLOUD_RUNTIME_REVISION,
+        runtimeProfileVersion: CLOUD_RUNTIME_PROFILE_VERSION,
+        modelAccessVersion: CLOUD_MODEL_ACCESS_VERSION,
+        appearance: appearanceFromProfile(runtimeProfile),
         workspaceId: createHash("sha256").update(resolve(request.cwd)).digest("hex").slice(0, 24),
         sourceRoot: request.cwd,
         provider: request.provider,
@@ -366,15 +402,17 @@ export class CloudManager {
       await this.#catalog.patch(snapshot.sessionId, { sandboxId: sandbox.id, sandboxName: sandbox.name });
       const base = request.provider === "e2b" ? "/home/user/vibe" : "/vercel/sandbox/vibe";
       this.#emit(snapshot.sessionId, "transferring", `Uploading verified runtime and workspace`, 0.36, "uploading", handoffStartedAt);
+      accessToken = randomBytes(36).toString("base64url");
+      const modelAccessEnvelope = sealCloudModelAccess(snapshot.sessionId, accessToken, modelEnvironment, runtimeProfile);
       await stageOperation(
         "uploading",
         "provider-unavailable",
         () => Promise.all([
           retryTransient("upload runtime", (signal) => provider.upload(sandbox.id, `${base}/runtime.tar.gz`, runtime.data, signal)),
           retryTransient("upload workspace", (signal) => provider.upload(sandbox.id, `${base}/handoff.json`, Buffer.from(JSON.stringify(transfer)), signal)),
+          retryTransient("upload protected model access", (signal) => provider.upload(sandbox.id, `${base}/model-access.json`, Buffer.from(JSON.stringify(modelAccessEnvelope)), signal)),
         ]).then(() => undefined),
       );
-      accessToken = randomBytes(36).toString("base64url");
       await this.#credentials.setSessionSecret(snapshot.sessionId, accessToken);
       await this.#credentials.setSessionEnvironment(snapshot.sessionId, modelEnvironment);
       this.#emit(snapshot.sessionId, "starting", "Verifying the cloud runtime", 0.48, "verifying", handoffStartedAt);
@@ -384,7 +422,6 @@ export class CloudManager {
       }, "runtime-incompatible", "verifying");
       this.#emit(snapshot.sessionId, "starting", "Restoring workspace and session state", 0.61, "restoring", handoffStartedAt);
       await runRequired(provider, sandbox.id, "sh", ["restore-session.sh", `${base}/handoff.json`, `${base}/project`, revision], {
-        ...modelEnvironment,
         VIBE_CLOUD_PROVIDER: request.provider,
         VIBE_CLOUD_RUNTIME: "1",
         VIBE_STATE_DIR: `${base}/state`,
@@ -394,17 +431,16 @@ export class CloudManager {
         timeoutMs: SETUP_TIMEOUT_MS,
       }, "setup-failed", "restoring");
       this.#emit(snapshot.sessionId, "starting", "Verifying every configured cloud model", 0.68, "verifying", handoffStartedAt);
-      await runRequired(provider, sandbox.id, "sh", ["probe-models.sh", JSON.stringify(models), `${base}/project`], {
-        ...modelEnvironment,
+      await runRequired(provider, sandbox.id, "sh", ["probe-models.sh", `${base}/model-access.json`, `${base}/project`, snapshot.sessionId], {
+        VIBE_CLOUD_ACCESS_TOKEN: accessToken,
         VIBE_CLOUD_RUNTIME: "1",
         VIBE_STATE_DIR: `${base}/state`,
       }, {
         privileged: true,
         cwd: `${base}/runtime`,
         timeoutMs: SETUP_TIMEOUT_MS,
-      }, "setup-failed", "verifying");
+      }, "invalid-credential", "verifying", modelEnvironment);
       const daemonEnvironment = {
-        ...modelEnvironment,
         VIBE_CLOUD_ACCESS_TOKEN: accessToken,
         VIBE_CLOUD_PROVIDER: request.provider,
         VIBE_CLOUD_EXPECTED_SESSION_ID: snapshot.sessionId,
@@ -417,7 +453,7 @@ export class CloudManager {
         "starting-agent",
         "provider-unavailable",
         () => withAbortDeadline(
-          (signal) => provider.start(sandbox.id, "sh", ["start.sh", request.provider], daemonEnvironment, {
+          (signal) => provider.start(sandbox.id, "sh", ["start.sh", request.provider, `${base}/model-access.json`], daemonEnvironment, {
             privileged: true,
             cwd: `${base}/runtime`,
             timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
@@ -440,6 +476,7 @@ export class CloudManager {
         endpoint.headers,
         AGENT_HEALTH_TIMEOUT_MS,
         Object.keys(modelEnvironment),
+        models,
       );
       const url = endpoint.url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
       this.#emit(snapshot.sessionId, "starting", "Connecting this window to the cloud session", 0.91, "connecting", handoffStartedAt);
@@ -458,6 +495,7 @@ export class CloudManager {
         targetRoot: `${base}/project`,
         targetStateRoot: cloudProjectStateRoot(`${base}/state`, `${base}/project`),
       });
+      this.#remoteSessionId = snapshot.sessionId;
       const entry: CloudSessionCatalogEntry = {
         sessionId: snapshot.sessionId,
         model: snapshot.model,
@@ -465,6 +503,10 @@ export class CloudManager {
         optionalModels: modelAccess.optionalModels,
         credentialEnvironment: Object.keys(modelEnvironment).sort(),
         providerDomains: modelAccess.domains,
+        runtimeRevision: CLOUD_RUNTIME_REVISION,
+        runtimeProfileVersion: CLOUD_RUNTIME_PROFILE_VERSION,
+        modelAccessVersion: CLOUD_MODEL_ACCESS_VERSION,
+        appearance: appearanceFromProfile(runtimeProfile),
         workspaceId: transfer.manifest.workspaceId,
         sourceRoot: request.cwd,
         provider: request.provider,
@@ -635,7 +677,7 @@ export class CloudManager {
     await this.#loadProvider(entry.provider);
     const provider = this.#providers[entry.provider];
     const settings = await this.#readSettings();
-    const sandbox = await provider.resume(entry.sandboxId, settings.autoPauseMinutes * 60 * 1_000);
+    let sandbox = await provider.resume(entry.sandboxId, settings.autoPauseMinutes * 60 * 1_000);
     if (!sandbox) {
       const error = "Cloud sandbox no longer exists. Recover the last local base from Settings → Cloud.";
       await this.#catalog.patch(sessionId, { status: "lost", error });
@@ -643,52 +685,115 @@ export class CloudManager {
       throw new Error(error);
     }
     const base = entry.provider === "e2b" ? "/home/user/vibe" : "/vercel/sandbox/vibe";
+    const needsRepair = cloudSessionNeedsRuntimeRepair(
+      entry,
+      CLOUD_RUNTIME_REVISION,
+      CLOUD_RUNTIME_PROFILE_VERSION,
+      CLOUD_MODEL_ACCESS_VERSION,
+    );
+    if (needsRepair && allowLegacyCredentialless) {
+      const recovered = await this.#connectLegacyRuntimeForReturn(entry, provider, token, base);
+      if (recovered) return recovered;
+    }
+    if (needsRepair) {
+      this.#emit(sessionId, "starting", "Repairing this Cloud session in place", 0.48, "verifying");
+    }
     let daemon: CloudCommandHandle | undefined;
     let expectedEnvironmentNames: string[] = [];
-    if (sandbox.needsDaemonRestart) {
+    let repairedProfile: CloudRuntimeProfileV1 | undefined;
+    let runtimeDirectory = `${base}/runtime`;
+    let legacyRecoveryRuntime = false;
+    let stagedRepair = false;
+    if (needsRepair || sandbox.needsDaemonRestart) {
       const models = entry.models?.length ? entry.models : entry.model ? [entry.model] : [];
-      if (!models.length && !allowLegacyCredentialless) {
-        throw new Error("This Cloud session predates scoped model access. Return it to Local from Settings → Cloud before reconnecting.");
-      }
-      if (!entry.credentialEnvironment?.length && !allowLegacyCredentialless) {
-        throw new Error("This Cloud session predates reviewed credential scope. Return it to Local from Settings → Cloud before reconnecting.");
-      }
+      if (!models.length) throw legacyRepairError("This Cloud session does not record a model. Return it to Local from Settings → Cloud.");
       const modelEnvironment = allowLegacyCredentialless
         ? {}
         : await this.#credentials.getSessionEnvironment(sessionId);
-      if (!allowLegacyCredentialless && !modelEnvironment) {
-        throw new Error("This Cloud session does not have a protected model-access snapshot. Return it to Local before reconnecting.");
+      if (!modelEnvironment) {
+        throw legacyRepairError("This Cloud session does not have a protected model-access snapshot. Return it to Local before reconnecting.");
       }
       if (!allowLegacyCredentialless && !entry.providerDomains?.length) {
-        throw new Error("This Cloud session does not have a reviewed provider route. Return it to Local before reconnecting.");
+        throw legacyRepairError("This Cloud session does not have a reviewed provider route. Return it to Local before reconnecting.");
       }
       const approvedEnvironment = [...(entry.credentialEnvironment ?? [])].sort();
       const pinnedEnvironment = Object.keys(modelEnvironment ?? {}).sort();
       if (!allowLegacyCredentialless && (approvedEnvironment.length !== pinnedEnvironment.length
         || approvedEnvironment.some((name, index) => name !== pinnedEnvironment[index]))) {
-        throw new Error("The protected Cloud model-access snapshot no longer matches the reviewed handoff. Return it to Local before reconnecting.");
+        throw legacyRepairError("The protected Cloud model-access snapshot no longer matches the reviewed handoff. Return it to Local before reconnecting.");
       }
-      expectedEnvironmentNames = Object.keys(modelEnvironment ?? {});
+      expectedEnvironmentNames = Object.keys(modelEnvironment);
       if (!allowLegacyCredentialless) await assertPublicProviderDomains(entry.providerDomains ?? []);
-      daemon = await provider.start(entry.sandboxId, "sh", ["start.sh", entry.provider], {
-        ...(modelEnvironment ?? {}),
+      repairedProfile = await this.#runtimeProfileForEntry(
+        entry,
+        allowLegacyCredentialless ? [] : models,
+        allowLegacyCredentialless,
+      );
+      if (needsRepair && !allowLegacyCredentialless) {
+        await this.#quiesceLegacyRuntime(entry, provider, token, base);
+        await provider.suspend(entry.sandboxId);
+        sandbox = await provider.resume(entry.sandboxId, settings.autoPauseMinutes * 60 * 1_000);
+        if (!sandbox) throw legacyRepairError("Cloud sandbox disappeared during in-place repair");
+      }
+      const envelope = sealCloudModelAccess(sessionId, token, modelEnvironment, repairedProfile);
+      if (needsRepair && allowLegacyCredentialless) {
+        const previousRuntime = `${base}/runtime-previous`;
+        runtimeDirectory = await remoteDirectoryExists(provider, entry.sandboxId, previousRuntime)
+          ? previousRuntime
+          : `${base}/runtime`;
+        legacyRecoveryRuntime = !(await runtimeSupportsModelEnvelope(provider, entry.sandboxId, runtimeDirectory));
+        await stopExistingCloudRuntime(provider, entry.sandboxId);
+      } else if (needsRepair) {
+        const revision = await engineRevision();
+        const runtime = await findRuntimeArtifact(revision);
+        await provider.upload(entry.sandboxId, `${base}/runtime.tar.gz`, runtime.data);
+        runtimeDirectory = `${base}/runtime-next`;
+        await runRequired(provider, entry.sandboxId, "sh", ["-lc", `set -eu; rm -rf '${runtimeDirectory}'; mkdir -p '${runtimeDirectory}'; tar -xzf '${base}/runtime.tar.gz' -C '${runtimeDirectory}'; cd '${runtimeDirectory}'; sh install-runtime.sh`], undefined, {
+          privileged: true,
+          timeoutMs: SETUP_TIMEOUT_MS,
+        }, "legacy-session-repair-failed", "verifying");
+      }
+      if (!legacyRecoveryRuntime) {
+        await provider.upload(entry.sandboxId, `${base}/model-access.json`, Buffer.from(JSON.stringify(envelope)));
+      }
+      if (!allowLegacyCredentialless) {
+        await runRequired(provider, entry.sandboxId, "sh", ["probe-models.sh", `${base}/model-access.json`, `${base}/project`, sessionId], {
+          VIBE_CLOUD_ACCESS_TOKEN: token,
+          VIBE_CLOUD_RUNTIME: "1",
+          VIBE_STATE_DIR: `${base}/state`,
+        }, {
+          privileged: true,
+          cwd: runtimeDirectory,
+          timeoutMs: SETUP_TIMEOUT_MS,
+        }, needsRepair ? "legacy-session-repair-failed" : "invalid-credential", "verifying", modelEnvironment);
+      }
+      if (needsRepair && !allowLegacyCredentialless) {
+        await stopExistingCloudRuntime(provider, entry.sandboxId);
+        await swapStagedCloudRuntime(provider, entry.sandboxId, base);
+        runtimeDirectory = `${base}/runtime`;
+        stagedRepair = true;
+      }
+      daemon = await provider.start(entry.sandboxId, "sh", legacyRecoveryRuntime
+        ? ["start.sh", entry.provider]
+        : ["start.sh", entry.provider, `${base}/model-access.json`], {
         VIBE_CLOUD_ACCESS_TOKEN: token,
         VIBE_CLOUD_PROVIDER: entry.provider,
         VIBE_CLOUD_EXPECTED_SESSION_ID: sessionId,
         VIBE_WORKSPACE_ROOT: `${base}/project`,
         VIBE_CLOUD_AGENT_PORT: String(CLOUD_PORT),
         VIBE_STATE_DIR: `${base}/state`,
-      }, { privileged: true, cwd: `${base}/runtime`, timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS });
+      }, { privileged: true, cwd: runtimeDirectory, timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS });
     }
     const endpoint = await provider.domain(entry.sandboxId, CLOUD_PORT);
-    if (daemon) {
+    if (daemon && !legacyRecoveryRuntime) {
       await superviseCloudAgent(
         daemon,
         endpoint.url,
         token,
         endpoint.headers,
         AGENT_HEALTH_TIMEOUT_MS,
-        expectedEnvironmentNames,
+        allowLegacyCredentialless ? [] : expectedEnvironmentNames,
+        allowLegacyCredentialless ? [] : entry.models?.length ? entry.models : entry.model ? [entry.model] : [],
       );
     }
     const url = endpoint.url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
@@ -698,13 +803,24 @@ export class CloudManager {
       { preserveLocal: entry.handoffTransition?.direction === "cloud-to-local" },
     );
     const id = daemon ? await awaitRemoteEngineReady(daemon, reconnect) : await reconnect;
+    this.#remoteSessionId = id;
     if (entry.handoffTransition?.direction === "cloud-to-local") {
       const recovered = await this.#recoverInterruptedReturn(entry, id);
       this.#ownershipUnresolved = false;
       return recovered;
     }
-    await this.#catalog.patch(sessionId, { remoteUrl: url });
-    await this.#catalog.patch(sessionId, { status: "running" });
+    await this.#catalog.patch(sessionId, {
+      remoteUrl: url,
+      status: "running",
+      error: undefined,
+      ...(repairedProfile ? {
+        runtimeRevision: CLOUD_RUNTIME_REVISION,
+        runtimeProfileVersion: CLOUD_RUNTIME_PROFILE_VERSION,
+        modelAccessVersion: CLOUD_MODEL_ACCESS_VERSION,
+        appearance: appearanceFromProfile(repairedProfile),
+      } : {}),
+    });
+    if (stagedRepair) await cleanupPreviousCloudRuntime(provider, entry.sandboxId, base).catch(() => undefined);
     return id;
   }
 
@@ -717,7 +833,9 @@ export class CloudManager {
     if (!entry) throw new Error("Cloud session is not in this desktop's catalog");
     const settings = await this.#readSettings();
     const preserveCloudCopy = keepCloudCopy || !settings.deleteOnReturn;
-    if (!this.transport.isRemote || !this.transport.isReady) await this.#reconnectTracked(sessionId, true);
+    if (shouldReconnectRemoteSession(this.transport.isRemote, this.transport.isReady, this.#remoteSessionId, sessionId)) {
+      await this.#reconnectTracked(sessionId, true);
+    }
     await this.#loadProvider(entry.provider);
     const provider = this.#providers[entry.provider];
     const revision = await engineRevision();
@@ -834,6 +952,7 @@ export class CloudManager {
       });
       await this.transport.importPortableSession(cwd, engine, revision, true);
       portableImported = true;
+      await this.#appearanceMutationChain;
       await this.#catalog.patch(sessionId, {
         handoffTransition: {
           direction: "cloud-to-local",
@@ -864,6 +983,7 @@ export class CloudManager {
       }
       portableImported = false;
       await this.transport.completeRemoteHandoff();
+      this.#remoteSessionId = null;
       provisionalLocal = false;
     } catch (error) {
       if (remoteOwnershipCommitted) {
@@ -1164,6 +1284,7 @@ export class CloudManager {
       transition.ownershipGeneration!,
     );
     await this.transport.completeRemoteHandoff();
+    this.#remoteSessionId = null;
     const localId = await this.transport.start({ cwd: transition.localCwd!, resume: entry.sessionId });
     await this.#loadProvider(entry.provider);
     await this.#providers[entry.provider].suspend(entry.sandboxId).catch(() => undefined);
@@ -1353,6 +1474,130 @@ export class CloudManager {
     return { environment, models: resolvedModels, optionalModels: resolvedOptionalModels, domains: [...domains] };
   }
 
+  async #runtimeProfileForEntry(
+    entry: CloudSessionCatalogEntry,
+    requiredModels: string[],
+    recoveryOnly = false,
+  ): Promise<CloudRuntimeProfileV1> {
+    if (entry.appearance) {
+      return createCloudRuntimeProfile({ ...entry.appearance, requiredModels, ...(recoveryOnly ? { recoveryOnly: true } : {}) });
+    }
+    // Pre-profile (0.6.2) runtimes booted with the remote default, which is the
+    // defect this migration repairs. That snapshot has no intent provenance,
+    // so the Mac's application-wide appearance is the migration authority.
+    // Once cataloged, all later Cloud changes are mirrored in both directions.
+    const globalResult = await readConfigFile(globalConfigPath());
+    return createCloudRuntimeProfile({
+      theme: globalResult?.config.theme ?? "graphite",
+      accentColor: globalResult?.config.accentColor ?? "#e6e6e6",
+      details: globalResult?.config.details ?? "normal",
+      requiredModels,
+      ...(recoveryOnly ? { recoveryOnly: true } : {}),
+    });
+  }
+
+  async #connectLegacyRuntimeForReturn(
+    entry: CloudSessionCatalogEntry,
+    provider: SandboxProvider,
+    token: string,
+    base: string,
+  ): Promise<string | null> {
+    const endpoint = await provider.domain(entry.sandboxId, CLOUD_PORT);
+    const state = await inspectLegacyCloudAgent(endpoint.url, token, endpoint.headers);
+    if (!state) {
+      if (await legacyCloudAgentProcessRunning(provider, entry.sandboxId)) {
+        throw legacyRepairError("The legacy Cloud agent is still running but its authenticated health endpoint is unavailable; recovery was deferred without stopping it");
+      }
+      return null;
+    }
+    const url = endpoint.url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+    const id = await this.transport.switchToRemote(
+      { url, accessToken: token, ...(endpoint.headers ? { headers: endpoint.headers } : {}) },
+      { cwd: `${base}/project`, resume: entry.sessionId },
+      { preserveLocal: true },
+    );
+    this.#remoteSessionId = id;
+    if (entry.handoffTransition?.direction === "cloud-to-local") {
+      const recovered = await this.#recoverInterruptedReturn(entry, id);
+      this.#ownershipUnresolved = false;
+      return recovered;
+    }
+    return id;
+  }
+
+  async #quiesceLegacyRuntime(
+    entry: CloudSessionCatalogEntry,
+    provider: SandboxProvider,
+    token: string,
+    base: string,
+  ): Promise<void> {
+    const endpoint = await provider.domain(entry.sandboxId, CLOUD_PORT);
+    const state = await inspectLegacyCloudAgent(endpoint.url, token, endpoint.headers);
+    if (!state) {
+      if (await legacyCloudAgentProcessRunning(provider, entry.sandboxId)) {
+        throw legacyRepairError("The legacy Cloud agent is still running but its authenticated health endpoint is unavailable; repair was deferred without stopping it");
+      }
+      return;
+    }
+    if (state.terminals > 0) {
+      throw legacyRepairError(`Cloud runtime repair is waiting for ${state.terminals} active terminal${state.terminals === 1 ? "" : "s"}. Return this session to Local or close the terminal before reconnecting.`);
+    }
+    if (!state.engine) return;
+    const url = endpoint.url.replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+    try {
+      const id = await this.transport.switchToRemote(
+        { url, accessToken: token, ...(endpoint.headers ? { headers: endpoint.headers } : {}) },
+        { cwd: `${base}/project`, resume: entry.sessionId },
+        { preserveLocal: true },
+      );
+      if (id !== entry.sessionId) throw legacyRepairError(`Legacy Cloud runtime resumed ${id} instead of ${entry.sessionId}`);
+      this.#remoteSessionId = id;
+      const eventSequence = this.#engineEventSequence;
+      const snapshot = await this.transport.rpc("snapshot") as EngineSnapshot;
+      await this.#waitForEngineIdle(snapshot, eventSequence);
+      await this.transport.stop();
+      this.#remoteSessionId = null;
+      await waitForLegacyEngineStopped(endpoint.url, token, endpoint.headers);
+    } catch (error) {
+      if (this.transport.isRemote) await this.transport.disconnectRemote().catch(() => undefined);
+      this.#remoteSessionId = null;
+      throw error;
+    }
+  }
+
+  async #mirrorCloudAppearance(
+    sessionId: string,
+    patch: Partial<NonNullable<CloudSessionCatalogEntry["appearance"]>>,
+  ): Promise<void> {
+    const run = this.#appearanceMutationChain.catch(() => undefined).then(async () => {
+      try {
+        const entry = await this.#catalog.get(sessionId);
+        if (!entry || !isCloudSessionRemoteOwned(entry.status)) return;
+        const current = entry.appearance ?? appearanceFromProfile(await this.#runtimeProfileForEntry(
+          entry,
+          entry.models?.length ? entry.models : entry.model ? [entry.model] : [],
+        ));
+        const appearance = { ...current, ...patch };
+        const result = await writeConfigFileValidated(globalConfigPath(), patch, validateConfig);
+        if (!result.ok) throw new Error(result.error);
+        const recoveredAppearanceSync = entry.status === "recoverable-error"
+          && entry.error?.startsWith(CLOUD_APPEARANCE_SYNC_ERROR_PREFIX) === true;
+        await this.#catalog.patch(sessionId, {
+          appearance,
+          ...(recoveredAppearanceSync ? { status: "running", error: undefined } : {}),
+        });
+        if (recoveredAppearanceSync) this.#emit(sessionId, "running", "Cloud appearance synchronized");
+      } catch (error) {
+        const detail = `${CLOUD_APPEARANCE_SYNC_ERROR_PREFIX} ${message(error)}`;
+        await this.#catalog.patch(sessionId, { status: "recoverable-error", error: detail }).catch(() => undefined);
+        this.#emit(sessionId, "recoverable-error", detail);
+        throw error;
+      }
+    });
+    this.#appearanceMutationChain = run.catch(() => undefined);
+    await run;
+  }
+
   #emit(
     sessionId: string,
     status: CloudSessionStatus,
@@ -1427,6 +1672,15 @@ export class CloudManager {
   }
 }
 
+export function shouldReconnectRemoteSession(
+  isRemote: boolean,
+  isReady: boolean,
+  activeSessionId: string | null,
+  requestedSessionId: string,
+): boolean {
+  return !isRemote || !isReady || activeSessionId !== requestedSessionId;
+}
+
 export class CloudOperationError extends Error {
   constructor(messageText: string, readonly details: CloudFailureDetails) {
     super(messageText);
@@ -1482,17 +1736,26 @@ export async function runRequired(
   options: Parameters<SandboxProvider["run"]>[4],
   code: CloudFailureDetails["code"],
   stage: CloudStartupStage,
+  redactionEnvironment?: Record<string, string>,
 ): Promise<CloudCommandResult> {
   let result: CloudCommandResult;
   try {
     result = await provider.run(id, command, args, env, options);
   } catch (error) {
-    throw new CloudOperationError(`Cloud ${stageLabel(stage)} failed: ${message(error)}`, {
+    const diagnostic = sanitizeCloudCommandOutput(message(error), redactionEnvironment);
+    throw new CloudOperationError(`Cloud ${stageLabel(stage)} failed: ${diagnostic}`, {
       code,
       stage,
       retryable: true,
-      diagnostic: message(error),
+      diagnostic,
     });
+  }
+  if (redactionEnvironment) {
+    result = {
+      ...result,
+      stdout: sanitizeCloudCommandOutput(result.stdout, redactionEnvironment),
+      stderr: sanitizeCloudCommandOutput(result.stderr, redactionEnvironment),
+    };
   }
   if (result.exitCode === 0) return result;
   const diagnostic = commandDiagnostic(result);
@@ -1502,6 +1765,123 @@ export async function runRequired(
     retryable: true,
     ...(diagnostic ? { diagnostic } : {}),
   });
+}
+
+export async function stopExistingCloudRuntime(provider: SandboxProvider, sandboxId: string): Promise<void> {
+  await runRequired(provider, sandboxId, "sh", ["-lc", [
+    "set -eu",
+    "command -v pkill >/dev/null 2>&1 || { echo 'pkill is required for Cloud runtime repair' >&2; exit 1; }",
+    "pkill -TERM -f '[c]loud-agentd\\.mjs' 2>/dev/null || true",
+    "if id -u vibe-workload >/dev/null 2>&1; then pkill -TERM -u \"$(id -u vibe-workload)\" 2>/dev/null || true; fi",
+    "if id -u vibe-terminal >/dev/null 2>&1; then pkill -TERM -u \"$(id -u vibe-terminal)\" 2>/dev/null || true; fi",
+    "sleep 1",
+    "pkill -KILL -f '[c]loud-agentd\\.mjs' 2>/dev/null || true",
+    "if id -u vibe-workload >/dev/null 2>&1; then pkill -KILL -u \"$(id -u vibe-workload)\" 2>/dev/null || true; fi",
+    "if id -u vibe-terminal >/dev/null 2>&1; then pkill -KILL -u \"$(id -u vibe-terminal)\" 2>/dev/null || true; fi",
+  ].join("; ")], undefined, {
+    privileged: true,
+    timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
+  }, "legacy-session-repair-failed", "verifying");
+}
+
+export async function inspectLegacyCloudAgent(
+  endpoint: string,
+  accessToken: string,
+  providerHeaders: Record<string, string> = {},
+): Promise<{ engine: boolean; terminals: number } | null> {
+  try {
+    const response = await fetch(new URL("/health", endpoint), {
+      headers: { ...providerHeaders, authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.status === 401 || response.status === 403) {
+      throw legacyRepairError("The legacy Cloud runtime rejected this session's protected access token");
+    }
+    const payload = await response.json().catch(() => null) as { engine?: unknown; terminals?: unknown; error?: unknown } | null;
+    if (!response.ok && (!payload || typeof payload.engine !== "boolean")) return null;
+    if (!payload || typeof payload.engine !== "boolean") {
+      throw legacyRepairError("The legacy Cloud runtime returned an invalid health response");
+    }
+    if (typeof payload.error === "string" && payload.error.trim()) {
+      throw legacyRepairError(`The legacy Cloud runtime is not healthy: ${payload.error.trim()}`);
+    }
+    return {
+      engine: payload.engine,
+      terminals: typeof payload.terminals === "number" && Number.isSafeInteger(payload.terminals) && payload.terminals >= 0
+        ? payload.terminals
+        : 0,
+    };
+  } catch (error) {
+    if (error instanceof CloudOperationError) throw error;
+    if (error instanceof TypeError || (error instanceof Error && error.name === "TimeoutError")) return null;
+    throw error;
+  }
+}
+
+export async function waitForLegacyEngineStopped(
+  endpoint: string,
+  accessToken: string,
+  providerHeaders: Record<string, string> = {},
+  timeoutMs = 15_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await inspectLegacyCloudAgent(endpoint, accessToken, providerHeaders);
+    if (!state?.engine) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw legacyRepairError("The legacy Cloud engine did not finish its graceful shutdown; repair was deferred without forcing it to stop");
+}
+
+async function legacyCloudAgentProcessRunning(provider: SandboxProvider, sandboxId: string): Promise<boolean> {
+  const result = await provider.run(sandboxId, "sh", ["-lc", "pgrep -f '[c]loud-agentd\\.mjs' >/dev/null"], undefined, {
+    privileged: true,
+    timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
+  });
+  if (result.exitCode === 0) return true;
+  if (result.exitCode === 1) return false;
+  throw legacyRepairError(commandDiagnostic(result) || "Could not inspect the legacy Cloud agent process");
+}
+
+async function remoteDirectoryExists(provider: SandboxProvider, sandboxId: string, path: string): Promise<boolean> {
+  const result = await provider.run(sandboxId, "sh", ["-lc", `test -d '${path}'`], undefined, {
+    privileged: true,
+    timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
+  });
+  return result.exitCode === 0;
+}
+
+async function runtimeSupportsModelEnvelope(
+  provider: SandboxProvider,
+  sandboxId: string,
+  runtimeDirectory: string,
+): Promise<boolean> {
+  const result = await provider.run(sandboxId, "sh", ["-lc", "grep -q 'model-access-envelope' start.sh"], undefined, {
+    privileged: true,
+    cwd: runtimeDirectory,
+    timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
+  });
+  return result.exitCode === 0;
+}
+
+export async function swapStagedCloudRuntime(provider: SandboxProvider, sandboxId: string, base: string): Promise<void> {
+  await runRequired(provider, sandboxId, "sh", ["-lc", [
+    "set -eu",
+    `test -d '${base}/runtime-next'`,
+    `if [ -d '${base}/runtime' ]; then if [ ! -d '${base}/runtime-previous' ]; then mv '${base}/runtime' '${base}/runtime-previous'; else rm -rf '${base}/runtime-failed'; mv '${base}/runtime' '${base}/runtime-failed'; fi; elif [ ! -d '${base}/runtime-previous' ]; then echo 'legacy-session-repair-failed: current and previous runtimes are both missing' >&2; exit 1; fi`,
+    `mv '${base}/runtime-next' '${base}/runtime'`,
+  ].join("; ")], undefined, {
+    privileged: true,
+    timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
+  }, "legacy-session-repair-failed", "verifying");
+}
+
+async function cleanupPreviousCloudRuntime(provider: SandboxProvider, sandboxId: string, base: string): Promise<void> {
+  const result = await provider.run(sandboxId, "rm", ["-rf", `${base}/runtime-previous`, `${base}/runtime-failed`], undefined, {
+    privileged: true,
+    timeoutMs: PROVIDER_REQUEST_TIMEOUT_MS,
+  });
+  if (result.exitCode !== 0) throw new Error(commandDiagnostic(result) || "Cloud runtime rollback cleanup failed");
 }
 
 /**
@@ -1531,6 +1911,7 @@ export async function superviseCloudAgent(
   providerHeaders: Record<string, string> = {},
   healthTimeoutMs = AGENT_HEALTH_TIMEOUT_MS,
   expectedEnvironmentNames: readonly string[] = [],
+  expectedModels: readonly string[] = [],
 ): Promise<void> {
   const healthController = new AbortController();
   const exited = daemon.wait().then(
@@ -1542,6 +1923,7 @@ export async function superviseCloudAgent(
     accessToken,
     providerHeaders,
     expectedEnvironmentNames,
+    expectedModels,
     healthTimeoutMs,
     healthController.signal,
   ).then(
@@ -1564,8 +1946,9 @@ export async function superviseCloudAgent(
     });
   }
   const diagnostic = commandDiagnostic(outcome.result);
+  const diagnosticCode = diagnostic ? cloudRuntimeErrorCode(diagnostic) : "daemon-exited";
   throw new CloudOperationError(`Cloud agent exited before it became healthy${diagnostic ? `: ${diagnosticSummary(diagnostic)}` : ` with exit code ${outcome.result.exitCode}`}`, {
-    code: "daemon-exited",
+    code: diagnosticCode === "setup-failed" ? "daemon-exited" : diagnosticCode,
     stage: "starting-agent",
     retryable: true,
     ...(diagnostic ? { diagnostic } : {}),
@@ -1642,6 +2025,7 @@ async function waitForCloudAgent(
   accessToken: string,
   providerHeaders: Record<string, string> = {},
   expectedEnvironmentNames: readonly string[] = [],
+  expectedModels: readonly string[] = [],
   timeoutMs = AGENT_HEALTH_TIMEOUT_MS,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -1657,32 +2041,54 @@ async function waitForCloudAgent(
       });
       const payload = await response.json().catch(() => null) as {
         error?: unknown;
-        environment?: unknown;
+        modelAccess?: { version?: unknown; validated?: unknown; environment?: unknown; requiredModels?: unknown };
       } | null;
       if (response.ok) {
-        const environment = Array.isArray(payload?.environment)
-          ? payload.environment.filter((name): name is string => typeof name === "string")
+        if (payload?.modelAccess?.version !== 1 || payload.modelAccess.validated !== true) {
+          throw new CloudOperationError("Cloud agent did not validate model access in the resumed engine", {
+            code: "runtime-profile-mismatch",
+            stage: "checking-health",
+            retryable: false,
+            diagnostic: "Engine model-access readiness was not confirmed",
+          });
+        }
+        const environment = Array.isArray(payload.modelAccess.environment)
+          ? payload.modelAccess.environment.filter((name): name is string => typeof name === "string")
           : [];
         const missing = expectedEnvironmentNames.filter((name) => !environment.includes(name));
         if (missing.length) {
           throw new CloudOperationError(
             `Cloud agent started without required model access: ${missing.join(", ")}`,
             {
-              code: "setup-failed",
+              code: "missing-credential",
               stage: "checking-health",
               retryable: false,
               diagnostic: `Missing environment bindings: ${missing.join(", ")}`,
             },
           );
         }
+        const requiredModels = Array.isArray(payload.modelAccess.requiredModels)
+          ? payload.modelAccess.requiredModels.filter((model): model is string => typeof model === "string")
+          : [];
+        const expected = [...new Set(expectedModels)].sort();
+        const actual = [...new Set(requiredModels)].sort();
+        if (expected.length !== actual.length || expected.some((model, index) => model !== actual[index])) {
+          throw new CloudOperationError("Cloud agent resumed with a different required-model profile", {
+            code: "runtime-profile-mismatch",
+            stage: "checking-health",
+            retryable: false,
+            diagnostic: `Expected ${expected.join(", ") || "no models"}; received ${actual.join(", ") || "no models"}`,
+          });
+        }
         return;
       }
       if (typeof payload?.error === "string" && payload.error.trim()) {
+        const diagnostic = payload.error.trim();
         throw new CloudOperationError(`Cloud agent rejected the imported session: ${payload.error.trim()}`, {
-          code: "setup-failed",
+          code: cloudRuntimeErrorCode(diagnostic),
           stage: "checking-health",
           retryable: false,
-          diagnostic: payload.error.trim(),
+          diagnostic,
         });
       }
       lastDiagnostic = `Health endpoint returned HTTP ${response.status}`;
@@ -1795,6 +2201,31 @@ function progressForStage(stage: CloudStartupStage): number {
     "checking-health": 0.82,
     connecting: 0.91,
   })[stage];
+}
+
+function appearanceFromProfile(profile: CloudRuntimeProfileV1): NonNullable<CloudSessionCatalogEntry["appearance"]> {
+  return {
+    theme: profile.theme,
+    accentColor: profile.accentColor ?? "",
+    details: profile.details,
+  };
+}
+
+function legacyRepairError(messageText: string): CloudOperationError {
+  return new CloudOperationError(messageText, {
+    code: "legacy-session-repair-failed",
+    stage: "verifying",
+    retryable: false,
+    diagnostic: messageText,
+  });
+}
+
+function cloudRuntimeErrorCode(value: string): CloudFailureDetails["code"] {
+  if (value.includes("missing-credential:")) return "missing-credential";
+  if (value.includes("invalid-credential:")) return "invalid-credential";
+  if (value.includes("runtime-profile-mismatch:")) return "runtime-profile-mismatch";
+  if (value.includes("legacy-session-repair-failed:")) return "legacy-session-repair-failed";
+  return "setup-failed";
 }
 
 async function findRuntimeArtifact(revision: string): Promise<{ path: string; data: Buffer }> {

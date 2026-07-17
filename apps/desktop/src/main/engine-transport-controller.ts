@@ -89,6 +89,16 @@ export class EngineTransportController implements EngineTransport {
     this.#wire(this.local);
   }
 
+  async disconnectRemote(): Promise<void> {
+    const remote = this.#remote;
+    if (remote) await remote.disposeForQuit();
+    if (this.#remote === remote) this.#remote = null;
+    this.#remoteActivationEvents = null;
+    this.#remoteActivationBytes = 0;
+    this.#active = this.local;
+    this.#wire(this.local);
+  }
+
   startProvisionalLocal(options: EngineStartOptions): Promise<string> {
     const operation = this.#localLifecycleTail.then(() => {
       this.#wire(this.local);

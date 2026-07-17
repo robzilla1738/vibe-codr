@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { dirname, relative, resolve, sep } from "node:path";
 import * as pty from "node-pty";
 import WebSocket, { WebSocketServer } from "ws";
+import { openCloudModelAccess, terminalEnvironmentWithoutModelAccess } from "@vibe/shared/cloud-runtime";
 
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -36,6 +37,8 @@ interface AgentOptions {
   expectedSessionId?: string;
   workloadUid?: number;
   workloadGid?: number;
+  terminalUid?: number;
+  terminalGid?: number;
   cloudProvider?: "e2b" | "vercel";
 }
 
@@ -57,25 +60,55 @@ export function startCloudAgent(options: AgentOptions = {}) {
   if (tokenFile) rmSync(tokenFile, { force: true });
   delete process.env.VIBE_CLOUD_ACCESS_TOKEN;
   const workload = workloadIdentity(options);
+  const terminalWorkload = terminalIdentity(options);
   const isolationRequired = process.env.VIBE_CLOUD_REQUIRE_ISOLATION === "1";
-  if (isolationRequired && (typeof process.getuid !== "function" || process.getuid() !== 0 || !workload)) {
-    throw new Error("Cloud control isolation requires a root agent and a dedicated non-root workload identity");
+  if (isolationRequired && (
+    typeof process.getuid !== "function"
+    || process.getuid() !== 0
+    || !workload
+    || !terminalWorkload
+    || workload.uid === terminalWorkload.uid
+  )) {
+    throw new Error("Cloud control isolation requires a root agent and distinct non-root engine and terminal identities");
   }
-  const childEnvironment = environmentWithoutControlSecrets(process.env);
+  const modelAccessFile = process.env.VIBE_CLOUD_MODEL_ACCESS_FILE;
+  if (!modelAccessFile) throw new Error("missing-credential: VIBE_CLOUD_MODEL_ACCESS_FILE is required");
+  let modelAccess: ReturnType<typeof openCloudModelAccess>;
+  try {
+    modelAccess = openCloudModelAccess(
+      JSON.parse(readFileSync(modelAccessFile, "utf8")),
+      accessToken,
+      expectedSessionId,
+    );
+  } finally {
+    rmSync(modelAccessFile, { force: true });
+  }
+  delete process.env.VIBE_CLOUD_MODEL_ACCESS_FILE;
+  const baselineEnvironment = environmentWithoutControlSecrets(process.env);
+  const engineEnvironment = { ...baselineEnvironment, ...modelAccess.environment };
+  const terminalEnvironment = terminalEnvironmentWithoutModelAccess(
+    baselineEnvironment,
+    Object.keys(modelAccess.environment),
+  );
   if (workload) {
-    childEnvironment.HOME = workload.home;
-    childEnvironment.USER = "vibe-workload";
-    childEnvironment.LOGNAME = "vibe-workload";
+    engineEnvironment.HOME = workload.home;
+    engineEnvironment.USER = "vibe-workload";
+    engineEnvironment.LOGNAME = "vibe-workload";
+  }
+  if (terminalWorkload) {
+    terminalEnvironment.HOME = terminalWorkload.home;
+    terminalEnvironment.USER = "vibe-terminal";
+    terminalEnvironment.LOGNAME = "vibe-terminal";
   }
 
   const state: AgentState = { host: null, sessionId: null, startupError: null, hostClients: new Set(), terminals: new Map() };
 
   const ensureHost = () => {
     if (state.host && state.host.exitCode === null) return state.host;
-    const host = spawn(engineHost, [], {
+    const host = spawn("/bin/sh", ["-c", "umask 002; exec \"$1\"", "vibe-engine", engineHost], {
       cwd: workspaceRoot,
       env: {
-        ...childEnvironment,
+        ...engineEnvironment,
         VIBE_CLOUD_RUNTIME: "1",
         VIBE_CLOUD_PROVIDER: cloudProvider,
       },
@@ -145,7 +178,12 @@ export function startCloudAgent(options: AgentOptions = {}) {
         ok: healthy,
         engine: state.host?.exitCode === null,
         sessionId: state.sessionId,
-        environment: Object.keys(childEnvironment).sort(),
+        modelAccess: {
+          version: 1,
+          validated: sessionReady && !state.startupError,
+          environment: Object.keys(modelAccess.environment).sort(),
+          requiredModels: modelAccess.profile.requiredModels,
+        },
         ...(state.startupError ? { error: state.startupError } : {}),
         terminals: state.terminals.size,
       }));
@@ -186,7 +224,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
           if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error("engine frame too large");
           host.stdin.write(line);
         } else if (frame.channel === "file") await handleFile(socket, frame, workspaceRoot, workload);
-        else if (frame.channel === "terminal") await handleTerminal(socket, frame, state, workspaceRoot, childEnvironment, workload);
+        else if (frame.channel === "terminal") await handleTerminal(socket, frame, state, workspaceRoot, terminalEnvironment, terminalWorkload);
         else if (frame.channel === "ping") send(socket, { channel: "pong", at: Date.now() });
         else throw new Error("unknown channel");
       } catch (error) {
@@ -206,6 +244,13 @@ export function startCloudAgent(options: AgentOptions = {}) {
       cwd: workspaceRoot,
       resume: expectedSessionId,
       executionTarget: { kind: "cloud", provider: cloudProvider },
+      ...(modelAccess.profile.requiredModels.length ? { requiredModels: modelAccess.profile.requiredModels } : {}),
+      runtimeProfile: {
+        schemaVersion: 1,
+        theme: modelAccess.profile.theme,
+        ...(modelAccess.profile.accentColor ? { accentColor: modelAccess.profile.accentColor } : {}),
+        details: modelAccess.profile.details,
+      },
     })}\n`);
   });
   return server;
@@ -219,8 +264,10 @@ async function handleFile(socket: ServerSocket, frame: Record<string, unknown>, 
     const data = Buffer.from(frame.contentBase64, "base64");
     if (data.byteLength > MAX_FILE_BYTES) throw new Error("file exceeds 64 MiB");
     await mkdirForWorkload(root, dirname(path), workload);
-    await writeFile(path, data, { mode: typeof frame.mode === "number" ? frame.mode & 0o777 : 0o600 });
-    if (typeof frame.mode === "number") await chmod(path, frame.mode & 0o777);
+    const requestedMode = typeof frame.mode === "number" ? frame.mode & 0o777 : 0o600;
+    const sharedMode = sharedProjectFileMode(requestedMode);
+    await writeFile(path, data, { mode: sharedMode });
+    await chmod(path, sharedMode);
     if (workload) await chown(path, workload.uid, workload.gid);
     send(socket, { channel: "file", requestId: frame.requestId, ok: true });
   } else if (frame.op === "read") {
@@ -245,7 +292,7 @@ async function handleTerminal(
     const id = typeof frame.id === "string" ? frame.id : randomUUID();
     if (state.terminals.has(id)) throw new Error("terminal already exists");
     const cwd = typeof frame.cwd === "string" ? await resolveCloudPath(root, frame.cwd) : root;
-    const process = pty.spawn("/bin/bash", ["-l"], {
+    const process = pty.spawn("/bin/bash", ["-lc", "umask 002; exec /bin/bash -l"], {
       cwd,
       cols: boundedInt(frame.cols, 80, 20, 400),
       rows: boundedInt(frame.rows, 24, 5, 200),
@@ -304,6 +351,11 @@ export async function resolveCloudPath(root: string, value: string): Promise<str
   return path;
 }
 
+export function sharedProjectFileMode(requestedMode: number): number {
+  const mode = requestedMode & 0o777;
+  return mode | ((mode & 0o700) >> 3);
+}
+
 function safeEqual(value: string, expected: string): boolean {
   const a = Buffer.from(value);
   const b = Buffer.from(expected);
@@ -312,7 +364,7 @@ function safeEqual(value: string, expected: string): boolean {
 
 export function environmentWithoutControlSecrets(environment: NodeJS.ProcessEnv): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(environment).filter(([key, value]) => key !== "VIBE_CLOUD_ACCESS_TOKEN" && key !== "VIBE_CLOUD_ACCESS_TOKEN_FILE" && typeof value === "string"),
+    Object.entries(environment).filter(([key, value]) => key !== "VIBE_CLOUD_ACCESS_TOKEN" && key !== "VIBE_CLOUD_ACCESS_TOKEN_FILE" && key !== "VIBE_CLOUD_MODEL_ACCESS_FILE" && typeof value === "string"),
   ) as Record<string, string>;
 }
 
@@ -321,6 +373,13 @@ function workloadIdentity(options: AgentOptions): WorkloadIdentity | null {
   const gid = options.workloadGid ?? Number(process.env.VIBE_CLOUD_WORKLOAD_GID);
   if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) return null;
   return { uid, gid, home: process.env.VIBE_CLOUD_WORKLOAD_HOME || "/home/vibe-workload" };
+}
+
+function terminalIdentity(options: AgentOptions): WorkloadIdentity | null {
+  const uid = options.terminalUid ?? Number(process.env.VIBE_CLOUD_TERMINAL_UID);
+  const gid = options.terminalGid ?? Number(process.env.VIBE_CLOUD_TERMINAL_GID);
+  if (!Number.isSafeInteger(uid) || uid <= 0 || !Number.isSafeInteger(gid) || gid <= 0) return null;
+  return { uid, gid, home: process.env.VIBE_CLOUD_TERMINAL_HOME || "/home/vibe-terminal" };
 }
 
 async function mkdirForWorkload(root: string, destination: string, workload: WorkloadIdentity | null): Promise<void> {
@@ -332,6 +391,7 @@ async function mkdirForWorkload(root: string, destination: string, workload: Wor
   for (const component of rel.split(sep)) {
     current = resolve(current, component);
     await chown(current, workload.uid, workload.gid);
+    await chmod(current, 0o2770);
   }
 }
 

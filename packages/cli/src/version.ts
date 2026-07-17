@@ -8,4 +8,4 @@
  * carries a stale hardcoded number. `update-check.ts` treats a `-dev` build as
  * never behind its own base version (see `isNewer`).
  */
-export const VERSION = "0.6.2";
+export const VERSION = "0.6.3";

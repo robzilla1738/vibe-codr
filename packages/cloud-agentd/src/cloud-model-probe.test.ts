@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createCloudRuntimeProfile, sealCloudModelAccess } from "@vibe/shared/cloud-runtime";
 
 let server: Server | undefined;
 afterEach(async () => {
@@ -75,20 +76,32 @@ async function runProbe(
 ): Promise<{ exitCode: number; stderr: Buffer }> {
   const cwd = mkdtempSync(join(tmpdir(), "vibe-cloud-model-probe-"));
   const configHome = mkdtempSync(join(tmpdir(), "vibe-cloud-model-config-"));
+  const sessionId = "ses_probe";
+  const accessToken = "probe-session-token-with-at-least-thirty-two-characters";
+  const envelopePath = join(cwd, "model-access.json");
+  writeFileSync(envelopePath, JSON.stringify(sealCloudModelAccess(
+    sessionId,
+    accessToken,
+    {
+      VIBE_PROVIDER_ACME_GATEWAY_API_KEY: "test-key",
+      VIBE_PROVIDER_ACME_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/v1`,
+    },
+    createCloudRuntimeProfile({ theme: "light", accentColor: "#ffffff", details: "normal", requiredModels: models }),
+  )));
   const child = Bun.spawn(
     [
       process.execPath,
       "run",
       join(import.meta.dirname, "..", "bin", "cloud-model-probe.ts"),
-      JSON.stringify(models),
+      envelopePath,
       cwd,
+      sessionId,
     ],
     {
       env: {
         ...process.env,
         XDG_CONFIG_HOME: configHome,
-        VIBE_PROVIDER_ACME_GATEWAY_API_KEY: "test-key",
-        VIBE_PROVIDER_ACME_GATEWAY_BASE_URL: `http://127.0.0.1:${port}/v1`,
+        VIBE_CLOUD_ACCESS_TOKEN: accessToken,
       },
       stderr: "pipe",
     },

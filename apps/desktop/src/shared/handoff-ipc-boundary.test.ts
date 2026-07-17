@@ -87,8 +87,10 @@ describe("cloud release invariants", () => {
 
   it("restarts and health-checks the daemon after a Vercel cold resume", () => {
     expect(providers).toContain("needsDaemonRestart: true");
-    expect(manager).toContain("if (sandbox.needsDaemonRestart)");
-    expect(manager).toContain('provider.start(entry.sandboxId, "sh", ["start.sh", entry.provider]');
+    expect(manager).toContain("if (needsRepair || sandbox.needsDaemonRestart)");
+    expect(manager).toContain('provider.start(entry.sandboxId, "sh", legacyRecoveryRuntime');
+    expect(manager).toContain('["start.sh", entry.provider, `');
+    expect(manager).toContain("model-access.json");
     expect(manager).toContain("expectedEnvironmentNames");
     expect(manager).toContain("await superviseCloudAgent(");
     expect(manager).toContain("getSessionEnvironment(sessionId)");
@@ -100,6 +102,29 @@ describe("cloud release invariants", () => {
     expect(manager).toContain("#reconnectTracked");
     expect(manager).toContain('current?.handoffTransition ? "handoff-interrupted" : "recoverable-error"');
     expect(manager).toContain("instead of leaving a stale \"running\" catalog row behind");
+  });
+
+  it("keeps Return Local available after an appearance sync failure", () => {
+    expect(manager).toContain("this.#appearanceMutationChain = run.catch(() => undefined)");
+    expect(manager).toContain("await this.#appearanceMutationChain;");
+    expect(manager).toContain("entry.error?.startsWith(CLOUD_APPEARANCE_SYNC_ERROR_PREFIX)");
+    expect(manager).toContain('{ status: "running", error: undefined }');
+  });
+
+  it("checks legacy repair prerequisites before suspending a sandbox", () => {
+    const credentials = manager.indexOf("const modelEnvironment = allowLegacyCredentialless");
+    const quiesce = manager.indexOf("await this.#quiesceLegacyRuntime", credentials);
+    const suspend = manager.indexOf("await provider.suspend(entry.sandboxId)", quiesce);
+    expect(credentials).toBeGreaterThan(-1);
+    expect(quiesce).toBeGreaterThan(credentials);
+    expect(suspend).toBeGreaterThan(quiesce);
+  });
+
+  it("uses the Mac appearance as migration authority for pre-profile sessions", () => {
+    expect(manager).toContain("Pre-profile (0.6.2) runtimes booted with the remote default");
+    const profile = manager.slice(manager.indexOf("async #runtimeProfileForEntry"), manager.indexOf("async #connectLegacyRuntimeForReturn"));
+    expect(profile.indexOf("if (entry.appearance)")).toBeLessThan(profile.indexOf("readConfigFile(globalConfigPath())"));
+    expect(profile).toContain('theme: globalResult?.config.theme ?? "graphite"');
   });
 
   it("serializes launch-surface project history RPCs through one controller queue", () => {
@@ -210,7 +235,7 @@ describe("cloud release invariants", () => {
 
   it("reconnects stopped remotes and buffers live events during hydration", () => {
     const sessionHook = readFileSync(join(process.cwd(), "src/renderer/hooks/useSession.ts"), "utf8");
-    expect(manager).toContain("!this.transport.isRemote || !this.transport.isReady");
+    expect(manager).toContain("shouldReconnectRemoteSession(this.transport.isRemote, this.transport.isReady, this.#remoteSessionId, sessionId)");
     const attach = sessionHook.slice(
       sessionHook.indexOf("const attachCurrent"),
       sessionHook.indexOf("useEffect(() =>", sessionHook.indexOf("const attachCurrent")),
@@ -229,7 +254,7 @@ describe("cloud release invariants", () => {
     expect(sheet).toContain("cloudSession: result.value");
     expect(completion).toContain('[cloudSession, ...current.filter((item) => item.sessionId !== cloudSession.sessionId)]');
     expect(completion.indexOf("setCloudSessions((current) => executionTarget"))
-      .toBeLessThan(completion.indexOf("await session.attachCurrent(activeCwd)"));
+      .toBeLessThan(completion.indexOf("await session.attachCurrent("));
   });
 
   it("serializes cloud settings and resolves interrupted ownership structurally", () => {
@@ -260,7 +285,7 @@ describe("cloud release invariants", () => {
     expect(providers).toContain("sudo: options?.privileged === true");
     expect(transfer).toContain("assertGitHistoryExcludes(join(cwd, submodule.path), patterns, submodule.path)");
     expect(appSource).toContain("const activeCwd = resumedCwd ?? cwd");
-    expect(appSource).toContain("await session.attachCurrent(activeCwd)");
+    expect(appSource).toContain("const attached = await session.attachCurrent(");
   });
 
   it("durably records the old Git head before updating the branch", () => {

@@ -164,6 +164,26 @@ workspace-return, and recovery contracts are release-gated, while promotion to
 stable still requires the paid E2B/Vercel and durable relay gates in
 `ACCEPTANCE.md`.
 
+For the v0.6.3 handoff boundary, focused release verification is:
+
+```bash
+bun test packages/shared/src/cloud-runtime.test.ts \
+  packages/cloud-agentd/src/cloud-model-probe.test.ts \
+  packages/cloud-agentd/src/server.test.ts \
+  packages/macos-bridge/src/protocol.test.ts
+npm --prefix apps/desktop test -- --run \
+  src/main/cloud/session-continuity.test.ts \
+  src/main/cloud/cloud-supervision.test.ts \
+  src/shared/cloud-routing.test.ts \
+  src/renderer/hooks/session-state.test.ts
+bun run build:cloud-runtime && bun run smoke:cloud-runtime
+```
+
+The smoke must report the exact resumed session and history. Authenticated
+health must report model-access version 1, `validated: true`, required model and
+credential names only. Confirm the model envelope is deleted after startup and
+that a Cloud terminal cannot read any reviewed model credential name.
+
 For interaction motion, the renderer preview must prove slash, mode/catalog,
 and activity-sidebar surfaces enter `is-closing`, remain inert during the short
 exit, and unmount afterward. Repeat with `prefers-reduced-motion: reduce` and
@@ -293,6 +313,17 @@ npm run dev
 6. Open the Local → Cloud review and confirm it names the active model, defaults
    Include model access from Settings → Cloud, and disables configured-key and
    subscription export when unchecked while preserving explicit Cloud bindings.
+   With Light selected, hand off `crof/glm-5.2`; confirm there is no dark-theme
+   flash and both the first and second Cloud turns succeed. Reconnect and return
+   must retain Light, the white accent, density, session ID, and history. Remove
+   the binding after handoff and confirm the running session still uses its
+   frozen protected snapshot. No credential value may appear in logs, catalog,
+   health, or a Cloud terminal. A 0.6.2 session must repair in place after an
+   authenticated engine-idle checkpoint and graceful engine shutdown. An active
+   terminal or forced repair failure must defer repair, preserve Cloud ownership,
+   and show Return Local without replaying the prompt. A pre-profile legacy
+   remote default must be replaced by the Mac's current application-wide
+   appearance during repair.
 7. Trigger a permission (e.g. bash) — y / a / n / ⌘P.
    Use a command/edit longer than 200 lines and confirm Expand preview shows
    bounded head and tail content with an explicit middle-omission marker.

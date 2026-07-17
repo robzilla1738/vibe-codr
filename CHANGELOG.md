@@ -4,6 +4,24 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.3 — 2026-07-16
+
+### Fixed — seamless Cloud handoff
+
+- Preserved theme, accent, and transcript density through first handoff,
+  reconnect, return, and application restart, without allowing a remote default
+  snapshot to repaint an established desktop appearance.
+- Replaced launcher-dependent provider inheritance with an authenticated,
+  session-bound model-access envelope. The resumed engine now resolves every
+  required model before health or ownership commit, while Cloud terminals never
+  inherit model credentials.
+- Added automatic in-place repair for 0.6.2 Cloud sessions using their frozen,
+  OS-protected credential snapshot. Repair first authenticates the old engine,
+  waits for engine-idle, and shuts it down gracefully; active terminals defer
+  repair. The Mac appearance replaces the untrusted legacy remote default.
+  Files, conversation, session identity, and Cloud ownership stay preserved,
+  and failures remain recoverable through Return Local without prompt replay.
+
 ## 0.6.2 — 2026-07-16
 
 ### Fixed

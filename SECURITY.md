@@ -23,6 +23,8 @@ a language model, so the interesting bugs are usually about containment:
 - Prompt-injection paths that turn fetched web content into unauthorized tool
   use
 - Secrets leaking into session files, crash logs, or the transcript
+- Cloud model credentials reaching terminal processes, health/catalog values,
+  or an engine that was not the one validated before ownership transfer
 
 ## Supported versions
 

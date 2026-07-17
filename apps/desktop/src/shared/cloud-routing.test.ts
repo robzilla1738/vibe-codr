@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { isCloudSessionMutationLocked, latestRemoteOwnedCloudSession, type CloudSessionCatalogEntry } from "./cloud";
+import { describe, expect, it, test } from "vitest";
+import { cloudSessionNeedsRuntimeRepair, isCloudSessionMutationLocked, latestRemoteOwnedCloudSession, type CloudSessionCatalogEntry } from "./cloud";
 
 function cloud(sessionId: string, updatedAt: number): CloudSessionCatalogEntry {
   return {
@@ -15,6 +15,17 @@ function cloud(sessionId: string, updatedAt: number): CloudSessionCatalogEntry {
     updatedAt,
   };
 }
+
+test("migrates legacy catalog rows through in-place runtime repair", () => {
+  const legacy = cloud("legacy", 1);
+  expect(cloudSessionNeedsRuntimeRepair(legacy, "cloud-runtime-profile-v1")).toBe(true);
+  expect(cloudSessionNeedsRuntimeRepair({
+    ...legacy,
+    runtimeRevision: "cloud-runtime-profile-v1",
+    runtimeProfileVersion: 1,
+    modelAccessVersion: 1,
+  }, "cloud-runtime-profile-v1")).toBe(false);
+});
 
 describe("latestRemoteOwnedCloudSession", () => {
   it("does not route an older cloud session when a newer local session exists", () => {

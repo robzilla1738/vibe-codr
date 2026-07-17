@@ -8,10 +8,15 @@ import {
   awaitRemoteEngineReady,
   CloudManager,
   createFreshNamedSandbox,
+  inspectLegacyCloudAgent,
   retryTransient,
   rollbackProvisionalHandoff,
   runRequired,
+  shouldReconnectRemoteSession,
   superviseCloudAgent,
+  stopExistingCloudRuntime,
+  swapStagedCloudRuntime,
+  waitForLegacyEngineStopped,
 } from "./manager";
 import { sanitizeCloudCommandOutput } from "./providers";
 
@@ -36,6 +41,60 @@ test("history mutations hold the same mutex that excludes ownership handoffs", a
 });
 
 describe("cloud command supervision", () => {
+  test("reconnects Return Local to the session selected in Settings", () => {
+    expect(shouldReconnectRemoteSession(true, true, "session-a", "session-b")).toBe(true);
+    expect(shouldReconnectRemoteSession(true, true, "session-b", "session-b")).toBe(false);
+    expect(shouldReconnectRemoteSession(false, false, null, "session-b")).toBe(true);
+  });
+
+  test("inspects an authenticated legacy runtime before repair", async () => {
+    const server = createServer((request, response) => {
+      response.statusCode = request.headers.authorization === "Bearer secret" ? 200 : 401;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ engine: true, terminals: 0 }));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Test server did not bind");
+
+    await expect(inspectLegacyCloudAgent(`http://127.0.0.1:${address.port}`, "secret"))
+      .resolves.toEqual({ engine: true, terminals: 0 });
+    await expect(inspectLegacyCloudAgent(`http://127.0.0.1:${address.port}`, "wrong"))
+      .rejects.toMatchObject({ details: { code: "legacy-session-repair-failed" } });
+  });
+
+  test("treats a cold provider gateway as no running legacy agent", async () => {
+    const server = createServer((_request, response) => {
+      response.statusCode = 502;
+      response.setHeader("content-type", "text/plain");
+      response.end("sandbox is not serving this port");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Test server did not bind");
+
+    await expect(inspectLegacyCloudAgent(`http://127.0.0.1:${address.port}`, "secret")).resolves.toBeNull();
+  });
+
+  test("waits for the legacy engine to exit gracefully", async () => {
+    let running = true;
+    const server = createServer((_request, response) => {
+      response.statusCode = 200;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ engine: running, terminals: 0 }));
+      running = false;
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Test server did not bind");
+
+    await expect(waitForLegacyEngineStopped(`http://127.0.0.1:${address.port}`, "secret", {}, 1_000))
+      .resolves.toBeUndefined();
+  });
+
   test("reports a finite setup command's nonzero exit immediately", async () => {
     const provider = providerWithRun({ exitCode: 127, stdout: "", stderr: "node: not found\n" });
 
@@ -52,6 +111,50 @@ describe("cloud command supervision", () => {
       message: "Cloud workspace restore failed: node: not found",
       details: { code: "setup-failed", stage: "restoring", retryable: true, diagnostic: "node: not found" },
     });
+  });
+
+  test("redacts sealed model credentials from probe diagnostics", async () => {
+    const secret = "crof_secret_that_must_not_escape";
+    const provider = providerWithRun({ exitCode: 1, stdout: "", stderr: `provider rejected ${secret}\n` });
+
+    const failure = await runRequired(
+      provider,
+      "sandbox",
+      "probe-models.sh",
+      ["model-access.json"],
+      { VIBE_CLOUD_ACCESS_TOKEN: "session-token" },
+      { timeoutMs: 1_000 },
+      "invalid-credential",
+      "verifying",
+      { CROF_API_KEY: secret },
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(String((failure as Error).message)).not.toContain(secret);
+    expect((failure as { details?: { diagnostic?: string } }).details?.diagnostic).not.toContain(secret);
+    expect(String((failure as Error).message)).toContain("[redacted]");
+  });
+
+  test("stops the old agent and workload processes before in-place repair", async () => {
+    const run = vi.fn(async (..._args: Parameters<SandboxProvider["run"]>) => ({ exitCode: 0, stdout: "", stderr: "" }));
+    const provider = { run } as unknown as SandboxProvider;
+    await stopExistingCloudRuntime(provider, "sandbox");
+    const args = run.mock.calls[0]![2];
+    expect(args.join(" ")).toContain("[c]loud-agentd");
+    expect(args.join(" ")).toContain("pkill -TERM -u");
+    expect(run.mock.calls[0]![4]).toMatchObject({ privileged: true });
+  });
+
+  test("atomically stages repair without deleting the previous runtime", async () => {
+    const run = vi.fn(async (..._args: Parameters<SandboxProvider["run"]>) => ({ exitCode: 0, stdout: "", stderr: "" }));
+    const provider = { run } as unknown as SandboxProvider;
+    await swapStagedCloudRuntime(provider, "sandbox", "/vibe");
+    const command = run.mock.calls[0]![2].join(" ");
+    expect(command).toContain("runtime-next");
+    expect(command).toContain("runtime-previous");
+    expect(command).toContain("if [ -d '/vibe/runtime' ]");
+    expect(command).toContain("elif [ ! -d '/vibe/runtime-previous' ]");
+    expect(command).not.toContain("rm -rf '/vibe/runtime'");
   });
 
   test("reports the actual exception instead of a Node.js stack footer", async () => {
@@ -109,7 +212,8 @@ describe("cloud command supervision", () => {
   test("accepts only an authenticated healthy agent", async () => {
     const server = createServer((request, response) => {
       response.statusCode = request.url === "/health" && request.headers.authorization === "Bearer secret" ? 200 : 401;
-      response.end();
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ ok: true, modelAccess: { version: 1, validated: true, environment: [] } }));
     });
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -126,7 +230,7 @@ describe("cloud command supervision", () => {
     const server = createServer((_request, response) => {
       response.statusCode = 200;
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ ok: true, environment: ["PATH"] }));
+      response.end(JSON.stringify({ ok: true, modelAccess: { version: 1, validated: true, environment: ["PATH"] } }));
     });
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -144,7 +248,7 @@ describe("cloud command supervision", () => {
       ["CROF_API_KEY"],
     )).rejects.toMatchObject({
       message: "Cloud agent started without required model access: CROF_API_KEY",
-      details: { code: "setup-failed", stage: "checking-health", retryable: false },
+      details: { code: "missing-credential", stage: "checking-health", retryable: false },
     });
     expect(kill).toHaveBeenCalledOnce();
   });

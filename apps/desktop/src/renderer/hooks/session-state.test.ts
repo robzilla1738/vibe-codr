@@ -6,7 +6,7 @@ import {
 } from "../../shared/chrome-state-bounds";
 import type { UIEvent } from "../../shared/events";
 import type { EngineSnapshot } from "../../shared/types";
-import { initialChrome, reduceChrome } from "./session-state";
+import { initialChrome, reduceChrome, snapshotWithAttachedAppearance } from "./session-state";
 
 function event(state: ReturnType<typeof initialChrome>, value: UIEvent) {
   return reduceChrome(state, { type: "event", event: value });
@@ -366,6 +366,30 @@ describe("large agent payload retention", () => {
 });
 
 describe("durable orchestration state", () => {
+  it("does not replace an established Cloud appearance with a remote default during attach", () => {
+    const remote = {
+      sessionId: "s",
+      model: "crof/glm-5.2",
+      mode: "execute",
+      goal: null,
+      history: [],
+      tasks: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+      busy: false,
+      theme: "graphite",
+      accentColor: "#aabbcc",
+      details: "verbose",
+      mouse: true,
+      approvalMode: "ask",
+      commandNames: [],
+    } satisfies EngineSnapshot;
+    expect(snapshotWithAttachedAppearance(remote, {
+      theme: "light",
+      accentColor: "#e6e6e6",
+      details: "normal",
+    })).toMatchObject({ theme: "light", accentColor: "#e6e6e6", details: "normal" });
+  });
+
   it("rehydrates a pending plan and structured question from the snapshot", () => {
     const snap: EngineSnapshot = {
       sessionId: "s",

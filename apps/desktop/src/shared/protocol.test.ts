@@ -11,6 +11,9 @@ import {
 describe("NDJSON protocol runtime validation", () => {
   it("rejects malformed inbound messages", () => {
     expect(decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "/repo" }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "/repo", requiredModels: ["crof/glm-5.2"] }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "/repo", requiredModels: ["glm-5.2"] }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "/repo", runtimeProfile: { schemaVersion: 1, theme: "light", details: "normal" } }))).not.toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "" }))).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: 0, method: "snapshot" }))).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "send", command: { type: "bogus" } }))).toBeNull();

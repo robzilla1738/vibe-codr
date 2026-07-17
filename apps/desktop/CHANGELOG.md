@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.6.7 — 2026-07-17
+
+### Fixed
+
+- Cloud handoff is resilient to a required-models cloud-flag mismatch:
+  the resumed engine validates the required models instead of failing with
+  `runtime-profile-mismatch: requiredModels is only accepted by the Cloud
+  runtime`. Together with the 0.6.6 appearance-profile fix, neither
+  handoff profile field can abort a cloud handoff.
+
 ## 0.6.6 — 2026-07-17
 
 ### Fixed

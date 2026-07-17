@@ -4,6 +4,17 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.7 — 2026-07-17
+
+### Fixed
+
+- Cloud handoff no longer aborts when the resumed engine receives a
+  required-model list without the Cloud runtime flag. The list is now
+  validated regardless of `VIBE_CLOUD_RUNTIME`, so a deployment skew that
+  drops the flag can no longer fail the handoff with
+  `runtime-profile-mismatch`; a genuinely unresolvable model still fails
+  fast with `missing-credential`.
+
 ## 0.6.6 — 2026-07-17
 
 ### Fixed

@@ -99,7 +99,7 @@ test("ensureShebang only prepends when missing", () => {
 test("missingInlinedSymbols catches an externalized SDK the module-id grep can't", () => {
   // An INLINED bundle carries the SDKs' internal class exports.
   const inlined = [
-    "class AnthropicMessagesLanguageModel {}",
+    "class AnthropicLanguageModel {}",
     "class OpenAICompatibleChatLanguageModel {}",
   ].join("\n");
   expect(missingInlinedSymbols(inlined)).toEqual([]);

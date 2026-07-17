@@ -4,6 +4,13 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.2 — 2026-07-16
+
+### Fixed
+
+- Updated npm bundle self-containment verification for AI SDK 7 provider
+  internals so the unified package can be built and published.
+
 ## 0.6.1 — 2026-07-16
 
 ### AI SDK 7 streaming

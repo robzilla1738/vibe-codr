@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.6.2 — 2026-07-16
+
+### Fixed
+
+- Updated unified release packaging to validate the current AI SDK 7 provider
+  bundle before publishing desktop and CLI artifacts together.
+
 ## 0.6.1 — 2026-07-16
 
 - Changed the default Vibe Dark chrome accent from peach to neutral white; orange and purple remain opt-in accent presets or semantic colors.

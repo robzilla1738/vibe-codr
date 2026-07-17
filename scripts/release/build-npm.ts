@@ -170,7 +170,7 @@ export function ensureShebang(bundle: string): string {
  * bundle when the SDK source is inlined; externalizing the SDK drops them.
  */
 export const REQUIRED_INLINED_SYMBOLS = [
-  "AnthropicMessagesLanguageModel",
+  "AnthropicLanguageModel",
   "OpenAICompatibleChatLanguageModel",
 ] as const;
 

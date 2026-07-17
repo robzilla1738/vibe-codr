@@ -4,6 +4,16 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.6 — 2026-07-17
+
+### Fixed
+
+- Cloud handoff no longer aborts when the resumed engine receives an
+  appearance runtime profile without the Cloud runtime flag. The profile
+  (theme, accent, transcript density) is cosmetic, so a non-cloud runtime
+  now ignores it and completes the handoff instead of failing with
+  `runtime-profile-mismatch`.
+
 ## 0.6.5 — 2026-07-16
 
 ### Fixed

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.6.6 — 2026-07-17
+
+### Fixed
+
+- Cloud handoff is resilient to an appearance runtime-profile mismatch:
+  the resumed engine ignores the profile and completes the handoff instead
+  of failing with `runtime-profile-mismatch: runtimeProfile is only
+  accepted by the Cloud runtime`. Theme, accent, and density still
+  synchronize on a correctly flagged Cloud runtime.
+
 ## 0.6.5 — 2026-07-16
 
 ### Fixed

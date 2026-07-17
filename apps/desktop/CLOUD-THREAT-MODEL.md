@@ -80,7 +80,10 @@ SDK. There is no Vibe service in the data path.
   exits through protocol shutdown. Their remote appearance has no intent
   provenance and may be the known accidental dark default, so the Mac's global
   preference is the one-time migration authority. Repair failure cannot transfer
-  ownership or automatically replay user input.
+  ownership or automatically replay user input. The appearance profile is
+  cosmetic, so a non-cloud runtime that receives it ignores the profile and
+  continues rather than failing the handoff; an appearance-profile mismatch
+  can never block session transfer.
 - A missing provider sandbox is not silently forgotten. Recovery requires the
   provider-confirmed missing state, an explicit destructive confirmation, the
   matching provider, and the exact ownership generation before core returns the

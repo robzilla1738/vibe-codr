@@ -164,7 +164,7 @@ workspace-return, and recovery contracts are release-gated, while promotion to
 stable still requires the paid E2B/Vercel and durable relay gates in
 `ACCEPTANCE.md`.
 
-For the v0.6.3 handoff boundary, focused release verification is:
+For the v0.6.4 handoff boundary, focused release verification is:
 
 ```bash
 bun test packages/shared/src/cloud-runtime.test.ts \

@@ -4,7 +4,7 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
-## 0.6.3 — 2026-07-16
+## 0.6.4 — 2026-07-16
 
 ### Fixed — seamless Cloud handoff
 
@@ -21,6 +21,13 @@ All notable changes to vibe-codr are documented here.
   repair. The Mac appearance replaces the untrusted legacy remote default.
   Files, conversation, session identity, and Cloud ownership stay preserved,
   and failures remain recoverable through Return Local without prompt replay.
+- Raised the aggregate renderer bundle allowance by 1 KB for the measured
+  31-byte appearance-profile addition; the startup chunk ceiling is unchanged.
+
+## 0.6.3 — 2026-07-16
+
+- Superseded before publication by 0.6.4 after the release bundle gate exceeded
+  its aggregate allowance by 31 bytes.
 
 ## 0.6.2 — 2026-07-16
 

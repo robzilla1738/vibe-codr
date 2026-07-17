@@ -71,7 +71,7 @@ Installed macOS and Windows builds check GitHub Releases after launch. Updates
 are never installed silently: Vibe Codr asks before downloading and again
 before restarting, and safely stops the engine and terminal processes first.
 
-### What’s new in 0.6.3
+### What’s new in 0.6.4
 
 - Cloud handoff keeps the same theme, accent, transcript density, session,
   history, model, and ownership across handoff, reconnect, return, and restart.

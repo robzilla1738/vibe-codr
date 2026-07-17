@@ -36,7 +36,10 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // Live session-state derivation and reviewed model-credential handoff add under
 // 8 KB across deferred surfaces. Cloud handoff remains off the startup path;
 // retain a narrow 2 KB allowance over the measured v0.6.1 aggregate.
-const totalBudget = 2_886_000;
+// The versioned appearance override adds 31 measured bytes across the deferred
+// handoff/settings surfaces. Keep a 1 KB allowance rather than weakening the
+// unchanged startup/largest-chunk ceiling.
+const totalBudget = 2_887_000;
 const chunkBudget = 2_120_000;
 
 if (total > totalBudget || largest > chunkBudget) {

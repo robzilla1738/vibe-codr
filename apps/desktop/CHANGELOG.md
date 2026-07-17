@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.6.3 — 2026-07-16
+## 0.6.4 — 2026-07-16
 
 ### Fixed
 
@@ -21,6 +21,13 @@
   graceful shutdown. The Mac appearance replaces the untrusted legacy remote
   default; active terminals defer repair. Failures preserve Cloud ownership and
   expose Return Local without replaying the failed message.
+- Raised the aggregate renderer bundle allowance by 1 KB for the measured
+  31-byte appearance-profile addition; the startup chunk ceiling is unchanged.
+
+## 0.6.3 — 2026-07-16
+
+- Superseded before publication by 0.6.4 after the release bundle gate exceeded
+  its aggregate allowance by 31 bytes.
 
 ## 0.6.2 — 2026-07-16
 

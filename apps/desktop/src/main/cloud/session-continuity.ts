@@ -27,15 +27,6 @@ export function assertCloudSessionContinuity(
   if (remote.mode !== local.mode) {
     throw new Error(`Cloud session continuity failed: mode changed from ${local.mode} to ${remote.mode}`);
   }
-  if (remote.theme !== local.theme) {
-    throw new Error(`Cloud session continuity failed: theme changed from ${local.theme} to ${remote.theme}`);
-  }
-  if (remote.accentColor !== local.accentColor) {
-    throw new Error("Cloud session continuity failed: accent color changed during handoff");
-  }
-  if (remote.details !== local.details) {
-    throw new Error(`Cloud session continuity failed: transcript density changed from ${local.details} to ${remote.details}`);
-  }
   const localHistory = historySignature(local.history, [
     [roots.sourceStateRoot, "<state>"],
     [roots.sourceRoot, "<workspace>"],

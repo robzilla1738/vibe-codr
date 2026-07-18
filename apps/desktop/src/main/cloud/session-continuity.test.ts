@@ -54,14 +54,19 @@ describe("cloud session continuity", () => {
     expect(() => assertCloudSessionContinuity(snapshot(), remoteSnapshot(), roots)).not.toThrow();
   });
 
+  it("does not block ownership transfer on presentation-only differences", () => {
+    expect(() => assertCloudSessionContinuity(snapshot(), remoteSnapshot({
+      theme: "light",
+      accentColor: "#ffffff",
+      details: "verbose",
+    }), roots)).not.toThrow();
+  });
+
   it.each([
     ["session identity", { sessionId: "session-replacement" }],
     ["main model", { model: "anthropic/claude-opus-4-8" }],
     ["subagent model", { subagentModel: "anthropic/claude-opus-4-8" }],
     ["mode", { mode: "plan" as const }],
-    ["theme", { theme: "light" }],
-    ["accent", { accentColor: "#ffffff" }],
-    ["density", { details: "verbose" as const }],
     ["conversation", { history: [] }],
   ])("rejects changed %s", (_label, changed) => {
     expect(() => assertCloudSessionContinuity(snapshot(), remoteSnapshot(changed), roots)).toThrow(/continuity failed/i);

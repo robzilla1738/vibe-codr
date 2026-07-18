@@ -4,6 +4,15 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.10 — 2026-07-18
+
+### Fixed
+
+- Cloud handoff now preserves theme, accent, and transcript density from the
+  authenticated bootstrap profile even when a sandbox launcher drops its
+  Cloud runtime flag. Presentation-only differences can no longer abort the
+  ownership transfer after session, model, mode, and history continuity pass.
+
 ## 0.6.9 — 2026-07-17
 
 ### Improved

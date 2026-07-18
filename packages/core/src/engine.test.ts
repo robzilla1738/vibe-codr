@@ -6,6 +6,7 @@ import type { UIEvent } from "@vibe/shared";
 import { defaultConfig, type Config } from "@vibe/config";
 import { CommandRegistry } from "@vibe/plugins";
 import { Engine, sandboxStateDirs } from "./engine.ts";
+import { globalStateDir } from "./state-dir.ts";
 
 // Each Engine gets an isolated temp cwd so `/recall`, `/memory`, checkpoints and
 // session persistence never read or write the developer's real `.vibe/` — that
@@ -104,6 +105,115 @@ test("snapshot restores the durable local-capability resolution surface", () => 
   };
   engine.requestExternalCapability(request);
   expect(engine.snapshot().pendingCapabilities).toEqual([request]);
+});
+
+test("external capability results return to the originating caller exactly once", async () => {
+  const engine = makeEngine();
+  const request = {
+    id: "cap_result_1",
+    integration: "macos",
+    toolName: "open-app",
+    arguments: { application: "Finder" },
+    approvalScope: "once" as const,
+    originatingTurn: "turn_result_1",
+    status: "pending" as const,
+    createdAt: Date.now(),
+  };
+  const resolution = engine.requestExternalCapability(request);
+  engine.send({
+    type: "resolve-external-capability",
+    id: request.id,
+    decision: "approve",
+    result: { opened: true },
+  });
+  await expect(resolution).resolves.toEqual({
+    id: request.id,
+    status: "resolved",
+    result: { opened: true },
+  });
+  expect(engine.snapshot().pendingCapabilities).toEqual([]);
+});
+
+test("external capability denials return their error to the originating caller", async () => {
+  const engine = makeEngine();
+  const request = {
+    id: "cap_denied_1",
+    integration: "macos",
+    toolName: "open-app",
+    arguments: { application: "Finder" },
+    approvalScope: "once" as const,
+    originatingTurn: "turn_denied_1",
+    status: "pending" as const,
+    createdAt: Date.now(),
+  };
+  const resolution = engine.requestExternalCapability(request);
+  engine.send({
+    type: "resolve-external-capability",
+    id: request.id,
+    decision: "deny",
+    error: "Not on this Mac",
+  });
+  await expect(resolution).resolves.toEqual({
+    id: request.id,
+    status: "denied",
+    error: "Not on this Mac",
+  });
+});
+
+test("a capability resolved after handoff is retained for the returning caller exactly once", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-capability-handoff-"));
+  const now = Date.now();
+  const sessionId = "s-capability-handoff";
+  const request = {
+    id: "cap_handoff_1",
+    integration: "macos",
+    toolName: "open-app",
+    arguments: { application: "Finder" },
+    approvalScope: "once" as const,
+    originatingTurn: "turn_handoff_1",
+    status: "pending" as const,
+    createdAt: now,
+  };
+  const sessionDir = join(globalStateDir(cwd), "sessions", sessionId);
+  mkdirSync(sessionDir, { recursive: true });
+  writeFileSync(
+    join(sessionDir, "engine.json"),
+    JSON.stringify({ pendingCapabilityRequests: [request] }),
+  );
+  const engine = new Engine({
+    config: defaultConfig(),
+    cwd,
+    resume: {
+      meta: {
+        id: sessionId,
+        model: defaultConfig().model,
+        mode: "execute",
+        goal: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      modelMessages: [],
+      history: [],
+    },
+  });
+  await engine.bootstrap();
+
+  expect(engine.pendingCapabilities()).toEqual([request]);
+  engine.send({
+    type: "resolve-external-capability",
+    id: request.id,
+    decision: "approve",
+    result: { opened: true },
+  });
+  expect(engine.pendingCapabilities()).toEqual([]);
+  await expect(engine.requestExternalCapability(request)).resolves.toEqual({
+    id: request.id,
+    status: "resolved",
+    result: { opened: true },
+  });
+
+  void engine.requestExternalCapability(request);
+  expect(engine.pendingCapabilities()).toEqual([request]);
 });
 
 test("/accent sets the accent color and emits accent-changed", async () => {

@@ -38,6 +38,7 @@ import {
   type ExecutionTarget,
   type HandoffPreparation,
   type PendingCapabilityRequest,
+  type ExternalCapabilityResolution,
   type PortableSessionArchiveV1,
 } from "@vibe/shared";
 import type { Config, PermissionRule } from "@vibe/config";
@@ -351,6 +352,13 @@ export class Engine implements EngineClient {
   >();
   #questionState: StructuredQuestion | undefined;
   #pendingCapabilityRequests = new Map<string, PendingCapabilityRequest>();
+  #pendingCapabilityWaiters = new Map<
+    string,
+    {
+      promise: Promise<ExternalCapabilityResolution>;
+      resolve: (resolution: ExternalCapabilityResolution) => void;
+    }
+  >();
   #store: SessionStore;
   #checkpoints: CheckpointManager;
   #mcp: McpHub;
@@ -748,7 +756,7 @@ export class Engine implements EngineClient {
         this.#goalCleanPasses = state.goalCleanPasses ?? 0;
       }
       for (const request of state.pendingCapabilityRequests ?? []) {
-        if (request.status === "pending" || request.status === "approved") {
+        if (["pending", "approved", "denied", "resolved"].includes(request.status)) {
           this.#pendingCapabilityRequests.set(request.id, request);
         }
       }
@@ -1382,17 +1390,42 @@ export class Engine implements EngineClient {
   }
 
   pendingCapabilities(): PendingCapabilityRequest[] {
-    return [...this.#pendingCapabilityRequests.values()].map((request) => ({ ...request }));
+    return [...this.#pendingCapabilityRequests.values()]
+      .filter((request) => request.status === "pending" || request.status === "approved")
+      .map((request) => ({ ...request }));
   }
 
-  requestExternalCapability(request: PendingCapabilityRequest): void {
-    this.#pendingCapabilityRequests.set(request.id, request);
-    void this.#persistEngineState();
-    this.#bus.emit({
-      type: "external-capability-pending",
-      sessionId: this.#session.id,
-      request,
+  requestExternalCapability(
+    request: PendingCapabilityRequest,
+  ): Promise<ExternalCapabilityResolution> {
+    const existing = this.#pendingCapabilityRequests.get(request.id);
+    if (existing?.status === "resolved" || existing?.status === "denied") {
+      this.#pendingCapabilityRequests.delete(request.id);
+      void this.#persistEngineState();
+      return Promise.resolve({
+        id: existing.id,
+        status: existing.status,
+        ...(existing.result !== undefined ? { result: existing.result } : {}),
+        ...(existing.error ? { error: existing.error } : {}),
+      });
+    }
+    const waiting = this.#pendingCapabilityWaiters.get(request.id);
+    if (waiting) return waiting.promise;
+    if (!existing) {
+      this.#pendingCapabilityRequests.set(request.id, { ...request, status: "pending" });
+      void this.#persistEngineState();
+      this.#bus.emit({
+        type: "external-capability-pending",
+        sessionId: this.#session.id,
+        request: { ...request, status: "pending" },
+      });
+    }
+    let resolve!: (resolution: ExternalCapabilityResolution) => void;
+    const promise = new Promise<ExternalCapabilityResolution>((done) => {
+      resolve = done;
     });
+    this.#pendingCapabilityWaiters.set(request.id, { promise, resolve });
+    return promise;
   }
 
   /** Emit the initial session-start event (call once after subscribing). */
@@ -1680,13 +1713,26 @@ export class Engine implements EngineClient {
       case "resolve-external-capability": {
         const request = this.#pendingCapabilityRequests.get(command.id);
         if (!request) break;
-        this.#pendingCapabilityRequests.delete(command.id);
+        const resolution: ExternalCapabilityResolution = {
+          id: command.id,
+          status: command.decision === "deny" ? "denied" : "resolved",
+          ...(command.result !== undefined ? { result: command.result } : {}),
+          ...(command.error ? { error: command.error } : {}),
+        };
+        const waiter = this.#pendingCapabilityWaiters.get(command.id);
+        if (waiter) {
+          this.#pendingCapabilityWaiters.delete(command.id);
+          this.#pendingCapabilityRequests.delete(command.id);
+          waiter.resolve(resolution);
+        } else {
+          this.#pendingCapabilityRequests.set(command.id, { ...request, ...resolution });
+        }
         void this.#persistEngineState();
         this.#bus.emit({
           type: "external-capability-resolved",
           sessionId: this.#session.id,
           id: command.id,
-          status: command.decision === "deny" ? "denied" : "resolved",
+          status: resolution.status,
         });
         break;
       }

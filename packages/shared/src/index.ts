@@ -32,6 +32,7 @@ export type {
   ExecutionTarget,
   CloudSessionStatus,
   PendingCapabilityRequest,
+  ExternalCapabilityResolution,
   PortableSessionFileV1,
   PortableSessionArchiveV1,
   HandoffPreparation,

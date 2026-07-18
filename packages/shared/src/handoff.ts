@@ -26,6 +26,13 @@ export interface PendingCapabilityRequest {
   error?: string;
 }
 
+export interface ExternalCapabilityResolution {
+  id: string;
+  status: "denied" | "resolved";
+  result?: unknown;
+  error?: string;
+}
+
 export interface PortableSessionFileV1 {
   path: string;
   bytes: number;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reduceScreen, initialScreen } from "./useTerminalScreen";
+import { reduceScreen, initialScreen, terminalLineText } from "./useTerminalScreen";
 
 function text(screen: ReturnType<typeof initialScreen>): string {
   return screen.lines.map((line) => line.map((c) => c.ch).join("")).join("\n");
@@ -40,5 +40,10 @@ describe("terminal screen model", () => {
     let s = initialScreen();
     for (let i = 0; i < 3000; i++) s = reduceScreen(s, `line ${i}\n`);
     expect(s.lines.length).toBeLessThanOrEqual(2000);
+  });
+  it("exposes each rendered row as one accessibility utterance", () => {
+    const s = reduceScreen(initialScreen(), "prompt$ pwd");
+    expect(terminalLineText(s.lines[0]!)).toBe("prompt$ pwd");
+    expect(terminalLineText([])).toBe(" ");
   });
 });

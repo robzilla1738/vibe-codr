@@ -3,12 +3,62 @@
 // formatGoalLine). Token-first, matching the desktop .meta-block/.meta-row/
 // .sidebar-section h4/.task-row/.StatusDot. Used by both the activity drawer and
 // the inspector so the two surfaces stay in lockstep.
-import { StyleSheet, Text, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { useTheme } from "../theme/ThemeProvider";
 import { staticTokens as T } from "../theme/tokens";
 import { Txt } from "./primitives";
 import { Icon } from "./icons";
 import type { SessionChrome } from "@hooks/session-state";
+import type { EngineCommand } from "@shared/commands";
+
+type PermissionDecision = Extract<EngineCommand, { type: "resolve-permission" }>["decision"];
+type PlanDecision = Extract<EngineCommand, { type: "resolve-plan" }>["decision"];
+
+/** Keep every live-panel action on the shared EngineCommand contract. */
+export function permissionResolutionCommand(
+  id: string,
+  decision: PermissionDecision,
+  feedback?: string,
+): EngineCommand {
+  const trimmedFeedback = feedback?.trim();
+  return {
+    type: "resolve-permission",
+    id,
+    decision,
+    ...(decision === "deny" && trimmedFeedback ? { feedback: trimmedFeedback } : {}),
+  };
+}
+
+export function planResolutionCommand(
+  decision: PlanDecision,
+  options: { edit?: string; autoApprove?: boolean } = {},
+): EngineCommand {
+  const edit = options.edit?.trim();
+  return {
+    type: "resolve-plan",
+    decision,
+    ...(decision === "edit" && edit ? { edit } : {}),
+    ...(decision === "accept" && options.autoApprove ? { approvals: "auto" as const } : {}),
+  };
+}
+
+export function questionResolutionCommand(
+  id: string,
+  answers: string[],
+  freeform?: string,
+): EngineCommand {
+  const trimmedFreeform = freeform?.trim();
+  return {
+    type: "resolve-question",
+    id,
+    answers,
+    ...(trimmedFreeform ? { freeform: trimmedFreeform } : {}),
+  };
+}
+
+export function queueActionCommand(action: "steer" | "dequeue", id: string): EngineCommand {
+  return { type: action, id };
+}
 
 export function formatGitLine(git: SessionChrome["git"]): string | null {
   if (!git) return null;

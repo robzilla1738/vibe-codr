@@ -29,8 +29,10 @@
     "../src/shared/runtime-guards.ts",
     "../src/shared/stdin-write-queue.ts",
     "protocol.ts",
+    "mobile-upload.ts",
     "../src/main/terminal-manager.ts",
     "../src/shared/terminal.ts",
-    "../src/shared/cwd-allowlist.ts"
+    "../src/shared/cwd-allowlist.ts",
+    "../src/shared/path-safe.ts"
   ]
 }

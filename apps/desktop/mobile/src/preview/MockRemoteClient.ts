@@ -5,7 +5,7 @@
 import type { EngineCommand } from "@shared/commands";
 import type { HostRpcParams, RpcMethod } from "@shared/protocol";
 import type { EngineSnapshot } from "@shared/types";
-import type { RelayOutbound } from "@relay/protocol";
+import type { MobileUploadResult, RelayOutbound } from "@relay/protocol";
 import type { CloudRelayRequest, CloudRelayResult, GitRelayRequest, GitRelayResult } from "@relay/protocol";
 import type { CloudSettingsPublic } from "@shared/cloud";
 import type { GitFullStatus } from "@shared/git-types";
@@ -65,7 +65,7 @@ export class MockRemoteClient {
 
   termOpen(_cwd: string, _cols: number, _rows: number): void {
     setTimeout(() => {
-      for (const sink of this.#relaySinks) sink({ relay: "term-opened", result: { ok: true, id: "mock-term", cwd: _cwd, shell: "fish", reused: false, replay: "$ echo hello\r\nhello\r\n$ ", sequence: 2 } } as RelayOutbound);
+      for (const sink of this.#relaySinks) sink({ relay: "term-opened", requestId: "preview-term", result: { ok: true, id: "mock-term", cwd: _cwd, shell: "fish", reused: false, replay: "$ echo hello\r\nhello\r\n$ ", sequence: 2 } } as RelayOutbound);
     }, 100);
   }
   termInput(_id: string, data: string): void {
@@ -77,8 +77,12 @@ export class MockRemoteClient {
   termClose(): void {}
   listFiles(_cwd: string, _query: string, _limit = 40): void {
     setTimeout(() => {
-      for (const sink of this.#relaySinks) sink({ relay: "files", paths: ["package.json", "src/App.tsx", "README.md"] } as RelayOutbound);
+      for (const sink of this.#relaySinks) sink({ relay: "files", requestId: "preview-files", paths: ["package.json", "src/App.tsx", "README.md"] } as RelayOutbound);
     }, 80);
+  }
+
+  async uploadFile(input: { cwd: string; name: string; mimeType?: string; dataBase64: string }): Promise<MobileUploadResult> {
+    return { ok: true, path: `.vibe/mobile-attachments/preview-${input.name}`, name: input.name, size: Math.floor(input.dataBase64.length * 0.75), ...(input.mimeType ? { mimeType: input.mimeType } : {}) };
   }
 
   async configRead(scope: string) { return { ok: true, config: { model: "openai-codex/gpt-5.3-codex", mode: "execute", approvalMode: "ask", theme: "default", details: "normal", maxSteps: 75, subagent: { maxDepth: 3, maxParallel: 8 }, compaction: { threshold: 0.75 }, budget: { limitUSD: 5, onExceed: "warn" } }, path: `/preview/${scope}/config.json`, raw: "" }; }

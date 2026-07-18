@@ -14,6 +14,13 @@ import type {
 import type { CloudFailureDetails, CloudProviderId, CloudSessionCatalogEntry, CloudSettingsPublic, CloudStatusEvent, ProviderCredentials } from "../src/shared/cloud.js";
 import { parseCloudSettingsPatch, type CloudSettingsPatch } from "../src/shared/cloud-settings.js";
 
+export const MOBILE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+export const MOBILE_UPLOAD_MAX_BASE64_CHARS = Math.ceil(MOBILE_UPLOAD_MAX_BYTES / 3) * 4;
+
+export type MobileUploadResult =
+  | { ok: true; path: string; name: string; size: number; mimeType?: string }
+  | { ok: false; error: string };
+
 export type GitRelayRequest =
   | { action: "status"; cwd: string }
   | { action: "createBranch"; request: GitCreateBranchRequest }
@@ -58,29 +65,31 @@ export type CloudRelayResult =
   | { ok: false; error: string; details?: CloudFailureDetails };
 
 export type RelayInbound =
-  | { relay: "term-open"; cwd: string; cols: number; rows: number }
-  | { relay: "term-input"; id: string; data: string }
-  | { relay: "term-resize"; id: string; cols: number; rows: number }
-  | { relay: "term-close"; id: string }
-  | { relay: "list-files"; cwd: string; query: string; limit: number }
-  | { relay: "config-read"; scope: ConfigScope; cwd?: string }
-  | { relay: "config-write"; request: ConfigWriteRequest }
-  | { relay: "memory-read"; scope: ConfigScope; cwd?: string }
-  | { relay: "memory-write"; request: MemoryWriteRequest }
-  | { relay: "git"; request: GitRelayRequest }
+  | { relay: "term-open"; requestId: string; cwd: string; cols: number; rows: number }
+  | { relay: "term-input"; requestId: string; id: string; data: string }
+  | { relay: "term-resize"; requestId: string; id: string; cols: number; rows: number }
+  | { relay: "term-close"; requestId: string; id: string }
+  | { relay: "list-files"; requestId: string; cwd: string; query: string; limit: number }
+  | { relay: "upload-file"; requestId: string; cwd: string; name: string; mimeType?: string; dataBase64: string }
+  | { relay: "config-read"; requestId: string; scope: ConfigScope; cwd?: string }
+  | { relay: "config-write"; requestId: string; request: ConfigWriteRequest }
+  | { relay: "memory-read"; requestId: string; scope: ConfigScope; cwd?: string }
+  | { relay: "memory-write"; requestId: string; request: MemoryWriteRequest }
+  | { relay: "git"; requestId: string; request: GitRelayRequest }
   | { relay: "cloud"; requestId: string; request: CloudRelayRequest };
 
 export type RelayOutbound =
-  | { relay: "term-opened"; result: TerminalOpenResult }
+  | { relay: "term-opened"; requestId: string; result: TerminalOpenResult }
   | { relay: "term-event"; event: TerminalEvent }
-  | { relay: "term-command"; result: TerminalCommandResult }
-  | { relay: "term-closed"; id: string }
-  | { relay: "files"; paths: string[] }
-  | { relay: "config-read-result"; result: ConfigReadResult | { ok: false; error: string } }
-  | { relay: "config-write-result"; result: { ok: true; config: Record<string, unknown> } | { ok: false; error: string } }
-  | { relay: "memory-read-result"; result: MemoryFileResult | { ok: false; error: string } }
-  | { relay: "memory-write-result"; result: { ok: true } | { ok: false; error: string } }
-  | { relay: "git-result"; result: GitRelayResult }
+  | { relay: "term-command"; requestId: string; result: TerminalCommandResult }
+  | { relay: "term-closed"; requestId: string; id: string }
+  | { relay: "files"; requestId: string; paths: string[] }
+  | { relay: "upload-result"; requestId: string; result: MobileUploadResult }
+  | { relay: "config-read-result"; requestId: string; result: ConfigReadResult | { ok: false; error: string } }
+  | { relay: "config-write-result"; requestId: string; result: { ok: true; config: Record<string, unknown> } | { ok: false; error: string } }
+  | { relay: "memory-read-result"; requestId: string; result: MemoryFileResult | { ok: false; error: string } }
+  | { relay: "memory-write-result"; requestId: string; result: { ok: true } | { ok: false; error: string } }
+  | { relay: "git-result"; requestId: string; result: GitRelayResult }
   | { relay: "cloud-result"; requestId: string; result: CloudRelayResult }
   | { relay: "cloud-status"; event: CloudStatusEvent };
 
@@ -88,14 +97,19 @@ export function isRelayInbound(value: unknown): value is RelayInbound {
   const v = relayRecord(value);
   if (!v) return false;
   if (typeof v.relay !== "string") return false;
+  if (!relayRequestId(v.requestId)) return false;
   if (v.relay === "git") return isGitRelayRequest(v.request);
-  if (v.relay === "cloud") return typeof v.requestId === "string" && v.requestId.length > 0 && isCloudRelayRequest(v.request);
+  if (v.relay === "cloud") return isCloudRelayRequest(v.request);
   if (v.relay === "term-open") return relayString(v.cwd, 32_768) && relayDimension(v.cols) && relayDimension(v.rows);
   if (v.relay === "term-input") return relayString(v.id, 1_024) && typeof v.data === "string" && v.data.length <= 256 * 1_024;
   if (v.relay === "term-resize") return relayString(v.id, 1_024) && relayDimension(v.cols) && relayDimension(v.rows);
   if (v.relay === "term-close") return relayString(v.id, 1_024);
   if (v.relay === "list-files") return relayString(v.cwd, 32_768) && typeof v.query === "string" && v.query.length <= 4_096
     && Number.isSafeInteger(v.limit) && (v.limit as number) >= 1 && (v.limit as number) <= 200;
+  if (v.relay === "upload-file") return relayString(v.cwd, 32_768)
+    && relayString(v.name, 255)
+    && (v.mimeType === undefined || relayString(v.mimeType, 255))
+    && isBoundedCanonicalBase64(v.dataBase64);
   if (v.relay === "config-read" || v.relay === "memory-read") return relayScope(v.scope) && relayOptionalCwd(v.cwd);
   if (v.relay === "config-write") {
     const request = relayRecord(v.request);
@@ -161,6 +175,26 @@ function relayString(value: unknown, maxChars: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxChars && !value.includes("\0");
 }
 
+export function isBoundedCanonicalBase64(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > MOBILE_UPLOAD_MAX_BASE64_CHARS || value.length % 4 !== 0) return false;
+  let dataEnd = value.length;
+  if (value.endsWith("==")) dataEnd -= 2;
+  else if (value.endsWith("=")) dataEnd -= 1;
+  for (let index = 0; index < dataEnd; index++) {
+    const code = value.charCodeAt(index);
+    const valid = code >= 65 && code <= 90
+      || code >= 97 && code <= 122
+      || code >= 48 && code <= 57
+      || code === 43
+      || code === 47;
+    if (!valid) return false;
+  }
+  for (let index = dataEnd; index < value.length; index++) if (value[index] !== "=") return false;
+  return true;
+}
+
+function relayRequestId(value: unknown): value is string { return relayString(value, 1_024); }
+
 function relayDimension(value: unknown): boolean {
   return Number.isFinite(value) && (value as number) >= 1 && (value as number) <= 1_000;
 }
@@ -183,5 +217,6 @@ export function isRelayOutbound(value: unknown): value is RelayOutbound {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   if (typeof v.relay !== "string") return false;
-  return v.relay === "term-opened" || v.relay === "term-event" || v.relay === "term-command" || v.relay === "term-closed" || v.relay === "files" || v.relay === "config-read-result" || v.relay === "config-write-result" || v.relay === "memory-read-result" || v.relay === "memory-write-result" || v.relay === "git-result" || v.relay === "cloud-result" || v.relay === "cloud-status";
+  if (v.relay === "term-event" || v.relay === "cloud-status") return true;
+  return relayRequestId(v.requestId) && (v.relay === "term-opened" || v.relay === "term-command" || v.relay === "term-closed" || v.relay === "files" || v.relay === "upload-result" || v.relay === "config-read-result" || v.relay === "config-write-result" || v.relay === "memory-read-result" || v.relay === "memory-write-result" || v.relay === "git-result" || v.relay === "cloud-result");
 }

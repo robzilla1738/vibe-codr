@@ -38,6 +38,15 @@ const config: ExpoConfig = {
     "expo-secure-store",
     "expo-status-bar",
     "expo-system-ui",
+    "expo-document-picker",
+    [
+      "expo-image-picker",
+      {
+        photosPermission: "Vibe Codr accesses selected photos so you can attach them to your desktop session.",
+        cameraPermission: false,
+        microphonePermission: false,
+      },
+    ],
     [
       "expo-splash-screen",
       {

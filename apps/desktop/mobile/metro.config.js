@@ -22,6 +22,13 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (moduleName === "./index.ts") {
     return { type: "sourceFile", filePath: path.join(projectRoot, "index.ts") };
   }
+  // Relay source uses Node/Vite-correct emitted-JS specifiers. Metro consumes
+  // that source directly, so bridge its one runtime shared import back to the
+  // TypeScript source instead of searching for an unbuilt sibling `.js` file.
+  if (moduleName === "../src/shared/cloud-settings.js"
+    && context.originModulePath === path.join(relayRoot, "protocol.ts")) {
+    return { type: "sourceFile", filePath: path.join(sharedRoot, "cloud-settings.ts") };
+  }
   return context.resolveRequest(context, moduleName, platform);
 };
 config.resolver.nodeModulesPaths = [

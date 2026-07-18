@@ -59,7 +59,8 @@ Two namespaces ride the same WebSocket (newline-delimited JSON):
   `term-opened` / `term-event` / `term-command` / `term-closed` outbound. The PTY
   + bounded replay buffer persist across mobile reconnects (close detaches the
   renderer only — desktop parity). The same namespace carries guarded project
-  file lookup, config/memory reads and writes, and the full desktop Git/`gh`
+  file lookup, bounded project-confined mobile attachment upload, config/memory
+  reads and writes, and the full desktop Git/`gh`
   operation surface plus Local/Cloud settings, catalog, handoff, return, and
   recovery. Those calls reuse the Electron shared logic and cwd allowlist.
 

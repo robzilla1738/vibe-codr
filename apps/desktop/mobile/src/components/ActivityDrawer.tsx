@@ -19,12 +19,26 @@ import { fileBasename, fileParentDir, changedFilesTotals } from "@shared/changed
 import type { RemoteEngineClient } from "../remote/RemoteEngineClient";
 import { GitWorkspace } from "./GitWorkspace";
 import { useAccessibilitySettings } from "../hooks/useAccessibilitySettings";
+import type { EngineCommand } from "@shared/commands";
+import type { ActivityInfo } from "@shared/types";
+
+export function activityRowsForDisplay(activities: readonly ActivityInfo[]): ActivityInfo[] {
+  return activities.slice(-100);
+}
+
+export function cancelActivityCommand(
+  activity: Pick<ActivityInfo, "id" | "status">,
+): EngineCommand | null {
+  return activity.status === "running" && activity.id.length > 0
+    ? { type: "cancel-activity", id: activity.id }
+    : null;
+}
 
 export type Tab = "session" | "changes" | "git" | "jobs";
 
-export function ActivityDrawer({ open, onClose, chrome, changedFiles, onOpenReview, onOpenDiffReview, tab, onTabChange, client }: {
+export function ActivityDrawer({ open, onClose, chrome, changedFiles, onOpenReview, onOpenDiffReview, tab, onTabChange, client, onSend }: {
     open: boolean; onClose: () => void; chrome: SessionChrome; changedFiles: readonly ChangedFile[]; onOpenReview: () => void; onOpenDiffReview: () => void;
-    tab: Tab; onTabChange: (t: Tab) => void; client: RemoteEngineClient;
+    tab: Tab; onTabChange: (t: Tab) => void; client: RemoteEngineClient; onSend: (command: EngineCommand) => Promise<boolean>;
   }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
@@ -55,7 +69,7 @@ export function ActivityDrawer({ open, onClose, chrome, changedFiles, onOpenRevi
             {tab === "session" ? <SessionView chrome={chrome} onOpenReview={onOpenReview} /> : null}
             {tab === "changes" ? <ChangesView files={changedFiles} onOpenReview={onOpenDiffReview} /> : null}
             {tab === "git" ? <GitWorkspace client={client} cwd={chrome.cwd} /> : null}
-            {tab === "jobs" ? <JobsView chrome={chrome} /> : null}
+            {tab === "jobs" ? <JobsView chrome={chrome} onSend={onSend} /> : null}
           </ScrollView>
         </View>
       </Animated.View>
@@ -141,12 +155,45 @@ function JobStatusPill({ status }: { status: "running" | "exited" | "killed" }) 
     </View>
   );
 }
-function JobsView({ chrome }: { chrome: SessionChrome }) {
+function ActivityStatusPill({ activity }: { activity: ActivityInfo }) {
   const { colors } = useTheme();
   const s = makeStyles(colors);
-  if (chrome.jobs.length === 0) return <Txt variant="ui" color={colors.textSubtle}>No background jobs</Txt>;
+  const c = activity.status === "running" ? colors.assistant : activity.status === "failed" || activity.status === "cancelled" ? colors.del : colors.muted;
+  return (
+    <View style={[s.jobStatus, { borderColor: c, backgroundColor: activity.status === "running" ? colors.navActiveBg : "transparent" }]}>
+      <View style={[s.jobStatusDot, { backgroundColor: c }]} />
+      <Text style={[s.jobStatusText, { color: c }]}>{activity.kind} · {activity.status}</Text>
+    </View>
+  );
+}
+
+function JobsView({ chrome, onSend }: { chrome: SessionChrome; onSend: (command: EngineCommand) => Promise<boolean> }) {
+  const { colors } = useTheme();
+  const s = makeStyles(colors);
+  const activities = activityRowsForDisplay(chrome.activities);
+  if (chrome.jobs.length === 0 && activities.length === 0) return <Txt variant="ui" color={colors.textSubtle}>No background jobs or activities</Txt>;
   return (
     <View style={{ gap: T.sXs }}>
+      {activities.map((activity) => {
+        const cancel = cancelActivityCommand(activity);
+        const metrics = [
+          activity.metrics?.turns != null ? `${activity.metrics.turns} turns` : null,
+          activity.metrics?.toolCalls != null ? `${activity.metrics.toolCalls} tools` : null,
+          activity.metrics?.inputTokens != null ? `${activity.metrics.inputTokens.toLocaleString()} in` : null,
+          activity.metrics?.outputTokens != null ? `${activity.metrics.outputTokens.toLocaleString()} out` : null,
+        ].filter(Boolean).join(" · ");
+        return (
+          <View key={`activity:${activity.id}`} style={s.jobCard}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: T.sXs, flexWrap: "wrap" }}>
+              <ActivityStatusPill activity={activity} />
+              <Text style={s.jobCommand} numberOfLines={2}>{activity.label}</Text>
+              {cancel ? <Pressable onPress={() => { void onSend(cancel); }} style={s.stopButton}><Txt variant="caption">Stop</Txt></Pressable> : null}
+            </View>
+            {metrics ? <Txt variant="caption" color={colors.textSecondary}>{metrics}</Txt> : null}
+            {activity.outputTail || activity.summary ? <Text style={s.output}>{activity.outputTail || activity.summary}</Text> : null}
+          </View>
+        );
+      })}
       {chrome.jobs.map((j) => (
         <View key={j.id} style={s.jobCard}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: T.sXs, flexWrap: "wrap" }}>
@@ -195,5 +242,6 @@ function makeStyles(colors: ReturnType<typeof useTheme>["colors"]) {
     jobStatusText: { fontSize: T.textCaption, fontWeight: "500", letterSpacing: T.trackingUi },
     jobCommand: { flex: 1, color: colors.assistant, fontFamily: "SF Mono", fontSize: T.textCode, minWidth: 0 },
     output: { color: colors.textSecondary, fontFamily: "SF Mono", fontSize: T.textCode, lineHeight: T.textCode * T.leadingCode, marginTop: T.s2xs },
+    stopButton: { minHeight: 30, justifyContent: "center", paddingHorizontal: T.sSm, borderWidth: 1, borderColor: colors.borderSoft, borderRadius: T.radiusSm },
   });
 }

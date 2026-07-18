@@ -10,7 +10,7 @@ import * as Haptics from "expo-haptics";
 import { useTheme } from "../theme/ThemeProvider";
 import { staticTokens as T } from "../theme/tokens";
 import { Txt, Spinner, IconBtn } from "./primitives";
-import { useTerminalScreen } from "../hooks/useTerminalScreen";
+import { terminalLineText, useTerminalScreen } from "../hooks/useTerminalScreen";
 import { Icon } from "./icons";
 import type { RelayOutbound } from "@relay/protocol";
 import type { TerminalOpenResult } from "@shared/terminal";
@@ -94,9 +94,9 @@ export function TerminalPanel({ open, onClose, client, cwd }: Props) {
         {error ? <Txt variant="caption" color={colors.del} style={s.err}>{error}</Txt> : null}
         <ScrollView ref={scrollRef} style={{ flex: 1, paddingTop: insets.top + 52 }} contentContainerStyle={{ paddingHorizontal: T.sBase, paddingVertical: T.sXs, paddingBottom: 96 }}>
           {screen.lines.map((line, r) => (
-            <View key={r} style={s.line}>
-              {line.length === 0 ? <Text style={s.blank}> </Text> :
-                line.map((cell, c) => <Text key={c} style={[s.ch, cell.color ? { color: cell.color } : undefined]}>{cell.ch}</Text>)}
+            <View key={r} style={s.line} accessible accessibilityLabel={terminalLineText(line)}>
+              {line.length === 0 ? <Text accessible={false} style={s.blank}> </Text> :
+                line.map((cell, c) => <Text accessible={false} key={c} style={[s.ch, cell.color ? { color: cell.color } : undefined]}>{cell.ch}</Text>)}
             </View>
           ))}
         </ScrollView>
@@ -106,9 +106,10 @@ export function TerminalPanel({ open, onClose, client, cwd }: Props) {
               style={s.input} value={input} onChangeText={setInput}
               placeholder="Type a command…" placeholderTextColor={colors.textSubtle}
               autoCapitalize="none" autoCorrect={false} editable={exited == null}
+              accessibilityLabel="Terminal command"
               onSubmitEditing={send}
             />
-            <Pressable onPress={send} disabled={!input || exited != null} style={({ pressed }) => [s.send, { backgroundColor: colors.accent }, pressed && { opacity: 0.7 }, (!input || exited != null) && { opacity: 0.3 }]}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Run terminal command" onPress={send} disabled={!input || exited != null} style={({ pressed }) => [s.send, { backgroundColor: colors.accent }, pressed && { opacity: 0.7 }, (!input || exited != null) && { opacity: 0.3 }]}>
               <Icon name="ArrowUp" size={18} color={colors.bg} />
             </Pressable>
           </View>

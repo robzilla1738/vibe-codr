@@ -39,6 +39,7 @@ import type { RemoteEngineClient } from "../remote/RemoteEngineClient";
 import type { ConnectionConfig } from "../app/connection";
 import { isCloudSessionRemoteOwned, type CloudSessionCatalogEntry } from "@shared/cloud";
 import { BrandIcon } from "../components/BrandWordmark";
+import { pickAndUploadMobileAttachments } from "../attachments/mobile-attachments";
 
 interface Props {
   client: RemoteEngineClient;
@@ -171,7 +172,7 @@ export function ChatScreen({ client, connection, onDisconnect, onSessionChange }
           if (target === "terminal") setTerminalOpen(true);
           else { setActivityTab(target); setActivityOpen(true); }
         }}
-        workspaceBadges={{ session: session.pendingCapabilities.length > 0 || chrome.perms.length > 0 || !!chrome.question || !!chrome.plan, changes: session.transcript.changedFiles.length > 0, git: !!chrome.git, jobs: chrome.jobs.length > 0 }}
+        workspaceBadges={{ session: session.pendingCapabilities.length > 0 || chrome.perms.length > 0 || !!chrome.question || !!chrome.plan, changes: session.transcript.changedFiles.length > 0, git: !!chrome.git, jobs: chrome.jobsTotal > 0 || chrome.activities.length > 0 }}
         onHeightChange={setComposerHeight}
         onShellRoute={(kind) => {
           if (kind === "keys") setKeysOpen(true);
@@ -179,8 +180,25 @@ export function ChatScreen({ client, connection, onDisconnect, onSessionChange }
           else if (kind === "jobs") { setActivityTab("jobs"); setActivityOpen(true); }
           else if (kind === "git") { setActivityTab("git"); setActivityOpen(true); }
         }}
+        onPickAttachments={async (kind, remaining) => {
+          try {
+            const outcome = await pickAndUploadMobileAttachments(kind, client, chrome.cwd || connection.cwd, remaining);
+            if (outcome.errors.length) {
+              session.showToast(
+                outcome.attachments.length
+                  ? `${outcome.attachments.length} attached; ${outcome.errors.join(" ")}`
+                  : outcome.errors.join(" "),
+                outcome.attachments.length ? "warn" : "error",
+              );
+            }
+            return outcome.attachments;
+          } catch (error) {
+            session.showToast(error instanceof Error ? error.message : String(error), "error");
+            return [];
+          }
+        }}
       />
-      <InspectorSheet open={reviewOpen} onClose={() => setReviewOpen(false)} chrome={chrome} changedFiles={session.transcript.changedFiles} />
+      <InspectorSheet open={reviewOpen} onClose={() => setReviewOpen(false)} chrome={chrome} changedFiles={session.transcript.changedFiles} onSend={(command) => handleSend([command])} />
       <ProviderAuthSheet
         open={providersOpen}
         onClose={() => setProvidersOpen(false)}
@@ -244,7 +262,7 @@ export function ChatScreen({ client, connection, onDisconnect, onSessionChange }
       <TerminalPanel open={terminalOpen} onClose={() => setTerminalOpen(false)} client={client} cwd={chrome.cwd} />
       <DiffReviewSheet open={diffReviewOpen} onClose={() => setDiffReviewOpen(false)} changedFiles={session.transcript.changedFiles} />
       <Toast toast={toast} />
-      <ActivityDrawer client={client} open={activityOpen} onClose={() => setActivityOpen(false)} chrome={chrome} changedFiles={session.transcript.changedFiles} onOpenReview={() => { setActivityOpen(false); setReviewOpen(true); }} onOpenDiffReview={() => { setActivityOpen(false); setDiffReviewOpen(true); }} tab={activityTab} onTabChange={setActivityTab} />
+      <ActivityDrawer client={client} onSend={(command) => handleSend([command])} open={activityOpen} onClose={() => setActivityOpen(false)} chrome={chrome} changedFiles={session.transcript.changedFiles} onOpenReview={() => { setActivityOpen(false); setReviewOpen(true); }} onOpenDiffReview={() => { setActivityOpen(false); setDiffReviewOpen(true); }} tab={activityTab} onTabChange={setActivityTab} />
     </View>
   );
 }

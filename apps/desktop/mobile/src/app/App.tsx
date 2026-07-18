@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Linking, View } from "react-native";
+import { AppState, Linking, View, type AppStateStatus } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -10,6 +10,8 @@ import { ConnectScreen } from "../screens/ConnectScreen";
 import { ChatScreen } from "../screens/ChatScreen";
 import { MockRemoteClient } from "../preview/MockRemoteClient";
 import { BrandIcon, BrandWordmark } from "../components/BrandWordmark";
+import { shouldRefreshAfterForeground } from "./foreground-reconnect";
+import { parsePairingDeepLink, validateConnectionConfig } from "./connection-validation";
 
 export default function App() {
   return (
@@ -23,23 +25,11 @@ export default function App() {
   );
 }
 
-function parseDeepLink(url: string | null): ConnectionConfig | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url);
-    if (u.protocol !== "vibecodr:" || u.hostname !== "connect") return null;
-    const urlParam = u.searchParams.get("url");
-    const token = u.searchParams.get("token");
-    const cwd = u.searchParams.get("cwd");
-    const sessionId = u.searchParams.get("session");
-    if (!urlParam || !token || !cwd) return null;
-    return { url: urlParam, accessToken: token, cwd, ...(sessionId ? { sessionId } : {}) };
-  } catch { return null; }
-  }
-
 function Root() {
   const { colors } = useTheme();
   const [connection, setConnection] = useState<ConnectionConfig | null>(null);
+  const [draftConnection, setDraftConnection] = useState<ConnectionConfig | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [parked, setParked] = useState(false);
 
@@ -56,8 +46,16 @@ function Root() {
   }, [connection]);
 
   async function connect(cfg: ConnectionConfig) {
-    const active = { ...cfg, parked: false };
+    const validated = validateConnectionConfig(cfg);
+    if (!validated.ok) {
+      setDraftConnection(cfg);
+      setConnectionError(validated.error);
+      return;
+    }
+    const active = { ...validated.value, parked: false };
     setParked(false);
+    setDraftConnection(null);
+    setConnectionError(null);
     setConnection(active);
     try { await saveConnection(active); } catch { /* optional */ }
   }
@@ -76,24 +74,50 @@ function Root() {
   useEffect(() => {
     loadConnection().then((cfg) => {
       if (cfg) {
-        setConnection(cfg);
-        setParked(cfg.parked === true);
+        const validated = validateConnectionConfig(cfg);
+        if (validated.ok) {
+          setConnection(validated.value);
+          setParked(validated.value.parked === true);
+        } else {
+          setDraftConnection(cfg);
+          setConnectionError(validated.error);
+        }
       }
     }).finally(() => setHydrated(true));
   }, []);
 
   useEffect(() => () => { void client?.shutdown().catch(() => undefined); }, [client]);
 
+  useEffect(() => {
+    if (!client || parked) return;
+    let previous: AppStateStatus = AppState.currentState;
+    let suspendedAt: number | null = previous === "active" ? null : Date.now();
+    const subscription = AppState.addEventListener("change", (next) => {
+      const now = Date.now();
+      if (shouldRefreshAfterForeground(previous, next, suspendedAt, now)) {
+        void client.refreshAfterForeground().catch(() => undefined);
+      }
+      if (previous === "active" && next !== "active") suspendedAt = now;
+      else if (next === "active") suspendedAt = null;
+      previous = next;
+    });
+    return () => subscription.remove();
+  }, [client, parked]);
+
   // Pairing deep link: scanning the relay QR opens vibecodr://connect?… and
   // auto-fills + connects. Replaces any manual entry on the Connect screen.
   useEffect(() => {
     const apply = (url: string | null) => {
-      const cfg = parseDeepLink(url);
-      if (cfg) {
-        const active = { ...cfg, parked: false };
+      const parsed = parsePairingDeepLink(url);
+      if (parsed?.ok) {
+        const active = { ...parsed.value, parked: false };
         setParked(false);
+        setDraftConnection(null);
+        setConnectionError(null);
         setConnection(active);
         void saveConnection(active).catch(() => undefined);
+      } else if (parsed) {
+        setConnectionError(parsed.error);
       }
     };
     Linking.getInitialURL().then(apply).catch(() => undefined);
@@ -124,7 +148,7 @@ function Root() {
       <StatusBar style={colors.scheme === "light" ? "dark" : "light"} />
       {connection && client && !parked
         ? <ChatScreen client={client} connection={connection} onDisconnect={returnToDesktop} onSessionChange={rememberSession} />
-        : <ConnectScreen onConnect={connect} initial={connection ?? undefined} />}
+        : <ConnectScreen onConnect={connect} initial={connection ?? draftConnection ?? undefined} errorMessage={connectionError ?? undefined} />}
     </>
   );
 }

@@ -91,6 +91,11 @@ export function initialScreen(): Screen {
   return { lines: [], col: 0, row: 0, color: null };
 }
 
+/** One VoiceOver utterance per terminal row instead of one element per cell. */
+export function terminalLineText(line: Cell[]): string {
+  return line.map((cell) => cell.ch).join("") || " ";
+}
+
 export function useTerminalScreen() {
   const [screen, dispatch] = useReducer(reduceScreen, undefined, initialScreen);
   const write = (data: string) => dispatch(data);

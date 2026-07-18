@@ -7,7 +7,7 @@ import type { EngineCommand } from "@shared/commands";
 import { encodeInbound, decodeOutbound, type HostOutbound, type RpcMethod, type HostRpcParams } from "@shared/protocol";
 import { isUIEvent } from "@shared/protocol";
 import { isEngineSnapshot, isRpcResult } from "@shared/runtime-guards";
-import { isRelayOutbound, type CloudRelayRequest, type CloudRelayResult, type GitRelayRequest, type GitRelayResult, type RelayOutbound } from "@relay/protocol";
+import { isRelayOutbound, type CloudRelayRequest, type CloudRelayResult, type GitRelayRequest, type GitRelayResult, type MobileUploadResult, type RelayOutbound } from "../../../relay/protocol";
 import type { ConfigReadResult, ConfigWriteRequest, MemoryFileResult, MemoryWriteRequest, ConfigScope } from "@shared/config-schema";
 import type { UIEvent } from "@shared/events";
 import type { EngineSnapshot, ModelSummary, ProviderInfo, AgentInfo, SkillInfo } from "@shared/types";
@@ -24,13 +24,16 @@ export interface RemoteClientOptions {
   rpcTimeoutMs?: number;
   /** Reconnect with exponential backoff on unexpected disconnect (default true). */
   autoReconnect?: boolean;
+  /** Deterministic reconnect schedule override for tests. */
+  reconnectDelaysMs?: readonly number[];
 }
 
 const READY_TIMEOUT_MS = 45_000;
 const RPC_TIMEOUT_MS = 30_000;
 const KEEPALIVE_MS = 15_000;
 const KEEPALIVE_PAYLOAD = '{"op":"ping"}\n';
-const RECONNECT_DELAYS_MS = [500, 1500, 5000];
+const RECONNECT_DELAYS_MS = [500, 1500, 5000, 15_000, 30_000];
+const TERMINAL_CLOSE_CODES = new Set([4001, 4003, 4004]);
 
 type EventSink = (event: UIEvent) => void;
 export type RemoteConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
@@ -40,27 +43,37 @@ export class RemoteEngineClient {
   #sessionId = "";
   #ready = false;
   #nextRpcId = 1;
+  #nextRelayId = 1;
   #rpc = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   #readyWaiter: { resolve: (id: string) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null;
   #keepalive: ReturnType<typeof setInterval> | null = null;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #reconnectAttempts = 0;
+  #socketGeneration = 0;
   #lastBootstrap: { cwd: string; resume?: string; continueLatest?: boolean; model?: string; mode?: string } | null = null;
   #sinks = new Set<EventSink>();
   #fatal: ((msg: string) => void) | null = null;
   #snapshot: EngineSnapshot | null = null;
   #opts: RemoteClientOptions;
+  #reconnectDelays: readonly number[];
   #closed = false;
+  #terminallyDisconnected = false;
+  #foregroundReconnect: Promise<string> | null = null;
 
   onFatal: ((message: string) => void) | null = null;
   onReady: ((sessionId: string) => void) | null = null;
   onDisconnect: (() => void) | null = null;
   onConnectionState: ((state: RemoteConnectionState) => void) | null = null;
   #relaySinks = new Set<(frame: RelayOutbound) => void>();
-  #relayRequests = new Map<string, (frame: RelayOutbound) => void>();
+  #relayRequests = new Map<string, {
+    resolve: (frame: RelayOutbound) => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   constructor(opts: RemoteClientOptions) {
     this.#opts = opts;
+    this.#reconnectDelays = opts.reconnectDelaysMs?.length ? opts.reconnectDelaysMs : RECONNECT_DELAYS_MS;
     this.#fatal = (msg) => this.onFatal?.(msg);
   }
 
@@ -69,24 +82,16 @@ export class RemoteEngineClient {
 
   async connect(): Promise<string> {
     this.#closed = false;
-    this.onConnectionState?.("connecting");
-    const url = new URL(this.#opts.url);
-    url.searchParams.set("token", this.#opts.accessToken);
-    const socket = new WebSocket(url.toString());
-    this.#socket = socket;
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("WebSocket open timeout")), this.#opts.readyTimeoutMs ?? READY_TIMEOUT_MS);
-      socket.onopen = () => { clearTimeout(t); resolve(); };
-      socket.onerror = () => { clearTimeout(t); reject(new Error("WebSocket connection failed")); };
-      socket.onclose = (ev) => { clearTimeout(t); reject(new Error(`WebSocket closed (${ev.code})`)); };
-    });
-    socket.onmessage = (ev) => this.#handleMessage(String(ev.data));
-    socket.onerror = () => this.#fail("Engine connection error");
-    socket.onclose = (ev) => this.#handleClose(ev.code, ev.reason);
-    this.#startKeepalive();
+    this.#terminallyDisconnected = false;
+    const socket = await this.#openSocket("connecting");
     this.#lastBootstrap = { cwd: this.#opts.cwd, resume: this.#opts.resume, continueLatest: this.#opts.continueLatest, model: this.#opts.model, mode: this.#opts.mode };
     this.#sendBootstrap(this.#lastBootstrap);
-    return this.#waitForReady();
+    try {
+      return await this.#waitForReady();
+    } catch (error) {
+      this.#discardSocket(socket);
+      throw error;
+    }
   }
 
   /** Re-bootstrap over the open socket to switch project/session (remote control
@@ -98,6 +103,39 @@ export class RemoteEngineClient {
     this.#lastBootstrap = opts;
     this.#sendBootstrap(opts);
     return this.#waitForReady();
+  }
+
+  /** iOS may suspend JavaScript before a dead WebSocket delivers `close`.
+   * Foreground recovery replaces that socket without sending engine shutdown,
+   * then resumes the exact session so `onReady` can hydrate a fresh snapshot. */
+  refreshAfterForeground(): Promise<string> {
+    if (this.#closed) return Promise.reject(new Error("Engine connection is closed"));
+    if (this.#terminallyDisconnected) return Promise.reject(new Error("Engine ownership or authentication ended"));
+    if (!this.#lastBootstrap) return Promise.reject(new Error("Engine has not bootstrapped"));
+    if (this.#foregroundReconnect) return this.#foregroundReconnect;
+    this.#foregroundReconnect = this.#refreshAfterForeground().finally(() => {
+      this.#foregroundReconnect = null;
+    });
+    return this.#foregroundReconnect;
+  }
+
+  async #refreshAfterForeground(): Promise<string> {
+    if (this.#reconnectTimer) { clearTimeout(this.#reconnectTimer); this.#reconnectTimer = null; }
+    const error = new Error("Connection refreshed after returning to foreground");
+    this.#readyWaiter?.reject(error);
+    this.#readyWaiter = null;
+    for (const waiter of this.#rpc.values()) { clearTimeout(waiter.timer); waiter.reject(error); }
+    this.#rpc.clear();
+    this.#rejectRelayRequests(error);
+    const socket = this.#socket;
+    if (socket) this.#discardSocket(socket);
+    this.onConnectionState?.("reconnecting");
+    try {
+      return await this.#reconnectWithLast();
+    } catch (reconnectError) {
+      if (!this.#closed && this.#opts.autoReconnect !== false) this.#scheduleReconnect();
+      throw reconnectError;
+    }
   }
 
   #sendBootstrap(opts: { cwd: string; resume?: string; continueLatest?: boolean; model?: string; mode?: string }): void {
@@ -126,9 +164,14 @@ export class RemoteEngineClient {
       try { parsed = JSON.parse(line); } catch { continue; }
       if (isRelayOutbound(parsed)) {
         const frame = parsed as RelayOutbound;
-        const relayKey = frame.relay === "cloud-result" ? `${frame.relay}:${frame.requestId}` : frame.relay;
-        const waiter = this.#relayRequests.get(relayKey);
-        if (waiter) { this.#relayRequests.delete(relayKey); waiter(frame); }
+        if ("requestId" in frame) {
+          const waiter = this.#relayRequests.get(frame.requestId);
+          if (waiter) {
+            this.#relayRequests.delete(frame.requestId);
+            clearTimeout(waiter.timer);
+            waiter.resolve(frame);
+          }
+        }
         for (const sink of this.#relaySinks) sink(frame);
         continue;
       }
@@ -141,6 +184,7 @@ export class RemoteEngineClient {
   #dispatch(msg: HostOutbound): void {
     if (msg.type === "ready") {
       this.#ready = true;
+      this.#reconnectAttempts = 0;
       this.#sessionId = msg.sessionId;
       if (this.#lastBootstrap) {
         this.#lastBootstrap = {
@@ -176,7 +220,8 @@ export class RemoteEngineClient {
     }
   }
 
-  #handleClose(code: number, reason: string): void {
+  #handleClose(socket: WebSocket, code: number, reason: string): void {
+    if (this.#socket !== socket) return;
     this.#stopKeepalive();
     this.#ready = false;
     this.#socket = null;
@@ -185,50 +230,72 @@ export class RemoteEngineClient {
     this.#readyWaiter = null;
     for (const w of this.#rpc.values()) { clearTimeout(w.timer); w.reject(err); }
     this.#rpc.clear();
-    if (!this.#closed && this.#opts.autoReconnect !== false) {
+    this.#rejectRelayRequests(err);
+    const terminal = TERMINAL_CLOSE_CODES.has(code) || (code === 1000 && reason === "desktop-control");
+    this.#terminallyDisconnected = terminal;
+    if (!this.#closed && !terminal && this.#opts.autoReconnect !== false) {
       this.onConnectionState?.("reconnecting");
       this.#scheduleReconnect();
     } else if (!this.#closed) {
       this.onConnectionState?.("disconnected");
-      this.onFatal?.(`Engine disconnected (${code})`);
+      this.onFatal?.(`Engine disconnected (${code})${reason ? `: ${reason}` : ""}`);
     }
     this.onDisconnect?.();
   }
 
   async #reconnectWithLast(): Promise<string> {
-    this.#closed = false;
-    this.onConnectionState?.("reconnecting");
+    if (this.#closed) throw new Error("Engine connection is closed");
+    const socket = await this.#openSocket("reconnecting");
+    this.#snapshot = null;
+    if (this.#lastBootstrap) this.#sendBootstrap(this.#lastBootstrap);
+    try {
+      return await this.#waitForReady();
+    } catch (error) {
+      this.#discardSocket(socket);
+      throw error;
+    }
+  }
+
+  async #openSocket(state: "connecting" | "reconnecting"): Promise<WebSocket> {
+    this.onConnectionState?.(state);
     const url = new URL(this.#opts.url);
     url.searchParams.set("token", this.#opts.accessToken);
     const socket = new WebSocket(url.toString());
+    const generation = ++this.#socketGeneration;
     this.#socket = socket;
-    await new Promise<void>((resolve, reject) => {
+    try {
+      await new Promise<void>((resolve, reject) => {
       const t = setTimeout(() => reject(new Error("WebSocket open timeout")), this.#opts.readyTimeoutMs ?? READY_TIMEOUT_MS);
-      socket.onopen = () => { clearTimeout(t); resolve(); };
-      socket.onerror = () => { clearTimeout(t); reject(new Error("WebSocket connection failed")); };
-      socket.onclose = (ev) => { clearTimeout(t); reject(new Error(`WebSocket closed (${ev.code})`)); };
-    });
-    socket.onmessage = (ev) => this.#handleMessage(String(ev.data));
-    socket.onerror = () => this.#fail("Engine connection error");
-    socket.onclose = (ev) => this.#handleClose(ev.code, ev.reason);
-    this.#startKeepalive();
-    this.#snapshot = null;
-    if (this.#lastBootstrap) this.#sendBootstrap(this.#lastBootstrap);
-    return this.#waitForReady();
+        socket.onopen = () => { clearTimeout(t); resolve(); };
+        socket.onerror = () => { clearTimeout(t); reject(new Error("WebSocket connection failed")); };
+        socket.onclose = (ev) => { clearTimeout(t); reject(new Error(`WebSocket closed (${ev.code})${ev.reason ? `: ${ev.reason}` : ""}`)); };
+      });
+    } catch (error) {
+      this.#discardSocket(socket);
+      throw error;
+    }
+    if (this.#socket !== socket || this.#socketGeneration !== generation) {
+      this.#discardSocket(socket);
+      throw new Error("WebSocket connection was superseded");
+    }
+    socket.onmessage = (ev) => {
+      if (this.#socket === socket && this.#socketGeneration === generation) this.#handleMessage(String(ev.data));
+    };
+    socket.onerror = () => undefined;
+    socket.onclose = (ev) => {
+      if (this.#socket === socket && this.#socketGeneration === generation) this.#handleClose(socket, ev.code, ev.reason);
+    };
+    this.#startKeepalive(socket);
+    return socket;
   }
 
   #scheduleReconnect(): void {
-    const attempt = this.#reconnectAttempts;
-    if (attempt >= RECONNECT_DELAYS_MS.length) {
-      this.onConnectionState?.("disconnected");
-      this.onFatal?.(`Engine reconnection failed after ${attempt} attempts`);
-      return;
-    }
-    const delay = RECONNECT_DELAYS_MS[attempt]!;
-    this.#reconnectAttempts += 1;
+    if (this.#closed || this.#reconnectTimer) return;
+    const delay = this.#reconnectDelays[Math.min(this.#reconnectAttempts, this.#reconnectDelays.length - 1)]!;
+    this.#reconnectAttempts = Math.min(this.#reconnectAttempts + 1, this.#reconnectDelays.length);
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
-      this.#reconnectWithLast().then(() => { this.#reconnectAttempts = 0; }).catch(() => this.#scheduleReconnect());
+      void this.#reconnectWithLast().catch(() => this.#scheduleReconnect());
     }, delay);
   }
 
@@ -236,10 +303,10 @@ export class RemoteEngineClient {
     this.#fatal?.(message);
   }
 
-  #startKeepalive(): void {
+  #startKeepalive(socket: WebSocket): void {
     this.#stopKeepalive();
     this.#keepalive = setInterval(() => {
-      if (this.#socket?.readyState === WebSocket.OPEN) this.#send(KEEPALIVE_PAYLOAD);
+      if (this.#socket === socket && socket.readyState === WebSocket.OPEN) socket.send(KEEPALIVE_PAYLOAD);
     }, KEEPALIVE_MS);
   }
   #stopKeepalive(): void {
@@ -249,6 +316,19 @@ export class RemoteEngineClient {
   #send(payload: string): void {
     const s = this.#socket;
     if (s && s.readyState === WebSocket.OPEN) s.send(payload);
+  }
+
+  #discardSocket(socket: WebSocket): void {
+    if (this.#socket !== socket) return;
+    this.#socketGeneration += 1;
+    this.#socket = null;
+    this.#ready = false;
+    this.#stopKeepalive();
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close();
   }
 
   // EngineClient surface ------------------------------------------------
@@ -339,62 +419,83 @@ export class RemoteEngineClient {
   }
 
   termOpen(cwd: string, cols: number, rows: number): void {
-    this.#send(`${JSON.stringify({ relay: "term-open", cwd, cols, rows })}\n`);
+    this.#send(`${JSON.stringify({ relay: "term-open", requestId: this.#relayRequestId("term"), cwd, cols, rows })}\n`);
   }
   termInput(id: string, data: string): void {
-    this.#send(`${JSON.stringify({ relay: "term-input", id, data })}\n`);
+    this.#send(`${JSON.stringify({ relay: "term-input", requestId: this.#relayRequestId("term"), id, data })}\n`);
   }
   termResize(id: string, cols: number, rows: number): void {
-    this.#send(`${JSON.stringify({ relay: "term-resize", id, cols, rows })}\n`);
+    this.#send(`${JSON.stringify({ relay: "term-resize", requestId: this.#relayRequestId("term"), id, cols, rows })}\n`);
   }
   termClose(id: string): void {
-    this.#send(`${JSON.stringify({ relay: "term-close", id })}\n`);
+    this.#send(`${JSON.stringify({ relay: "term-close", requestId: this.#relayRequestId("term"), id })}\n`);
   }
   listFiles(cwd: string, query: string, limit = 40): void {
-    this.#send(`${JSON.stringify({ relay: "list-files", cwd, query, limit })}\n`);
+    this.#send(`${JSON.stringify({ relay: "list-files", requestId: this.#relayRequestId("files"), cwd, query, limit })}\n`);
+  }
+  async uploadFile(input: { cwd: string; name: string; mimeType?: string; dataBase64: string }): Promise<MobileUploadResult> {
+    return this.#relayRequest({ relay: "upload-file", ...input }, "upload", 45_000);
   }
 
   // Config + memory (relay channel; reuses the desktop config-io/validate) ----
 
   async configRead(scope: ConfigScope, cwd?: string): Promise<ConfigReadResult | { ok: false; error: string }> {
-    return this.#relayRequest("config-read-result", { relay: "config-read", scope, ...(cwd ? { cwd } : {}) });
+    return this.#relayRequest({ relay: "config-read", scope, ...(cwd ? { cwd } : {}) });
   }
   async configWrite(request: ConfigWriteRequest): Promise<{ ok: true; config: Record<string, unknown> } | { ok: false; error: string }> {
-    return this.#relayRequest("config-write-result", { relay: "config-write", request });
+    return this.#relayRequest({ relay: "config-write", request });
   }
   async memoryRead(scope: ConfigScope, cwd?: string): Promise<MemoryFileResult | { ok: false; error: string }> {
-    return this.#relayRequest("memory-read-result", { relay: "memory-read", scope, ...(cwd ? { cwd } : {}) });
+    return this.#relayRequest({ relay: "memory-read", scope, ...(cwd ? { cwd } : {}) });
   }
   async memoryWrite(request: MemoryWriteRequest): Promise<{ ok: true } | { ok: false; error: string }> {
-    return this.#relayRequest("memory-write-result", { relay: "memory-write", request });
+    return this.#relayRequest({ relay: "memory-write", request });
   }
   async git(request: GitRelayRequest): Promise<GitRelayResult> {
-    return this.#relayRequest("git-result", { relay: "git", request });
+    return this.#relayRequest({ relay: "git", request });
   }
   async cloud(request: CloudRelayRequest): Promise<CloudRelayResult> {
-    const requestId = `cloud-${this.#nextRpcId++}`;
-    return this.#relayRequest(`cloud-result:${requestId}`, { relay: "cloud", requestId, request });
+    return this.#relayRequest({ relay: "cloud", request }, "cloud");
   }
 
-  #relayRequest<T>(resultRelay: string, inbound: Record<string, unknown>): Promise<T> {
+  #relayRequestId(prefix = "relay"): string {
+    return `${prefix}-${this.#nextRelayId++}`;
+  }
+
+  #relayRequest<T>(inbound: Record<string, unknown>, prefix = "relay", timeoutMs = 15_000): Promise<T> {
+    const socket = this.#socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Engine not connected"));
+    const requestId = this.#relayRequestId(prefix);
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => { this.#relayRequests.delete(resultRelay); reject(new Error(`relay ${resultRelay} timeout`)); }, 15_000);
-      this.#relayRequests.set(resultRelay, (frame) => {
-        clearTimeout(timer);
-        const payload = "result" in frame ? frame.result : frame;
-        resolve(payload as unknown as T);
+      const timer = setTimeout(() => { this.#relayRequests.delete(requestId); reject(new Error(`relay ${requestId} timeout`)); }, timeoutMs);
+      this.#relayRequests.set(requestId, {
+        resolve: (frame) => {
+          const payload = "result" in frame ? frame.result : frame;
+          resolve(payload as unknown as T);
+        },
+        reject,
+        timer,
       });
-      this.#send(`${JSON.stringify(inbound)}\n`);
+      this.#send(`${JSON.stringify({ ...inbound, requestId })}\n`);
     });
+  }
+
+  #rejectRelayRequests(error: Error): void {
+    for (const waiter of this.#relayRequests.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.#relayRequests.clear();
   }
 
   async shutdown(): Promise<void> {
     this.#closed = true;
     if (this.#reconnectTimer) { clearTimeout(this.#reconnectTimer); this.#reconnectTimer = null; }
     this.#send(encodeInbound({ op: "shutdown" }));
+    this.#rejectRelayRequests(new Error("Engine shut down"));
     this.#stopKeepalive();
-    this.#socket?.close();
-    this.#socket = null;
+    const socket = this.#socket;
+    if (socket) this.#discardSocket(socket);
     this.#ready = false;
     this.onConnectionState?.("disconnected");
   }

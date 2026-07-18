@@ -1,6 +1,6 @@
 # Vibe Codr — Mobile (Expo)
 
-A React Native (Expo) presentation shell for [vibe-codr](https://github.com/robzilla1738/vibe-codr) with **1:1 behavioral parity** with the Electron desktop app, plus **remote control** of a desktop engine over the network.
+A React Native (Expo) presentation shell for [vibe-codr](https://github.com/robzilla1738/vibe-codr) that targets **applicable behavioral parity** with the Electron desktop app, plus authenticated remote control of a desktop engine. The evidence-backed status of each surface, including remaining gaps, lives in [PARITY.md](./PARITY.md).
 
 ## Architecture — no tech debt
 
@@ -19,7 +19,7 @@ Both are wired through Metro path aliases (`metro.config.js`) and TypeScript pat
 
 ## Remote control
 
-The phone controls a desktop engine via the **relay** (`../relay/server.ts`), which reuses the desktop `EngineBridge` + `host-resolver` and exposes the host NDJSON over WebSocket with `?token=` pairing. The active cwd/session is saved securely; temporary network drops reattach to the running relay engine, and **Return to desktop** releases only mobile ownership while preserving the relay, token, and exact session. In the packaged desktop app, choose **Tools → Continue on Phone…** to safely release the desktop session and open a scannable pairing window. Returning from mobile automatically continues the same session on desktop; choosing Continue on Phone again reauthorizes that existing pairing instead of making the user scan a new token. The CLI remains available for development:
+The phone controls a desktop engine via the **relay** (`../relay/server.ts`), which reuses the desktop `EngineBridge` + `host-resolver` and exposes the host NDJSON over WebSocket with `?token=` pairing. The active cwd/session is saved securely. Temporary network drops retry for the lifetime of active phone ownership with a capped delay, rehydrate from an authoritative snapshot, and reattach to the same relay engine. Returning after meaningful iOS/Android suspension proactively replaces a possibly half-open socket without sending shutdown, resumes the exact session, and runs the same authoritative resync. **Return to desktop** releases only mobile ownership while preserving the relay, token, and exact session. In the packaged desktop app, choose **Tools → Continue on Phone…** to safely release the desktop session and open a scannable pairing window. Returning from mobile automatically continues the same session on desktop; choosing Continue on Phone again reauthorizes that existing pairing instead of making the user scan a new token. The CLI remains available for development:
 
 The packaged relay also reuses the desktop's encrypted Cloud provider/session
 store through request-scoped parent IPC; the desktop main process keeps the
@@ -68,6 +68,11 @@ mobile/
 Scanning it on the phone opens the app and auto-connects (the scheme is registered
 in `app.config.ts`; `App.tsx` handles the initial + incoming deep link). Manual
 entry on the Connect screen remains available; connections persist in SecureStore.
+All three entry paths use the same validation boundary: plaintext `ws://` is
+accepted only for private LAN, loopback, or Tailnet IP addresses; public endpoints
+must use `wss://`. Embedded URL credentials, relative project paths, malformed
+session IDs, and oversized or NUL-containing fields are rejected before any
+socket opens or pairing data is persisted.
 
 ## Verify
 
@@ -76,6 +81,7 @@ cd mobile
 npm run typecheck     # tsc --noEmit (clean)
 npm test              # focused theme, protocol, and terminal-screen parity tests
 npx expo export --platform ios   # production native bundle
+npx expo export --platform android
 npm run preview       # web UI preview with a mocked engine (no relay needed) —
                       #   renders the full chat surface with canned chrome/transcript
                       #   for visual verification/screenshots
@@ -85,7 +91,7 @@ The preview harness (`EXPO_PUBLIC_VIBE_PREVIEW=1`) renders the real `ChatScreen`
 `MockRemoteClient` (canned snapshot + scripted event stream), so the native UI can be
 exercised and screenshotted in a browser with no engine or relay running.
 
-## Status
+## Current status
 
 Working: connect + QR deep-link pairing, transcript (markdown/code/diff/tool/
 thinking/notice), composer (slash routing, mode cycle, busy/abort), live approval
@@ -104,7 +110,19 @@ client also exposes the desktop Local/Cloud target with provider setup, handoff,
 return, recovery, policies, and credential bindings. It includes authenticated
 QR pairing, the desktop-native Continue on Phone handoff, same-token repeated
 desktop/phone switching, TLS relay support, bounded reconnect, persisted exact
-session resume, and an explicit return-to-desktop flow.
+session resume, and an explicit return-to-desktop flow. The packaged continuity
+smoke drops the controller, resumes the exact session, exercises concurrent
+correlated relay services, and releases ownership cleanly.
+
+Not yet complete: phone-triggered execution of durable local-only capability requests, full-screen
+terminal emulation, and a fresh physical-device background/radio acceptance
+matrix. Project-file `@` mentions and native photo/document uploads are available. See [PARITY.md](./PARITY.md)
+for the row-by-row verified/partial/blocked contract; do not infer completion
+from typecheck or bundling alone.
+
+The iOS native acceptance pass also verifies line-level VoiceOver terminal
+output plus named command/run controls; terminal cells must never be exposed as
+one accessibility element per character.
 
 The mobile UI uses a quiet opaque chat canvas with restrained system glass only
 on functional chrome: the compact project header and full composer surface.
@@ -112,3 +130,10 @@ Content cards remain opaque and readable, controls keep native-size touch
 targets, and motion/transparency follow the device accessibility settings.
 Projects and activity use edge-attached drawers; settings switch to horizontal
 section navigation and single-column fields on phone widths.
+
+Native photos and documents use Expo's system pickers. Selected files are read
+from the app cache, capped at 5MB each, sent only over the already-authenticated
+paired socket, and written with exclusive permissions beneath the active
+project's ignored `.vibe/mobile-attachments/` directory. The composer submits
+the resulting project-relative `@path` tokens, so engine mention expansion and
+multimodal image handling remain identical to desktop file drops.

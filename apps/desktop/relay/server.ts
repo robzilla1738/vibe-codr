@@ -22,6 +22,7 @@ import type { ProtectedStringStorage } from "../src/main/cloud/credential-store.
 import { TerminalManager } from "../src/main/terminal-manager.js";
 import { projectCwdAllowlist, isAllowedCwd } from "../src/shared/cwd-allowlist.js";
 import { isRelayInbound, type CloudRelayResult, type RelayInbound, type RelayOutbound } from "./protocol.js";
+import { persistMobileUpload } from "./mobile-upload.js";
 import type { ConfigScope, ConfigWriteRequest, MemoryWriteRequest } from "../src/shared/config-schema.js";
 import { listProjectFiles, rankPaths } from "../src/shared/file-fuzzy.js";
 import { readdirSync, readFileSync, existsSync, lstatSync, realpathSync } from "node:fs";
@@ -50,6 +51,7 @@ import { isPrivateNetworkAddress, privateLanIPv4 } from "../src/shared/private-n
 
 const PROJECT_INDEX_RPCS = new Set<RpcMethod>(["listProjects", "renameProject", "archiveProject", "deleteProject", "renameSession", "deleteSession", "archiveSession"]);
 const PROVIDER_AUTH_RPCS = new Set<RpcMethod>(["providerAuthStatus", "beginProviderAuth", "cancelProviderAuth", "logoutProviderAuth"]);
+const CONTROLLER_HEARTBEAT_MS = 30_000;
 
 const ELECTRON_ROOT = process.env.VIBE_ELECTRON_ROOT
   ? resolvePath(process.env.VIBE_ELECTRON_ROOT)
@@ -153,11 +155,23 @@ async function main(): Promise<void> {
     : new WebSocketServer({ host: HOST, port: PORT, maxPayload: 32 * 1024 * 1024 });
   httpsServer?.listen(PORT, HOST);
   let controller: WebSocket | null = null;
+  let controllerAlive = false;
   let activeSessionId = "";
   let activeCwd = "";
   let handoffSessionId = INITIAL_SESSION_ID;
   let mobileAuthorized = !MANAGED || process.env.VIBE_RELAY_MOBILE_AUTHORIZED === "1";
   let releasingOwnership = false;
+  const controllerHeartbeat = setInterval(() => {
+    const socket = controller;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (!controllerAlive) {
+      socket.terminate();
+      if (controller === socket) controller = null;
+      return;
+    }
+    controllerAlive = false;
+    socket.ping();
+  }, CONTROLLER_HEARTBEAT_MS);
 
   // Persistent contextual terminal (shell feature, not engine). PTY + bounded
   // replay buffer survive across mobile reconnects, mirroring the desktop
@@ -174,6 +188,7 @@ async function main(): Promise<void> {
   };
   bridge.onEvent = (event) => {
     cloudManager.observeEngineEvent(event);
+    if (event && typeof event === "object" && (event as { type?: unknown }).type === "turn-performance") return;
     if (controller) send(controller, { type: "event", event: event as UIEvent });
   };
   bridge.onFatal = (message) => {
@@ -215,9 +230,14 @@ async function main(): Promise<void> {
       return;
     }
     controller = ws;
+    controllerAlive = true;
     console.log("✓ mobile controller connected");
+    ws.on("pong", () => {
+      if (controller === ws) controllerAlive = true;
+    });
 
     ws.on("message", (data) => {
+      if (controller === ws) controllerAlive = true;
       for (const line of String(data).split("\n")) {
         if (!line.trim()) continue;
         let parsed: unknown = null;
@@ -236,7 +256,10 @@ async function main(): Promise<void> {
 
     ws.on("close", () => {
       console.log("✗ mobile controller disconnected");
-      if (controller === ws) controller = null;
+      if (controller === ws) {
+        controller = null;
+        controllerAlive = false;
+      }
     });
     ws.on("error", () => undefined);
   });
@@ -340,88 +363,101 @@ async function main(): Promise<void> {
     switch (msg.relay) {
       case "term-open": {
         const result = terminals.open({ cwd: msg.cwd, cols: msg.cols, rows: msg.rows });
-        sendRelay(ws, { relay: "term-opened", result });
+        sendRelay(ws, { relay: "term-opened", requestId: msg.requestId, result });
         return;
       }
       case "term-input": {
         const result = terminals.write(msg.id, msg.data);
-        sendRelay(ws, { relay: "term-command", result });
+        sendRelay(ws, { relay: "term-command", requestId: msg.requestId, result });
         return;
       }
       case "term-resize": {
         const result = terminals.resize(msg.id, msg.cols, msg.rows);
-        sendRelay(ws, { relay: "term-command", result });
+        sendRelay(ws, { relay: "term-command", requestId: msg.requestId, result });
         return;
       }
       case "term-close": {
         // Detach only — the PTY + replay buffer persist (desktop parity: close
         // detaches the renderer, the main-owned PTY survives until shutdown).
-        sendRelay(ws, { relay: "term-closed", id: msg.id });
+        sendRelay(ws, { relay: "term-closed", requestId: msg.requestId, id: msg.id });
         return;
       }
       case "list-files": {
         if (!isAllowedCwd(msg.cwd)) {
-          sendRelay(ws, { relay: "files", paths: [] });
+          sendRelay(ws, { relay: "files", requestId: msg.requestId, paths: [] });
           return;
         }
         const readdir = (dir: string) => readdirSync(dir, { withFileTypes: true })
           .map((e) => ({ name: e.name, isDirectory: e.isDirectory() }));
         const all = listProjectFiles(msg.cwd, { readdir });
         const paths = rankPaths(all, msg.query, msg.limit || 40);
-        sendRelay(ws, { relay: "files", paths });
+        sendRelay(ws, { relay: "files", requestId: msg.requestId, paths });
+        return;
+      }
+      case "upload-file": {
+        if (!isAllowedCwd(msg.cwd)) {
+          sendRelay(ws, { relay: "upload-result", requestId: msg.requestId, result: { ok: false, error: "cwd is not an opened project root" } });
+          return;
+        }
+        const result = await persistMobileUpload(msg.cwd, {
+          name: msg.name,
+          ...(msg.mimeType ? { mimeType: msg.mimeType } : {}),
+          dataBase64: msg.dataBase64,
+        });
+        sendRelay(ws, { relay: "upload-result", requestId: msg.requestId, result });
         return;
       }
       case "config-read": {
         const result = await readConfig(msg.scope, msg.cwd);
-        sendRelay(ws, { relay: "config-read-result", result });
+        sendRelay(ws, { relay: "config-read-result", requestId: msg.requestId, result });
         return;
       }
       case "config-write": {
         const result = await writeConfig(msg.request);
-        sendRelay(ws, { relay: "config-write-result", result });
+        sendRelay(ws, { relay: "config-write-result", requestId: msg.requestId, result });
         return;
       }
       case "memory-read": {
         const result = await readMemory(msg.scope, msg.cwd);
-        sendRelay(ws, { relay: "memory-read-result", result });
+        sendRelay(ws, { relay: "memory-read-result", requestId: msg.requestId, result });
         return;
       }
       case "memory-write": {
         const result = await writeMemory(msg.request);
-        sendRelay(ws, { relay: "memory-write-result", result });
+        sendRelay(ws, { relay: "memory-write-result", requestId: msg.requestId, result });
         return;
       }
       case "git": {
         const request = msg.request;
         const cwd = "cwd" in request ? request.cwd : request.request.cwd;
         if (!isAllowedCwd(cwd)) {
-          sendRelay(ws, { relay: "git-result", result: { ok: false, error: "cwd is not an opened project root" } });
+          sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: { ok: false, error: "cwd is not an opened project root" } });
           return;
         }
         try {
           if (request.action === "status") {
             const status = await isGitRepo(cwd) ? await getFullStatus(cwd) : null;
-            sendRelay(ws, { relay: "git-result", result: { ok: true, status } });
+            sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: { ok: true, status } });
             return;
           }
           if (request.action === "ghAvailable") {
             const available = (await runGh(cwd, ["--version"])).ok;
-            sendRelay(ws, { relay: "git-result", result: { ok: true, available } });
+            sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: { ok: true, available } });
             return;
           }
           if (request.action === "prList") {
             const listed = await runGh(cwd, ["pr", "list", "--json", "number,title,state,headRefName,url", "--limit", "20"]);
             if (!listed.ok) {
-              sendRelay(ws, { relay: "git-result", result: { ok: false, error: listed.stderr || "gh command failed" } });
+              sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: { ok: false, error: listed.stderr || "gh command failed" } });
               return;
             }
             const prs = parseGhPrList(JSON.parse(listed.stdout) as unknown);
-            sendRelay(ws, { relay: "git-result", result: prs ? { ok: true, prs } : { ok: false, error: "gh returned an invalid pull-request list" } });
+            sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: prs ? { ok: true, prs } : { ok: false, error: "gh returned an invalid pull-request list" } });
             return;
           }
           if (request.action === "prCreate") {
             if (!validateGhPrCreateRequest(request.request)) {
-              sendRelay(ws, { relay: "git-result", result: { ok: false, error: "Invalid pull-request details" } });
+              sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: { ok: false, error: "Invalid pull-request details" } });
               return;
             }
             const args = ["pr", "create", "--title", request.request.title];
@@ -431,12 +467,12 @@ async function main(): Promise<void> {
             if (request.request.draft) args.push("--draft");
             const created = await runGh(cwd, args);
             if (!created.ok) {
-              sendRelay(ws, { relay: "git-result", result: { ok: false, error: created.stderr || "gh pr create failed" } });
+              sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: { ok: false, error: created.stderr || "gh pr create failed" } });
               return;
             }
             const rawUrl = created.stdout.trim().split("\n")[0] || undefined;
             const url = rawUrl ? safeExternalUrl(rawUrl) : undefined;
-            sendRelay(ws, { relay: "git-result", result: rawUrl && !url ? { ok: false, error: "gh returned an invalid pull-request URL" } : { ok: true, ...(url ? { url } : {}), message: "Pull request created" } });
+            sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: rawUrl && !url ? { ok: false, error: "gh returned an invalid pull-request URL" } : { ok: true, ...(url ? { url } : {}), message: "Pull request created" } });
             return;
           }
           let result: GitResult;
@@ -460,11 +496,11 @@ async function main(): Promise<void> {
             case "pull": result = await pullBranch(cwd, request.request); break;
             case "fetch": result = await fetchRemotes(cwd, request.request.remote); break;
           }
-          sendRelay(ws, { relay: "git-result", result: result.ok
+          sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: result.ok
             ? { ok: true, ...(result.message ? { message: result.message } : {}) }
             : { ok: false, error: result.stderr || "Git operation failed" } });
         } catch (error) {
-          sendRelay(ws, { relay: "git-result", result: { ok: false, error: error instanceof Error ? error.message : String(error) } });
+          sendRelay(ws, { relay: "git-result", requestId: msg.requestId, result: { ok: false, error: error instanceof Error ? error.message : String(error) } });
         }
         return;
       }
@@ -569,6 +605,7 @@ async function main(): Promise<void> {
   }
 
   const shutdown = async () => {
+    clearInterval(controllerHeartbeat);
     for (const waiter of storageWaiters.values()) {
       clearTimeout(waiter.timer);
       waiter.reject(new Error("Mobile relay is shutting down"));

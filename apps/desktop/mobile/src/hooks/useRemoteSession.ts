@@ -102,6 +102,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
   const bootstrapGate = useRef(new RequestGate());
   const modeTransitioning = useRef(false);
   const activeSessionId = useRef("");
+  const activeCwd = useRef(cwd ?? "");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastExitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const didInitialConnect = useRef(false);
@@ -400,6 +401,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
     }
     if (!bootstrapGate.current.isCurrent(request)) return false;
     activeSessionId.current = snap.sessionId;
+    activeCwd.current = opts.cwd;
     lastSnap.current = snap;
     setPendingCapabilities(snap.pendingCapabilities ?? []);
     dispatchChrome({ type: "reset", cwd: opts.cwd });
@@ -467,6 +469,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
     }
     if (!bootstrapGate.current.isCurrent(request)) return false;
     activeSessionId.current = snap.sessionId;
+    activeCwd.current = opts.cwd;
     lastSnap.current = snap;
     setPendingCapabilities(snap.pendingCapabilities ?? []);
     dispatchChrome({ type: "reset", cwd: opts.cwd });
@@ -575,21 +578,48 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
       // transport reconnected. Re-fetch the snapshot + re-seed chrome + re-
       // hydrate the transcript so the view matches the engine without a full
       // reset (seamless remote control across drops).
-      if (!didInitialConnect.current) return;
+      if (!didInitialConnect.current || bootstrapHandoff.current) return;
       void (async () => {
+        const request = bootstrapGate.current.begin();
+        bootstrapHandoff.current = true;
+        bootstrapEvents.current = [];
+        bootstrapEventBytes.current = 0;
+        bootstrapEventsTruncated.current = false;
         try {
           const snap = await client.snapshot();
+          if (!bootstrapGate.current.isCurrent(request)) return;
           activeSessionId.current = snap.sessionId;
           lastSnap.current = snap;
           setPendingCapabilities(snap.pendingCapabilities ?? []);
-          dispatchChrome({ type: "seed", snap, cwd: snap.sessionId ? chrome.cwd : chrome.cwd });
-          if (snap.history?.length) dispatchTranscript({ type: "replace", state: hydrateFromHistory(snap.history) });
-        } catch { /* best-effort resync */ }
+          dispatchChrome({ type: "seed", snap, cwd: activeCwd.current });
+          dispatchTranscript({ type: "replace", state: hydrateFromHistory(snap.history ?? []) });
+          const queuedEvents = bootstrapEvents.current
+            .filter(({ event }) => "sessionId" in event && event.sessionId === snap.sessionId)
+            .map(({ event }) => event);
+          const eventsTruncated = bootstrapEventsTruncated.current;
+          bootstrapEvents.current = [];
+          bootstrapEventBytes.current = 0;
+          bootstrapEventsTruncated.current = false;
+          bootstrapHandoff.current = false;
+          for (const event of queuedEvents) handleEvent(event);
+          if (eventsTruncated) {
+            dispatchTranscript({ type: "notice", text: "Some live output during reconnection was omitted to keep memory bounded.", level: "warn" });
+          }
+          setBootError(null);
+          setReady(true);
+        } catch (error) {
+          if (!bootstrapGate.current.isCurrent(request)) return;
+          bootstrapHandoff.current = false;
+          bootstrapEvents.current = [];
+          bootstrapEventBytes.current = 0;
+          bootstrapEventsTruncated.current = false;
+          const message = `Engine resync failed: ${error instanceof Error ? error.message : String(error)}`;
+          setBootError(message);
+          dispatchTranscript({ type: "notice", text: message, level: "error" });
+        }
       })();
     };
-    client.onDisconnect = () => {
-      if (didInitialConnect.current) dispatchChrome({ type: "set-busy", busy: false });
-    };
+    client.onDisconnect = () => undefined;
     client.onConnectionState = setConnectionState;
     const prevFatal = client.onFatal;
     client.onFatal = (message: string) => {

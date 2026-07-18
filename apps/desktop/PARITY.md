@@ -34,6 +34,35 @@ coverage/bridge/packaged-host gates.
 
 Engine ownership stays in `@vibe/core`; this app is a presentation shell over NDJSON (`macos-bridge` protocol). Public repo: [vbcode-electron](https://github.com/robzilla1738/vbcode-electron).
 
+## Mobile extension contract
+
+- [x] Every request-response relay service is correlated by request ID; pending
+  calls reject on disconnect instead of cross-resolving or hanging.
+- [x] Mobile reconnect retries for the lifetime of active ownership with capped
+  delay, rejects stale socket generations, preserves busy until `engine-idle`,
+  and atomically replays live events after snapshot hydration.
+- [x] The relay detects dead controllers without stopping their engine. The
+  packaged journey drops the phone socket, resumes the exact session, exercises
+  concurrent services, then releases ownership explicitly.
+- [x] Permission, plan, question, and queue gates expose the applicable desktop
+  decisions; plan content and evidence are visible before approval.
+- [x] Inspector checkpoint actions, expanded subagent detail, all activity
+  categories, and typed cancellation are reachable on mobile.
+- [x] Native document/image selection and authenticated bounded upload to the
+  Mac. iOS Simulator Photos selection produced a byte-identical `0600` project
+  file; the Files picker opened, and bounded/error-isolated batch behavior is tested.
+- [ ] Phone execution of durable Needs-your-Mac requests. The engine now returns
+  live results/errors and retains handoff-time resolutions for exactly-once
+  consumption by the originating caller; a production local-only tool caller
+  still needs to adopt the contract.
+- [ ] Physical iPhone/iPad background, radio-loss, camera/document selection,
+  and repeated handoff acceptance. Devices were offline during the 2026-07-18
+  audit; Expo Doctor and iOS/Android production exports passed.
+
+The authoritative row-by-row classifications and evidence are in
+[`mobile/PARITY.md`](./mobile/PARITY.md). “Applicable parity” excludes Finder,
+host editor, updater/window chrome, and full-screen terminal emulation.
+
 ## Durable planning and orchestration
 
 - [x] Pending plan approvals rehydrate from `EngineSnapshot.planState` after a

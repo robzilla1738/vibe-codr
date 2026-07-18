@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { StyleSheet, View, TextInput, KeyboardAvoidingView, Platform, ScrollView } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "../theme/ThemeProvider";
@@ -7,21 +7,28 @@ import { Icon } from "../components/icons";
 import { AmbientBackground } from "../components/AmbientBackground";
 import { BrandWordmark } from "../components/BrandWordmark";
 import type { ConnectionConfig } from "../app/connection";
+import { validateConnectionConfig } from "../app/connection-validation";
 
-export function ConnectScreen({ onConnect, initial }: { onConnect: (cfg: ConnectionConfig) => void | Promise<void>; initial?: ConnectionConfig }) {
+export function ConnectScreen({ onConnect, initial, errorMessage }: { onConnect: (cfg: ConnectionConfig) => void | Promise<void>; initial?: ConnectionConfig; errorMessage?: string }) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [url, setUrl] = useState(initial?.url ?? "");
   const [token, setToken] = useState(initial?.accessToken ?? "");
   const [cwd, setCwd] = useState(initial?.cwd ?? "");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(errorMessage ?? null);
+
+  useEffect(() => setError(errorMessage ?? null), [errorMessage]);
 
   const s = makeStyles(colors);
 
   async function submit() {
     if (!url.trim() || !token.trim() || !cwd.trim()) return;
+    const validated = validateConnectionConfig({ url, accessToken: token, cwd });
+    if (!validated.ok) { setError(validated.error); return; }
+    setError(null);
     setBusy(true);
-    try { await onConnect({ url: url.trim(), accessToken: token.trim(), cwd: cwd.trim() }); }
+    try { await onConnect(validated.value); }
     finally { setBusy(false); }
   }
 
@@ -50,22 +57,27 @@ export function ConnectScreen({ onConnect, initial }: { onConnect: (cfg: Connect
           </View>
           <Txt variant="label" color={colors.textSecondary} style={s.fieldLabel}>Relay URL</Txt>
           <TextInput
+            accessibilityLabel="Relay URL"
             style={s.input} placeholder="ws://192.168.1.5:7788" placeholderTextColor={colors.textSubtle}
-            value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" textContentType="URL"
+            value={url} onChangeText={(value) => { setUrl(value); setError(null); }} autoCapitalize="none" autoCorrect={false} keyboardType="url" textContentType="URL"
           />
           <Txt variant="label" color={colors.textSecondary} style={[s.fieldLabel, { marginTop: T.sSm }]}>Pairing token</Txt>
           <TextInput
+            accessibilityLabel="Pairing token"
             style={s.input} placeholder="pairing token" placeholderTextColor={colors.textSubtle}
-            value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry
+            value={token} onChangeText={(value) => { setToken(value); setError(null); }} autoCapitalize="none" autoCorrect={false} secureTextEntry
           />
           <Txt variant="label" color={colors.textSecondary} style={[s.fieldLabel, { marginTop: T.sSm }]}>Project path</Txt>
           <TextInput
+            accessibilityLabel="Project path"
             style={s.input} placeholder="/Users/you/Code/project" placeholderTextColor={colors.textSubtle}
-            value={cwd} onChangeText={setCwd} autoCapitalize="none" autoCorrect={false}
+            value={cwd} onChangeText={(value) => { setCwd(value); setError(null); }} autoCapitalize="none" autoCorrect={false}
           />
         </Card>
 
         <Button label={busy ? "Connecting to desktop…" : initial?.parked ? "Take control after Mac is ready" : "Connect to desktop"} onPress={submit} disabled={busy || !url.trim() || !token.trim() || !cwd.trim()} style={{ marginBottom: T.sBase }} />
+
+        {error ? <Txt variant="caption" color={colors.del} style={s.connectionError}>{error}</Txt> : null}
 
         <View style={s.tip}>
           <Icon name="QrCode" size={16} color={colors.textSecondary} />
@@ -98,5 +110,6 @@ function makeStyles(colors: ReturnType<typeof useTheme>["colors"]) {
     },
     tip: { flexDirection: "row", alignItems: "flex-start", gap: T.sXs, backgroundColor: colors.surfaceSubtle, borderRadius: T.radiusMd, padding: T.sSm, marginBottom: T.sSm },
     security: { textAlign: "center", paddingHorizontal: T.sBase },
+    connectionError: { textAlign: "center", marginBottom: T.sSm, paddingHorizontal: T.sBase },
   });
 }

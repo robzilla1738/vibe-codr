@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { encodeInbound, decodeInbound, decodeOutbound, type HostInbound } from "@shared/protocol";
 import type { EngineCommand } from "@shared/commands";
-import { isRelayInbound, isRelayOutbound } from "../../../relay/protocol";
+import { isRelayInbound, isRelayOutbound, MOBILE_UPLOAD_MAX_BASE64_CHARS } from "../../../relay/protocol";
 
 // Locks the phone↔relay wire contract: the NDJSON the mobile RemoteEngineClient
 // emits is byte-identical to what the relay's decodeInbound accepts, and the
@@ -43,6 +43,8 @@ describe("remote protocol parity (mobile client ↔ relay)", () => {
     // an event frame the relay forwards must decode as a valid UIEvent
     const ev = decodeOutbound('{"type":"event","event":{"type":"notice","level":"info","message":"hi"}}');
     expect(ev?.type).toBe("event");
+    const correlated = decodeOutbound('{"type":"event","event":{"type":"user-message","sessionId":"s1","turnId":"turn-opaque","text":"hi"}}');
+    expect(correlated).toMatchObject({ type: "event", event: { type: "user-message", turnId: "turn-opaque" } });
   });
 
   it("shutdown round-trips", () => {
@@ -50,20 +52,24 @@ describe("remote protocol parity (mobile client ↔ relay)", () => {
   });
 
   it("accepts guarded Git relay frames and rejects incomplete requests", () => {
-    expect(isRelayInbound({ relay: "git", request: { action: "status", cwd: "/x" } })).toBe(true);
-    expect(isRelayInbound({ relay: "git", request: { action: "commit", request: { cwd: "/x", message: "ship" } } })).toBe(true);
+    expect(isRelayInbound({ relay: "git", requestId: "git-1", request: { action: "status", cwd: "/x" } })).toBe(true);
+    expect(isRelayInbound({ relay: "git", requestId: "git-2", request: { action: "commit", request: { cwd: "/x", message: "ship" } } })).toBe(true);
     expect(isRelayInbound({ relay: "git" })).toBe(false);
-    expect(isRelayInbound({ relay: "git", request: { action: "status" } })).toBe(false);
-    expect(isRelayOutbound({ relay: "git-result", result: { ok: true, status: null } })).toBe(true);
+    expect(isRelayInbound({ relay: "git", requestId: "git-bad", request: { action: "status" } })).toBe(false);
+    expect(isRelayOutbound({ relay: "git-result", requestId: "git-1", result: { ok: true, status: null } })).toBe(true);
   });
 
-  it("bounds terminal, file, config, and memory relay frames", () => {
-    expect(isRelayInbound({ relay: "term-open", cwd: "/x", cols: 80, rows: 24 })).toBe(true);
-    expect(isRelayInbound({ relay: "term-open", cwd: "/x", cols: Number.NaN, rows: 24 })).toBe(false);
-    expect(isRelayInbound({ relay: "list-files", cwd: "/x", query: "src", limit: 40 })).toBe(true);
-    expect(isRelayInbound({ relay: "list-files", cwd: "/x", query: "", limit: 10_000 })).toBe(false);
-    expect(isRelayInbound({ relay: "config-write", request: { scope: "project", cwd: "/x", patch: { model: "openai/gpt" } } })).toBe(true);
-    expect(isRelayInbound({ relay: "memory-write", request: { scope: "project", cwd: "/x" } })).toBe(false);
+  it("bounds terminal, file, upload, config, and memory relay frames", () => {
+    expect(isRelayInbound({ relay: "term-open", requestId: "term-1", cwd: "/x", cols: 80, rows: 24 })).toBe(true);
+    expect(isRelayInbound({ relay: "term-open", requestId: "term-2", cwd: "/x", cols: Number.NaN, rows: 24 })).toBe(false);
+    expect(isRelayInbound({ relay: "list-files", requestId: "files-1", cwd: "/x", query: "src", limit: 40 })).toBe(true);
+    expect(isRelayInbound({ relay: "list-files", requestId: "files-2", cwd: "/x", query: "", limit: 10_000 })).toBe(false);
+    expect(isRelayInbound({ relay: "upload-file", requestId: "upload-1", cwd: "/x", name: "photo.png", mimeType: "image/png", dataBase64: "aGk=" })).toBe(true);
+    expect(isRelayInbound({ relay: "upload-file", requestId: "upload-2", cwd: "/x", name: "photo.png", dataBase64: "not base64" })).toBe(false);
+    expect(isRelayInbound({ relay: "upload-file", requestId: "upload-3", cwd: "/x", name: "photo.png", dataBase64: "A".repeat(MOBILE_UPLOAD_MAX_BASE64_CHARS + 4) })).toBe(false);
+    expect(isRelayOutbound({ relay: "upload-result", requestId: "upload-1", result: { ok: true, path: ".vibe/mobile-attachments/id-photo.png", name: "photo.png", size: 2 } })).toBe(true);
+    expect(isRelayInbound({ relay: "config-write", requestId: "config-1", request: { scope: "project", cwd: "/x", patch: { model: "openai/gpt" } } })).toBe(true);
+    expect(isRelayInbound({ relay: "memory-write", requestId: "memory-1", request: { scope: "project", cwd: "/x" } })).toBe(false);
   });
 
   it("guards Cloud relay control frames", () => {

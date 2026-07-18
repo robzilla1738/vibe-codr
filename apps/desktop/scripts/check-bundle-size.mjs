@@ -47,7 +47,10 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // Actionable live Sessions insight adds ~0.5 KB over the previous aggregate
 // ceiling. Keep a narrow 3 KB product-surface allowance while leaving the
 // startup/largest-chunk ceiling unchanged.
-const totalBudget = 2_890_000;
+// Local-only performance sampling and the opt-in provider-tier control add
+// 422 measured bytes across startup/settings. Keep a sub-1 KB allowance while
+// leaving the startup/largest-chunk ceiling unchanged.
+const totalBudget = 2_891_000;
 const chunkBudget = 2_120_000;
 
 if (total > totalBudget || largest > chunkBudget) {

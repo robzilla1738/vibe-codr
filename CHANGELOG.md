@@ -4,6 +4,44 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.12 — 2026-07-18
+
+### Added
+
+- Optional Turbo provider processing for supported Grok 4.5 routes, with the
+  existing cost warning and standard processing kept as the default.
+- Content-free local turn-performance samples with bounded seven-day desktop
+  retention, plus deterministic startup, checkpoint, stream, and transcript
+  benchmarks. Prompts, outputs, paths, tool arguments, and credentials are
+  never recorded or uploaded.
+- Continue on Phone now supports native document and image selection with
+  authenticated, size-bounded, project-contained uploads that preserve every
+  successful attachment when another file in the batch fails.
+
+### Improved
+
+- Provider startup and time-to-first-token now reuse stable prompt-cache
+  routing, resolved model objects, and safe OAuth/token reads without changing
+  messages, tools, reasoning, retries, model choice, or `store: false` behavior.
+- Checkpoints seed their private index from Git's real stat cache while leaving
+  the user's index byte-for-byte untouched, and desktop startup reuses its
+  prewarmed source host while independent context systems initialize together.
+- Desktop streaming coalesces adjacent deltas after the first visible token,
+  memoizes settled turns, isolates live timers, and anchors scroll work once per
+  animation frame without changing finalized markdown, tool cards, or themes.
+- Mobile relay calls are request-correlated, reconnect safely after suspension,
+  retain the exact active session, and expose the complete workspace-control,
+  approval, terminal, activity, and attachment surfaces.
+
+### Fixed
+
+- Capability handoff now returns live and retained results or errors exactly
+  once to the originating caller instead of losing a resolution across an
+  ownership transition.
+- Mobile pairing rejects public plaintext and malformed endpoints, stale socket
+  generations cannot overwrite the active connection, and disconnected relay
+  requests reject instead of hanging or cross-resolving.
+
 ## 0.6.11 — 2026-07-18
 
 ### Improved

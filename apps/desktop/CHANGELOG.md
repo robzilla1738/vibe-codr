@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## 0.6.12 — 2026-07-18
+
+### Added
+
+- Optional Turbo provider processing for supported Grok 4.5 routes, with the
+  existing cost warning and standard processing kept as the default.
+- Content-free local turn-performance samples with bounded seven-day retention,
+  plus deterministic startup, checkpoint, stream, and transcript benchmarks.
+- Continue on Phone now supports native document and image selection with
+  authenticated, size-bounded, project-contained uploads that preserve every
+  successful attachment when another file in the batch fails.
+
+### Improved
+
+- Desktop startup reuses its prewarmed source host, streaming forwards the first
+  delta immediately and coalesces adjacent progress, and completed transcript
+  turns no longer rerender during long sessions.
+- Mobile relay calls are request-correlated, reconnect safely after suspension,
+  retain the exact active session, and expose the complete workspace-control,
+  approval, terminal, activity, and attachment surfaces.
+
+### Fixed
+
+- Capability handoff now returns live and retained results or errors exactly
+  once to the originating caller instead of losing a resolution across an
+  ownership transition.
+- Mobile pairing rejects public plaintext and malformed endpoints, stale socket
+  generations cannot overwrite the active connection, and disconnected relay
+  requests reject instead of hanging or cross-resolving.
+
 ## 0.6.11 — 2026-07-18
 
 ### Improved

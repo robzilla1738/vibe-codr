@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import WebSocket from "ws";
+import type { CappedReadResult } from "../shared/capped-read";
 import type { EngineCommand } from "../shared/commands";
 import {
   decodeOutbound,
@@ -10,12 +12,14 @@ import {
 import type { EngineStartOptions } from "./engine-bridge";
 import type { EngineTransport } from "./engine-transport";
 import { isRpcResult } from "../shared/runtime-guards";
+import type { TerminalCommandResult, TerminalEvent, TerminalOpenRequest, TerminalOpenResult } from "../shared/terminal";
 
 const READY_TIMEOUT_MS = 45_000;
 const RPC_TIMEOUT_MS = 30_000;
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const CONNECT_RETRY_DELAYS_MS = [250, 750];
 const KEEPALIVE_INTERVAL_MS = 15_000;
+const CHANNEL_TIMEOUT_MS = 10_000;
 
 interface RemoteTransportOptions {
   url: string;
@@ -31,6 +35,19 @@ export class RemoteEngineTransport implements EngineTransport {
   #sessionId = "";
   #nextRpcId = 1;
   #rpc = new Map<number, { method: RpcMethod; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  #fileRequests = new Map<string, {
+    expectsContent: boolean;
+    resolve: (data: Buffer) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+  #terminalOpenRequests = new Map<string, {
+    cwd: string;
+    resolve: (result: TerminalOpenResult) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+  #terminalSequences = new Map<string, number>();
   #readyWaiters: Array<{ resolve: (id: string) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = [];
   #agentReady: ((sessionId: string | null) => void) | null = null;
   #existingSessionId: string | null | undefined;
@@ -39,6 +56,7 @@ export class RemoteEngineTransport implements EngineTransport {
   #connecting = false;
 
   onEvent: ((event: unknown) => void) | null = null;
+  onTerminalEvent: ((event: TerminalEvent) => void) | null = null;
   onFatal: ((message: string) => void) | null = null;
   onReady: ((sessionId: string) => void) | null = null;
 
@@ -145,6 +163,90 @@ export class RemoteEngineTransport implements EngineTransport {
     });
   }
 
+  readTextFile(path: string, maxBytes: number): Promise<CappedReadResult> {
+    if (!this.isReady) return Promise.resolve({ ok: false, error: "Cloud engine not ready" });
+    if (!isSafeRemoteRelativePath(path)) return Promise.resolve({ ok: false, error: "Invalid remote file path" });
+    const requestId = `file-${this.#nextRpcId++}`;
+    return new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#fileRequests.delete(requestId);
+        reject(new Error("Cloud file read timed out"));
+      }, CHANNEL_TIMEOUT_MS);
+      this.#fileRequests.set(requestId, { expectsContent: true, resolve, reject, timer });
+      this.#sendChannel({ channel: "file", op: "read", requestId, path });
+    }).then((data): CappedReadResult => {
+      const cap = Math.max(1, Math.trunc(maxBytes));
+      const preview = data.subarray(0, Math.min(data.byteLength, cap));
+      if (preview.includes(0)) return { ok: false, error: "Binary file — preview unavailable in Cloud" };
+      return { ok: true, text: preview.toString("utf8"), truncated: data.byteLength > cap };
+    }).catch((error: unknown): CappedReadResult => ({
+      ok: false,
+      error: error instanceof Error ? error.message : "Couldn’t read Cloud file",
+    }));
+  }
+
+  writeFile(path: string, data: Buffer, mode = 0o600): Promise<TerminalCommandResult> {
+    if (!this.isReady) return Promise.resolve({ ok: false, error: "Cloud engine not ready" });
+    if (!isSafeRemoteRelativePath(path) || data.byteLength > 16 * 1024 * 1024) {
+      return Promise.resolve({ ok: false, error: "Invalid remote file upload" });
+    }
+    const requestId = `file-${this.#nextRpcId++}`;
+    return new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#fileRequests.delete(requestId);
+        reject(new Error("Cloud file upload timed out"));
+      }, CHANNEL_TIMEOUT_MS);
+      this.#fileRequests.set(requestId, { expectsContent: false, resolve, reject, timer });
+      this.#sendChannel({
+        channel: "file",
+        op: "write",
+        requestId,
+        path,
+        contentBase64: data.toString("base64"),
+        mode,
+      });
+    }).then((): TerminalCommandResult => ({ ok: true })).catch((error: unknown): TerminalCommandResult => ({
+      ok: false,
+      error: error instanceof Error ? error.message : "Couldn’t upload Cloud file",
+    }));
+  }
+
+  terminalOpen(request: TerminalOpenRequest): Promise<TerminalOpenResult> {
+    if (!this.isReady) return Promise.resolve({ ok: false, error: "Cloud engine not ready" });
+    const id = `electron-${createHash("sha256").update(`${this.#sessionId}\0${request.cwd}`).digest("hex").slice(0, 24)}`;
+    const existing = this.#terminalOpenRequests.get(id);
+    if (existing) return Promise.resolve({ ok: false, error: "Cloud terminal is already opening" });
+    return new Promise<TerminalOpenResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#terminalOpenRequests.delete(id);
+        reject(new Error("Cloud terminal open timed out"));
+      }, CHANNEL_TIMEOUT_MS);
+      this.#terminalOpenRequests.set(id, { cwd: request.cwd, resolve, reject, timer });
+      this.#sendChannel({
+        channel: "terminal",
+        op: "create",
+        requestId: `terminal-open:${id}`,
+        id,
+        cols: request.cols,
+        rows: request.rows,
+      });
+    });
+  }
+
+  terminalWrite(id: string, data: string): TerminalCommandResult {
+    if (!this.isReady) return { ok: false, error: "Cloud engine not ready" };
+    if (!isRemoteTerminalId(id) || Buffer.byteLength(data) > 64 * 1024) return { ok: false, error: "Invalid Cloud terminal input" };
+    this.#sendChannel({ channel: "terminal", op: "write", requestId: `terminal-op:${id}:${this.#nextRpcId++}`, id, data });
+    return { ok: true };
+  }
+
+  terminalResize(id: string, cols: number, rows: number): TerminalCommandResult {
+    if (!this.isReady) return { ok: false, error: "Cloud engine not ready" };
+    if (!isRemoteTerminalId(id) || !Number.isFinite(cols) || !Number.isFinite(rows)) return { ok: false, error: "Invalid Cloud terminal size" };
+    this.#sendChannel({ channel: "terminal", op: "resize", requestId: `terminal-op:${id}:${this.#nextRpcId++}`, id, cols, rows });
+    return { ok: true };
+  }
+
   async stop(): Promise<void> {
     const socket = this.#socket;
     this.#socket = null;
@@ -217,6 +319,12 @@ export class RemoteEngineTransport implements EngineTransport {
     this.#sendFrame(socket, { channel: "engine", payload });
   }
 
+  #sendChannel(frame: unknown): void {
+    const socket = this.#socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Cloud agent socket is not open");
+    this.#sendFrame(socket, frame);
+  }
+
   #sendFrame(socket: WebSocket, frame: unknown): void {
     const data = JSON.stringify(frame);
     if (Buffer.byteLength(data) > MAX_FRAME_BYTES) throw new Error("Cloud engine frame exceeds 32 MiB");
@@ -224,7 +332,21 @@ export class RemoteEngineTransport implements EngineTransport {
   }
 
   #handleFrame(raw: string): void {
-    let frame: { channel?: unknown; payload?: unknown; type?: unknown; engineSessionId?: unknown; message?: unknown; error?: unknown };
+    let frame: {
+      channel?: unknown;
+      payload?: unknown;
+      type?: unknown;
+      engineSessionId?: unknown;
+      message?: unknown;
+      error?: unknown;
+      requestId?: unknown;
+      ok?: unknown;
+      contentBase64?: unknown;
+      id?: unknown;
+      data?: unknown;
+      exitCode?: unknown;
+      signal?: unknown;
+    };
     try { frame = JSON.parse(raw); } catch { this.#fail("Cloud agent emitted malformed JSON"); return; }
     if (frame.channel === "agent" && frame.type === "ready") {
       const sessionId = typeof frame.engineSessionId === "string" ? frame.engineSessionId : null;
@@ -241,6 +363,17 @@ export class RemoteEngineTransport implements EngineTransport {
       }
       return;
     }
+    if (frame.channel === "file") {
+      this.#handleFileFrame(frame);
+      return;
+    }
+    if (frame.channel === "terminal") {
+      this.#handleTerminalFrame(frame);
+      return;
+    }
+    if (frame.channel === "error" && typeof frame.requestId === "string" && this.#handleRequestError(frame.requestId, frame.error)) {
+      return;
+    }
     if (frame.channel === "fatal" || frame.channel === "error") {
       const detail = typeof frame.message === "string"
         ? frame.message
@@ -252,6 +385,95 @@ export class RemoteEngineTransport implements EngineTransport {
     const msg = decodeOutbound(JSON.stringify(frame.payload));
     if (!msg) { this.#fail("Cloud agent emitted invalid engine protocol"); return; }
     this.#handleHost(msg);
+  }
+
+  #handleFileFrame(frame: { requestId?: unknown; ok?: unknown; contentBase64?: unknown }): void {
+    if (typeof frame.requestId !== "string") return;
+    const waiter = this.#fileRequests.get(frame.requestId);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    this.#fileRequests.delete(frame.requestId);
+    if (frame.ok !== true || waiter.expectsContent && typeof frame.contentBase64 !== "string") {
+      waiter.reject(new Error("Cloud file response was invalid"));
+      return;
+    }
+    waiter.resolve(waiter.expectsContent ? Buffer.from(frame.contentBase64 as string, "base64") : Buffer.alloc(0));
+  }
+
+  #handleTerminalFrame(frame: {
+    type?: unknown;
+    id?: unknown;
+    data?: unknown;
+    exitCode?: unknown;
+    signal?: unknown;
+  }): void {
+    if (typeof frame.id !== "string" || !isRemoteTerminalId(frame.id)) return;
+    const id = frame.id;
+    if (frame.type === "created" || frame.type === "replay") {
+      const waiter = this.#terminalOpenRequests.get(id);
+      if (!waiter) return;
+      clearTimeout(waiter.timer);
+      this.#terminalOpenRequests.delete(id);
+      const replay = frame.type === "replay" && typeof frame.data === "string" ? frame.data : "";
+      waiter.resolve({
+        ok: true,
+        id,
+        cwd: waiter.cwd,
+        shell: "/bin/bash",
+        reused: frame.type === "replay",
+        replay,
+        sequence: this.#terminalSequences.get(id) ?? 0,
+      });
+      return;
+    }
+    if (frame.type === "data" && typeof frame.data === "string" && Buffer.byteLength(frame.data) <= 1024 * 1024) {
+      const sequence = (this.#terminalSequences.get(id) ?? 0) + 1;
+      this.#terminalSequences.set(id, sequence);
+      this.onTerminalEvent?.({ type: "data", id, data: frame.data, sequence });
+      return;
+    }
+    if (frame.type === "exit" && typeof frame.exitCode === "number" && typeof frame.signal === "number") {
+      this.#terminalSequences.delete(id);
+      this.onTerminalEvent?.({ type: "exit", id, exitCode: frame.exitCode, signal: frame.signal });
+    }
+  }
+
+  #handleRequestError(requestId: string, value: unknown): boolean {
+    const detail = typeof value === "string" ? value : "Cloud channel request failed";
+    const file = this.#fileRequests.get(requestId);
+    if (file) {
+      clearTimeout(file.timer);
+      this.#fileRequests.delete(requestId);
+      file.reject(new Error(detail));
+      return true;
+    }
+    const terminalPrefix = requestId.startsWith("terminal-open:")
+      ? "terminal-open:"
+      : requestId.startsWith("terminal-attach:")
+        ? "terminal-attach:"
+        : null;
+    if (terminalPrefix) {
+      const id = requestId.slice(terminalPrefix.length);
+      const waiter = this.#terminalOpenRequests.get(id);
+      if (!waiter) return true;
+      if (terminalPrefix === "terminal-open:" && detail === "terminal already exists") {
+        this.#sendChannel({ channel: "terminal", op: "attach", requestId: `terminal-attach:${id}`, id });
+        return true;
+      }
+      clearTimeout(waiter.timer);
+      this.#terminalOpenRequests.delete(id);
+      waiter.resolve({ ok: false, error: detail });
+      return true;
+    }
+    if (requestId.startsWith("terminal-op:")) {
+      const id = requestId.slice("terminal-op:".length).split(":", 1)[0];
+      if (isRemoteTerminalId(id)) {
+        this.#terminalSequences.delete(id);
+        this.onTerminalEvent?.({ type: "exit", id, exitCode: 1, signal: 0 });
+      }
+      return true;
+    }
+    return false;
   }
 
   #handleHost(msg: HostOutbound): void {
@@ -326,6 +548,11 @@ export class RemoteEngineTransport implements EngineTransport {
   #rejectAll(error: Error): void {
     for (const waiter of this.#rpc.values()) { clearTimeout(waiter.timer); waiter.reject(error); }
     this.#rpc.clear();
+    for (const waiter of this.#fileRequests.values()) { clearTimeout(waiter.timer); waiter.reject(error); }
+    this.#fileRequests.clear();
+    for (const waiter of this.#terminalOpenRequests.values()) { clearTimeout(waiter.timer); waiter.reject(error); }
+    this.#terminalOpenRequests.clear();
+    this.#terminalSequences.clear();
     for (const waiter of this.#readyWaiters.splice(0)) { clearTimeout(waiter.timer); waiter.reject(error); }
     if (this.#detachWaiter) {
       clearTimeout(this.#detachWaiter.timer);
@@ -333,6 +560,18 @@ export class RemoteEngineTransport implements EngineTransport {
       this.#detachWaiter = null;
     }
   }
+}
+
+function isSafeRemoteRelativePath(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/");
+  return normalized.length > 0
+    && !normalized.startsWith("/")
+    && !normalized.includes("\0")
+    && normalized.split("/").every((component) => component !== ".." && component !== "");
+}
+
+function isRemoteTerminalId(id: string): boolean {
+  return /^electron-[a-f0-9]{24}$/.test(id);
 }
 
 function isTransientDisconnect(error: unknown): boolean {

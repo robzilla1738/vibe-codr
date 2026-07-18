@@ -1,7 +1,17 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { app } from "electron";
+import { createRequire } from "node:module";
+
+// Lazy electron access so this module is importable outside the Electron runtime
+// (the relay server reuses the same host resolution without a live `app`).
+const electronApp = (): { isPackaged: boolean; getAppPath(): string } | null => {
+  try {
+    return createRequire(import.meta.url)("electron").app as { isPackaged: boolean; getAppPath(): string };
+  } catch {
+    return null;
+  }
+};
 
 export interface HostLaunch {
   executable: string;
@@ -39,17 +49,18 @@ const DEFAULT_DEPS = (): HostResolverDeps => ({
   readdirSync: (path) => readdirSync(path),
   homedir,
   env: process.env,
-  isPackaged: app.isPackaged,
+  isPackaged: (() => { const a = electronApp(); return a ? a.isPackaged : false; })(),
   resourcesPath: (() => {
     try {
-      return process.resourcesPath;
+      return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null;
     } catch {
       return null;
     }
   })(),
   appPath: (() => {
     try {
-      return app.getAppPath();
+      const a = electronApp();
+      return a ? a.getAppPath() : process.cwd();
     } catch {
       return process.cwd();
     }

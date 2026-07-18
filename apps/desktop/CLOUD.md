@@ -5,13 +5,14 @@ Vercel Sandbox. Electron remains the presentation shell; both locations run the
 same revision-locked `vibe-codr` engine and host protocol. Vibe provides no
 hosted account, billing, database, object store, relay, or web control plane.
 
-Cloud remains behind **Settings → Cloud → Enable experimental Cloud**. Both
-provider contract suites must have fresh, opt-in green results within seven days
-of a release before the flag can be removed.
+Cloud remains labeled experimental. Confirming the first handoff enables it
+inline after showing the transfer boundary; the same preference remains under
+**Settings → Cloud**. Both provider contract suites must have fresh, opt-in
+green results within seven days of a release before the label can be removed.
 
 ## Setup
 
-1. Open **Settings → Cloud**.
+1. Open the Cloud handoff sheet or **Settings → Cloud**.
 2. Connect and test E2B, Vercel, or both. Provider credentials are encrypted by
    Electron `safeStorage`; setup and unattended handoff are refused when
    OS-protected storage is unavailable.
@@ -68,6 +69,11 @@ Inside the sandbox, the authenticated control daemon uses a separate privileged
 OS identity. The engine, terminals, tools, and project commands run as a
 dedicated non-root workload user; the one-time control bearer is never inherited
 by those processes, and startup fails if the boundary cannot be established.
+Before upload, Electron seals the reviewed credential environment and runtime
+profile to that session bearer with AES-256-GCM. Probe and daemon startup consume
+the same envelope; the daemon removes the one-shot file after authenticating it
+and health reports only credential names and required model IDs. Raw model keys
+are never placed in the daemon launch environment or catalog.
 
 Every `.env*` variant (including `.envrc` and `.env-secret`), SSH/cloud
 credential material, private-key files, `node_modules`, nested repository
@@ -82,7 +88,12 @@ protected local file.
 
 This is logical migration at `engine-idle`, not migration of macOS processes to
 Linux. Portable jobs restart from recorded commands. Local PTYs and macOS-only
-processes do not move.
+processes do not move. While Cloud owns the session, file previews and the
+Terminal activity use the authenticated daemon against the remote workspace.
+The Cloud PTY is a new isolated Linux shell, retains bounded replay when the
+sidebar or desktop disconnects, and reattaches on reconnect. The local Git panel
+pauses to avoid mutating a stale base; remote Git remains available in the Cloud
+terminal. Finder continues to mean the explicitly labeled local base.
 
 ## Provisioning and diagnostics
 
@@ -187,8 +198,10 @@ and clearly warns that cloud-only work is irretrievable.
 
 The default idle timeout is ten minutes. E2B pauses with auto-resume; Vercel uses
 a named persistent sandbox that stops and resumes. After a Vercel cold resume,
-Vibe relaunches the authenticated cloud daemon with the same bounded environment
-and waits for its health proof before reconnecting the session. Provider charges, quotas,
+Vibe reseals the protected model-access snapshot, relaunches the authenticated
+cloud daemon, and waits for its credential/model health proof before reconnecting
+the session. A cold Return Local uses a credential-free recovery profile, so an
+expired provider login cannot trap work in Cloud. Provider charges, quotas,
 retention, and network features are governed entirely by the user’s provider
 account and plan. Check the provider dashboard for authoritative pricing. Remote
 sandboxes are deleted after a verified local return by default. **Keep cloud
@@ -200,7 +213,8 @@ the sandbox or catalog record can be removed.
 
 ## Troubleshooting
 
-- **Cloud disabled:** enable the experimental toggle and connect/test a provider.
+- **Cloud disabled:** connect/test a provider, then confirm the handoff; Vibe
+  enables the experimental preference inline. It can also be changed in Settings.
 - **Protected storage unavailable:** enable the macOS login keychain; credentials
   are never persisted as plaintext fallback.
 - **Runtime missing or revision mismatch:** in `vibe-codr`, run
@@ -211,7 +225,8 @@ the sandbox or catalog record can be removed.
 - **Transfer rejected:** review limits, `.vibe/cloudignore`, escaping symlinks,
   and excluded credential material in the preflight.
 - **Reconnect fails:** confirm the sandbox still exists and this is the desktop
-  installation that created it. There is intentionally no hosted lookup.
+  installation that created it. There is intentionally no hosted lookup. A
+  retained older runtime must be returned Local once before a fresh handoff.
 - **Return opens a worktree:** local files changed after departure. Review and
   merge the safe worktree; Vibe will not overwrite the original.
 - **Needs your Mac:** reconnect this Mac and review the bounded request. The
@@ -224,5 +239,6 @@ the sandbox or catalog record can be removed.
 The local release gate remains `npm run verify:ci` plus packaged smoke. Cloud
 adds `bun run build:cloud-runtime`, the network-disabled `bun run
 smoke:cloud-runtime`, checksum/SBOM inspection, supervision and portable
-round-trip tests, workspace transfer tests, and paid opt-in E2B/Vercel lifecycle suites.
+round-trip tests, workspace transfer tests, paid opt-in E2B/Vercel lifecycle
+suites, and the packaged authenticated PTY/file-preview round trip.
 Never run paid live suites implicitly in CI.

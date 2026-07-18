@@ -1,0 +1,56 @@
+{
+  "name": "vbcode-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "lint": "expo lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "preview": "EXPO_PUBLIC_VIBE_PREVIEW=1 expo start --web",
+    "preview:build": "EXPO_PUBLIC_VIBE_PREVIEW=1 expo export --platform web"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~57.0.6",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-navigation/native": "^7.1.0",
+    "@react-navigation/native-stack": "^7.3.0",
+    "expo": "^57.0.7",
+    "expo-blur": "~57.0.2",
+    "expo-build-properties": "~57.0.6",
+    "expo-clipboard": "~57.0.1",
+    "expo-haptics": "~57.0.1",
+    "expo-linear-gradient": "~57.0.1",
+    "expo-linking": "~57.0.3",
+    "expo-secure-store": "~57.0.1",
+    "expo-splash-screen": "~57.0.4",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.1",
+    "lucide-react-native": "^1.25.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-gesture-handler": "~2.32.0",
+    "react-native-reanimated": "4.5.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "4.25.2",
+    "react-native-svg": "15.15.4",
+    "react-native-web": "^0.21.0",
+    "react-native-worklets": "0.10.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@types/node": "^26.1.1",
+    "@types/react": "~19.2.10",
+    "typescript": "~6.0.3",
+    "vitest": "^3.2.7"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}

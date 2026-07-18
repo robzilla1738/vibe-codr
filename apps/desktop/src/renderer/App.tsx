@@ -106,6 +106,7 @@ const OnboardingModal = lazy(() =>
 const CloudHandoffSheet = lazy(() =>
   import("./panels/CloudHandoffSheet").then((module) => ({ default: module.CloudHandoffSheet })),
 );
+const CLOUD_FILE_REVEAL_NOTICE = "This file is in Cloud. Preview it here or return Local before revealing it in Finder.";
 
 function pickerMatchesDraft(picker: Picker, draft: string, modelTarget: "main" | "sub"): boolean {
   if (!picker) return false;
@@ -2522,6 +2523,7 @@ export function App() {
               cwd={cwd}
               project={activeProject ? projectLabel(activeProject, projects) : projectName(cwd)}
               branch={chrome.git?.branch ?? null}
+              executionTarget={currentCloudSession ? "cloud" : "local"}
               sessionOpen={false}
               changesOpen={false}
               gitOpen={false}
@@ -2573,6 +2575,7 @@ export function App() {
                     key={`changes:${inspectorFocusPath ?? ""}`}
                     files={session.transcript.changedFiles}
                     cwd={cwd}
+                    cloudOwned={currentCloudSession !== null}
                     focusPath={inspectorFocusPath}
                     onClose={() => {
                       setInspectorFocusPath(null);
@@ -2580,6 +2583,10 @@ export function App() {
                     }}
                     onRevealFile={(path) => {
                       if (!cwd) return;
+                      if (currentCloudSession) {
+                        session.showToast(CLOUD_FILE_REVEAL_NOTICE, "info");
+                        return;
+                      }
                       const resolvedPath = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)
                         ? path
                         : `${cwd}/${path}`;
@@ -2606,6 +2613,10 @@ export function App() {
                   onRedo={() => void session.send({ type: "run-slash", name: "redo", args: "" })}
                   onRevealFile={(path) => {
                     if (!cwd) return;
+                    if (currentCloudSession) {
+                      session.showToast(CLOUD_FILE_REVEAL_NOTICE, "info");
+                      return;
+                    }
                     const resolvedPath = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path)
                       ? path
                       : `${cwd}/${path}`;
@@ -2624,8 +2635,9 @@ export function App() {
                   )}
                 >
                   <GitView
-                    key={cwd}
+                    key={`${cwd}:${currentCloudSession ? "cloud" : "local"}`}
                     cwd={cwd}
+                    cloudOwned={currentCloudSession !== null}
                     onClose={() => setGitOpen(false)}
                     showToast={session.showToast}
                   />
@@ -2642,8 +2654,10 @@ export function App() {
                   )}
                 >
                   <TerminalPanel
+                    key={`${terminalCwd}:${currentCloudSession ? "cloud" : "local"}`}
                     cwd={terminalCwd}
                     scope={terminalScope}
+                    executionTarget={currentCloudSession ? "cloud" : "local"}
                     onClose={() => setTerminalOpen(false)}
                   />
                 </Suspense>

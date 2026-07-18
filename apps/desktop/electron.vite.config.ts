@@ -1,6 +1,34 @@
 import { resolve } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
+import type { Plugin } from "vite";
+
+function extractRendererLegalNotices(): Plugin {
+  const notices = new Set<string>();
+  return {
+    name: "extract-renderer-legal-notices",
+    enforce: "post",
+    buildStart() { notices.clear(); },
+    renderChunk(code: string) {
+      let changed = false;
+      const stripped = code.replace(/\/\*[\s\S]*?\*\//g, (notice: string) => {
+        if (!notice.startsWith("/*!") && !/@license|Copyright/i.test(notice)) return notice;
+        notices.add(notice.trim());
+        changed = true;
+        return "";
+      });
+      return changed ? { code: stripped, map: null } : null;
+    },
+    generateBundle() {
+      if (!notices.size) return;
+      this.emitFile({
+        type: "asset",
+        fileName: "THIRD_PARTY_LICENSES.txt",
+        source: `Third-party notices extracted from the production renderer bundles.\n\n${[...notices].sort().join("\n\n")}\n`,
+      });
+    },
+  };
+}
 
 export default defineConfig({
   main: {
@@ -10,6 +38,7 @@ export default defineConfig({
         external: ["electron-liquid-glass"],
         input: {
           index: resolve("src/main/index.ts"),
+          relay: resolve("relay/server.ts"),
         },
       },
     },
@@ -38,6 +67,9 @@ export default defineConfig({
         "@renderer": resolve("src/renderer"),
       },
     },
-    plugins: [react()],
+    // electron-builder ships the complete out/ tree. Extract repeated /*! ... */
+    // notices into one companion file so licenses remain present without making
+    // every startup/lazy JavaScript chunk parse the same banners.
+    plugins: [react(), extractRendererLegalNotices()],
   },
 });

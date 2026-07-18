@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { safeStorage } from "electron";
 import type { CloudProviderId, ProviderCredentials } from "../../shared/cloud";
+
+export interface ProtectedStringStorage {
+  isEncryptionAvailable(): boolean;
+  encryptString(value: string): Buffer | Promise<Buffer>;
+  decryptString(value: Buffer): string | Promise<string>;
+}
 
 interface EncryptedCredentialFileV1 {
   schemaVersion: 1;
@@ -12,18 +17,18 @@ interface EncryptedCredentialFileV1 {
 export class CloudCredentialStore {
   #mutationTail: Promise<void> = Promise.resolve();
 
-  constructor(private readonly path: string) {}
+  constructor(private readonly path: string, private readonly protectedStorage?: ProtectedStringStorage) {}
 
   isAvailable(): boolean {
-    return safeStorage.isEncryptionAvailable();
+    return this.protectedStorage?.isEncryptionAvailable() === true;
   }
 
   async set<P extends CloudProviderId>(provider: P, credentials: NonNullable<ProviderCredentials[P]>): Promise<void> {
     if (!this.isAvailable()) {
       throw new Error("Cloud credentials cannot be saved because OS-protected storage is unavailable");
     }
-    await this.#mutate((file) => {
-      file.values[provider] = safeStorage.encryptString(JSON.stringify(credentials)).toString("base64");
+    await this.#mutate(async (file) => {
+      file.values[provider] = (await this.protectedStorage!.encryptString(JSON.stringify(credentials))).toString("base64");
     });
   }
 
@@ -32,7 +37,7 @@ export class CloudCredentialStore {
     const encoded = (await this.#readCurrent()).values[provider];
     if (!encoded) return undefined;
     try {
-      return JSON.parse(safeStorage.decryptString(Buffer.from(encoded, "base64"))) as ProviderCredentials[P];
+      return JSON.parse(await this.protectedStorage!.decryptString(Buffer.from(encoded, "base64"))) as ProviderCredentials[P];
     } catch {
       throw new Error(`${provider} cloud credentials could not be decrypted; reconnect the account`);
     }
@@ -44,21 +49,21 @@ export class CloudCredentialStore {
 
   async setSessionSecret(sessionId: string, value: string): Promise<void> {
     if (!this.isAvailable()) throw new Error("OS-protected storage is unavailable");
-    await this.#mutate((file) => {
-      file.values[`session:${sessionId}`] = safeStorage.encryptString(value).toString("base64");
+    await this.#mutate(async (file) => {
+      file.values[`session:${sessionId}`] = (await this.protectedStorage!.encryptString(value)).toString("base64");
     });
   }
 
   async getSessionSecret(sessionId: string): Promise<string | undefined> {
     if (!this.isAvailable()) return undefined;
     const encoded = (await this.#readCurrent()).values[`session:${sessionId}`];
-    return encoded ? safeStorage.decryptString(Buffer.from(encoded, "base64")) : undefined;
+    return encoded ? await this.protectedStorage!.decryptString(Buffer.from(encoded, "base64")) : undefined;
   }
 
   async setSessionEnvironment(sessionId: string, environment: Record<string, string>): Promise<void> {
     if (!this.isAvailable()) throw new Error("OS-protected storage is unavailable");
-    await this.#mutate((file) => {
-      file.values[`session-environment:${sessionId}`] = safeStorage.encryptString(JSON.stringify(environment)).toString("base64");
+    await this.#mutate(async (file) => {
+      file.values[`session-environment:${sessionId}`] = (await this.protectedStorage!.encryptString(JSON.stringify(environment))).toString("base64");
     });
   }
 
@@ -67,7 +72,7 @@ export class CloudCredentialStore {
     const encoded = (await this.#readCurrent()).values[`session-environment:${sessionId}`];
     if (!encoded) return undefined;
     try {
-      const value = JSON.parse(safeStorage.decryptString(Buffer.from(encoded, "base64"))) as unknown;
+      const value = JSON.parse(await this.protectedStorage!.decryptString(Buffer.from(encoded, "base64"))) as unknown;
       if (!value || typeof value !== "object" || Array.isArray(value)
         || Object.values(value).some((item) => typeof item !== "string")) throw new Error();
       return value as Record<string, string>;
@@ -85,15 +90,15 @@ export class CloudCredentialStore {
 
   async setBinding(id: string, value: string): Promise<void> {
     if (!this.isAvailable()) throw new Error("OS-protected storage is unavailable");
-    await this.#mutate((file) => {
-      file.values[`binding:${id}`] = safeStorage.encryptString(value).toString("base64");
+    await this.#mutate(async (file) => {
+      file.values[`binding:${id}`] = (await this.protectedStorage!.encryptString(value)).toString("base64");
     });
   }
 
   async getBinding(id: string): Promise<string | undefined> {
     if (!this.isAvailable()) return undefined;
     const encoded = (await this.#readCurrent()).values[`binding:${id}`];
-    return encoded ? safeStorage.decryptString(Buffer.from(encoded, "base64")) : undefined;
+    return encoded ? await this.protectedStorage!.decryptString(Buffer.from(encoded, "base64")) : undefined;
   }
 
   async removeBinding(id: string): Promise<void> {
@@ -124,10 +129,10 @@ export class CloudCredentialStore {
     return this.#read();
   }
 
-  async #mutate(mutation: (file: EncryptedCredentialFileV1) => void): Promise<void> {
+  async #mutate(mutation: (file: EncryptedCredentialFileV1) => void | Promise<void>): Promise<void> {
     const operation = this.#mutationTail.then(async () => {
       const file = await this.#read();
-      mutation(file);
+      await mutation(file);
       await this.#write(file);
     });
     this.#mutationTail = operation.catch(() => undefined);

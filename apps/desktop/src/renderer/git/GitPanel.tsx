@@ -100,10 +100,12 @@ function GitContent({
 
 export function GitView({
   cwd,
+  cloudOwned,
   onClose,
   showToast,
 }: {
   cwd: string;
+  cloudOwned: boolean;
   onClose: () => void;
   showToast: (message: string, severity?: "info" | "warn" | "error") => void;
 }) {
@@ -117,6 +119,12 @@ export function GitView({
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeq.current;
+    if (cloudOwned) {
+      setLoading(false);
+      setStatus(null);
+      setError(null);
+      return;
+    }
     setLoading(true); setError(null);
     try {
       const res = await window.vibe.gitStatus(cwd);
@@ -127,19 +135,23 @@ export function GitView({
       if (seq !== refreshSeq.current) return;
       setError(err instanceof Error ? err.message : "Failed"); setLoading(false);
     }
-  }, [cwd]);
+  }, [cloudOwned, cwd]);
 
   useEffect(() => {
     void refresh();
     return () => { refreshSeq.current += 1; };
   }, [refresh]);
   useEffect(() => {
+    if (cloudOwned) {
+      setGhAvailable(false);
+      return;
+    }
     let cancelled = false;
     void window.vibe.ghCheckAvailable()
       .then((res) => { if (!cancelled) setGhAvailable(res.available); })
       .catch(() => { if (!cancelled) setGhAvailable(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [cloudOwned]);
 
   const runOp = useCallback(async (op: () => Promise<GitOpResult>, successMsg?: string) => {
     setBusy(true);
@@ -191,13 +203,21 @@ export function GitView({
       <ActivityPanelHeader
         titleId="git-panel-title"
         title="Git"
-        subtitle={status
-          ? `${status.branch}${status.clean ? " · clean" : ` · ${status.entries.length} changed`}`
-          : "Branches, changes, and history"}
+        subtitle={cloudOwned
+          ? "Local controls pause while Cloud owns this session"
+          : status
+            ? `${status.branch}${status.clean ? " · clean" : ` · ${status.entries.length} changed`}`
+            : "Branches, changes, and history"}
         onClose={onClose}
         closeLabel="Close git panel"
       />
 
+      {cloudOwned ? (
+        <div className="settings-empty" role="status">
+          <p>The Git panel targets the local base, so its controls pause while this session runs in Cloud.</p>
+          <p>Use the Cloud terminal for remote Git commands, or return the session to Local for these controls.</p>
+        </div>
+      ) : <>
       <div className="git-panel-actions" aria-label="Git actions">
         <button type="button" className="button" disabled={busy} onClick={() => void runOp(() => window.vibe.gitFetch({ cwd }))}>Fetch</button>
         <button type="button" className="button" disabled={busy} onClick={() => void runOp(() => window.vibe.gitPull({ cwd }))}>Pull</button>
@@ -235,6 +255,7 @@ export function GitView({
           showToast={showToast}
         />
       </div>
+      </>}
     </section>
   );
 }

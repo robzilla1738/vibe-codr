@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import type { CloudProviderId, ProviderCredentials, SandboxProvider } from "../../shared/cloud";
 import { E2BSandboxProvider, VercelSandboxProvider } from "./providers";
+import { getAuth } from "@vercel/sandbox/dist/auth/index.js";
 
 const live = process.env.VIBE_LIVE_CLOUD === "1";
 const e2bLive = live && Boolean(process.env.E2B_API_KEY?.trim());
-const vercelLive = live && ["VERCEL_TOKEN", "VERCEL_TEAM_ID", "VERCEL_PROJECT_ID"].every((name) => Boolean(process.env[name]?.trim()));
+const vercelLive = live && Boolean(process.env.VERCEL_TOKEN?.trim() || getAuth()?.token?.trim());
 
 describe("paid cloud provider contract", () => {
   test.skipIf(!e2bLive)("E2B create/upload/start/reconnect/suspend/resume/download/destroy", async () => {
@@ -14,9 +15,9 @@ describe("paid cloud provider contract", () => {
 
   test.skipIf(!vercelLive)("Vercel create/upload/start/reconnect/suspend/resume/download/destroy", async () => {
     await exercise(new VercelSandboxProvider(), {
-      token: required("VERCEL_TOKEN"),
-      teamId: required("VERCEL_TEAM_ID"),
-      projectId: required("VERCEL_PROJECT_ID"),
+      ...(process.env.VERCEL_TOKEN?.trim() ? { token: process.env.VERCEL_TOKEN.trim() } : {}),
+      ...(process.env.VERCEL_TEAM_ID?.trim() ? { teamId: process.env.VERCEL_TEAM_ID.trim() } : {}),
+      ...(process.env.VERCEL_PROJECT_ID?.trim() ? { projectId: process.env.VERCEL_PROJECT_ID.trim() } : {}),
     }, "vercel");
   }, 240_000);
 });

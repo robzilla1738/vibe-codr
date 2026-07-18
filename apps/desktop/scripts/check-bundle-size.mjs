@@ -4,8 +4,13 @@ import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const assets = resolve("out/renderer/assets");
+const rendererNotices = resolve("out/renderer/THIRD_PARTY_LICENSES.txt");
 if (!existsSync(assets)) {
   console.error("Renderer assets missing — run `npm run build` before verify:bundle");
+  process.exit(1);
+}
+if (!existsSync(rendererNotices) || (await stat(rendererNotices)).size < 1_000) {
+  console.error("Renderer third-party notices missing — production chunks must keep extracted license text");
   process.exit(1);
 }
 const files = (await readdir(assets)).filter((name) => name.endsWith(".js"));
@@ -48,6 +53,7 @@ if (total > totalBudget || largest > chunkBudget) {
 }
 
 console.log(`Renderer bundle budget OK: ${total} total bytes, ${largest} largest chunk`);
+console.log(`Renderer third-party notices OK: ${rendererNotices}`);
 
 // Host binary budget when present (pack / copy-host). Not required for verify
 // after a renderer-only build, but fail loud if an oversized host is staged.

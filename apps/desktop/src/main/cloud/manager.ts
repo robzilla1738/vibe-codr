@@ -1,18 +1,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { app } from "electron";
-import {
-  CLOUD_MODEL_ACCESS_VERSION,
-  CLOUD_RUNTIME_PROFILE_VERSION,
-  CLOUD_RUNTIME_REVISION,
-  createCloudRuntimeProfile,
-  sealCloudModelAccess,
-  type CloudRuntimeProfileV1,
-} from "../../../../../packages/shared/src/cloud-runtime";
 import { globalConfigPath, projectConfigPath, readConfigFile, writeConfigFileValidated } from "../../shared/config-io";
 import { validateConfig } from "../../shared/config-validate";
 import { cloudSessionNeedsRuntimeRepair, isCloudSessionMutationLocked, isCloudSessionRemoteOwned } from "../../shared/cloud";
+import { parseCloudSettingsPatch } from "../../shared/cloud-settings";
 import type {
   CloudCommandHandle,
   CloudCommandResult,
@@ -32,7 +24,15 @@ import type { EngineSnapshot } from "../../shared/types";
 import type { HandoffPreparation, PortableSessionArchiveV1 } from "../../shared/handoff";
 import type { EngineTransportController } from "../engine-transport-controller";
 import { CloudSessionCatalog } from "./catalog";
-import { CloudCredentialStore } from "./credential-store";
+import { CloudCredentialStore, type ProtectedStringStorage } from "./credential-store";
+import {
+  CLOUD_MODEL_ACCESS_VERSION,
+  CLOUD_RUNTIME_PROFILE_VERSION,
+  CLOUD_RUNTIME_REVISION,
+  createCloudRuntimeProfile,
+  sealCloudModelAccess,
+  type CloudRuntimeProfileV1,
+} from "./cloud-runtime";
 import { assertPublicProviderDomains } from "./domain-validation";
 import {
   ambientCloudModelEnvironment,
@@ -79,6 +79,7 @@ interface HandoffRequest {
 }
 
 interface CloudSettingsFileV1 extends CloudSettingsPublic { schemaVersion: 1 }
+export interface CloudRuntimeLocation { isPackaged: boolean; appPath: string; resourcesPath: string }
 
 export class CloudManager {
   readonly #catalog: CloudSessionCatalog;
@@ -97,12 +98,18 @@ export class CloudManager {
 
   onStatus: ((event: CloudStatusEvent) => void) | null = null;
 
-  constructor(private readonly transport: EngineTransportController, userData = app.getPath("userData")) {
+  constructor(private readonly transport: EngineTransportController, userData: string, protectedStorage?: ProtectedStringStorage) {
     this.#catalog = new CloudSessionCatalog(join(userData, "cloud", "sessions.json"));
-    this.#credentials = new CloudCredentialStore(join(userData, "cloud", "credentials.enc.json"));
+    this.#credentials = new CloudCredentialStore(join(userData, "cloud", "credentials.enc.json"), protectedStorage);
     this.#settingsPath = join(userData, "cloud", "settings.json");
     this.#providers = { e2b: new E2BSandboxProvider(), vercel: new VercelSandboxProvider() };
   }
+
+  runtimeLocation: CloudRuntimeLocation = {
+    isPackaged: false,
+    appPath: process.env.VIBE_ELECTRON_ROOT ?? process.cwd(),
+    resourcesPath: process.env.VIBE_ELECTRON_ROOT ?? process.cwd(),
+  };
 
   async settings(): Promise<CloudSettingsPublic> {
     const settings = await this.#readSettings();
@@ -116,17 +123,18 @@ export class CloudManager {
     };
   }
 
-  async updateSettings(patch: Partial<Pick<CloudSettingsPublic, "experimentalEnabled" | "transferModelCredentials" | "lastProvider" | "autoPauseMinutes" | "deleteOnReturn" | "allowedDomains" | "additionalExclusions">>): Promise<CloudSettingsPublic> {
-    await this.#mutateSettings((current) => ({ ...current, ...patch, schemaVersion: 1 }));
+  async updateSettings(patch: unknown): Promise<CloudSettingsPublic> {
+    const validated = parseCloudSettingsPatch(patch);
+    await this.#mutateSettings((current) => ({ ...current, ...validated, schemaVersion: 1 }));
     return this.settings();
   }
 
   async connect<P extends CloudProviderId>(provider: P, credentials: NonNullable<ProviderCredentials[P]>) {
     if (!this.#credentials.isAvailable()) throw new Error("Cloud setup requires OS-protected credential storage");
-    await this.#providers[provider].connectAccount(credentials);
+    const resolvedCredentials = await this.#providers[provider].connectAccount(credentials);
     const result = await this.#providers[provider].test();
     if (!result.ok) throw new Error(result.error);
-    await this.#credentials.set(provider, credentials);
+    await this.#credentials.set(provider, resolvedCredentials as NonNullable<ProviderCredentials[P]>);
     await this.#mutateSettings((settings) => {
       settings.providers[provider] = { configured: true, lastTest: Date.now(), ...(result.account ? { account: result.account } : {}) };
       settings.lastProvider = provider;
@@ -273,7 +281,7 @@ export class CloudManager {
     if (!this.#credentials.isAvailable()) throw new Error("Cloud handoff requires OS-protected credential storage");
     await this.#loadProvider(request.provider);
     const provider = this.#providers[request.provider];
-    const revision = await engineRevision();
+    const revision = await engineRevision(this.runtimeLocation);
     const eventSequence = this.#engineEventSequence;
     let snapshot = await this.transport.local.rpc("snapshot") as EngineSnapshot;
     const handoffStartedAt = Date.now();
@@ -319,6 +327,7 @@ export class CloudManager {
         details: snapshot.details,
         requiredModels: models,
       });
+      await assertPublicProviderDomains(settings.allowedDomains);
       const prior = await this.#catalog.get(snapshot.sessionId);
       if (prior) {
         const action = isCloudSessionRemoteOwned(prior.status) ? "reconnect or resume it locally" : "delete the retained cloud copy";
@@ -384,7 +393,7 @@ export class CloudManager {
         relayOnlyCapabilities: ["macos-apps", "local-browser", "ollama", "lm-studio", "local-mcp"],
         additionalExclusions: settings.additionalExclusions,
       });
-      const runtime = await findRuntimeArtifact(revision);
+      const runtime = await findRuntimeArtifact(revision, this.runtimeLocation);
       const sandboxName = `vibe-${transfer.manifest.workspaceId}-${snapshot.sessionId.slice(-8)}`;
       await this.#catalog.patch(snapshot.sessionId, { sandboxName });
       this.#emit(snapshot.sessionId, "transferring", `Creating ${request.provider === "e2b" ? "E2B" : "Vercel"} sandbox`, 0.26, "creating", handoffStartedAt);
@@ -485,7 +494,7 @@ export class CloudManager {
         this.transport.switchToRemote(
           { url, accessToken, ...(endpoint.headers ? { headers: endpoint.headers } : {}) },
           { cwd: `${base}/project`, resume: snapshot.sessionId },
-          { preserveLocal: true },
+          { preserveLocal: true, sourceCwd: request.cwd },
         ),
       );
       const remoteSnapshot = await this.transport.snapshotForHandoff();
@@ -717,7 +726,7 @@ export class CloudManager {
         throw legacyRepairError("This Cloud session does not have a reviewed provider route. Return it to Local before reconnecting.");
       }
       const approvedEnvironment = [...(entry.credentialEnvironment ?? [])].sort();
-      const pinnedEnvironment = Object.keys(modelEnvironment ?? {}).sort();
+      const pinnedEnvironment = Object.keys(modelEnvironment).sort();
       if (!allowLegacyCredentialless && (approvedEnvironment.length !== pinnedEnvironment.length
         || approvedEnvironment.some((name, index) => name !== pinnedEnvironment[index]))) {
         throw legacyRepairError("The protected Cloud model-access snapshot no longer matches the reviewed handoff. Return it to Local before reconnecting.");
@@ -744,8 +753,8 @@ export class CloudManager {
         legacyRecoveryRuntime = !(await runtimeSupportsModelEnvelope(provider, entry.sandboxId, runtimeDirectory));
         await stopExistingCloudRuntime(provider, entry.sandboxId);
       } else if (needsRepair) {
-        const revision = await engineRevision();
-        const runtime = await findRuntimeArtifact(revision);
+        const revision = await engineRevision(this.runtimeLocation);
+        const runtime = await findRuntimeArtifact(revision, this.runtimeLocation);
         await provider.upload(entry.sandboxId, `${base}/runtime.tar.gz`, runtime.data);
         runtimeDirectory = `${base}/runtime-next`;
         await runRequired(provider, entry.sandboxId, "sh", ["-lc", `set -eu; rm -rf '${runtimeDirectory}'; mkdir -p '${runtimeDirectory}'; tar -xzf '${base}/runtime.tar.gz' -C '${runtimeDirectory}'; cd '${runtimeDirectory}'; sh install-runtime.sh`], undefined, {
@@ -800,7 +809,7 @@ export class CloudManager {
     const reconnect = this.transport.switchToRemote(
       { url, accessToken: token, ...(endpoint.headers ? { headers: endpoint.headers } : {}) },
       { cwd: `${base}/project`, resume: sessionId },
-      { preserveLocal: entry.handoffTransition?.direction === "cloud-to-local" },
+      { preserveLocal: entry.handoffTransition?.direction === "cloud-to-local", sourceCwd: entry.sourceRoot },
     );
     const id = daemon ? await awaitRemoteEngineReady(daemon, reconnect) : await reconnect;
     this.#remoteSessionId = id;
@@ -838,7 +847,7 @@ export class CloudManager {
     }
     await this.#loadProvider(entry.provider);
     const provider = this.#providers[entry.provider];
-    const revision = await engineRevision();
+    const revision = await engineRevision(this.runtimeLocation);
     let preparation: HandoffPreparation | undefined;
     let provisionalLocal = false;
     let portableImported = false;
@@ -2228,15 +2237,15 @@ function cloudRuntimeErrorCode(value: string): CloudFailureDetails["code"] {
   return "setup-failed";
 }
 
-async function findRuntimeArtifact(revision: string): Promise<{ path: string; data: Buffer }> {
-  const roots = app.isPackaged
-    ? [join(process.resourcesPath, "cloud-runtime")]
+async function findRuntimeArtifact(revision: string, runtime: CloudRuntimeLocation): Promise<{ path: string; data: Buffer }> {
+  const roots = runtime.isPackaged
+    ? [join(runtime.resourcesPath, "cloud-runtime")]
     : [
         ...(process.env.VIBE_CODR_ROOT
           ? [resolve(process.env.VIBE_CODR_ROOT, "dist", "cloud-runtime")]
           : []),
-        resolve(app.getAppPath(), "..", "..", "dist", "cloud-runtime"),
-        resolve(app.getAppPath(), "..", "vibe-codr", "dist", "cloud-runtime"),
+        resolve(runtime.appPath, "..", "..", "dist", "cloud-runtime"),
+        resolve(runtime.appPath, "..", "vibe-codr", "dist", "cloud-runtime"),
       ];
   for (const root of roots) {
     try {
@@ -2255,10 +2264,10 @@ async function findRuntimeArtifact(revision: string): Promise<{ path: string; da
   throw new Error("The revision-locked cloud runtime is missing. Run npm run build:cloud-runtime in vibe-codr.");
 }
 
-async function engineRevision(): Promise<string> {
-  const paths = app.isPackaged
-    ? [join(process.resourcesPath, "app.asar", "ENGINE_COMMIT"), join(process.resourcesPath, "ENGINE_COMMIT")]
-    : [resolve(app.getAppPath(), "ENGINE_COMMIT")];
+async function engineRevision(runtime: CloudRuntimeLocation): Promise<string> {
+  const paths = runtime.isPackaged
+    ? [join(runtime.resourcesPath, "app.asar", "ENGINE_COMMIT"), join(runtime.resourcesPath, "ENGINE_COMMIT")]
+    : [resolve(runtime.appPath, "ENGINE_COMMIT")];
   for (const path of paths) {
     try { return (await readFile(path, "utf8")).trim(); } catch { /* next */ }
   }

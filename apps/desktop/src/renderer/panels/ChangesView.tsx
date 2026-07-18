@@ -131,12 +131,14 @@ function NumberedFilePreview({ path, text }: { path: string; text: string | null
 export function ChangesView({
   files,
   cwd,
+  cloudOwned,
   focusPath,
   onClose,
   onRevealFile,
 }: {
   files: ChangedFile[];
   cwd: string | null;
+  cloudOwned: boolean;
   focusPath?: string | null;
   onClose: () => void;
   onRevealFile: (path: string) => void;
@@ -233,6 +235,15 @@ export function ChangesView({
       setDiffError(null);
       return;
     }
+    // The engine-authored changed-file event is authoritative in Cloud. The
+    // local checkout may have diverged since handoff and must never overwrite
+    // that remote diff with a fresh local Git query.
+    if (cloudOwned) {
+      setWorkingDiff(null);
+      setDiffError(null);
+      setDiffLoading(false);
+      return;
+    }
     let cancelled = false;
     setDiffLoading(true);
     setDiffError(null);
@@ -247,7 +258,7 @@ export function ChangesView({
       if (!cancelled) setDiffLoading(false);
     });
     return () => { cancelled = true; };
-  }, [cwd, selectedFile?.added, selectedFile?.diff, selectedFile?.removed, selectedPath]);
+  }, [cloudOwned, cwd, selectedFile?.added, selectedFile?.diff, selectedFile?.removed, selectedPath]);
 
   const selectedDiff = workingDiff?.diff
     ?? (isUnifiedDiff(selectedFile?.diff) ? selectedFile.diff : undefined);

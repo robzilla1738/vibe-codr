@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": [
+      "node"
+    ],
+    "baseUrl": "..",
+    "paths": {
+      "@shared/*": [
+        "src/shared/*"
+      ]
+    }
+  },
+  "include": [
+    "qrcode-terminal.d.ts",
+    "server.ts",
+    "../src/main/engine-bridge.ts",
+    "../src/main/host-resolver.ts",
+    "../src/shared/protocol.ts",
+    "../src/shared/commands.ts",
+    "../src/shared/events.ts",
+    "../src/shared/runtime-guards.ts",
+    "../src/shared/stdin-write-queue.ts",
+    "protocol.ts",
+    "../src/main/terminal-manager.ts",
+    "../src/shared/terminal.ts",
+    "../src/shared/cwd-allowlist.ts"
+  ]
+}

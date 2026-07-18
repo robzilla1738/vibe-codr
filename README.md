@@ -223,6 +223,8 @@ npm --prefix apps/desktop run verify
 npm --prefix apps/desktop run test:coverage
 npm --prefix apps/desktop run smoke:bridge
 npm --prefix apps/desktop run test:e2e
+npm --prefix apps/desktop run smoke:packaged:relay
+npm --prefix apps/desktop/mobile test
 ```
 
 `bun run verify:all` runs the strongest combined local gate. CI additionally builds the locked cloud runtime and performs packaged macOS and Windows smoke tests.
@@ -243,6 +245,9 @@ The desktop engine lock is `apps/desktop/ENGINE_COMMIT`. It must name a commit i
 - Reviewed Cloud model access moves only as a sealed, session-bound envelope,
   is deleted after remote startup, and is injected into the engine—not Cloud
   terminals. Health, logs, and catalog records expose names only.
+- Continue on Phone launches a desktop-owned relay. Plaintext pairing is limited
+  to private LAN/Tailnet addresses; public routing requires WSS, and protected
+  credentials remain in the desktop process instead of relay argv or environment.
 - Tool output and protocol frames are bounded. Web fetches block private-network targets and pin verified DNS results across redirects.
 - Project config cannot silently enable hooks, plugins, permissive rules, arbitrary provider redirects, or unsafe MCP transports unless global trust allows it.
 - Crash logs are local and redacted.

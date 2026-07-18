@@ -71,6 +71,7 @@ const ALLOW_DECLARATION_DRIFT = new Map([
 ]);
 
 const pairs = [
+  ["packages/shared/src/cloud-runtime.ts", "src/main/cloud/cloud-runtime.ts", {}],
   ["packages/providers/src/runtime-metadata.ts", "src/shared/provider-runtime-metadata.ts", {}],
   ["packages/providers/src/provider-manifest.ts", "src/shared/provider-manifest.ts", {}],
   ["packages/shared/src/commands.ts", "src/shared/commands.ts", { extras: true }],

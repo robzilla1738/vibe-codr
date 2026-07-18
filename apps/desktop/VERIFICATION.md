@@ -24,7 +24,7 @@ Quick gate before shipping Electron shell changes. Repo: [vbcode-electron](https
 - Confirm packaging rejects dirty engine runtime inputs and outbound handoff
   rejects a portable archive whose session ID or canonical source root differs
   from the active workspace.
-- `npm test -- --run src/main/cloud/cloud-supervision.test.ts src/main/cloud/session-continuity.test.ts src/main/cloud/workspace-transfer.test.ts src/shared/cloud-handoff-ux.test.ts src/main/remote-engine-transport.test.ts src/shared/protocol.test.ts`
+- `npm test -- --run src/main/cloud/cloud-runtime.test.ts src/main/cloud/cloud-supervision.test.ts src/main/cloud/session-continuity.test.ts src/main/cloud/workspace-transfer.test.ts src/shared/cloud-handoff-ux.test.ts src/main/remote-engine-transport.test.ts src/shared/protocol.test.ts`
   covers protected return paths and Git history, branch/index-only divergence,
   recursive submodule commit restoration, exact mode rollback, remote-session
   identity/model/history continuity before ownership commit, stale same-name
@@ -36,15 +36,29 @@ Quick gate before shipping Electron shell changes. Repo: [vbcode-electron](https
   session-filtered accessible progress,
   renderer RPC privilege separation, and archive verification.
 - `npm run test:cloud:live` runs the paid, opt-in E2B and Vercel lifecycle
-  contracts with `E2B_API_KEY`, `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and
-  `VERCEL_PROJECT_ID`. Fresh green output is required within seven days of a
+  contracts with `E2B_API_KEY` and either `VERCEL_TOKEN` or an authenticated
+  local Vercel CLI session; `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` are
+  optional scope overrides. Fresh green output is required within seven days of a
   release; the default unit suite skips these resource-creating tests.
+- 2026-07-17 local release audit: both provider contracts passed against live
+  accounts. E2B completed create/upload/start/reconnect/suspend/resume/download/
+  destroy; Vercel completed the same lifecycle using the authenticated CLI
+  session and removed its named sandbox afterward.
 - The E2B live contract must fetch its allowlisted registry domain while using
   the required `allowOut` plus `denyOut: [ALL_TRAFFIC]` policy, then prove
   pause/resume and destruction. This is the regression gate for E2B's 400
   network-policy response.
-- Paid opt-in suites must additionally cover the packaged runtime's authenticated
-  PTY and preview channels before stable release.
+- `VIBE_LIVE_PACKAGED_CLOUD=1 E2B_API_KEY=… npm run smoke:cloud:packaged`
+  exercises the installed-style Electron boundary: protected provider setup,
+  deterministic temporary-project bootstrap, engine/workspace/model handoff,
+  authenticated remote README preview, a real command through the isolated
+  persistent PTY, verified clean return, and delete-on-return cleanup.
+- 2026-07-17 packaged release audit: the unsigned macOS package with engine lock
+  `82c9abcb53b8` passed that full E2B journey. The authenticated health response
+  matched the sealed credential names and required-model profile, the preview
+  returned the fixture's Cloud README, the Cloud PTY returned its command output,
+  and return restored the original workspace without divergence before removing
+  the catalog entry and deleting the sandbox.
 - Both provider contracts must prove privileged control startup (`id -u` is 0),
   while runtime tests prove engine/PTY children receive the dedicated non-root
   UID/GID and cannot inherit the control bearer or one-shot file path.
@@ -60,8 +74,9 @@ Quick gate before shipping Electron shell changes. Repo: [vbcode-electron](https
 - Reopen coverage must restore a durable Needs-your-Mac request from snapshot,
   replay events held during remote activation, and authorize only the verified
   divergent worktree returned by the main-process manager.
-- Never remove the experimental flag while either provider suite or the durable
-  local-capability relay acceptance suite is missing.
+- Never remove the experimental flag while either provider suite is stale, the
+  durable local-capability relay acceptance suite is missing, or Vercel
+  credential brokering remains unverified.
 
 ## Automated
 
@@ -113,6 +128,9 @@ may be empty when every project is archived). Prefer live suite output over froz
 Settings, Sessions, and the xterm runtime must remain in deferred chunks: aggregate
 renderer payload may include them, but the initial/largest chunk retains its
 budget.
+The renderer build extracts repeated legal banners into
+`out/renderer/THIRD_PARTY_LICENSES.txt`; `verify:bundle` requires that shipped
+notice file as well as the JavaScript budgets.
 `npm ci` must finish the `install-electron` prefetch before Vitest starts; this
 prevents parallel test workers from racing Electron 43's lazy binary download.
 
@@ -142,6 +160,8 @@ and run the Electron harness without installing that native module.
 GitHub CI (`.github/workflows/ci.yml`) runs `verify`, coverage floors,
 `smoke:bridge`, and Electron E2E on Linux, plus explicitly unsigned native-host
 packaged smokes on macOS and Windows and a validated NSIS/update-feed build.
+It independently installs, typechecks, and tests the Expo client, while the
+root TypeScript gate also covers the packaged relay entrypoint.
 A `v<package-version>` tag triggers
 `.github/workflows/release.yml`, which gates publication on both platform jobs:
 it signs and notarizes the hardened arm64 app/DMG/ZIP, validates Gatekeeper and
@@ -158,11 +178,13 @@ The unified v0.6.1 source baseline is 622 passing unit tests (2 paid-provider
 tests skipped) and 12 Electron E2E
 scenarios. The packaged smoke also stops the active host and proves that an idle
 project-index request transparently starts and reaps the bundled helper host;
-the bridge suite applies the same lifecycle to an exact session mutation.
+the bridge suite applies the same lifecycle to an exact session mutation, and
+`smoke:packaged:relay` proves the installed Continue-on-Phone entrypoint resumes
+through the bundled host and releases ownership cleanly.
 Cloud handoff ships behind its experimental setting: ownership, reconnect,
 workspace-return, and recovery contracts are release-gated, while promotion to
-stable still requires the paid E2B/Vercel and durable relay gates in
-`ACCEPTANCE.md`.
+stable still requires a current provider audit, the durable local-capability
+relay gate, and verified Vercel credential brokering in `ACCEPTANCE.md`.
 
 For the v0.6.4 handoff boundary, focused release verification is:
 
@@ -267,9 +289,11 @@ Codr wordmark remains visible rather than switching to a plain text fallback.
 npm run build:icon   # assets/icon.png → assets/icon.icns
 npm run pack         # macOS
 npm run smoke:packaged
+npm run smoke:packaged:relay
 # On Windows:
 npm run pack:win
 npm run smoke:packaged
+npm run smoke:packaged:relay
 ```
 
 `pack` is intentionally unsigned and disables hardened runtime only for local/CI

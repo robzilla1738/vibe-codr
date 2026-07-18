@@ -52,6 +52,8 @@ describe("cloud handoff progress UX", () => {
     expect(sheet).toContain("All project files, including Git-ignored files");
     expect(sheet).toContain("Include model access");
     expect(sheet).toContain("includeModelCredentials");
+    expect(sheet).toContain("Continuing enables it for this Mac");
+    expect(sheet).toContain("updateCloudSettings({ experimentalEnabled: true })");
     expect(sheet).toContain("Stays on this Mac");
     expect(sheet).toContain('role="radiogroup"');
   });

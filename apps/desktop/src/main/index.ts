@@ -5,7 +5,7 @@ import { chmod, open as fsOpen, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { MessageBoxSyncOptions } from "electron";
-import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, session, shell } from "electron";
 import { readTextFileCapped } from "../shared/capped-read";
 import type { EngineCommand } from "../shared/commands";
 import { isAllowedCwd, isAllowedProjectRoot, isAllowedRevealPath, projectCwdAllowlist } from "../shared/cwd-allowlist";
@@ -28,12 +28,55 @@ import { registerGitIpc } from "./git-ipc";
 import { enrichedEnv } from "./host-resolver";
 import { assertTrustedIpc, assertTrustedSender, getMainWindow, setMainWindow } from "./ipc-security";
 import { TerminalManager } from "./terminal-manager";
+import { MobileRelayController } from "./mobile-relay-controller";
 
 let mainWindow: BrowserWindow | null = null;
 let settingsDirty = false;
 let appUpdater: AppUpdaterController | null = null;
 const bridge = new EngineTransportController();
-const cloudManager = new CloudManager(bridge);
+const cloudManager = new CloudManager(bridge, app.getPath("userData"), safeStorage);
+cloudManager.runtimeLocation = { isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath };
+let lastDesktopCwd = "";
+let lastDesktopSessionId = "";
+
+const mobileRelay = new MobileRelayController({
+  getParent: () => mainWindow,
+  releaseDesktop: async () => {
+    if (cloudManager.ownershipTransitioning) throw new Error("Wait for the current cloud handoff to finish first.");
+    if (bridge.isRemote) throw new Error("Return this session to Local before moving control to your phone.");
+    if (bridge.isRunning) await bridge.stop();
+  },
+  resumeDesktop: (sessionId, cwd) => {
+    if (sessionId) lastDesktopSessionId = sessionId;
+    if (cwd) lastDesktopCwd = cwd;
+    setTimeout(() => sendMenuAction("continueLatest"), 150);
+  },
+});
+
+async function startMobileRemoteControl(): Promise<void> {
+  if (!lastDesktopCwd) {
+    const options: import("electron").MessageBoxOptions = {
+      type: "info",
+      title: "Mobile Remote Control",
+      message: "Open a project or chat first.",
+      detail: "Vibe needs an active workspace before it can continue the same session on your phone.",
+      buttons: ["OK"],
+    };
+    if (mainWindow) await dialog.showMessageBox(mainWindow, options); else await dialog.showMessageBox(options);
+    return;
+  }
+  try { await mobileRelay.start(lastDesktopCwd, lastDesktopSessionId || undefined); }
+  catch (error) {
+    const options: import("electron").MessageBoxOptions = {
+      type: "error",
+      title: "Mobile Remote Control",
+      message: error instanceof Error ? error.message : String(error),
+      buttons: ["OK"],
+    };
+    if (mainWindow) await dialog.showMessageBox(mainWindow, options); else await dialog.showMessageBox(options);
+    sendMenuAction("continueLatest");
+  }
+}
 
 function confirmDiscardSettings(parent?: BrowserWindow | null): boolean {
   if (!settingsDirty) return true;
@@ -331,6 +374,11 @@ function buildApplicationMenu(): void {
           accelerator: "CmdOrCtrl+Shift+J",
           click: () => sendMenuAction("toggleJobs"),
         },
+        { type: "separator" as const },
+        {
+          label: "Continue on Phone…",
+          click: () => void startMobileRemoteControl(),
+        },
       ],
     },
     // ── Window ──────────────────────────────────────────────────────────
@@ -458,7 +506,8 @@ function wireBridge(): void {
     sendToRenderer("engine:event", event);
   };
   bridge.onFatal = (message) => sendToRenderer("engine:fatal", message);
-  bridge.onReady = (sessionId) => sendToRenderer("engine:ready", sessionId);
+  bridge.onReady = (sessionId) => { lastDesktopSessionId = sessionId; sendToRenderer("engine:ready", sessionId); };
+  bridge.onTerminalEvent = (event) => sendToRenderer("terminal:event", event);
   cloudManager.onStatus = (status) => sendToRenderer("cloud:status", status);
 }
 
@@ -521,6 +570,8 @@ function registerIpc(): void {
         // Only after a successful host start — failed bootstrap must not widen
         // git/config/fs IPC to an unopened path.
         projectCwdAllowlist.add(message.cwd);
+        lastDesktopCwd = message.cwd;
+        lastDesktopSessionId = sessionId;
         return { ok: true as const, sessionId, launch: bridge.lastLaunchDescription };
       } catch (err) {
         return {
@@ -798,6 +849,13 @@ function registerIpc(): void {
             return { kind: "error" as const, error: "Clipboard write is limited to opened project roots" };
           }
           const filename = `vibe-clip-${randomUUID()}.png`;
+          if (opts?.cwd && bridge.isRemote) {
+            const path = `.vibe/clipboard/${filename}`;
+            const uploaded = await bridge.remoteWriteFile(opts.cwd, path, png, 0o600);
+            return uploaded.ok
+              ? { kind: "image" as const, path }
+              : { kind: "error" as const, error: uploaded.error };
+          }
           let dir = clipboardTempRoot;
           let abs = join(dir, filename);
           if (opts?.cwd) {
@@ -933,11 +991,10 @@ function registerIpc(): void {
     ) {
       return { ok: false as const, error: "Invalid terminal request" };
     }
-    return terminalManager.open({
-      cwd: request.cwd,
-      cols: request.cols,
-      rows: request.rows,
-    });
+    const terminalRequest = { cwd: request.cwd, cols: request.cols, rows: request.rows };
+    return bridge.isRemote
+      ? bridge.remoteTerminalOpen(terminalRequest)
+      : terminalManager.open(terminalRequest);
   });
 
   ipcMain.handle("terminal:write", (event, request) => {
@@ -945,7 +1002,9 @@ function registerIpc(): void {
     if (!request || typeof request !== "object" || typeof request.id !== "string" || typeof request.data !== "string") {
       return { ok: false as const, error: "Invalid terminal input" };
     }
-    return terminalManager.write(request.id, request.data);
+    return bridge.isRemote
+      ? bridge.remoteTerminalWrite(request.id, request.data)
+      : terminalManager.write(request.id, request.data);
   });
 
   ipcMain.handle("terminal:resize", (event, request) => {
@@ -959,7 +1018,9 @@ function registerIpc(): void {
     ) {
       return { ok: false as const, error: "Invalid terminal size" };
     }
-    return terminalManager.resize(request.id, request.cols, request.rows);
+    return bridge.isRemote
+      ? bridge.remoteTerminalResize(request.id, request.cols, request.rows)
+      : terminalManager.resize(request.id, request.cols, request.rows);
   });
 
   ipcMain.handle("app:getPath", (event, name: "home" | "userData") => {
@@ -1015,13 +1076,16 @@ function registerIpc(): void {
       if (!opts || typeof opts.cwd !== "string" || typeof opts.path !== "string") {
         return { ok: false, error: "Invalid path" };
       }
-      if (!isAllowedCwd(opts.cwd)) {
+      if (!bridge.isRemote && !isAllowedCwd(opts.cwd)) {
         return { ok: false, error: "cwd is not an opened project root" };
       }
       const maxBytes = Math.min(
         256_000,
         Math.max(1024, Number.isFinite(opts.maxBytes) ? Math.trunc(opts.maxBytes!) : 65_536),
       );
+      if (bridge.isRemote) {
+        return bridge.remoteReadTextFile(opts.cwd, opts.path, maxBytes);
+      }
       const located = resolvePathInsideRoot(opts.cwd, opts.path, {
         realpathSync,
         existsSync,
@@ -1129,6 +1193,7 @@ function cleanupForQuit(): Promise<void> {
   terminalManager.dispose();
   quitCleanupPromise = Promise.race([
     (async () => {
+      await mobileRelay.stopForQuit();
       // Always try to reap when we still own a child (isRunning tracks exit
       // codes, not proc.killed — soft-kill alone must not skip cleanup).
       if (bridge.isRunning) {

@@ -1,5 +1,7 @@
 import type { EngineCommand } from "../shared/commands";
+import type { CappedReadResult } from "../shared/capped-read";
 import type { HostRpcParams, RpcMethod } from "../shared/protocol";
+import type { TerminalCommandResult, TerminalEvent, TerminalOpenRequest, TerminalOpenResult } from "../shared/terminal";
 import type { EngineSnapshot } from "../shared/types";
 import { estimateJsonUtf8Bytes } from "../shared/json-size";
 import { isEngineSnapshot } from "../shared/runtime-guards";
@@ -11,11 +13,14 @@ export class EngineTransportController implements EngineTransport {
   readonly local = new EngineBridge();
   #active: EngineTransport = this.local;
   #remote: RemoteEngineTransport | null = null;
+  #remoteCwd: string | null = null;
+  #remoteSourceCwd: string | null = null;
   #remoteActivationEvents: Array<{ event: unknown; bytes: number }> | null = null;
   #remoteActivationBytes = 0;
   #localLifecycleTail: Promise<void> = Promise.resolve();
 
   onEvent: ((event: unknown) => void) | null = null;
+  onTerminalEvent: ((event: TerminalEvent) => void) | null = null;
   onFatal: ((message: string) => void) | null = null;
   onReady: ((sessionId: string) => void) | null = null;
 
@@ -33,6 +38,8 @@ export class EngineTransportController implements EngineTransport {
       // its PTYs, and jobs continue until an explicit return or destroy action.
       if (this.#remote) await this.#remote.disposeForQuit();
       this.#remote = null;
+      this.#remoteCwd = null;
+      this.#remoteSourceCwd = null;
       this.#remoteActivationEvents = null;
       this.#remoteActivationBytes = 0;
       this.#active = this.local;
@@ -46,7 +53,7 @@ export class EngineTransportController implements EngineTransport {
   async switchToRemote(
     connection: { url: string; accessToken: string; headers?: Record<string, string> },
     options: EngineStartOptions,
-    handoff: { preserveLocal?: boolean } = {},
+    handoff: { preserveLocal?: boolean; sourceCwd?: string } = {},
   ): Promise<string> {
     if (this.#remote) {
       await this.#remote.disposeForQuit();
@@ -55,6 +62,8 @@ export class EngineTransportController implements EngineTransport {
     if (!handoff.preserveLocal && this.local.isRunning) await this.local.stop();
     const remote = new RemoteEngineTransport(connection);
     this.#remote = remote;
+    this.#remoteCwd = options.cwd;
+    this.#remoteSourceCwd = handoff.sourceCwd ?? options.cwd;
     this.#active = remote;
     this.#remoteActivationEvents = [];
     this.#remoteActivationBytes = 0;
@@ -66,6 +75,8 @@ export class EngineTransportController implements EngineTransport {
       this.#remoteActivationEvents = null;
       this.#remoteActivationBytes = 0;
       if (this.#remote === remote) this.#remote = null;
+      this.#remoteCwd = null;
+      this.#remoteSourceCwd = null;
       if (this.#active === remote) {
         this.#active = this.local;
         this.#wire(this.local);
@@ -83,6 +94,8 @@ export class EngineTransportController implements EngineTransport {
     if (!remote) throw new Error("Cloud transport is unavailable for ownership detach");
     await remote.detachForHandoff();
     if (this.#remote === remote) this.#remote = null;
+    this.#remoteCwd = null;
+    this.#remoteSourceCwd = null;
     this.#remoteActivationEvents = null;
     this.#remoteActivationBytes = 0;
     this.#active = this.local;
@@ -140,6 +153,8 @@ export class EngineTransportController implements EngineTransport {
   async stop(): Promise<void> {
     await this.#active.stop();
     if (this.#active !== this.local) this.#remote = null;
+    this.#remoteCwd = null;
+    this.#remoteSourceCwd = null;
     this.#remoteActivationEvents = null;
     this.#remoteActivationBytes = 0;
     this.#active = this.local;
@@ -151,6 +166,41 @@ export class EngineTransportController implements EngineTransport {
   }
 
   send(command: EngineCommand): void { this.#active.send(command); }
+
+  isRemoteWorkspaceCwd(cwd: string): boolean {
+    return this.isRemote && (this.#remoteCwd === cwd || this.#remoteSourceCwd === cwd);
+  }
+
+  remoteTerminalOpen(request: TerminalOpenRequest): Promise<TerminalOpenResult> {
+    if (!this.#remote || this.#active !== this.#remote || !this.isRemoteWorkspaceCwd(request.cwd)) {
+      return Promise.resolve({ ok: false, error: "Cloud terminal is unavailable for this workspace" });
+    }
+    return this.#remote.terminalOpen(request);
+  }
+
+  remoteTerminalWrite(id: string, data: string): TerminalCommandResult {
+    if (!this.#remote || this.#active !== this.#remote) return { ok: false, error: "Cloud terminal is unavailable" };
+    return this.#remote.terminalWrite(id, data);
+  }
+
+  remoteTerminalResize(id: string, cols: number, rows: number): TerminalCommandResult {
+    if (!this.#remote || this.#active !== this.#remote) return { ok: false, error: "Cloud terminal is unavailable" };
+    return this.#remote.terminalResize(id, cols, rows);
+  }
+
+  remoteReadTextFile(cwd: string, path: string, maxBytes: number): Promise<CappedReadResult> {
+    if (!this.#remote || this.#active !== this.#remote || !this.isRemoteWorkspaceCwd(cwd)) {
+      return Promise.resolve({ ok: false, error: "Cloud file preview is unavailable for this workspace" });
+    }
+    return this.#remote.readTextFile(path, maxBytes);
+  }
+
+  remoteWriteFile(cwd: string, path: string, data: Buffer, mode?: number): Promise<TerminalCommandResult> {
+    if (!this.#remote || this.#active !== this.#remote || !this.isRemoteWorkspaceCwd(cwd)) {
+      return Promise.resolve({ ok: false, error: "Cloud file upload is unavailable for this workspace" });
+    }
+    return this.#remote.writeFile(path, data, mode);
+  }
 
   /** Read the provisional remote snapshot without releasing activation events.
    * The renderer's later attach remains the sole hydration boundary. */
@@ -191,6 +241,11 @@ export class EngineTransportController implements EngineTransport {
   listProjectsForIndex(): Promise<unknown> { return this.local.listProjectsForIndex(); }
 
   #wire(transport: EngineTransport): void {
+    if (transport instanceof RemoteEngineTransport) {
+      transport.onTerminalEvent = (event) => {
+        if (this.#active === transport) this.onTerminalEvent?.(event);
+      };
+    }
     transport.onEvent = (event) => {
       if (!(this.#active === transport || transport === this.local && this.#active === this.local)) return;
       if (transport === this.#remote && this.#remoteActivationEvents) {

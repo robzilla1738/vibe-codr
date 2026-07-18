@@ -24,3 +24,6 @@ tools/ui-preview/shots/
 
 # Agent goal-tracking artifacts
 .goalgraph/
+
+# Local Vibe Codr runtime state
+.vibe/

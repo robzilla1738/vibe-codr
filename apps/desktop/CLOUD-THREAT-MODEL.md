@@ -7,7 +7,8 @@ SDK, provider file API ↔ guest, authenticated WebSocket ↔ `cloud-agentd`, an
 `cloud-agentd` ↔ the unchanged NDJSON engine host.
 
 The renderer receives provider readiness and progress metadata only. Provider,
-session, and bound model credentials remain in main-process `safeStorage`.
+session, and bound model credentials remain in main-process `safeStorage` at
+rest; a handoff uploads only a session-bound encrypted model-access envelope.
 Ownership, portable export/import, and handoff recovery RPCs are rejected at
 the renderer IPC boundary and are callable only by the main-process controller.
 Workspace and portable archives upload directly through the selected provider

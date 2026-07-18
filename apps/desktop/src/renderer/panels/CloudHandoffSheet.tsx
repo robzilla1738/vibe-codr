@@ -105,6 +105,14 @@ export function CloudHandoffSheet({
       return;
     }
     try {
+      if (settings && !settings.experimentalEnabled) {
+        const enabled = await window.vibe.updateCloudSettings({ experimentalEnabled: true });
+        if (!enabled.ok) {
+          setError(enabled.error);
+          return;
+        }
+        setSettings(enabled.value);
+      }
       const result = await window.vibe.handoffToCloud({
         cwd,
         provider,
@@ -227,7 +235,12 @@ export function CloudHandoffSheet({
             </>
           )}
           {resumeLocal && !cloudSession && <p className="settings-save-error" role="alert">This session is already running locally.</p>}
-          {!settings?.experimentalEnabled && !resumeLocal && <p className="settings-save-error" role="alert">Enable experimental Cloud in Settings → Cloud first.</p>}
+          {settings && !settings.experimentalEnabled && !resumeLocal && (
+            <p className="cloud-cost-note" role="note">
+              <strong>Cloud is experimental</strong>
+              <span>Continuing enables it for this Mac. You can turn it off again in Settings → Cloud.</span>
+            </p>
+          )}
           {!configured && !resumeLocal && <p className="settings-save-error" role="alert">Connect and test {provider === "e2b" ? "E2B" : "Vercel"} in Settings → Cloud first.</p>}
           {error && <p className="settings-save-error" role="alert">{error}</p>}
           {failure && (
@@ -267,7 +280,7 @@ export function CloudHandoffSheet({
 
         <footer className="cloud-handoff-footer">
           <button type="button" className="button" disabled={working} onClick={onClose}>{recoveryRequired ? "Close and recover in Settings" : resumeLocal ? "Keep running in Cloud" : "Keep running locally"}</button>
-          <button type="button" className="button primary" disabled={working || recoveryRequired || (resumeLocal ? !cloudSession : (!settings?.experimentalEnabled || !configured))} onClick={() => void go()}>
+          <button type="button" className="button primary" disabled={working || recoveryRequired || (resumeLocal ? !cloudSession : (!settings || !configured))} onClick={() => void go()}>
             {resumeLocal
               ? working ? "Verifying and syncing…" : "Verify and resume locally"
               : cloudHandoffActionLabel(working, error, failure)}

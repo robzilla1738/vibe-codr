@@ -137,11 +137,12 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 | `npm run verify:source-parity` | AST drift gate against live CLI/shared/bridge sources |
 | `npm run verify:config-shape` | Top-level Settings schema drift gate against the engine `ConfigSchema` |
 | `npm run verify:bundle` | Renderer JavaScript + staged host binary budget |
-| `npm run typecheck` | `tsc` for node + web projects |
+| `npm run typecheck` | `tsc` for Electron node, web, and packaged relay projects |
 | `npm run ui:preview` | Renderer in a browser with a mocked bridge (no engine) |
 | `npm run ui:shots` | Headless screenshot matrix (fails non-zero on capture errors) |
 | `npm run smoke:bridge` | NDJSON bootstrap → snapshot → shutdown |
 | `npm run smoke:packaged` | Packaged app smoke without developer host fallback |
+| `npm run smoke:packaged:relay` | Packaged Continue-on-Phone relay + bundled-host ownership round trip |
 | `npm run copy-host` | Copy host binary into `resources/` (freshness + arch checks) |
 | `npm run pack` / `pack:mac` | Explicitly unsigned macOS dir build for local/CI smoke |
 | `npm run pack:win` | Explicitly unsigned Windows x64 dir build for CI smoke |
@@ -170,6 +171,9 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 - **Persistent contextual terminal:** project sessions open at the project root;
   Chats open at the user's home. Each effective-cwd PTY lives in the main process,
   so closing Terminal or switching views preserves commands and buffered output.
+  Cloud-owned sessions transparently use the authenticated sandbox PTY and file
+  previews; Local/Cloud ownership changes remount the view against the correct
+  workspace, while local Git controls pause until the session returns.
 - **Long-session recovery:** authoritative engine history is enhanced by a bounded
   IndexedDB presentation cache; corrupt, oversized, unsettled, or schema-invalid
   records are discarded and rebuilt instead of entering renderer state, and

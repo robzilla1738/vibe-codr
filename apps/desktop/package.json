@@ -1,6 +1,6 @@
 {
   "name": "vibe-codr-desktop",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "private": true,
   "author": "robzilla1738",
   "license": "MIT",
@@ -22,7 +22,7 @@
     "build:icon": "node scripts/build-icon.mjs",
     "postinstall": "install-electron --no && electron-builder install-app-deps",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p relay/tsconfig.json",
     "lint": "biome lint --error-on-warnings .",
     "verify": "npm run lint && npm test && npm run verify:source-parity && npm run verify:config-shape && npm run typecheck && npm run build && npm run verify:bundle",
     "verify:fast": "npm run lint && npm test && npm run typecheck",
@@ -47,7 +47,10 @@
     "copy-runtime": "node scripts/copy-cloud-runtime.mjs",
     "smoke:bridge": "node scripts/smoke-bridge.mjs",
     "smoke:packaged": "node scripts/smoke-packaged.mjs",
-    "providers:sync": "node scripts/sync-provider-manifest.mjs"
+    "smoke:packaged:relay": "node scripts/smoke-packaged-relay.mjs",
+    "smoke:cloud:packaged": "node scripts/smoke-cloud-packaged.mjs",
+    "providers:sync": "node scripts/sync-provider-manifest.mjs",
+    "relay": "npm --prefix relay start --"
   },
   "dependencies": {
     "@vercel/sandbox": "^2.6.0",
@@ -57,6 +60,7 @@
     "electron-updater": "^6.8.9",
     "lucide-react": "^1.24.0",
     "node-pty": "^1.1.0",
+    "qrcode-terminal": "^0.12.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "streamdown": "^2.5.0",

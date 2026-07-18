@@ -21,6 +21,8 @@ Electron **presentation shell** in `apps/desktop`. Do **not** reimplement `@vibe
 | Concern | File |
 |---------|------|
 | Host spawn + NDJSON | `src/main/engine-bridge.ts` (disposeForQuit preemption, stdin write queue), `host-resolver.ts` (freshness-checked compiled host) |
+| Cloud ownership + runtime | `src/main/cloud/manager.ts`, `cloud-runtime.ts`, `credential-store.ts`, `providers.ts`; contracts in `src/shared/cloud.ts`, `cloud-settings.ts` |
+| Continue on Phone relay | `src/main/mobile-relay-controller.ts`, `relay/`, Expo client in `mobile/`, private-network policy in `src/shared/private-network.ts` |
 | App icon | `assets/icon.png` → `npm run build:icon` → `assets/icon.icns`; unpackaged dock via `src/main/index.ts` |
 | IPC surface | `src/preload/index.ts` → `window.vibe` (`getShellInfo`, full key list in `src/shared/vibe-api-keys.ts`) |
 | Path / capture safety | `src/shared/path-safe.ts`, `capped-read.ts`, `stream-cap.ts`, `cwd-allowlist.ts` |
@@ -73,6 +75,8 @@ npm run ui:preview     # renderer in a browser, mocked window.vibe (no engine)
 npm run ui:shots       # headless screenshots (non-zero exit on capture failure)
 npm run smoke:bridge   # host NDJSON smoke (needs vibe-codr dist host)
 npm run smoke:packaged # launch packaged app against its bundled host
+npm run smoke:packaged:relay # bundled Continue-on-Phone relay + ownership round trip
+npm run smoke:cloud:packaged # opt-in paid packaged Cloud handoff journey
 npm run copy-host      # embed host for pack (freshness + arch checks)
 ```
 

@@ -201,7 +201,7 @@ export function CloudSection({ showToast, onSessionRecovered, onDirtyChange }: {
       </p>
 
       <SettingSection title="Cloud sessions" description="Run the same revision-locked vibe-codr engine in an isolated Linux sandbox.">
-        <SettingField label="Enable experimental Cloud" description="Cloud remains experimental until both opt-in provider contract suites have a fresh green release result.">
+        <SettingField label="Enable experimental Cloud" description="Cloud remains experimental until the local capability relay and Vercel credential broker complete their release gates.">
           <ToggleSwitch checked={settings.experimentalEnabled} onChange={(experimentalEnabled) => void patchSettings({ experimentalEnabled })} />
         </SettingField>
         <SettingField label="Include model access by default" description="Seal a session-scoped snapshot of the active model, configured provider keys, and connected subscription access for the remote engine. Cloud terminals never receive it. You can override this for each session.">
@@ -278,10 +278,10 @@ export function CloudSection({ showToast, onSessionRecovered, onDirtyChange }: {
           </div>
         ) : (
           <>
-            <SettingField label="Vercel access token"><TextInput value={vercelToken} onChange={setVercelToken} placeholder="Token" monospace type="password" /></SettingField>
-            <SettingField label="Team ID"><TextInput value={vercelTeam} onChange={setVercelTeam} placeholder="team_…" monospace /></SettingField>
-            <SettingField label="Project ID"><TextInput value={vercelProject} onChange={setVercelProject} placeholder="prj_…" monospace /></SettingField>
-            <button type="button" className="button primary" disabled={!vercelToken.trim() || !vercelTeam.trim() || !vercelProject.trim() || working === "vercel"} onClick={() => void connect("vercel")}>{working === "vercel" ? "Testing…" : "Connect and test"}</button>
+            <SettingField label="Vercel access token (optional)" description="Leave blank to reuse your Vercel CLI sign-in. Vibe finds an eligible team and creates or reuses the default Sandbox project automatically."><TextInput value={vercelToken} onChange={setVercelToken} placeholder="Use Vercel CLI session" monospace type="password" /></SettingField>
+            <SettingField label="Team ID (optional)" description="Use this only to target a specific team."><TextInput value={vercelTeam} onChange={setVercelTeam} placeholder="Auto-detect" monospace /></SettingField>
+            <SettingField label="Project ID (optional)" description="Requires the team ID above; otherwise Vibe uses the default Sandbox project."><TextInput value={vercelProject} onChange={setVercelProject} placeholder="Auto-create or reuse" monospace /></SettingField>
+            <button type="button" className="button primary" disabled={(!!vercelProject.trim() && !vercelTeam.trim()) || working === "vercel"} onClick={() => void connect("vercel")}>{working === "vercel" ? "Finding workspace and testing…" : vercelToken.trim() ? "Connect and test" : "Use Vercel CLI session"}</button>
           </>
         )}
       </SettingSection>

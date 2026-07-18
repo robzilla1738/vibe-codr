@@ -31,6 +31,7 @@ export function WorkspaceDock({
   cwd,
   project,
   branch,
+  executionTarget,
   sessionOpen,
   changesOpen,
   gitOpen,
@@ -43,6 +44,7 @@ export function WorkspaceDock({
   cwd: string | null;
   project: string;
   branch: string | null;
+  executionTarget: "local" | "cloud";
   sessionOpen: boolean;
   /** True when Session end panel is open focused on file review. */
   changesOpen?: boolean;
@@ -100,7 +102,11 @@ export function WorkspaceDock({
         <DockRow
           label={branch ? `Git · ${branch}` : "Git"}
           ariaLabel="Open git panel"
-          title={cwd ? "Branches, commit, remotes, PRs" : "Open a project first"}
+          title={cwd
+            ? executionTarget === "cloud"
+              ? "Local Git pauses while Cloud owns this session"
+              : "Branches, commit, remotes, PRs"
+            : "Open a project first"}
           active={gitOpen}
           disabled={!cwd}
           onClick={() => onOpen("git")}
@@ -109,7 +115,9 @@ export function WorkspaceDock({
         <DockRow
           label="Terminal"
           ariaLabel="Open project terminal"
-          title="Open an interactive shell in this project"
+          title={executionTarget === "cloud"
+            ? "Open the persistent terminal in the Cloud workspace"
+            : "Open an interactive shell in this project"}
           active={terminalOpen}
           disabled={!cwd}
           onClick={() => onOpen("terminal")}
@@ -126,7 +134,9 @@ export function WorkspaceDock({
         <DockRow
           label="Files"
           ariaLabel="Reveal project in Finder"
-          title={cwd ? "Reveal project in Finder" : "Open a project first"}
+          title={cwd
+            ? executionTarget === "cloud" ? "Reveal the local base in Finder" : "Reveal project in Finder"
+            : "Open a project first"}
           disabled={!cwd}
           onClick={() => onOpen("files")}
           icon={<IconFolderOpen size={15} />}

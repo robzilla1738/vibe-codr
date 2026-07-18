@@ -1,5 +1,8 @@
 import { ALL_TRAFFIC, Sandbox as E2BSandbox } from "e2b";
 import { Sandbox as VercelSandbox } from "@vercel/sandbox";
+import { getAuth, inferScope } from "@vercel/sandbox/dist/auth/index.js";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import type {
   CloudCommandHandle,
   CloudCommandOptions,
@@ -18,9 +21,10 @@ export class E2BSandboxProvider implements SandboxProvider {
   #handles = new Map<string, E2BSandbox>();
   #timeouts = new Map<string, number>();
 
-  async connectAccount(credentials: ProviderCredentials["e2b"]): Promise<void> {
+  async connectAccount(credentials: ProviderCredentials["e2b"]): Promise<NonNullable<ProviderCredentials["e2b"]>> {
     if (!credentials?.apiKey.trim()) throw new Error("E2B API key is required");
     this.#credentials = { apiKey: credentials.apiKey.trim() };
+    return this.#credentials;
   }
 
   async test() {
@@ -217,25 +221,19 @@ export class E2BSandboxProvider implements SandboxProvider {
 
 export class VercelSandboxProvider implements SandboxProvider {
   readonly id = "vercel" as const;
-  #credentials: ProviderCredentials["vercel"] | undefined;
+  #credentials: ResolvedVercelCredentials | undefined;
   #handles = new Map<string, VercelSandbox>();
 
-  async connectAccount(credentials: ProviderCredentials["vercel"]): Promise<void> {
-    if (!credentials?.token.trim() || !credentials.teamId.trim() || !credentials.projectId.trim()) {
-      throw new Error("Vercel token, team ID, and project ID are required");
-    }
-    this.#credentials = {
-      token: credentials.token.trim(),
-      teamId: credentials.teamId.trim(),
-      projectId: credentials.projectId.trim(),
-    };
+  async connectAccount(credentials: ProviderCredentials["vercel"]): Promise<ResolvedVercelCredentials> {
+    this.#credentials = await resolveVercelCredentials(credentials);
+    return this.#credentials;
   }
 
   async test() {
     try {
       const list = await VercelSandbox.list({ ...this.#auth(), limit: 1 });
       await list.toArray();
-      return { ok: true as const };
+      return { ok: true as const, account: `${this.#auth().teamId} · ${this.#auth().projectId}` };
     } catch (error) {
       return { ok: false as const, error: message(error) };
     }
@@ -391,6 +389,29 @@ export class VercelSandboxProvider implements SandboxProvider {
     if (!this.#credentials) throw new Error("Vercel is not connected");
     return this.#credentials;
   }
+}
+
+type ResolvedVercelCredentials = { token: string; teamId: string; projectId: string };
+type VercelScopeResolver = (input: { token: string; teamId?: string; cwd?: string }) => Promise<{ teamId: string; projectId: string }>;
+type VercelAuthReader = () => { token?: string } | null;
+
+export async function resolveVercelCredentials(
+  credentials: ProviderCredentials["vercel"],
+  resolveScope: VercelScopeResolver = inferScope,
+  readAuth: VercelAuthReader = getAuth,
+): Promise<ResolvedVercelCredentials> {
+  const token = credentials?.token?.trim() || readAuth()?.token?.trim();
+  const teamId = credentials?.teamId?.trim() || undefined;
+  const projectId = credentials?.projectId?.trim() || undefined;
+  if (!token) throw new Error("Paste a Vercel access token or sign in once with the Vercel CLI");
+  if (projectId && !teamId) throw new Error("A Vercel project override also requires its team ID");
+  if (teamId && projectId) return { token, teamId, projectId };
+  const scope = await resolveScope({
+    token,
+    ...(teamId ? { teamId } : {}),
+    cwd: join(tmpdir(), "vibe-codr-vercel-scope"),
+  });
+  return { token, teamId: scope.teamId, projectId: scope.projectId };
 }
 
 function normalizeName(value: string): string {

@@ -116,6 +116,81 @@ describe("RemoteEngineTransport", () => {
     await detach;
     expect(transport.isRunning).toBe(false);
   });
+
+  it("routes terminal and bounded file-preview channels through the authenticated agent", async () => {
+    const received: Array<Record<string, unknown>> = [];
+    const { server, url } = await cloudAgent((socket) => {
+      socket.send(JSON.stringify({ channel: "agent", type: "ready", engineSessionId: "session-cloud" }));
+      socket.on("message", (data: RawData) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        received.push(frame);
+        if (frame.channel === "terminal" && frame.op === "create") {
+          socket.send(JSON.stringify({ channel: "terminal", type: "created", id: frame.id, pid: 123 }));
+          socket.send(JSON.stringify({ channel: "terminal", type: "data", id: frame.id, data: "cloud prompt$ " }));
+        }
+        if (frame.channel === "file" && frame.op === "read") {
+          socket.send(JSON.stringify({
+            channel: "file",
+            requestId: frame.requestId,
+            ok: true,
+            contentBase64: Buffer.from("remote file contents").toString("base64"),
+          }));
+        }
+        if (frame.channel === "file" && frame.op === "write") {
+          socket.send(JSON.stringify({ channel: "file", requestId: frame.requestId, ok: true }));
+        }
+      });
+    });
+    servers.push(server);
+    const transport = new RemoteEngineTransport({ url, accessToken: "x".repeat(40) });
+    const terminalEvent = new Promise((resolve) => { transport.onTerminalEvent = resolve; });
+    await transport.start({ cwd: "/home/user/vibe/project", resume: "session-cloud" });
+
+    const opened = await transport.terminalOpen({ cwd: "/home/user/vibe/project", cols: 100, rows: 30 });
+    expect(opened).toMatchObject({ ok: true, cwd: "/home/user/vibe/project", reused: false, shell: "/bin/bash" });
+    if (!opened.ok) throw new Error(opened.error);
+    await expect(terminalEvent).resolves.toMatchObject({ type: "data", id: opened.id, data: "cloud prompt$ ", sequence: 1 });
+    expect(transport.terminalWrite(opened.id, "pwd\n")).toEqual({ ok: true });
+    expect(transport.terminalResize(opened.id, 120, 40)).toEqual({ ok: true });
+    await expect(transport.readTextFile("README.md", 6)).resolves.toEqual({ ok: true, text: "remote", truncated: true });
+    await expect(transport.writeFile(".vibe/clipboard/image.png", Buffer.from("png"), 0o600)).resolves.toEqual({ ok: true });
+    await expect(transport.readTextFile("../outside", 6)).resolves.toEqual({ ok: false, error: "Invalid remote file path" });
+    expect(received).toContainEqual(expect.objectContaining({ channel: "terminal", op: "create", cols: 100, rows: 30 }));
+    expect(received).toContainEqual(expect.objectContaining({ channel: "terminal", op: "write", id: opened.id, data: "pwd\n" }));
+    expect(received).toContainEqual(expect.objectContaining({ channel: "file", op: "read", path: "README.md" }));
+    expect(received).toContainEqual(expect.objectContaining({
+      channel: "file",
+      op: "write",
+      path: ".vibe/clipboard/image.png",
+      contentBase64: Buffer.from("png").toString("base64"),
+      mode: 0o600,
+    }));
+    await transport.disposeForQuit();
+  });
+
+  it("reattaches its deterministic terminal and returns bounded replay after reconnect", async () => {
+    const { server, url } = await cloudAgent((socket) => {
+      socket.send(JSON.stringify({ channel: "agent", type: "ready", engineSessionId: "session-cloud" }));
+      socket.on("message", (data: RawData) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (frame.channel === "terminal" && frame.op === "create") {
+          socket.send(JSON.stringify({ channel: "error", requestId: frame.requestId, error: "terminal already exists" }));
+        } else if (frame.channel === "terminal" && frame.op === "attach") {
+          socket.send(JSON.stringify({ channel: "terminal", type: "replay", id: frame.id, data: "persisted output\n" }));
+        }
+      });
+    });
+    servers.push(server);
+    const transport = new RemoteEngineTransport({ url, accessToken: "x".repeat(40) });
+    await transport.start({ cwd: "/home/user/vibe/project", resume: "session-cloud" });
+
+    await expect(transport.terminalOpen({ cwd: "/home/user/vibe/project", cols: 80, rows: 24 })).resolves.toMatchObject({
+      ok: true,
+      reused: true,
+      replay: "persisted output\n",
+    });
+    await transport.disposeForQuit();
+  });
 });
 
 async function cloudAgent(onConnection: (socket: WebSocket) => void): Promise<{ server: WebSocketServer; url: string }> {

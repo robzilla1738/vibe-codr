@@ -187,6 +187,18 @@ without changing the active chat or scroll position.
 
 ## Interaction contracts
 
+### Mobile handoff
+
+- **Tools → Continue on Phone…** is a main-process ownership handoff, not a new
+  renderer workspace. It finalizes the local engine, launches the packaged LAN
+  relay, and opens a small native modal with a scannable pairing QR.
+- The pairing window stays modal while the phone owns the session so the stale
+  desktop composer cannot submit into a released engine. Closing it returns
+  control; the phone's Return to desktop action does the same remotely.
+- On release, Electron automatically continues the latest copy of the same cwd
+  and session. The native pairing surface remains outside the renderer design
+  system; do not add a duplicate topbar, dock, or activity-lane control.
+
 ### Project rail
 
 - **Sessions** is the first workspace row and shows the total indexed session
@@ -367,6 +379,12 @@ snippet. External links go through `ExternalLink` / host bridge.
   is selected again; app shutdown remains the lifecycle boundary. Shells are
   explicitly interactive login sessions, and a stale PTY id self-heals by
   reopening the effective cwd instead of leaving a dead terminal banner.
+- While Cloud owns the session, Terminal uses the authenticated remote PTY and
+  file review reads from the remote workspace. Closing the sidebar or desktop
+  preserves bounded Cloud replay; crossing the Local/Cloud ownership boundary
+  remounts xterm against the new owner. Git controls pause because they target
+  the local base; remote Git remains available in Terminal. Finder actions stay
+  explicitly local and never masquerade as a Cloud reveal.
 - All activity tabs, headers, labels, and supporting paths use the shared app
   sans stack and tokenized type scale. The xterm grid intentionally uses
   `--font-mono` at 12.5px with neutral letter spacing and a 1.35 line height so

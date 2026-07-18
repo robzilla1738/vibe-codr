@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+## 0.6.9 — 2026-07-17
+
+### Improved
+
+- Continue on Phone now binds only to a private LAN/Tailnet interface and
+  rejects public clients over plaintext WebSockets; routed access remains
+  available through the existing WSS relay path.
+- Packaged Continue on Phone now launches its bundled relay in Electron's Node
+  mode and proxies protected-storage operations back to the desktop main
+  process. Mobile Cloud therefore reuses the same encrypted provider/session
+  access without putting credentials in relay argv or environment variables.
+- Mobile Cloud handoff now mirrors desktop consent: choosing Move session to
+  Cloud enables the feature inline instead of requiring a separate preference
+  toggle first.
+- Mobile now renders durable “Needs your Mac” requests and can deny the
+  unsupported local-only action so a Cloud turn does not remain stuck.
+- Vercel Cloud setup can reuse an authenticated Vercel CLI session without
+  copying credentials. A pasted token still overrides it; the official Sandbox
+  SDK discovers an eligible team and creates or reuses its default project,
+  while team/project IDs remain optional advanced overrides.
+- Added an opt-in paid packaged Cloud smoke covering the real Electron handoff,
+  authenticated remote file preview and PTY, clean return, and sandbox deletion
+  against an exact temporary project—not only provider SDK lifecycle calls.
+- CI now typechecks the bundled relay and independently installs, typechecks,
+  and tests the Expo remote-control client.
+- Renderer bundles now extract repeated third-party license banners into one
+  shipped notice file, reducing startup JavaScript without dropping notices.
+
+### Fixed
+
+- Cloud status refreshes are no longer limited to the open session.
+- Cloud settings updates are runtime-validated, and added egress domains must
+  resolve only to public addresses before a sandbox is created.
+- Cloud model access is now sealed to the session bearer before upload. Probe,
+  daemon startup, and authenticated health all verify the same credential names
+  and required-model profile without putting raw provider keys in the remote
+  daemon launch environment.
+- Cold Cloud-to-Local recovery no longer depends on still-valid model
+  credentials. Current runtimes use a credential-free recovery envelope, while
+  older retained runtimes keep a return-only compatibility path instead of
+  receiving incompatible startup arguments.
+- File previews and the Terminal activity now follow the authenticated Cloud
+  owner instead of silently reading or executing against the local base. Cloud
+  PTYs persist across sidebar close and desktop reconnect; ownership changes
+  remount the terminal cleanly. Local Git controls pause while Cloud owns the
+  session, and Finder actions are labeled as the local base.
+
 ## 0.6.8 — 2026-07-17
 
 ### Fixed

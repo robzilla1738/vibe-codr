@@ -1,8 +1,14 @@
 import type { ProjectSessionSummary, ProjectSummary } from "./protocol";
 import type { CloudSessionStatus } from "./cloud";
 import { isChatsCwd, projectLabel } from "./project-index";
+import {
+  SESSION_BOARD_STORAGE_KEY,
+  sessionBoardKey,
+  type SessionBoardStatus,
+} from "./session-board-persistence";
 
-export type SessionBoardStatus = "active" | "review" | "done";
+export { SESSION_BOARD_STORAGE_KEY, sessionBoardKey, type SessionBoardStatus } from "./session-board-persistence";
+
 export type SessionBoardView = "board" | "list";
 export type SessionBoardSort = "updated" | "oldest" | "title" | "project";
 
@@ -23,8 +29,6 @@ export interface SessionBoardPreferences {
   sort: SessionBoardSort;
   statuses: Record<string, SessionBoardStatus>;
 }
-
-export const SESSION_BOARD_STORAGE_KEY = "vibe.session-board.v1";
 
 export const DEFAULT_SESSION_BOARD_PREFERENCES: SessionBoardPreferences = {
   view: "board",
@@ -66,10 +70,6 @@ export function automaticSessionBoardStatus(state: AutomaticSessionState): Sessi
 const STATUS_VALUES = new Set<SessionBoardStatus>(["active", "review", "done"]);
 const VIEW_VALUES = new Set<SessionBoardView>(["board", "list"]);
 const SORT_VALUES = new Set<SessionBoardSort>(["updated", "oldest", "title", "project"]);
-
-export function sessionBoardKey(cwd: string, sessionId: string): string {
-  return `${cwd}\u0000${sessionId}`;
-}
 
 export function readSessionBoardPreferences(
   storage: Pick<Storage, "getItem">,

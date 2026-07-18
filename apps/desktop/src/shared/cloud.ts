@@ -91,7 +91,7 @@ export interface WorkspaceTransferBundleV1 {
 
 export interface ProviderCredentials {
   e2b?: { apiKey: string };
-  vercel?: { token: string; teamId: string; projectId: string };
+  vercel?: { token?: string; teamId?: string; projectId?: string };
 }
 
 export interface CloudSandboxRecord {
@@ -167,7 +167,7 @@ export interface CloudCommandHandle {
 
 export interface SandboxProvider {
   readonly id: CloudProviderId;
-  connectAccount(credentials: ProviderCredentials[CloudProviderId]): Promise<void>;
+  connectAccount(credentials: ProviderCredentials[CloudProviderId]): Promise<NonNullable<ProviderCredentials[CloudProviderId]>>;
   test(): Promise<{ ok: true; account?: string } | { ok: false; error: string }>;
   create(options: CloudSandboxCreateOptions): Promise<CloudSandboxRecord>;
   get(id: string): Promise<CloudSandboxRecord | null>;

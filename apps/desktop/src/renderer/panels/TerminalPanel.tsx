@@ -30,10 +30,12 @@ function terminalFontFromTokens(): string {
 export function TerminalPanel({
   cwd,
   scope,
+  executionTarget,
   onClose,
 }: {
   cwd: string;
   scope: "chat" | "project";
+  executionTarget: "local" | "cloud";
   onClose: () => void;
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
@@ -173,7 +175,11 @@ export function TerminalPanel({
       <ActivityPanelHeader
         titleId="terminal-panel-title"
         title="Terminal"
-        subtitle={<span className="terminal-panel-subtitle" title={cwd}>{scope === "chat" ? "Home" : "Project"} · {cwd}</span>}
+        subtitle={(
+          <span className="terminal-panel-subtitle" title={cwd}>
+            {executionTarget === "cloud" ? "Cloud" : scope === "chat" ? "Home" : "Project"} · {cwd}
+          </span>
+        )}
         onClose={onClose}
         closeLabel="Close terminal"
         actions={exit || error ? (

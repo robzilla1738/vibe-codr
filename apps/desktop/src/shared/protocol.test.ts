@@ -51,6 +51,29 @@ describe("NDJSON protocol runtime validation", () => {
     }))).toBeNull();
   });
 
+  it("accepts bounded cloud bootstrap requirements and credentials", () => {
+    expect(decodeInbound(JSON.stringify({
+      op: "bootstrap",
+      cwd: "/repo",
+      requiredModels: ["crof/glm-5.2"],
+      runtimeProfile: { schemaVersion: 1, theme: "vibe-dark", details: "normal" },
+      runtimeCredentials: { CROF_API_KEY: "session-secret" },
+    }))).toMatchObject({
+      requiredModels: ["crof/glm-5.2"],
+      runtimeCredentials: { CROF_API_KEY: "session-secret" },
+    });
+    expect(decodeInbound(JSON.stringify({
+      op: "bootstrap",
+      cwd: "/repo",
+      runtimeCredentials: { "invalid-name": "secret" },
+    }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "bootstrap",
+      cwd: "/repo",
+      requiredModels: [],
+    }))).toBeNull();
+  });
+
   it("rejects rpc params with non-string name", () => {
     expect(
       decodeInbound(

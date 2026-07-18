@@ -1,4 +1,4 @@
-# vibe-codr — project notes for agents
+# AGENTS.md — vibe-codr
 
 A model-agnostic coding workspace with desktop and terminal interfaces.
 TypeScript + Bun monorepo. `AGENTS.md` is the canonical project
@@ -23,6 +23,8 @@ memory; `CLAUDE.md` exists as the Claude Code bridge and points back here.
 | `@vibe/macos-bridge` | Runtime-validated NDJSON stdio host for desktop shells: in-process `Engine`, same `EngineCommand`/`UIEvent` contracts as the TUI. Run `bun run macos-bridge`; compile with `bun run build:macos-bridge` → `dist/vibecodr-engine-host` |
 | `@vibe/cli` | `bin/vibecodr` entrypoint (argv, config, headless `-p` vs TUI); the `VERSION` sentinel (`version.ts`, stamped at release) and `vibe upgrade` channel detection (`upgrade.ts`). Release tooling (binary + npm-bundle builds, version stamping) lives in `scripts/release/` |
 | `apps/desktop` | Electron presentation shell, IPC, renderer, Git/diff/terminal panels, Sessions workspace, and desktop packaging. It consumes the engine only through the NDJSON host. |
+| `apps/desktop/mobile` | Expo remote-control client for the authenticated desktop relay; shared engine behavior stays protocol-driven. |
+| `apps/desktop/relay` | Private-LAN/Tailnet or public-WSS handoff relay launched and owned by the desktop main process. |
 
 ## Commands
 
@@ -52,6 +54,9 @@ bun run macos-bridge              # dev: Bun source host on stdio
 bun run build:macos-bridge        # → dist/vibecodr-engine-host (app Debug/Release prefer this)
 npm --prefix apps/desktop run dev
 npm --prefix apps/desktop run verify:ci
+npm --prefix apps/desktop/mobile ci
+npm --prefix apps/desktop/mobile test
+npm --prefix apps/desktop run smoke:packaged:relay
 ```
 
 ## Conventions

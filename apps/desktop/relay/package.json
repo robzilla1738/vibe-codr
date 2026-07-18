@@ -1,0 +1,16 @@
+{
+  "name": "vbcode-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.21.1",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.0"
+  }
+}

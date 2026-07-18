@@ -2,7 +2,7 @@
 
 Manual smoke against OpenTUI / `vibecodr` in the **same project cwd**. Automated:
 `npm test` (current live suite), `npm run test:e2e` (12 scenarios),
-`npm run verify:source-parity` (19 declaration pairs),
+`npm run verify:source-parity` (22 declaration pairs),
 `npm run verify:config-shape` (40 top-level engine fields), and CI
 coverage/bridge/packaged-host gates.
 
@@ -22,7 +22,15 @@ coverage/bridge/packaged-host gates.
 - [x] Model access crosses Cloud as a sealed session envelope, is validated by the actual resumed engine, and is excluded from terminal environments, logs, catalog values, and health values
 - [x] Legacy 0.6.2 Cloud catalog rows repair their runtime in place from the frozen protected credential snapshot only after authenticated engine-idle and graceful shutdown; active terminals defer repair, while failure preserves Cloud ownership and exposes Return Local without prompt replay
 - [x] Cloud return exports as the isolated workload owner and survives tracked deletions
-- [ ] Stable flag removal: fresh live suites for both providers, durable Mac relay, and Vercel broker verification
+- [x] Fresh live E2B/Vercel provider lifecycle suites plus a packaged E2B
+  workspace/model handoff and clean return passed on 2026-07-17
+- [x] Packaged E2B handoff routes file previews and a persistent PTY through the
+  authenticated Cloud agent, then returns cleanly and deletes the sandbox
+- [x] Continue on Phone is main-owned and private-LAN/Tailnet-only over plaintext;
+  public routing requires WSS
+- [ ] Stable flag removal: enable the provider-neutral local integration
+  executor only after its relay acceptance suite and verify Vercel firewall
+  brokering
 
 Engine ownership stays in `@vibe/core`; this app is a presentation shell over NDJSON (`macos-bridge` protocol). Public repo: [vbcode-electron](https://github.com/robzilla1738/vbcode-electron).
 
@@ -633,9 +641,10 @@ npm run dev
 - [x] Project/activity rails, drawer scrims, slash/mention, mode/insert, and
   catalog surfaces retain a short inert closing phase so tokenized exit motion
   completes before unmount; reduced motion skips the delay.
-- [x] Current release gate: 581 unit tests, 12 e2e scenarios, lint, typecheck,
-  build, bundle budget, source parity (21 pairs), config-shape parity (40
-  fields), coverage floors, bridge smoke, and locked-engine packaged-app smoke.
+- [x] Current release gate: live unit/Electron/mobile suites, lint,
+  Electron/renderer/relay/mobile typecheck, build, bundle budget, source parity
+  (22 pairs), config-shape parity (40 fields), coverage floors, bridge smoke,
+  and locked-engine packaged app + Continue-on-Phone relay smokes.
 - [x] Direct macOS/Windows releases publish GitHub-backed updater feeds. Update
   downloads and restarts require consent, and installation waits for the same
   bounded engine/PTY cleanup used by an ordinary app quit.

@@ -2,6 +2,34 @@
 
 Quick gate before shipping Electron shell changes. Repo: [vbcode-electron](https://github.com/robzilla1738/vbcode-electron).
 
+## Performance acceptance
+
+The performance path has deterministic, opt-in budgets in addition to the normal
+correctness suite:
+
+```bash
+# Canonical engine: seeded private Git index versus the legacy empty index
+cd /path/to/vibe-codr
+bun run bench:checkpoint
+
+# Desktop: 20 cold/prewarmed host pairs, 10,000 stream chunks, 2,500 blocks
+cd apps/desktop
+npm run bench:performance
+
+# Paid xAI cache/TTFT canary; never run by CI
+cd /path/to/vibe-codr
+VIBE_LIVE_PERF=1 bun run test:perf:live
+```
+
+The 2026-07-18 local deterministic run recorded a 280.30 ms legacy checkpoint
+median versus 64.01 ms seeded (77.2% lower), a 50.09 ms cold host-fixture
+click-to-ready median versus 0.21 ms when reusing the project-index host (99.6%
+lower), two renderer deliveries for 10,000 adjacent chunks (99.98% fewer), and
+a 2,500-block incremental transcript flush of 0.009 ms p95 / 0.63 ms max.
+These are machine-local fixture results, not provider-generation claims. The
+paid canary records default and Turbo TTFT/cache-token pairs only when explicitly
+enabled; CI never incurs provider spend.
+
 ## Experimental cloud gate
 
 - `cd ../cli && bun test packages/core/src/portable-session.test.ts packages/core/src/session-tools.test.ts`

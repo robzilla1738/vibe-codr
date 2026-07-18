@@ -23,6 +23,7 @@ export class EngineTransportController implements EngineTransport {
   onTerminalEvent: ((event: TerminalEvent) => void) | null = null;
   onFatal: ((message: string) => void) | null = null;
   onReady: ((sessionId: string) => void) | null = null;
+  onTransportWillSwitch: (() => void) | null = null;
 
   constructor() { this.#wire(this.local); }
 
@@ -34,6 +35,7 @@ export class EngineTransportController implements EngineTransport {
 
   start(options: EngineStartOptions): Promise<string> {
     const operation = this.#localLifecycleTail.then(async () => {
+      if (this.#active !== this.local) this.onTransportWillSwitch?.();
       // A project/session switch only detaches this desktop. The cloud owner,
       // its PTYs, and jobs continue until an explicit return or destroy action.
       if (this.#remote) await this.#remote.disposeForQuit();
@@ -55,6 +57,7 @@ export class EngineTransportController implements EngineTransport {
     options: EngineStartOptions,
     handoff: { preserveLocal?: boolean; sourceCwd?: string } = {},
   ): Promise<string> {
+    this.onTransportWillSwitch?.();
     if (this.#remote) {
       await this.#remote.disposeForQuit();
       this.#remote = null;
@@ -90,6 +93,7 @@ export class EngineTransportController implements EngineTransport {
   }
 
   async completeRemoteHandoff(): Promise<void> {
+    this.onTransportWillSwitch?.();
     const remote = this.#remote;
     if (!remote) throw new Error("Cloud transport is unavailable for ownership detach");
     await remote.detachForHandoff();
@@ -151,6 +155,7 @@ export class EngineTransportController implements EngineTransport {
   }
 
   async stop(): Promise<void> {
+    this.onTransportWillSwitch?.();
     await this.#active.stop();
     if (this.#active !== this.local) this.#remote = null;
     this.#remoteCwd = null;
@@ -228,6 +233,7 @@ export class EngineTransportController implements EngineTransport {
   projectIndexRpc(method: RpcMethod, params?: HostRpcParams): Promise<unknown> {
     const operation = this.#localLifecycleTail.then(async () => {
       if (this.local.isReady) return this.local.rpc(method, params);
+      if (method === "listProjects") return this.local.listProjectsForIndex();
       const helper = new EngineBridge();
       try { return await helper.rpcWithTemporaryHost(method, params); }
       finally { await helper.disposeForQuit().catch(() => undefined); }

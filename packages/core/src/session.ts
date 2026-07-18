@@ -11,6 +11,7 @@ import {
   type StructuredQuestion,
   type Task,
   type TaskStatus,
+  type TurnPerformanceSample,
   type UIEvent,
   type Usage,
 } from "@vibe/shared";
@@ -284,6 +285,7 @@ export class Session {
   #costEstimated = false;
   #price: (ModelPrice & { estimated?: boolean }) | undefined;
   #turnMutated = false;
+  #lastPerformance: Omit<TurnPerformanceSample, "postTurnMs" | "totalMs"> | undefined;
   /** Sticky: a DETACHED (background) subagent mutated the workspace after the
    * spawning turn already evaluated didMutate for the green-gate. Survives
    * until the next gateable after-turn clears it so the tree still gets verified. */
@@ -1043,7 +1045,20 @@ export class Session {
   async run(
     input: string,
     images: ImageAttachment[] = [],
-    opts: { display?: string | null; origin?: "user" | "engine"; label?: string } = {},
+    opts: {
+      display?: string | null;
+      origin?: "user" | "engine";
+      label?: string;
+      performance?: {
+        turnId: string;
+        startedAt: number;
+        queueDelayMs: number;
+        hooksMs: number;
+        checkpointMs: number;
+        recallMs: number;
+        attachmentsMs: number;
+      };
+    } = {},
   ): Promise<void> {
     const { bus, registry, toolset, config } = this.#deps;
     this.busy = true;
@@ -1056,6 +1071,19 @@ export class Session {
     this.#toolCallOutputs.clear();
     this.#toolCallAnnotations.clear();
     this.#committedSteps = [];
+    this.#lastPerformance = undefined;
+    const perfStarted = performance.now();
+    const usageBefore = { ...this.#usage };
+    const toolStarts = new Map<string, number>();
+    let modelResolveMs = 0;
+    let contextPrepareMs = 0;
+    let providerRequestAt = 0;
+    let providerTtftMs: number | undefined;
+    let firstReasoningMs: number | undefined;
+    let firstVisibleTextMs: number | undefined;
+    let generationMs = 0;
+    let toolMs = 0;
+    let persistMs = 0;
     // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
     // cancel that arrives mid-turn aborts this turn's signal and the NEXT turn
     // still starts clean — and so a steered prompt isn't run against a stale,
@@ -1099,7 +1127,15 @@ export class Session {
         sources: this.#sources.size ? this.#sources.format() : undefined,
         ...(backgroundFinished?.length ? { backgroundFinished } : {}),
       });
-      this.#pushUser(input, images, opts.display, stateReminder, opts.origin, opts.label);
+      this.#pushUser(
+        input,
+        images,
+        opts.display,
+        stateReminder,
+        opts.origin,
+        opts.label,
+        opts.performance?.turnId,
+      );
       userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
       histRef = this.#history[this.#history.length - 1];
 
@@ -1120,7 +1156,10 @@ export class Session {
       }
       this.#turnGate = this.mode === "plan" ? this.#planGate : undefined;
 
+      const modelResolveStarted = performance.now();
       const model = await this.#resolveWithFallback(registry, config);
+      modelResolveMs = performance.now() - modelResolveStarted;
+      const contextPrepareStarted = performance.now();
       if (this.#aborted()) {
         this.#interrupted = true;
         return;
@@ -1402,7 +1441,7 @@ export class Session {
 
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
       // the stable system prefix so repeated turns don't re-bill the full prompt.
-      const tuning = buildModelTuning(this.model, config);
+      const tuning = buildModelTuning(this.model, config, { sessionId: this.id });
       // Anthropic reports cache_read_input_tokens DISJOINT from input_tokens; fold
       // it into a superset (below) so cost, the live context %, and the compaction
       // trigger all reflect the true prompt size rather than the uncached slice.
@@ -1430,6 +1469,8 @@ export class Session {
       }
 
       await this.#withLimiter(async () => {
+        contextPrepareMs = performance.now() - contextPrepareStarted;
+        providerRequestAt = performance.now();
         const result = streamText({
           model,
           // When caching, the system prompt rides in `messages` with a cache
@@ -1611,7 +1652,30 @@ export class Session {
         // `result.response` rejects, so we record the partial assistant text in
         // the model context too — keeping `#history` and `#modelMessages` in
         // lockstep (otherwise the next turn's context would be missing this turn).
-        const assistant = await this.#consume(result);
+        const assistant = await this.#consume(result, {
+          onPart: (type, toolCallId) => {
+            const now = performance.now();
+            if (
+              providerTtftMs === undefined &&
+              (type === "text-delta" || type === "reasoning-delta" || type === "tool-call")
+            ) {
+              providerTtftMs = now - providerRequestAt;
+            }
+            generationMs = now - providerRequestAt;
+            if (type === "text-delta" && firstVisibleTextMs === undefined) {
+              firstVisibleTextMs = now - perfStarted;
+            }
+            if (type === "reasoning-delta" && firstReasoningMs === undefined) {
+              firstReasoningMs = now - perfStarted;
+            }
+            if (type === "tool-call" && toolCallId) toolStarts.set(toolCallId, now);
+            if ((type === "tool-result" || type === "tool-error") && toolCallId) {
+              const started = toolStarts.get(toolCallId);
+              if (started !== undefined) toolMs += now - started;
+              toolStarts.delete(toolCallId);
+            }
+          },
+        });
         let responseOk = false;
         try {
           const response = await result.response;
@@ -1721,7 +1785,35 @@ export class Session {
         if (histRef && this.#history[this.#history.length - 1] === histRef) this.#history.pop();
       }
       this.busy = false;
+      const persistStarted = performance.now();
       await this.#persist();
+      persistMs = performance.now() - persistStarted;
+      if (opts.performance) {
+        this.#lastPerformance = {
+          turnId: opts.performance.turnId,
+          sessionId: this.id,
+          model: this.model,
+          serviceTier: config.latency.providerTier,
+          startedAt: opts.performance.startedAt,
+          queueDelayMs: opts.performance.queueDelayMs,
+          hooksMs: opts.performance.hooksMs,
+          checkpointMs: opts.performance.checkpointMs,
+          recallMs: opts.performance.recallMs,
+          attachmentsMs: opts.performance.attachmentsMs,
+          modelResolveMs,
+          contextPrepareMs,
+          ...(providerTtftMs !== undefined ? { providerTtftMs } : {}),
+          ...(firstReasoningMs !== undefined ? { firstReasoningMs } : {}),
+          ...(firstVisibleTextMs !== undefined ? { firstVisibleTextMs } : {}),
+          generationMs,
+          toolMs,
+          persistMs,
+          inputTokens: this.#usage.inputTokens - usageBefore.inputTokens,
+          cachedInputTokens:
+            (this.#usage.cachedInputTokens ?? 0) - (usageBefore.cachedInputTokens ?? 0),
+          outputTokens: this.#usage.outputTokens - usageBefore.outputTokens,
+        };
+      }
       bus.emit({ type: "turn-finished", sessionId: this.id });
       bus.emit({ type: "session-idle", sessionId: this.id });
     }
@@ -2110,6 +2202,7 @@ export class Session {
     stateReminder?: string,
     origin: "user" | "engine" = "user",
     label?: string,
+    turnId?: string,
   ): void {
     // The model-facing text: the user's input, then (when present) the workspace
     // state block APPENDED so the user's own words lead and the ambient state
@@ -2151,12 +2244,16 @@ export class Session {
         sessionId: this.id,
         text: display ?? input,
         ...(origin === "engine" ? { origin, ...(label ? { label } : {}) } : {}),
+        ...(turnId ? { turnId } : {}),
       });
     }
   }
 
   /** Translate AI-SDK stream parts into UIEvents and accumulate the message. */
-  async #consume(result: { fullStream: AsyncIterable<unknown> }): Promise<Message | null> {
+  async #consume(
+    result: { fullStream: AsyncIterable<unknown> },
+    timing?: { onPart: (type: string, toolCallId?: string) => void },
+  ): Promise<Message | null> {
     const bus = this.#deps.bus;
     let assistant: Message | null = null;
     const ensure = (): Message => {
@@ -2234,6 +2331,10 @@ export class Session {
         const raw = next.value;
         if (partGate(1)) await new Promise((r) => setTimeout(r, 0));
         const part = raw as Record<string, any>;
+        timing?.onPart(
+          part.type,
+          typeof part.toolCallId === "string" ? part.toolCallId : undefined,
+        );
         switch (part.type) {
           case "text-delta": {
             const delta: string = part.text ?? part.textDelta ?? "";
@@ -2390,6 +2491,12 @@ export class Session {
       void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
     }
     return assistant;
+  }
+
+  takeLastPerformance(): Omit<TurnPerformanceSample, "postTurnMs" | "totalMs"> | undefined {
+    const sample = this.#lastPerformance;
+    this.#lastPerformance = undefined;
+    return sample;
   }
 }
 

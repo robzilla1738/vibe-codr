@@ -836,6 +836,7 @@ const mock = {
   archiveSession: async () => ({ ok: true as const }),
   stop: async () => ({ ok: true as const }),
   quit: () => undefined,
+  recordFirstPaint: () => undefined,
   onEvent: (cb: EventCb) => {
     listeners.add(cb);
     return () => listeners.delete(cb);
@@ -1058,7 +1059,7 @@ const mock = {
 const REQUIRED_VIBE_KEYS = [
   "bootstrap", "send", "rpc", "listProjects", "renameProject", "archiveProject",
   "deleteProject", "renameSession", "deleteSession", "archiveSession", "stop",
-  "quit", "onEvent", "onReady", "onFatal", "onMenuAction", "cloudSettings",
+  "quit", "recordFirstPaint", "onEvent", "onReady", "onFatal", "onMenuAction", "cloudSettings",
   "updateCloudSettings", "connectCloudProvider", "disconnectCloudProvider", "testCloudProvider", "saveCloudCredentialBinding", "removeCloudCredentialBinding",
   "listCloudSessions", "deleteCloudSessionCopy", "recoverLostCloudSession", "handoffToCloud", "reconnectCloudSession", "resumeCloudSessionLocally", "onCloudStatus",
   "setSettingsDirty", "openProject",

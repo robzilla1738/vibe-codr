@@ -1,6 +1,6 @@
-import { mkdir, rm, rename, stat, writeFile, readFile } from "node:fs/promises";
+import { copyFile, mkdir, rm, rename, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createId, type GateSummary } from "@vibe/shared";
 import { killTree } from "@vibe/tools";
 import { globalStateDir } from "./state-dir.ts";
@@ -265,6 +265,37 @@ export class CheckpointManager {
     }
   }
 
+  /**
+   * Populate a private index while preserving the user's index byte-for-byte.
+   * Seeding from Git's real index reuses its stat cache; `git add -A` still
+   * refreshes every tracked/untracked/deleted path into the private file, so the
+   * resulting tree is identical to an empty-index full scan. If the repository
+   * uses an index form Git cannot reopen from the temp location (or the copy
+   * races an index rewrite), retry from the legacy empty-index path.
+   */
+  async #stagePrivateIndex(indexFile: string): Promise<boolean> {
+    const root = this.#gitRoot ?? this.#cwd;
+    const indexPathResult = await this.#git(["rev-parse", "--git-path", "index"]);
+    let seeded = false;
+    if (indexPathResult.ok && indexPathResult.stdout) {
+      const source = isAbsolute(indexPathResult.stdout)
+        ? indexPathResult.stdout
+        : resolve(root, indexPathResult.stdout);
+      try {
+        await copyFile(source, indexFile);
+        seeded = true;
+      } catch {
+        // Unborn/missing/unreadable index: the legacy empty-index path is valid.
+      }
+    }
+    let add = await this.#git(["add", "-A"], { GIT_INDEX_FILE: indexFile });
+    if (!add.ok && seeded) {
+      await rm(indexFile, { force: true }).catch(() => undefined);
+      add = await this.#git(["add", "-A"], { GIT_INDEX_FILE: indexFile });
+    }
+    return add.ok;
+  }
+
   /** Whether `cwd` is inside a git work tree (memoized). */
   async isGitRepo(): Promise<boolean> {
     if (this.#isGit === null) {
@@ -388,7 +419,7 @@ export class CheckpointManager {
       // write-tree, so the checkpoint would record a tree MISSING that file —
       // and a later restore's untracked-cleanup would then delete it as
       // "created since". Bail on a failed add so the snapshot is all-or-nothing.
-      if (!(await this.#git(["add", "-A"], env)).ok) return null;
+      if (!(await this.#stagePrivateIndex(indexFile))) return null;
       const tree = (await this.#git(["write-tree"], env)).stdout;
       if (!tree) return null;
       const head = await this.#git(["rev-parse", "HEAD"]);
@@ -716,8 +747,7 @@ export class CheckpointManager {
       // Stage everything into the throwaway index, then diff the base commit
       // against it — this is base→working-tree, including untracked new files,
       // without ever touching the user's real staging area.
-      const add = await this.#git(["add", "-A"], env);
-      if (!add.ok) return "";
+      if (!(await this.#stagePrivateIndex(indexFile))) return "";
       const r = await this.#git(["diff", "--cached", ref], env);
       if (!r.ok) return "";
       const max = opts.max ?? MAX_DIFF;

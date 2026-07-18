@@ -645,6 +645,26 @@ export function groupIntoTurns(blocks: Block[]): Turn[] {
   return turns;
 }
 
+export function updateGroupedTurns(
+  previousBlocks: readonly Block[],
+  previousTurns: readonly Turn[],
+  blocks: Block[],
+): Turn[] {
+  if (blocks === previousBlocks) return previousTurns as Turn[];
+  if (
+    previousBlocks.length === 0 || blocks.length === 0 ||
+    blocks.length < previousBlocks.length || previousBlocks[0] !== blocks[0]
+  ) return groupIntoTurns(blocks);
+  if (blocks === previousBlocks) return previousTurns as Turn[];
+  let restartAt = blocks.length - 1;
+  while (restartAt > 0 && blocks[restartAt]?.kind !== "user") restartAt -= 1;
+  if (restartAt === 0) return groupIntoTurns(blocks);
+  const restart = blocks[restartAt];
+  if (restart?.kind !== "user") return groupIntoTurns(blocks);
+  const preserveCount = previousTurns.at(-1)?.key === restart.id ? previousTurns.length - 1 : previousTurns.length;
+  return [...previousTurns.slice(0, preserveCount), ...groupIntoTurns(blocks.slice(restartAt))];
+}
+
 /**
  * Turn grouping: map each block to its turn's user-message id, and count the
  * non-user blocks per turn — so tapping a user message can fold (and count) its

@@ -42,6 +42,7 @@ export interface EngineBridgeOptions {
   killWaitMs?: number;
   stdinMessageMaxBytes?: number;
   protocolLineMaxBytes?: number;
+  prewarmTimeoutMs?: number;
   /** Test seam for deterministic stream/process failure injection. */
   onSpawn?: (proc: ChildProcessWithoutNullStreams) => void;
 }
@@ -69,6 +70,8 @@ export class EngineBridge implements EngineTransport {
     reject: (e: Error) => void;
   }> = [];
   private didReady = false;
+  private prewarmed = false;
+  private prewarmTimer: NodeJS.Timeout | undefined;
   private sessionId = "";
   private stderrBuf = "";
   /** Serializes stdin writes behind Node backpressure (drain). */
@@ -105,13 +108,18 @@ export class EngineBridge implements EngineTransport {
 
   start(opts: EngineStartOptions): Promise<string> {
     const request = ++this.startRequest;
-    this.generation += 1;
+    const canReuse = this.prewarmed && this.hasOwnedChild() && !this.didReady;
+    if (!canReuse) this.generation += 1;
     // Supersede a bootstrap that is waiting for ready immediately; its queued
     // lifecycle step then releases so the newest request can retire its child.
     this.failReady(new Error("Engine host stopped"));
     this.failAllRpc(new Error("Engine host stopped"));
     return this.schedule(async () => {
       if (request !== this.startRequest) throw new Error("Engine host stopped");
+      if (canReuse && this.prewarmed && this.hasOwnedChild() && !this.didReady) {
+        this.clearPrewarm();
+        return this.bootstrapCurrent(opts);
+      }
       if (this.hasOwnedChild()) await this.stopCurrent();
       if (request !== this.startRequest) throw new Error("Engine host stopped");
       return this.startCurrent(opts);
@@ -127,7 +135,43 @@ export class EngineBridge implements EngineTransport {
    * bootstrap starts a clean host.
    */
   listProjectsForIndex(): Promise<unknown> {
-    return this.rpcWithTemporaryHost("listProjects");
+    if (this.isReady) return this.rpc("listProjects");
+    const request = ++this.startRequest;
+    this.failReady(new Error("Engine host stopped"));
+    this.failAllRpc(new Error("Engine host stopped"));
+    return this.schedule(async () => {
+      if (request !== this.startRequest) throw new Error("Engine host stopped");
+      if (!this.prewarmed || !this.hasOwnedChild()) {
+        if (this.hasOwnedChild()) await this.stopCurrent();
+        this.spawnCurrent();
+        this.prewarmed = true;
+      }
+      const proc = this.proc;
+      try {
+        const value = await this.rpcUnlocked("listProjects");
+        if (proc && this.proc === proc) this.armPrewarmTimeout(proc);
+        return value;
+      } catch (error) {
+        if (this.proc === proc) await this.stopCurrent();
+        throw error;
+      }
+    });
+  }
+
+  private clearPrewarm(): void {
+    this.prewarmed = false;
+    if (this.prewarmTimer) clearTimeout(this.prewarmTimer);
+    this.prewarmTimer = undefined;
+  }
+
+  private armPrewarmTimeout(proc: ChildProcessWithoutNullStreams): void {
+    if (this.prewarmTimer) clearTimeout(this.prewarmTimer);
+    this.prewarmTimer = setTimeout(() => {
+      if (!this.prewarmed || this.proc !== proc || this.didReady) return;
+      this.clearPrewarm();
+      void this.stop();
+    }, this.options.prewarmTimeoutMs ?? 5 * 60_000);
+    this.prewarmTimer.unref?.();
   }
 
   /**
@@ -455,7 +499,13 @@ export class EngineBridge implements EngineTransport {
   private async startCurrent(opts: EngineStartOptions): Promise<string> {
     // A second bootstrap can arrive while the prior host is still starting.
     // `start` serializes retirement before this method spawns the replacement.
-    const proc = this.spawnCurrent();
+    this.spawnCurrent();
+    return this.bootstrapCurrent(opts);
+  }
+
+  private async bootstrapCurrent(opts: EngineStartOptions): Promise<string> {
+    const proc = this.proc;
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null) throw new Error("Engine host not running");
     const generation = this.generation;
 
     try {
@@ -543,6 +593,7 @@ export class EngineBridge implements EngineTransport {
   }
 
   private async stopCurrent(): Promise<void> {
+    this.clearPrewarm();
     this.generation += 1;
     this.failReady(new Error("Engine host stopped"));
     this.failAllRpc(new Error("Engine host stopped"));

@@ -178,6 +178,67 @@ test("streams reasoning and text deltas exactly once in provider order", async (
   ]);
 });
 
+test("turn performance instrumentation is content-free and correlates the user event", async () => {
+  const model = new MockLanguageModelV3({
+    doStream: async () =>
+      stream([
+        { type: "stream-start", warnings: [] },
+        { type: "reasoning-start", id: "r1" },
+        { type: "reasoning-delta", id: "r1", delta: "private reasoning" },
+        { type: "reasoning-end", id: "r1" },
+        { type: "text-start", id: "t1" },
+        { type: "text-delta", id: "t1", delta: "private answer" },
+        { type: "text-end", id: "t1" },
+        { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+      ]) as never,
+  });
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus,
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/test",
+    mode: "execute",
+  });
+  const startedAt = Date.now();
+  const events = await collect(bus, () =>
+    session.run("private prompt", [], {
+      performance: {
+        turnId: "turn-opaque",
+        startedAt,
+        queueDelayMs: 1,
+        hooksMs: 2,
+        checkpointMs: 3,
+        recallMs: 4,
+        attachmentsMs: 5,
+      },
+    }),
+  );
+  expect(events.find((event) => event.type === "user-message")).toMatchObject({
+    turnId: "turn-opaque",
+  });
+  const sample = session.takeLastPerformance();
+  expect(sample).toMatchObject({
+    turnId: "turn-opaque",
+    sessionId: session.id,
+    model: "mock/test",
+    queueDelayMs: 1,
+    hooksMs: 2,
+    checkpointMs: 3,
+    recallMs: 4,
+    attachmentsMs: 5,
+    inputTokens: 10,
+    outputTokens: 5,
+  });
+  expect(sample?.providerTtftMs).toBeGreaterThanOrEqual(0);
+  expect(sample?.firstReasoningMs).toBeGreaterThanOrEqual(0);
+  expect(sample?.firstVisibleTextMs).toBeGreaterThanOrEqual(0);
+  expect(JSON.stringify(sample)).not.toContain("private");
+});
+
 test("persists after a turn and can be resumed with prior context", async () => {
   const reply = (text: string) =>
     stream([

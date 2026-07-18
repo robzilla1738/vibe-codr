@@ -25,6 +25,10 @@ const sessionScrollPositions = new TtlLruCache<string, number>(
   128,
   24 * 60 * 60 * 1_000,
 );
+const messageTimeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
 
 /** JS smooth-scroll must honor the OS reduced-motion setting (I19/P04); CSS
  *  `scroll-behavior: smooth` is already disabled by the media query, but
@@ -41,7 +45,7 @@ function scrollBehavior(pref: ScrollBehavior): ScrollBehavior {
 }
 
 function formatMessageTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(timestamp);
+  return messageTimeFormatter.format(timestamp);
 }
 
 function memoryNotice(text: string): { count: string; details: string[] } | null {
@@ -451,6 +455,81 @@ const BlockView = memo(function BlockView({
   }
 });
 
+const TranscriptTurn = memo(function TranscriptTurn({
+  turn, folded, itemStart, itemHidden, itemRevealPage, active, density, theme, now,
+  onSetBlockExpanded, onToggleTurn, onEdit, onRevealTurnItems,
+}: {
+  turn: Turn; folded: boolean; itemStart: number; itemHidden: number; itemRevealPage: number;
+  active: boolean; density: TranscriptDensity; theme: string; now: number;
+  onSetBlockExpanded: (id: number, expanded: boolean) => void; onToggleTurn: (key: number) => void;
+  onEdit: (text: string) => void; onRevealTurnItems: (turnKey: number, hidden: number) => void;
+}) {
+  const renderedItems = groupTranscriptItems(turn.items, itemStart).map((item) => {
+    if (item.kind === "activity") {
+      return (
+        <ThinkingGroup
+          key={`work-${turn.key}`}
+          groupId={`work-items-${turn.key}`}
+          blocks={item.blocks}
+          active={active}
+          density={density}
+          theme={theme}
+          now={now}
+          onSetExpanded={onSetBlockExpanded}
+        />
+      );
+    }
+    return (
+      <BlockView
+        key={item.block.id}
+        block={item.block}
+        density={density}
+        theme={theme}
+        now={now}
+        onSetExpanded={onSetBlockExpanded}
+      />
+    );
+  });
+  return (
+    <section className="turn" aria-label={turn.user?.origin === "engine" ? "Automatic follow-up turn" : turn.user ? "Conversation turn" : "Assistant activity"}>
+      <div className="turn-content" id={`turn-items-${turn.key}`}>
+        {turn.user?.origin === "engine" ? (
+          <details className="block-automation">
+            <summary className="block-automation-summary">
+              <span className="block-automation-mark" aria-hidden><IconContinue size={13} /></span>
+              <span>{turn.user.label ?? "Automatic follow-up"}</span>
+              <span className="block-automation-hint">Engine context</span>
+            </summary>
+            <div className="block-automation-text">{turn.user.text}</div>
+          </details>
+        ) : turn.user ? (
+          <div className="block-user-row"><div className="block-user-stack">
+            <div className="block-user" role="button" tabIndex={0} aria-expanded={!folded}
+              aria-controls={`turn-items-${turn.key}`} aria-label={folded ? "Expand user message" : "Collapse user message"}
+              onClick={() => onToggleTurn(turn.key)} onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onToggleTurn(turn.key); }
+              }}>
+              <span className="block-user-text">{turn.user.text}</span>
+              {folded ? <span className="folded-hint">{turn.items.length} hidden</span> : null}
+            </div>
+            <div className="assistant-actions user-message-actions hover-reveal" role="toolbar" aria-label="User message actions">
+              <CopyButton text={turn.user.text} label="Copy message" />
+              <button type="button" className="assistant-action" onClick={(event) => { event.stopPropagation(); onEdit(turn.user!.text); }} aria-label="Edit message" title="Edit message"><IconRename size={13} /></button>
+              <time className="message-time" dateTime={new Date(turn.user.timestamp).toISOString()}>{formatMessageTime(turn.user.timestamp)}</time>
+            </div>
+          </div></div>
+        ) : null}
+        {!folded && itemHidden > 0 && (
+          <button type="button" className="earlier earlier-items" onClick={() => onRevealTurnItems(turn.key, itemHidden)}>
+            Load {itemRevealPage} earlier item{itemRevealPage === 1 ? "" : "s"}<span className="earlier-meta"> · {itemHidden} hidden</span>
+          </button>
+        )}
+        {!folded && renderedItems}
+      </div>
+    </section>
+  );
+});
+
 export function TranscriptView({
   sessionId,
   turns,
@@ -492,6 +571,7 @@ export function TranscriptView({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const restoringSessionRef = useRef(false);
+  const scrollFrameRef = useRef<number | null>(null);
   const [anchored, setAnchored] = useState(true);
   const [now, setNow] = useState(Date.now());
   const hasLiveTool = turns.some((turn) =>
@@ -529,9 +609,18 @@ export function TranscriptView({
     return () => window.cancelAnimationFrame(frame);
   }, [sessionId]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (restoringSessionRef.current) return;
-    if (anchored) scrollToLatest("auto");
+    if (!anchored) return;
+    if (scrollFrameRef.current != null) window.cancelAnimationFrame(scrollFrameRef.current);
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      scrollToLatest("auto");
+    });
+    return () => {
+      if (scrollFrameRef.current != null) window.cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = null;
+    };
   }, [turns, foldedTurns, density, anchored]);
 
   const handleScroll = () => {
@@ -562,113 +651,16 @@ export function TranscriptView({
           {turns.map((turn) => {
             const folded = foldedTurns.has(turn.key);
             const itemWindow = itemWindowFor(turn.key, turn.items.length);
-            const renderedItems = groupTranscriptItems(turn.items, itemWindow.start).map((item) => {
-              if (item.kind === "activity") {
-                return (
-                  <ThinkingGroup
-                    key={`work-${turn.key}`}
-                    groupId={`work-items-${turn.key}`}
-                    blocks={item.blocks}
-                    active={busy && turn.key === latestTurnKey}
-                    density={density}
-                    theme={theme}
-                    now={now}
-                    onSetExpanded={onSetBlockExpanded}
-                  />
-                );
-              }
-              return (
-                <BlockView
-                  key={item.block.id}
-                  block={item.block}
-                  density={density}
-                  theme={theme}
-                  now={now}
-                  onSetExpanded={onSetBlockExpanded}
-                />
-              );
-            });
+            const active = busy && turn.key === latestTurnKey;
             return (
-              <section
-                className="turn"
+              <TranscriptTurn
                 key={turn.key}
-                aria-label={
-                  turn.user?.origin === "engine"
-                    ? "Automatic follow-up turn"
-                    : turn.user
-                      ? "Conversation turn"
-                      : "Assistant activity"
-                }
-              >
-                <div className="turn-content" id={`turn-items-${turn.key}`}>
-                  {turn.user?.origin === "engine" ? (
-                    <details className="block-automation">
-                      <summary className="block-automation-summary">
-                        <span className="block-automation-mark" aria-hidden>
-                          <IconContinue size={13} />
-                        </span>
-                        <span>{turn.user.label ?? "Automatic follow-up"}</span>
-                        <span className="block-automation-hint">Engine context</span>
-                      </summary>
-                      <div className="block-automation-text">{turn.user.text}</div>
-                    </details>
-                  ) : turn.user ? (
-                    <div className="block-user-row">
-                      <div className="block-user-stack">
-                        <div
-                          className="block-user"
-                          role="button"
-                          tabIndex={0}
-                          aria-expanded={!folded}
-                          aria-controls={`turn-items-${turn.key}`}
-                          aria-label={folded ? "Expand user message" : "Collapse user message"}
-                          onClick={() => onToggleTurn(turn.key)}
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter" || event.key === " ") {
-                              event.preventDefault();
-                              onToggleTurn(turn.key);
-                            }
-                          }}
-                        >
-                          <span className="block-user-text">{turn.user.text}</span>
-                          {folded ? (
-                            <span className="folded-hint">{turn.items.length} hidden</span>
-                          ) : null}
-                        </div>
-                        <div className="assistant-actions user-message-actions hover-reveal" role="toolbar" aria-label="User message actions">
-                          <CopyButton text={turn.user.text} label="Copy message" />
-                          <button
-                            type="button"
-                            className="assistant-action"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onEdit(turn.user!.text);
-                            }}
-                            aria-label="Edit message"
-                            title="Edit message"
-                          >
-                            <IconRename size={13} />
-                          </button>
-                          <time className="message-time" dateTime={new Date(turn.user.timestamp).toISOString()}>
-                            {formatMessageTime(turn.user.timestamp)}
-                          </time>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                  {!folded && itemWindow.hidden > 0 && (
-                    <button
-                      type="button"
-                      className="earlier earlier-items"
-                      onClick={() => onRevealTurnItems(turn.key, itemWindow.hidden)}
-                    >
-                      Load {itemWindow.revealPage} earlier item{itemWindow.revealPage === 1 ? "" : "s"}
-                      <span className="earlier-meta"> · {itemWindow.hidden} hidden</span>
-                    </button>
-                  )}
-                  {!folded && renderedItems}
-                </div>
-              </section>
+                turn={turn} folded={folded} itemStart={itemWindow.start}
+                itemHidden={itemWindow.hidden} itemRevealPage={itemWindow.revealPage}
+                active={active} density={density} theme={theme} now={active ? now : 0}
+                onSetBlockExpanded={onSetBlockExpanded} onToggleTurn={onToggleTurn} onEdit={onEdit}
+                onRevealTurnItems={onRevealTurnItems}
+              />
             );
           })}
         </div>

@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { environmentWithoutControlSecrets, resolveCloudPath, sharedProjectFileMode } from "./server.ts";
+import {
+  environmentWithoutControlSecrets,
+  resolveCloudPath,
+  sharedProjectFileMode,
+  shouldProxyEngineFrame,
+} from "./server.ts";
 
 const roots: string[] = [];
 
@@ -20,10 +25,21 @@ test("cloud control credentials are not inherited by engine or terminal children
   })).toEqual({ PATH: "/usr/bin" });
 });
 
+test("content-free performance samples remain machine-local", () => {
+  expect(shouldProxyEngineFrame({ type: "event", event: { type: "turn-performance" } })).toBe(
+    false,
+  );
+  expect(shouldProxyEngineFrame({ type: "event", event: { type: "assistant-text-delta" } })).toBe(
+    true,
+  );
+});
+
 describe("resolveCloudPath", () => {
   test("accepts a contained path", async () => {
     const root = await temporaryRoot();
-    await expect(resolveCloudPath(root, "nested/file.txt")).resolves.toBe(join(root, "nested/file.txt"));
+    await expect(resolveCloudPath(root, "nested/file.txt")).resolves.toBe(
+      join(root, "nested/file.txt"),
+    );
   });
 
   test("rejects the workspace root and traversal", async () => {

@@ -207,6 +207,7 @@ const UI_EVENT_TYPES = new Set<UIEvent["type"]>([
   "notice",
   "engine-error",
   "turn-finished",
+  "turn-performance",
   "session-idle",
   "engine-idle",
 ]);
@@ -239,6 +240,7 @@ const SESSION_EVENT_TYPES = new Set<UIEvent["type"]>([
   "subagent-activity",
   "subagent-finished",
   "turn-finished",
+  "turn-performance",
   "session-idle",
   "engine-idle",
 ]);
@@ -414,8 +416,20 @@ export function isUIEvent(value: unknown): value is UIEvent {
       return (
         typeof event.text === "string" &&
         (event.origin === undefined || event.origin === "user" || event.origin === "engine") &&
-        optionalString(event.label)
+        optionalString(event.label) &&
+        optionalString(event.turnId)
       );
+    case "turn-performance": {
+      const sample = record(event.sample);
+      return (
+        !!sample &&
+        typeof sample.turnId === "string" &&
+        typeof sample.model === "string" &&
+        (sample.serviceTier === "default" || sample.serviceTier === "priority") &&
+        typeof sample.totalMs === "number" &&
+        Number.isFinite(sample.totalMs)
+      );
+    }
     case "assistant-text-delta":
     case "reasoning-delta":
       return typeof event.delta === "string" && optionalString(event.subagentId);
@@ -615,8 +629,12 @@ export function decodeInbound(line: string): HostInbound | null {
         !optionalString(params.nonce) ||
         !optionalString(params.engineRevision) ||
         !optionalString(params.archivePath) ||
-        (params.providerId !== undefined && params.providerId !== "openai-codex" && params.providerId !== "xai-oauth") ||
-        (params.authMethod !== undefined && params.authMethod !== "browser" && params.authMethod !== "device") ||
+        (params.providerId !== undefined &&
+          params.providerId !== "openai-codex" &&
+          params.providerId !== "xai-oauth") ||
+        (params.authMethod !== undefined &&
+          params.authMethod !== "browser" &&
+          params.authMethod !== "device") ||
         !optionalString(params.authSessionId) ||
         !optionalBoolean(params.provisional) ||
         !optionalSafeNonNegativeInteger(params.expectedGeneration) ||

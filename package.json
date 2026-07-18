@@ -39,6 +39,8 @@
     "test": "turbo run test",
     "smoke:tui": "bun packages/tui/scripts/smoke.ts",
     "smoke:sidebar": "bun packages/tui/scripts/sidebar-smoke.ts",
+    "bench:checkpoint": "bun scripts/bench-checkpoint.ts",
+    "test:perf:live": "VIBE_LIVE_PERF=1 bun scripts/live-xai-performance.ts",
     "inspect:tui": "bun packages/tui/scripts/inspect.ts",
     "macos-bridge": "bun packages/macos-bridge/bin/engine-host.ts",
     "build:macos-bridge": "bun build packages/macos-bridge/bin/engine-host.ts --compile --outfile dist/vibecodr-engine-host",

@@ -767,6 +767,16 @@ export const ConfigSchema = z.object({
     })
     .default({ enabled: true, cacheTools: true, cacheConversation: true }),
   /**
+   * Latency policy. The default preserves provider routing exactly; priority is
+   * an explicit paid acceleration hint and is only forwarded by transports
+   * whose wire contract supports it.
+   */
+  latency: z
+    .object({
+      providerTier: z.enum(["default", "priority"]).default("default"),
+    })
+    .default({ providerTier: "default" }),
+  /**
    * Spend guard. When cumulative session cost crosses `limitUSD`, `warn` emits a
    * notice; `stop` also aborts the turn. No limit set = unbounded.
    */

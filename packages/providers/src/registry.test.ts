@@ -6,6 +6,7 @@ import { type Config, defaultConfig } from "@vibe/config";
 import { builtinProviders } from "./defs.ts";
 import { PROVIDER_MANIFEST } from "./provider-manifest.ts";
 import { ProviderRegistry } from "./registry.ts";
+import type { ProviderDef } from "./types.ts";
 
 function withProvider(id: string, cfg: Record<string, unknown>): Config {
   const base = defaultConfig();
@@ -90,9 +91,14 @@ test("Codex subscription aliases never mistake a public OpenAI key for ChatGPT a
   process.env.CODEX_API_KEY = "legacy-codex-key";
   delete process.env.VIBE_CODEX_OAUTH_TOKEN;
   try {
-    expect(() => reg.resolveAuth("codex", withProvider("codex", {
-      tokenFile: "/definitely/missing/codex-auth.json",
-    }))).toThrow(/VIBE_CODEX_OAUTH_TOKEN/);
+    expect(() =>
+      reg.resolveAuth(
+        "codex",
+        withProvider("codex", {
+          tokenFile: "/definitely/missing/codex-auth.json",
+        }),
+      ),
+    ).toThrow(/VIBE_CODEX_OAUTH_TOKEN/);
   } finally {
     if (previous.openai === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previous.openai;
@@ -106,10 +112,13 @@ test("Codex subscription aliases never mistake a public OpenAI key for ChatGPT a
 test("Codex CLI OAuth supplies its access token and ChatGPT account routing header", async () => {
   const reg = new ProviderRegistry();
   const path = join(mkdtempSync(join(tmpdir(), "vibe-codex-auth-")), "auth.json");
-  await Bun.write(path, JSON.stringify({
-    auth_mode: "chatgpt",
-    tokens: { access_token: "oauth-access", account_id: "account-123" },
-  }));
+  await Bun.write(
+    path,
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: { access_token: "oauth-access", account_id: "account-123" },
+    }),
+  );
   const auth = reg.resolveAuth("codex", withProvider("codex", { tokenFile: path }));
   expect(auth.apiKey).toBe("oauth-access");
   expect(auth.headers?.["ChatGPT-Account-Id"]).toBe("account-123");
@@ -119,8 +128,12 @@ test("xAI routes only Grok 4.5 through Responses", async () => {
   for (const id of ["xai", "xai-oauth"]) {
     const def = builtinProviders().find((provider) => provider.id === id);
     if (!def) throw new Error(`${id} provider missing`);
-    const grok45 = await def.create("grok-4.5", { apiKey: "test-token" }) as { provider?: string };
-    const grokBuild = await def.create("grok-build-0.1", { apiKey: "test-token" }) as { provider?: string };
+    const grok45 = (await def.create("grok-4.5", { apiKey: "test-token" })) as {
+      provider?: string;
+    };
+    const grokBuild = (await def.create("grok-build-0.1", { apiKey: "test-token" })) as {
+      provider?: string;
+    };
     expect(grok45.provider).toBe(`${id}.responses`);
     expect(grokBuild.provider).toBe(`${id}.chat`);
   }
@@ -130,16 +143,69 @@ test("xAI subscription catalog always exposes Grok 4.5 and Grok Build", async ()
   const def = builtinProviders().find((provider) => provider.id === "xai-oauth");
   if (!def) throw new Error("xai-oauth provider missing");
   const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({ data: [] }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  })) as unknown as typeof fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
   try {
-    expect((await def.listModels({ apiKey: "test-token" })).map((model) => model.id))
-      .toEqual(["grok-4.5", "grok-build-0.1"]);
+    expect((await def.listModels({ apiKey: "test-token" })).map((model) => model.id)).toEqual([
+      "grok-4.5",
+      "grok-build-0.1",
+    ]);
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("resolved language models are reused and rejected creations are evicted", async () => {
+  let creates = 0;
+  let fail = false;
+  const def: ProviderDef = {
+    id: "cached-test",
+    auth: { env: [], keyless: true },
+    create: async () => {
+      creates += 1;
+      if (fail) throw new Error("boom");
+      return { specificationVersion: "v2", provider: "test", modelId: "m" } as never;
+    },
+    listModels: async () => [],
+  };
+  const reg = new ProviderRegistry([def]);
+  const config = withProvider("cached-test", {});
+  const first = await reg.resolveModel("cached-test/m", config);
+  expect(await reg.resolveModel("cached-test/m", config)).toBe(first);
+  expect(creates).toBe(1);
+
+  fail = true;
+  reg.register(def); // provider generation invalidates the successful entry
+  await expect(reg.resolveModel("cached-test/m", config)).rejects.toThrow("boom");
+  await expect(reg.resolveModel("cached-test/m", config)).rejects.toThrow("boom");
+  expect(creates).toBe(3);
+});
+
+test("credential-file changes invalidate the resolved model without exposing the token", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "vibe-model-cache-")), "token.txt");
+  await Bun.write(path, "token-one");
+  let creates = 0;
+  const def: ProviderDef = {
+    id: "rotating-test",
+    auth: { env: [], tokenFile: path },
+    create: async () => {
+      creates += 1;
+      return { specificationVersion: "v2", provider: "test", modelId: "m" } as never;
+    },
+    listModels: async () => [],
+  };
+  const reg = new ProviderRegistry([def]);
+  const config = withProvider("rotating-test", {});
+  await reg.resolveModel("rotating-test/m", config);
+  await reg.resolveModel("rotating-test/m", config);
+  expect(creates).toBe(1);
+  await Bun.sleep(5);
+  await Bun.write(path, "token-two-longer");
+  await reg.resolveModel("rotating-test/m", config);
+  expect(creates).toBe(2);
 });
 
 test("native cloud providers construct the AI SDK model family they require", async () => {

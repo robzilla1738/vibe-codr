@@ -26,7 +26,7 @@ export type {
 } from "./types.ts";
 
 // UI events (engine -> UI)
-export type { UIEvent, UIEventType } from "./events.ts";
+export type { TurnPerformanceSample, UIEvent, UIEventType } from "./events.ts";
 
 export type {
   ExecutionTarget,

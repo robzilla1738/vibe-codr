@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -61,7 +61,8 @@ export function xaiDevicePollDecision(
 ): { action: "wait" | "fail"; intervalMs: number; message?: string } {
   if (error === "authorization_pending") return { action: "wait", intervalMs };
   if (error === "slow_down") return { action: "wait", intervalMs: intervalMs + 5000 };
-  if (error === "expired_token") return { action: "fail", intervalMs, message: "The xAI device code expired." };
+  if (error === "expired_token")
+    return { action: "fail", intervalMs, message: "The xAI device code expired." };
   if (error === "access_denied" || error === "authorization_denied") {
     return { action: "fail", intervalMs, message: "xAI authorization was denied." };
   }
@@ -85,12 +86,47 @@ function authStorePath(): string {
   return process.env.VIBE_AUTH_PATH || join(homedir(), ".vibe-codr", "auth.json");
 }
 
-async function readStore(): Promise<AuthStore> {
+let storeReadCache:
+  | {
+      path: string;
+      signature: string;
+      checkedAt: number;
+      store: AuthStore;
+    }
+  | undefined;
+
+function cloneStore(store: AuthStore): AuthStore {
+  return structuredClone(store);
+}
+
+async function authStoreSignature(path: string): Promise<string> {
   try {
-    const value = JSON.parse(await readFile(authStorePath(), "utf8")) as Partial<AuthStore>;
-    return { version: 1, providers: value.providers ?? {} };
+    const value = await stat(path);
+    return `${value.dev}:${value.ino}:${value.size}:${value.mtimeMs}`;
   } catch {
-    return { version: 1, providers: {} };
+    return "missing";
+  }
+}
+
+async function readStore(): Promise<AuthStore> {
+  const path = authStorePath();
+  const now = Date.now();
+  // Stat on every request so an external login/logout is visible immediately;
+  // the JSON parse and file read remain cached while the signature is stable.
+  const signature = await authStoreSignature(path);
+  if (storeReadCache?.path === path && storeReadCache.signature === signature) {
+    storeReadCache.checkedAt = now;
+    return cloneStore(storeReadCache.store);
+  }
+  try {
+    const value = JSON.parse(await readFile(path, "utf8")) as Partial<AuthStore>;
+    const store = { version: 1 as const, providers: value.providers ?? {} };
+    storeReadCache = { path, signature, checkedAt: now, store: cloneStore(store) };
+    return store;
+  } catch {
+    const store: AuthStore = { version: 1, providers: {} };
+    storeReadCache = { path, signature: "missing", checkedAt: now, store: cloneStore(store) };
+    return store;
   }
 }
 
@@ -102,6 +138,12 @@ async function writeStore(store: AuthStore): Promise<void> {
   await chmod(temp, 0o600);
   await rename(temp, path);
   await chmod(path, 0o600);
+  storeReadCache = {
+    path,
+    signature: await authStoreSignature(path),
+    checkedAt: Date.now(),
+    store: cloneStore(store),
+  };
 }
 
 let storeWriteQueue: Promise<void> = Promise.resolve();
@@ -144,13 +186,15 @@ function claimString(claims: Record<string, unknown> | undefined, key: string): 
 function codexIdentity(tokens: TokenResponse): { accountId?: string; accountLabel?: string } {
   const claims = jwtClaims(tokens.id_token) ?? jwtClaims(tokens.access_token);
   const nested = claims?.["https://api.openai.com/auth"];
-  const nestedId = nested && typeof nested === "object"
-    ? claimString(nested as Record<string, unknown>, "chatgpt_account_id")
-    : undefined;
+  const nestedId =
+    nested && typeof nested === "object"
+      ? claimString(nested as Record<string, unknown>, "chatgpt_account_id")
+      : undefined;
   const organizations = Array.isArray(claims?.organizations) ? claims.organizations : [];
-  const organizationId = organizations.length && organizations[0] && typeof organizations[0] === "object"
-    ? claimString(organizations[0] as Record<string, unknown>, "id")
-    : undefined;
+  const organizationId =
+    organizations.length && organizations[0] && typeof organizations[0] === "object"
+      ? claimString(organizations[0] as Record<string, unknown>, "id")
+      : undefined;
   return {
     accountId: claimString(claims, "chatgpt_account_id") ?? nestedId ?? organizationId,
     accountLabel: claimString(claims, "email"),
@@ -176,16 +220,31 @@ async function tokenRequest(url: string, body: URLSearchParams): Promise<TokenRe
   });
   const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok || typeof json.access_token !== "string") {
-    const detail = typeof json.error_description === "string" ? json.error_description : typeof json.error === "string" ? json.error : `HTTP ${response.status}`;
+    const detail =
+      typeof json.error_description === "string"
+        ? json.error_description
+        : typeof json.error === "string"
+          ? json.error
+          : `HTTP ${response.status}`;
     throw new Error(detail);
   }
   return json as unknown as TokenResponse;
 }
 
-async function persistTokens(providerId: SubscriptionProviderId, tokens: TokenResponse, previous?: StoredOAuthToken): Promise<void> {
-  const identity = providerId === "openai-codex" ? codexIdentity(tokens) : {
-    accountLabel: claimString(jwtClaims(tokens.id_token) ?? jwtClaims(tokens.access_token), "email"),
-  };
+async function persistTokens(
+  providerId: SubscriptionProviderId,
+  tokens: TokenResponse,
+  previous?: StoredOAuthToken,
+): Promise<void> {
+  const identity =
+    providerId === "openai-codex"
+      ? codexIdentity(tokens)
+      : {
+          accountLabel: claimString(
+            jwtClaims(tokens.id_token) ?? jwtClaims(tokens.access_token),
+            "email",
+          ),
+        };
   await mutateStore((store) => {
     store.providers[providerId] = {
       access: tokens.access_token,
@@ -202,14 +261,20 @@ function successPage(provider: string): string {
 }
 
 function errorPage(message: string): string {
-  const safe = message.replace(/[<>&"]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[char]!);
+  const safe = message.replace(
+    /[<>&"]/g,
+    (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[char]!,
+  );
   return `<!doctype html><meta charset="utf-8"><title>Connection failed</title><body><h1>Connection failed</h1><p>${safe}</p></body>`;
 }
 
 export class ProviderAuthManager {
   private pending = new Map<string, PendingAuth>();
 
-  async status(providerId: SubscriptionProviderId, sessionId?: string): Promise<SubscriptionAuthStatus> {
+  async status(
+    providerId: SubscriptionProviderId,
+    sessionId?: string,
+  ): Promise<SubscriptionAuthStatus> {
     if (sessionId) {
       const pending = this.pending.get(sessionId);
       if (pending && pending.providerId === providerId) {
@@ -231,7 +296,10 @@ export class ProviderAuthManager {
       : { providerId, state: "disconnected" };
   }
 
-  async begin(providerId: SubscriptionProviderId, method: SubscriptionAuthMethod): Promise<SubscriptionAuthStart> {
+  async begin(
+    providerId: SubscriptionProviderId,
+    method: SubscriptionAuthMethod,
+  ): Promise<SubscriptionAuthStart> {
     if (providerId === "openai-codex" && method === "device") {
       throw new Error("Codex sign-in uses the browser callback flow.");
     }
@@ -255,7 +323,9 @@ export class ProviderAuthManager {
 
   /** Main-process-only Cloud binding: returns the current access token and
    * non-secret account routing metadata, never the refresh token. */
-  async exportCredential(providerId: SubscriptionProviderId): Promise<{ providerId: SubscriptionProviderId; access: string; accountId?: string } | null> {
+  async exportCredential(
+    providerId: SubscriptionProviderId,
+  ): Promise<{ providerId: SubscriptionProviderId; access: string; accountId?: string } | null> {
     const token = await ensureSubscriptionToken(providerId);
     return token ? { providerId, access: token.access, accountId: token.accountId } : null;
   }
@@ -269,7 +339,9 @@ export class ProviderAuthManager {
     const nonce = base64url(randomBytes(32));
     const sessionId = randomUUID();
     const expiresAt = Date.now() + LOGIN_TIMEOUT_MS;
-    const authorize = new URL(isCodex ? `${CODEX_ISSUER}/oauth/authorize` : `${XAI_ISSUER}/authorize`);
+    const authorize = new URL(
+      isCodex ? `${CODEX_ISSUER}/oauth/authorize` : `${XAI_ISSUER}/authorize`,
+    );
     authorize.search = new URLSearchParams({
       response_type: "code",
       client_id: isCodex ? CODEX_CLIENT_ID : XAI_CLIENT_ID,
@@ -279,7 +351,11 @@ export class ProviderAuthManager {
       code_challenge_method: "S256",
       state,
       ...(isCodex
-        ? { id_token_add_organizations: "true", codex_cli_simplified_flow: "true", originator: "vibe-codr" }
+        ? {
+            id_token_add_organizations: "true",
+            codex_cli_simplified_flow: "true",
+            originator: "vibe-codr",
+          }
         : { nonce, plan: "generic", referrer: "vibe-codr" }),
     }).toString();
     const server = createServer((request, response) => {
@@ -299,31 +375,52 @@ export class ProviderAuthManager {
         const message = error || (!code ? "Missing authorization code" : "Invalid OAuth state");
         pending.state = "error";
         pending.error = message;
-        response.writeHead(400, { "content-type": "text/html; charset=utf-8" }).end(errorPage(message));
+        response
+          .writeHead(400, { "content-type": "text/html; charset=utf-8" })
+          .end(errorPage(message));
         server.close();
         return;
       }
-      void tokenRequest(isCodex ? `${CODEX_ISSUER}/oauth/token` : `${XAI_ISSUER}/token`, new URLSearchParams({
-        grant_type: "authorization_code",
-        client_id: isCodex ? CODEX_CLIENT_ID : XAI_CLIENT_ID,
-        code,
-        redirect_uri: redirectUri,
-        code_verifier: codes.verifier,
-      })).then(async (tokens) => {
-        await persistTokens(providerId, tokens);
-        pending.state = "connected";
-        response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(successPage(isCodex ? "ChatGPT" : "xAI"));
-      }).catch((cause) => {
-        pending.state = "error";
-        pending.error = cause instanceof Error ? cause.message : String(cause);
-        response.writeHead(400, { "content-type": "text/html; charset=utf-8" }).end(errorPage(pending.error));
-      }).finally(() => server.close());
+      void tokenRequest(
+        isCodex ? `${CODEX_ISSUER}/oauth/token` : `${XAI_ISSUER}/token`,
+        new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: isCodex ? CODEX_CLIENT_ID : XAI_CLIENT_ID,
+          code,
+          redirect_uri: redirectUri,
+          code_verifier: codes.verifier,
+        }),
+      )
+        .then(async (tokens) => {
+          await persistTokens(providerId, tokens);
+          pending.state = "connected";
+          response
+            .writeHead(200, { "content-type": "text/html; charset=utf-8" })
+            .end(successPage(isCodex ? "ChatGPT" : "xAI"));
+        })
+        .catch((cause) => {
+          pending.state = "error";
+          pending.error = cause instanceof Error ? cause.message : String(cause);
+          response
+            .writeHead(400, { "content-type": "text/html; charset=utf-8" })
+            .end(errorPage(pending.error));
+        })
+        .finally(() => server.close());
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(Number(callback.port), callback.hostname, () => resolve());
     });
-    const pending: PendingAuth = { sessionId, providerId, method: "browser", url: authorize.toString(), expiresAt, state: "pending", server, cancelled: false };
+    const pending: PendingAuth = {
+      sessionId,
+      providerId,
+      method: "browser",
+      url: authorize.toString(),
+      expiresAt,
+      state: "pending",
+      server,
+      cancelled: false,
+    };
     this.pending.set(sessionId, pending);
     setTimeout(() => {
       if (pending.state === "pending") {
@@ -350,24 +447,51 @@ export class ProviderAuthManager {
       }),
     });
     const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!response.ok || typeof json.device_code !== "string" || typeof json.user_code !== "string") {
-      throw new Error(typeof json.error_description === "string" ? json.error_description : "xAI did not return a device code.");
+    if (
+      !response.ok ||
+      typeof json.device_code !== "string" ||
+      typeof json.user_code !== "string"
+    ) {
+      throw new Error(
+        typeof json.error_description === "string"
+          ? json.error_description
+          : "xAI did not return a device code.",
+      );
     }
-    const url = typeof json.verification_uri_complete === "string"
-      ? json.verification_uri_complete
-      : typeof json.verification_uri === "string" ? json.verification_uri : "https://accounts.x.ai";
-    const expiresMs = Number.isFinite(Number(json.expires_in)) && Number(json.expires_in) > 0 ? Number(json.expires_in) * 1000 : LOGIN_TIMEOUT_MS;
-    const interval = Number.isFinite(Number(json.interval)) && Number(json.interval) > 0 ? Math.max(1000, Number(json.interval) * 1000) : 5000;
+    const url =
+      typeof json.verification_uri_complete === "string"
+        ? json.verification_uri_complete
+        : typeof json.verification_uri === "string"
+          ? json.verification_uri
+          : "https://accounts.x.ai";
+    const expiresMs =
+      Number.isFinite(Number(json.expires_in)) && Number(json.expires_in) > 0
+        ? Number(json.expires_in) * 1000
+        : LOGIN_TIMEOUT_MS;
+    const interval =
+      Number.isFinite(Number(json.interval)) && Number(json.interval) > 0
+        ? Math.max(1000, Number(json.interval) * 1000)
+        : 5000;
     const pending: PendingAuth = {
-      sessionId: randomUUID(), providerId: "xai-oauth", method: "device", url,
-      userCode: json.user_code, expiresAt: Date.now() + expiresMs, state: "pending", cancelled: false,
+      sessionId: randomUUID(),
+      providerId: "xai-oauth",
+      method: "device",
+      url,
+      userCode: json.user_code,
+      expiresAt: Date.now() + expiresMs,
+      state: "pending",
+      cancelled: false,
     };
     this.pending.set(pending.sessionId, pending);
     void this.pollXaiDevice(pending, json.device_code, interval);
     return pending;
   }
 
-  private async pollXaiDevice(pending: PendingAuth, deviceCode: string, initialInterval: number): Promise<void> {
+  private async pollXaiDevice(
+    pending: PendingAuth,
+    deviceCode: string,
+    initialInterval: number,
+  ): Promise<void> {
     let interval = initialInterval;
     while (!pending.cancelled && Date.now() < pending.expiresAt) {
       await new Promise((resolve) => setTimeout(resolve, interval));
@@ -379,7 +503,11 @@ export class ProviderAuthManager {
           accept: "application/json",
           "user-agent": "vibe-codr",
         },
-        body: new URLSearchParams({ grant_type: DEVICE_GRANT, client_id: XAI_CLIENT_ID, device_code: deviceCode }),
+        body: new URLSearchParams({
+          grant_type: DEVICE_GRANT,
+          client_id: XAI_CLIENT_ID,
+          device_code: deviceCode,
+        }),
       });
       const json = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       if (response.ok && typeof json.access_token === "string") {
@@ -391,7 +519,8 @@ export class ProviderAuthManager {
       interval = decision.intervalMs;
       if (decision.action === "wait") continue;
       pending.state = "error";
-      pending.error = typeof json.error_description === "string" ? json.error_description : decision.message;
+      pending.error =
+        typeof json.error_description === "string" ? json.error_description : decision.message;
       return;
     }
     if (!pending.cancelled && pending.state === "pending") {
@@ -403,7 +532,9 @@ export class ProviderAuthManager {
 
 const refreshes = new Map<SubscriptionProviderId, Promise<StoredOAuthToken>>();
 
-export async function ensureSubscriptionToken(providerId: SubscriptionProviderId): Promise<StoredOAuthToken | undefined> {
+export async function ensureSubscriptionToken(
+  providerId: SubscriptionProviderId,
+): Promise<StoredOAuthToken | undefined> {
   const current = (await readStore()).providers[providerId];
   if (!current) return undefined;
   if (current.expires - Date.now() > REFRESH_SKEW_MS) return current;
@@ -412,11 +543,14 @@ export async function ensureSubscriptionToken(providerId: SubscriptionProviderId
   const refresh = (async () => {
     if (!current.refresh) throw new Error(`${providerId} sign-in expired; connect again.`);
     const isCodex = providerId === "openai-codex";
-    const tokens = await tokenRequest(isCodex ? `${CODEX_ISSUER}/oauth/token` : `${XAI_ISSUER}/token`, new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: isCodex ? CODEX_CLIENT_ID : XAI_CLIENT_ID,
-      refresh_token: current.refresh,
-    }));
+    const tokens = await tokenRequest(
+      isCodex ? `${CODEX_ISSUER}/oauth/token` : `${XAI_ISSUER}/token`,
+      new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: isCodex ? CODEX_CLIENT_ID : XAI_CLIENT_ID,
+        refresh_token: current.refresh,
+      }),
+    );
     await persistTokens(providerId, tokens, current);
     return (await readStore()).providers[providerId]!;
   })().finally(() => refreshes.delete(providerId));
@@ -424,7 +558,10 @@ export async function ensureSubscriptionToken(providerId: SubscriptionProviderId
   return refresh;
 }
 
-export type ProviderFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type ProviderFetch = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
 
 export function subscriptionFetch(providerId: SubscriptionProviderId): ProviderFetch {
   return async (input, init) => {
@@ -438,9 +575,11 @@ export function subscriptionFetch(providerId: SubscriptionProviderId): ProviderF
       headers.set("originator", "vibe-codr");
     }
     const original = input instanceof Request ? input.url : input.toString();
-    const url = providerId === "openai-codex" && (/\/responses(?:\?|$)/.test(original) || /\/chat\/completions(?:\?|$)/.test(original))
-      ? "https://chatgpt.com/backend-api/codex/responses"
-      : input;
+    const url =
+      providerId === "openai-codex" &&
+      (/\/responses(?:\?|$)/.test(original) || /\/chat\/completions(?:\?|$)/.test(original))
+        ? "https://chatgpt.com/backend-api/codex/responses"
+        : input;
     return fetch(url, { ...init, headers });
   };
 }
@@ -448,4 +587,5 @@ export function subscriptionFetch(providerId: SubscriptionProviderId): ProviderF
 export async function removeAuthStoreForTests(): Promise<void> {
   if (!process.env.VIBE_AUTH_PATH) throw new Error("VIBE_AUTH_PATH is required");
   await rm(process.env.VIBE_AUTH_PATH, { force: true });
+  storeReadCache = undefined;
 }

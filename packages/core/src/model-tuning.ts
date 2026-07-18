@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseModelString } from "@vibe/providers";
 import type { Config } from "@vibe/config";
 
@@ -109,7 +110,11 @@ export function cacheTokensDisjointFromInput(modelString: string): boolean {
   return providerOf(modelString) === "anthropic";
 }
 
-export function buildModelTuning(modelString: string, config: Config): ModelTuning {
+export function buildModelTuning(
+  modelString: string,
+  config: Config,
+  context: { sessionId?: string } = {},
+): ModelTuning {
   const { providerId: provider, modelId } = modelParts(modelString);
   const { effort, budgetTokens } = config.reasoning;
   const opts: Record<string, Record<string, unknown>> = {};
@@ -134,7 +139,19 @@ export function buildModelTuning(modelString: string, config: Config): ModelTuni
     case "xai":
     case "xai-oauth": {
       if (modelId === "grok-4.5") {
-        opts.openai = { store: false, ...(effort ? { reasoningEffort: effort } : {}) };
+        const promptCacheKey =
+          config.caching.enabled && context.sessionId
+            ? createHash("sha256")
+                .update(`vibe-codr\0${context.sessionId}\0${modelString}`)
+                .digest("base64url")
+                .slice(0, 32)
+            : undefined;
+        opts.openai = {
+          store: false,
+          ...(effort ? { reasoningEffort: effort } : {}),
+          ...(promptCacheKey ? { promptCacheKey } : {}),
+          ...(config.latency.providerTier === "priority" ? { serviceTier: "priority" } : {}),
+        };
       }
       break;
     }

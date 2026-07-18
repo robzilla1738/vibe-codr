@@ -300,6 +300,7 @@ export class Engine implements EngineClient {
   #pending: {
     id: string;
     label: string;
+    queuedAt: number;
     run: () => Promise<unknown>;
     onCancel?: (reason: string) => void;
     /** Which machinery queued this item. Goal-run turns carry "goal" so the
@@ -309,6 +310,7 @@ export class Engine implements EngineClient {
   }[] = [];
   #active: QueuedItem | null = null;
   #draining = false;
+  #activeQueueDelayMs = 0;
   #drainPromise: Promise<void> | undefined;
   #idleResolvers: (() => void)[] = [];
   #agents = new Map<string, NamedAgent>();
@@ -1132,22 +1134,23 @@ export class Engine implements EngineClient {
     // Long-term memory: resolve the (optional) embedder and attach the service
     // to the live session. Degrades to lexical recall when no embedder is
     // available, so this never blocks or fails startup.
-    this.#memory = await MemoryService.create(this.#cwd, this.#config, this.registry, this.#log);
+    // These four jobs are independent after deterministic provider/plugin/tool
+    // registration. Run their I/O concurrently, but do not announce ready until
+    // every capability is present. This keeps the exact bootstrap contract while
+    // making the critical path the slowest job rather than the sum of all four.
+    const [memory] = await Promise.all([
+      MemoryService.create(this.#cwd, this.#config, this.registry, this.#log),
+      // Deterministic repo recon: ONE batched probe whose profile rides every
+      // prompt + subagent kickoff. Never throws; worst case is an empty profile.
+      this.#runRecon(),
+      // Plugins and local resources are already registered, so MCP remains the
+      // last tool source even though its network/process connects overlap I/O.
+      this.#mcp.start(this.#config.mcp.servers),
+      // Engine state is session-local and independent of memory/recon/MCP.
+      this.#restoreEngineState(),
+    ]);
+    this.#memory = memory;
     this.#session.setMemory(this.#memory);
-
-    // Deterministic repo recon: ONE batched probe (ledger-bootstrapped) whose
-    // profile rides every prompt + subagent kickoff in the tree, so no agent
-    // ever guesses this repo's build/test commands. Never throws — worst case
-    // is an empty profile and everything behaves as before.
-    await this.#runRecon();
-
-    // Connect MCP servers last so their tools join the same registry.
-    await this.#mcp.start(this.#config.mcp.servers);
-
-    // Restore engine-side per-session state (armed plan handoff + the last
-    // presented plan + a live goal run) so a --resume picks up exactly where
-    // things left off.
-    await this.#restoreEngineState();
 
     // A goal run that was live at shutdown resumes here: the goal text and
     // conversation context came back with the session, so re-enter the loop —
@@ -2552,6 +2555,7 @@ export class Engine implements EngineClient {
     this.#pending.push({
       id: createId("q"),
       label,
+      queuedAt: performance.now(),
       run,
       ...(opts.onCancel ? { onCancel: opts.onCancel } : {}),
       ...(opts.origin ? { origin: opts.origin } : {}),
@@ -2585,8 +2589,10 @@ export class Engine implements EngineClient {
   async #runItemBounded(item: {
     id: string;
     label: string;
+    queuedAt: number;
     run: () => Promise<unknown>;
   }): Promise<void> {
+    this.#activeQueueDelayMs = Math.max(0, performance.now() - item.queuedAt);
     const ceiling = this.#config.itemTimeoutMs;
     if (!ceiling) {
       await item.run();
@@ -2745,6 +2751,9 @@ export class Engine implements EngineClient {
       label?: string;
     } = {},
   ): Promise<"denied" | undefined> {
+    const startedAt = Date.now();
+    const turnId = createId("turn");
+    const hookStarted = performance.now();
     // A prompt hook can veto the turn outright — run it FIRST, on the raw incoming
     // text, BEFORE any handoff rewrite / plan-state mutation and BEFORE the
     // checkpoint snapshot. A deny must leave EVERYTHING untouched: a denied handoff
@@ -2753,6 +2762,7 @@ export class Engine implements EngineClient {
     // checkpoint. The hook rewrites the raw text; the handoff directive below is
     // then built around the (possibly rewritten) text exactly as before.
     const hooked = await this.hooks.run("user.prompt.submit", { text });
+    const hooksMs = performance.now() - hookStarted;
     if (hooked.deny) {
       this.#notice("Prompt blocked by a user.prompt.submit hook.", "warn");
       // A DEFERRED plan handoff was consumed off #pendingHandoff at enqueue and
@@ -2799,6 +2809,7 @@ export class Engine implements EngineClient {
     // Snapshot the workspace before an edit turn so /undo can roll it back — and
     // remember its id as the base the diff reviewer diffs THIS turn against.
     this.#turnCheckpointId = undefined;
+    const checkpointStarted = performance.now();
     if (this.#config.checkpoints.enabled && this.#session.mode === "execute") {
       // Capture the conversation length too, so /undo can rewind history to
       // before this turn (otherwise the model still "remembers" undone edits).
@@ -2815,10 +2826,14 @@ export class Engine implements EngineClient {
         this.#bus.emit({ type: "checkpoint-created", id: cp.id, label: cp.label });
       }
     }
+    const checkpointMs = performance.now() - checkpointStarted;
     // Proactive recall (default-on, opt-out): once per session, seed a "relevant past context"
     // block from long-term memory using the first prompt + goal, injected into
     // the system prompt. Best-effort — a failure must not block the turn.
+    const recallStarted = performance.now();
     await this.#maybeProactiveRecall(text);
+    const recallMs = performance.now() - recallStarted;
+    const attachmentsStarted = performance.now();
     // Determine vision relay active status ONCE (session-stable). The system
     // prompt must be byte-stable across turns, so this is set before the first
     // session.run — the VISION RELAY section rides in the system prompt from
@@ -2891,6 +2906,7 @@ export class Engine implements EngineClient {
         this.#notice(`${this.#session.model} may not accept image input; sending anyway.`, "warn");
       }
     }
+    const attachmentsMs = performance.now() - attachmentsStarted;
     await this.#session.run(relayedText, relayedImages, {
       ...(isHandoff
         ? { display: null }
@@ -2899,8 +2915,31 @@ export class Engine implements EngineClient {
           : {}),
       ...(isHandoff ? { origin: "engine" as const } : opts.origin ? { origin: opts.origin } : {}),
       ...(isHandoff ? { label: "Plan approved" } : opts.label ? { label: opts.label } : {}),
+      performance: {
+        turnId,
+        startedAt,
+        queueDelayMs: this.#activeQueueDelayMs,
+        hooksMs,
+        checkpointMs,
+        recallMs,
+        attachmentsMs,
+      },
     });
+    const postTurnStarted = performance.now();
     await this.#afterTurn();
+    const postTurnMs = performance.now() - postTurnStarted;
+    const performanceSample = this.#session.takeLastPerformance();
+    if (performanceSample) {
+      this.#bus.emit({
+        type: "turn-performance",
+        sessionId: this.#session.id,
+        sample: {
+          ...performanceSample,
+          postTurnMs,
+          totalMs: Date.now() - startedAt,
+        },
+      });
+    }
     // The turn may have touched the working tree — refresh the header's git state.
     void this.#emitGit();
   }

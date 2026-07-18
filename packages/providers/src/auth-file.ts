@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -21,6 +21,30 @@ const COMMON_KEYS = [
   "tokens.access_token",
 ];
 
+interface TokenFileCacheEntry {
+  signature: string;
+  text: string;
+  json: unknown;
+}
+
+const TOKEN_FILE_CACHE_MAX = 32;
+const tokenFileCache = new Map<string, TokenFileCacheEntry>();
+
+function fileSignature(path: string): string | undefined {
+  try {
+    const value = statSync(path);
+    return `${value.dev}:${value.ino}:${value.size}:${value.mtimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Non-secret version used to invalidate cached provider/model instances. */
+export function tokenFileVersion(path: string): string {
+  const full = expandHome(path);
+  return fileSignature(full) ?? "missing";
+}
+
 function getPath(obj: unknown, path: string): unknown {
   return path
     .split(".")
@@ -40,21 +64,37 @@ function getPath(obj: unknown, path: string): unknown {
  */
 export function readTokenFile(path: string, jsonPath?: string): string | undefined {
   const full = expandHome(path);
-  if (!existsSync(full)) return undefined;
-  let text: string;
-  try {
-    text = readFileSync(full, "utf8").trim();
-  } catch {
+  const signature = fileSignature(full);
+  if (!signature) {
+    tokenFileCache.delete(full);
     return undefined;
   }
-  if (!text) return undefined;
-
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    return text; // plain-text token file
+  let cached = tokenFileCache.get(full);
+  if (!cached || cached.signature !== signature) {
+    let text: string;
+    try {
+      text = readFileSync(full, "utf8").trim();
+    } catch {
+      return undefined;
+    }
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    cached = { signature, text, json };
+    tokenFileCache.delete(full);
+    tokenFileCache.set(full, cached);
+    while (tokenFileCache.size > TOKEN_FILE_CACHE_MAX) {
+      const oldest = tokenFileCache.keys().next().value;
+      if (typeof oldest !== "string") break;
+      tokenFileCache.delete(oldest);
+    }
   }
+  const { text, json } = cached;
+  if (!text) return undefined;
+  if (json === undefined) return text; // plain-text token file
 
   if (jsonPath) {
     const v = getPath(json, jsonPath);

@@ -1,6 +1,32 @@
 import type { ActivityInfo, GitInfo, GoalRunInfo, JobInfo, Mode, PlanState, QueuedItem, SessionUsage, StructuredQuestion, Task, Usage } from "./types";
 import type { ExecutionTarget, PendingCapabilityRequest } from "./cloud";
 
+export interface TurnPerformanceSample {
+  turnId: string;
+  sessionId: string;
+  model: string;
+  serviceTier: "default" | "priority";
+  startedAt: number;
+  queueDelayMs: number;
+  hooksMs: number;
+  checkpointMs: number;
+  recallMs: number;
+  attachmentsMs: number;
+  modelResolveMs: number;
+  contextPrepareMs: number;
+  providerTtftMs?: number;
+  firstReasoningMs?: number;
+  firstVisibleTextMs?: number;
+  generationMs: number;
+  toolMs: number;
+  persistMs: number;
+  postTurnMs: number;
+  totalMs: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+}
+
 /**
  * Events emitted by the engine and consumed by any UI (TUI, headless printer).
  * The engine translates AI-SDK stream parts into these so the UI never depends
@@ -16,6 +42,7 @@ export type UIEvent =
       origin?: "user" | "engine";
       /** Compact UI label for an engine-authored continuation. */
       label?: string;
+      turnId?: string;
     }
   | {
       type: "assistant-text-delta";
@@ -174,6 +201,7 @@ export type UIEvent =
   | { type: "notice"; level: "info" | "warn" | "error"; message: string }
   | { type: "engine-error"; sessionId?: string; message: string }
   | { type: "turn-finished"; sessionId: string }
+  | { type: "turn-performance"; sessionId: string; sample: TurnPerformanceSample }
   /** One turn's run loop settled. Emitted PER TURN — a single user prompt can
    * expand into several (a gate-fix / review-fix / verify-fix follow-up), so this
    * is NOT the end of the work for that prompt. */

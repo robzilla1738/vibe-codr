@@ -38,6 +38,7 @@ import {
   groupIntoTurns,
   initialTranscript,
   reduceTranscript,
+  updateGroupedTurns,
 } from "./reducer";
 import { isScrollAnchored } from "./scroll-anchor";
 import { shikiThemeFor, shikiThemeId, shikiThemesCoverRegistry } from "./shiki-theme";
@@ -141,6 +142,22 @@ describe("transcript reducer", () => {
     expect(turns).toHaveLength(1);
     expect(turns[0]!.user?.text).toBe("hi");
     expect(turns[0]!.items[0]).toMatchObject({ kind: "assistant", text: "hello", streaming: false });
+  });
+
+  it("incrementally rebuilds only the live turn and preserves completed turn identity", () => {
+    let state = initialTranscript();
+    state = reduceTranscript(state, { type: "user", text: "first" });
+    state = reduceTranscript(state, { type: "delta", text: "done" });
+    state = reduceTranscript(state, { type: "finalize" });
+    state = reduceTranscript(state, { type: "user", text: "second" });
+    state = reduceTranscript(state, { type: "delta", text: "a" });
+    const firstBlocks = state.blocks;
+    const firstTurns = groupIntoTurns(firstBlocks);
+    state = reduceTranscript(state, { type: "delta", text: "b" });
+    const nextTurns = updateGroupedTurns(firstBlocks, firstTurns, state.blocks);
+    expect(nextTurns[0]).toBe(firstTurns[0]);
+    expect(nextTurns[1]).not.toBe(firstTurns[1]);
+    expect(nextTurns[1]!.items[0]).toMatchObject({ text: "ab" });
   });
 
   it("folds file-changed into tool block", () => {

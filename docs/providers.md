@@ -59,6 +59,11 @@ xai-oauth/grok-build-0.1
 ```
 
 Grok 4.5 uses xAI Responses with low/medium/high reasoning and `store: false`.
+When prompt caching is enabled, Vibe Codr sends a stable opaque session/model
+cache key. The optional `latency.providerTier: "priority"` setting sends xAI's
+priority service tier; the default omits it. Desktop labels this **Turbo provider
+processing**, keeps it off by default, and warns that served priority traffic
+currently costs twice the standard rate.
 Grok Build and older xAI models continue through Chat Completions.
 
 Eligibility and quota remain controlled by the user's xAI plan. API-key users

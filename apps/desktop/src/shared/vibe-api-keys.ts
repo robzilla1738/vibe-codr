@@ -15,6 +15,7 @@ export const VIBE_API_KEYS = [
   "archiveSession",
   "stop",
   "quit",
+  "recordFirstPaint",
   "onEvent",
   "onReady",
   "onFatal",

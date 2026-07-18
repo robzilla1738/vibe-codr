@@ -42,21 +42,35 @@ interface AgentOptions {
   cloudProvider?: "e2b" | "vercel";
 }
 
-interface WorkloadIdentity { uid: number; gid: number; home: string }
+export function shouldProxyEngineFrame(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return true;
+  const frame = payload as { type?: unknown; event?: { type?: unknown } };
+  return frame.type !== "event" || frame.event?.type !== "turn-performance";
+}
+
+interface WorkloadIdentity {
+  uid: number;
+  gid: number;
+  home: string;
+}
 
 export function startCloudAgent(options: AgentOptions = {}) {
   const port = options.port ?? Number(process.env.VIBE_CLOUD_AGENT_PORT ?? 8787);
   const tokenFile = process.env.VIBE_CLOUD_ACCESS_TOKEN_FILE;
-  const accessToken = options.accessToken
-    ?? (tokenFile ? readFileSync(tokenFile, "utf8") : process.env.VIBE_CLOUD_ACCESS_TOKEN);
-  const workspaceRoot = resolve(options.workspaceRoot ?? process.env.VIBE_WORKSPACE_ROOT ?? "/workspace");
+  const accessToken =
+    options.accessToken ??
+    (tokenFile ? readFileSync(tokenFile, "utf8") : process.env.VIBE_CLOUD_ACCESS_TOKEN);
+  const workspaceRoot = resolve(
+    options.workspaceRoot ?? process.env.VIBE_WORKSPACE_ROOT ?? "/workspace",
+  );
   const engineHost = options.engineHost ?? process.env.VIBE_ENGINE_HOST ?? "vibecodr-engine-host";
   const expectedSessionId = options.expectedSessionId ?? process.env.VIBE_CLOUD_EXPECTED_SESSION_ID;
   const cloudProvider = options.cloudProvider;
   if (cloudProvider !== "e2b" && cloudProvider !== "vercel") {
     throw new Error("Cloud agent requires an explicit e2b or vercel provider identity");
   }
-  if (!accessToken || accessToken.length < 32) throw new Error("VIBE_CLOUD_ACCESS_TOKEN must contain at least 32 characters");
+  if (!accessToken || accessToken.length < 32)
+    throw new Error("VIBE_CLOUD_ACCESS_TOKEN must contain at least 32 characters");
   if (tokenFile) rmSync(tokenFile, { force: true });
   delete process.env.VIBE_CLOUD_ACCESS_TOKEN;
   const workload = workloadIdentity(options);
@@ -101,7 +115,13 @@ export function startCloudAgent(options: AgentOptions = {}) {
     terminalEnvironment.LOGNAME = "vibe-terminal";
   }
 
-  const state: AgentState = { host: null, sessionId: null, startupError: null, hostClients: new Set(), terminals: new Map() };
+  const state: AgentState = {
+    host: null,
+    sessionId: null,
+    startupError: null,
+    hostClients: new Set(),
+    terminals: new Map(),
+  };
 
   const ensureHost = () => {
     if (state.host && state.host.exitCode === null) return state.host;
@@ -126,35 +146,65 @@ export function startCloudAgent(options: AgentOptions = {}) {
         const line = stdout.slice(0, newline);
         stdout = stdout.slice(newline + 1);
         if (Buffer.byteLength(line) > MAX_FRAME_BYTES) {
-          broadcast(state.hostClients, { channel: "fatal", message: "engine protocol frame exceeded limit" });
+          broadcast(state.hostClients, {
+            channel: "fatal",
+            message: "engine protocol frame exceeded limit",
+          });
           host.kill("SIGKILL");
           break;
         }
         try {
-          const payload = JSON.parse(line) as { type?: string; sessionId?: string; message?: string };
-          if (payload.type === "fatal") state.startupError = payload.message ?? "engine bootstrap failed";
+          const payload = JSON.parse(line) as {
+            type?: string;
+            sessionId?: string;
+            message?: string;
+            event?: { type?: string };
+          };
+          if (payload.type === "fatal")
+            state.startupError = payload.message ?? "engine bootstrap failed";
           if (payload.type === "ready" && typeof payload.sessionId === "string") {
             if (expectedSessionId && payload.sessionId !== expectedSessionId) {
               state.startupError = `cloud engine resumed ${payload.sessionId} instead of ${expectedSessionId}`;
               host.kill("SIGKILL");
             } else state.sessionId = payload.sessionId;
           }
-          broadcast(state.hostClients, { channel: "engine", payload });
+          // Performance samples are machine-local diagnostics. Never proxy them
+          // over the cloud transport; the desktop persists only locally observed
+          // samples under Electron application data.
+          if (shouldProxyEngineFrame(payload)) {
+            broadcast(state.hostClients, { channel: "engine", payload });
+          }
+        } catch {
+          broadcast(state.hostClients, {
+            channel: "fatal",
+            message: "engine emitted malformed JSON",
+          });
         }
-        catch { broadcast(state.hostClients, { channel: "fatal", message: "engine emitted malformed JSON" }); }
       }
     });
-    host.stderr.on("data", (chunk) => broadcast(state.hostClients, { channel: "diagnostic", stream: "stderr", data: chunk.toString("utf8").slice(-16_384) }));
+    host.stderr.on("data", (chunk) =>
+      broadcast(state.hostClients, {
+        channel: "diagnostic",
+        stream: "stderr",
+        data: chunk.toString("utf8").slice(-16_384),
+      }),
+    );
     host.on("error", (error) => {
       if (state.host === host) {
-        broadcast(state.hostClients, { channel: "fatal", message: `engine host could not start: ${error.message}` });
+        broadcast(state.hostClients, {
+          channel: "fatal",
+          message: `engine host could not start: ${error.message}`,
+        });
         state.host = null;
         state.sessionId = null;
       }
     });
     host.on("exit", (code, signal) => {
       if (state.host === host) {
-        broadcast(state.hostClients, { channel: "fatal", message: `engine host exited (${signal ?? code ?? "unknown"})` });
+        broadcast(state.hostClients, {
+          channel: "fatal",
+          message: `engine host exited (${signal ?? code ?? "unknown"})`,
+        });
         state.host = null;
         state.sessionId = null;
       }
@@ -204,13 +254,22 @@ export function startCloudAgent(options: AgentOptions = {}) {
   });
   wss.on("connection", (socket) => {
     state.hostClients.add(socket);
-    send(socket, { channel: "agent", type: "ready", protocol: 1, connectionId: randomUUID(), engineSessionId: state.sessionId });
+    send(socket, {
+      channel: "agent",
+      type: "ready",
+      protocol: 1,
+      connectionId: randomUUID(),
+      engineSessionId: state.sessionId,
+    });
     socket.on("message", async (raw) => {
       const bytes = Array.isArray(raw) ? Buffer.concat(raw) : Buffer.from(raw as ArrayBuffer);
       if (bytes.byteLength > MAX_FRAME_BYTES) return socket.close(1009, "frame too large");
       let frame: Record<string, unknown>;
-      try { frame = JSON.parse(bytes.toString("utf8")); }
-      catch { return send(socket, { channel: "error", error: "malformed JSON" }); }
+      try {
+        frame = JSON.parse(bytes.toString("utf8"));
+      } catch {
+        return send(socket, { channel: "error", error: "malformed JSON" });
+      }
       try {
         if (frame.channel === "agent" && frame.op === "detach-engine") {
           const host = state.host;
@@ -228,7 +287,11 @@ export function startCloudAgent(options: AgentOptions = {}) {
         else if (frame.channel === "ping") send(socket, { channel: "pong", at: Date.now() });
         else throw new Error("unknown channel");
       } catch (error) {
-        send(socket, { channel: "error", requestId: frame.requestId, error: error instanceof Error ? error.message : String(error) });
+        send(socket, {
+          channel: "error",
+          requestId: frame.requestId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     });
     socket.on("close", () => {
@@ -257,7 +320,12 @@ export function startCloudAgent(options: AgentOptions = {}) {
   return server;
 }
 
-async function handleFile(socket: ServerSocket, frame: Record<string, unknown>, root: string, workload: WorkloadIdentity | null): Promise<void> {
+async function handleFile(
+  socket: ServerSocket,
+  frame: Record<string, unknown>,
+  root: string,
+  workload: WorkloadIdentity | null,
+): Promise<void> {
   if (typeof frame.path !== "string") throw new Error("file path required");
   const path = await resolveCloudPath(root, frame.path);
   if (frame.op === "write") {
@@ -274,7 +342,12 @@ async function handleFile(socket: ServerSocket, frame: Record<string, unknown>, 
   } else if (frame.op === "read") {
     const data = await readFile(path);
     if (data.byteLength > MAX_FILE_BYTES) throw new Error("file exceeds 64 MiB");
-    send(socket, { channel: "file", requestId: frame.requestId, ok: true, contentBase64: data.toString("base64") });
+    send(socket, {
+      channel: "file",
+      requestId: frame.requestId,
+      ok: true,
+      contentBase64: data.toString("base64"),
+    });
   } else if (frame.op === "delete") {
     await rm(path, { recursive: true, force: true });
     send(socket, { channel: "file", requestId: frame.requestId, ok: true });
@@ -320,10 +393,14 @@ async function handleTerminal(
     terminal.subscribers.add(socket);
     send(socket, { channel: "terminal", type: "replay", id: terminal.id, data: terminal.replay });
   } else if (frame.op === "write") {
-    if (typeof frame.data !== "string" || Buffer.byteLength(frame.data) > 64 * 1024) throw new Error("invalid terminal input");
+    if (typeof frame.data !== "string" || Buffer.byteLength(frame.data) > 64 * 1024)
+      throw new Error("invalid terminal input");
     terminal.process.write(frame.data);
   } else if (frame.op === "resize") {
-    terminal.process.resize(boundedInt(frame.cols, 80, 20, 400), boundedInt(frame.rows, 24, 5, 200));
+    terminal.process.resize(
+      boundedInt(frame.cols, 80, 20, 400),
+      boundedInt(frame.rows, 24, 5, 200),
+    );
   } else if (frame.op === "kill") terminal.process.kill();
   else if (frame.op === "detach") terminal.subscribers.delete(socket);
   else throw new Error("unknown terminal operation");
@@ -331,7 +408,14 @@ async function handleTerminal(
 
 export async function resolveCloudPath(root: string, value: string): Promise<string> {
   const portable = value.replaceAll("\\", "/").replace(/^\/+/, "");
-  if (!portable || portable === "." || portable.includes("\0") || portable === ".." || portable.startsWith("../")) throw new Error("unsafe path");
+  if (
+    !portable ||
+    portable === "." ||
+    portable.includes("\0") ||
+    portable === ".." ||
+    portable.startsWith("../")
+  )
+    throw new Error("unsafe path");
   const path = resolve(root, portable);
   if (path !== root && !path.startsWith(`${root}${sep}`)) throw new Error("path escaped workspace");
 
@@ -343,7 +427,8 @@ export async function resolveCloudPath(root: string, value: string): Promise<str
   for (const component of components) {
     current = resolve(current, component);
     try {
-      if ((await lstat(current)).isSymbolicLink()) throw new Error("symlink paths are not available through file RPC");
+      if ((await lstat(current)).isSymbolicLink())
+        throw new Error("symlink paths are not available through file RPC");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
       throw error;
@@ -363,7 +448,9 @@ function safeEqual(value: string, expected: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function environmentWithoutControlSecrets(environment: NodeJS.ProcessEnv): Record<string, string> {
+export function environmentWithoutControlSecrets(
+  environment: NodeJS.ProcessEnv,
+): Record<string, string> {
   return Object.fromEntries(
     Object.entries(environment).filter(([key, value]) => key !== "VIBE_CLOUD_ACCESS_TOKEN" && key !== "VIBE_CLOUD_ACCESS_TOKEN_FILE" && key !== "VIBE_CLOUD_MODEL_ACCESS_FILE" && typeof value === "string"),
   ) as Record<string, string>;
@@ -397,13 +484,18 @@ async function mkdirForWorkload(root: string, destination: string, workload: Wor
 }
 
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number {
-  return typeof value === "number" && Number.isInteger(value) ? Math.max(min, Math.min(max, value)) : fallback;
+  return typeof value === "number" && Number.isInteger(value)
+    ? Math.max(min, Math.min(max, value))
+    : fallback;
 }
 
 async function terminateHost(host: ChildProcessWithoutNullStreams): Promise<void> {
   if (host.exitCode !== null || host.signalCode !== null) return;
   await new Promise<void>((resolve, reject) => {
-    const hardTimeout = setTimeout(() => reject(new Error("engine host did not exit after forced detach")), 5_000);
+    const hardTimeout = setTimeout(
+      () => reject(new Error("engine host did not exit after forced detach")),
+      5_000,
+    );
     const forceTimeout = setTimeout(() => {
       host.kill("SIGKILL");
     }, 2_000);

@@ -71,6 +71,7 @@ export interface VibeApi {
   archiveSession(opts: { cwd: string; id: string }): Promise<{ ok: true } | { ok: false; error: string }>;
   stop(): Promise<{ ok: true }>;
   quit(): void;
+  recordFirstPaint(input: { turnId: string; sessionId: string; paintedAt: number }): void;
   onEvent(cb: (event: unknown) => void): () => void;
   onReady(cb: (sessionId: string) => void): () => void;
   onFatal(cb: (message: string) => void): () => void;
@@ -164,6 +165,7 @@ const api: VibeApi = {
   archiveSession: (opts) => ipcRenderer.invoke("engine:rpc", "archiveSession", opts),
   stop: () => ipcRenderer.invoke("engine:stop"),
   quit: () => ipcRenderer.send("app:quit"),
+  recordFirstPaint: (input) => ipcRenderer.send("performance:firstPaint", input),
   onEvent: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, event: unknown) => cb(event);
     ipcRenderer.on("engine:event", handler);

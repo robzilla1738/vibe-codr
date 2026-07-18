@@ -55,7 +55,7 @@ const snapshot = {
 };
 
 describe("EngineBridge lifecycle", () => {
-  it("loads the project index before bootstrap and reaps the temporary host", async () => {
+  it("loads the project index and reuses its prewarmed host for bootstrap", async () => {
     let launches = 0;
     const child = String.raw`
       const readline = require("node:readline");
@@ -87,10 +87,33 @@ describe("EngineBridge lifecycle", () => {
     await expect(bridge.listProjectsForIndex()).resolves.toEqual([
       { cwd: process.cwd(), name: "fixture", updatedAt: 1, sessions: [] },
     ]);
-    expect(bridge.isRunning).toBe(false);
+    expect(bridge.isRunning).toBe(true);
     await expect(bridge.start({ cwd: process.cwd() })).resolves.toBe("after-index");
-    expect(launches).toBe(2);
+    expect(launches).toBe(1);
     await bridge.stop();
+  });
+
+  it("reaps an unused prewarmed project-index host after its lifetime", async () => {
+    const child = String.raw`
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on("line", (line) => {
+        const msg = JSON.parse(line);
+        if (msg.op === "rpc" && msg.method === "listProjects") {
+          process.stdout.write(JSON.stringify({ type: "resp", id: msg.id, ok: true, value: [] }) + "\n");
+        } else if (msg.op === "shutdown") process.exit(0);
+      });
+    `;
+    const bridge = new EngineBridge({
+      resolveLaunch: () => fixture(child),
+      rpcTimeoutMs: 5_000,
+      stopTimeoutMs: 800,
+      prewarmTimeoutMs: 20,
+    });
+
+    await expect(bridge.listProjectsForIndex()).resolves.toEqual([]);
+    expect(bridge.isRunning).toBe(true);
+    await pollUntil(() => !bridge.isRunning);
   });
 
   it("runs project history mutations without an active session and reaps the temporary host", async () => {

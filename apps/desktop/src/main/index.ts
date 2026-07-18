@@ -23,12 +23,14 @@ import { TtlLruCache } from "../shared/ttl-lru-cache";
 import { type AppUpdaterController, createAppUpdater } from "./app-updater";
 import { registerConfigIpc } from "./config-ipc";
 import { EngineTransportController } from "./engine-transport-controller";
+import { EngineEventCoalescer } from "./event-coalescer";
 import { cloudFailureDetails, CloudManager } from "./cloud/manager";
 import { registerGitIpc } from "./git-ipc";
 import { enrichedEnv } from "./host-resolver";
 import { assertTrustedIpc, assertTrustedSender, getMainWindow, setMainWindow } from "./ipc-security";
 import { TerminalManager } from "./terminal-manager";
 import { MobileRelayController } from "./mobile-relay-controller";
+import { PerformanceStore } from "./performance-store";
 
 let mainWindow: BrowserWindow | null = null;
 let settingsDirty = false;
@@ -36,6 +38,14 @@ let appUpdater: AppUpdaterController | null = null;
 const bridge = new EngineTransportController();
 const cloudManager = new CloudManager(bridge, app.getPath("userData"), safeStorage);
 cloudManager.runtimeLocation = { isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath };
+const performanceStore = new PerformanceStore(app.getPath("userData"));
+const engineEventCoalescer = new EngineEventCoalescer((event) => {
+  performanceStore.observeEngineEvent(event);
+  cloudManager.observeEngineEvent(event);
+  if (event && typeof event === "object" && (event as { type?: unknown }).type === "turn-performance") return;
+  sendToRenderer("engine:event", event);
+});
+bridge.onTransportWillSwitch = () => engineEventCoalescer.flush();
 let lastDesktopCwd = "";
 let lastDesktopSessionId = "";
 
@@ -502,16 +512,28 @@ const terminalManager = new TerminalManager((event) => sendToRenderer("terminal:
 
 function wireBridge(): void {
   bridge.onEvent = (event) => {
-    cloudManager.observeEngineEvent(event);
-    sendToRenderer("engine:event", event);
+    engineEventCoalescer.push(event);
   };
-  bridge.onFatal = (message) => sendToRenderer("engine:fatal", message);
-  bridge.onReady = (sessionId) => { lastDesktopSessionId = sessionId; sendToRenderer("engine:ready", sessionId); };
+  bridge.onFatal = (message) => { engineEventCoalescer.flush(); sendToRenderer("engine:fatal", message); };
+  bridge.onReady = (sessionId) => {
+    engineEventCoalescer.flush();
+    lastDesktopSessionId = sessionId;
+    sendToRenderer("engine:ready", sessionId);
+  };
   bridge.onTerminalEvent = (event) => sendToRenderer("terminal:event", event);
   cloudManager.onStatus = (status) => sendToRenderer("cloud:status", status);
 }
 
 function registerIpc(): void {
+  ipcMain.on("performance:firstPaint", (event, input: unknown) => {
+    assertTrustedSender(event.sender);
+    if (!input || typeof input !== "object") return;
+    const value = input as { turnId?: unknown; sessionId?: unknown; paintedAt?: unknown };
+    if (typeof value.turnId !== "string" || value.turnId.length > 128) return;
+    if (typeof value.sessionId !== "string" || value.sessionId.length > 128) return;
+    if (typeof value.paintedAt !== "number" || !Number.isFinite(value.paintedAt)) return;
+    performanceStore.recordFirstPaint({ turnId: value.turnId, sessionId: value.sessionId, paintedAt: value.paintedAt });
+  });
   ipcMain.on("settings:dirty", (event, dirty: unknown) => {
     assertTrustedSender(event.sender);
     settingsDirty = dirty === true;
@@ -1208,6 +1230,7 @@ function cleanupForQuit(): Promise<void> {
           }
         }
       }
+      await performanceStore.flush();
       // Clean up per-session clipboard temp PNGs (TUI parity: cleanupClipboardTempDir).
       try {
         await rm(clipboardTempRoot, { recursive: true, force: true });

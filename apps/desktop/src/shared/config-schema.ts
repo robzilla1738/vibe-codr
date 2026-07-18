@@ -211,6 +211,7 @@ export interface VibeConfig {
   contextWindow?: Record<string, number>;
   reasoning?: { effort?: "low" | "medium" | "high"; budgetTokens?: number };
   caching?: { enabled?: boolean; cacheTools?: boolean; cacheConversation?: boolean };
+  latency?: { providerTier?: "default" | "priority" };
   budget?: { limitUSD?: number; onExceed?: "warn" | "stop" };
   retry?: { maxAttempts?: number; baseDelayMs?: number };
   vision?: { relay?: VisionRelayConfig };

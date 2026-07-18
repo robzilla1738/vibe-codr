@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NumberInput, SelectInput, SettingBadge, SettingField, SettingSection, TextArea, TextInput } from "../FormControls";
+import { NumberInput, SelectInput, SettingBadge, SettingField, SettingSection, TextArea, TextInput, ToggleSwitch } from "../FormControls";
 import type { SectionProps } from "./types";
 
 export function ModelsSection({
@@ -12,6 +12,8 @@ export function ModelsSection({
   draftResetVersion = 0,
 }: SectionProps) {
   const reasoning = config.reasoning ?? {};
+  const latency = config.latency ?? {};
+  const prioritySupported = /^(?:xai|xai-oauth)\/grok-4\.5$/.test(config.model ?? "");
   return (
     <>
       <SettingSection title="Model Selection" description="Choose which model new sessions use.">
@@ -75,6 +77,20 @@ export function ModelsSection({
       </SettingSection>
 
       <SettingSection title="Performance" description="Step and stream limits that bound agent behavior.">
+        <SettingField
+          label="Turbo provider processing"
+          description={prioritySupported
+            ? "Requests xAI priority processing for lower latency. xAI currently charges 2× when priority is served. Model quality and tools are unchanged."
+            : "Available for Grok 4.5 through xAI API or xAI subscription connections."}
+        >
+          <ToggleSwitch
+            checked={latency.providerTier === "priority"}
+            disabled={!prioritySupported}
+            onChange={(enabled) => updateConfig({
+              latency: { ...latency, providerTier: enabled ? "priority" : "default" },
+            })}
+          />
+        </SettingField>
         <SettingField label="Max steps per turn" description="Hard cap on agentic steps in a single turn.">
           <NumberInput
             value={config.maxSteps}

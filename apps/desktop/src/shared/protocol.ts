@@ -194,6 +194,7 @@ const UI_EVENT_TYPE_MAP = {
   notice: 1,
   "engine-error": 1,
   "turn-finished": 1,
+  "turn-performance": 1,
   "session-idle": 1,
   "engine-idle": 1,
 } as const satisfies Record<UIEvent["type"], 1>;
@@ -219,6 +220,7 @@ const SESSION_EVENT_TYPES = new Set<UIEvent["type"]>([
   "goal-run", "plan-state-changed", "question-request", "question-settled", "activities-changed", "git-updated", "jobs-changed", "plan-presented", "permission-request",
   "permission-settled", "tasks-updated", "orchestration-task", "file-changed", "compacted",
   "subagent-started", "subagent-activity", "subagent-finished", "turn-finished",
+  "turn-performance",
   "session-idle", "engine-idle",
   "runtime-handoff-requested", "external-capability-pending", "external-capability-resolved",
 ]);
@@ -434,7 +436,14 @@ export function isUIEvent(value: unknown): value is UIEvent {
     case "user-message":
       return typeof event.text === "string"
         && (event.origin === undefined || event.origin === "user" || event.origin === "engine")
-        && optionalString(event.label);
+        && optionalString(event.label)
+        && optionalRuntimeIdentifier(event.turnId);
+    case "turn-performance": {
+      const sample = record(event.sample);
+      return !!sample && isRuntimeIdentifier(sample.turnId) && typeof sample.model === "string"
+        && (sample.serviceTier === "default" || sample.serviceTier === "priority")
+        && nonNegativeNumber(sample.totalMs);
+    }
     case "assistant-text-delta":
     case "reasoning-delta": return typeof event.delta === "string" && optionalRuntimeIdentifier(event.subagentId);
     case "tool-call-started": return isRuntimeIdentifier(event.toolCallId) && typeof event.toolName === "string" && optionalRuntimeIdentifier(event.subagentId);

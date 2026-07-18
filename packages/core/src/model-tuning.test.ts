@@ -84,10 +84,47 @@ test("older xAI/Grok chat models keep native reasoning without an effort option"
 test("Grok 4.5 uses Responses tuning for API-key and subscription routes", () => {
   for (const model of ["xai/grok-4.5", "xai-oauth/grok-4.5"]) {
     expect(reasoningCategory(model)).toBe("forwarded");
-    expect(buildModelTuning(model, cfg({ reasoning: { effort: "high" } })).providerOptions?.openai)
-      .toEqual({ store: false, reasoningEffort: "high" });
+    expect(
+      buildModelTuning(model, cfg({ reasoning: { effort: "high" } })).providerOptions?.openai,
+    ).toEqual({ store: false, reasoningEffort: "high" });
     expect(buildModelTuning(model, cfg()).providerOptions?.openai).toEqual({ store: false });
   }
+});
+
+test("Grok 4.5 adds a stable opaque prompt cache key without server storage", () => {
+  const config = cfg();
+  const first = buildModelTuning("xai-oauth/grok-4.5", config, { sessionId: "ses-one" });
+  const again = buildModelTuning("xai-oauth/grok-4.5", config, { sessionId: "ses-one" });
+  const otherSession = buildModelTuning("xai-oauth/grok-4.5", config, { sessionId: "ses-two" });
+  const otherModelRoute = buildModelTuning("xai/grok-4.5", config, { sessionId: "ses-one" });
+  const options = first.providerOptions?.openai;
+  expect(options?.store).toBe(false);
+  expect(typeof options?.promptCacheKey).toBe("string");
+  expect(options?.promptCacheKey).toBe(again.providerOptions?.openai?.promptCacheKey);
+  expect(options?.promptCacheKey).not.toBe(otherSession.providerOptions?.openai?.promptCacheKey);
+  expect(options?.promptCacheKey).not.toBe(otherModelRoute.providerOptions?.openai?.promptCacheKey);
+  expect(String(options?.promptCacheKey)).not.toContain("ses-one");
+});
+
+test("Grok 4.5 priority tier is explicit and cache-disable removes only the cache key", () => {
+  const normal = buildModelTuning("xai/grok-4.5", cfg(), { sessionId: "ses" });
+  expect(normal.providerOptions?.openai?.serviceTier).toBeUndefined();
+
+  const priority = buildModelTuning(
+    "xai/grok-4.5",
+    cfg({ latency: { providerTier: "priority" } }),
+    { sessionId: "ses" },
+  );
+  expect(priority.providerOptions?.openai).toMatchObject({
+    store: false,
+    serviceTier: "priority",
+  });
+
+  const uncached = buildModelTuning("xai/grok-4.5", cfg({ caching: { enabled: false } }), {
+    sessionId: "ses",
+  });
+  expect(uncached.providerOptions?.openai?.promptCacheKey).toBeUndefined();
+  expect(uncached.providerOptions?.openai?.store).toBe(false);
 });
 
 test("reasoningSupported is true for reasoning providers, false for local models", () => {

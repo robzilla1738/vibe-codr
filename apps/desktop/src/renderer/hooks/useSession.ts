@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { shouldClearBusyOnSendFailure } from "../../shared/busy-on-send-failure";
 import type { PendingCapabilityRequest } from "../../shared/cloud";
 import type { EngineCommand } from "../../shared/commands";
@@ -20,10 +20,12 @@ import {
   capTranscriptState,
   firstLine,
   groupIntoTurns,
+  updateGroupedTurns,
   initialTranscript,
   MAX_RETAINED_TRANSCRIPT_BLOCKS,
   REASONING_OUTPUT_MAX_CHARS,
   reduceTranscript,
+  type Turn,
   type TranscriptAction,
   type TranscriptState,
   truncate,
@@ -110,6 +112,11 @@ const REVEAL_PAGE = 20;
 const TURN_ITEMS_MAX = 120;
 const TURN_ITEMS_STEP = 24;
 const TURN_ITEM_REVEAL_PAGE = TURN_ITEMS_STEP;
+const TRANSCRIPT_ONLY_STREAM_TYPES = new Set<UIEvent["type"]>([
+  "assistant-text-delta",
+  "reasoning-delta",
+  "tool-call-progress",
+]);
 function reduceTxCapped(s: TranscriptState, a: TxAction): TranscriptState {
   return capTranscriptState(reduceTx(s, a), MAX_RETAINED_TRANSCRIPT_BLOCKS);
 }
@@ -147,6 +154,8 @@ export function useSession(cwd: string | null) {
   const bootstrapGate = useRef(new RequestGate());
   const modeTransitioning = useRef(false);
   const activeSessionId = useRef("");
+  const activeTurnId = useRef("");
+  const pendingFirstPaint = useRef<{ turnId: string; sessionId: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
   const toastExitTimer = useRef<number | null>(null);
   /** Always-current chrome.busy for send-failure busy policy (avoid stale closures). */
@@ -281,12 +290,14 @@ export function useSession(cwd: string | null) {
           event,
           snap: lastSnap.current,
         });
-      } else {
+      } else if (!TRANSCRIPT_ONLY_STREAM_TYPES.has(event.type)) {
         dispatchChrome({ type: "event", event });
       }
 
       switch (event.type) {
         case "user-message":
+          activeTurnId.current = event.turnId ?? "";
+          pendingFirstPaint.current = null;
           flushDeltas();
           landReasoning();
           // Per-turn clean slate for the reasoning trail (chrome thoughtLog is
@@ -313,6 +324,9 @@ export function useSession(cwd: string | null) {
           break;
         case "assistant-text-delta":
           if (event.subagentId || !event.delta) break;
+          if (activeTurnId.current && !pendingFirstPaint.current) {
+            pendingFirstPaint.current = { turnId: activeTurnId.current, sessionId: event.sessionId };
+          }
           // Commit reasoning before the first answer token. Keep prior answer
           // chunks buffered so normal text streaming stays coalesced at 24ms.
           landReasoning();
@@ -805,6 +819,13 @@ export function useSession(cwd: string | null) {
     };
   }, [handleEvent]);
 
+  useLayoutEffect(() => {
+    const pending = pendingFirstPaint.current;
+    if (!pending) return;
+    pendingFirstPaint.current = null;
+    window.vibe.recordFirstPaint({ ...pending, paintedAt: Date.now() });
+  }, [transcript]);
+
   useEffect(() => {
     const sessionId = activeSessionId.current;
     if (!ready || !cwd || !sessionId || chrome.busy) return;
@@ -883,7 +904,13 @@ export function useSession(cwd: string | null) {
     });
   }, [transcript.blocks]);
 
-  const turns = useMemo(() => groupIntoTurns(transcript.blocks), [transcript.blocks]);
+  const groupedTurnsRef = useRef<{ blocks: typeof transcript.blocks; turns: Turn[] }>({ blocks: [], turns: [] });
+  const turns = useMemo(() => {
+    const previous = groupedTurnsRef.current;
+    const next = updateGroupedTurns(previous.blocks, previous.turns, transcript.blocks);
+    groupedTurnsRef.current = { blocks: transcript.blocks, turns: next };
+    return next;
+  }, [transcript.blocks]);
   useEffect(() => {
     // Transcript retention shifts old blocks out of memory. Prune interaction
     // state for those turns too, otherwise repeatedly folding/revealing old

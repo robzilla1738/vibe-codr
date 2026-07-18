@@ -278,7 +278,10 @@ Full list: type `/keys` in the composer. See also [PARITY.md](./PARITY.md).
   Permissions, Cloud, and Instructions stay visible; the remaining technical
   sections stay searchable behind **Advanced settings**. Models keeps its default
   selection primary and collapses planning/fallback/reasoning/performance/pricing
-  and context overrides. Providers opens first, separates subscriptions from
+  and context overrides. Supported Grok 4.5 routes expose an off-by-default
+  **Turbo provider processing** switch with the current 2× cost warning; it
+  changes only the provider service tier, never model, reasoning, tools, retries,
+  context, or storage. Providers opens first, separates subscriptions from
   API/local/custom routes, keeps credential/model/required URL primary, fills
   known URLs, and collapses transport/token/header overrides.
 - **Full-workspace coverage**: 15 sections still cover every config field — Models

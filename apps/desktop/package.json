@@ -32,6 +32,7 @@
     "test:e2e": "npm run build && playwright test",
     "test:cloud:live": "VIBE_LIVE_CLOUD=1 vitest run src/main/cloud/providers.live.test.ts --no-file-parallelism",
     "test:watch": "vitest",
+    "bench:performance": "VIBE_PERF_BENCH=1 vitest run src/main/performance.bench.test.ts --reporter=verbose",
     "verify:source-parity": "node scripts/check-source-parity.mjs",
     "verify:config-shape": "node scripts/check-config-shape.mjs",
     "verify:bundle": "node scripts/check-bundle-size.mjs",

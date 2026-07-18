@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "@vibe/config";
 import { ModelResolutionError, ProviderAuthError } from "@vibe/shared";
 import type { EmbeddingModel, LanguageModel } from "ai";
-import { readTokenFile } from "./auth-file.ts";
+import { readTokenFile, tokenFileVersion } from "./auth-file.ts";
 import { builtinProviders, configDefinedProvider, configProviderEnvironmentName } from "./defs.ts";
 import { parseModelString } from "./resolve.ts";
 import type { ModelInfo, ProviderCreateOptions, ProviderDef } from "./types.ts";
@@ -15,6 +16,8 @@ import type { ModelInfo, ProviderCreateOptions, ProviderDef } from "./types.ts";
  */
 export class ProviderRegistry {
   #providers = new Map<string, ProviderDef>();
+  #modelCache = new Map<string, Promise<LanguageModel>>();
+  #providerGeneration = 0;
 
   constructor(defs: ProviderDef[] = builtinProviders()) {
     for (const def of defs) this.register(def);
@@ -22,11 +25,15 @@ export class ProviderRegistry {
 
   register(def: ProviderDef): void {
     this.#providers.set(def.id, def);
+    this.#providerGeneration += 1;
+    this.#modelCache.clear();
   }
 
   /** Remove a previously-registered provider (plugin load rollback — BUG-099). */
   unregister(id: string): void {
     this.#providers.delete(id);
+    this.#providerGeneration += 1;
+    this.#modelCache.clear();
   }
 
   has(id: string): boolean {
@@ -71,7 +78,8 @@ export class ProviderRegistry {
     const baseURL = config.providers[id]?.baseURL;
     let headers = config.providers[id]?.headers ?? cloudProviderHeaders(id);
     if ((id === "codex" || id === "openai-codex") && !hasHeader(headers, "chatgpt-account-id")) {
-      const accountId = process.env.CODEX_ACCOUNT_ID ?? this.#resolveCodexAccountId(def, config.providers[id]);
+      const accountId =
+        process.env.CODEX_ACCOUNT_ID ?? this.#resolveCodexAccountId(def, config.providers[id]);
       if (accountId) headers = { ...headers, "ChatGPT-Account-Id": accountId };
     }
     if (!apiKey && !def.auth.keyless) {
@@ -97,9 +105,7 @@ export class ProviderRegistry {
       // A custom token file must not inherit the built-in file's JSON path.
       // Without this, pointing Codex at ~/.codex/auth.json still looked for
       // providers.openai-codex.access from Vibe's own store.
-      const tokenPath = cfg?.tokenFile
-        ? cfg.tokenPath
-        : cfg?.tokenPath ?? def.auth.tokenPath;
+      const tokenPath = cfg?.tokenFile ? cfg.tokenPath : (cfg?.tokenPath ?? def.auth.tokenPath);
       const token = readTokenFile(tokenFile, tokenPath);
       if (token) return token;
     }
@@ -118,8 +124,10 @@ export class ProviderRegistry {
   ): string | undefined {
     const candidates = cfg?.tokenFile
       ? [cfg.tokenFile]
-      : [def.auth.tokenFile, ...(def.auth.fallbackTokenFiles ?? []).map((item) => item.path)]
-          .filter((path): path is string => Boolean(path));
+      : [
+          def.auth.tokenFile,
+          ...(def.auth.fallbackTokenFiles ?? []).map((item) => item.path),
+        ].filter((path): path is string => Boolean(path));
     for (const path of candidates) {
       for (const field of [
         "providers.openai-codex.accountId",
@@ -186,7 +194,41 @@ export class ProviderRegistry {
       throw new ModelResolutionError(modelString, `unknown provider "${providerId}"`);
     }
     const opts = this.resolveAuth(providerId, config);
-    return def.create(modelId, opts);
+    const cfg = config.providers[providerId];
+    const tokenFiles = [
+      cfg?.tokenFile ?? def.auth.tokenFile,
+      ...(!cfg?.tokenFile ? (def.auth.fallbackTokenFiles ?? []).map((item) => item.path) : []),
+    ].filter((path): path is string => Boolean(path));
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          generation: this.#providerGeneration,
+          providerId,
+          modelId,
+          apiKey: opts.apiKey,
+          baseURL: opts.baseURL,
+          headers: Object.entries(opts.headers ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+          tokenFiles: tokenFiles.map((path) => [path, tokenFileVersion(path)]),
+        }),
+      )
+      .digest("base64url");
+    let pending = this.#modelCache.get(fingerprint);
+    if (!pending) {
+      pending = Promise.resolve(def.create(modelId, opts));
+      this.#modelCache.set(fingerprint, pending);
+      while (this.#modelCache.size > 32) {
+        const oldest = this.#modelCache.keys().next().value;
+        if (typeof oldest !== "string") break;
+        this.#modelCache.delete(oldest);
+      }
+      void pending.catch(() => {
+        if (this.#modelCache.get(fingerprint) === pending) this.#modelCache.delete(fingerprint);
+      });
+    } else {
+      this.#modelCache.delete(fingerprint);
+      this.#modelCache.set(fingerprint, pending);
+    }
+    return pending;
   }
 
   /** Resolve a full model string to a live text-embedding model (for semantic
@@ -251,8 +293,13 @@ function cloudProviderHeaders(id: string): Record<string, string> | undefined {
   if (!raw) return undefined;
   try {
     const value = JSON.parse(raw) as unknown;
-    if (!value || typeof value !== "object" || Array.isArray(value)
-      || Object.values(value).some((item) => typeof item !== "string")) throw new Error();
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      Object.values(value).some((item) => typeof item !== "string")
+    )
+      throw new Error();
     return value as Record<string, string>;
   } catch {
     throw new ModelResolutionError(id, "invalid cloud provider headers");

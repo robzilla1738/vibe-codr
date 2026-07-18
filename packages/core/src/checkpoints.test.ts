@@ -1,7 +1,15 @@
 import { test, expect } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, utimesSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { CheckpointManager } from "./checkpoints.ts";
 import { gitAddWorktree } from "./build/gitops.ts";
 
@@ -16,6 +24,40 @@ async function gitOut(cwd: string, args: string[]): Promise<string> {
   const out = await new Response(proc.stdout).text();
   await proc.exited;
   return out.trim();
+}
+
+async function legacyWorkingTreeId(cwd: string): Promise<string> {
+  const index = join(tmpdir(), `vibe-legacy-index-${crypto.randomUUID()}`);
+  try {
+    const add = Bun.spawn(["git", "add", "-A"], {
+      cwd,
+      env: { ...process.env, GIT_INDEX_FILE: index },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const stderr = await new Response(add.stderr).text();
+    const addExit = await add.exited;
+    if (addExit !== 0) throw new Error(`legacy git add failed: ${stderr}`);
+    const tree = Bun.spawn(["git", "write-tree"], {
+      cwd,
+      env: { ...process.env, GIT_INDEX_FILE: index },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = (await new Response(tree.stdout).text()).trim();
+    const treeError = await new Response(tree.stderr).text();
+    const treeExit = await tree.exited;
+    if (treeExit !== 0) throw new Error(`legacy write-tree failed: ${treeError}`);
+    return output;
+  } finally {
+    rmSync(index, { force: true });
+  }
+}
+
+async function checkpointTreeId(cwd: string): Promise<string> {
+  const checkpoint = await new CheckpointManager(cwd).snapshot("tree equivalence");
+  expect(checkpoint).not.toBeNull();
+  return gitOut(cwd, ["rev-parse", `${checkpoint!.commit}^{tree}`]);
 }
 
 /** The ids of the live hidden checkpoint refs (`refs/vibecodr/<id>`). */
@@ -63,7 +105,10 @@ test("the user's staging area is left untouched after a snapshot", async () => {
   const dir = await initRepo();
   const cp = new CheckpointManager(dir);
   await Bun.write(join(dir, "a.txt"), "changed\n");
+  const indexPath = await gitOut(dir, ["rev-parse", "--git-path", "index"]);
+  const indexBefore = readFileSync(join(dir, indexPath));
   await cp.snapshot("mid");
+  expect(readFileSync(join(dir, indexPath))).toEqual(indexBefore);
 
   // `git status --porcelain` should show a.txt modified-but-unstaged (" M"),
   // i.e. the snapshot didn't leave everything staged. (Do not trim — the
@@ -73,6 +118,91 @@ test("the user's staging area is left untouched after a snapshot", async () => {
   await proc.exited;
   expect(out).toContain(" M a.txt");
 });
+
+test("seeded and legacy private indexes produce identical trees for every repository shape", async () => {
+  // Staged + unstaged + untracked + deleted + symlinked in one representative dirty tree.
+  const dirty = await initRepo();
+  await Bun.write(join(dirty, "deleted.txt"), "delete me\n");
+  symlinkSync("a.txt", join(dirty, "link-to-a"));
+  await git(dirty, ["add", "-A"]);
+  await git(dirty, ["commit", "-qm", "fixtures"]);
+  await Bun.write(join(dirty, "a.txt"), "staged version\n");
+  await git(dirty, ["add", "a.txt"]);
+  await Bun.write(join(dirty, "a.txt"), "unstaged version\n");
+  await Bun.write(join(dirty, "untracked.txt"), "new\n");
+  rmSync(join(dirty, "deleted.txt"));
+  const dirtyIndex = readFileSync(
+    join(dirty, await gitOut(dirty, ["rev-parse", "--git-path", "index"])),
+  );
+  expect(await checkpointTreeId(dirty)).toBe(await legacyWorkingTreeId(dirty));
+  expect(
+    readFileSync(join(dirty, await gitOut(dirty, ["rev-parse", "--git-path", "index"]))),
+  ).toEqual(dirtyIndex);
+
+  // Unborn repositories have no usable real index/HEAD and must take the safe fallback.
+  const unborn = mkdtempSync(join(tmpdir(), "vibe-cp-unborn-"));
+  await git(unborn, ["init", "-q"]);
+  await git(unborn, ["config", "user.email", "t@t.dev"]);
+  await git(unborn, ["config", "user.name", "t"]);
+  await Bun.write(join(unborn, "first.txt"), "first\n");
+  expect(await checkpointTreeId(unborn)).toBe(await legacyWorkingTreeId(unborn));
+
+  // Linked worktrees use a worktree-specific index under the common git dir.
+  const worktreeSource = await initRepo();
+  const worktree = mkdtempSync(join(tmpdir(), "vibe-cp-worktree-"));
+  rmSync(worktree, { recursive: true, force: true });
+  await git(worktreeSource, [
+    "worktree",
+    "add",
+    "-q",
+    "-b",
+    `vibe-perf-${crypto.randomUUID()}`,
+    worktree,
+  ]);
+  await Bun.write(join(worktree, "a.txt"), "worktree edit\n");
+  await Bun.write(join(worktree, "new.txt"), "worktree new\n");
+  expect(await checkpointTreeId(worktree)).toBe(await legacyWorkingTreeId(worktree));
+
+  // Split indexes cannot be relocated safely; the seeded add rejects and falls back.
+  const split = await initRepo();
+  await git(split, ["update-index", "--split-index"]);
+  await Bun.write(join(split, "a.txt"), "split edit\n");
+  await Bun.write(join(split, "new.txt"), "split new\n");
+  const splitIndexPath = join(split, await gitOut(split, ["rev-parse", "--git-path", "index"]));
+  const splitIndex = readFileSync(splitIndexPath);
+  const sharedIndexPath = await gitOut(split, ["rev-parse", "--shared-index-path"]);
+  const sharedIndexFile = sharedIndexPath
+    ? isAbsolute(sharedIndexPath)
+      ? sharedIndexPath
+      : join(split, sharedIndexPath)
+    : undefined;
+  const sharedIndex = sharedIndexFile ? readFileSync(sharedIndexFile) : undefined;
+  expect(await checkpointTreeId(split)).toBe(await legacyWorkingTreeId(split));
+  expect(readFileSync(splitIndexPath)).toEqual(splitIndex);
+  if (sharedIndex && sharedIndexFile) expect(readFileSync(sharedIndexFile)).toEqual(sharedIndex);
+
+  // A checked-out submodule whose HEAD advanced must be captured as the new gitlink.
+  const submoduleSource = await initRepo();
+  const parent = await initRepo();
+  await git(parent, [
+    "-c",
+    "protocol.file.allow=always",
+    "submodule",
+    "add",
+    "-q",
+    submoduleSource,
+    "sub",
+  ]);
+  await git(parent, ["commit", "-qam", "add submodule"]);
+  await git(join(parent, "sub"), ["config", "user.email", "t@t.dev"]);
+  await git(join(parent, "sub"), ["config", "user.name", "t"]);
+  await Bun.write(join(parent, "sub", "a.txt"), "advanced submodule\n");
+  await git(join(parent, "sub"), ["commit", "-qam", "advance"]);
+  const parentIndexPath = join(parent, await gitOut(parent, ["rev-parse", "--git-path", "index"]));
+  const parentIndex = readFileSync(parentIndexPath);
+  expect(await checkpointTreeId(parent)).toBe(await legacyWorkingTreeId(parent));
+  expect(readFileSync(parentIndexPath)).toEqual(parentIndex);
+}, 30_000);
 
 test("snapshot in a repo with no commits leaves the index empty", async () => {
   // A freshly `git init`'d repo has no HEAD; the snapshot must not leave the

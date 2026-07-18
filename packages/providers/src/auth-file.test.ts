@@ -37,3 +37,12 @@ test("JSON file: an explicit dot-path is honored", async () => {
   expect(readTokenFile(path, "tokens.access_token")).toBe("deep-xyz");
   expect(readTokenFile(path, "tokens.missing")).toBeUndefined();
 });
+
+test("cached token parsing invalidates when the credential file changes", async () => {
+  const path = await fixture("rotate.json", JSON.stringify({ token: "first" }));
+  expect(readTokenFile(path)).toBe("first");
+  expect(readTokenFile(path)).toBe("first");
+  await Bun.sleep(5);
+  await Bun.write(path, JSON.stringify({ token: "second-and-longer" }));
+  expect(readTokenFile(path)).toBe("second-and-longer");
+});

@@ -120,14 +120,15 @@ npm run test:e2e       # hermetic Electron host/renderer lifecycle matrix
 ```
 
 Expect: the current Vitest suite green, Playwright Electron E2E
-green (**12** scenarios), all 21 upstream source pairs aligned, Biome and `tsc`
+green (**13** scenarios), all 22 upstream source pairs aligned, Biome and `tsc`
 clean, all 40 engine config fields represented, electron-vite build and
 renderer/host bundle budget OK, and smoke prints
 `ready` + `snapshot ok` and a structurally valid project-list response (which
 may be empty when every project is archived). Prefer live suite output over frozen counts in prose.
 Settings, Sessions, and the xterm runtime must remain in deferred chunks: aggregate
 renderer payload may include them, but the initial/largest chunk retains its
-budget.
+budget. The aggregate ceiling includes a narrow 3 KB allowance for the active
+Sessions insight surface; the startup/largest-chunk ceiling is unchanged.
 The renderer build extracts repeated legal banners into
 `out/renderer/THIRD_PARTY_LICENSES.txt`; `verify:bundle` requires that shipped
 notice file as well as the JavaScript budgets.
@@ -331,7 +332,11 @@ npm run dev
    Open **Sessions** from the rail and confirm Board/List, search, project/status/
    mode filters, and sort all persist after reopening the app. Verify a busy turn
    moves to Active, permission/question/plan/capability waits move to Review,
-   and a settled turn moves to Done. A merely running Cloud sandbox must not be
+   and a settled turn moves to Done. During a busy fixture, the active card must
+   update its current tool/task or wait, tasks completed/total, running agents
+   and jobs, queue, changed files, context, tokens/cost, model/mode/goal, and
+   Local/Cloud provider without reopening Sessions. After engine-idle it must
+   read Ready with refreshed saved metadata. A merely running Cloud sandbox must not be
    presented as model work. Open, rename, archive,
    and delete records from both Board and List; destructive actions must use the
    in-app confirmation dialog and the underlying project rail must refresh.
@@ -382,8 +387,11 @@ npm run dev
     cards, the collapsed `Memory · N notes` row, and its expanded note list. Scroll
     away from the bottom after edits and confirm Jump to latest sits beside the
     changed-files chip, not above it.
-14. Expand a Work group — compact steps, no brain icon, one surface per open
-    thought; tool rows stay expandable for output.
+14. In each Quiet, Normal, and Verbose density, open and close a Work group and
+    a tool/thinking row. Compact steps retain no brain icon and one surface per
+    open thought; density only chooses the default. Confirm ⌘T closes Verbose
+    thinking, then reopens it, and that a completed tool with no output has no
+    chevron or disclosure semantics.
 15. Approve a permission request for a background `npm run dev`; confirm the job starts, the host remains healthy, and the session does not show a generic host-exited failure. Trigger an unfamiliar plugin/MCP permission and confirm its bounded argument preview is visible before deciding.
     For synthetic large queue/job fixtures, confirm only 200 rows mount, the
     omitted count is visible, and running jobs plus queue head/tail remain present.

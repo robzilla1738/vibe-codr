@@ -330,8 +330,19 @@ test("a thinking burst lands as a collapsed row; toggle expands it; empty is dro
   expect(run([{ type: "thinking", text: "   \n  " }]).blocks).toHaveLength(0);
 });
 
+test("explicit disclosure state survives density defaults", () => {
+  let s = run([
+    { type: "tool-start", toolCallId: "c1", toolName: "bash", input: { command: "pwd" } },
+    { type: "tool-finish", toolCallId: "c1", output: "/tmp", isError: false },
+  ]);
+  const id = s.blocks[0]!.id;
+  s = reduceTranscript(s, { type: "set-expanded", id, expanded: true });
+  expect(s.blocks[0]).toMatchObject({ kind: "tool", expandedOverride: true });
+  s = reduceTranscript(s, { type: "set-expanded", id, expanded: false });
+  expect(s.blocks[0]).toMatchObject({ kind: "tool", expandedOverride: false });
+});
+
 test("toggle-thinking-all expands every thinking row, then folds them all back", () => {
-  const collapsed = (b: unknown) => (b as { collapsed: boolean }).collapsed;
   let s = run([
     { type: "thinking", text: "first burst", seconds: 2 },
     { type: "tool-start", toolCallId: "c1", toolName: "read", input: {} },
@@ -339,15 +350,22 @@ test("toggle-thinking-all expands every thinking row, then folds them all back",
   ]);
   // Mixed state (one row manually opened) still means "expand the rest".
   s = reduceTranscript(s, { type: "toggle", id: s.blocks[0]!.id });
-  s = reduceTranscript(s, { type: "toggle-thinking-all" });
-  expect(s.blocks.filter((b) => b.kind === "thinking").every((b) => !collapsed(b))).toBe(true);
+  s = reduceTranscript(s, { type: "toggle-thinking-all", density: "normal" });
+  expect(s.blocks.filter((b) => b.kind === "thinking").every((b) => b.expandedOverride)).toBe(true);
   // All open → collapse all.
-  s = reduceTranscript(s, { type: "toggle-thinking-all" });
-  expect(s.blocks.filter((b) => b.kind === "thinking").every((b) => collapsed(b))).toBe(true);
-  // Tool rows are untouched, and a transcript with no thinking is a no-op.
+  s = reduceTranscript(s, { type: "toggle-thinking-all", density: "normal" });
+  expect(s.blocks.filter((b) => b.kind === "thinking").every((b) => b.expandedOverride === false)).toBe(true);
+  // Tool rows are untouched.
   expect(s.blocks[1]!.kind).toBe("tool");
+  // Verbose defaults open, so its first toggle explicitly collapses every row.
+  s = reduceTranscript(run([{ type: "thinking", text: "verbose default" }]), {
+    type: "toggle-thinking-all",
+    density: "verbose",
+  });
+  expect(s.blocks[0]).toMatchObject({ kind: "thinking", expandedOverride: false });
+  // A transcript with no thinking is a no-op.
   const none = run([{ type: "user", text: "hi" }]);
-  expect(reduceTranscript(none, { type: "toggle-thinking-all" })).toBe(none);
+  expect(reduceTranscript(none, { type: "toggle-thinking-all", density: "normal" })).toBe(none);
 });
 
 test("clear-turn settles still-running rows so an aborted call doesn't spin forever", () => {

@@ -20,8 +20,8 @@ Scenarios: `welcome`, `splash` (quiet empty home + composer), `chat`, `table`,
 `onboarding`, `slash`, `catalog`, `catalog-draft`, `mention`, `attachments`,
 `jobs`, `inspector`, `changes`, `toast`, `density-quiet`, `density-verbose`, `ctx-hot`,
 `sessions`, `settings`, `git` — plus `&theme=<name>` for any registered TUI theme (e.g.
-`?scenario=chat&theme=opencode`). Shots also capture `busy-narrow`, `busy-wide`,
-`light`, and `theme-opencode`. `attachments` previews the dropped-image and
+`?scenario=chat&theme=tokyonight`). Shots also capture `busy-narrow`, `busy-wide`,
+`light`, and `theme-tokyonight`. `attachments` previews the dropped-image and
 file-reference composer state, including Finder-style URI path fallback. The
 `inspector` exercises Session, while `changes` opens the expanded master-detail
 changed-files review with recursive navigation, totals, and numbered Diff/File content;

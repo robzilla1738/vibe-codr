@@ -32,13 +32,51 @@ import {
   IconRename,
   IconSearch,
 } from "../icons";
+import type { LiveSessionInsight } from "./session-live-insight";
 
 const STATUS_ORDER: SessionBoardStatus[] = ["active", "review", "done"];
 const STATUS_COPY: Record<SessionBoardStatus, { label: string; description: string }> = {
-  active: { label: "Active", description: "Work in progress" },
+  active: { label: "Active", description: "In progress or ready to continue" },
   review: { label: "Review", description: "Ready for your attention" },
   done: { label: "Done", description: "Finished sessions" },
 };
+
+function compactCount(value: number): string {
+  return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k` : value.toLocaleString();
+}
+
+function SessionLiveSummary({ insight }: { insight: LiveSessionInsight }) {
+  const stateLabel = insight.state === "needs-input"
+    ? "Needs input"
+    : insight.state === "review"
+      ? "Review"
+      : insight.state === "working"
+        ? "Working"
+        : "Ready";
+  const metrics = [
+    insight.taskProgress ? `Tasks ${insight.taskProgress.completed}/${insight.taskProgress.total}` : null,
+    insight.runningSubagents > 0 ? `${insight.runningSubagents} agent${insight.runningSubagents === 1 ? "" : "s"}` : null,
+    insight.runningJobs > 0 ? `${insight.runningJobs} job${insight.runningJobs === 1 ? "" : "s"}` : null,
+    insight.queueDepth > 0 ? `${insight.queueDepth} queued` : null,
+    insight.changedFiles > 0 ? `${insight.changedFiles} file${insight.changedFiles === 1 ? "" : "s"} changed` : null,
+    insight.contextPercent != null ? `Context ${insight.contextPercent}%` : null,
+    insight.totalTokens > 0 ? `${compactCount(insight.totalTokens)} tokens` : null,
+    insight.costUSD > 0 ? `$${insight.costUSD.toFixed(4)}` : null,
+  ].filter((metric): metric is string => metric !== null);
+  return (
+    <div className={`session-live-summary is-${insight.state}`} role="status" aria-live="polite">
+      <div className="session-live-headline">
+        <span className="session-live-state"><span aria-hidden />{stateLabel}</span>
+        <span className="session-live-activity" title={insight.headline}>{insight.headline}</span>
+      </div>
+      {metrics.length > 0 ? (
+        <div className="session-live-metrics" aria-label="Live session metrics">
+          {metrics.map((metric) => <span key={metric}>{metric}</span>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function loadPreferences(): SessionBoardPreferences {
   try {
@@ -285,6 +323,7 @@ export function SessionsWorkspace({
   interactionDisabled,
   needsInput,
   needsReview,
+  liveInsight,
   statusRevision,
   loading,
   error,
@@ -297,7 +336,7 @@ export function SessionsWorkspace({
   onClose,
 }: {
   projects: ProjectSummary[];
-  cloudSessions: Pick<CloudSessionCatalogEntry, "sessionId" | "status">[];
+  cloudSessions: Pick<CloudSessionCatalogEntry, "sessionId" | "status" | "provider" | "error" | "updatedAt">[];
   chatsCwd: string | null;
   activeCwd: string | null;
   activeSessionId: string;
@@ -305,6 +344,7 @@ export function SessionsWorkspace({
   interactionDisabled: boolean;
   needsInput: boolean;
   needsReview: boolean;
+  liveInsight: LiveSessionInsight | null;
   statusRevision: number;
   loading: boolean;
   error: string | null;
@@ -342,7 +382,7 @@ export function SessionsWorkspace({
     [projects, chatsCwd, preferences.statuses],
   );
   const cloudBySession = useMemo(
-    () => new Map(cloudSessions.map((entry) => [entry.sessionId, entry.status])),
+    () => new Map(cloudSessions.map((entry) => [entry.sessionId, entry])),
     [cloudSessions],
   );
   const cloudOwned = useMemo(
@@ -352,7 +392,7 @@ export function SessionsWorkspace({
   const automaticStates = useMemo(() => {
     const states = new Map<string, "working" | "needs-input" | "review" | "done">();
     for (const item of items) {
-      const cloudStatus = cloudBySession.get(item.session.id);
+      const cloudStatus = cloudBySession.get(item.session.id)?.status;
       const cloudState = cloudStatus ? cloudAutomaticSessionState(cloudStatus) : null;
       if (cloudState) states.set(item.key, cloudState);
     }
@@ -448,6 +488,15 @@ export function SessionsWorkspace({
     const remoteOwned = cloudOwned.has(item.session.id);
     const effectiveStatus = automaticStatuses.get(item.key) ?? item.status;
     const active = item.cwd === activeCwd && item.session.id === activeSessionId;
+    const live = active
+      && liveInsight?.sessionId === item.session.id
+      && liveInsight.cwd === item.cwd
+      ? liveInsight
+      : null;
+    const cloud = cloudBySession.get(item.session.id);
+    const displayMode = live?.mode ?? item.session.mode;
+    const displayModel = live?.model || item.session.model;
+    const displayGoal = live?.goal ?? item.session.goal;
     return (
       <article
         key={item.key}
@@ -465,18 +514,23 @@ export function SessionsWorkspace({
           />
         </div>
         <div className="session-board-meta">
-          {working ? <span className="session-board-live"><span aria-hidden />Working</span> : null}
-          {automaticState === "needs-input" ? <span className="session-board-attention">Needs your input</span> : null}
-          {automaticState === "review" ? <span className="session-board-attention">Needs review</span> : null}
+          {working && (!live || surface === "row") ? <span className="session-board-live"><span aria-hidden />Working</span> : null}
+          {automaticState === "needs-input" && (!live || surface === "row") ? <span className="session-board-attention">Needs your input</span> : null}
+          {automaticState === "review" && (!live || surface === "row") ? <span className="session-board-attention">Needs review</span> : null}
           {active && !working ? <span>Open</span> : null}
-          <span>{item.isChat ? "Chat" : item.session.mode === "plan" ? "Plan" : "Execute"}</span>
-          <span className="session-board-model" title={item.session.model}>{item.session.model}</span>
+          {cloud ? <span className="session-board-cloud">Cloud · {cloud.provider.toUpperCase()}</span> : <span>Local</span>}
+          <span>{item.isChat ? "Chat" : displayMode === "plan" ? "Plan" : "Execute"}</span>
+          <span className="session-board-model" title={displayModel}>{displayModel}</span>
           <time dateTime={new Date(item.session.updatedAt).toISOString()}>
-            {relativeSessionTime(item.session.updatedAt)}
+            {working ? "Live now" : relativeSessionTime(item.session.updatedAt)}
           </time>
         </div>
-        {surface === "card" && item.session.goal ? (
-          <p className="session-board-goal">{item.session.goal}</p>
+        {surface === "card" && displayGoal ? (
+          <p className="session-board-goal">{displayGoal}</p>
+        ) : null}
+        {surface === "card" && live ? <SessionLiveSummary insight={live} /> : null}
+        {surface === "card" && cloud?.error ? (
+          <p className="session-board-cloud-error" role="alert">{cloud.error}</p>
         ) : null}
         <div className="session-board-controls">
           <SessionStatusSelect

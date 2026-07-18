@@ -82,6 +82,7 @@ import {
 } from "./primitives";
 import { TranscriptView } from "./transcript/TranscriptView";
 import { deleteTranscriptCache, deleteTranscriptCachesForCwd } from "./transcript-cache";
+import { buildLiveSessionInsight } from "./sessions/session-live-insight";
 
 type Picker = CatalogPickerState | null;
 
@@ -173,6 +174,7 @@ export function App() {
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionStatusRevision, setSessionStatusRevision] = useState(0);
   const busySessionRef = useRef<string | null>(null);
+  const projectRefreshBusyRef = useRef(false);
   const [cloudSheetOpen, setCloudSheetOpen] = useState(false);
   const [cloudTransitioning, setCloudTransitioning] = useState(false);
   const [cloudRequest, setCloudRequest] = useState<{ target?: "cloud" | "local"; provider?: CloudProviderId; instruction?: string } | null>(null);
@@ -1722,7 +1724,7 @@ export function App() {
       // Ctrl/Cmd+T thinking
       if (chatShortcutAvailable && e.key === "t" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
         e.preventDefault();
-        session.dispatchTranscript({ type: "toggle-thinking-all" });
+        session.dispatchTranscript({ type: "toggle-thinking-all", density: session.chrome.density });
         return;
       }
       // Ctrl/Cmd+D density
@@ -1946,6 +1948,22 @@ export function App() {
     || planPending
     || (pendingLocalCapability !== null && pendingLocalCapabilitySessionId === chrome.sessionId);
   const sessionNeedsReview = !chrome.busy && (chrome.lastGate === "red" || failedSessionId === chrome.sessionId);
+  const sessionAttention = chrome.perms[0]
+    ? `Approve ${chrome.perms[0].toolName}`
+    : questionPending
+      ? chrome.question?.question ?? "Answer the agent’s question"
+      : planPending
+        ? "Review the proposed plan"
+        : pendingLocalCapability !== null && pendingLocalCapabilitySessionId === chrome.sessionId
+          ? `Continue ${pendingLocalCapability.integration} on this Mac`
+          : null;
+  const liveSessionInsight = buildLiveSessionInsight({
+    chrome,
+    transcript: session.transcript,
+    needsInput: sessionNeedsInput,
+    needsReview: sessionNeedsReview,
+    attention: sessionAttention,
+  });
   const persistSessionStatus = useCallback((statusCwd: string, sessionId: string, status: SessionBoardStatus) => {
     try {
       const preferences = readSessionBoardPreferences(window.localStorage);
@@ -1978,6 +1996,11 @@ export function App() {
       busySessionRef.current = null;
     }
   }, [chrome.busy, chrome.sessionId, cwd, persistSessionStatus, session.ready, sessionNeedsInput, sessionNeedsReview]);
+  useEffect(() => {
+    const wasBusy = projectRefreshBusyRef.current;
+    projectRefreshBusyRef.current = chrome.busy;
+    if (wasBusy && !chrome.busy && session.ready) void refreshProjects();
+  }, [chrome.busy, refreshProjects, session.ready]);
   const showGateBanner = chrome.lastGate === "red" && !chrome.busy;
   const contextSummary = formatChromeSummary({
     git: formatGitLine(chrome.git),
@@ -2131,6 +2154,7 @@ export function App() {
                 interactionDisabled={chrome.busy || session.booting || cloudTransitioning}
                 needsInput={sessionNeedsInput}
                 needsReview={sessionNeedsReview}
+                liveInsight={liveSessionInsight}
                 statusRevision={sessionStatusRevision}
                 loading={projectsLoading}
                 error={projectsError}
@@ -2218,8 +2242,8 @@ export function App() {
                     density={chrome.density}
                     theme={chrome.theme}
                     itemWindowFor={session.itemWindowFor}
-                    onToggleBlock={(id) =>
-                      session.dispatchTranscript({ type: "toggle", id })
+                    onSetBlockExpanded={(id, expanded) =>
+                      session.dispatchTranscript({ type: "set-expanded", id, expanded })
                     }
                     onToggleTurn={(key) =>
                       session.setFoldedTurns((prev) => {
@@ -2276,8 +2300,8 @@ export function App() {
                 density={chrome.density}
                 theme={chrome.theme}
                 itemWindowFor={session.itemWindowFor}
-                onToggleBlock={(id) =>
-                  session.dispatchTranscript({ type: "toggle", id })
+                onSetBlockExpanded={(id, expanded) =>
+                  session.dispatchTranscript({ type: "set-expanded", id, expanded })
                 }
                 onToggleTurn={(key) =>
                   session.setFoldedTurns((prev) => {

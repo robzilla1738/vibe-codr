@@ -135,7 +135,10 @@ The shell has these primary surfaces:
 6. **Sessions workspace** — a full main-stage Board/List view over the host-owned
    project index. Live local and Cloud state automatically drives Working,
    Needs input, Review, and Done; users retain manual organization when no live
-   state applies.
+   state applies. The active card streams its current tool/task or actionable
+   wait plus task progress, agents, jobs, queue, changed files, context, usage,
+   model, mode, goal, and ownership. Project metadata refreshes when a turn
+   settles so the board and rail do not lag behind the transcript.
    Search, project/status/mode filters, sorting, inline rename, status movement,
    archive, delete, and resume all operate on the existing session APIs.
 
@@ -234,6 +237,10 @@ without changing the active chat or scroll position.
 - Actual model execution or an ownership transition places a card in Active and
   shows Working. Permission, question, plan, and local-capability waits move to
   Review with “Needs your input”; a settled active turn moves to Done.
+- The active card's polite live summary names the most actionable current state
+  first, then exposes compact task/agent/job/queue/change/context/token/cost
+  metrics. Cloud cards identify the provider and surface ownership errors; the
+  same card reads `Ready` after the turn settles instead of retaining stale work.
 - Rename stays inline. Archive and Delete use a keyboard-safe in-app confirmation
   dialog, then reuse the same host mutations and transcript-cache cleanup as the rail.
 - Below 48rem, board columns stack and list rows collapse without horizontal scroll;
@@ -298,6 +305,10 @@ without changing the active chat or scroll position.
   the final answer stays outside it. Each open thought is **one
   quiet surface** (label + prose; no brain icon; no stacked empty cards).
   Copy for thinking sits on the head row.
+- Quiet, Normal, and Verbose define only the initial disclosure state. A visible
+  Work/tool/thinking control always responds to click or keyboard activation,
+  and ⌘T explicitly opens or closes all thinking rows. A tool with no output is
+  a static completion/failure status and never renders an inert chevron.
 - Thinking groups, nested tool/thought rows, and assistant prose share the same
   physical left edge at every viewport width; compact label typography must not
   re-resolve the `ch` reading measure or introduce nested indentation.
@@ -437,7 +448,7 @@ snippet. External links go through `ExternalLink` / host bridge.
 | Composer / mode / menus | `src/renderer/composer/Composer.tsx` |
 | Native dropped-file paths | `src/preload/index.ts` (`webUtils.getPathForFile`) |
 | Project rail | `src/renderer/layout/ProjectRail.tsx` |
-| Sessions workspace | `src/renderer/sessions/SessionsWorkspace.tsx`, `src/shared/session-board.ts` |
+| Sessions workspace | `src/renderer/sessions/SessionsWorkspace.tsx`, `src/renderer/sessions/session-live-insight.ts`, `src/shared/session-board.ts` |
 | Workspace dock | `src/renderer/layout/WorkspaceDock.tsx` |
 | Changed-files footer chip | `src/renderer/panels/TurnChangesCard.tsx` |
 | Diff display helpers | `src/shared/diff-view.ts`, `changed-files.ts` |

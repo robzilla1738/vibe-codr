@@ -42,15 +42,22 @@ export function densityShort(d: TranscriptDensity): string {
 
 /**
  * Effective collapse for a tool row under the active density.
- * Click toggles still mutate `block.collapsed`; density is an overlay:
- *  - quiet: always collapsed
- *  - verbose: force-open errors, diffs, and markdown (subagent) replies
- *  - normal: honor the block flag
+ * Density supplies the initial presentation; an explicit user disclosure choice
+ * always wins so a visible control can never become inert:
+ *  - quiet: collapsed by default
+ *  - verbose: open errors, diffs, and markdown (subagent) replies by default
+ *  - normal: honor the block's initial flag
  */
 export function toolCollapsed(
   density: TranscriptDensity,
-  block: { collapsed: boolean; isError: boolean; isDiff: boolean },
+  block: {
+    collapsed: boolean;
+    expandedOverride?: boolean;
+    isError: boolean;
+    isDiff: boolean;
+  },
 ): boolean {
+  if (block.expandedOverride !== undefined) return !block.expandedOverride;
   if (density === "quiet") return true;
   if (density === "verbose" && (block.isError || block.isDiff)) return false;
   return block.collapsed;
@@ -62,7 +69,12 @@ export function showThinkingRows(density: TranscriptDensity): boolean {
 }
 
 /** Effective collapse for a thinking row. */
-export function thinkingCollapsed(density: TranscriptDensity, collapsed: boolean): boolean {
+export function thinkingCollapsed(
+  density: TranscriptDensity,
+  collapsed: boolean,
+  expandedOverride?: boolean,
+): boolean {
+  if (expandedOverride !== undefined) return !expandedOverride;
   if (density === "verbose") return false;
   return collapsed;
 }

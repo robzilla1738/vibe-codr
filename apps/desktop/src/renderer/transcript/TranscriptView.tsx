@@ -142,7 +142,7 @@ function ThinkingGroup({
   density,
   theme,
   now,
-  onToggle,
+  onSetExpanded,
 }: {
   groupId: string;
   blocks: Block[];
@@ -150,13 +150,13 @@ function ThinkingGroup({
   density: TranscriptDensity;
   theme: string;
   now: number;
-  onToggle: (id: number) => void;
+  onSetExpanded: (id: number, expanded: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState(density === "verbose");
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
   const items = blocks.filter((block) => block.kind !== "thinking" || showThinkingRows(density));
   const stepCount = blocks.filter(isActivityBlock).length;
   if (items.length === 0) return null;
-  const open = density === "verbose" || expanded;
+  const open = expandedOverride ?? density === "verbose";
   const visibleItems = open ? items : items.filter((block) => block.kind === "notice");
 
   return (
@@ -168,9 +168,7 @@ function ThinkingGroup({
         className="thinking-group-head"
         aria-expanded={open}
         aria-controls={groupId}
-        onClick={() => {
-          if (density !== "verbose") setExpanded((current) => !current);
-        }}
+        onClick={() => setExpandedOverride(!open)}
       >
         <span className="thinking-group-label">
           <IconChevron open={open} size={13} />
@@ -188,7 +186,7 @@ function ThinkingGroup({
             density={density}
             theme={theme}
             now={now}
-            onToggle={onToggle}
+            onSetExpanded={onSetExpanded}
             activityContext
           />
         ))}
@@ -202,14 +200,14 @@ const BlockView = memo(function BlockView({
   density,
   theme,
   now,
-  onToggle,
+  onSetExpanded,
   activityContext = false,
 }: {
   block: Block;
   density: TranscriptDensity;
   theme: string;
   now: number;
-  onToggle: (id: number) => void;
+  onSetExpanded: (id: number, expanded: boolean) => void;
   activityContext?: boolean;
 }) {
   switch (block.kind) {
@@ -233,6 +231,7 @@ const BlockView = memo(function BlockView({
       );
     case "tool": {
       const collapsed = toolCollapsed(density, block);
+      const expandable = block.output.length > 0;
       const dur = toolDurationLabel(block, now);
       const outputText = block.output.join("\n");
       if (isSubagentTool(block.toolName)) {
@@ -258,27 +257,43 @@ const BlockView = memo(function BlockView({
       }
       return (
         <div className="tool-row">
-          <button
-            type="button"
-            className={`tool-head${block.isError ? " error" : ""}${!block.done ? " live" : ""}`}
-            onClick={() => onToggle(block.id)}
-            aria-expanded={!collapsed}
-            aria-controls={`tool-body-${block.id}`}
-            aria-label={`${collapsed ? "Expand" : "Collapse"} ${block.label}`}
-          >
-            <span className="tool-label">
-              <IconChevron open={!collapsed} size={13} />
-              <ToolGlyph toolName={block.toolName} />
-              <span>
-                {stripToolGlyph(block.label)}
+          {expandable ? (
+            <button
+              type="button"
+              className={`tool-head${block.isError ? " error" : ""}${!block.done ? " live" : ""}`}
+              onClick={() => onSetExpanded(block.id, collapsed)}
+              aria-expanded={!collapsed}
+              aria-controls={`tool-body-${block.id}`}
+              aria-label={`${collapsed ? "Expand" : "Collapse"} ${block.label}`}
+            >
+              <span className="tool-label">
+                <IconChevron open={!collapsed} size={13} />
+                <ToolGlyph toolName={block.toolName} />
+                <span>{stripToolGlyph(block.label)}</span>
               </span>
-            </span>
-            <span className="tool-meta">
-              {collapsed && block.done ? collapsedHint(block) : ""}
-              {!block.done && block.tail ? " …" : ""}
-              {dur ? ` ${dur}` : ""}
-            </span>
-          </button>
+              <span className="tool-meta">
+                {collapsed && block.done ? collapsedHint(block) : ""}
+                {!block.done && block.tail ? " …" : ""}
+                {dur ? ` ${dur}` : ""}
+              </span>
+            </button>
+          ) : (
+            <div
+              className={`tool-head is-static${block.isError ? " error" : ""}${!block.done ? " live" : ""}`}
+              role="status"
+              aria-label={`${stripToolGlyph(block.label)}, ${block.done ? block.isError ? "failed with no output" : "completed with no output" : "running"}`}
+            >
+              <span className="tool-label">
+                <span className="tool-disclosure-dot" aria-hidden>·</span>
+                <ToolGlyph toolName={block.toolName} />
+                <span>{stripToolGlyph(block.label)}</span>
+              </span>
+              <span className="tool-meta">
+                {block.done ? (block.isError ? "failed · no output" : "done · no output") : "running"}
+                {dur ? ` ${dur}` : ""}
+              </span>
+            </div>
+          )}
           {!collapsed && block.isDiff && (
             <div id={`tool-body-${block.id}`}>
               <DiffBody lines={block.output} />
@@ -313,7 +328,7 @@ const BlockView = memo(function BlockView({
     }
     case "thinking": {
       if (!showThinkingRows(density)) return null;
-      const collapsed = thinkingCollapsed(density, block.collapsed);
+      const collapsed = thinkingCollapsed(density, block.collapsed, block.expandedOverride);
       const label =
         block.seconds != null && block.seconds >= 1
           ? `Thought for ${block.seconds}s`
@@ -325,7 +340,7 @@ const BlockView = memo(function BlockView({
             <button
               type="button"
               className="thinking-head"
-              onClick={() => onToggle(block.id)}
+              onClick={() => onSetExpanded(block.id, collapsed)}
               aria-expanded={!collapsed}
               aria-controls={`thinking-body-${block.id}`}
               aria-label={`${collapsed ? "Expand" : "Collapse"} ${label}`}
@@ -446,7 +461,7 @@ export function TranscriptView({
   density,
   theme,
   itemWindowFor,
-  onToggleBlock,
+  onSetBlockExpanded,
   onToggleTurn,
   onEdit,
   onShowEarlier,
@@ -467,7 +482,7 @@ export function TranscriptView({
     hidden: number;
     revealPage: number;
   };
-  onToggleBlock: (id: number) => void;
+  onSetBlockExpanded: (id: number, expanded: boolean) => void;
   onToggleTurn: (key: number) => void;
   onEdit: (text: string) => void;
   onShowEarlier: () => void;
@@ -558,7 +573,7 @@ export function TranscriptView({
                     density={density}
                     theme={theme}
                     now={now}
-                    onToggle={onToggleBlock}
+                    onSetExpanded={onSetBlockExpanded}
                   />
                 );
               }
@@ -569,7 +584,7 @@ export function TranscriptView({
                   density={density}
                   theme={theme}
                   now={now}
-                  onToggle={onToggleBlock}
+                  onSetExpanded={onSetBlockExpanded}
                 />
               );
             });

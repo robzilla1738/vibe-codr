@@ -566,6 +566,28 @@ async function runTimeline(): Promise<void> {
         ],
       });
       break;
+    case "sessions":
+      await busyTurn();
+      emit({ type: "jobs-changed", sessionId: SID, jobs: JOBS });
+      emit({
+        type: "queue-changed",
+        active: { id: "q_active", label: "Refactor billing webhook handlers" },
+        pending: [
+          { id: "q1", label: "Run the integration suite" },
+          { id: "q2", label: "Review the final diff" },
+        ],
+      });
+      emit({
+        type: "file-changed",
+        sessionId: SID,
+        toolCallId: "tc_mig",
+        path: "src/billing/webhook.ts",
+        action: "edit",
+        diff: "@@ -18,2 +18,3 @@\n+await claimWebhookEvent(event.id);\n handle(event);",
+        added: 1,
+        removed: 0,
+      });
+      break;
     case "permission":
       await permissionTurn();
       break;

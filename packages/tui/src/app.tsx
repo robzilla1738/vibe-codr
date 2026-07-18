@@ -445,11 +445,11 @@ export function App(props: { engine: EngineClient }) {
     return "";
   };
   const cwd = shortCwd();
-  // Chrome accent for titles, caret, active markers: near-white by default, or
+  // Chrome accent for titles, caret, active markers: theme primary by default, or
   // `/accent` override. Box borders stay neutral grey (`palette().border`).
   const [accentColor, setAccentColor] = createSignal(snap.accentColor || "");
   const brand = () => accentColor() || palette().primary;
-  // Wordmark / user-rail / spinner hue: `/accent` when set, else white primary.
+  // Wordmark / user-rail / spinner hue: `/accent` when set, else theme primary.
   const logoHue = () =>
     wordmarkHue({
       accent: accentColor(),
@@ -1260,8 +1260,10 @@ export function App(props: { engine: EngineClient }) {
 
   // Finalize the streaming reply (land buffered text, flip `streaming` off).
   const finalizeAssistant = () => apply({ type: "finalize" });
-  // Toggle a tool/diff block's collapsed state (the click-to-expand handler).
-  const toggle = (id: number) => apply({ type: "toggle", id });
+  // User disclosure choices override density defaults. A visible chevron must
+  // always respond, including Quiet and Verbose modes.
+  const setExpanded = (id: number, expanded: boolean) =>
+    apply({ type: "set-expanded", id, expanded });
 
   // ── The sidebar Thinking trail + `✻ thought` burst plumbing ─────────────────
   /** Buffer a reasoning token — O(1); the trail/preview land once per frame. */
@@ -1558,7 +1560,7 @@ export function App(props: { engine: EngineClient }) {
       // are open) — the keyboard route to the reasoning, beside click-per-row.
       if (key.ctrl && key.name === "t") {
         key.preventDefault?.();
-        apply({ type: "toggle-thinking-all" });
+        apply({ type: "toggle-thinking-all", density: details() });
         return;
       }
       // Ctrl+D cycles transcript density (quiet → normal → verbose).
@@ -2466,7 +2468,7 @@ export function App(props: { engine: EngineClient }) {
                           </Show>
                         }
                       >
-                        {/* ░██ wordmark: single-hue white ramp (or `/accent`). */}
+                        {/* ░██ wordmark: single-hue theme-primary ramp (or `/accent`). */}
                         <For each={WORDMARK}>
                           {(line) => <BrandLine line={line} cols={WORDMARK_COLS} hue={logoHue()} />}
                         </For>
@@ -2639,7 +2641,7 @@ export function App(props: { engine: EngineClient }) {
                                           first={sourceIndex() === 0}
                                           width={blockInner()}
                                           spin={() => spinnerFrame(tick())}
-                                          onToggle={(id) => anchoredToggle(() => toggle(id))}
+                                          onToggle={(id, expanded) => anchoredToggle(() => setExpanded(id, expanded))}
                                         />
                                       </Show>
                                       <Show
@@ -2654,7 +2656,7 @@ export function App(props: { engine: EngineClient }) {
                                           chained={sourceIndex() > 0 && chained()}
                                           first={sourceIndex() === 0}
                                           width={blockInner()}
-                                          onToggle={(id) => anchoredToggle(() => toggle(id))}
+                                          onToggle={(id, expanded) => anchoredToggle(() => setExpanded(id, expanded))}
                                         />
                                       </Show>
                                       <Show when={blk().kind === "notice"}>
@@ -4212,7 +4214,7 @@ function ToolBlockView(props: {
   block: () => Extract<Block, { kind: "tool" }>;
   palette: Palette;
   style: SyntaxStyle | undefined;
-  /** Transcript density overlay (quiet forces collapse; verbose opens diffs/errors). */
+  /** Transcript density supplies disclosure defaults; explicit clicks win. */
   density?: TranscriptDensity;
   /** This row follows another visible step row → stack flush (no top gap). */
   chained?: boolean;
@@ -4222,13 +4224,13 @@ function ToolBlockView(props: {
   width?: number;
   /** Live spinner frame (tick-driven) — shown as the chevron while the call runs. */
   spin?: () => string;
-  onToggle: (id: number) => void;
+  onToggle: (id: number, expanded: boolean) => void;
 }) {
   const b = props.block;
   const p = props.palette;
   const dens = () => props.density ?? "normal";
   const expandable = () => b().output.length > 0;
-  // Density overlay: quiet always collapses; verbose force-opens error/diff/markdown.
+  // Density supplies a default; reducer-persisted user disclosure overrides it.
   const collapsed = () => toolCollapsed(dens(), b());
   // Split the stored label into its leading glyph + the summary so the icon can
   // carry the tool tone while the summary stays calm — `"→ read x"` → `→`, `read x`.
@@ -4276,7 +4278,7 @@ function ToolBlockView(props: {
       flexShrink={0}
       marginTop={props.first || props.chained ? 0 : 1}
       onMouseDown={() => {
-        if (expandable()) props.onToggle(b().id);
+        if (expandable()) props.onToggle(b().id, collapsed());
       }}
     >
       {/* Header: chevron · icon · summary … right-aligned meta. */}
@@ -4373,12 +4375,12 @@ function ThinkingBlockView(props: {
   chained?: boolean;
   first?: boolean;
   width?: number;
-  onToggle: (id: number) => void;
+  onToggle: (id: number, expanded: boolean) => void;
 }) {
   const b = props.block;
   const p = props.palette;
   const dens = () => props.density ?? "normal";
-  const collapsed = () => thinkingCollapsed(dens(), b().collapsed);
+  const collapsed = () => thinkingCollapsed(dens(), b().collapsed, b().expandedOverride);
   const header = () => {
     const s = b().seconds ?? 0;
     return s >= 1 ? `thinking · ${s}s` : "thinking";
@@ -4391,7 +4393,7 @@ function ThinkingBlockView(props: {
       flexDirection="column"
       flexShrink={0}
       marginTop={props.first || props.chained ? 0 : 1}
-      onMouseDown={() => props.onToggle(b().id)}
+      onMouseDown={() => props.onToggle(b().id, collapsed())}
     >
       <box flexDirection="row" flexShrink={0}>
         <text flexShrink={0} fg={p.muted}>{`${collapsed() ? GLYPH.fold : GLYPH.unfold} `}</text>

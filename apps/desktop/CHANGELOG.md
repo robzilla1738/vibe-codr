@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Improved
+
+- The Sessions workspace now turns the active session card into a live operational
+  summary: current tool or task, actionable waits, task progress, subagents,
+  background jobs, queued prompts, changed files, context use, tokens, cost,
+  model, mode, goal, and Local/Cloud ownership update while work is running.
+  Settled turns refresh the project index immediately so saved session metadata
+  no longer lags behind the conversation.
+
+### Fixed
+
+- `Work`, thinking, and tool-output disclosures now respond in every transcript
+  density. Quiet and Verbose provide defaults instead of overriding a user's
+  click or the all-thinking shortcut, and completed tools with no output render
+  an honest static status instead of an inert expand chevron.
+
 ## 0.6.10 — 2026-07-18
 
 ### Fixed

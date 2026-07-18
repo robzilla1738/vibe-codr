@@ -124,12 +124,17 @@ Useful commands:
 The desktop app is a presentation shell over the engine’s NDJSON host protocol. It does not fork or reimplement the agent loop.
 
 - **Project rail:** Projects, Chats, and a first-class Sessions workspace.
-- **Sessions workspace:** Board/List views, search, project/mode/status filters, sorting, automatic live Working/Needs input/Review/Done transitions, and open/rename/archive/delete actions.
+- **Sessions workspace:** Board/List views, search, project/mode/status filters,
+  sorting, open/rename/archive/delete actions, and a live active-session summary
+  for the current tool/task, waits, task progress, agents, jobs, queue, changes,
+  context, tokens, cost, model, mode, goal, and Local/Cloud ownership.
 - **Conversation:** streaming Markdown, reasoning, tool progress, plans, approvals, queue steering, source cards, attachments, and changed-file summaries.
 - **Workspace dock:** Session, Changes, Git, Terminal, Jobs, and Files stay beside the conversation rather than replacing it.
 - **Changes:** a master-detail file tree with numbered Diff/File review, semantic additions/deletions, copy, and reveal actions.
 - **Terminal:** main-process-owned PTYs persist across view changes and keep each project’s working directory.
-- **Themes:** the same theme and accent semantics as the terminal interface, rendered through a token-first desktop design system with restrained Liquid Glass chrome; Vibe Dark defaults to a neutral-white accent.
+- **Themes:** the same theme and accent semantics as the terminal interface,
+  rendered through a token-first desktop design system with restrained Liquid
+  Glass chrome; Vibe Dark defaults to a warm-peach primary.
 - **Recovery:** authoritative engine history is enhanced by a bounded, validated presentation cache; corrupt or unavailable browser storage never blocks startup.
 
 Desktop behavior and visual contracts are documented in [apps/desktop/UI.md](apps/desktop/UI.md), [apps/desktop/PARITY.md](apps/desktop/PARITY.md), and [apps/desktop/design-system.md](apps/desktop/design-system.md).

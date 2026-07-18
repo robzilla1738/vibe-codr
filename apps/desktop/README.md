@@ -70,11 +70,12 @@ Installed macOS and Windows builds check GitHub Releases after launch. Updates
 are never installed silently: Vibe Codr asks before downloading and again
 before restarting, and safely stops the engine and terminal processes first.
 
-### What’s new in 0.6.5
+### What’s new in 0.6.11
 
-- Model-provider setup remains above the composer at compact window heights.
-  The complete footer stays visible while provider choices and details scroll
-  inside the dialog.
+- Work, thinking, and tool-output rows remain expandable in Quiet, Normal, and
+  Verbose density; rows with no output no longer advertise a fake disclosure.
+- Sessions shows the active tool or task plus live tasks, agents, jobs, queue,
+  changes, context, token/cost, model, mode, goal, and Local/Cloud state.
 
 ## Clone
 
@@ -110,8 +111,9 @@ npm run ui:shots -- tools/ui-preview/shots
 
 Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 `permission`, `plan`, `gate`, `mode`, `queue`, `onboarding`, `slash`, `catalog`,
-`catalog-draft`, `mention`, `attachments`, `jobs`, `inspector`, `changes`, `toast`,
-`density-quiet`, `density-verbose`, `ctx-hot`, `settings`, `git` — plus
+`catalog-draft`, `mention`, `attachments`, `cloud-progress`, `cloud-failure`,
+`jobs`, `inspector`, `changes`, `sessions`, `toast`, `density-quiet`,
+`density-verbose`, `ctx-hot`, `settings`, `git` — plus
 `&theme=<name>` for any TUI theme. See
 [tools/ui-preview/README.md](./tools/ui-preview/README.md).
 
@@ -165,7 +167,11 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 
 - Content max ~130ch; transcript prose, tool activity, notices, approval panels, and the composer share the font-independent `--transcript-measure: 40rem` reading measure
 - **Left rail:** first-class Sessions workspace plus collapsible Projects + Chats sections; project rows reveal icon-only new-chat and ⋯ actions on hover/focus; Settings stays in the footer
-- **Sessions workspace:** persistent Board/List management across every project and Chat, with search/filter/sort, automatic Active/Review/Done transitions from live model state, and open/rename/archive/delete actions backed by the existing host APIs
+- **Sessions workspace:** persistent Board/List management across every project
+  and Chat, with search/filter/sort, automatic Active/Review/Done transitions,
+  live active-session operational insight (tool/task, waits, tasks, agents, jobs,
+  queue, changes, context, usage, model/mode/goal, and Local/Cloud ownership), and
+  open/rename/archive/delete actions backed by the existing host APIs
 - **Right workspace dock:** full-label Session / Changes / Git / Terminal / Jobs / Files in an equally inset, quietly grey rounded enclosure on the chat surface; compact below ~960px
 - **Shared activity sidebar:** Session, Changes, Git, Terminal, and Jobs open in one full-height, edge-attached right pane with equal switcher tabs, one compact Workspace header, a shared resize handle, and responsive drawer behavior. Horizontal divider rules are omitted; spacing and quiet surface shifts organize the chrome. Changes pairs a recursively expandable file tree with numbered Diff/File review and saturated semantic change colors. It is a structural sibling of chat, never a floating card or overlay on desktop. Files remains a Finder reveal.
 - **Persistent contextual terminal:** project sessions open at the project root;
@@ -215,8 +221,10 @@ keyboard-contained; Session, Changes, Git, Terminal, and Jobs open in one
 edge-attached activity sidebar without replacing the chat surface. Project/session ⋯ menus are portal-mounted, trigger-anchored, and
 toggle cleanly. User-message Copy/Edit/time actions sit **under** the bubble
 (trailing-aligned); assistant actions remain below the response. Tool/thinking
-rows stay compact under a `Thinking · N steps` group; open thoughts are one
-quiet surface (no brain icon). The live Subagents pill jumps to an expandable
+rows stay compact under a `Work · N steps` group; density supplies disclosure
+defaults while clicks and ⌘T always win. Completed tools with no output show a
+static status instead of a fake chevron. Open thoughts are one quiet surface
+(no brain icon). The live Subagents pill jumps to an expandable
 per-agent review with task, activity, elapsed time, result, and Copy. User turns
 fold by clicking the message. Source/article results use
 structured cards. Dropped images and files render as removable attachment chips
@@ -365,7 +373,7 @@ Shell-owned surfaces:
   the chat workspace
 - Project rail and right-side activity panels are responsive, with persisted
   desktop widths where resize handles are present
-- Theme-faithful selection colors, headings, and user-message accent (neutral-white Vibe Dark default; `/accent` remaps)
+- Theme-faithful selection colors, headings, and user-message accent (warm-peach Vibe Dark default; `/accent` remaps)
 - Empty-home splash: the same stylized, fluidly scaled ASCII wordmark at every window size, centered composer, and no automatic prompt suggestions
 - Project rail: rename/archive/delete on hover, titled sessions, working-only spinner for the active busy session
 - Host fatal recovery: **New session** on the boot-error card

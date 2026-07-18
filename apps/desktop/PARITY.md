@@ -1,7 +1,7 @@
 # CLI ↔ Electron parity checklist
 
 Manual smoke against OpenTUI / `vibecodr` in the **same project cwd**. Automated:
-`npm test` (current live suite), `npm run test:e2e` (12 scenarios),
+`npm test` (current live suite), `npm run test:e2e` (13 scenarios),
 `npm run verify:source-parity` (22 declaration pairs),
 `npm run verify:config-shape` (40 top-level engine fields), and CI
 coverage/bridge/packaged-host gates.
@@ -106,7 +106,10 @@ whose HEAD equals the lock before it will embed a rebuilt host.
 - [x] Assistant output streams as lightweight plain text, then finalizes into Streamdown + GFM
 - [x] Diff blocks green/red hunk coloring
 - [x] Tool icons + condensed labels; expand on click; auto-expand on error
-- [x] Each turn consolidates reasoning, tools, and intermediate progress into one `Work · N steps` disclosure; individual rows retain click-to-expand bodies and the final answer stays outside
+- [x] Each turn consolidates reasoning, tools, and intermediate progress into one
+  `Work · N steps` disclosure; density supplies defaults only, every visible
+  Work/tool/thinking disclosure remains interactive, empty-output tools do not
+  advertise a fake chevron, and the final answer stays outside
 - [x] Turn fold (click or keyboard-activate the user bubble / ⌘O fold-all; no persistent arrow); density quiet/normal/verbose (⌘D)
 - [x] Windowed transcript (“N earlier turns”) with progressive reveal (20 at a time)
 - [x] Per-turn item windowing for long tool runs (cap 120, step 24, reveal page)
@@ -139,7 +142,11 @@ whose HEAD equals the lock before it will embed a rebuilt host.
 - [x] Catalog filtering, no-results state, current-model marker, and RPC failure feedback
 - [x] Multi-project + Chats rail with collapsible sections, section +, titles, resume/filter; Continue Latest via ⇧⌘N / menu
 - [x] Project/session rename, archive, and delete menus with in-app confirmation; project menus escape rail clipping
-- [x] Sessions workspace: persistent Board/List views across all projects and Chats, search/filter/sort, automatic Active/Review/Done transitions for working/input-needed/settled sessions, honest Cloud ownership state, and open/rename/archive/delete management
+- [x] Sessions workspace: persistent Board/List views across all projects and
+  Chats, search/filter/sort, automatic Active/Review/Done transitions, live
+  current tool/task and wait insight plus task/agent/job/queue/change/context/
+  usage/model/mode/goal telemetry, end-turn metadata refresh, honest Local/Cloud
+  ownership and error state, and open/rename/archive/delete management
 - [x] Workspace dock (Session / Changes / Git / Terminal / Jobs / Files) on chat surface; no topbar duplicates
 - [x] Changed-files chip after edits; dock Changes opens the dedicated master-detail review
 - [x] Host fatal / boot error: primary New session recovery

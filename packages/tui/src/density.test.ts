@@ -30,8 +30,9 @@ test("densityShort is the bare level name", () => {
   for (const d of DENSITY_LEVELS) expect(densityShort(d)).toBe(d);
 });
 
-test("toolCollapsed: quiet always collapses", () => {
+test("toolCollapsed: quiet defaults closed but honors explicit disclosure", () => {
   expect(toolCollapsed("quiet", { collapsed: false, isError: true, isDiff: true })).toBe(true);
+  expect(toolCollapsed("quiet", { collapsed: true, expandedOverride: true, isError: false, isDiff: false })).toBe(false);
 });
 
 test("toolCollapsed: verbose opens error/diff even when flagged collapsed", () => {
@@ -39,6 +40,7 @@ test("toolCollapsed: verbose opens error/diff even when flagged collapsed", () =
   expect(toolCollapsed("verbose", { collapsed: true, isError: false, isDiff: true })).toBe(false);
   // Ordinary tool stays collapsed until the user expands.
   expect(toolCollapsed("verbose", { collapsed: true, isError: false, isDiff: false })).toBe(true);
+  expect(toolCollapsed("verbose", { collapsed: false, expandedOverride: false, isError: true, isDiff: true })).toBe(true);
 });
 
 test("toolCollapsed: normal honors the block flag", () => {
@@ -56,4 +58,6 @@ test("thinkingCollapsed: verbose always open", () => {
   expect(thinkingCollapsed("verbose", true)).toBe(false);
   expect(thinkingCollapsed("normal", true)).toBe(true);
   expect(thinkingCollapsed("quiet", true)).toBe(true);
+  expect(thinkingCollapsed("verbose", false, false)).toBe(true);
+  expect(thinkingCollapsed("normal", true, true)).toBe(false);
 });

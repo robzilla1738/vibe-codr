@@ -42,8 +42,8 @@ export function contextLabel(pct: number): string {
 
 /**
  * Hue for the wordmark gradient / compact logo.
- * Explicit `/accent` wins; otherwise chrome `primary` (white by default — no
- * purple fallback). Themed palettes with a saturated primary keep their brand.
+ * Explicit `/accent` wins; otherwise chrome `primary`. Themed palettes with a
+ * saturated primary keep their brand; heading color is never used as fallback.
  */
 export function wordmarkHue(opts: {
   accent?: string;

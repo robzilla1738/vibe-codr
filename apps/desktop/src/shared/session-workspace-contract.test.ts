@@ -29,7 +29,7 @@ describe("sessions workspace contract", () => {
   });
 
   it("does not claim an idle card is running", () => {
-    expect(workspace).toContain('active: { label: "Active", description: "Work in progress" }');
+    expect(workspace).toContain('active: { label: "Active", description: "In progress or ready to continue" }');
     expect(workspace).toContain("cloudAutomaticSessionState(cloudStatus)");
     expect(workspace).toContain("workingKeys.has(item.key)");
     expect(workspace).not.toContain('label: "Running"');
@@ -39,6 +39,15 @@ describe("sessions workspace contract", () => {
     expect(workspace).toContain('if (automaticStates.get(key) !== "review") appliedAutomaticStates.current.delete(key)');
     expect(app).toContain('event.type === "session-start"');
     expect(app).toContain("current === event.sessionId ? null : current");
+  });
+
+  it("projects live engine insight and refreshes persisted history after a turn", () => {
+    expect(app).toContain("buildLiveSessionInsight");
+    expect(app).toContain("projectRefreshBusyRef.current");
+    expect(app).toContain("if (wasBusy && !chrome.busy && session.ready) void refreshProjects()");
+    expect(workspace).toContain("<SessionLiveSummary insight={live}");
+    expect(workspace).toContain('aria-label="Live session metrics"');
+    expect(workspace).toContain("Cloud · {cloud.provider.toUpperCase()}");
   });
 
   it("does not mutate the local recovery record while cloud owns a session", () => {

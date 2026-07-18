@@ -39,7 +39,7 @@ const engine: EngineClient = {
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
     tasks: [],
     theme: "default",
-    // No /accent override → brand() falls back to the theme's Blue 300 primary, so
+    // No /accent override → brand() falls back to the theme's primary, so
     // the smoke exercises the real default chrome (peach wordmark/markers/spinner).
     accentColor: "",
     details: "normal",
@@ -136,25 +136,22 @@ sent.length = 0;
 t.mockInput.pressEscape();
 await settle();
 
-// The wordmark is a single-hue WHITE ramp (monochrome chrome): many distinct
-// per-column lightness steps (a real sweep, not a flat fill), with r≈g≈b so it
-// stays neutral — not a rainbow, not a purple default. captureCharFrame is
-// color-blind, so inspect per-span fg via captureSpans.
+// The wordmark is a single-hue WARM ramp: many distinct per-column lightness
+// steps (a real sweep, not a flat fill), holding the default theme's peach hue.
+// captureCharFrame is color-blind, so inspect per-span fg via captureSpans.
 const wordmarkColors = new Set<string>();
-let wordmarkNeutral = true;
+let wordmarkWarm = true;
 for (const line of t.captureSpans().lines) {
   if (!line.spans.some((s) => s.text.includes("░") || s.text.includes("█"))) continue;
   for (const s of line.spans) {
-    if (!s.text.trim()) continue;
+    if (!s.text.includes("░") && !s.text.includes("█")) continue;
     wordmarkColors.add(`${s.fg.r},${s.fg.g},${s.fg.b}`);
-    // Neutral = channels within 0.12 of each other (allows ramp noise).
-    const maxc = Math.max(s.fg.r, s.fg.g, s.fg.b);
-    const minc = Math.min(s.fg.r, s.fg.g, s.fg.b);
-    if (maxc - minc > 0.12) wordmarkNeutral = false;
+    // The default #fab283 ramp remains orange/peach throughout: R > G > B.
+    if (!(s.fg.r > s.fg.g && s.fg.g > s.fg.b)) wordmarkWarm = false;
   }
 }
-check(`wordmark is a single-hue white ramp (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
-check("wordmark colors are neutral white (no purple default)", wordmarkNeutral);
+check(`wordmark is a single-hue warm ramp (${wordmarkColors.size} distinct colors)`, wordmarkColors.size >= 8);
+check("wordmark colors follow the warm default primary", wordmarkWarm);
 // The default theme paints a BLACK background — guards the regression where a
 // persisted `theme: light` (or a non-black default) turned the whole UI white.
 const bgBlack = t
@@ -426,7 +423,7 @@ check(
 await t.mockInput.typeText("/theme ");
 await settle();
 frame = t.captureCharFrame();
-check("value submenu lists the options", frame.includes("opencode") && frame.includes("contrast"));
+check("value submenu lists the options", frame.includes("default") && frame.includes("contrast"));
 check("value submenu marks the current value (●)", frame.includes("●"));
 // Esc clears the draft (closes the menu) before the next section.
 t.mockInput.pressEscape();

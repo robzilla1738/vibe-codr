@@ -60,6 +60,9 @@ export type Block =
       /** Full captured output / diff hunk, shown only when expanded. */
       output: string[];
       collapsed: boolean;
+      /** Explicit disclosure state chosen by the user. Density only supplies
+       * defaults and must never make a visible chevron inert. */
+      expandedOverride?: boolean;
       /** Output is a unified diff → color +/- lines when expanded. */
       isDiff: boolean;
       /** Output is markdown prose (a subagent's reply) → render via <markdown>. */
@@ -88,6 +91,8 @@ export type Block =
       id: number;
       text: string;
       collapsed: boolean;
+      /** Explicit disclosure state chosen by the user. */
+      expandedOverride?: boolean;
       /** How long the burst took, seconds (shown in the header when ≥1). */
       seconds?: number;
     }
@@ -245,9 +250,10 @@ export type TranscriptAction =
     }
   | { type: "notice"; text: string; level?: "info" | "warn" | "error" }
   | { type: "toggle"; id: number }
+  | { type: "set-expanded"; id: number; expanded: boolean }
   /** Expand every thinking row if any is collapsed, else collapse them all
    * (the Ctrl+T companion to Ctrl+O's whole-turn fold). */
-  | { type: "toggle-thinking-all" }
+  | { type: "toggle-thinking-all"; density: "quiet" | "normal" | "verbose" }
   /** Turn boundary: finalize the reply and drop per-turn call maps. */
   | { type: "clear-turn" };
 
@@ -552,15 +558,31 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
             : b,
         ),
       };
-    case "toggle-thinking-all": {
-      if (!s.blocks.some((b) => b.kind === "thinking")) return s;
-      // Any collapsed → open everything (the "show me the thinking" gesture);
-      // all open → fold them all back down.
-      const expand = s.blocks.some((b) => b.kind === "thinking" && b.collapsed);
+    case "set-expanded":
       return {
         ...s,
         blocks: s.blocks.map((b) =>
-          b.kind === "thinking" ? { ...b, collapsed: !expand } : b,
+          b.id === a.id && (b.kind === "tool" || b.kind === "thinking")
+            ? { ...b, expandedOverride: a.expanded }
+            : b,
+        ),
+      };
+    case "toggle-thinking-all": {
+      if (!s.blocks.some((b) => b.kind === "thinking")) return s;
+      // Any effectively collapsed row → open everything; all open → fold all.
+      // Density supplies only the default and this keyboard choice is explicit.
+      const expand = s.blocks.some((b) =>
+        b.kind === "thinking"
+        && (b.expandedOverride !== undefined
+          ? !b.expandedOverride
+          : a.density === "verbose"
+            ? false
+            : b.collapsed),
+      );
+      return {
+        ...s,
+        blocks: s.blocks.map((b) =>
+          b.kind === "thinking" ? { ...b, expandedOverride: expand } : b,
         ),
       };
     }

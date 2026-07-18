@@ -7,6 +7,7 @@ const sessionId = "fixture-session";
 let mode = "execute";
 let approvalMode = "ask";
 let theme = "default";
+let details = "normal";
 // The real host reads its persisted project index before bootstrap. Seed the
 // fixture with its saved project so cold-start recents exercise that contract.
 let currentCwd = resolve(dirname(fileURLToPath(import.meta.url)), "../../project");
@@ -31,7 +32,7 @@ const snapshot = () => ({
   busy: false,
   theme,
   accentColor: "",
-  details: "normal",
+  details,
   mouse: false,
   approvalMode,
   commandNames: ["clear", "new", "theme", "fixture-command"],
@@ -81,6 +82,19 @@ function submit(text) {
       toolCallId: "tool-error",
       toolName: "bash",
       output: "fixture command failed",
+      isError: true,
+    });
+    sessionEvent({
+      type: "tool-call-started",
+      toolCallId: "tool-empty",
+      toolName: "bash",
+      input: { command: "npm install" },
+    });
+    sessionEvent({
+      type: "tool-call-finished",
+      toolCallId: "tool-empty",
+      toolName: "bash",
+      output: "",
       isError: true,
     });
     sessionEvent({ type: "assistant-text-delta", delta: "Done with **markdown**." });
@@ -154,6 +168,31 @@ function submit(text) {
     finish();
     return;
   }
+  if (text === "fixture:live-session") {
+    event({ type: "tasks-updated", sessionId, tasks: [
+      { id: "live-1", title: "Diagnose", status: "in_progress" },
+      { id: "live-2", title: "Verify", status: "pending" },
+    ] });
+    event({ type: "subagent-started", sessionId, subagentId: "live-sub", prompt: "Review live session" });
+    event({ type: "subagent-activity", sessionId, subagentId: "live-sub", label: "checking session telemetry" });
+    event({ type: "jobs-changed", sessionId, jobs: [{ id: "live-job", command: "npm run dev", status: "running", exitCode: null, servers: [], outputTail: "ready" }] });
+    event({ type: "queue-changed", sessionId, active: null, pending: [{ id: "live-queue", label: "Follow-up verification" }] });
+    event({ type: "usage-updated", sessionId, usage: { inputTokens: 1200, outputTokens: 300, totalTokens: 1500, costUSD: 0.0123 } });
+    event({ type: "context-updated", sessionId, usedTokens: 800, contextWindow: 1000 });
+    event({ type: "tool-call-started", sessionId, toolCallId: "live-tool", toolName: "bash", input: { command: "npm run typecheck" } });
+    setTimeout(() => {
+      event({ type: "tool-call-finished", sessionId, toolCallId: "live-tool", toolName: "bash", output: "typecheck passed", isError: false });
+      event({ type: "subagent-finished", sessionId, subagentId: "live-sub", result: "session telemetry verified" });
+      event({ type: "jobs-changed", sessionId, jobs: [] });
+      event({ type: "queue-changed", sessionId, active: null, pending: [] });
+      event({ type: "tasks-updated", sessionId, tasks: [
+        { id: "live-1", title: "Diagnose", status: "completed" },
+        { id: "live-2", title: "Verify", status: "completed" },
+      ] });
+      finish("green");
+    }, 2_000);
+    return;
+  }
   sessionEvent({ type: "assistant-text-delta", delta: `Echo: ${text}` });
   finish();
 }
@@ -191,6 +230,10 @@ function send(command) {
       if (command.name === "theme" && command.args) {
         theme = command.args;
         event({ type: "theme-changed", theme });
+      }
+      if (command.name === "details" && command.args) {
+        details = command.args;
+        event({ type: "details-changed", details });
       }
       break;
     case "shutdown":

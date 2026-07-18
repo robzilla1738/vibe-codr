@@ -113,6 +113,41 @@ test("streams reasoning, tools, diffs, markdown, telemetry, and engine-idle", as
   await expect(reasoning).toBeVisible();
   await reasoning.click();
   await expect(page.getByText("Inspecting the fixture.", { exact: false })).toBeVisible();
+
+  await submit("/details quiet");
+  await submit("fixture:stream");
+  await expect(page.getByText("Done with markdown.").last()).toBeVisible();
+  const quietWork = page.locator(".thinking-group").last();
+  await quietWork.locator(".thinking-group-head").click();
+  const quietFailure = quietWork.locator("button.tool-head").filter({ hasText: "exit 1" });
+  await quietFailure.click();
+  await expect(quietFailure).toHaveAttribute("aria-expanded", "true");
+  await expect(quietWork.getByText("fixture command failed", { exact: true })).toBeVisible();
+  await expect(quietWork.getByRole("status", { name: /npm install, failed with no output/i })).toBeVisible();
+
+  await submit("/details verbose");
+  const verboseFailure = quietWork.locator("button.tool-head").filter({ hasText: "exit 1" });
+  await verboseFailure.click();
+  await expect(verboseFailure).toHaveAttribute("aria-expanded", "false");
+  await expect(quietWork.getByText("fixture command failed", { exact: true })).toBeHidden();
+});
+
+test("shows actionable live insight in Sessions and settles it after the turn", async () => {
+  await submit("fixture:live-session");
+  await page.getByRole("button", { name: /^Sessions/ }).click();
+  await expect(page.getByRole("heading", { name: "Sessions" })).toBeVisible();
+  const live = page.locator(".session-live-summary");
+  await expect(live.getByText("$ npm run typecheck", { exact: true })).toBeVisible();
+  await expect(live.getByText("Tasks 0/2", { exact: true })).toBeVisible();
+  await expect(live.getByText("1 agent", { exact: true })).toBeVisible();
+  await expect(live.getByText("1 job", { exact: true })).toBeVisible();
+  await expect(live.getByText("1 queued", { exact: true })).toBeVisible();
+  await expect(live.getByText("Context 80%", { exact: true })).toBeVisible();
+  await expect(live.getByText("1.5k tokens", { exact: true })).toBeVisible();
+  await expect(live.getByText("$0.0123", { exact: true })).toBeVisible();
+  await expect(live.getByText("Checks passed", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await page.getByRole("button", { name: "Back to chat" }).click();
+  await expect(page.getByRole("textbox", { name: "Task message" })).toBeVisible();
 });
 
 test("contains hostile markdown and applies CLI theme events", async () => {
@@ -200,7 +235,8 @@ test("renders task, subagent, source, job, and checkpoint activity in the correc
   await expect(page.getByRole("region", { name: "Session", exact: true })).toBeHidden();
   // Opening Session closes Jobs; leave Jobs closed so the transcript is interactive.
   await expect(page.getByRole("button", { name: "Dismiss jobs" })).toHaveCount(0);
-  await page.locator(".thinking-group > .thinking-group-head").last().click();
+  const workGroup = page.locator(".thinking-group > .thinking-group-head").last();
+  if ((await workGroup.getAttribute("aria-expanded")) !== "true") await workGroup.click();
   await page.getByRole("button", { name: /Expand.*search.*fixture/ }).click();
   await expect(page.getByRole("link", { name: "Fixture search" })).toBeVisible();
 });

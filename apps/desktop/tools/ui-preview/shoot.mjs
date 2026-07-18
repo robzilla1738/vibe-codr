@@ -47,7 +47,7 @@ const SHOTS = [
   ["density-verbose", "scenario=density-verbose", { width: 1440, height: 900 }],
   ["ctx-hot", "scenario=ctx-hot", { width: 1100, height: 900 }],
   ["light", "scenario=light&theme=light", { width: 1440, height: 900 }],
-  ["theme-opencode", "scenario=chat&theme=opencode", { width: 1440, height: 900 }],
+  ["theme-tokyonight", "scenario=chat&theme=tokyonight", { width: 1440, height: 900 }],
   ["settings", "scenario=settings", { width: 1440, height: 900 }],
   ["settings-narrow", "scenario=settings", { width: 900, height: 900 }],
   ["sessions", "scenario=sessions", { width: 1440, height: 900 }],

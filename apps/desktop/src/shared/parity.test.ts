@@ -83,6 +83,36 @@ describe("slash routing", () => {
 });
 
 describe("transcript reducer", () => {
+  it("persists explicit disclosure independently of density defaults", () => {
+    let state = initialTranscript();
+    state = reduceTranscript(state, {
+      type: "tool-start",
+      toolCallId: "disclosure",
+      toolName: "bash",
+      input: { command: "pwd" },
+    });
+    state = reduceTranscript(state, {
+      type: "tool-finish",
+      toolCallId: "disclosure",
+      output: "/tmp",
+      isError: false,
+    });
+    const id = state.blocks[0]!.id;
+    state = reduceTranscript(state, { type: "set-expanded", id, expanded: true });
+    expect(state.blocks[0]).toMatchObject({ kind: "tool", expandedOverride: true });
+    state = reduceTranscript(state, { type: "set-expanded", id, expanded: false });
+    expect(state.blocks[0]).toMatchObject({ kind: "tool", expandedOverride: false });
+  });
+
+  it("lets the all-thinking shortcut close verbose-default rows", () => {
+    let state = reduceTranscript(initialTranscript(), {
+      type: "thinking",
+      text: "Inspecting the fixture",
+    });
+    state = reduceTranscript(state, { type: "toggle-thinking-all", density: "verbose" });
+    expect(state.blocks[0]).toMatchObject({ kind: "thinking", expandedOverride: false });
+  });
+
   it("caps whole-state replacement while shifting live cursors safely", () => {
     const blocks = Array.from({ length: 4 }, (_, index) => ({
       kind: "assistant" as const,
@@ -257,7 +287,9 @@ describe("modes & themes", () => {
   it("density overlay", () => {
     expect(nextDensity("quiet")).toBe("normal");
     expect(toolCollapsed("quiet", { collapsed: false, isError: true, isDiff: false })).toBe(true);
+    expect(toolCollapsed("quiet", { collapsed: true, expandedOverride: true, isError: false, isDiff: false })).toBe(false);
     expect(toolCollapsed("verbose", { collapsed: true, isError: true, isDiff: false })).toBe(false);
+    expect(toolCollapsed("verbose", { collapsed: false, expandedOverride: false, isError: true, isDiff: true })).toBe(true);
   });
 
   it("keeps density acknowledgements out of the transcript", () => {

@@ -122,16 +122,13 @@ export async function runHost(): Promise<void> {
       }
     }
     if (msg.runtimeProfile) {
-      // The runtime profile is appearance-only (theme/accent/details). A Cloud
-      // runtime applies it; any other runtime must ignore it and continue rather
-      // than fail the handoff over a cosmetic preference. The Cloud agent always
-      // sets VIBE_CLOUD_RUNTIME=1 when sending this profile, so a mismatch here
-      // is a deployment skew — degrade gracefully instead of blocking the user.
-      if (process.env.VIBE_CLOUD_RUNTIME === "1") {
-        overrides.theme = msg.runtimeProfile.theme;
-        overrides.accentColor = msg.runtimeProfile.accentColor;
-        overrides.details = msg.runtimeProfile.details;
-      }
+      // The profile is presentation-only and is safe to honor at this protocol
+      // boundary. Do not depend on a launcher environment flag: a sandbox may
+      // drop inherited environment while still delivering the authenticated
+      // bootstrap frame, and that must not reset appearance during handoff.
+      overrides.theme = msg.runtimeProfile.theme;
+      overrides.accentColor = msg.runtimeProfile.accentColor;
+      overrides.details = msg.runtimeProfile.details;
     }
     if (msg.mode !== undefined && !applyModeOverride(overrides, msg.mode)) {
       write({ type: "fatal", message: `invalid mode "${msg.mode}"` });

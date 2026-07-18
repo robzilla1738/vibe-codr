@@ -100,13 +100,13 @@ describe("engine host protocol boundary", () => {
       message: "requested session not found: ses_missing",
     });
   });
-  test("ignores a runtime profile on a non-cloud runtime instead of failing the handoff", async () => {
+  test("applies a runtime profile even when the launcher drops the cloud runtime flag", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-host-project-"));
     const stateDir = mkdtempSync(join(tmpdir(), "vibe-host-state-"));
     roots.push(cwd, stateDir);
     const previousStateDir = process.env.VIBE_STATE_DIR;
     process.env.VIBE_STATE_DIR = stateDir;
-    const sessionId = "ses_runtime_profile_skipped";
+    const sessionId = "ses_runtime_profile_applied";
     const store = new SessionStore(cwd);
     await store.save({
       id: sessionId,
@@ -122,8 +122,8 @@ describe("engine host protocol boundary", () => {
     if (previousStateDir === undefined) delete process.env.VIBE_STATE_DIR;
     else process.env.VIBE_STATE_DIR = previousStateDir;
 
-    // The host helper spawns without VIBE_CLOUD_RUNTIME=1, so a runtimeProfile
-    // in the bootstrap must be ignored (appearance-only) and not fatal.
+    // The helper intentionally spawns without VIBE_CLOUD_RUNTIME=1. The
+    // authenticated bootstrap profile must remain the durable appearance handoff.
     const proc = host(stateDir);
     proc.send({
       op: "bootstrap",
@@ -136,6 +136,12 @@ describe("engine host protocol boundary", () => {
     expect(await proc.next((value) => value.type === "ready")).toEqual({
       type: "ready",
       sessionId,
+    });
+    proc.send({ op: "rpc", id: 1, method: "snapshot" });
+    expect((await proc.next((value) => value.type === "resp" && value.id === 1)).value).toMatchObject({
+      theme: "light",
+      accentColor: "#e6e6e6",
+      details: "normal",
     });
     proc.send({ op: "shutdown" });
   });

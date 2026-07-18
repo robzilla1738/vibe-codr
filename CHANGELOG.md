@@ -4,6 +4,8 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.11 — 2026-07-18
+
 ### Improved
 
 - The Sessions workspace now turns the active session card into a live operational

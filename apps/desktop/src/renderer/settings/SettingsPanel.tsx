@@ -193,6 +193,7 @@ function SettingsFormArea({
   activeSection,
   scope,
   cwd,
+  runtimeIdentity,
   onClose,
   showToast,
   onCloudSessionRecovered,
@@ -203,6 +204,7 @@ function SettingsFormArea({
   activeSection: SectionId;
   scope: ConfigScope;
   cwd: string | null;
+  runtimeIdentity: string;
   onClose: () => void;
   showToast: (message: string, severity?: "info" | "warn" | "error") => void;
   onCloudSessionRecovered?: (sessionId: string, cwd: string) => void | Promise<void>;
@@ -421,7 +423,8 @@ function SettingsFormArea({
     cwd,
     onInvalidDraftChange: reportInvalidDraft,
     draftResetVersion,
-  }), [state.config, scope, updateConfig, updateNested, cwd, reportInvalidDraft, draftResetVersion]);
+    showToast,
+  }), [state.config, scope, updateConfig, updateNested, cwd, reportInvalidDraft, draftResetVersion, showToast]);
 
   // Keep every section mounted while Settings is open. Besides VIBE.md, MCP
   // env/header editors and add-new rows carry legitimate local draft state that
@@ -441,7 +444,13 @@ function SettingsFormArea({
       case "compaction": return <CompactionSection {...sectionProps} />;
       case "budget": return <BudgetSection {...sectionProps} />;
       case "hooks": return <HooksSection {...sectionProps} />;
-      case "advanced": return <AdvancedSection {...sectionProps} />;
+      case "advanced": return (
+        <AdvancedSection
+          {...sectionProps}
+          active={active && activeSection === "advanced"}
+          runtimeIdentity={runtimeIdentity}
+        />
+      );
       case "instructions": return null;
       case "cloud": return <CloudSection showToast={showToast} onSessionRecovered={onCloudSessionRecovered} onDirtyChange={setCloudDirty} />;
       default: return null;
@@ -521,6 +530,7 @@ function SettingsFormArea({
 export function SettingsView({
   active,
   cwd,
+  runtimeIdentity,
   onClose,
   showToast,
   onCloudSessionRecovered,
@@ -528,6 +538,7 @@ export function SettingsView({
 }: {
   active: boolean;
   cwd: string | null;
+  runtimeIdentity: string;
   onClose: () => void;
   showToast: (message: string, severity?: "info" | "warn" | "error") => void;
   onCloudSessionRecovered?: (sessionId: string, cwd: string) => void | Promise<void>;
@@ -601,6 +612,7 @@ export function SettingsView({
           activeSection={activeSection}
           scope={scope}
           cwd={cwd}
+          runtimeIdentity={runtimeIdentity}
           onClose={onClose}
           showToast={showToast}
           onCloudSessionRecovered={onCloudSessionRecovered}

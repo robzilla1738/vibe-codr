@@ -54,10 +54,27 @@ const snapshot = {
   commandNames: [],
 };
 
+const readyFrameSource = `
+  const readyFrame = (sessionId, hostInstanceId = "fixture-host") => ({
+    type: "ready",
+    protocolVersion: 2,
+    engineRevision: "test",
+    capabilities: ["event-replay"],
+    hostInstanceId,
+    sessionId,
+  });
+  const eventFrame = (event, seq = 1, hostInstanceId = "fixture-host") => ({
+    type: "event",
+    hostInstanceId,
+    seq,
+    event,
+  });
+`;
+
 describe("EngineBridge lifecycle", () => {
   it("loads the project index and reuses its prewarmed host for bootstrap", async () => {
     let launches = 0;
-    const child = String.raw`
+    const child = String.raw`${readyFrameSource}
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
@@ -70,7 +87,7 @@ describe("EngineBridge lifecycle", () => {
             value: [{ cwd: ${JSON.stringify(process.cwd())}, name: "fixture", updatedAt: 1, sessions: [] }]
           }) + "\n");
         } else if (msg.op === "bootstrap") {
-          process.stdout.write(JSON.stringify({ type: "ready", sessionId: "after-index" }) + "\n");
+          process.stdout.write(JSON.stringify(readyFrame("after-index")) + "\n");
         } else if (msg.op === "shutdown") process.exit(0);
       });
     `;
@@ -94,7 +111,7 @@ describe("EngineBridge lifecycle", () => {
   });
 
   it("reaps an unused prewarmed project-index host after its lifetime", async () => {
-    const child = String.raw`
+    const child = String.raw`${readyFrameSource}
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
@@ -142,14 +159,14 @@ describe("EngineBridge lifecycle", () => {
   });
 
   it("bootstraps, forwards events, resolves RPC, and shuts down", async () => {
-    const child = String.raw`
+    const child = String.raw`${readyFrameSource}
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
         const msg = JSON.parse(line);
         if (msg.op === "bootstrap") {
-          process.stdout.write(JSON.stringify({ type: "ready", sessionId: "fixture-session" }) + "\n");
-          process.stdout.write(JSON.stringify({ type: "event", event: { type: "notice", level: "info", message: "online" } }) + "\n");
+          process.stdout.write(JSON.stringify(readyFrame("fixture-session")) + "\n");
+          process.stdout.write(JSON.stringify(eventFrame({ type: "notice", level: "info", message: "online" })) + "\n");
         } else if (msg.op === "rpc") {
           process.stdout.write(JSON.stringify({ type: "resp", id: msg.id, ok: true, value: ${JSON.stringify(snapshot)} }) + "\n");
         } else if (msg.op === "shutdown") process.exit(0);
@@ -165,6 +182,115 @@ describe("EngineBridge lifecycle", () => {
     expect(events).toContainEqual({ type: "notice", level: "info", message: "online" });
     await bridge.stop();
     expect(bridge.isRunning).toBe(false);
+  });
+
+  it("replays a sequence gap once and rejects duplicate delivery", async () => {
+    const replayFrames = [
+      { type: "event", hostInstanceId: "gap-host", seq: 2, event: { type: "notice", level: "info", message: "two" } },
+      { type: "event", hostInstanceId: "gap-host", seq: 3, event: { type: "notice", level: "info", message: "three" } },
+    ];
+    const child = String.raw`${readyFrameSource}
+      const readline = require("node:readline");
+      readline.createInterface({ input: process.stdin }).on("line", (line) => {
+        const msg = JSON.parse(line);
+        if (msg.op === "bootstrap") {
+          process.stdout.write(JSON.stringify(readyFrame("fixture-session", "gap-host")) + "\n");
+          process.stdout.write(JSON.stringify(eventFrame({ type: "notice", level: "info", message: "one" }, 1, "gap-host")) + "\n");
+          process.stdout.write(JSON.stringify(eventFrame({ type: "notice", level: "info", message: "three" }, 3, "gap-host")) + "\n");
+        } else if (msg.op === "rpc" && msg.method === "replayEvents") {
+          process.stdout.write(JSON.stringify({ type: "resp", id: msg.id, ok: true, value: {
+            hostInstanceId: "gap-host",
+            events: ${JSON.stringify(replayFrames)},
+            lastEventSeq: 3,
+            truncated: false,
+          } }) + "\n");
+        } else if (msg.op === "shutdown") process.exit(0);
+      });
+    `;
+    const bridge = bridgeFor(child);
+    const messages: string[] = [];
+    bridge.onEvent = (event) => {
+      if (event && typeof event === "object" && "message" in event) messages.push(String(event.message));
+    };
+
+    await bridge.start({ cwd: process.cwd() });
+    await pollUntil(() => messages.length === 3);
+    expect(messages).toEqual(["one", "two", "three"]);
+    await bridge.stop();
+  });
+
+  it("falls back to a cursor-bearing snapshot when replay has expired", async () => {
+    const resyncSnapshot = {
+      ...snapshot,
+      hostInstanceId: "snapshot-host",
+      lastEventSeq: 3,
+    };
+    const child = String.raw`${readyFrameSource}
+      const readline = require("node:readline");
+      readline.createInterface({ input: process.stdin }).on("line", (line) => {
+        const msg = JSON.parse(line);
+        if (msg.op === "bootstrap") {
+          process.stdout.write(JSON.stringify(readyFrame("fixture-session", "snapshot-host")) + "\n");
+          process.stdout.write(JSON.stringify(eventFrame({ type: "notice", level: "info", message: "three" }, 3, "snapshot-host")) + "\n");
+        } else if (msg.op === "rpc" && msg.method === "replayEvents") {
+          process.stdout.write(JSON.stringify({ type: "resp", id: msg.id, ok: true, value: {
+            hostInstanceId: "snapshot-host", events: [], lastEventSeq: 3, truncated: true,
+          } }) + "\n");
+        } else if (msg.op === "rpc" && msg.method === "snapshot") {
+          process.stdout.write(JSON.stringify({ type: "resp", id: msg.id, ok: true, value: ${JSON.stringify(resyncSnapshot)} }) + "\n");
+        } else if (msg.op === "shutdown") process.exit(0);
+      });
+    `;
+    const bridge = bridgeFor(child);
+    const resyncs: unknown[] = [];
+    bridge.onResync = (value) => resyncs.push(value);
+
+    await bridge.start({ cwd: process.cwd() });
+    await pollUntil(() => resyncs.length === 1);
+    expect(resyncs[0]).toMatchObject({ hostInstanceId: "snapshot-host", lastEventSeq: 3 });
+    await bridge.stop();
+  });
+
+  it("reports an explicit protocol mismatch before accepting ready", async () => {
+    const child = String.raw`
+      const readline = require("node:readline");
+      readline.createInterface({ input: process.stdin }).on("line", (line) => {
+        if (JSON.parse(line).op === "bootstrap") process.stdout.write(JSON.stringify({
+          type: "ready",
+          protocolVersion: 99,
+          engineRevision: "old-host",
+          capabilities: [],
+          hostInstanceId: "old-host",
+          sessionId: "fixture-session",
+        }) + "\n");
+      });
+    `;
+    const bridge = bridgeFor(child);
+    await expect(bridge.start({ cwd: process.cwd() })).rejects.toThrow(
+      "Engine host protocol 99 is incompatible with desktop protocol 2",
+    );
+    await pollUntil(() => !bridge.isRunning);
+  });
+
+  it("rejects a packaged host whose engine revision does not match the lock", async () => {
+    const child = String.raw`${readyFrameSource}
+      const readline = require("node:readline");
+      readline.createInterface({ input: process.stdin }).on("line", (line) => {
+        if (JSON.parse(line).op === "bootstrap") {
+          process.stdout.write(JSON.stringify(readyFrame("fixture-session")) + "\n");
+        }
+      });
+    `;
+    const bridge = new EngineBridge({
+      resolveLaunch: () => fixture(child),
+      environment: () => ({ ...process.env, VIBE_ENGINE_COMMIT: "a".repeat(40) }),
+      readyTimeoutMs: 5_000,
+      stopTimeoutMs: 800,
+    });
+    await expect(bridge.start({ cwd: process.cwd() })).rejects.toThrow(
+      `Engine host revision test is incompatible with packaged revision ${"a".repeat(40)}`,
+    );
+    await pollUntil(() => !bridge.isRunning);
   });
 
   it("surfaces malformed protocol output instead of silently desynchronizing", async () => {
@@ -211,13 +337,13 @@ describe("EngineBridge lifecycle", () => {
   });
 
   it("reports an unexpected clean exit after ready as fatal", async () => {
-    const bridge = bridgeFor(String.raw`
+    const bridge = bridgeFor(String.raw`${readyFrameSource}
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
         const msg = JSON.parse(line);
         if (msg.op === "bootstrap") {
-          process.stdout.write(JSON.stringify({ type: "ready", sessionId: "clean-exit" }) + "\n");
+          process.stdout.write(JSON.stringify(readyFrame("clean-exit")) + "\n");
           setTimeout(() => process.exit(0), 10);
         }
       });
@@ -233,16 +359,15 @@ describe("EngineBridge lifecycle", () => {
   });
 
   it("terminates the host on malformed nested event payloads", async () => {
-    const bridge = bridgeFor(String.raw`
+    const bridge = bridgeFor(String.raw`${readyFrameSource}
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
         const msg = JSON.parse(line);
         if (msg.op === "bootstrap") {
-          process.stdout.write(JSON.stringify({ type: "ready", sessionId: "nested-invalid" }) + "\n");
+          process.stdout.write(JSON.stringify(readyFrame("nested-invalid")) + "\n");
           setTimeout(() => process.stdout.write(JSON.stringify({
-            type: "event",
-            event: { type: "queue-changed", active: null, pending: [null] }
+            ...eventFrame({ type: "queue-changed", active: null, pending: [null] })
           }) + "\n"), 10);
         }
       });
@@ -281,12 +406,12 @@ describe("EngineBridge lifecycle", () => {
     const bridge = new EngineBridge({
       resolveLaunch: () => {
         launches += 1;
-        return fixture(String.raw`
+        return fixture(String.raw`${readyFrameSource}
           const readline = require("node:readline");
           const rl = readline.createInterface({ input: process.stdin });
           rl.on("line", (line) => {
             const msg = JSON.parse(line);
-            if (msg.op === "bootstrap") setTimeout(() => process.stdout.write(JSON.stringify({ type: "ready", sessionId: "session-${launches}" }) + "\n"), 100);
+            if (msg.op === "bootstrap") setTimeout(() => process.stdout.write(JSON.stringify(readyFrame("session-${launches}")) + "\n"), 100);
             if (msg.op === "shutdown") process.exit(0);
           });
         `);
@@ -310,25 +435,25 @@ describe("EngineBridge lifecycle", () => {
       resolveLaunch: () => {
         launches += 1;
         if (launches === 1) {
-          return fixture(String.raw`
+          return fixture(String.raw`${readyFrameSource}
             const readline = require("node:readline");
             const rl = readline.createInterface({ input: process.stdin });
             rl.on("line", (line) => {
               const msg = JSON.parse(line);
               if (msg.op === "shutdown") {
-                process.stdout.write(JSON.stringify({ type: "ready", sessionId: "stale-session" }) + "\n");
-                process.stdout.write(JSON.stringify({ type: "event", event: { type: "notice", level: "warn", message: "stale" } }) + "\n");
+                process.stdout.write(JSON.stringify(readyFrame("stale-session", "retired-host")) + "\n");
+                process.stdout.write(JSON.stringify(eventFrame({ type: "notice", level: "warn", message: "stale" }, 1, "retired-host")) + "\n");
                 setTimeout(() => process.exit(0), 20);
               }
             });
           `);
         }
-        return fixture(String.raw`
+        return fixture(String.raw`${readyFrameSource}
           const readline = require("node:readline");
           const rl = readline.createInterface({ input: process.stdin });
           rl.on("line", (line) => {
             const msg = JSON.parse(line);
-            if (msg.op === "bootstrap") process.stdout.write(JSON.stringify({ type: "ready", sessionId: "current-session" }) + "\n");
+            if (msg.op === "bootstrap") process.stdout.write(JSON.stringify(readyFrame("current-session", "current-host")) + "\n");
             if (msg.op === "shutdown") process.exit(0);
           });
         `);
@@ -357,12 +482,12 @@ describe("EngineBridge lifecycle", () => {
     const bridge = new EngineBridge({
       resolveLaunch: () => {
         launches += 1;
-        return fixture(String.raw`
+        return fixture(String.raw`${readyFrameSource}
           const readline = require("node:readline");
           const rl = readline.createInterface({ input: process.stdin });
           rl.on("line", (line) => {
             const msg = JSON.parse(line);
-            if (msg.op === "bootstrap") setTimeout(() => process.stdout.write(JSON.stringify({ type: "ready", sessionId: "session-${launches}" }) + "\n"), 50);
+            if (msg.op === "bootstrap") setTimeout(() => process.stdout.write(JSON.stringify(readyFrame("session-${launches}")) + "\n"), 50);
             if (msg.op === "shutdown") setTimeout(() => process.exit(0), 10);
           });
         `);
@@ -394,12 +519,12 @@ describe("EngineBridge lifecycle", () => {
   it("turns asynchronous child stdin failures into one fatal lifecycle error", async () => {
     let childProcess: ChildProcessWithoutNullStreams | null = null;
     const bridge = new EngineBridge({
-      resolveLaunch: () => fixture(String.raw`
+      resolveLaunch: () => fixture(String.raw`${readyFrameSource}
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
         const msg = JSON.parse(line);
-        if (msg.op === "bootstrap") process.stdout.write(JSON.stringify({ type: "ready", sessionId: "pipe-session" }) + "\n");
+        if (msg.op === "bootstrap") process.stdout.write(JSON.stringify(readyFrame("pipe-session")) + "\n");
         if (msg.op === "shutdown") process.exit(0);
       });
       `),
@@ -472,14 +597,14 @@ describe("EngineBridge lifecycle", () => {
     // Ignore SIGTERM; only exit on SIGKILL (default).
     const bridge = new EngineBridge({
       resolveLaunch: () =>
-        fixture(String.raw`
+        fixture(String.raw`${readyFrameSource}
           process.on("SIGTERM", () => { /* ignore soft kill */ });
           const readline = require("node:readline");
           const rl = readline.createInterface({ input: process.stdin });
           rl.on("line", (line) => {
             const msg = JSON.parse(line);
             if (msg.op === "bootstrap") {
-              process.stdout.write(JSON.stringify({ type: "ready", sessionId: "wedged" }) + "\n");
+              process.stdout.write(JSON.stringify(readyFrame("wedged")) + "\n");
             }
             // Never honor shutdown.
           });
@@ -509,13 +634,13 @@ describe("EngineBridge lifecycle", () => {
   });
 
   it("disposeForQuit finalizes when ready and always leaves no owned child", async () => {
-    const bridge = bridgeFor(String.raw`
+    const bridge = bridgeFor(String.raw`${readyFrameSource}
       const readline = require("node:readline");
       const rl = readline.createInterface({ input: process.stdin });
       rl.on("line", (line) => {
         const msg = JSON.parse(line);
         if (msg.op === "bootstrap") {
-          process.stdout.write(JSON.stringify({ type: "ready", sessionId: "quit-session" }) + "\n");
+          process.stdout.write(JSON.stringify(readyFrame("quit-session")) + "\n");
         } else if (msg.op === "rpc" && msg.method === "finalize") {
           finalized = true;
           process.stdout.write(JSON.stringify({ type: "resp", id: msg.id, ok: true, value: null }) + "\n");
@@ -534,13 +659,13 @@ describe("EngineBridge lifecycle", () => {
     let childProcess: ChildProcessWithoutNullStreams | null = null;
     const bridge = new EngineBridge({
       resolveLaunch: () =>
-        fixture(String.raw`
+        fixture(String.raw`${readyFrameSource}
           const readline = require("node:readline");
           const rl = readline.createInterface({ input: process.stdin });
           rl.on("line", (line) => {
             const msg = JSON.parse(line);
             if (msg.op === "bootstrap") {
-              process.stdout.write(JSON.stringify({ type: "ready", sessionId: "hang-finalize" }) + "\n");
+              process.stdout.write(JSON.stringify(readyFrame("hang-finalize")) + "\n");
             } else if (msg.op === "rpc" && msg.method === "finalize") {
               // Never respond — quit must not wait the full RPC timeout.
             } else if (msg.op === "shutdown") process.exit(0);
@@ -606,7 +731,7 @@ describe("EngineBridge lifecycle", () => {
     let childProcess: ChildProcessWithoutNullStreams | null = null;
     const bridge = new EngineBridge({
       resolveLaunch: () =>
-        fixture(String.raw`
+        fixture(String.raw`${readyFrameSource}
           process.on("SIGTERM", () => {
             // Exit after the soft signal, not after process startup. Coverage
             // instrumentation may delay the parent long enough that a
@@ -618,7 +743,7 @@ describe("EngineBridge lifecycle", () => {
           rl.on("line", (line) => {
             const msg = JSON.parse(line);
             if (msg.op === "bootstrap") {
-              process.stdout.write(JSON.stringify({ type: "ready", sessionId: "soft-kill" }) + "\n");
+              process.stdout.write(JSON.stringify(readyFrame("soft-kill")) + "\n");
             }
           });
         `),

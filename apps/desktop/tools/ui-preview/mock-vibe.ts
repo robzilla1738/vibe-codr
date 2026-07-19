@@ -802,6 +802,7 @@ const rpcHandlers: Record<string, (params?: Record<string, unknown>) => unknown>
   listAgents: () => AGENTS,
   listSkills: () => SKILLS,
   listMcp: () => MCP,
+  listPluginStatus: () => [],
   listSessions: () => PROJECTS[0]!.sessions,
   finalize: () => null,
   renameSession: () => true,
@@ -834,14 +835,33 @@ const mock = {
   renameSession: async () => ({ ok: true as const }),
   deleteSession: async () => ({ ok: true as const }),
   archiveSession: async () => ({ ok: true as const }),
+  searchSessions: async () => ({ ok: true as const, value: [] }),
+  forkSession: async ({ cwd }: { cwd: string }) => ({ ok: true as const, value: { id: "sess_forked", cwd, atTurnId: "turn_preview" } }),
   stop: async () => ({ ok: true as const }),
   quit: () => undefined,
   recordFirstPaint: () => undefined,
+  getPerformanceSummary: async ({ days }: { days: 1 | 7 }) => ({ ok: true as const, value: {
+    days, generatedAt: Date.now(), since: Date.now() - days * 86_400_000, turnCount: 24,
+    phases: {
+      "provider-ttft": { count: 24, p50: 420, p95: 880 },
+      generation: { count: 24, p50: 4_200, p95: 9_700 },
+      "first-paint": { count: 24, p50: 18, p95: 34 },
+    },
+    toolSchemaTokens: { count: 24, p50: 2_100, p95: 3_400 },
+    dominantBottleneck: { phase: "generation" as const, p95Ms: 9_700 },
+  } }),
+  exportDiagnosticsBundle: async () => ({ ok: true as const, value: {
+    formatVersion: 1 as const, generatedAt: Date.now(),
+    app: { version: "preview", platform: "browser", architecture: "preview", protocolVersion: 2 },
+    performance: { lastDay: {}, lastWeek: {} },
+  } }),
   onEvent: (cb: EventCb) => {
     listeners.add(cb);
     return () => listeners.delete(cb);
   },
   onReady: () => () => undefined,
+  onResync: () => () => undefined,
+  onLocalRuntimeStatus: () => () => undefined,
   onFatal: () => () => undefined,
   onMenuAction: () => () => undefined,
   cloudSettings: async () => ({ ok: true as const, value: {
@@ -1058,8 +1078,8 @@ const mock = {
 // browser preview bundle does not need a separate resolve path for Node tests.
 const REQUIRED_VIBE_KEYS = [
   "bootstrap", "send", "rpc", "listProjects", "renameProject", "archiveProject",
-  "deleteProject", "renameSession", "deleteSession", "archiveSession", "stop",
-  "quit", "recordFirstPaint", "onEvent", "onReady", "onFatal", "onMenuAction", "cloudSettings",
+  "deleteProject", "renameSession", "deleteSession", "archiveSession", "searchSessions", "forkSession", "stop",
+  "quit", "recordFirstPaint", "getPerformanceSummary", "exportDiagnosticsBundle", "onEvent", "onReady", "onResync", "onLocalRuntimeStatus", "onFatal", "onMenuAction", "cloudSettings",
   "updateCloudSettings", "connectCloudProvider", "disconnectCloudProvider", "testCloudProvider", "saveCloudCredentialBinding", "removeCloudCredentialBinding",
   "listCloudSessions", "deleteCloudSessionCopy", "recoverLostCloudSession", "handoffToCloud", "reconnectCloudSession", "resumeCloudSessionLocally", "onCloudStatus",
   "setSettingsDirty", "openProject",

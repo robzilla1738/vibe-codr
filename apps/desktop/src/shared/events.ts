@@ -19,6 +19,8 @@ export interface TurnPerformanceSample {
   firstVisibleTextMs?: number;
   generationMs: number;
   toolMs: number;
+  /** Estimated tokens occupied by the submitted tool schema map. */
+  toolSchemaTokens?: number;
   persistMs: number;
   postTurnMs: number;
   totalMs: number;

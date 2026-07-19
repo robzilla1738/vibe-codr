@@ -14,23 +14,24 @@ import { safeExternalUrl } from "../shared/external-url";
 import { listProjectFiles, rankPaths } from "../shared/file-fuzzy";
 import type { MenuAction } from "../shared/menu-actions";
 import { resolvePathInsideRoot, resolveWritablePathInsideRoot } from "../shared/path-safe";
+import { diagnosticLaunchKind } from "../shared/performance";
 import { chatsCwdFromHome } from "../shared/project-index";
-import { isRendererRpcMethod } from "../shared/renderer-rpc";
 import type { ProjectSummary } from "../shared/protocol";
-import { decodeInbound, type HostInbound, type RpcMethod } from "../shared/protocol";
+import { decodeInbound, HOST_PROTOCOL_VERSION, type HostInbound, type RpcMethod } from "../shared/protocol";
+import { isRendererRpcMethod } from "../shared/renderer-rpc";
 import { isProjectSummaryArray } from "../shared/runtime-guards";
 import { TtlLruCache } from "../shared/ttl-lru-cache";
 import { type AppUpdaterController, createAppUpdater } from "./app-updater";
+import { CloudManager, cloudFailureDetails } from "./cloud/manager";
 import { registerConfigIpc } from "./config-ipc";
 import { EngineTransportController } from "./engine-transport-controller";
 import { EngineEventCoalescer } from "./event-coalescer";
-import { cloudFailureDetails, CloudManager } from "./cloud/manager";
 import { registerGitIpc } from "./git-ipc";
 import { enrichedEnv } from "./host-resolver";
 import { assertTrustedIpc, assertTrustedSender, getMainWindow, setMainWindow } from "./ipc-security";
-import { TerminalManager } from "./terminal-manager";
 import { MobileRelayController } from "./mobile-relay-controller";
 import { PerformanceStore } from "./performance-store";
+import { TerminalManager } from "./terminal-manager";
 
 let mainWindow: BrowserWindow | null = null;
 let settingsDirty = false;
@@ -46,6 +47,8 @@ const engineEventCoalescer = new EngineEventCoalescer((event) => {
   sendToRenderer("engine:event", event);
 });
 bridge.onTransportWillSwitch = () => engineEventCoalescer.flush();
+bridge.onPerformancePhase = (sample) => performanceStore.recordPhase(sample);
+bridge.onBackgroundEvent = (event) => performanceStore.observeEngineEvent(event);
 let lastDesktopCwd = "";
 let lastDesktopSessionId = "";
 
@@ -54,9 +57,10 @@ const mobileRelay = new MobileRelayController({
   releaseDesktop: async () => {
     if (cloudManager.ownershipTransitioning) throw new Error("Wait for the current cloud handoff to finish first.");
     if (bridge.isRemote) throw new Error("Return this session to Local before moving control to your phone.");
-    if (bridge.isRunning) await bridge.stop();
+    if (bridge.isRunning) await bridge.stopAllOwnedRuntimes();
   },
   resumeDesktop: (sessionId, cwd) => {
+    bridge.restoreLocalRuntimeOwnership();
     if (sessionId) lastDesktopSessionId = sessionId;
     if (cwd) lastDesktopCwd = cwd;
     setTimeout(() => sendMenuAction("continueLatest"), 150);
@@ -119,13 +123,17 @@ const PROJECT_INDEX_MUTATIONS = new Set<RpcMethod>([
   "renameSession",
   "deleteSession",
   "archiveSession",
+  "forkSession",
 ]);
 const SESSION_HISTORY_MUTATIONS = new Set<RpcMethod>([
   "renameSession",
   "deleteSession",
   "archiveSession",
+  "forkSession",
 ]);
 const PROJECT_RECOVERY_MUTATIONS = new Set<RpcMethod>(["archiveProject", "deleteProject"]);
+const SESSION_RUNTIME_MUTATIONS = new Set<RpcMethod>(["renameSession", "deleteSession", "archiveSession"]);
+const PROJECT_RUNTIME_MUTATIONS = new Set<RpcMethod>(["archiveProject", "deleteProject"]);
 const HANDOFF_CONTROL_COMMANDS = new Set<EngineCommand["type"]>([
   "abort",
   "resolve-permission",
@@ -520,6 +528,8 @@ function wireBridge(): void {
     lastDesktopSessionId = sessionId;
     sendToRenderer("engine:ready", sessionId);
   };
+  bridge.onResync = () => { engineEventCoalescer.flush(); sendToRenderer("engine:resync"); };
+  bridge.onLocalRuntimeStatus = (status) => sendToRenderer("engine:runtime-status", status);
   bridge.onTerminalEvent = (event) => sendToRenderer("terminal:event", event);
   cloudManager.onStatus = (status) => sendToRenderer("cloud:status", status);
 }
@@ -533,6 +543,44 @@ function registerIpc(): void {
     if (typeof value.sessionId !== "string" || value.sessionId.length > 128) return;
     if (typeof value.paintedAt !== "number" || !Number.isFinite(value.paintedAt)) return;
     performanceStore.recordFirstPaint({ turnId: value.turnId, sessionId: value.sessionId, paintedAt: value.paintedAt });
+  });
+  ipcMain.handle("performance:summary", async (event, input: unknown) => {
+    assertTrustedIpc(event);
+    if (!input || typeof input !== "object" || ((input as { days?: unknown }).days !== 1 && (input as { days?: unknown }).days !== 7)) {
+      return { ok: false as const, error: "Performance summary supports only 1 or 7 days" };
+    }
+    try {
+      return { ok: true as const, value: await performanceStore.getPerformanceSummary({ days: (input as { days: 1 | 7 }).days }) };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle("performance:export", async (event) => {
+    assertTrustedIpc(event);
+    try {
+      const generatedAt = Date.now();
+      const launchKind = diagnosticLaunchKind(bridge.lastLaunchDescription);
+      return {
+        ok: true as const,
+        value: {
+          formatVersion: 1 as const,
+          generatedAt,
+          app: {
+            version: app.getVersion(),
+            platform: process.platform,
+            architecture: process.arch,
+            protocolVersion: HOST_PROTOCOL_VERSION,
+            ...(launchKind ? { launchKind } : {}),
+          },
+          performance: {
+            lastDay: await performanceStore.getPerformanceSummary({ days: 1 }),
+            lastWeek: await performanceStore.getPerformanceSummary({ days: 7 }),
+          },
+        },
+      };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
   });
   ipcMain.on("settings:dirty", (event, dirty: unknown) => {
     assertTrustedSender(event.sender);
@@ -644,6 +692,15 @@ function registerIpc(): void {
     try {
       let historyMutation: { cwd: string; sessionId?: string } | null = null;
       let rpcParams = message.params;
+      if (message.method === "searchSessions" && message.params?.cwd !== undefined) {
+        const cwd = message.params.cwd;
+        if (typeof cwd !== "string" || !isAllowedProjectRoot(cwd)) {
+          return {
+            ok: false as const,
+            error: "Transcript search is limited to opened or recent projects",
+          };
+        }
+      }
       if (PROJECT_INDEX_MUTATIONS.has(message.method)) {
         const cwd = message.params?.cwd;
         if (typeof cwd !== "string" || !isAllowedProjectRoot(cwd)) {
@@ -665,8 +722,30 @@ function registerIpc(): void {
             ...(sessionId !== undefined ? { sessionId } : {}),
           };
         }
+        if (SESSION_RUNTIME_MUTATIONS.has(message.method)) {
+          const id = rpcParams?.id;
+          if (typeof id !== "string") return { ok: false as const, error: "A session ID is required" };
+          const retirement = await bridge.retireLocalSessionForMutation(cwd, id, message.method === "renameSession");
+          if (!retirement.ok) {
+            return {
+              ok: false as const,
+              error: `This session is still ${retirement.state}. Finish or stop it before changing its saved history.`,
+            };
+          }
+        } else if (PROJECT_RUNTIME_MUTATIONS.has(message.method)) {
+          const retirement = await bridge.retireLocalProjectForMutation(cwd);
+          if (!retirement.ok) {
+            return {
+              ok: false as const,
+              error: retirement.state === "foreground"
+                ? "Open another project before removing this project."
+                : `A session in this project is still ${retirement.state}. Finish or stop it before removing the project.`,
+            };
+          }
+        }
       }
       const isProjectIndexRpc = message.method === "listProjects"
+        || message.method === "searchSessions"
         || PROJECT_INDEX_MUTATIONS.has(message.method);
       const isProviderAuthRpc = message.method === "providerAuthStatus"
         || message.method === "beginProviderAuth"
@@ -1149,6 +1228,7 @@ if (!gotSingleInstanceLock) {
     // After last window close on macOS, mainWindow is null — recreate so a
     // second launch is not a silent no-op until Dock activate.
     if (!mainWindow) {
+      bridge.restoreLocalRuntimeOwnership();
       createWindow();
       return;
     }
@@ -1194,6 +1274,7 @@ if (!gotSingleInstanceLock) {
     updateTimer.unref();
 
     app.on("activate", () => {
+      bridge.restoreLocalRuntimeOwnership();
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
   });
@@ -1277,8 +1358,11 @@ app.on("before-quit", async (e) => {
 app.on("window-all-closed", () => {
   // Local engines are finalized, while a cloud-owned session is disconnected
   // without sending shutdown so its turn, PTYs, jobs, and replay keep running.
+  // macOS keeps the app process alive here, so use the reusable ownership
+  // boundary rather than terminal quit disposal; Dock activation can then
+  // create a new window and start a fresh local runtime normally.
   if (process.platform === "darwin") {
-    void bridge.disposeForQuit().catch(() => undefined);
+    void bridge.stopAllOwnedRuntimes({ preserveRemote: true }).catch(() => undefined);
     return;
   }
   app.quit();

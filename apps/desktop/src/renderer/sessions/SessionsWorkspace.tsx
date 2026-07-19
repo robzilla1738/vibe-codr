@@ -1,32 +1,34 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft as IconBack,
-  CheckCircle2 as IconCheckCircle,
-  CircleDot as IconReview,
   Columns3 as IconBoard,
-  List as IconList,
-  MessagesSquare as IconSessions,
+  CheckCircle2 as IconCheckCircle,
   SlidersHorizontal as IconFilter,
+  List as IconList,
+  CircleDot as IconReview,
+  MessagesSquare as IconSessions,
 } from "lucide-react";
-import { isCloudSessionMutationLocked, type CloudSessionCatalogEntry } from "../../shared/cloud";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { type CloudSessionCatalogEntry, isCloudSessionMutationLocked } from "../../shared/cloud";
+import type { LocalRuntimeStatus } from "../../shared/local-runtime";
 import { normalizeSessionTitle, relativeSessionTime, SESSION_TITLE_LIMIT } from "../../shared/project-index";
-import type { ProjectSummary } from "../../shared/protocol";
+import type { ProjectSummary, SessionSearchHit } from "../../shared/protocol";
 import {
-  DEFAULT_SESSION_BOARD_PREFERENCES,
   automaticSessionBoardStatus,
   cloudAutomaticSessionState,
+  DEFAULT_SESSION_BOARD_PREFERENCES,
   filterSessionBoard,
   flattenSessionBoard,
   readSessionBoardPreferences,
-  sessionBoardKey,
   type SessionBoardItem,
   type SessionBoardPreferences,
   type SessionBoardStatus,
+  sessionBoardKey,
   writeSessionBoardPreferences,
 } from "../../shared/session-board";
 import {
   IconArchive,
   IconDelete,
+  IconGitBranch,
   IconMore,
   IconPlus,
   IconRename,
@@ -125,6 +127,7 @@ function SessionActions({
   item,
   disabled,
   disabledReason,
+  onFork,
   onRename,
   onArchive,
   onDelete,
@@ -132,6 +135,7 @@ function SessionActions({
   item: SessionBoardItem;
   disabled: boolean;
   disabledReason?: string;
+  onFork: () => void;
   onRename: () => void;
   onArchive: () => void;
   onDelete: () => void;
@@ -178,6 +182,9 @@ function SessionActions({
         <IconMore size={14} />
       </summary>
       <div className="session-board-menu" role="menu">
+        <button type="button" role="menuitem" onClick={() => choose(onFork)}>
+          <IconGitBranch size={14} /> Fork here
+        </button>
         <button type="button" role="menuitem" onClick={() => choose(onRename)}>
           <IconRename size={14} /> Rename
         </button>
@@ -196,6 +203,7 @@ function SessionIdentity({
   item,
   editing,
   renamePending,
+  disabled,
   onOpen,
   onCommitRename,
   onCancelRename,
@@ -203,6 +211,7 @@ function SessionIdentity({
   item: SessionBoardItem;
   editing: boolean;
   renamePending: boolean;
+  disabled: boolean;
   onOpen: () => void;
   onCommitRename: (title: string) => void;
   onCancelRename: () => void;
@@ -247,7 +256,7 @@ function SessionIdentity({
   }
 
   return (
-    <button type="button" className="session-board-open" onClick={onOpen}>
+    <button type="button" className="session-board-open" disabled={disabled} onClick={onOpen}>
       <span className="session-board-project">{item.project}</span>
       <span className="session-board-title">{item.session.title}</span>
     </button>
@@ -316,11 +325,13 @@ function ConfirmSessionAction({
 export function SessionsWorkspace({
   projects,
   cloudSessions,
+  localRuntimes,
   chatsCwd,
   activeCwd,
   activeSessionId,
   busy,
   interactionDisabled,
+  navigationDisabled,
   needsInput,
   needsReview,
   liveInsight,
@@ -330,6 +341,7 @@ export function SessionsWorkspace({
   onRetry,
   onOpen,
   onNewChat,
+  onFork,
   onRename,
   onArchive,
   onDelete,
@@ -337,11 +349,13 @@ export function SessionsWorkspace({
 }: {
   projects: ProjectSummary[];
   cloudSessions: Pick<CloudSessionCatalogEntry, "sessionId" | "status" | "provider" | "error" | "updatedAt">[];
+  localRuntimes: LocalRuntimeStatus[];
   chatsCwd: string | null;
   activeCwd: string | null;
   activeSessionId: string;
   busy: boolean;
   interactionDisabled: boolean;
+  navigationDisabled: boolean;
   needsInput: boolean;
   needsReview: boolean;
   liveInsight: LiveSessionInsight | null;
@@ -351,6 +365,7 @@ export function SessionsWorkspace({
   onRetry: () => void;
   onOpen: (cwd: string, id: string) => void;
   onNewChat: () => void;
+  onFork: (cwd: string, id: string, atTurnId?: string) => Promise<boolean>;
   onRename: (cwd: string, id: string, title: string) => Promise<boolean>;
   onArchive: (cwd: string, id: string) => Promise<boolean>;
   onDelete: (cwd: string, id: string) => Promise<boolean>;
@@ -363,6 +378,8 @@ export function SessionsWorkspace({
   const [renamePending, setRenamePending] = useState(false);
   const [confirming, setConfirming] = useState<{ item: SessionBoardItem; mode: "archive" | "delete" } | null>(null);
   const [actionPending, setActionPending] = useState(false);
+  const [transcriptHits, setTranscriptHits] = useState<Map<string, SessionSearchHit>>(new Map());
+  const searchRevision = useRef(0);
   const appliedAutomaticStates = useRef(new Map<string, string>());
 
   useEffect(() => {
@@ -376,6 +393,29 @@ export function SessionsWorkspace({
   useEffect(() => {
     if (statusRevision > 0) setPreferences(loadPreferences());
   }, [statusRevision]);
+
+  useEffect(() => {
+    const normalized = query.replace(/\s+/g, " ").trim();
+    const revision = ++searchRevision.current;
+    // Results from the previous query must never decorate the new metadata
+    // result set while its asynchronous transcript search is in flight.
+    setTranscriptHits(new Map());
+    if (!normalized) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void window.vibe.searchSessions({ query: normalized, limit: 50 }).then((result) => {
+        if (revision !== searchRevision.current || !result.ok) return;
+        const best = new Map<string, SessionSearchHit>();
+        for (const hit of result.value) {
+          const key = sessionBoardKey(hit.cwd, hit.sessionId);
+          if (!best.has(key)) best.set(key, hit);
+        }
+        setTranscriptHits(best);
+      }).catch(() => undefined);
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   const items = useMemo(
     () => flattenSessionBoard(projects, chatsCwd, preferences.statuses),
@@ -396,6 +436,13 @@ export function SessionsWorkspace({
       const cloudState = cloudStatus ? cloudAutomaticSessionState(cloudStatus) : null;
       if (cloudState) states.set(item.key, cloudState);
     }
+    for (const runtime of localRuntimes) {
+      const key = sessionBoardKey(runtime.cwd, runtime.sessionId);
+      if (!items.some((item) => item.key === key)) continue;
+      if (runtime.state === "working") states.set(key, "working");
+      else if (runtime.state === "needs-input") states.set(key, "needs-input");
+      else if (runtime.state === "needs-review" || runtime.state === "failed") states.set(key, "review");
+    }
     if (activeCwd && activeSessionId) {
       const key = sessionBoardKey(activeCwd, activeSessionId);
       if (needsInput) states.set(key, "needs-input");
@@ -403,7 +450,7 @@ export function SessionsWorkspace({
       else if (busy) states.set(key, "working");
     }
     return states;
-  }, [activeCwd, activeSessionId, busy, cloudBySession, items, needsInput, needsReview]);
+  }, [activeCwd, activeSessionId, busy, cloudBySession, items, localRuntimes, needsInput, needsReview]);
   const workingKeys = useMemo(
     () => new Set([...automaticStates].filter(([, state]) => state === "working").map(([key]) => key)),
     [automaticStates],
@@ -426,7 +473,7 @@ export function SessionsWorkspace({
     if (Object.keys(changes).length === 0) return;
     setPreferences((current) => ({ ...current, statuses: { ...current.statuses, ...changes } }));
   }, [automaticStates]);
-  const visibleItems = useMemo(
+  const metadataVisibleItems = useMemo(
     () => filterSessionBoard(items, {
       query,
       status: preferences.status,
@@ -438,6 +485,25 @@ export function SessionsWorkspace({
     }),
     [automaticStatuses, items, preferences.mode, preferences.project, preferences.sort, preferences.status, query, workingKeys],
   );
+  const visibleItems = useMemo(() => {
+    if (!query.trim() || transcriptHits.size === 0) return metadataVisibleItems;
+    const eligible = filterSessionBoard(items, {
+      query: "",
+      status: preferences.status,
+      project: preferences.project,
+      mode: preferences.mode,
+      sort: preferences.sort,
+      workingKeys,
+      automaticStatuses,
+    });
+    const seen = new Set(metadataVisibleItems.map((item) => item.key));
+    const byKey = new Map(eligible.map((item) => [item.key, item]));
+    const recalled = [...transcriptHits.keys()]
+      .map((key) => byKey.get(key))
+      .filter((item): item is SessionBoardItem => item !== undefined)
+      .filter((item) => !seen.has(item.key));
+    return [...metadataVisibleItems, ...recalled];
+  }, [automaticStatuses, items, metadataVisibleItems, preferences.mode, preferences.project, preferences.sort, preferences.status, query, transcriptHits, workingKeys]);
   const projectsForFilter = useMemo(() => {
     const seen = new Map<string, string>();
     for (const item of items) seen.set(item.cwd, item.project);
@@ -508,6 +574,7 @@ export function SessionsWorkspace({
             item={item}
             editing={editingKey === item.key}
             renamePending={renamePending}
+            disabled={navigationDisabled}
             onOpen={() => onOpen(item.cwd, item.session.id)}
             onCommitRename={(title) => void commitRename(item, title)}
             onCancelRename={() => setEditingKey(null)}
@@ -525,8 +592,8 @@ export function SessionsWorkspace({
             {working ? "Live now" : relativeSessionTime(item.session.updatedAt)}
           </time>
         </div>
-        {surface === "card" && displayGoal ? (
-          <p className="session-board-goal">{displayGoal}</p>
+        {surface === "card" && (transcriptHits.get(item.key)?.snippet || displayGoal) ? (
+          <p className="session-board-goal">{transcriptHits.get(item.key)?.snippet ?? displayGoal}</p>
         ) : null}
         {surface === "card" && live ? <SessionLiveSummary insight={live} /> : null}
         {surface === "card" && cloud?.error ? (
@@ -543,10 +610,11 @@ export function SessionsWorkspace({
             item={item}
             disabled={remoteOwned || (interactionDisabled && active)}
             disabledReason={remoteOwned
-              ? "Return this session to Local to rename, archive, or delete it"
+              ? "Return this session to Local to fork, rename, archive, or delete it"
               : interactionDisabled && active
                 ? "Wait for the current turn to finish"
                 : undefined}
+            onFork={() => void onFork(item.cwd, item.session.id, item.session.latestTurnId)}
             onRename={() => setEditingKey(item.key)}
             onArchive={() => setConfirming({ item, mode: "archive" })}
             onDelete={() => setConfirming({ item, mode: "delete" })}
@@ -610,7 +678,7 @@ export function SessionsWorkspace({
           >
             <IconFilter size={14} strokeWidth={1.5} aria-hidden /> Filters{activeFilterCount ? ` · ${activeFilterCount}` : ""}
           </button>
-          <button type="button" className="sessions-new" disabled={interactionDisabled} onClick={onNewChat}>
+          <button type="button" className="sessions-new" disabled={navigationDisabled} onClick={onNewChat}>
             <IconPlus size={14} /> New chat
           </button>
         </div>

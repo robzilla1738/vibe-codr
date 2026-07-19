@@ -739,3 +739,28 @@ npm run dev
 - [x] Source/config parity reads the exact locked engine commit. Packaging
   refuses a mismatched HEAD or dirty engine build input—including dependency
   manifests and the lockfile—before copying the host.
+
+## Runtime continuity and efficiency (2026-07-18)
+
+- [x] Versioned protocol ready/event/snapshot frames carry engine revision,
+  capabilities, host identity, session identity, and monotonic event cursors;
+  duplicate frames are ignored, gaps replay from a bounded 2,048-event/8 MiB
+  host ring, and expired replay falls back to a fresh snapshot.
+- [x] Adaptive tool discovery keeps core/task/allowlisted tools direct, defers
+  only large MCP/plugin catalogs, preserves real tool identity through hooks,
+  permissions, approvals, telemetry, and UI, and reduces the 100-tool fixture's
+  schema tokens by at least 60% without exceeding the two-point selection budget.
+- [x] A three-runtime local supervisor lets two background turns continue while
+  one session owns the renderer, pins working/input/review states, rejects
+  capacity exhaustion clearly, evicts expired idle runtimes, and drains all
+  owned hosts on quit.
+- [x] Advanced Settings reports content-free local p50/p95 phase attribution,
+  dominant bottleneck, seven-day/2 MiB retention, export/copy diagnostics, and
+  plugin health without central telemetry or new presentation primitives.
+- [x] Sessions merges immediate metadata filtering with cancellable cross-project
+  BM25 transcript recall, persists stable completed-turn IDs, and atomically
+  forks model/display history without dangling tool calls or mutating the source.
+- [x] PluginManifestV1 is read before executable import, rejects incompatible
+  API/contribution contracts, records package integrity or unverified local
+  provenance, isolates failures with rollback, and exposes loaded/degraded/
+  incompatible/failed status through the existing Advanced section.

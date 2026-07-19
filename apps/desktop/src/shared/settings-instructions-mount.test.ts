@@ -16,6 +16,11 @@ describe("settings instructions mount contract", () => {
     resolve(import.meta.dirname, "../renderer/settings/sections/InstructionsSection.tsx"),
     "utf8",
   );
+  const advancedSrc = readFileSync(
+    resolve(import.meta.dirname, "../renderer/settings/sections/AdvancedSection.tsx"),
+    "utf8",
+  );
+  const appSrc = readFileSync(resolve(import.meta.dirname, "../renderer/App.tsx"), "utf8");
 
   it("keeps InstructionsSection mounted while hidden on other sections", () => {
     expect(panelSrc).toMatch(/hidden=\{activeSection !== "instructions"\}/);
@@ -52,5 +57,16 @@ describe("settings instructions mount contract", () => {
     expect(panelSrc).toMatch(/function SettingsFormArea\(\{\s*active,/);
     expect(panelSrc).toMatch(/useEffect\(\(\) => \{\s*if \(!active\) return;\s*const onKeyDown/);
     expect(panelSrc).toContain("active={active}");
+  });
+
+  it("refreshes diagnostics and plugin health for the visible foreground runtime", () => {
+    expect(panelSrc).toContain('active={active && activeSection === "advanced"}');
+    expect(panelSrc).toContain("runtimeIdentity={runtimeIdentity}");
+    expect(appSrc).toMatch(/runtimeIdentity=\{`\$\{cwd \?\? ""\}\\0\$\{chrome\.sessionId\}`\}/);
+    expect(advancedSrc).toMatch(/if \(!active\) return;/);
+    expect(advancedSrc.match(/\[active, cwd, runtimeIdentity\]/g)).toHaveLength(2);
+    expect(advancedSrc).toContain("getPerformanceSummary({ days: 1 })");
+    expect(advancedSrc).toContain("getPerformanceSummary({ days: 7 })");
+    expect(advancedSrc).toContain("PERFORMANCE_PHASES.map");
   });
 });

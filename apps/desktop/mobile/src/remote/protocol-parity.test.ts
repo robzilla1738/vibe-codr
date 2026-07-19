@@ -37,13 +37,13 @@ describe("remote protocol parity (mobile client ↔ relay)", () => {
   });
 
   it("relay → mobile: ready/event/resp frames decode", () => {
-    expect(decodeOutbound('{"type":"ready","sessionId":"s1"}')).toEqual({ type: "ready", sessionId: "s1" });
+    expect(decodeOutbound('{"type":"ready","protocolVersion":2,"engineRevision":"test","capabilities":["event-replay"],"hostInstanceId":"host-1","sessionId":"s1"}')).toMatchObject({ type: "ready", protocolVersion: 2, hostInstanceId: "host-1", sessionId: "s1" });
     expect(decodeOutbound('{"type":"resp","id":7,"ok":true,"value":{"x":1}}')).toEqual({ type: "resp", id: 7, ok: true, value: { x: 1 } });
     expect(decodeOutbound('{"type":"fatal","message":"boom"}')).toEqual({ type: "fatal", message: "boom" });
     // an event frame the relay forwards must decode as a valid UIEvent
-    const ev = decodeOutbound('{"type":"event","event":{"type":"notice","level":"info","message":"hi"}}');
+    const ev = decodeOutbound('{"type":"event","hostInstanceId":"host-1","seq":1,"event":{"type":"notice","level":"info","message":"hi"}}');
     expect(ev?.type).toBe("event");
-    const correlated = decodeOutbound('{"type":"event","event":{"type":"user-message","sessionId":"s1","turnId":"turn-opaque","text":"hi"}}');
+    const correlated = decodeOutbound('{"type":"event","hostInstanceId":"host-1","seq":2,"event":{"type":"user-message","sessionId":"s1","turnId":"turn-opaque","text":"hi"}}');
     expect(correlated).toMatchObject({ type: "event", event: { type: "user-message", turnId: "turn-opaque" } });
   });
 

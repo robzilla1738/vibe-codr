@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 0.6.13 — 2026-07-19
+
+### Added
+
+- Resumable engine continuity with host identity, event cursors, bounded replay,
+  and coordinated reconnect behavior across Local, Cloud, and Continue on Phone.
+- Up to three supervised local runtimes across independent workspaces, allowing
+  session switching without aborting active turns.
+- Transcript-aware cross-project Sessions search, completed-turn session forks,
+  local diagnostics summaries/exports, and plugin health reporting in existing
+  desktop surfaces.
+
+### Improved
+
+- Runtime and history ownership now fail closed across handoffs, canonicalize
+  writable roots, preserve busy work during navigation, and keep background
+  completion metadata current.
+- Large MCP/plugin catalogs use adaptive discovery to reduce schema context
+  while preserving real tool identity for approvals, hooks, telemetry, and UI.
+
+### Fixed
+
+- Event replay, snapshot resync, stale-host recovery, mobile relay continuity,
+  Windows session keys, quit cleanup, and failed provisional handoffs now retain
+  bounded, single-owner behavior.
+
 ## 0.6.12 — 2026-07-18
 
 ### Added

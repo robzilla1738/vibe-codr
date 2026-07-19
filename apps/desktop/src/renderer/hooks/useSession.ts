@@ -601,6 +601,8 @@ export function useSession(cwd: string | null) {
       continueLatest?: boolean;
     }) => {
       const request = bootstrapGate.current.begin();
+      const previousCwd = chrome.cwd;
+      const previousSnapshot = lastSnap.current;
       // Keep the previous activeSessionId for any race that slips past the
       // handoff gate; never open the filter with "" (accept-all) during bootstrap.
       bootstrapHandoff.current = true;
@@ -614,7 +616,6 @@ export function useSession(cwd: string | null) {
       setRevealTurns(0);
       setRevealedTurnItems(new Map());
       suppressAfterClear.current = false;
-      lastSnap.current = null;
       deltaBuf.current = "";
       progressBuf.current.clear();
       reasoningBuf.current = "";
@@ -627,22 +628,52 @@ export function useSession(cwd: string | null) {
       // Keep the current conversation visible while the replacement host
       // starts. The shell owns the transition surface; clearing here made a
       // sub-second engine handoff look like a blank, blocking screen.
+      const restorePreviousAttachment = async (message: string): Promise<boolean> => {
+        if (!previousCwd || !previousSnapshot) return false;
+        let response: Awaited<ReturnType<typeof window.vibe.rpc>>;
+        try { response = await window.vibe.rpc("snapshot"); }
+        catch { return false; }
+        if (!bootstrapGate.current.isCurrent(request)) return false;
+        if (!response.ok || !isEngineSnapshot(response.value)) return false;
+        const snapshot = response.value;
+        if (snapshot.sessionId !== previousSnapshot.sessionId) return false;
+        activeSessionId.current = snapshot.sessionId;
+        lastSnap.current = snapshot;
+        setPendingCapabilities(snapshot.pendingCapabilities ?? []);
+        dispatchChrome({ type: "seed", snap: snapshot, cwd: previousCwd });
+        dispatchTranscript({ type: "replace", state: hydrateFromHistory(snapshot.history) });
+        bootstrapEvents.current = [];
+        bootstrapEventBytes.current = 0;
+        bootstrapEventsTruncated.current = false;
+        bootstrapHandoff.current = false;
+        setBootError(null);
+        setReady(true);
+        setBooting(false);
+        dispatchTranscript({ type: "notice", text: message, level: "error" });
+        return true;
+      };
       let res: Awaited<ReturnType<typeof window.vibe.bootstrap>>;
       try {
         res = await window.vibe.bootstrap(opts);
       } catch (error) {
         if (!bootstrapGate.current.isCurrent(request)) return false;
+        const message = error instanceof Error ? error.message : "Engine bootstrap failed";
+        if (await restorePreviousAttachment(message)) return false;
+        if (!bootstrapGate.current.isCurrent(request)) return false;
         bootstrapHandoff.current = false;
         bootstrapEvents.current = [];
-        setBootError(error instanceof Error ? error.message : "Engine bootstrap failed");
+        setBootError(message);
         setBooting(false);
         return false;
       }
       if (!bootstrapGate.current.isCurrent(request)) return false;
       if (!res.ok) {
+        const message = res.error + (res.stderr ? `\n${res.stderr}` : "");
+        if (await restorePreviousAttachment(message)) return false;
+        if (!bootstrapGate.current.isCurrent(request)) return false;
         bootstrapHandoff.current = false;
         bootstrapEvents.current = [];
-        setBootError(res.error + (res.stderr ? `\n${res.stderr}` : ""));
+        setBootError(message);
         setBooting(false);
         return false;
       }
@@ -732,7 +763,7 @@ export function useSession(cwd: string | null) {
       setBooting(false);
       return true;
     },
-    [handleEvent],
+    [chrome.cwd, handleEvent],
   );
 
   /** Hydrate the renderer from an already-running transport (cloud reconnect).
@@ -801,6 +832,10 @@ export function useSession(cwd: string | null) {
 
   useEffect(() => {
     const offEvent = window.vibe.onEvent(handleEvent);
+    const offResync = window.vibe.onResync(() => {
+      if (bootstrapHandoff.current) return;
+      if (cwd) void attachCurrent(cwd);
+    });
     const offFatal = window.vibe.onFatal((message) => {
       // Host death mid-bootstrap must reopen the event filter so Retry/New work.
       bootstrapHandoff.current = false;
@@ -813,11 +848,12 @@ export function useSession(cwd: string | null) {
     });
     return () => {
       offEvent();
+      offResync();
       offFatal();
       if (flushTimer.current != null) window.clearTimeout(flushTimer.current);
       if (toastTimer.current != null) window.clearTimeout(toastTimer.current);
     };
-  }, [handleEvent]);
+  }, [attachCurrent, cwd, handleEvent]);
 
   useLayoutEffect(() => {
     const pending = pendingFirstPaint.current;

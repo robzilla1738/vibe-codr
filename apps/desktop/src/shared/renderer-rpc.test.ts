@@ -7,6 +7,7 @@ describe("renderer RPC boundary", () => {
     expect(isRendererRpcMethod("snapshot")).toBe(true);
     expect(isRendererRpcMethod("listProjects")).toBe(true);
     expect(isRendererRpcMethod("beginProviderAuth")).toBe(true);
+    expect(isRendererRpcMethod("listPluginStatus")).toBe(true);
     for (const method of [
       "prepareHandoff",
       "exportPortableSession",

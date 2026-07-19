@@ -54,6 +54,7 @@ export class MockRemoteClient {
       case "listAgents": return [];
       case "listSkills": return [];
       case "listMcp": return [];
+      case "listPluginStatus": return [];
       default: return null;
     }
   }

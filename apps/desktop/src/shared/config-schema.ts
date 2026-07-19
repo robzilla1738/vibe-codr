@@ -150,6 +150,7 @@ export interface VibeConfig {
   details?: "quiet" | "normal" | "verbose";
   mouse?: boolean;
   plugins?: string[];
+  toolDiscovery?: { mode?: "auto" | "direct"; directTools?: string[] };
   hooks?: HookConfig[];
   subagent?: {
     maxDepth?: number;

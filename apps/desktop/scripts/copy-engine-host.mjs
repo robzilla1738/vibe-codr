@@ -41,6 +41,7 @@ const ENGINE_BUILD_INPUT_PATHS = [
   "packages/macos-bridge/package.json",
   "packages/macos-bridge/tsconfig.json",
   "packages/macos-bridge/bin/engine-host.ts",
+  "scripts/build-macos-bridge.ts",
   "packages/macos-bridge/src",
   "packages/plugins/package.json",
   "packages/plugins/tsconfig.json",

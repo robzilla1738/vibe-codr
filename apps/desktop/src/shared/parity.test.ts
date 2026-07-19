@@ -242,8 +242,12 @@ describe("protocol", () => {
   });
 
   it("decodes ready / event / fatal", () => {
-    expect(decodeOutbound('{"type":"ready","sessionId":"ses_1"}')).toEqual({
+    expect(decodeOutbound('{"type":"ready","protocolVersion":2,"engineRevision":"test","capabilities":["event-replay"],"hostInstanceId":"host-1","sessionId":"ses_1"}')).toEqual({
       type: "ready",
+      protocolVersion: 2,
+      engineRevision: "test",
+      capabilities: ["event-replay"],
+      hostInstanceId: "host-1",
       sessionId: "ses_1",
     });
     expect(decodeOutbound('{"type":"fatal","message":"boom"}')).toEqual({

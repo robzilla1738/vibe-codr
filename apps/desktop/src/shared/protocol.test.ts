@@ -8,6 +8,22 @@ import {
   listedUIEventTypes,
 } from "./protocol";
 
+const readyFrame = (sessionId: unknown) => ({
+  type: "ready",
+  protocolVersion: 2,
+  engineRevision: "test",
+  capabilities: ["event-replay"],
+  hostInstanceId: "host-test",
+  sessionId,
+});
+
+const eventFrame = (event: unknown) => ({
+  type: "event",
+  hostInstanceId: "host-test",
+  seq: 1,
+  event,
+});
+
 describe("NDJSON protocol runtime validation", () => {
   it("rejects malformed inbound messages", () => {
     expect(decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "/repo" }))).not.toBeNull();
@@ -147,22 +163,22 @@ describe("NDJSON protocol runtime validation", () => {
   });
 
   it("rejects malformed host messages and UI events", () => {
-    expect(decodeOutbound(JSON.stringify({ type: "ready", sessionId: "ses_1" }))).not.toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "ready", sessionId: 1 }))).toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "assistant-text-delta", delta: "missing session" } }))).toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "notice", level: "info", message: "ok" } }))).not.toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "jobs-changed", sessionId: "s", jobs: "bad" } }))).toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "permission-settled", sessionId: "s", ids: [3], reason: "aborted" } }))).toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "loop-tick", sessionId: "s", loopId: "l", iteration: -1 } }))).toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "goal-run", sessionId: "s", run: { active: true, phase: "execute", round: -1, max: 3, pausedReason: null, met: false } } }))).toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "tool-call-progress", sessionId: "s", toolCallId: "x".repeat(1_025), chunk: "data" } }))).toBeNull();
-    expect(decodeOutbound(JSON.stringify({ type: "event", event: { type: "permission-settled", sessionId: "s", ids: ["ok", "bad\0id"], reason: "aborted" } }))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(readyFrame("ses_1")))).not.toBeNull();
+    expect(decodeOutbound(JSON.stringify(readyFrame(1)))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "assistant-text-delta", delta: "missing session" })))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "notice", level: "info", message: "ok" })))).not.toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "jobs-changed", sessionId: "s", jobs: "bad" })))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "permission-settled", sessionId: "s", ids: [3], reason: "aborted" })))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "loop-tick", sessionId: "s", loopId: "l", iteration: -1 })))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "goal-run", sessionId: "s", run: { active: true, phase: "execute", round: -1, max: 3, pausedReason: null, met: false } })))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "tool-call-progress", sessionId: "s", toolCallId: "x".repeat(1_025), chunk: "data" })))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(eventFrame({ type: "permission-settled", sessionId: "s", ids: ["ok", "bad\0id"], reason: "aborted" })))).toBeNull();
     expect(decodeOutbound(JSON.stringify({ type: "resp", id: 1, ok: false }))).toBeNull();
   });
 
   it("rejects oversized runtime ids in both protocol directions", () => {
     const oversized = "x".repeat(1_025);
-    expect(decodeOutbound(JSON.stringify({ type: "ready", sessionId: oversized }))).toBeNull();
+    expect(decodeOutbound(JSON.stringify(readyFrame(oversized)))).toBeNull();
     expect(decodeInbound(JSON.stringify({
       op: "send",
       command: { type: "resolve-permission", id: oversized, decision: "deny" },

@@ -49,7 +49,12 @@ import {
 } from "../src/shared/protocol.js";
 import { isPrivateNetworkAddress, privateLanIPv4 } from "../src/shared/private-network.js";
 
-const PROJECT_INDEX_RPCS = new Set<RpcMethod>(["listProjects", "renameProject", "archiveProject", "deleteProject", "renameSession", "deleteSession", "archiveSession"]);
+const PROJECT_INDEX_RPCS = new Set<RpcMethod>(["listProjects", "searchSessions", "renameProject", "archiveProject", "deleteProject", "renameSession", "deleteSession", "archiveSession", "forkSession"]);
+const PROJECT_INDEX_MUTATIONS = new Set<RpcMethod>(["renameProject", "archiveProject", "deleteProject", "renameSession", "deleteSession", "archiveSession", "forkSession"]);
+const SESSION_HISTORY_MUTATIONS = new Set<RpcMethod>(["renameSession", "deleteSession", "archiveSession", "forkSession"]);
+const PROJECT_RECOVERY_MUTATIONS = new Set<RpcMethod>(["archiveProject", "deleteProject"]);
+const SESSION_RUNTIME_MUTATIONS = new Set<RpcMethod>(["renameSession", "deleteSession", "archiveSession"]);
+const PROJECT_RUNTIME_MUTATIONS = new Set<RpcMethod>(["archiveProject", "deleteProject"]);
 const PROVIDER_AUTH_RPCS = new Set<RpcMethod>(["providerAuthStatus", "beginProviderAuth", "cancelProviderAuth", "logoutProviderAuth"]);
 const CONTROLLER_HEARTBEAT_MS = 30_000;
 
@@ -157,6 +162,7 @@ async function main(): Promise<void> {
   let controller: WebSocket | null = null;
   let controllerAlive = false;
   let activeSessionId = "";
+  let activeProtocolInfo: Omit<Extract<HostOutbound, { type: "ready" }>, "type" | "sessionId"> | null = null;
   let activeCwd = "";
   let handoffSessionId = INITIAL_SESSION_ID;
   let mobileAuthorized = !MANAGED || process.env.VIBE_RELAY_MOBILE_AUTHORIZED === "1";
@@ -182,14 +188,27 @@ async function main(): Promise<void> {
 
   // Keep the engine alive across transient phone network/background drops.
   // An explicit shutdown remains the ownership-release point back to desktop.
-  bridge.onReady = (sessionId) => {
+  bridge.onReady = (sessionId, info) => {
     activeSessionId = sessionId;
-    if (controller) send(controller, { type: "ready", sessionId });
+    activeProtocolInfo = info ? {
+      protocolVersion: info.protocolVersion,
+      engineRevision: info.engineRevision,
+      capabilities: ["event-replay"],
+      hostInstanceId: info.hostInstanceId,
+    } : null;
+    if (controller && activeProtocolInfo) send(controller, { type: "ready", sessionId, ...activeProtocolInfo });
   };
-  bridge.onEvent = (event) => {
+  bridge.onEvent = (event, frame) => {
     cloudManager.observeEngineEvent(event);
-    if (event && typeof event === "object" && (event as { type?: unknown }).type === "turn-performance") return;
-    if (controller) send(controller, { type: "event", event: event as UIEvent });
+    // Every sequenced host event must cross the relay. Filtering one event here
+    // creates an artificial cursor gap and forces the phone into replay.
+    if (controller && frame) send(controller, { type: "event", event: event as UIEvent, ...frame });
+  };
+  bridge.onResync = (snapshot) => {
+    activeSessionId = snapshot.sessionId;
+    if (controller && activeProtocolInfo) {
+      send(controller, { type: "ready", sessionId: snapshot.sessionId, ...activeProtocolInfo });
+    }
   };
   bridge.onFatal = (message) => {
     if (controller) send(controller, { type: "fatal", message });
@@ -269,7 +288,18 @@ async function main(): Promise<void> {
     releasingOwnership = true;
     const sessionId = activeSessionId;
     const cwd = activeCwd || CWD;
-    try { await bridge.stop(); } catch { /* best-effort ownership release */ }
+    try {
+      await bridge.stopAllOwnedRuntimes();
+    } catch (error) {
+      if (controller) {
+        send(controller, {
+          type: "fatal",
+          message: `Could not return control to desktop: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+      releasingOwnership = false;
+      return;
+    }
     activeSessionId = "";
     activeCwd = "";
     mobileAuthorized = false;
@@ -300,6 +330,7 @@ async function main(): Promise<void> {
     }
     if (!MANAGED) return;
     if (value.type === "desktop-released") {
+      bridge.restoreLocalRuntimeOwnership();
       if (typeof value.cwd === "string" && value.cwd) {
         projectCwdAllowlist.add(value.cwd);
         activeCwd = value.cwd;
@@ -553,7 +584,7 @@ async function main(): Promise<void> {
         activeCwd === msg.cwd &&
         (msg.resume === activeSessionId || msg.continue === true)
       ) {
-        send(ws, { type: "ready", sessionId: activeSessionId });
+        if (activeProtocolInfo) send(ws, { type: "ready", sessionId: activeSessionId, ...activeProtocolInfo });
         return;
       }
       const opts: EngineStartOptions = {
@@ -576,9 +607,48 @@ async function main(): Promise<void> {
     if (msg.op === "rpc") {
       try {
         const method = msg.method as RpcMethod;
-        const params = msg.params as HostRpcParams | undefined;
+        let params = msg.params as HostRpcParams | undefined;
+        let historyMutation: { cwd: string; sessionId?: string } | null = null;
+        if (method === "searchSessions" && params?.cwd !== undefined) {
+          if (typeof params.cwd !== "string" || !isAllowedCwd(params.cwd)) {
+            throw new Error("Transcript search is limited to opened projects");
+          }
+        }
+        if (PROJECT_INDEX_MUTATIONS.has(method)) {
+          const cwd = params?.cwd;
+          if (typeof cwd !== "string" || !isAllowedCwd(cwd)) {
+            throw new Error("Project history changes are limited to opened projects");
+          }
+          if (SESSION_HISTORY_MUTATIONS.has(method) || PROJECT_RECOVERY_MUTATIONS.has(method)) {
+            const rawSessionId = SESSION_HISTORY_MUTATIONS.has(method) ? params?.id : undefined;
+            const sessionId = typeof rawSessionId === "string" ? rawSessionId.trim() : undefined;
+            if (sessionId !== undefined) params = { ...params, id: sessionId } as HostRpcParams;
+            historyMutation = { cwd, ...(sessionId !== undefined ? { sessionId } : {}) };
+          }
+          if (SESSION_RUNTIME_MUTATIONS.has(method)) {
+            const id = params?.id;
+            if (typeof id !== "string") throw new Error("A session ID is required");
+            const retirement = await bridge.retireLocalSessionForMutation(cwd, id, method === "renameSession");
+            if (!retirement.ok) {
+              throw new Error(`This session is still ${retirement.state}. Finish or stop it before changing its saved history.`);
+            }
+          } else if (PROJECT_RUNTIME_MUTATIONS.has(method)) {
+            const retirement = await bridge.retireLocalProjectForMutation(cwd);
+            if (!retirement.ok) {
+              throw new Error(retirement.state === "foreground"
+                ? "Open another project before removing this project."
+                : `A session in this project is still ${retirement.state}. Finish or stop it before removing the project.`);
+            }
+          }
+        }
         const value = PROJECT_INDEX_RPCS.has(method)
-          ? await bridge.projectIndexRpc(method, params)
+          ? historyMutation
+            ? await cloudManager.runHistoryMutation(
+                historyMutation.cwd,
+                historyMutation.sessionId,
+                () => bridge.projectIndexRpc(method, params),
+              )
+            : await bridge.projectIndexRpc(method, params)
           : PROVIDER_AUTH_RPCS.has(method)
             ? await bridge.providerAuthRpc(method, params)
             : await bridge.rpc(method, params);
@@ -592,7 +662,7 @@ async function main(): Promise<void> {
       if (MANAGED) {
         await releaseToDesktop();
       } else {
-        await bridge.stop();
+        await bridge.stopAllOwnedRuntimes();
         activeSessionId = "";
         activeCwd = "";
         ws.close(1000, "shutdown");

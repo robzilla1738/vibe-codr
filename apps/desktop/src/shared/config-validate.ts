@@ -217,6 +217,11 @@ export function validateConfig(config: Record<string, unknown>): string[] {
   if (Array.isArray(config.plugins) && config.plugins.every((entry) => typeof entry === "string")) {
     errors.push(...validatePluginSpecifiers(config.plugins));
   }
+  const toolDiscovery = objectField(config, "toolDiscovery", "toolDiscovery", errors);
+  if (toolDiscovery) {
+    errors.push(...checkEnum(toolDiscovery.mode, ["auto", "direct"], "toolDiscovery.mode"));
+    errors.push(...checkStringArray(toolDiscovery.directTools, "toolDiscovery.directTools"));
+  }
 
   // Provider baseURLs
   const providers = objectField(config, "providers", "providers", errors);

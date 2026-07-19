@@ -4,7 +4,8 @@
 // Reuses the shared `encodeInbound` / `decodeOutbound` / guards so the wire
 // contract is byte-identical to the desktop shell — 1:1 by construction.
 import type { EngineCommand } from "@shared/commands";
-import { encodeInbound, decodeOutbound, type HostOutbound, type RpcMethod, type HostRpcParams } from "@shared/protocol";
+import { estimateJsonUtf8Bytes } from "@shared/json-size";
+import { encodeInbound, decodeOutbound, HOST_PROTOCOL_VERSION, type HostEventFrame, type HostOutbound, type HostReplayResult, type RpcMethod, type HostRpcParams } from "@shared/protocol";
 import { isUIEvent } from "@shared/protocol";
 import { isEngineSnapshot, isRpcResult } from "@shared/runtime-guards";
 import { isRelayOutbound, type CloudRelayRequest, type CloudRelayResult, type GitRelayRequest, type GitRelayResult, type MobileUploadResult, type RelayOutbound } from "../../../relay/protocol";
@@ -34,6 +35,13 @@ const KEEPALIVE_MS = 15_000;
 const KEEPALIVE_PAYLOAD = '{"op":"ping"}\n';
 const RECONNECT_DELAYS_MS = [500, 1500, 5000, 15_000, 30_000];
 const TERMINAL_CLOSE_CODES = new Set([4001, 4003, 4004]);
+const MAX_PENDING_EVENT_FRAMES = 2_048;
+const MAX_PENDING_EVENT_BYTES = 8 * 1024 * 1024;
+
+interface PendingEventFrame {
+  frame: HostEventFrame;
+  bytes: number;
+}
 
 type EventSink = (event: UIEvent) => void;
 export type RemoteConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
@@ -44,7 +52,7 @@ export class RemoteEngineClient {
   #ready = false;
   #nextRpcId = 1;
   #nextRelayId = 1;
-  #rpc = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  #rpc = new Map<number, { method: RpcMethod; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   #readyWaiter: { resolve: (id: string) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null = null;
   #keepalive: ReturnType<typeof setInterval> | null = null;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,6 +67,11 @@ export class RemoteEngineClient {
   #closed = false;
   #terminallyDisconnected = false;
   #foregroundReconnect: Promise<string> | null = null;
+  #hostInstanceId = "";
+  #lastEventSeq = 0;
+  #pendingEventFrames: PendingEventFrame[] = [];
+  #pendingEventBytes = 0;
+  #replayInFlight = false;
 
   onFatal: ((message: string) => void) | null = null;
   onReady: ((sessionId: string) => void) | null = null;
@@ -183,9 +196,23 @@ export class RemoteEngineClient {
 
   #dispatch(msg: HostOutbound): void {
     if (msg.type === "ready") {
+      if (msg.protocolVersion !== HOST_PROTOCOL_VERSION) {
+        this.#recoverFromContinuityFailure(
+          `Engine protocol ${msg.protocolVersion} is incompatible with mobile protocol ${HOST_PROTOCOL_VERSION}`,
+          false,
+        );
+        return;
+      }
       this.#ready = true;
+      this.#snapshot = null;
       this.#reconnectAttempts = 0;
       this.#sessionId = msg.sessionId;
+      const sameHost = this.#hostInstanceId === msg.hostInstanceId;
+      this.#hostInstanceId = msg.hostInstanceId;
+      if (!sameHost) {
+        this.#lastEventSeq = 0;
+        this.#clearPendingEventFrames();
+      }
       if (this.#lastBootstrap) {
         this.#lastBootstrap = {
           ...this.#lastBootstrap,
@@ -200,10 +227,7 @@ export class RemoteEngineClient {
       return;
     }
     if (msg.type === "event") {
-      if (isUIEvent(msg.event)) {
-        const ev = msg.event as UIEvent;
-        for (const sink of this.#sinks) sink(ev);
-      }
+      this.#acceptEventFrame(msg);
       return;
     }
     if (msg.type === "resp") {
@@ -211,13 +235,115 @@ export class RemoteEngineClient {
       if (!w) return;
       this.#rpc.delete(msg.id);
       clearTimeout(w.timer);
-      if (msg.ok) w.resolve(msg.value);
+      if (msg.ok) {
+        if (!isRpcResult(w.method, msg.value)) {
+          w.reject(new Error(`Invalid ${w.method} response`));
+          return;
+        }
+        w.resolve(msg.value);
+      }
       else w.reject(new Error(msg.error));
       return;
     }
     if (msg.type === "fatal") {
       this.#fail(msg.message);
     }
+  }
+
+  #acceptEventFrame(frame: HostEventFrame): void {
+    if (frame.hostInstanceId !== this.#hostInstanceId) {
+      this.#recoverFromContinuityFailure("Engine event belongs to a stale host instance");
+      return;
+    }
+    if (frame.seq <= this.#lastEventSeq) return;
+    if (!this.#replayInFlight && frame.seq === this.#lastEventSeq + 1) {
+      this.#deliverEventFrame(frame);
+      return;
+    }
+    if (!this.#queuePendingEventFrame(frame)) return;
+    if (!this.#replayInFlight) void this.#reconcileEventGap();
+  }
+
+  #queuePendingEventFrame(frame: HostEventFrame): boolean {
+    const bytes = estimateJsonUtf8Bytes(frame, MAX_PENDING_EVENT_BYTES);
+    if (bytes > MAX_PENDING_EVENT_BYTES) {
+      this.#recoverFromContinuityFailure("Engine event exceeds the mobile continuity buffer");
+      return false;
+    }
+    while (
+      this.#pendingEventFrames.length >= MAX_PENDING_EVENT_FRAMES
+      || this.#pendingEventBytes + bytes > MAX_PENDING_EVENT_BYTES
+    ) {
+      const removed = this.#pendingEventFrames.shift();
+      if (!removed) break;
+      this.#pendingEventBytes -= removed.bytes;
+    }
+    this.#pendingEventFrames.push({ frame, bytes });
+    this.#pendingEventBytes += bytes;
+    return true;
+  }
+
+  #clearPendingEventFrames(): void {
+    this.#pendingEventFrames = [];
+    this.#pendingEventBytes = 0;
+  }
+
+  #retainPendingEventFrames(afterSeq: number): void {
+    this.#pendingEventFrames = this.#pendingEventFrames.filter(({ frame }) => frame.seq > afterSeq);
+    this.#pendingEventBytes = this.#pendingEventFrames.reduce((total, item) => total + item.bytes, 0);
+  }
+
+  #deliverEventFrame(frame: HostEventFrame): void {
+    if (frame.seq <= this.#lastEventSeq || !isUIEvent(frame.event)) return;
+    this.#lastEventSeq = frame.seq;
+    for (const sink of this.#sinks) sink(frame.event as UIEvent);
+  }
+
+  async #reconcileEventGap(): Promise<void> {
+    if (this.#replayInFlight || !this.#hostInstanceId || !this.#ready) return;
+    this.#replayInFlight = true;
+    try {
+      const result = await this.rpc("replayEvents", {
+        hostInstanceId: this.#hostInstanceId,
+        afterSeq: this.#lastEventSeq,
+      }) as HostReplayResult;
+      if (result.truncated || result.hostInstanceId !== this.#hostInstanceId) {
+        await this.#resyncFromSnapshot();
+        return;
+      }
+      const frames = [...result.events, ...this.#pendingEventFrames.map(({ frame }) => frame)].sort((a, b) => a.seq - b.seq);
+      this.#clearPendingEventFrames();
+      for (const frame of frames) {
+        if (frame.seq <= this.#lastEventSeq) continue;
+        if (frame.hostInstanceId !== this.#hostInstanceId || frame.seq !== this.#lastEventSeq + 1) {
+          await this.#resyncFromSnapshot();
+          return;
+        }
+        this.#deliverEventFrame(frame);
+      }
+      if (this.#lastEventSeq < result.lastEventSeq) await this.#resyncFromSnapshot();
+    } catch (error) {
+      this.#recoverFromContinuityFailure(
+        `Engine event replay failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      this.#replayInFlight = false;
+      if (this.#ready && this.#pendingEventFrames.some(({ frame }) => frame.seq > this.#lastEventSeq)) {
+        void this.#reconcileEventGap();
+      }
+    }
+  }
+
+  async #resyncFromSnapshot(): Promise<void> {
+    const value = await this.rpc("snapshot");
+    if (!isEngineSnapshot(value)) throw new Error("Invalid engine resync snapshot");
+    if (value.hostInstanceId !== this.#hostInstanceId || !Number.isSafeInteger(value.lastEventSeq)) {
+      throw new Error("Engine resync snapshot cursor mismatch");
+    }
+    this.#lastEventSeq = value.lastEventSeq ?? this.#lastEventSeq;
+    this.#retainPendingEventFrames(this.#lastEventSeq);
+    this.#snapshot = value;
+    this.onReady?.(value.sessionId);
   }
 
   #handleClose(socket: WebSocket, code: number, reason: string): void {
@@ -303,6 +429,33 @@ export class RemoteEngineClient {
     this.#fatal?.(message);
   }
 
+  #recoverFromContinuityFailure(message: string, reconnect = true): void {
+    const error = new Error(message);
+    if (!reconnect) this.#terminallyDisconnected = true;
+    this.#ready = false;
+    this.#hostInstanceId = "";
+    this.#lastEventSeq = 0;
+    this.#clearPendingEventFrames();
+    this.#readyWaiter?.reject(error);
+    this.#readyWaiter = null;
+    for (const waiter of this.#rpc.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    this.#rpc.clear();
+    this.#rejectRelayRequests(error);
+    const socket = this.#socket;
+    if (socket) this.#discardSocket(socket);
+    this.#fatal?.(message);
+    this.onDisconnect?.();
+    if (reconnect && !this.#closed && !this.#terminallyDisconnected && this.#opts.autoReconnect !== false) {
+      this.onConnectionState?.("reconnecting");
+      this.#scheduleReconnect();
+    } else if (!this.#closed) {
+      this.onConnectionState?.("disconnected");
+    }
+  }
+
   #startKeepalive(socket: WebSocket): void {
     this.#stopKeepalive();
     this.#keepalive = setInterval(() => {
@@ -377,7 +530,7 @@ export class RemoteEngineClient {
     const timeout = this.#opts.rpcTimeoutMs ?? RPC_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.#rpc.delete(id); reject(new Error(`rpc ${method} timeout`)); }, timeout);
-      this.#rpc.set(id, { resolve, reject, timer });
+      this.#rpc.set(id, { method, resolve, reject, timer });
       this.#send(encodeInbound({ op: "rpc", id, method, ...(params ? { params } : {}) }));
     });
   }
@@ -386,8 +539,19 @@ export class RemoteEngineClient {
     if (this.#snapshot) return this.#snapshot;
     const value = await this.rpc("snapshot");
     if (!isEngineSnapshot(value)) throw new Error("Invalid engine snapshot");
+    this.#adoptSnapshotCursor(value);
     this.#snapshot = value;
     return value;
+  }
+
+  #adoptSnapshotCursor(value: EngineSnapshot): void {
+    if (!value.hostInstanceId || !Number.isSafeInteger(value.lastEventSeq)) return;
+    if (this.#hostInstanceId && value.hostInstanceId !== this.#hostInstanceId) {
+      throw new Error("Engine snapshot belongs to a stale host instance");
+    }
+    this.#hostInstanceId = value.hostInstanceId;
+    this.#lastEventSeq = Math.max(this.#lastEventSeq, value.lastEventSeq ?? 0);
+    this.#retainPendingEventFrames(this.#lastEventSeq);
   }
 
   async listModels(): Promise<ModelSummary[]> {
@@ -497,6 +661,9 @@ export class RemoteEngineClient {
     const socket = this.#socket;
     if (socket) this.#discardSocket(socket);
     this.#ready = false;
+    this.#hostInstanceId = "";
+    this.#lastEventSeq = 0;
+    this.#clearPendingEventFrames();
     this.onConnectionState?.("disconnected");
   }
 }

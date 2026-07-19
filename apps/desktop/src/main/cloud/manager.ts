@@ -809,7 +809,7 @@ export class CloudManager {
     const reconnect = this.transport.switchToRemote(
       { url, accessToken: token, ...(endpoint.headers ? { headers: endpoint.headers } : {}) },
       { cwd: `${base}/project`, resume: sessionId },
-      { preserveLocal: entry.handoffTransition?.direction === "cloud-to-local", sourceCwd: entry.sourceRoot },
+      { preserveLocal: true, sourceCwd: entry.sourceRoot },
     );
     const id = daemon ? await awaitRemoteEngineReady(daemon, reconnect) : await reconnect;
     this.#remoteSessionId = id;
@@ -1011,7 +1011,7 @@ export class CloudManager {
         this.#emit(sessionId, "recoverable-error", message(error));
         throw error;
       } else {
-        if (provisionalLocal) await this.transport.local.detachForHandoff().catch(() => undefined);
+        if (provisionalLocal) await this.transport.abortProvisionalLocal(cwd, sessionId).catch(() => undefined);
         if (portableImported && preparation) {
           await this.transport.abortPortableImport(cwd, sessionId, preparation.ownershipGeneration).catch(() => undefined);
         }

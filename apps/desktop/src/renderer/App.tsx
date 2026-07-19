@@ -12,11 +12,14 @@ import {
   skillsPickerFilter,
 } from "../shared/catalog-draft";
 import { sortChangedFilesForDisplay } from "../shared/changed-files";
+import { type CloudProviderId, type CloudSessionCatalogEntry, type CloudStatusEvent, isCloudSessionRemoteOwned, latestRemoteOwnedCloudSession, type PendingCapabilityRequest } from "../shared/cloud";
+import { cloudStatusBelongsToSession } from "../shared/cloud-progress";
 import { commandsExpectBusy } from "../shared/command-busy";
 import { applyConfigPatch, buildConfigPatch } from "../shared/config-diff";
 import { contextUsagePercent } from "../shared/context-usage";
 import { densityLabel, nextDensity } from "../shared/density";
 import { parseHandoffCommand, resolveHandoffCommandAction } from "../shared/handoff-command";
+import type { LocalRuntimeStatus } from "../shared/local-runtime";
 import { planResolutionBlockedReason } from "../shared/plan-resolution";
 import {
   isChatsCwd,
@@ -29,6 +32,7 @@ import {
   type EngineCommand,
   encodedEngineCommandBytes,
   HOST_INBOUND_SAFE_BYTES,
+  isUIEvent,
   type ProjectSummary,
 } from "../shared/protocol";
 import { hasUsableOnboardingProvider } from "../shared/provider-readiness";
@@ -48,11 +52,8 @@ import type {
   ProviderInfo,
   SkillInfo,
 } from "../shared/types";
-import { isCloudSessionRemoteOwned, latestRemoteOwnedCloudSession, type CloudProviderId, type CloudSessionCatalogEntry, type CloudStatusEvent, type PendingCapabilityRequest } from "../shared/cloud";
-import { cloudStatusBelongsToSession } from "../shared/cloud-progress";
-import { isUIEvent } from "../shared/protocol";
-import { Composer, type ComposerMetric } from "./composer/Composer";
 import { BrandWordmark } from "./branding/BrandWordmark";
+import { Composer, type ComposerMetric } from "./composer/Composer";
 import { RequestGate } from "./hooks/request-gate";
 import { usePresence, useRetainedValue } from "./hooks/usePresence";
 import { useSession } from "./hooks/useSession";
@@ -173,6 +174,10 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionStatusRevision, setSessionStatusRevision] = useState(0);
+  const [localRuntimeStatuses, setLocalRuntimeStatuses] = useState<Map<string, LocalRuntimeStatus>>(
+    () => new Map(),
+  );
+  const localRuntimeStateRef = useRef(new Map<string, LocalRuntimeStatus["state"]>());
   const busySessionRef = useRef<string | null>(null);
   const projectRefreshBusyRef = useRef(false);
   const [cloudSheetOpen, setCloudSheetOpen] = useState(false);
@@ -783,10 +788,6 @@ export function App() {
   );
 
   const openProject = useCallback(async () => {
-    if (session.chrome.busy) {
-      session.showToast("Stop the current turn before switching projects.", "warn");
-      return;
-    }
     try {
       const path = await window.vibe.openProject();
       if (!path) return;
@@ -861,10 +862,6 @@ export function App() {
 
   const resumeSession = useCallback(
     async (projectCwd: string, id: string) => {
-      if (session.chrome.busy) {
-        session.showToast("Stop the current turn before switching sessions.", "warn");
-        return;
-      }
       const wasDirty = settingsDirtyRef.current();
       if (!confirmLeaveSettings()) return;
       if (wasDirty) setSettingsOpen(false);
@@ -899,10 +896,6 @@ export function App() {
 
   const continueLatest = useCallback(async () => {
     if (!cwd) return;
-    if (session.chrome.busy) {
-      session.showToast("Stop the current turn before switching sessions.", "warn");
-      return;
-    }
     const wasDirty = settingsDirtyRef.current();
     if (!confirmLeaveSettings()) return;
     if (wasDirty) setSettingsOpen(false);
@@ -935,7 +928,6 @@ export function App() {
   const newSession = useCallback(async () => {
     if (!cwd) return false;
     if (settingsOpen && !confirmLeaveSettings()) return false;
-    if (session.chrome.busy && !(await session.send({ type: "abort" }))) return false;
     invalidateCatalogs();
     const ok = await session.bootstrap({ cwd });
     if (ok) {
@@ -985,10 +977,6 @@ export function App() {
   }, [newSession, openProject, toggleSettings, toggleGit, toggleInspector, openWorkspaceDock, continueLatest]);
 
   const startProjectChat = useCallback(async (projectCwd: string) => {
-    if (session.chrome.busy) {
-      session.showToast("Stop the current turn before starting a new chat.", "warn");
-      return;
-    }
     const wasDirty = settingsDirtyRef.current();
     if (!confirmLeaveSettings()) return;
     if (wasDirty) setSettingsOpen(false);
@@ -1005,10 +993,6 @@ export function App() {
 
   /** One-off conversation in `~/.vibe/chats` — not a code project. */
   const startNewChat = useCallback(async () => {
-    if (session.chrome.busy) {
-      session.showToast("Stop the current turn before starting a new chat.", "warn");
-      return;
-    }
     const wasDirty = settingsDirtyRef.current();
     if (!confirmLeaveSettings()) return;
     if (wasDirty) setSettingsOpen(false);
@@ -1082,6 +1066,10 @@ export function App() {
 
   const archiveProject = useCallback(
     async (projectCwd: string) => {
+      if (projectCwd === cwd) {
+        session.showToast("Open another project before archiving this project.", "warn");
+        return false;
+      }
       try {
         const res = await window.vibe.archiveProject({ cwd: projectCwd });
         if (!res.ok) {
@@ -1096,7 +1084,7 @@ export function App() {
         return false;
       }
     },
-    [refreshProjects, session],
+    [cwd, refreshProjects, session],
   );
 
   const deleteProject = useCallback(
@@ -1151,6 +1139,30 @@ export function App() {
       }
     },
     [cwd, newSession, refreshProjects, session],
+  );
+
+  const forkSession = useCallback(
+    async (projectCwd: string, id: string, atTurnId?: string) => {
+      try {
+        const result = await window.vibe.forkSession({ cwd: projectCwd, id, ...(atTurnId ? { atTurnId } : {}) });
+        if (!result.ok) {
+          session.showToast(result.error || "Fork failed", "error");
+          return false;
+        }
+        const opened = await session.bootstrap({ cwd: projectCwd, resume: result.value.id });
+        if (!opened) return false;
+        setCwd(projectCwd);
+        setSessionsOpen(false);
+        setDraft("");
+        await refreshProjects();
+        session.showToast("Session forked");
+        return true;
+      } catch (error) {
+        session.showToast(error instanceof Error ? error.message : "Fork failed", "error");
+        return false;
+      }
+    },
+    [refreshProjects, session],
   );
 
   /** Prevent double resolve-permission / resolve-plan from keyboard + card races. */
@@ -1976,6 +1988,27 @@ export function App() {
       /* Session organization remains usable in-memory when storage is unavailable. */
     }
   }, []);
+  useEffect(() => window.vibe.onLocalRuntimeStatus((status) => {
+    const previous = localRuntimeStateRef.current.get(status.key);
+    if (status.state === "stopped") localRuntimeStateRef.current.delete(status.key);
+    else localRuntimeStateRef.current.set(status.key, status.state);
+    setLocalRuntimeStatuses((current) => {
+      const next = new Map(current);
+      if (status.state === "stopped") next.delete(status.key);
+      else next.set(status.key, status);
+      return next;
+    });
+    if (
+      !status.foreground
+      && status.state === "idle"
+      && previous !== undefined
+      && previous !== "idle"
+      && previous !== "failed"
+    ) {
+      persistSessionStatus(status.cwd, status.sessionId, "done");
+      void refreshProjects();
+    }
+  }), [persistSessionStatus, refreshProjects]);
   useEffect(() => {
     if (!chrome.sessionId) return;
     if (sessionNeedsInput) {
@@ -2065,6 +2098,7 @@ export function App() {
               <SettingsView
                 active={settingsOpen}
                 cwd={cwd}
+                runtimeIdentity={`${cwd ?? ""}\0${chrome.sessionId}`}
                 onClose={() => setSettingsOpen(false)}
                 showToast={session.showToast}
                 onCloudSessionRecovered={async (_sessionId, recoveredCwd) => {
@@ -2089,7 +2123,8 @@ export function App() {
           closing={projectRailPresence.closing}
           loading={projectsLoading}
           error={projectsError}
-          busy={chrome.busy || session.booting || cloudTransitioning}
+          busy={chrome.busy}
+          navigationDisabled={session.booting || cloudTransitioning}
           onClose={() => setProjectRailOpen(false)}
           onOpenSettings={openSettings}
           settingsActive={settingsOpen}
@@ -2119,6 +2154,7 @@ export function App() {
           onRenameSession={renameSession}
           onDeleteSession={(projectCwd, id) => removeSession(projectCwd, id, "delete")}
           onArchiveSession={(projectCwd, id) => removeSession(projectCwd, id, "archive")}
+          onForkSession={forkSession}
         />
         {projectRailPresence.mounted && (
           <button
@@ -2147,11 +2183,13 @@ export function App() {
               <SessionsWorkspace
                 projects={projects}
                 cloudSessions={cloudSessions}
+                localRuntimes={[...localRuntimeStatuses.values()]}
                 chatsCwd={chatsCwd}
                 activeCwd={cwd}
                 activeSessionId={chrome.sessionId}
                 busy={chrome.busy || cloudTransitioning}
                 interactionDisabled={chrome.busy || session.booting || cloudTransitioning}
+                navigationDisabled={session.booting || cloudTransitioning}
                 needsInput={sessionNeedsInput}
                 needsReview={sessionNeedsReview}
                 liveInsight={liveSessionInsight}
@@ -2161,6 +2199,7 @@ export function App() {
                 onRetry={() => void refreshProjects()}
                 onOpen={(projectCwd, id) => void resumeSession(projectCwd, id)}
                 onNewChat={() => void startNewChat()}
+                onFork={forkSession}
                 onRename={renameSession}
                 onArchive={(projectCwd, id) => removeSession(projectCwd, id, "archive")}
                 onDelete={(projectCwd, id) => removeSession(projectCwd, id, "delete")}

@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 describe("handoff IPC boundary", () => {
   const source = readFileSync(join(process.cwd(), "src", "main", "index.ts"), "utf8");
   const manager = readFileSync(join(process.cwd(), "src", "main", "cloud", "manager.ts"), "utf8");
+  const relay = readFileSync(join(process.cwd(), "relay", "server.ts"), "utf8");
+  const controller = readFileSync(join(process.cwd(), "src", "main", "engine-transport-controller.ts"), "utf8");
 
   it("blocks bootstrap before transport replacement while a handoff is active", () => {
     const handler = source.slice(source.indexOf('ipcMain.handle(\n    "engine:bootstrap"'), source.indexOf('ipcMain.handle("engine:send"'));
@@ -63,6 +65,80 @@ describe("handoff IPC boundary", () => {
     expect(handler).toContain("rpcParams = { ...message.params, id: sessionId }");
     expect(handler).toContain("() => bridge.projectIndexRpc(message.method, rpcParams)");
     expect(manager).toContain("Return Cloud-owned or interrupted sessions to Local");
+  });
+
+  it("authorizes renderer-scoped transcript search before reading session stores", () => {
+    const handler = source.slice(source.indexOf('ipcMain.handle("engine:rpc"'), source.indexOf('ipcMain.handle("engine:stop"'));
+    const searchGuard = handler.indexOf('message.method === "searchSessions"');
+    const authorization = handler.indexOf("isAllowedProjectRoot(cwd)", searchGuard);
+    const dispatch = handler.indexOf("bridge.projectIndexRpc(message.method", authorization);
+    expect(searchGuard).toBeGreaterThan(-1);
+    expect(authorization).toBeGreaterThan(searchGuard);
+    expect(dispatch).toBeGreaterThan(authorization);
+    expect(relay).toContain('method === "searchSessions" && params?.cwd !== undefined');
+    expect(relay).toContain("!isAllowedCwd(params.cwd)");
+  });
+
+  it("drains all runtimes and serializes history mutations at phone ownership boundaries", () => {
+    expect(source).toContain("await bridge.stopAllOwnedRuntimes()");
+    expect(relay).toContain("await bridge.stopAllOwnedRuntimes()");
+    expect(controller).toContain("this.#authBridge.disposeForQuit()");
+    expect(controller).toContain("this.#indexBridge.disposeForQuit()");
+    expect(controller).toContain("provisional?.disposeForQuit()");
+    expect(relay).toContain('bridge.retireLocalSessionForMutation(cwd, id, method === "renameSession")');
+    expect(relay).toContain("bridge.retireLocalProjectForMutation(cwd)");
+    expect(relay).toContain("cloudManager.runHistoryMutation(");
+    expect(controller).toContain("this.#localOwnershipEpoch += 1");
+    expect(controller).toContain("ownershipEpoch !== this.#localOwnershipEpoch");
+    expect(source).toContain("bridge.restoreLocalRuntimeOwnership()");
+    expect(relay).toContain("bridge.restoreLocalRuntimeOwnership()");
+    const release = relay.slice(
+      relay.indexOf("async function releaseToDesktop"),
+      relay.indexOf('process.on("message"'),
+    );
+    expect(release).toContain("await bridge.stopAllOwnedRuntimes()");
+    expect(release).toContain("Could not return control to desktop");
+    expect(release.indexOf("return;")).toBeLessThan(release.indexOf('process.send?.({ type: "mobile-released"'));
+  });
+
+  it("uses an isolated helper for portable-import rollback", () => {
+    const abort = controller.slice(
+      controller.indexOf("async abortPortableImport"),
+      controller.indexOf("async recoverLostCloudOwnership"),
+    );
+    expect(abort).toContain("const helper = new EngineBridge()");
+    expect(abort).toContain("helper.abortPortableImport");
+    expect(abort).not.toContain("this.#locals.activeBridge");
+    expect(abort).not.toContain("this.#indexBridge");
+    expect(controller).toContain("abortProvisionalLocal(cwd: string, sessionId: string)");
+    expect(controller).toContain("this.#locals.detachSessionForHandoff(cwd, sessionId)");
+    expect(manager).toContain("this.transport.abortProvisionalLocal(cwd, sessionId)");
+  });
+
+  it("keeps the local supervisor reusable when the last macOS window closes", () => {
+    const handler = source.slice(source.indexOf('app.on("window-all-closed"'));
+    expect(handler).toContain("bridge.stopAllOwnedRuntimes({ preserveRemote: true })");
+    expect(handler).not.toContain("bridge.disposeForQuit()");
+    const secondInstance = source.slice(
+      source.indexOf('app.on("second-instance"'),
+      source.indexOf("app.whenReady()"),
+    );
+    expect(secondInstance).toContain("bridge.restoreLocalRuntimeOwnership()");
+  });
+
+  it("preserves the local supervisor after remote disconnect and every relay event cursor", () => {
+    const disconnect = controller.slice(
+      controller.indexOf("async disconnectRemote"),
+      controller.indexOf("startProvisionalLocal"),
+    );
+    expect(disconnect).toContain("this.#active = this.#locals");
+    expect(disconnect).toContain("this.#wire(this.#locals)");
+    expect(relay).not.toContain('type === "turn-performance") return');
+    expect(relay).toContain("if (controller && frame) send(controller");
+    expect(relay).toContain("bridge.onResync = (snapshot)");
+    expect(relay).toContain('{ type: "ready", sessionId: snapshot.sessionId');
+    expect(controller).toContain("handoff.preserveLocal === false");
+    expect(manager).toContain('{ preserveLocal: true, sourceCwd: entry.sourceRoot }');
   });
 });
 
@@ -176,7 +252,10 @@ describe("cloud release invariants", () => {
   });
 
   it("reports a retained provisional local engine during quit cleanup", () => {
-    expect(controller).toContain("this.#active.isRunning || this.local.isRunning");
+    expect(controller).toContain("this.#provisionalBridge?.isRunning === true");
+    expect(controller).toContain("this.#authBridge.isRunning");
+    expect(controller).toContain("this.#indexBridge.isRunning");
+    expect(controller).toContain("this.#locals.activeBridge ?? this.#provisionalBridge ?? this.#indexBridge");
   });
 
   it("waits for engine-idle from the exact busy session", () => {

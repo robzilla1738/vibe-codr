@@ -3,11 +3,18 @@ import type { CloudSessionStatus } from "./cloud";
 import { isChatsCwd, projectLabel } from "./project-index";
 import {
   SESSION_BOARD_STORAGE_KEY,
+  canonicalSessionBoardStatuses,
   sessionBoardKey,
   type SessionBoardStatus,
 } from "./session-board-persistence";
 
-export { SESSION_BOARD_STORAGE_KEY, sessionBoardKey, type SessionBoardStatus } from "./session-board-persistence";
+export {
+  SESSION_BOARD_STORAGE_KEY,
+  canonicalSessionBoardCwd,
+  canonicalSessionBoardStatuses,
+  sessionBoardKey,
+  type SessionBoardStatus,
+} from "./session-board-persistence";
 
 export type SessionBoardView = "board" | "list";
 export type SessionBoardSort = "updated" | "oldest" | "title" | "project";
@@ -78,11 +85,7 @@ export function readSessionBoardPreferences(
     const raw = storage.getItem(SESSION_BOARD_STORAGE_KEY);
     if (!raw) return DEFAULT_SESSION_BOARD_PREFERENCES;
     const value = JSON.parse(raw) as Partial<SessionBoardPreferences>;
-    const statuses = Object.fromEntries(
-      Object.entries(value.statuses ?? {}).filter(
-        (entry): entry is [string, SessionBoardStatus] => STATUS_VALUES.has(entry[1] as SessionBoardStatus),
-      ),
-    );
+    const statuses = canonicalSessionBoardStatuses(value.statuses);
     return {
       view: VIEW_VALUES.has(value.view as SessionBoardView) ? value.view as SessionBoardView : "board",
       status: value.status === "all" || STATUS_VALUES.has(value.status as SessionBoardStatus)

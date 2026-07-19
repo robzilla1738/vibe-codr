@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -96,6 +96,7 @@ const ENGINE_SOURCE_PATHS = [
   "packages/providers/src",
   "packages/shared/src",
   "packages/tools/src",
+  "scripts/build-macos-bridge.ts",
 ];
 
 const SOURCE_EXTENSIONS = new Set([".json", ".ts", ".tsx"]);
@@ -284,9 +285,23 @@ export function enrichedEnv(
     : [join(home, ".bun", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
   const extras = extraEntries.join(separator);
   const path = env.PATH ? `${extras}${separator}${env.PATH}` : extras;
+  let packagedEngineRevision: string | undefined;
+  if (!env.VIBE_ENGINE_COMMIT && !deps) {
+    const electron = electronApp();
+    if (electron?.isPackaged) {
+      try {
+        const revision = readFileSync(join(electron.getAppPath(), "ENGINE_COMMIT"), "utf8").trim();
+        if (/^[0-9a-f]{40}$/i.test(revision)) packagedEngineRevision = revision;
+      } catch {
+        // Packaging verification catches a missing lock file. Keep resolution
+        // usable here so startup can surface the more specific host error.
+      }
+    }
+  }
   return {
     ...env,
     HOME: env.HOME ?? home,
     PATH: path,
+    ...(packagedEngineRevision ? { VIBE_ENGINE_COMMIT: packagedEngineRevision } : {}),
   };
 }

@@ -99,7 +99,9 @@ The shell has five primary layout regions:
 3. **Sessions workspace:** a full main-stage Board/List manager that keeps the
    project rail mounted. It uses flat workflow columns and one bordered record
    surface per session; Active / Review / Done are desktop organization states,
-   while accent is reserved for actual local or Cloud work.
+   while accent is reserved for actual local or Cloud work. Transcript recall,
+   safe forks, and background-runtime state reuse these existing rows, menus,
+   labels, and status treatments; they add no dashboard or layout region.
 4. **Workspace dock:** compact navigation that stays on the chat surface and
    exposes a flat list of **Session**, **Changes**, **Git**, **Terminal**, **Jobs**, and
    **Files** only — no Local/Files double Finder entry and no commit/compare

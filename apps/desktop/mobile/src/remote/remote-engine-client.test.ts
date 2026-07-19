@@ -41,6 +41,34 @@ class MockWebSocket {
   }
 }
 
+const readyFrame = (sessionId = "session-1") => ({
+  type: "ready",
+  protocolVersion: 2,
+  engineRevision: "test",
+  capabilities: ["event-replay"],
+  hostInstanceId: "mobile-host",
+  sessionId,
+});
+
+const snapshotFrame = (lastEventSeq: number) => ({
+  hostInstanceId: "mobile-host",
+  lastEventSeq,
+  sessionId: "session-1",
+  model: "fixture/model",
+  mode: "execute",
+  goal: null,
+  history: [],
+  tasks: [],
+  usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 },
+  busy: false,
+  theme: "default",
+  accentColor: "",
+  details: "normal",
+  mouse: false,
+  approvalMode: "ask",
+  commandNames: [],
+});
+
 async function connectedClient(options: Partial<ConstructorParameters<typeof RemoteEngineClient>[0]> = {}): Promise<{ client: RemoteEngineClient; socket: MockWebSocket }> {
   const client = new RemoteEngineClient({
     url: "ws://relay.test",
@@ -53,7 +81,7 @@ async function connectedClient(options: Partial<ConstructorParameters<typeof Rem
   await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
   const socket = MockWebSocket.instances[0]!;
   await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
-  socket.receive({ type: "ready", sessionId: "session-1" });
+  socket.receive(readyFrame());
   await expect(connecting).resolves.toBe("session-1");
   return { client, socket };
 }
@@ -115,6 +143,63 @@ describe("RemoteEngineClient relay request correlation", () => {
     await expect(pending).rejects.toThrow("Engine shut down");
   });
 
+  it("rejects an incompatible ready handshake immediately and never reconnects it", async () => {
+    const client = new RemoteEngineClient({
+      url: "ws://relay.test",
+      accessToken: "token",
+      cwd: "/project",
+      autoReconnect: true,
+      reconnectDelaysMs: [1],
+      readyTimeoutMs: 10_000,
+    });
+    const connecting = client.connect();
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const socket = MockWebSocket.instances[0]!;
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    socket.receive({ ...readyFrame(), protocolVersion: 999 });
+
+    await expect(connecting).rejects.toThrow("protocol 999 is incompatible");
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await client.shutdown();
+  });
+
+  it("detaches a ready client from stale-host event frames", async () => {
+    const { client, socket } = await connectedClient();
+    const fatals: string[] = [];
+    client.onFatal = (message) => fatals.push(message);
+    socket.receive({
+      type: "event",
+      hostInstanceId: "stale-host",
+      seq: 1,
+      event: { type: "notice", level: "info", message: "stale" },
+    });
+
+    await vi.waitFor(() => expect(fatals.at(-1)).toContain("stale host"));
+    expect(client.isReady).toBe(false);
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    await client.shutdown();
+  });
+
+  it("disconnects instead of retaining an oversized continuity-gap event", async () => {
+    const { client, socket } = await connectedClient();
+    const fatals: string[] = [];
+    client.onFatal = (message) => fatals.push(message);
+
+    socket.receive({
+      type: "event",
+      hostInstanceId: "mobile-host",
+      seq: 2,
+      event: { type: "notice", level: "info", message: "x".repeat(8 * 1024 * 1024) },
+    });
+
+    await vi.waitFor(() => expect(fatals.at(-1)).toContain("continuity buffer"));
+    expect(client.isReady).toBe(false);
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    await client.shutdown();
+  });
+
   it("keeps retrying beyond the old three-attempt window", async () => {
     const { client, socket } = await connectedClient({ autoReconnect: true, reconnectDelaysMs: [1] });
     MockWebSocket.autoOpen = false;
@@ -148,7 +233,7 @@ describe("RemoteEngineClient relay request correlation", () => {
   });
 
   it("ignores messages from a stale socket generation after reconnect", async () => {
-    const { client, socket: first } = await connectedClient();
+    const { client, socket: first } = await connectedClient({ autoReconnect: true });
     const notices: string[] = [];
     client.onEvent((event) => {
       if (event.type === "notice") notices.push(event.message);
@@ -160,10 +245,107 @@ describe("RemoteEngineClient relay request correlation", () => {
     await Promise.resolve();
     const second = MockWebSocket.instances.at(-1)!;
     await vi.waitFor(() => expect(second.sent.length).toBeGreaterThan(0));
-    second.receive({ type: "ready", sessionId: "session-1" });
-    first.receive({ type: "event", event: { type: "notice", level: "info", message: "stale" } });
+    second.receive(readyFrame());
+    first.receive({ type: "event", hostInstanceId: "mobile-host", seq: 1, event: { type: "notice", level: "info", message: "stale" } });
 
     expect(notices).toEqual([]);
+    await client.shutdown();
+  });
+
+  it("preserves the protocol cursor when reconnecting to the same host", async () => {
+    const { client, socket: first } = await connectedClient({ autoReconnect: true, reconnectDelaysMs: [1] });
+    const notices: string[] = [];
+    client.onEvent((event) => {
+      if (event.type === "notice") notices.push(event.message);
+    });
+    first.receive({
+      type: "event",
+      hostInstanceId: "mobile-host",
+      seq: 1,
+      event: { type: "notice", level: "info", message: "before" },
+    });
+
+    first.close(1006, "network changed");
+    await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(2));
+    const second = MockWebSocket.instances[1]!;
+    await vi.waitFor(() => expect(second.sent).toHaveLength(1));
+    second.receive(readyFrame());
+    second.receive({
+      type: "event",
+      hostInstanceId: "mobile-host",
+      seq: 2,
+      event: { type: "notice", level: "info", message: "after" },
+    });
+
+    expect(notices).toEqual(["before", "after"]);
+    expect(second.sent.map((line) => JSON.parse(line.trim())))
+      .not.toContainEqual(expect.objectContaining({ op: "rpc", method: "replayEvents" }));
+    await client.shutdown();
+  });
+
+  it("seeds event continuity from an authoritative snapshot cursor", async () => {
+    const { client, socket } = await connectedClient();
+    const notices: string[] = [];
+    client.onEvent((event) => {
+      if (event.type === "notice") notices.push(event.message);
+    });
+
+    const loading = client.snapshot();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    const request = JSON.parse(socket.sent[1]!.trim()) as { id: number };
+    socket.receive({ type: "resp", id: request.id, ok: true, value: snapshotFrame(10) });
+    await expect(loading).resolves.toMatchObject({ lastEventSeq: 10 });
+    socket.receive({
+      type: "event",
+      hostInstanceId: "mobile-host",
+      seq: 11,
+      event: { type: "notice", level: "info", message: "continued" },
+    });
+
+    expect(notices).toEqual(["continued"]);
+    expect(socket.sent.map((line) => JSON.parse(line.trim())))
+      .not.toContainEqual(expect.objectContaining({ op: "rpc", method: "replayEvents" }));
+    await client.shutdown();
+  });
+
+  it("invalidates a cached snapshot when the relay reannounces ready after resync", async () => {
+    const { client, socket } = await connectedClient();
+    const first = client.snapshot();
+    const firstRequest = JSON.parse(socket.sent.at(-1)!.trim()) as { id: number; method: string };
+    socket.receive({ type: "resp", id: firstRequest.id, ok: true, value: snapshotFrame(4) });
+    await expect(first).resolves.toMatchObject({ lastEventSeq: 4 });
+
+    socket.receive(readyFrame());
+    const refreshed = client.snapshot();
+    const secondRequest = JSON.parse(socket.sent.at(-1)!.trim()) as { id: number; method: string };
+    expect(secondRequest.method).toBe("snapshot");
+    expect(secondRequest.id).not.toBe(firstRequest.id);
+    socket.receive({ type: "resp", id: secondRequest.id, ok: true, value: snapshotFrame(9) });
+    await expect(refreshed).resolves.toMatchObject({ lastEventSeq: 9 });
+    await client.shutdown();
+  });
+
+  it("tears down a failed replay before reconnecting instead of looping the same gap", async () => {
+    const { client, socket } = await connectedClient();
+    const fatals: string[] = [];
+    client.onFatal = (message) => fatals.push(message);
+
+    socket.receive({
+      type: "event",
+      hostInstanceId: "mobile-host",
+      seq: 2,
+      event: { type: "notice", level: "info", message: "gap" },
+    });
+    await vi.waitFor(() => expect(socket.sent.length).toBe(2));
+    const replay = JSON.parse(socket.sent[1]!.trim()) as { id: number; method: string };
+    expect(replay.method).toBe("replayEvents");
+    socket.receive({ type: "resp", id: replay.id, ok: false, error: "replay expired" });
+
+    await vi.waitFor(() => expect(fatals.at(-1)).toContain("replay expired"));
+    expect(client.isReady).toBe(false);
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(socket.sent.map((line) => JSON.parse(line.trim())).filter((frame) => frame.method === "replayEvents"))
+      .toHaveLength(1);
     await client.shutdown();
   });
 
@@ -178,7 +360,7 @@ describe("RemoteEngineClient relay request correlation", () => {
     await vi.waitFor(() => expect(second.sent).toHaveLength(1));
     expect(JSON.parse(second.sent[0]!.trim())).toMatchObject({ op: "bootstrap", cwd: "/project", resume: "session-1" });
     expect(first.readyState).toBe(MockWebSocket.CLOSED);
-    second.receive({ type: "ready", sessionId: "session-1" });
+    second.receive(readyFrame());
     await expect(refreshing).resolves.toBe("session-1");
     await client.shutdown();
   });

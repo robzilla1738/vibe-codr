@@ -31,7 +31,9 @@ import type {
   GitPushRequest,
 } from "../shared/git-types";
 import { isMenuAction, type MenuAction } from "../shared/menu-actions";
-import type { ProjectSummary, RpcMethod } from "../shared/protocol";
+import type { LocalRuntimeStatus } from "../shared/local-runtime";
+import type { PerformanceDiagnosticsBundle, PerformanceSummary } from "../shared/performance";
+import type { ProjectSummary, RpcMethod, SessionSearchHit } from "../shared/protocol";
 import type {
   TerminalCommandResult,
   TerminalEvent,
@@ -69,11 +71,17 @@ export interface VibeApi {
   renameSession(opts: { cwd: string; id: string; title: string }): Promise<{ ok: true } | { ok: false; error: string }>;
   deleteSession(opts: { cwd: string; id: string }): Promise<{ ok: true } | { ok: false; error: string }>;
   archiveSession(opts: { cwd: string; id: string }): Promise<{ ok: true } | { ok: false; error: string }>;
+  searchSessions(opts: { query: string; cwd?: string; limit?: number }): Promise<{ ok: true; value: SessionSearchHit[] } | { ok: false; error: string }>;
+  forkSession(opts: { cwd: string; id: string; atTurnId?: string }): Promise<{ ok: true; value: { id: string; cwd: string; atTurnId: string } } | { ok: false; error: string }>;
   stop(): Promise<{ ok: true }>;
   quit(): void;
   recordFirstPaint(input: { turnId: string; sessionId: string; paintedAt: number }): void;
+  getPerformanceSummary(input: { days: 1 | 7 }): Promise<{ ok: true; value: PerformanceSummary } | { ok: false; error: string }>;
+  exportDiagnosticsBundle(): Promise<{ ok: true; value: PerformanceDiagnosticsBundle } | { ok: false; error: string }>;
   onEvent(cb: (event: unknown) => void): () => void;
   onReady(cb: (sessionId: string) => void): () => void;
+  onResync(cb: () => void): () => void;
+  onLocalRuntimeStatus(cb: (status: LocalRuntimeStatus) => void): () => void;
   onFatal(cb: (message: string) => void): () => void;
   onMenuAction(cb: (action: MenuAction) => void): () => void;
   cloudSettings(): Promise<{ ok: true; value: CloudSettingsPublic } | { ok: false; error: string }>;
@@ -163,9 +171,13 @@ const api: VibeApi = {
   renameSession: (opts) => ipcRenderer.invoke("engine:rpc", "renameSession", opts),
   deleteSession: (opts) => ipcRenderer.invoke("engine:rpc", "deleteSession", opts),
   archiveSession: (opts) => ipcRenderer.invoke("engine:rpc", "archiveSession", opts),
+  searchSessions: (opts) => ipcRenderer.invoke("engine:rpc", "searchSessions", opts),
+  forkSession: (opts) => ipcRenderer.invoke("engine:rpc", "forkSession", opts),
   stop: () => ipcRenderer.invoke("engine:stop"),
   quit: () => ipcRenderer.send("app:quit"),
   recordFirstPaint: (input) => ipcRenderer.send("performance:firstPaint", input),
+  getPerformanceSummary: (input) => ipcRenderer.invoke("performance:summary", input),
+  exportDiagnosticsBundle: () => ipcRenderer.invoke("performance:export"),
   onEvent: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, event: unknown) => cb(event);
     ipcRenderer.on("engine:event", handler);
@@ -175,6 +187,16 @@ const api: VibeApi = {
     const handler = (_: Electron.IpcRendererEvent, sessionId: string) => cb(sessionId);
     ipcRenderer.on("engine:ready", handler);
     return () => ipcRenderer.removeListener("engine:ready", handler);
+  },
+  onResync: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on("engine:resync", handler);
+    return () => ipcRenderer.removeListener("engine:resync", handler);
+  },
+  onLocalRuntimeStatus: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, status: LocalRuntimeStatus) => cb(status);
+    ipcRenderer.on("engine:runtime-status", handler);
+    return () => ipcRenderer.removeListener("engine:runtime-status", handler);
   },
   onFatal: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, message: string) => cb(message);

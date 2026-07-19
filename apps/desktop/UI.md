@@ -232,6 +232,9 @@ without changing the active chat or scroll position.
 
 - Board and List share one search/filter/sort model and persist the selected view,
   filters, sort, and per-session Active/Review/Done status across app restarts.
+- Metadata matches render immediately. Transcript recall merges asynchronously
+  across projects with four-store concurrency, bounded snippets, and
+  latest-query cancellation. It reuses the same search field and record grammar.
 - Cards keep project identity, title, goal, model, mode, relative activity time,
   status, and actions scannable without turning each metadata value into a badge.
 - Actual model execution or an ownership transition places a card in Active and
@@ -243,6 +246,12 @@ without changing the active chat or scroll position.
   same card reads `Ready` after the turn settles instead of retaining stale work.
 - Rename stays inline. Archive and Delete use a keyboard-safe in-app confirmation
   dialog, then reuse the same host mutations and transcript-cache cleanup as the rail.
+  **Fork here** appears in the existing session action menu and opens an atomic
+  copy through the latest completed user-turn boundary.
+- Switching to another local session never stops an owned running turn. The
+  renderer attaches to one of three bounded runtimes; background work updates
+  existing Working/Needs input/Needs review treatments without mutating the
+  foreground transcript. Reattachment restores a snapshot plus event cursor.
 - Below 48rem, board columns stack and list rows collapse without horizontal scroll;
   touch targets expand to 44px while pointer layouts retain desktop density.
 
@@ -438,6 +447,9 @@ snippet. External links go through `ExternalLink` / host bridge.
   keeps its own Save/Reset and stays **mounted (hidden)** when navigating away
   so drafts and dirty bind survive section switches. Closing settings still
   clears the shell dirty guard.
+- Advanced reuses existing setting cards, badges, and buttons for content-free
+  local performance summaries, Copy diagnostics, and plugin loaded/degraded/
+  incompatible/failed health. It introduces no telemetry or new visual primitive.
 
 ## Key files
 

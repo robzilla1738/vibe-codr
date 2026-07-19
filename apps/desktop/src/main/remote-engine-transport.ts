@@ -2,17 +2,23 @@ import { createHash } from "node:crypto";
 import WebSocket from "ws";
 import type { CappedReadResult } from "../shared/capped-read";
 import type { EngineCommand } from "../shared/commands";
+import { estimateJsonUtf8Bytes } from "../shared/json-size";
+import type { PerformancePhaseSample } from "../shared/performance";
 import {
   decodeOutbound,
+  HOST_PROTOCOL_VERSION,
+  type HostEventFrame,
   type HostInbound,
   type HostOutbound,
+  type HostReplayResult,
   type HostRpcParams,
   type RpcMethod,
 } from "../shared/protocol";
+import { isEngineSnapshot, isRpcResult } from "../shared/runtime-guards";
+import type { TerminalCommandResult, TerminalEvent, TerminalOpenRequest, TerminalOpenResult } from "../shared/terminal";
+import type { EngineSnapshot } from "../shared/types";
 import type { EngineStartOptions } from "./engine-bridge";
 import type { EngineTransport } from "./engine-transport";
-import { isRpcResult } from "../shared/runtime-guards";
-import type { TerminalCommandResult, TerminalEvent, TerminalOpenRequest, TerminalOpenResult } from "../shared/terminal";
 
 const READY_TIMEOUT_MS = 45_000;
 const RPC_TIMEOUT_MS = 30_000;
@@ -20,6 +26,19 @@ const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const CONNECT_RETRY_DELAYS_MS = [250, 750];
 const KEEPALIVE_INTERVAL_MS = 15_000;
 const CHANNEL_TIMEOUT_MS = 10_000;
+const MAX_PENDING_EVENT_FRAMES = 2_048;
+const MAX_PENDING_EVENT_BYTES = 8 * 1024 * 1024;
+type HostReadyFrame = Extract<HostOutbound, { type: "ready" }>;
+
+interface PendingEventFrame {
+  frame: HostEventFrame;
+  bytes: number;
+}
+
+interface ExistingAgentSession {
+  sessionId: string;
+  ready: HostReadyFrame | null;
+}
 
 interface RemoteTransportOptions {
   url: string;
@@ -49,16 +68,23 @@ export class RemoteEngineTransport implements EngineTransport {
   }>();
   #terminalSequences = new Map<string, number>();
   #readyWaiters: Array<{ resolve: (id: string) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }> = [];
-  #agentReady: ((sessionId: string | null) => void) | null = null;
-  #existingSessionId: string | null | undefined;
+  #agentReady: ((session: ExistingAgentSession | null) => void) | null = null;
+  #existingSession: ExistingAgentSession | null | undefined;
   #detachWaiter: { resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout } | null = null;
   #keepalive: NodeJS.Timeout | null = null;
   #connecting = false;
+  #hostInstanceId = "";
+  #lastEventSeq = 0;
+  #pendingEventFrames: PendingEventFrame[] = [];
+  #pendingEventBytes = 0;
+  #replayInFlight = false;
 
-  onEvent: ((event: unknown) => void) | null = null;
+  onEvent: ((event: unknown, frame?: Omit<HostEventFrame, "type" | "event">) => void) | null = null;
   onTerminalEvent: ((event: TerminalEvent) => void) | null = null;
   onFatal: ((message: string) => void) | null = null;
-  onReady: ((sessionId: string) => void) | null = null;
+  onReady: ((sessionId: string, info?: { protocolVersion: number; engineRevision: string; capabilities: string[]; hostInstanceId: string }) => void) | null = null;
+  onResync: ((snapshot: EngineSnapshot) => void) | null = null;
+  onPerformancePhase: ((sample: PerformancePhaseSample) => void) | null = null;
 
   constructor(private readonly options: RemoteTransportOptions) {}
 
@@ -91,7 +117,12 @@ export class RemoteEngineTransport implements EngineTransport {
   }
 
   async #startAttempt(options: EngineStartOptions): Promise<string> {
-    this.#existingSessionId = undefined;
+    const connectionStarted = performance.now();
+    this.#existingSession = undefined;
+    this.#hostInstanceId = "";
+    this.#lastEventSeq = 0;
+    this.#clearPendingEventFrames();
+    this.#replayInFlight = false;
     const socket = new WebSocket(this.options.url, {
       headers: { ...this.options.headers, authorization: `Bearer ${this.options.accessToken}` },
       maxPayload: MAX_FRAME_BYTES,
@@ -106,6 +137,7 @@ export class RemoteEngineTransport implements EngineTransport {
       if (this.#socket === socket) this.#socket = null;
       this.#stopKeepalive();
       this.#ready = false;
+      this.#resetContinuityState();
       this.#rejectAll(new Error(`Cloud engine disconnected (${code})${reason.length ? `: ${reason.toString()}` : ""}`));
       if (!expected && !this.#connecting) this.onFatal?.(`Cloud engine disconnected (${code})`);
     });
@@ -114,20 +146,60 @@ export class RemoteEngineTransport implements EngineTransport {
       socket.once("error", reject);
       socket.once("close", (code) => reject(new Error(`Cloud engine disconnected (${code}) during connection`)));
     });
-    const existing = await new Promise<string | null>((resolve) => {
-      if (this.#existingSessionId !== undefined) { resolve(this.#existingSessionId); return; }
+    this.onPerformancePhase?.({ phase: "host-spawn", durationMs: performance.now() - connectionStarted, transport: "cloud" });
+    const readyStarted = performance.now();
+    const existing = await new Promise<ExistingAgentSession | null>((resolve) => {
+      if (this.#existingSession !== undefined) { resolve(this.#existingSession); return; }
       const timer = setTimeout(() => { this.#agentReady = null; resolve(null); }, 3_000);
-      this.#agentReady = (sessionId) => { clearTimeout(timer); this.#agentReady = null; resolve(sessionId); };
+      this.#agentReady = (session) => { clearTimeout(timer); this.#agentReady = null; resolve(session); };
     });
     if (existing) {
-      if (options.resume && existing !== options.resume) {
+      if (options.resume && existing.sessionId !== options.resume) {
         await this.disposeForQuit();
-        throw new Error(`Cloud sandbox session mismatch: expected ${options.resume}, received ${existing}`);
+        throw new Error(`Cloud sandbox session mismatch: expected ${options.resume}, received ${existing.sessionId}`);
       }
       this.#ready = true;
-      this.#sessionId = existing;
-      this.onReady?.(existing);
-      return existing;
+      this.#sessionId = existing.sessionId;
+      if (existing.ready) {
+        if (existing.ready.protocolVersion !== HOST_PROTOCOL_VERSION) {
+          throw new Error(
+            `Cloud engine protocol ${existing.ready.protocolVersion} is incompatible with desktop protocol ${HOST_PROTOCOL_VERSION}`,
+          );
+        }
+      }
+      // Ready metadata identifies the host but intentionally carries no event
+      // cursor. Always seed from an authoritative snapshot before releasing
+      // racing frames, including for a versioned cached cloud-agent ready.
+      this.#hostInstanceId = "";
+      this.#lastEventSeq = 0;
+      const value = await this.rpc("snapshot");
+      if (!isEngineSnapshot(value) || !value.hostInstanceId || !Number.isSafeInteger(value.lastEventSeq)) {
+        throw new Error("Cloud engine did not provide a resumable protocol cursor");
+      }
+      if (existing.ready && existing.ready.hostInstanceId !== value.hostInstanceId) {
+        throw new Error("Cloud engine snapshot belongs to a different host instance");
+      }
+      this.#hostInstanceId = value.hostInstanceId;
+      this.#lastEventSeq = value.lastEventSeq ?? 0;
+      this.#retainPendingEventFrames(value.hostInstanceId, this.#lastEventSeq);
+      this.#flushPendingEventFrames();
+      // Older cloud agents cached only the durable session id. The successful
+      // v2 snapshot above proves both event replay support and the live host
+      // identity, so synthesize the metadata the relay/mobile ready handshake
+      // requires instead of leaving the phone waiting forever.
+      this.onReady?.(existing.sessionId, existing.ready ? {
+        protocolVersion: existing.ready.protocolVersion,
+        engineRevision: existing.ready.engineRevision,
+        capabilities: [...existing.ready.capabilities],
+        hostInstanceId: existing.ready.hostInstanceId,
+      } : {
+        protocolVersion: HOST_PROTOCOL_VERSION,
+        engineRevision: "legacy-cloud-agent",
+        capabilities: ["event-replay"],
+        hostInstanceId: value.hostInstanceId,
+      });
+      this.onPerformancePhase?.({ phase: "host-ready", durationMs: performance.now() - readyStarted, transport: "cloud" });
+      return existing.sessionId;
     }
     this.#sendHost({
       op: "bootstrap",
@@ -138,6 +210,7 @@ export class RemoteEngineTransport implements EngineTransport {
       ...(options.mode ? { mode: options.mode } : {}),
     });
     const sessionId = await this.#waitReady();
+    this.onPerformancePhase?.({ phase: "host-ready", durationMs: performance.now() - readyStarted, transport: "cloud" });
     if (options.resume && sessionId !== options.resume) {
       await this.stop();
       throw new Error(`Cloud sandbox session mismatch: expected ${options.resume}, received ${sessionId}`);
@@ -150,17 +223,22 @@ export class RemoteEngineTransport implements EngineTransport {
     this.#sendHost({ op: "send", command });
   }
 
-  rpc(method: RpcMethod, params?: HostRpcParams): Promise<unknown> {
+  async rpc(method: RpcMethod, params?: HostRpcParams): Promise<unknown> {
     if (!this.isReady) return Promise.reject(new Error("Cloud engine not ready"));
+    const phaseStarted = method === "snapshot" ? performance.now() : 0;
     const id = this.#nextRpcId++;
-    return new Promise((resolve, reject) => {
+    try { return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#rpc.delete(id);
         reject(new Error(`Cloud RPC ${method} timed out`));
       }, this.options.rpcTimeoutMs ?? RPC_TIMEOUT_MS);
       this.#rpc.set(id, { method, resolve, reject, timer });
       this.#sendHost({ op: "rpc", id, method, ...(params ? { params } : {}) });
-    });
+    }); } finally {
+      if (method === "snapshot") {
+        this.onPerformancePhase?.({ phase: "snapshot", durationMs: performance.now() - phaseStarted, transport: "cloud" });
+      }
+    }
   }
 
   readTextFile(path: string, maxBytes: number): Promise<CappedReadResult> {
@@ -251,6 +329,7 @@ export class RemoteEngineTransport implements EngineTransport {
     const socket = this.#socket;
     this.#socket = null;
     this.#ready = false;
+    this.#resetContinuityState();
     this.#stopKeepalive();
     if (!socket) return;
     if (socket.readyState === WebSocket.OPEN) {
@@ -271,6 +350,7 @@ export class RemoteEngineTransport implements EngineTransport {
     const socket = this.#socket;
     this.#socket = null;
     this.#ready = false;
+    this.#resetContinuityState();
     this.#stopKeepalive();
     if (socket) {
       await new Promise<void>((resolve) => {
@@ -337,6 +417,7 @@ export class RemoteEngineTransport implements EngineTransport {
       payload?: unknown;
       type?: unknown;
       engineSessionId?: unknown;
+      engineReady?: unknown;
       message?: unknown;
       error?: unknown;
       requestId?: unknown;
@@ -350,8 +431,18 @@ export class RemoteEngineTransport implements EngineTransport {
     try { frame = JSON.parse(raw); } catch { this.#fail("Cloud agent emitted malformed JSON"); return; }
     if (frame.channel === "agent" && frame.type === "ready") {
       const sessionId = typeof frame.engineSessionId === "string" ? frame.engineSessionId : null;
-      this.#existingSessionId = sessionId;
-      this.#agentReady?.(sessionId);
+      let ready: HostReadyFrame | null = null;
+      if (sessionId && frame.engineReady !== undefined) {
+        const decoded = decodeOutbound(JSON.stringify(frame.engineReady));
+        if (decoded?.type !== "ready" || decoded.sessionId !== sessionId) {
+          this.#fail("Cloud agent emitted invalid cached engine ready metadata");
+          return;
+        }
+        ready = decoded;
+      }
+      const existing = sessionId ? { sessionId, ready } : null;
+      this.#existingSession = existing;
+      this.#agentReady?.(existing);
       return;
     }
     if (frame.channel === "agent" && frame.type === "detached") {
@@ -478,13 +569,25 @@ export class RemoteEngineTransport implements EngineTransport {
 
   #handleHost(msg: HostOutbound): void {
     if (msg.type === "ready") {
+      if (msg.protocolVersion !== HOST_PROTOCOL_VERSION) {
+        this.#fail(`Cloud engine protocol ${msg.protocolVersion} is incompatible with desktop protocol ${HOST_PROTOCOL_VERSION}`);
+        return;
+      }
       this.#ready = true;
       this.#sessionId = msg.sessionId;
-      this.onReady?.(msg.sessionId);
+      this.#hostInstanceId = msg.hostInstanceId;
+      this.#lastEventSeq = 0;
+      this.#clearPendingEventFrames();
+      this.onReady?.(msg.sessionId, {
+        protocolVersion: msg.protocolVersion,
+        engineRevision: msg.engineRevision,
+        capabilities: [...msg.capabilities],
+        hostInstanceId: msg.hostInstanceId,
+      });
       for (const waiter of this.#readyWaiters.splice(0)) { clearTimeout(waiter.timer); waiter.resolve(msg.sessionId); }
       return;
     }
-    if (msg.type === "event") { this.onEvent?.(msg.event); return; }
+    if (msg.type === "event") { this.#acceptEventFrame(msg); return; }
     if (msg.type === "fatal") { this.#fail(msg.message); return; }
     const waiter = this.#rpc.get(msg.id);
     if (!waiter) return;
@@ -497,6 +600,135 @@ export class RemoteEngineTransport implements EngineTransport {
         this.#fail(message);
       } else waiter.resolve(msg.value);
     } else waiter.reject(new Error(msg.error));
+  }
+
+  #acceptEventFrame(frame: HostEventFrame): void {
+    if (!this.#hostInstanceId && this.#ready) {
+      this.#queuePendingEventFrame(frame);
+      return;
+    }
+    if (frame.hostInstanceId !== this.#hostInstanceId) {
+      this.#fail("Cloud engine event belongs to a stale host instance");
+      return;
+    }
+    if (frame.seq <= this.#lastEventSeq) return;
+    if (!this.#replayInFlight && frame.seq === this.#lastEventSeq + 1) {
+      this.#deliverEventFrame(frame);
+      return;
+    }
+    if (!this.#queuePendingEventFrame(frame)) return;
+    if (!this.#replayInFlight) void this.#reconcileEventGap();
+  }
+
+  #queuePendingEventFrame(frame: HostEventFrame): boolean {
+    const bytes = estimateJsonUtf8Bytes(frame, MAX_PENDING_EVENT_BYTES);
+    if (bytes > MAX_PENDING_EVENT_BYTES) {
+      this.#fail("Cloud engine emitted an event larger than the continuity buffer");
+      return false;
+    }
+    while (
+      this.#pendingEventFrames.length >= MAX_PENDING_EVENT_FRAMES
+      || this.#pendingEventBytes + bytes > MAX_PENDING_EVENT_BYTES
+    ) {
+      const removed = this.#pendingEventFrames.shift();
+      if (!removed) break;
+      this.#pendingEventBytes -= removed.bytes;
+    }
+    this.#pendingEventFrames.push({ frame, bytes });
+    this.#pendingEventBytes += bytes;
+    return true;
+  }
+
+  #clearPendingEventFrames(): void {
+    this.#pendingEventFrames = [];
+    this.#pendingEventBytes = 0;
+  }
+
+  #resetContinuityState(): void {
+    this.#hostInstanceId = "";
+    this.#lastEventSeq = 0;
+    this.#clearPendingEventFrames();
+    this.#replayInFlight = false;
+  }
+
+  #retainPendingEventFrames(hostInstanceId: string, afterSeq: number): void {
+    this.#pendingEventFrames = this.#pendingEventFrames.filter(
+      ({ frame }) => frame.hostInstanceId === hostInstanceId && frame.seq > afterSeq,
+    );
+    this.#pendingEventBytes = this.#pendingEventFrames.reduce((total, item) => total + item.bytes, 0);
+  }
+
+  #flushPendingEventFrames(): void {
+    if (!this.#hostInstanceId || !this.#pendingEventFrames.length) return;
+    const pending = this.#pendingEventFrames.map(({ frame }) => frame).sort((left, right) => left.seq - right.seq);
+    this.#clearPendingEventFrames();
+    for (const frame of pending) {
+      if (frame.seq <= this.#lastEventSeq) continue;
+      if (frame.hostInstanceId !== this.#hostInstanceId || frame.seq !== this.#lastEventSeq + 1) {
+        this.#queuePendingEventFrame(frame);
+        continue;
+      }
+      this.#deliverEventFrame(frame);
+    }
+    if (this.#pendingEventFrames.length && !this.#replayInFlight) {
+      void this.#reconcileEventGap();
+    }
+  }
+
+  #deliverEventFrame(frame: HostEventFrame): void {
+    if (frame.seq <= this.#lastEventSeq) return;
+    this.#lastEventSeq = frame.seq;
+    this.onEvent?.(frame.event, { hostInstanceId: frame.hostInstanceId, seq: frame.seq });
+  }
+
+  async #reconcileEventGap(): Promise<void> {
+    if (this.#replayInFlight || !this.#hostInstanceId || !this.isReady) return;
+    this.#replayInFlight = true;
+    const phaseStarted = performance.now();
+    try {
+      const result = await this.rpc("replayEvents", {
+        hostInstanceId: this.#hostInstanceId,
+        afterSeq: this.#lastEventSeq,
+      }) as HostReplayResult;
+      if (result.truncated || result.hostInstanceId !== this.#hostInstanceId) {
+        await this.#resyncFromSnapshot();
+        return;
+      }
+      const pending = this.#pendingEventFrames
+        .map(({ frame }) => frame)
+        .filter((frame) => frame.hostInstanceId === this.#hostInstanceId);
+      const frames = [...result.events, ...pending].sort((a, b) => a.seq - b.seq);
+      this.#clearPendingEventFrames();
+      for (const frame of frames) {
+        if (frame.seq <= this.#lastEventSeq) continue;
+        if (frame.hostInstanceId !== this.#hostInstanceId || frame.seq !== this.#lastEventSeq + 1) {
+          await this.#resyncFromSnapshot();
+          return;
+        }
+        this.#deliverEventFrame(frame);
+      }
+      if (this.#lastEventSeq < result.lastEventSeq) await this.#resyncFromSnapshot();
+    } catch (error) {
+      this.#fail(`Cloud engine event replay failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.onPerformancePhase?.({ phase: "replay", durationMs: performance.now() - phaseStarted, transport: "cloud" });
+      this.#replayInFlight = false;
+      if (this.isReady && this.#pendingEventFrames.some(({ frame }) => frame.seq > this.#lastEventSeq)) {
+        void this.#reconcileEventGap();
+      }
+    }
+  }
+
+  async #resyncFromSnapshot(): Promise<void> {
+    const value = await this.rpc("snapshot");
+    if (!isRpcResult("snapshot", value)) throw new Error("cloud host returned an invalid resync snapshot");
+    const snapshot = value as EngineSnapshot;
+    if (snapshot.hostInstanceId !== this.#hostInstanceId || !Number.isSafeInteger(snapshot.lastEventSeq)) {
+      throw new Error("cloud host returned a mismatched resync cursor");
+    }
+    this.#lastEventSeq = snapshot.lastEventSeq ?? this.#lastEventSeq;
+    this.#retainPendingEventFrames(this.#hostInstanceId, this.#lastEventSeq);
+    this.onResync?.(snapshot);
   }
 
   #waitReady(): Promise<string> {
@@ -515,6 +747,7 @@ export class RemoteEngineTransport implements EngineTransport {
     const socket = this.#socket;
     this.#socket = null;
     this.#ready = false;
+    this.#resetContinuityState();
     this.#stopKeepalive();
     if (!this.#connecting) this.onFatal?.(message);
     this.#rejectAll(new Error(message));
@@ -525,6 +758,7 @@ export class RemoteEngineTransport implements EngineTransport {
     const socket = this.#socket;
     this.#socket = null;
     this.#ready = false;
+    this.#resetContinuityState();
     this.#stopKeepalive();
     if (!socket) return;
     socket.terminate();

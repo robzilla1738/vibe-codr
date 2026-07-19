@@ -6,13 +6,18 @@ import type { EngineCommand } from "../shared/commands";
 import {
   decodeOutbound,
   encodeInbound,
+  HOST_PROTOCOL_VERSION,
   HOST_INBOUND_SAFE_BYTES,
+  type HostEventFrame,
   type HostInbound,
+  type HostReplayResult,
   type HostRpcParams,
   type RpcMethod,
 } from "../shared/protocol";
 import { isRenderableUIEvent, isRpcResult } from "../shared/runtime-guards";
+import type { EngineSnapshot } from "../shared/types";
 import { StdinWriteQueue } from "../shared/stdin-write-queue";
+import type { PerformancePhaseSample } from "../shared/performance";
 import { enrichedEnv, type HostLaunch, resolveHostLaunch } from "./host-resolver";
 import type { EngineTransport } from "./engine-transport";
 
@@ -28,9 +33,15 @@ const STDIN_MESSAGE_MAX_BYTES = HOST_INBOUND_SAFE_BYTES;
 /** A snapshot can contain substantial history, but one line must never grow without bound. */
 const PROTOCOL_LINE_MAX_BYTES = 32 * 1024 * 1024;
 
-export type BridgeEventHandler = (event: unknown) => void;
+export type BridgeEventHandler = (event: unknown, frame?: Omit<HostEventFrame, "type" | "event">) => void;
 export type BridgeFatalHandler = (message: string) => void;
-export type BridgeReadyHandler = (sessionId: string) => void;
+export type BridgeReadyHandler = (sessionId: string, info?: {
+  protocolVersion: number;
+  engineRevision: string;
+  capabilities: string[];
+  hostInstanceId: string;
+}) => void;
+export type BridgeResyncHandler = (snapshot: EngineSnapshot) => void;
 
 export interface EngineBridgeOptions {
   resolveLaunch?: () => HostLaunch;
@@ -73,6 +84,11 @@ export class EngineBridge implements EngineTransport {
   private prewarmed = false;
   private prewarmTimer: NodeJS.Timeout | undefined;
   private sessionId = "";
+  private hostInstanceId = "";
+  private expectedEngineRevision = "";
+  private lastEventSeq = 0;
+  private pendingEventFrames: HostEventFrame[] = [];
+  private replayInFlight = false;
   private stderrBuf = "";
   /** Serializes stdin writes behind Node backpressure (drain). */
   private stdinQueue = new StdinWriteQueue();
@@ -83,6 +99,8 @@ export class EngineBridge implements EngineTransport {
   onEvent: BridgeEventHandler | null = null;
   onFatal: BridgeFatalHandler | null = null;
   onReady: BridgeReadyHandler | null = null;
+  onResync: BridgeResyncHandler | null = null;
+  onPerformancePhase: ((sample: PerformancePhaseSample) => void) | null = null;
 
   constructor(private readonly options: EngineBridgeOptions = {}) {}
 
@@ -353,6 +371,7 @@ export class EngineBridge implements EngineTransport {
   }
 
   private spawnCurrent(): ChildProcessWithoutNullStreams {
+    const phaseStarted = performance.now();
     // A second bootstrap can arrive while the prior host is still starting.
     // Always retire any existing child before spawning another; checking only
     // `didReady` leaks two hosts and lets both write into the same renderer.
@@ -364,6 +383,10 @@ export class EngineBridge implements EngineTransport {
     this.stdinQueue.clear();
     this.didReady = false;
     this.sessionId = "";
+    this.hostInstanceId = "";
+    this.lastEventSeq = 0;
+    this.pendingEventFrames = [];
+    this.replayInFlight = false;
 
     let launch: HostLaunch;
     try {
@@ -377,13 +400,16 @@ export class EngineBridge implements EngineTransport {
     // Own a process group on POSIX so stop can reap grandchildren (bun workers).
     // Windows has no process groups of this form — fall back to direct kill.
     const useProcessGroup = process.platform !== "win32";
+    const environment = (this.options.environment ?? enrichedEnv)();
+    this.expectedEngineRevision = environment.VIBE_ENGINE_COMMIT?.trim() ?? "";
     const proc = spawn(launch.executable, launch.arguments, {
       cwd: launch.workingDirectory,
-      env: (this.options.environment ?? enrichedEnv)(),
+      env: environment,
       stdio: ["pipe", "pipe", "pipe"],
       detached: useProcessGroup,
     });
     this.proc = proc;
+    this.onPerformancePhase?.({ phase: "host-spawn", durationMs: performance.now() - phaseStarted, transport: "local" });
 
     const isCurrent = () => this.proc === proc && this.generation === generation;
     const protocolLineMaxBytes =
@@ -504,6 +530,7 @@ export class EngineBridge implements EngineTransport {
   }
 
   private async bootstrapCurrent(opts: EngineStartOptions): Promise<string> {
+    const phaseStarted = performance.now();
     const proc = this.proc;
     if (!proc || proc.exitCode !== null || proc.signalCode !== null) throw new Error("Engine host not running");
     const generation = this.generation;
@@ -524,7 +551,9 @@ export class EngineBridge implements EngineTransport {
       throw new Error(message);
     }
 
-    return this.waitForReady(this.options.readyTimeoutMs ?? READY_TIMEOUT_MS);
+    const sessionId = await this.waitForReady(this.options.readyTimeoutMs ?? READY_TIMEOUT_MS);
+    this.onPerformancePhase?.({ phase: "host-ready", durationMs: performance.now() - phaseStarted, transport: "local" });
+    return sessionId;
   }
 
   stop(): Promise<void> {
@@ -688,7 +717,13 @@ export class EngineBridge implements EngineTransport {
   async rpc(method: RpcMethod, params?: HostRpcParams): Promise<unknown> {
     if (!this.hasOwnedChild()) throw new Error("Engine host not running");
     if (!this.didReady) throw new Error("Engine host not ready");
-    return this.rpcUnlocked(method, params);
+    const phaseStarted = method === "snapshot" ? performance.now() : 0;
+    try { return await this.rpcUnlocked(method, params); }
+    finally {
+      if (method === "snapshot") {
+        this.onPerformancePhase?.({ phase: "snapshot", durationMs: performance.now() - phaseStarted, transport: "local" });
+      }
+    }
   }
 
   /** RPC without the ready gate — used only for quit finalize after isReady check. */
@@ -772,9 +807,32 @@ export class EngineBridge implements EngineTransport {
     }
     switch (msg.type) {
       case "ready":
+        if (msg.protocolVersion !== HOST_PROTOCOL_VERSION) {
+          this.terminateFatal(
+            `Engine host protocol ${msg.protocolVersion} is incompatible with desktop protocol ${HOST_PROTOCOL_VERSION}`,
+            proc,
+            generation,
+          );
+          break;
+        }
+        if (this.expectedEngineRevision && msg.engineRevision !== this.expectedEngineRevision) {
+          this.terminateFatal(
+            `Engine host revision ${msg.engineRevision} is incompatible with packaged revision ${this.expectedEngineRevision}`,
+            proc,
+            generation,
+          );
+          break;
+        }
         this.didReady = true;
         this.sessionId = msg.sessionId;
-        this.onReady?.(msg.sessionId);
+        this.hostInstanceId = msg.hostInstanceId;
+        this.lastEventSeq = 0;
+        this.onReady?.(msg.sessionId, {
+          protocolVersion: msg.protocolVersion,
+          engineRevision: msg.engineRevision,
+          capabilities: [...msg.capabilities],
+          hostInstanceId: msg.hostInstanceId,
+        });
         for (const w of this.readyWaiters) w.resolve(msg.sessionId);
         this.readyWaiters = [];
         break;
@@ -782,7 +840,7 @@ export class EngineBridge implements EngineTransport {
         if (!isRenderableUIEvent(msg.event)) {
           this.terminateFatal("Engine host emitted an invalid nested event payload", proc, generation);
         } else {
-          this.onEvent?.(msg.event);
+          this.acceptEventFrame(msg, proc, generation);
         }
         break;
       case "resp": {
@@ -805,6 +863,93 @@ export class EngineBridge implements EngineTransport {
         this.terminateFatal(msg.message, proc, generation);
         break;
     }
+  }
+
+  private acceptEventFrame(
+    frame: HostEventFrame,
+    proc: ChildProcessWithoutNullStreams,
+    generation: number,
+  ): void {
+    if (frame.hostInstanceId !== this.hostInstanceId) {
+      this.terminateFatal("Engine host event belongs to a stale host instance", proc, generation);
+      return;
+    }
+    if (frame.seq <= this.lastEventSeq) return;
+    if (!this.replayInFlight && frame.seq === this.lastEventSeq + 1) {
+      this.deliverEventFrame(frame);
+      return;
+    }
+    this.pendingEventFrames.push(frame);
+    if (this.pendingEventFrames.length > 2_048) this.pendingEventFrames = this.pendingEventFrames.slice(-2_048);
+    if (!this.replayInFlight) void this.reconcileEventGap(proc, generation);
+  }
+
+  private deliverEventFrame(frame: HostEventFrame): void {
+    if (frame.seq <= this.lastEventSeq) return;
+    this.lastEventSeq = frame.seq;
+    this.onEvent?.(frame.event, { hostInstanceId: frame.hostInstanceId, seq: frame.seq });
+  }
+
+  private async reconcileEventGap(
+    proc: ChildProcessWithoutNullStreams,
+    generation: number,
+  ): Promise<void> {
+    if (this.replayInFlight || !this.hostInstanceId) return;
+    this.replayInFlight = true;
+    const phaseStarted = performance.now();
+    try {
+      const result = await this.rpcUnlocked("replayEvents", {
+        hostInstanceId: this.hostInstanceId,
+        afterSeq: this.lastEventSeq,
+      }) as HostReplayResult;
+      if (this.proc !== proc || this.generation !== generation) return;
+      if (result.truncated || result.hostInstanceId !== this.hostInstanceId) {
+        await this.resyncFromSnapshot();
+        return;
+      }
+      const frames = [...result.events, ...this.pendingEventFrames]
+        .sort((a, b) => a.seq - b.seq);
+      this.pendingEventFrames = [];
+      for (const frame of frames) {
+        if (frame.seq <= this.lastEventSeq) continue;
+        if (frame.hostInstanceId !== this.hostInstanceId || frame.seq !== this.lastEventSeq + 1) {
+          await this.resyncFromSnapshot();
+          return;
+        }
+        this.deliverEventFrame(frame);
+      }
+      if (this.lastEventSeq < result.lastEventSeq) await this.resyncFromSnapshot();
+    } catch (error) {
+      if (this.proc === proc && this.generation === generation) {
+        this.terminateFatal(
+          `Engine event replay failed: ${error instanceof Error ? error.message : String(error)}`,
+          proc,
+          generation,
+        );
+      }
+    } finally {
+      this.onPerformancePhase?.({ phase: "replay", durationMs: performance.now() - phaseStarted, transport: "local" });
+      this.replayInFlight = false;
+      if (
+        this.proc === proc && this.generation === generation && this.pendingEventFrames.some((frame) => frame.seq > this.lastEventSeq)
+      ) {
+        void this.reconcileEventGap(proc, generation);
+      }
+    }
+  }
+
+  private async resyncFromSnapshot(): Promise<void> {
+    const phaseStarted = performance.now();
+    const value = await this.rpcUnlocked("snapshot");
+    this.onPerformancePhase?.({ phase: "snapshot", durationMs: performance.now() - phaseStarted, transport: "local" });
+    if (!isRpcResult("snapshot", value)) throw new Error("host returned an invalid resync snapshot");
+    const snapshot = value as EngineSnapshot;
+    if (snapshot.hostInstanceId !== this.hostInstanceId || !Number.isSafeInteger(snapshot.lastEventSeq)) {
+      throw new Error("host returned a mismatched resync cursor");
+    }
+    this.lastEventSeq = snapshot.lastEventSeq ?? this.lastEventSeq;
+    this.pendingEventFrames = this.pendingEventFrames.filter((frame) => frame.seq > this.lastEventSeq);
+    this.onResync?.(snapshot);
   }
 
   private waitForReady(timeoutMs: number): Promise<string> {

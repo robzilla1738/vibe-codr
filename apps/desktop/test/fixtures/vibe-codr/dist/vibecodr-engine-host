@@ -4,6 +4,9 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const sessionId = "fixture-session";
+const hostInstanceId = "fixture-host-instance";
+let eventSequence = 0;
+const replayFrames = [];
 let mode = "execute";
 let approvalMode = "ask";
 let theme = "default";
@@ -18,10 +21,16 @@ let savedSessions = [
 ];
 
 const write = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
-const event = (value) => write({ type: "event", event: value });
+const event = (value) => {
+  const frame = { type: "event", hostInstanceId, seq: ++eventSequence, event: value };
+  replayFrames.push(frame);
+  write(frame);
+};
 const sessionEvent = (value) => event({ sessionId, ...value });
 
 const snapshot = () => ({
+  hostInstanceId,
+  lastEventSeq: eventSequence,
   sessionId,
   model: "fixture/model",
   mode,
@@ -246,11 +255,53 @@ for await (const line of rl) {
   const message = JSON.parse(line);
   if (message.op === "bootstrap") {
     currentCwd = message.cwd;
-    write({ type: "ready", sessionId });
+    write({
+      type: "ready",
+      protocolVersion: 2,
+      engineRevision: process.env.VIBE_ENGINE_COMMIT || "development",
+      capabilities: ["event-replay"],
+      hostInstanceId,
+      sessionId,
+    });
     sessionEvent({ type: "session-start", model: "fixture/model", mode });
   } else if (message.op === "send") {
     send(message.command);
   } else if (message.op === "rpc") {
+    if (message.method === "replayEvents") {
+      const afterSeq = message.params?.afterSeq ?? 0;
+      write({
+        type: "resp",
+        id: message.id,
+        ok: true,
+        value: {
+          hostInstanceId,
+          events: replayFrames.filter((frame) => frame.seq > afterSeq),
+          lastEventSeq: eventSequence,
+          truncated: false,
+        },
+      });
+      continue;
+    }
+    if (message.method === "forkSession") {
+      const source = savedSessions.find((session) => session.id === message.params?.id);
+      if (!source) {
+        write({ type: "resp", id: message.id, ok: false, error: "session not found" });
+        continue;
+      }
+      const forkId = `fixture-fork-${savedSessions.length}`;
+      savedSessions.unshift({ ...source, id: forkId, title: `${source.title} (fork)`, updatedAt: Date.now() });
+      write({
+        type: "resp",
+        id: message.id,
+        ok: true,
+        value: {
+          id: forkId,
+          cwd: message.params?.cwd ?? process.cwd(),
+          atTurnId: message.params?.atTurnId ?? "turn-fixture",
+        },
+      });
+      continue;
+    }
     if (["renameSession", "deleteSession", "archiveSession"].includes(message.method)) {
       const id = message.params?.id;
       const index = savedSessions.findIndex((session) => session.id === id);
@@ -290,7 +341,9 @@ for await (const line of rl) {
       listAgents: [{ name: "reviewer", description: "Fixture reviewer", model: null, mode: "execute" }],
       listSkills: [{ name: "fixture-skill", description: "Fixture skill" }],
       listMcp: [{ name: "fixture-mcp", connected: true, configured: true, toolCount: 2, resourceCount: 0, promptCount: 0 }],
+      listPluginStatus: [],
       listSessions: [],
+      searchSessions: [],
       listProjects: [{ cwd: currentCwd, name: "project", updatedAt: 3, sessions: savedSessions }],
       finalize: null,
     };

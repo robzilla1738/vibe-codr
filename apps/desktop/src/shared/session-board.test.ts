@@ -3,6 +3,7 @@ import type { ProjectSummary } from "./protocol";
 import {
   DEFAULT_SESSION_BOARD_PREFERENCES,
   automaticSessionBoardStatus,
+  canonicalSessionBoardCwd,
   cloudAutomaticSessionState,
   filterSessionBoard,
   flattenSessionBoard,
@@ -32,6 +33,14 @@ const projects: ProjectSummary[] = [
 ];
 
 describe("session board projection", () => {
+  it("joins Windows runtime status to project rows across slash and case variants", () => {
+    expect(sessionBoardKey("C:\\Work\\Repo\\", "s1"))
+      .toBe(sessionBoardKey("c:/work/repo", "s1"));
+    expect(canonicalSessionBoardCwd("C:\\")).toBe("c:/");
+    expect(sessionBoardKey("/Work/Repo", "s1"))
+      .not.toBe(sessionBoardKey("/work/repo", "s1"));
+  });
+
   it("distinguishes sandbox ownership from actual model activity", () => {
     expect(cloudAutomaticSessionState("running")).toBeNull();
     expect(cloudAutomaticSessionState("starting")).toBe("working");
@@ -99,5 +108,24 @@ describe("session board preferences", () => {
     expect(readSessionBoardPreferences(storage)).toEqual(preferences);
     saved = "{not json";
     expect(readSessionBoardPreferences(storage)).toEqual(DEFAULT_SESSION_BOARD_PREFERENCES);
+  });
+
+  it("migrates persisted Windows status keys without losing canonical values", () => {
+    const legacy = sessionBoardKey("C:\\Work\\Repo", "legacy").replace("c:/work/repo", "C:\\Work\\Repo");
+    const canonical = sessionBoardKey("c:/work/repo", "current");
+    const storage = {
+      getItem: () => JSON.stringify({
+        ...DEFAULT_SESSION_BOARD_PREFERENCES,
+        statuses: {
+          [legacy]: "review",
+          [canonical]: "done",
+        },
+      }),
+    };
+
+    expect(readSessionBoardPreferences(storage).statuses).toEqual({
+      [sessionBoardKey("c:/work/repo", "legacy")]: "review",
+      [canonical]: "done",
+    });
   });
 });

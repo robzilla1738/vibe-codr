@@ -4,6 +4,38 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.13 — 2026-07-19
+
+### Added
+
+- Versioned, resumable engine continuity with host identities, event cursors,
+  bounded replay, gap recovery, and revision-locked desktop, Cloud, relay, and
+  mobile clients.
+- Adaptive MCP/plugin tool discovery that keeps core tools direct while
+  deferring large external catalogs behind search, describe, and call wrappers.
+- Bounded multi-session desktop runtimes across independent workspaces, plus
+  cross-project transcript search, stable turn identities, and safe session
+  forks at completed turn boundaries.
+- Content-free local diagnostics summaries and exports, and versioned plugin
+  manifests with compatibility, provenance, contribution, and health status.
+
+### Improved
+
+- Session switching preserves active work, background completion state, scroll
+  position, and reconnect hydration without changing the existing design
+  system or workspace layout.
+- Runtime ownership now fails closed across desktop, Cloud, and phone handoffs,
+  rejects overlapping writable workspace roots, and retains supervision until
+  every host is actually reaped.
+
+### Fixed
+
+- Replay queues are bounded by both event count and bytes, stale host frames
+  cannot contaminate foreground continuity, and authoritative resyncs propagate
+  through the mobile relay.
+- Plugin loading validates manifests before executable import, while session
+  search, fork, and history mutations remain path-authorized and atomic.
+
 ## 0.6.12 — 2026-07-18
 
 ### Added

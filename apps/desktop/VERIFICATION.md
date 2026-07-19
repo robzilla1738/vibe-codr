@@ -22,13 +22,41 @@ VIBE_LIVE_PERF=1 bun run test:perf:live
 ```
 
 The 2026-07-18 local deterministic run recorded a 280.30 ms legacy checkpoint
-median versus 64.01 ms seeded (77.2% lower), a 50.09 ms cold host-fixture
-click-to-ready median versus 0.21 ms when reusing the project-index host (99.6%
+median versus 64.01 ms seeded (77.2% lower) and a 50.09 ms cold host-fixture
+click-to-ready baseline. The final continuity build measured 43.30 ms cold
+versus 0.19 ms when reusing the project-index host (99.6%
 lower), two renderer deliveries for 10,000 adjacent chunks (99.98% fewer), and
-a 2,500-block incremental transcript flush of 0.009 ms p95 / 0.63 ms max.
+a 2,500-block incremental transcript flush of 0.0069 ms p95 / 0.06 ms max.
 These are machine-local fixture results, not provider-generation claims. The
 paid canary records default and Turbo TTFT/cache-token pairs only when explicitly
 enabled; CI never incurs provider spend.
+
+The local seven-day/2 MiB flight recorder attributes host spawn/ready/snapshot/
+replay, tool-schema tokens, provider TTFT, generation, tool execution, bridge,
+and first-paint phases without prompts, paths, credentials, tool inputs, or tool
+outputs. Advanced Settings exposes 1-day/7-day p50/p95 summaries and a local
+diagnostics export; no network sender exists.
+
+## Continuity and discovery acceptance
+
+```bash
+cd /path/to/vibe-codr
+bun test packages/macos-bridge/src/protocol.test.ts packages/macos-bridge/src/host.integration.test.ts \
+  packages/tools/src/toolset.test.ts packages/core/src/store.test.ts \
+  packages/core/src/recall.test.ts packages/core/src/recall.performance.test.ts \
+  packages/plugins/src/plugin.test.ts
+
+cd /path/to/vbcode-electron
+npm test -- --run src/main/engine-bridge.test.ts src/main/remote-engine-transport.test.ts \
+  src/main/local-runtime-supervisor.test.ts src/main/performance-store.test.ts \
+  src/shared/protocol.test.ts
+```
+
+These fixtures cover duplicate/gap/replay/restart/version behavior, concurrent
+local runtime capacity and eviction, real-identity tool discovery with at least
+60% schema-token reduction, 10,000-message recall at no more than 150 ms p95,
+safe compacted-history forks, plugin preflight/rollback, and diagnostics
+redaction/retention/percentiles.
 
 ## Experimental cloud gate
 
@@ -148,8 +176,8 @@ npm run test:e2e       # hermetic Electron host/renderer lifecycle matrix
 ```
 
 Expect: the current Vitest suite green, Playwright Electron E2E
-green (**13** scenarios), all 22 upstream source pairs aligned, Biome and `tsc`
-clean, all 40 engine config fields represented, electron-vite build and
+green, every reported upstream source pair aligned, Biome and `tsc`
+clean, every engine config field represented, electron-vite build and
 renderer/host bundle budget OK, and smoke prints
 `ready` + `snapshot ok` and a structurally valid project-list response (which
 may be empty when every project is archived). Prefer live suite output over frozen counts in prose.
@@ -365,7 +393,12 @@ npm run dev
    and jobs, queue, changed files, context, tokens/cost, model/mode/goal, and
    Local/Cloud provider without reopening Sessions. After engine-idle it must
    read Ready with refreshed saved metadata. A merely running Cloud sandbox must not be
-   presented as model work. Open, rename, archive,
+   presented as model work. Transcript-only matches should merge without
+   clearing immediate metadata hits. Start turns in three local sessions,
+   switch rapidly, and confirm each continues with only the selected transcript
+   visible; a fourth pinned runtime must show the capacity explanation. Use
+   **Fork here** and confirm the source is unchanged and the fork opens through
+   the selected completed turn. Open, rename, archive,
    and delete records from both Board and List; destructive actions must use the
    in-app confirmation dialog and the underlying project rail must refresh.
 3. Submit a short prompt — stream text + tools; the project rail spinner appears
@@ -457,6 +490,9 @@ npm run dev
     custom provider ID / URL / model are primary while transport remains under
     **Advanced settings**. In Settings, confirm technical sections collapse
     behind **Advanced settings** but remain discoverable through search.
+    Confirm Advanced shows plugin status/provenance plus content-free 1-day and
+    7-day performance p50/p95; Copy diagnostics must contain no prompt, path,
+    credential, tool input, or tool output.
     Simulate unavailable/blocked IndexedDB and corrupt cache metadata; startup
     must continue without cache, and a late open handle must be closed.
 18. Exercise File/Tools/Help menu actions: New Session, Open Project, Continue

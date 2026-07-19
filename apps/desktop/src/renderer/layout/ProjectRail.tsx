@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { isCloudSessionMutationLocked, type CloudSessionCatalogEntry } from "../../shared/cloud";
+import { type CloudSessionCatalogEntry, isCloudSessionMutationLocked } from "../../shared/cloud";
 import {
   chatSessions,
   filterChatSessions,
@@ -26,6 +26,7 @@ import {
   IconDelete,
   IconFolder,
   IconFolderOpen,
+  IconGitBranch,
   IconJobs,
   IconMore,
   IconPlus,
@@ -65,6 +66,7 @@ export function ProjectRail({
   loading,
   error,
   busy,
+  navigationDisabled,
   onClose,
   onRetry,
   onOpenProject,
@@ -77,6 +79,7 @@ export function ProjectRail({
   onRenameSession,
   onDeleteSession,
   onArchiveSession,
+  onForkSession,
   onOpenSessions,
   sessionsActive,
   onOpenSettings,
@@ -94,6 +97,9 @@ export function ProjectRail({
   loading: boolean;
   error: string | null;
   busy: boolean;
+  /** Host/bootstrap or ownership transition in progress. A running turn alone
+   * does not disable navigation because its local runtime remains supervised. */
+  navigationDisabled: boolean;
   onClose: () => void;
   onRetry: () => void;
   onOpenProject: () => void;
@@ -108,6 +114,7 @@ export function ProjectRail({
   onRenameSession: (cwd: string, id: string, title: string) => Promise<boolean>;
   onDeleteSession: (cwd: string, id: string) => Promise<boolean>;
   onArchiveSession: (cwd: string, id: string) => Promise<boolean>;
+  onForkSession: (cwd: string, id: string, atTurnId?: string) => Promise<boolean>;
   onOpenSessions: () => void;
   sessionsActive: boolean;
   onOpenSettings: () => void;
@@ -450,10 +457,20 @@ export function ProjectRail({
     }
   };
 
-  const busyTitle = "Stop the current turn before switching sessions";
-  const busyProjectTitle = "Stop the current turn before switching projects";
-  const busyActionLabel = (action: string, reason = busyTitle) =>
-    busy ? `${action}. ${reason}` : action;
+  const runForkAction = async (cwd: string, id: string, atTurnId?: string) => {
+    if (menuActionPendingRef.current) return;
+    menuActionPendingRef.current = true;
+    setMenuActionPending(true);
+    try {
+      if (await onForkSession(cwd, id, atTurnId)) setMenu(null);
+    } finally {
+      menuActionPendingRef.current = false;
+      setMenuActionPending(false);
+    }
+  };
+
+  const busyTitle = "Session actions are unavailable while the foreground turn is running";
+  const navigationTitle = "A session transition is already in progress";
 
   return (
     <aside
@@ -564,9 +581,9 @@ export function ProjectRail({
               event.stopPropagation();
               onOpenProject();
             }}
-            disabled={busy}
-            title={busy ? busyProjectTitle : "Add project"}
-            aria-label={busyActionLabel("Add project", busyProjectTitle)}
+            disabled={navigationDisabled}
+            title={navigationDisabled ? navigationTitle : "Add project"}
+            aria-label="Add project"
           >
             <IconPlus size={14} />
           </button>
@@ -650,12 +667,9 @@ export function ProjectRail({
                       type="button"
                       className="project-new-chat"
                       onClick={() => onNewProjectChat(project.cwd)}
-                      disabled={busy}
-                      title={busy ? busyProjectTitle : `New chat in ${projectLabel(project, projects)}`}
-                      aria-label={busyActionLabel(
-                        `New chat in ${projectLabel(project, projects)}`,
-                        busyProjectTitle,
-                      )}
+                      disabled={navigationDisabled}
+                      title={navigationDisabled ? navigationTitle : `New chat in ${projectLabel(project, projects)}`}
+                      aria-label={`New chat in ${projectLabel(project, projects)}`}
                     >
                       <IconPlus size={14} />
                     </button>
@@ -714,14 +728,14 @@ export function ProjectRail({
                             className={`session-row${isActive ? " active" : ""}`}
                             onClick={() => onResume(project.cwd, session.id)}
                             onContextMenu={(event) => openMenu(event, project.cwd, session)}
-                            disabled={busy}
+                            disabled={navigationDisabled}
                             aria-current={isActive ? "true" : undefined}
                             aria-label={
-                              busy
-                                ? `${session.title}. AI is working in this session. ${busyTitle}${isRunningInCloud ? " Running in Cloud." : ""}`
+                              isActive && busy
+                                ? `${session.title}. AI is working in this session; switching keeps it running.${isRunningInCloud ? " Running in Cloud." : ""}`
                                 : isRunningInCloud ? `${session.title}. Running in Cloud.` : undefined
                             }
-                            title={busy ? busyTitle : `${session.title}\n${session.model}${isRunningInCloud ? "\nRunning in Cloud" : ""}`}
+                            title={navigationDisabled ? navigationTitle : `${session.title}\n${session.model}${isRunningInCloud ? "\nRunning in Cloud" : ""}`}
                           >
                             <span className="session-title">{session.title}</span>
                             <time
@@ -806,9 +820,9 @@ export function ProjectRail({
               event.stopPropagation();
               onNewChat();
             }}
-            disabled={busy}
-            title={busy ? busyTitle : "New chat"}
-            aria-label={busyActionLabel("New chat")}
+            disabled={navigationDisabled}
+            title={navigationDisabled ? navigationTitle : "New chat"}
+            aria-label="New chat"
           >
             <IconPlus size={14} />
           </button>
@@ -864,15 +878,15 @@ export function ProjectRail({
                       <button
                         type="button"
                         className="session-row session-row-flat"
-                        disabled={busy}
+                        disabled={navigationDisabled}
                         onClick={() => onResume(chatsRoot, session.id)}
                         aria-current={isActive ? "true" : undefined}
                         aria-label={
-                          busy
-                            ? `${session.title}. ${busyTitle}${isRunningInCloud ? " Running in Cloud." : ""}`
+                          isActive && busy
+                            ? `${session.title}. AI is working in this session; switching keeps it running.${isRunningInCloud ? " Running in Cloud." : ""}`
                             : `${session.title}${isRunningInCloud ? ". Running in Cloud." : ""}`
                         }
-                        title={busy ? busyTitle : `${session.title}\n${session.model}${isRunningInCloud ? "\nRunning in Cloud" : ""}`}
+                        title={navigationDisabled ? navigationTitle : `${session.title}\n${session.model}${isRunningInCloud ? "\nRunning in Cloud" : ""}`}
                       >
                         <span className="session-title">{session.title}</span>
                         <time className="session-time" dateTime={new Date(session.updatedAt).toISOString()}>
@@ -1088,6 +1102,18 @@ export function ProjectRail({
             </div>
           ) : (
             <>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={menuActionPending || remoteOwnedSessionIds.has(menu.session.id)}
+                title={remoteOwnedSessionIds.has(menu.session.id)
+                  ? "Return this session to Local before forking it"
+                  : undefined}
+                onClick={() => void runForkAction(menu.cwd, menu.session.id, menu.session.latestTurnId)}
+              >
+                <IconGitBranch size={14} />
+                Fork here
+              </button>
               <button
                 type="button"
                 role="menuitem"

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { PERFORMANCE_PHASES, type PerformanceSummary } from "../../../shared/performance";
 import { pluginSpecifiersFromLines } from "../../../shared/plugin-specifiers";
-import { NumberInput, SettingField, SettingSection, TextArea, TextInput, ToggleSwitch } from "../FormControls";
+import type { PluginStatus } from "../../../shared/protocol";
+import { NumberInput, SettingActions, SettingBadge, SettingField, SettingSection, TextArea, TextInput, ToggleSwitch } from "../FormControls";
 import type { SectionProps } from "./types";
 
 export function AdvancedSection({
@@ -9,13 +11,24 @@ export function AdvancedSection({
   updateConfig,
   updateNested,
   cwd,
+  active = false,
+  runtimeIdentity = "",
   onInvalidDraftChange,
   draftResetVersion = 0,
+  showToast,
 }: SectionProps) {
   const lsp = config.lsp ?? {};
   const lspServers = lsp.servers ?? {};
   const vision = config.vision?.relay ?? {};
   const [newLspLanguage, setNewLspLanguage] = useState("");
+  const [performanceSummaries, setPerformanceSummaries] = useState<{
+    day: PerformanceSummary;
+    week: PerformanceSummary;
+  } | null>(null);
+  const [diagnosticsError, setDiagnosticsError] = useState<string | null>(null);
+  const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
+  const [pluginStatuses, setPluginStatuses] = useState<PluginStatus[]>([]);
+  const [pluginHealthError, setPluginHealthError] = useState<string | null>(null);
   const lspDraftKey = `advanced:${scope}:${cwd ?? ""}:lsp-language`;
 
   useEffect(() => {
@@ -24,6 +37,57 @@ export function AdvancedSection({
     return () => onInvalidDraftChange?.(lspDraftKey, false);
   }, [lspDraftKey, newLspLanguage, onInvalidDraftChange]);
   useEffect(() => setNewLspLanguage(""), [scope, cwd, draftResetVersion]);
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    setPerformanceSummaries(null);
+    setDiagnosticsError(null);
+    void Promise.all([
+      window.vibe.getPerformanceSummary({ days: 1 }),
+      window.vibe.getPerformanceSummary({ days: 7 }),
+    ]).then(([day, week]) => {
+      if (!current) return;
+      if (!day.ok) throw new Error(day.error);
+      if (!week.ok) throw new Error(week.error);
+      setPerformanceSummaries({ day: day.value, week: week.value });
+      setDiagnosticsError(null);
+    }).catch((error) => {
+      if (current) setDiagnosticsError(error instanceof Error ? error.message : String(error));
+    });
+    return () => { current = false; };
+  }, [active, cwd, runtimeIdentity]);
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    setPluginStatuses([]);
+    setPluginHealthError(null);
+    void window.vibe.rpc("listPluginStatus").then((result) => {
+      if (!current) return;
+      if (result.ok) {
+        setPluginStatuses(result.value as PluginStatus[]);
+        setPluginHealthError(null);
+      } else setPluginHealthError(result.error);
+    }).catch((error) => {
+      if (current) setPluginHealthError(error instanceof Error ? error.message : String(error));
+    });
+    return () => { current = false; };
+  }, [active, cwd, runtimeIdentity]);
+
+  const copyDiagnostics = async () => {
+    if (copyingDiagnostics) return;
+    setCopyingDiagnostics(true);
+    try {
+      const result = await window.vibe.exportDiagnosticsBundle();
+      if (!result.ok) throw new Error(result.error);
+      const copied = await window.vibe.writeClipboardText(JSON.stringify(result.value, null, 2));
+      if (!copied.ok) throw new Error(copied.error);
+      showToast?.("Local diagnostics copied", "info");
+    } catch (error) {
+      showToast?.(error instanceof Error ? error.message : "Couldn’t copy diagnostics", "error");
+    } finally {
+      setCopyingDiagnostics(false);
+    }
+  };
 
   const updateLspServer = (
     language: string,
@@ -61,6 +125,94 @@ export function AdvancedSection({
             monospace
           />
         </SettingField>
+        <SettingField label="Adaptive tool discovery" description="Auto keeps core and explicitly named tools visible, and defers only large MCP/plugin catalogs. Direct submits the full catalog on every turn.">
+          <ToggleSwitch
+            checked={(config.toolDiscovery?.mode ?? "auto") === "auto"}
+            onChange={(enabled) => updateConfig({
+              toolDiscovery: { ...(config.toolDiscovery ?? {}), mode: enabled ? "auto" : "direct" },
+            })}
+          />
+        </SettingField>
+        <SettingField label="Always-visible tools" description="Exact MCP/plugin tool names, one per line.">
+          <TextArea
+            value={(config.toolDiscovery?.directTools ?? []).join("\n")}
+            onChange={(value) => updateConfig({
+              toolDiscovery: {
+                ...(config.toolDiscovery ?? {}),
+                directTools: value.split("\n").map((tool) => tool.trim()).filter(Boolean),
+              },
+            })}
+            rows={3}
+            monospace
+          />
+        </SettingField>
+        {pluginHealthError ? <p className="setting-empty" role="status">Plugin health unavailable: {pluginHealthError}</p> : null}
+        {pluginStatuses.length > 0 ? (
+          <div className="setting-list" aria-label="Loaded plugin health">
+            {pluginStatuses.map((plugin) => {
+              const registeredCount = Object.values(plugin.registeredContributions).reduce(
+                (total, contributions) => total + contributions.length,
+                0,
+              );
+              const tone = plugin.status === "degraded" ? "warn" : plugin.status === "loaded" ? "neutral" : "danger";
+              return (
+                <div key={plugin.specifier} className="setting-card expanded">
+                  <div className="setting-card-header">
+                    <span className="setting-card-title">{plugin.name}</span>
+                    <SettingBadge tone={tone}>{plugin.status}</SettingBadge>
+                  </div>
+                  <div className="setting-card-body">
+                    <SettingField
+                      label={plugin.version ? `Version ${plugin.version}` : "Version unavailable"}
+                      description={plugin.reason ?? `${registeredCount} registered contribution${registeredCount === 1 ? "" : "s"}.`}
+                    >
+                      <span>{plugin.provenance.source === "npm" && plugin.provenance.verified ? "verified package" : "unverified local code"}</span>
+                    </SettingField>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : config.plugins?.length ? (
+          <p className="setting-empty">No plugin status is available from the active engine yet.</p>
+        ) : null}
+      </SettingSection>
+
+      <SettingSection title="Local Diagnostics" description="Content-free, machine-local performance history. No prompts, paths, credentials, tool inputs, or outputs are recorded or transmitted.">
+        {diagnosticsError ? <p className="setting-empty" role="status">Diagnostics unavailable: {diagnosticsError}</p> : null}
+        {performanceSummaries ? (
+          <div className="setting-card expanded">
+            <div className="setting-card-body">
+              <SettingField label="Last 24 hours" description={`${performanceSummaries.day.turnCount} measured turn${performanceSummaries.day.turnCount === 1 ? "" : "s"}.`}>
+                <span>
+                  {performanceSummaries.day.dominantBottleneck
+                    ? `${performanceSummaries.day.dominantBottleneck.phase.replaceAll("-", " ")} · p95 ${formatDuration(performanceSummaries.day.dominantBottleneck.p95Ms)}`
+                    : "No completed measurements yet"}
+                </span>
+              </SettingField>
+              <SettingField label="Last 7 days" description={`${performanceSummaries.week.turnCount} measured turn${performanceSummaries.week.turnCount === 1 ? "" : "s"}.`}>
+                <span>
+                  {performanceSummaries.week.dominantBottleneck
+                    ? `${performanceSummaries.week.dominantBottleneck.phase.replaceAll("-", " ")} · p95 ${formatDuration(performanceSummaries.week.dominantBottleneck.p95Ms)}`
+                    : "No completed measurements yet"}
+                </span>
+              </SettingField>
+              {PERFORMANCE_PHASES.map((phase) => (
+                <SettingField key={phase} label={performancePhaseLabel(phase)} description="7-day p50 / p95">
+                  <span>{formatPercentiles(performanceSummaries.week.phases[phase])}</span>
+                </SettingField>
+              ))}
+              <SettingField label="Tool schema" description="Estimated tokens · p50 / p95">
+                <span>{formatPlainPercentiles(performanceSummaries.week.toolSchemaTokens)}</span>
+              </SettingField>
+            </div>
+          </div>
+        ) : null}
+        <SettingActions>
+          <button type="button" className="button" disabled={copyingDiagnostics} onClick={() => void copyDiagnostics()}>
+            {copyingDiagnostics ? "Copying…" : "Copy diagnostics"}
+          </button>
+        </SettingActions>
       </SettingSection>
 
       <SettingSection title="LSP Diagnostics" description="Multi-language language-server diagnostics-in-the-loop after edits.">
@@ -246,4 +398,31 @@ export function AdvancedSection({
       </SettingSection>
     </>
   );
+}
+
+function formatDuration(value: number): string {
+  return value >= 1_000 ? `${(value / 1_000).toFixed(value >= 10_000 ? 1 : 2)}s` : `${Math.round(value)}ms`;
+}
+
+function formatPercentiles(value: PerformanceSummary["phases"][keyof PerformanceSummary["phases"]]): string {
+  return value ? `${formatDuration(value.p50)} / ${formatDuration(value.p95)}` : "Not measured";
+}
+
+function formatPlainPercentiles(value: PerformanceSummary["toolSchemaTokens"]): string {
+  return value ? `${Math.round(value.p50).toLocaleString()} / ${Math.round(value.p95).toLocaleString()}` : "Not measured";
+}
+
+function performancePhaseLabel(phase: (typeof PERFORMANCE_PHASES)[number]): string {
+  const labels: Record<(typeof PERFORMANCE_PHASES)[number], string> = {
+    "host-spawn": "Host spawn",
+    "host-ready": "Host ready",
+    snapshot: "Snapshot",
+    replay: "Event replay",
+    "provider-ttft": "Provider first token",
+    generation: "Generation",
+    "tool-execution": "Tool execution",
+    "bridge-delay": "Bridge delay",
+    "first-paint": "First paint",
+  };
+  return labels[phase];
 }

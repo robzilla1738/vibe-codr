@@ -25,7 +25,14 @@ const hostSource = String.raw`
     if (msg.op === "rpc" && msg.method === "listProjects") {
       process.stdout.write(JSON.stringify({ type: "resp", id: msg.id, ok: true, value: [] }) + "\n");
     } else if (msg.op === "bootstrap") {
-      process.stdout.write(JSON.stringify({ type: "ready", sessionId: "bench" }) + "\n");
+      process.stdout.write(JSON.stringify({
+        type: "ready",
+        protocolVersion: 2,
+        engineRevision: "test",
+        capabilities: ["event-replay"],
+        hostInstanceId: "bench-host",
+        sessionId: "bench",
+      }) + "\n");
     } else if (msg.op === "shutdown") process.exit(0);
   });
 `;

@@ -120,6 +120,8 @@ export function isEngineSnapshot(value: unknown): value is EngineSnapshot {
   const usage = record(snap?.usage);
   return !!snap
     && isRuntimeIdentifier(snap.sessionId)
+    && (snap.hostInstanceId === undefined || isRuntimeIdentifier(snap.hostInstanceId))
+    && (snap.lastEventSeq === undefined || (Number.isSafeInteger(snap.lastEventSeq) && (snap.lastEventSeq as number) >= 0))
     && typeof snap.model === "string"
     && (snap.mode === "plan" || snap.mode === "execute")
     && (snap.goal === null || typeof snap.goal === "string")
@@ -168,7 +170,8 @@ export function isProjectSummaryArray(value: unknown): value is ProjectSummary[]
         && (session.mode === "plan" || session.mode === "execute")
         && (session.goal === null || typeof session.goal === "string")
         && finite(session.createdAt)
-        && finite(session.updatedAt);
+        && finite(session.updatedAt)
+        && (session.latestTurnId === undefined || isRuntimeIdentifier(session.latestTurnId));
     });
   });
 }
@@ -176,12 +179,50 @@ export function isProjectSummaryArray(value: unknown): value is ProjectSummary[]
 export function isRpcResult(method: RpcMethod, value: unknown): boolean {
   switch (method) {
     case "snapshot": return isEngineSnapshot(value);
+    case "replayEvents": {
+      const result = record(value);
+      return !!result
+        && isRuntimeIdentifier(result.hostInstanceId)
+        && Number.isSafeInteger(result.lastEventSeq) && (result.lastEventSeq as number) >= 0
+        && typeof result.truncated === "boolean"
+        && Array.isArray(result.events)
+        && result.events.length <= 2_048
+        && result.events.every((frameValue) => {
+          const frame = record(frameValue);
+          return !!frame && frame.type === "event"
+            && frame.hostInstanceId === result.hostInstanceId
+            && Number.isSafeInteger(frame.seq) && (frame.seq as number) > 0
+            && isUIEvent(frame.event);
+        });
+    }
     case "listProjects": return isProjectSummaryArray(value);
     case "listModels": return catalogRecords(value, (item) => boundedString(item.id) && boundedString(item.providerId) && boundedOptionalDisplayString(item.name) && (item.contextWindow === undefined || positive(item.contextWindow)));
     case "listProviders": return catalogRecords(value, (item) => boundedString(item.id) && typeof item.configured === "boolean" && typeof item.keyless === "boolean" && boundedProviderEnv(item.env));
     case "listAgents": return catalogRecords(value, (item) => boundedString(item.name) && boundedDisplayString(item.description) && boundedOptionalStringOrNull(item.model) && (item.mode === "plan" || item.mode === "execute"));
     case "listSkills": return catalogRecords(value, (item) => boundedString(item.name) && boundedDisplayString(item.description));
     case "listMcp": return catalogRecords(value, (item) => boundedString(item.name) && typeof item.connected === "boolean" && typeof item.configured === "boolean" && nonNegative(item.toolCount) && nonNegative(item.resourceCount) && nonNegative(item.promptCount) && boundedOptionalDisplayString(item.error, RPC_CATALOG_ERROR_MAX_CHARS));
+    case "listPluginStatus": return catalogRecords(value, (item) => {
+      const registered = record(item.registeredContributions);
+      const provenance = record(item.provenance);
+      const contributions = ["tools", "providers", "commands", "skills", "hooks"];
+      return boundedString(item.specifier)
+        && boundedString(item.name)
+        && boundedOptionalDisplayString(item.version)
+        && (item.status === "loaded" || item.status === "degraded" || item.status === "incompatible" || item.status === "failed")
+        && boundedOptionalDisplayString(item.reason, RPC_CATALOG_ERROR_MAX_CHARS)
+        && Array.isArray(item.declaredContributions)
+        && item.declaredContributions.length <= contributions.length
+        && item.declaredContributions.every((type) => contributions.includes(String(type)))
+        && !!registered
+        && contributions.every((type) => Array.isArray(registered[type])
+          && (registered[type] as unknown[]).length <= RPC_CATALOG_MAX_ITEMS
+          && (registered[type] as unknown[]).every((name) => boundedString(name)))
+        && !!provenance
+        && (provenance.source === "npm" || provenance.source === "local")
+        && typeof provenance.verified === "boolean"
+        && boundedOptionalDisplayString(provenance.packageVersion)
+        && boundedOptionalDisplayString(provenance.integrity);
+    });
     case "providerAuthStatus": return isSubscriptionAuthStatus(value);
     case "beginProviderAuth": return isSubscriptionAuthStart(value);
     case "cancelProviderAuth":
@@ -195,12 +236,22 @@ export function isRpcResult(method: RpcMethod, value: unknown): boolean {
         && (credential.accountId === undefined || typeof credential.accountId === "string");
     }
     case "listSessions": return recordsWithRuntimeId(value, "id");
+    case "searchSessions": return Array.isArray(value) && value.length <= 100 && value.every((hitValue) => {
+      const hit = record(hitValue);
+      return !!hit && typeof hit.cwd === "string" && isRuntimeIdentifier(hit.sessionId)
+        && (hit.role === "user" || hit.role === "assistant" || hit.role === "system" || hit.role === "tool")
+        && finite(hit.timestamp) && typeof hit.snippet === "string" && hit.snippet.length <= 260
+        && finite(hit.score);
+    });
     case "renameProject": return typeof record(value)?.name === "string";
     case "archiveProject":
     case "deleteProject": return typeof record(value)?.cwd === "string";
     case "renameSession":
     case "deleteSession":
     case "archiveSession": return isRuntimeIdentifier(record(value)?.id);
+    case "forkSession": return isRuntimeIdentifier(record(value)?.id)
+      && typeof record(value)?.cwd === "string"
+      && isRuntimeIdentifier(record(value)?.atTurnId);
     case "finalize": return value === null;
     case "prepareHandoff": {
       const item = record(value);

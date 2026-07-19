@@ -222,6 +222,9 @@ export interface GoalRunInfo {
 
 /** Static, read-only snapshot of engine state for the UI to render. */
 export interface EngineSnapshot {
+  /** Host sequencing cursor; absent from direct in-process snapshots. */
+  hostInstanceId?: string;
+  lastEventSeq?: number;
   sessionId: string;
   model: string;
   mode: Mode;

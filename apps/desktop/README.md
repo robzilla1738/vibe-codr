@@ -170,8 +170,13 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 - **Sessions workspace:** persistent Board/List management across every project
   and Chat, with search/filter/sort, automatic Active/Review/Done transitions,
   live active-session operational insight (tool/task, waits, tasks, agents, jobs,
-  queue, changes, context, usage, model/mode/goal, and Local/Cloud ownership), and
-  open/rename/archive/delete actions backed by the existing host APIs
+  queue, changes, context, usage, model/mode/goal, and Local/Cloud ownership),
+  immediate metadata filtering plus asynchronous bounded transcript recall, and
+  open/fork/rename/archive/delete actions backed by the existing host APIs
+- **Concurrent local continuity:** switching sessions detaches the renderer without
+  stopping the previous turn. One foreground and up to two background local
+  runtimes remain owned by a bounded supervisor; working and blocked sessions
+  stay pinned while expired idle runtimes are evicted.
 - **Right workspace dock:** full-label Session / Changes / Git / Terminal / Jobs / Files in an equally inset, quietly grey rounded enclosure on the chat surface; compact below ~960px
 - **Shared activity sidebar:** Session, Changes, Git, Terminal, and Jobs open in one full-height, edge-attached right pane with equal switcher tabs, one compact Workspace header, a shared resize handle, and responsive drawer behavior. Horizontal divider rules are omitted; spacing and quiet surface shifts organize the chrome. Changes pairs a recursively expandable file tree with numbered Diff/File review and saturated semantic change colors. It is a structural sibling of chat, never a floating card or overlay on desktop. Files remains a Finder reveal.
 - **Persistent contextual terminal:** project sessions open at the project root;
@@ -183,7 +188,9 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 - **Long-session recovery:** authoritative engine history is enhanced by a bounded
   IndexedDB presentation cache; corrupt, oversized, unsettled, or schema-invalid
   records are discarded and rebuilt instead of entering renderer state, and
-  unavailable browser storage never blocks bootstrap or cleanup.
+  unavailable browser storage never blocks bootstrap or cleanup. Protocol-v2
+  host identity, event cursors, bounded replay, and snapshot fallback repair
+  duplicate, missing, or stale frames after a reconnect.
 - **Deferred terminal runtime:** xterm is code-split and loaded only when the
   Terminal activity view first opens, preserving the chat startup bundle.
 - **Cross-platform CI install:** macOS-only Liquid Glass is optional, so Linux
@@ -297,6 +304,9 @@ Full list: type `/keys` in the composer. See also [PARITY.md](./PARITY.md).
   gate), Memory, Search & Web, Compaction, Budget & Retry, Hooks, Custom
   Instructions (VIBE.md), Advanced (trusted plugins, LSP plus per-language
   server overrides, vision relay, verify, updates, goal/loop, orchestration)
+- **Local diagnostics:** Advanced shows content-free 1-day/7-day p50 and p95
+  phase attribution, the dominant local bottleneck, plugin health/provenance,
+  and Copy diagnostics. The seven-day/2 MiB recorder never sends telemetry.
 - **Project trust is global-only**: a repository cannot authorize its own
   providers, hooks/plugins/MCP, LSP or verify commands, sandbox/SSRF
   relaxations, auto approvals, or broad allows. Exact scoped grants created by

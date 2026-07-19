@@ -56,6 +56,17 @@ describe("RPC runtime guards", () => {
     expect(isRpcResult("listSkills", [{ name: "skill", description: "x".repeat(RPC_CATALOG_FIELD_MAX_CHARS + 1) }])).toBe(false);
     expect(isRpcResult("listProviders", [{ id: "p", configured: true, keyless: false, env: Array.from({ length: RPC_PROVIDER_ENV_MAX_ITEMS + 1 }, () => "KEY") }])).toBe(false);
     expect(isRpcResult("listMcp", [{ name: "bad\0name", connected: true, configured: true, toolCount: 0, resourceCount: 0, promptCount: 0 }])).toBe(false);
+    expect(isRpcResult("listPluginStatus", [{
+      specifier: "./plugin.ts", name: "plugin", version: "1.0.0", status: "degraded",
+      reason: "Local plugin is unverified", declaredContributions: ["commands"],
+      registeredContributions: { tools: [], providers: [], commands: ["ship"], skills: [], hooks: [] },
+      provenance: { source: "local", verified: false },
+    }])).toBe(true);
+    expect(isRpcResult("listPluginStatus", [{
+      specifier: "./plugin.ts", name: "plugin", status: "trusted",
+      declaredContributions: [], registeredContributions: { tools: [], providers: [], commands: [], skills: [], hooks: [] },
+      provenance: { source: "local", verified: false },
+    }])).toBe(false);
     expect(isRpcResult("listAgents", Array.from({ length: RPC_CATALOG_MAX_ITEMS + 1 }, (_, index) => ({ name: `a${index}`, description: "", model: null, mode: "execute" })))).toBe(false);
   });
 

@@ -1,20 +1,20 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolDefinition } from "@vibe/shared";
 import { z } from "zod";
+import { FreshnessRegistry } from "./builtins/freshness.ts";
+import { builtinTools } from "./builtins/index.ts";
+import { canonicalLockKey } from "./fs/canonical-key.ts";
 import {
-  Toolset,
-  createSerialLock,
-  createSemaphore,
   createFileLock,
+  createSemaphore,
+  createSerialLock,
   isConcurrencySafe,
+  Toolset,
   toAISDKTool,
 } from "./toolset.ts";
-import { canonicalLockKey } from "./fs/canonical-key.ts";
-import { builtinTools } from "./builtins/index.ts";
-import { FreshnessRegistry } from "./builtins/freshness.ts";
 
 const freshness = new FreshnessRegistry();
 
@@ -106,9 +106,14 @@ test("adaptive discovery preserves exact tool selection across a 100-tool fixtur
     undefined,
     { mode: "auto", contextWindow: 128_000 },
   );
-  const search = (build.tools.tool_search as unknown as {
-    execute: (input: unknown, options: { toolCallId: string }) => Promise<{ tools?: Array<{ name?: string }> }>;
-  }).execute;
+  const search = (
+    build.tools.tool_search as unknown as {
+      execute: (
+        input: unknown,
+        options: { toolCallId: string },
+      ) => Promise<{ tools?: Array<{ name?: string }> }>;
+    }
+  ).execute;
   let selected = 0;
   for (let index = 0; index < 100; index += 1) {
     const name = `mcp__fixture__tool_${index}`;
@@ -151,16 +156,26 @@ test("tool_call resolves permissions and hooks against the real tool identity", 
       sessionId: "s",
       emit: () => {},
       freshness,
-      beforeTool: async (name) => { seen.push(`before:${name}`); return {}; },
-      checkPermission: async (name) => { seen.push(`permission:${name}`); return { allowed: true }; },
-      afterTool: async (name) => { seen.push(`after:${name}`); },
+      beforeTool: async (name) => {
+        seen.push(`before:${name}`);
+        return {};
+      },
+      checkPermission: async (name) => {
+        seen.push(`permission:${name}`);
+        return { allowed: true };
+      },
+      afterTool: async (name) => {
+        seen.push(`after:${name}`);
+      },
     },
     createSerialLock(),
     { mode: "auto", contextWindow: 128_000 },
   );
-  const execute = (build.tools.tool_call as unknown as {
-    execute: (input: unknown, options: { toolCallId: string }) => Promise<unknown>;
-  }).execute;
+  const execute = (
+    build.tools.tool_call as unknown as {
+      execute: (input: unknown, options: { toolCallId: string }) => Promise<unknown>;
+    }
+  ).execute;
   const output = await execute(
     { name: "mcp__fixture__tool_7", input: { query: "hello" } },
     { toolCallId: "call-7" },
@@ -171,6 +186,129 @@ test("tool_call resolves permissions and hooks against the real tool identity", 
     "permission:mcp__fixture__tool_7",
     "after:mcp__fixture__tool_7",
   ]);
+});
+
+test("tool_call validates deferred JSON Schema input before hooks, permissions, or execution", async () => {
+  const ts = new Toolset([]);
+  for (let index = 0; index < 33; index += 1) ts.register(extensionTool(index), false, "mcp");
+  const seen: string[] = [];
+  let executed = false;
+  ts.register(
+    {
+      ...extensionTool(99, false),
+      name: "mcp__fixture__strict",
+      async execute() {
+        executed = true;
+        return { output: "ran" };
+      },
+    },
+    false,
+    "mcp",
+  );
+  const build = ts.aiToolsAdaptive(
+    "execute",
+    {
+      cwd: ".",
+      sessionId: "s",
+      emit: () => {},
+      freshness,
+      beforeTool: async (name) => {
+        seen.push(`before:${name}`);
+        return {};
+      },
+      checkPermission: async (name) => {
+        seen.push(`permission:${name}`);
+        return { allowed: true };
+      },
+      recordToolResult: (id, isError) => seen.push(`result:${id}:${isError}`),
+    },
+    undefined,
+    { mode: "auto", contextWindow: 128_000 },
+  );
+  const execute = (
+    build.tools.tool_call as unknown as {
+      execute: (input: unknown, options: { toolCallId: string }) => Promise<unknown>;
+    }
+  ).execute;
+
+  const output = await execute(
+    { name: "mcp__fixture__strict", input: { unexpected: true } },
+    { toolCallId: "invalid-1" },
+  );
+
+  expect(String(output)).toContain("required property is missing");
+  expect(executed).toBe(false);
+  expect(seen).toEqual(["result:invalid-1:true"]);
+});
+
+test("tool_call applies deferred Zod defaults and transforms before execution", async () => {
+  const ts = new Toolset([]);
+  for (let index = 0; index < 33; index += 1) ts.register(extensionTool(index), false, "plugin");
+  let received: unknown;
+  ts.register(
+    {
+      name: "plugin__normalized",
+      description: "Normalize input",
+      inputSchema: z.object({ value: z.string().trim().min(1), count: z.number().default(2) }),
+      readOnly: true,
+      async execute(input) {
+        received = input;
+        return { output: input };
+      },
+    },
+    false,
+    "plugin",
+  );
+  const build = ts.aiToolsAdaptive(
+    "execute",
+    { cwd: ".", sessionId: "s", emit: () => {}, freshness },
+    undefined,
+    { mode: "auto", contextWindow: 128_000 },
+  );
+  const execute = (
+    build.tools.tool_call as unknown as {
+      execute: (input: unknown, options: { toolCallId: string }) => Promise<unknown>;
+    }
+  ).execute;
+
+  await execute(
+    { name: "plugin__normalized", input: { value: "  ready  " } },
+    { toolCallId: "normalized-1" },
+  );
+
+  expect(received).toEqual({ value: "ready", count: 2 });
+});
+
+test("tool_describe bounds extension-controlled schemas", async () => {
+  const ts = new Toolset([]);
+  for (let index = 0; index < 33; index += 1) ts.register(extensionTool(index), false, "mcp");
+  ts.register(
+    {
+      ...extensionTool(99),
+      name: "mcp__fixture__huge",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string", description: "external ".repeat(10_000) } },
+      },
+    },
+    false,
+    "mcp",
+  );
+  const build = ts.aiToolsAdaptive(
+    "execute",
+    { cwd: ".", sessionId: "s", emit: () => {}, freshness },
+    undefined,
+    { mode: "auto", contextWindow: 128_000 },
+  );
+  const describe = (
+    build.tools.tool_describe as unknown as {
+      execute: (input: unknown, options: { toolCallId: string }) => Promise<string>;
+    }
+  ).execute;
+  const output = await describe({ name: "mcp__fixture__huge" }, { toolCallId: "describe-1" });
+
+  expect(output.length).toBeLessThan(17_000);
+  expect(output).toContain("chars omitted");
 });
 
 test("catalog revision invalidates cached discovery after MCP relists", () => {
@@ -190,10 +328,12 @@ test("catalog revision invalidates cached discovery after MCP relists", () => {
   expect(after.active).toBe(true);
   expect(after.catalogRevision).toBeGreaterThan(before.catalogRevision);
   ts.unregister("mcp__fixture__tool_32");
-  expect(ts.aiToolsAdaptive("execute", base, undefined, {
-    mode: "auto",
-    contextWindow: 1_000_000,
-  }).active).toBe(false);
+  expect(
+    ts.aiToolsAdaptive("execute", base, undefined, {
+      mode: "auto",
+      contextWindow: 1_000_000,
+    }).active,
+  ).toBe(false);
 });
 
 test("isConcurrencySafe: read-only or explicitly-safe tools, not mutating ones", () => {

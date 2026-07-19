@@ -23,7 +23,12 @@ rmSync(output, { recursive: true, force: true });
 mkdirSync(join(stage, "packages"), { recursive: true });
 mkdirSync(join(stage, "bin"), { recursive: true });
 
-run("bun", ["build", "packages/macos-bridge/bin/engine-host.ts", "--compile", "--target=bun-linux-x64", "--outfile", join(stage, "vibecodr-engine-host")], root);
+run("bun", [
+  "scripts/build-macos-bridge.ts",
+  "--target=bun-linux-x64",
+  `--outfile=${join(stage, "vibecodr-engine-host")}`,
+  `--revision=${revision}`,
+], root);
 run("bun", ["build", "packages/cloud-agentd/bin/cloud-agentd.ts", "--target=node", "--external", "node-pty", "--external", "ws", "--outfile", join(stage, "cloud-agentd.mjs")], root);
 run("bun", ["build", "packages/cloud-agentd/bin/cloud-bootstrap.ts", "--target=node", "--outfile", join(stage, "vibe-cloud-bootstrap.mjs")], root);
 run("bun", ["build", "packages/cloud-agentd/bin/cloud-export.ts", "--target=node", "--outfile", join(stage, "vibe-cloud-export.mjs")], root);

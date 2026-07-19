@@ -73,6 +73,7 @@ export { createLogger } from "./logger.ts";
 
 // Utilities
 export { createId } from "./id.ts";
+export { validateJsonSchema } from "./json-schema.ts";
 export { AsyncQueue } from "./async-queue.ts";
 
 // Stream reading + truncation

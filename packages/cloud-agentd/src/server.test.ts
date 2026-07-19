@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  cloudAgentReadyFrame,
   environmentWithoutControlSecrets,
+  isEngineReadyFrame,
   resolveCloudPath,
   sharedProjectFileMode,
   shouldProxyEngineFrame,
@@ -16,13 +18,15 @@ afterEach(async () => {
 });
 
 test("cloud control credentials are not inherited by engine or terminal children", () => {
-  expect(environmentWithoutControlSecrets({
-    PATH: "/usr/bin",
-    VIBE_CLOUD_ACCESS_TOKEN: "not-for-workloads",
-    VIBE_CLOUD_ACCESS_TOKEN_FILE: "/run/vibe-cloud/access-token",
-    VIBE_CLOUD_MODEL_ACCESS_FILE: "/run/vibe-cloud/model-access.json",
-    OPTIONAL: undefined,
-  })).toEqual({ PATH: "/usr/bin" });
+  expect(
+    environmentWithoutControlSecrets({
+      PATH: "/usr/bin",
+      VIBE_CLOUD_ACCESS_TOKEN: "not-for-workloads",
+      VIBE_CLOUD_ACCESS_TOKEN_FILE: "/run/vibe-cloud/access-token",
+      VIBE_CLOUD_MODEL_ACCESS_FILE: "/run/vibe-cloud/model-access.json",
+      OPTIONAL: undefined,
+    }),
+  ).toEqual({ PATH: "/usr/bin" });
 });
 
 test("content-free performance samples remain machine-local", () => {
@@ -31,6 +35,29 @@ test("content-free performance samples remain machine-local", () => {
   );
   expect(shouldProxyEngineFrame({ type: "event", event: { type: "assistant-text-delta" } })).toBe(
     true,
+  );
+});
+
+test("reconnecting clients receive the cached versioned engine identity", () => {
+  const engineReady = {
+    type: "ready" as const,
+    protocolVersion: 2,
+    engineRevision: "revision-1",
+    capabilities: ["event-replay"],
+    hostInstanceId: "host-1",
+    sessionId: "session-1",
+  };
+  expect(isEngineReadyFrame(engineReady)).toBe(true);
+  expect(cloudAgentReadyFrame("session-1", engineReady, "connection-1")).toEqual({
+    channel: "agent",
+    type: "ready",
+    protocol: 1,
+    connectionId: "connection-1",
+    engineSessionId: "session-1",
+    engineReady,
+  });
+  expect(cloudAgentReadyFrame("session-other", engineReady, "connection-2")).not.toHaveProperty(
+    "engineReady",
   );
 });
 

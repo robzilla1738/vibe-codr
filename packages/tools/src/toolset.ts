@@ -1,12 +1,14 @@
-import { tool, jsonSchema, type Tool } from "ai";
-import { toJSONSchema, z, type ZodType } from "zod";
 import type {
   CheckPermission,
   FreshnessRegistryLike,
+  JsonSchema,
   Mode,
   ToolContext,
   ToolDefinition,
 } from "@vibe/shared";
+import { capText, omittedMarker, validateJsonSchema } from "@vibe/shared";
+import { jsonSchema, type Tool, tool } from "ai";
+import { toJSONSchema, type ZodType, z } from "zod";
 import { canonicalLockKey } from "./fs/canonical-key.ts";
 import { normalizePathAliases } from "./path-input.ts";
 
@@ -22,6 +24,7 @@ export function withFileLock<T>(
 ): Promise<T> {
   return ctx.lockFile ? ctx.lockFile(absPath, fn) : fn();
 }
+
 import { builtinTools } from "./builtins/index.ts";
 
 /** Zod schemas expose `.parse`; raw JSON Schema objects don't. */
@@ -126,6 +129,8 @@ interface SearchableTool {
 const TOOL_DISCOVERY_COUNT_THRESHOLD = 32;
 const TOOL_DISCOVERY_CONTEXT_RATIO = 0.1;
 const TOOL_DISCOVERY_RESULTS_MAX = 20;
+const TOOL_DESCRIPTION_MAX_CHARS = 16_000;
+const TOOL_VALIDATION_ERROR_MAX_CHARS = 2_000;
 const TOOL_DISCOVERY_WRAPPERS = new Set(["tool_search", "tool_describe", "tool_call"]);
 
 /**
@@ -239,20 +244,27 @@ export class Toolset {
     const allowed = options.allowTools?.length ? new Set(options.allowTools) : null;
     const denied = new Set(options.denyTools ?? []);
     const direct = new Set(options.directTools ?? []);
-    const permitted = this.#catalog(mode).filter(({ definition }) =>
-      (!allowed || allowed.has(definition.name)) && !denied.has(definition.name));
-    const deferrable = permitted.filter(({ definition, source }) =>
-      (source === "mcp" || source === "plugin") && !direct.has(definition.name));
-    const deferrableTokens = estimateCatalogTokens(deferrable);
-    const shouldDefer = options.mode === "auto" && deferrable.length > 0 && (
-      deferrable.length > TOOL_DISCOVERY_COUNT_THRESHOLD ||
-      deferrableTokens > Math.max(1, options.contextWindow) * TOOL_DISCOVERY_CONTEXT_RATIO
+    const permitted = this.#catalog(mode).filter(
+      ({ definition }) =>
+        (!allowed || allowed.has(definition.name)) && !denied.has(definition.name),
     );
+    const deferrable = permitted.filter(
+      ({ definition, source }) =>
+        (source === "mcp" || source === "plugin") && !direct.has(definition.name),
+    );
+    const deferrableTokens = estimateCatalogTokens(deferrable);
+    const shouldDefer =
+      options.mode === "auto" &&
+      deferrable.length > 0 &&
+      (deferrable.length > TOOL_DISCOVERY_COUNT_THRESHOLD ||
+        deferrableTokens > Math.max(1, options.contextWindow) * TOOL_DISCOVERY_CONTEXT_RATIO);
     if (!shouldDefer) {
-      const tools = Object.fromEntries(permitted.map(({ definition }) => [
-        definition.name,
-        toAISDKTool(definition, base, serialize),
-      ]));
+      const tools = Object.fromEntries(
+        permitted.map(({ definition }) => [
+          definition.name,
+          toAISDKTool(definition, base, serialize),
+        ]),
+      );
       const tokens = estimateCatalogTokens(permitted);
       return {
         tools,
@@ -266,10 +278,9 @@ export class Toolset {
 
     const deferredNames = new Set(deferrable.map(({ definition }) => definition.name));
     const visible = permitted.filter(({ definition }) => !deferredNames.has(definition.name));
-    const tools = Object.fromEntries(visible.map(({ definition }) => [
-      definition.name,
-      toAISDKTool(definition, base, serialize),
-    ]));
+    const tools = Object.fromEntries(
+      visible.map(({ definition }) => [definition.name, toAISDKTool(definition, base, serialize)]),
+    );
     const searchable = new Map(deferrable.map((entry) => [entry.definition.name, entry]));
     Object.assign(tools, buildDiscoveryTools(searchable, base, serialize));
     return {
@@ -323,7 +334,11 @@ function estimateToolMapTokens(tools: Record<string, Tool>): number {
   let chars = 0;
   for (const [name, definition] of Object.entries(tools)) {
     const value = definition as { description?: string; inputSchema?: unknown };
-    chars += JSON.stringify({ name, description: value.description, inputSchema: value.inputSchema }).length;
+    chars += JSON.stringify({
+      name,
+      description: value.description,
+      inputSchema: value.inputSchema,
+    }).length;
   }
   return Math.ceil(chars / 4);
 }
@@ -345,54 +360,73 @@ function buildDiscoveryTools(
   base: ToolRuntimeBase,
   serialize?: SerialLock,
 ): Record<string, Tool> {
-  const search = toAISDKTool({
-    name: "tool_search",
-    description: "Search deferred MCP and plugin tools by capability. Returns real tool names and short descriptions.",
-    inputSchema: z.object({
-      query: z.string().min(1).max(512),
-      limit: z.number().int().min(1).max(TOOL_DISCOVERY_RESULTS_MAX).default(8),
-    }),
-    readOnly: true,
-    concurrencySafe: true,
-    execute: async ({ query, limit }) => ({
-      output: {
-        tools: [...catalog.values()]
-          .map((entry) => ({ entry, score: scoreSearch(entry, query) }))
-          .filter(({ score }) => score > 0)
-          .sort((a, b) => b.score - a.score || a.entry.definition.name.localeCompare(b.entry.definition.name))
-          .slice(0, limit)
-          .map(({ entry }) => ({
-            name: entry.definition.name,
-            description: entry.definition.description.slice(0, 400),
-            readOnly: entry.definition.readOnly,
-            source: entry.source,
-          })),
-      },
-    }),
-  }, base, serialize);
-  const describe = toAISDKTool({
-    name: "tool_describe",
-    description: "Describe one deferred MCP or plugin tool, including its bounded input schema.",
-    inputSchema: z.object({ name: z.string().min(1).max(256) }),
-    readOnly: true,
-    concurrencySafe: true,
-    execute: async ({ name }) => {
-      const entry = catalog.get(name);
-      if (!entry) return { output: `Unknown or unavailable deferred tool: ${name}`, isError: true };
-      return {
+  const search = toAISDKTool(
+    {
+      name: "tool_search",
+      description:
+        "Search deferred MCP and plugin tools by capability. Returns real tool names and short descriptions.",
+      inputSchema: z.object({
+        query: z.string().min(1).max(512),
+        limit: z.number().int().min(1).max(TOOL_DISCOVERY_RESULTS_MAX).default(8),
+      }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ query, limit }) => ({
         output: {
+          tools: [...catalog.values()]
+            .map((entry) => ({ entry, score: scoreSearch(entry, query) }))
+            .filter(({ score }) => score > 0)
+            .sort(
+              (a, b) =>
+                b.score - a.score || a.entry.definition.name.localeCompare(b.entry.definition.name),
+            )
+            .slice(0, limit)
+            .map(({ entry }) => ({
+              name: entry.definition.name,
+              description: entry.definition.description.slice(0, 400),
+              readOnly: entry.definition.readOnly,
+              source: entry.source,
+            })),
+        },
+      }),
+    },
+    base,
+    serialize,
+  );
+  const describe = toAISDKTool(
+    {
+      name: "tool_describe",
+      description: "Describe one deferred MCP or plugin tool, including its bounded input schema.",
+      inputSchema: z.object({ name: z.string().min(1).max(256) }),
+      readOnly: true,
+      concurrencySafe: true,
+      execute: async ({ name }) => {
+        const entry = catalog.get(name);
+        if (!entry)
+          return { output: `Unknown or unavailable deferred tool: ${name}`, isError: true };
+        const serialized = JSON.stringify({
           name: entry.definition.name,
           description: entry.definition.description,
           inputSchema: entry.schema,
           readOnly: entry.definition.readOnly,
           network: entry.definition.network ?? false,
           source: entry.source,
-        },
-      };
+        });
+        return {
+          output: capText(serialized, {
+            cap: TOOL_DESCRIPTION_MAX_CHARS,
+            keep: "head",
+            marker: omittedMarker,
+          }),
+        };
+      },
     },
-  }, base, serialize);
+    base,
+    serialize,
+  );
   const call = tool({
-    description: "Call one deferred MCP or plugin tool. The real tool identity is used for permissions, hooks, telemetry, and UI events.",
+    description:
+      "Call one deferred MCP or plugin tool. The real tool identity is used for permissions, hooks, telemetry, and UI events.",
     inputSchema: z.object({
       name: z.string().min(1).max(256),
       input: z.record(z.string(), z.unknown()).default({}),
@@ -400,14 +434,47 @@ function buildDiscoveryTools(
     execute: async ({ name, input }, options) => {
       const entry = catalog.get(name);
       if (!entry) return `ERROR: unknown or unavailable deferred tool "${name}".`;
+      const validation = await validateDiscoveredInput(entry.definition, input);
+      if (!validation.ok) {
+        base.recordToolResult?.(options.toolCallId, true);
+        return `ERROR: invalid input for deferred tool "${name}": ${validation.error}`;
+      }
       const adapted = toAISDKTool(entry.definition, base, serialize) as {
         execute?: (value: unknown, opts: typeof options) => PromiseLike<unknown> | unknown;
       };
       if (!adapted.execute) return `ERROR: deferred tool "${name}" cannot execute.`;
-      return adapted.execute(input, options);
+      return adapted.execute(validation.value, options);
     },
   });
   return { tool_search: search, tool_describe: describe, tool_call: call };
+}
+
+async function validateDiscoveredInput(
+  definition: ToolDefinition,
+  input: unknown,
+): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  if (isZodSchema(definition.inputSchema)) {
+    const result = await (definition.inputSchema as ZodType<unknown>).safeParseAsync(input);
+    if (result.success) return { ok: true, value: result.data };
+    return {
+      ok: false,
+      error: capText(result.error.message, {
+        cap: TOOL_VALIDATION_ERROR_MAX_CHARS,
+        keep: "head",
+        marker: omittedMarker,
+      }),
+    };
+  }
+  const errors = validateJsonSchema(definition.inputSchema as JsonSchema, input);
+  if (!errors.length) return { ok: true, value: input };
+  return {
+    ok: false,
+    error: capText(errors.join("; "), {
+      cap: TOOL_VALIDATION_ERROR_MAX_CHARS,
+      keep: "head",
+      marker: omittedMarker,
+    }),
+  };
 }
 
 export function isToolDiscoveryWrapper(name: string): boolean {

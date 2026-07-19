@@ -1,12 +1,15 @@
-import { timingSafeEqual, randomUUID } from "node:crypto";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { chmod, chown, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, relative, resolve, sep } from "node:path";
+import {
+  openCloudModelAccess,
+  terminalEnvironmentWithoutModelAccess,
+} from "@vibe/shared/cloud-runtime";
 import * as pty from "node-pty";
 import WebSocket, { WebSocketServer } from "ws";
-import { openCloudModelAccess, terminalEnvironmentWithoutModelAccess } from "@vibe/shared/cloud-runtime";
 
 const MAX_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -24,9 +27,19 @@ interface TerminalSession {
 interface AgentState {
   host: ChildProcessWithoutNullStreams | null;
   sessionId: string | null;
+  engineReady: EngineReadyFrame | null;
   startupError: string | null;
   hostClients: Set<ServerSocket>;
   terminals: Map<string, TerminalSession>;
+}
+
+export interface EngineReadyFrame {
+  type: "ready";
+  protocolVersion: number;
+  engineRevision: string;
+  capabilities: string[];
+  hostInstanceId: string;
+  sessionId: string;
 }
 
 interface AgentOptions {
@@ -46,6 +59,38 @@ export function shouldProxyEngineFrame(payload: unknown): boolean {
   if (!payload || typeof payload !== "object") return true;
   const frame = payload as { type?: unknown; event?: { type?: unknown } };
   return frame.type !== "event" || frame.event?.type !== "turn-performance";
+}
+
+export function isEngineReadyFrame(value: unknown): value is EngineReadyFrame {
+  if (!value || typeof value !== "object") return false;
+  const frame = value as Partial<EngineReadyFrame>;
+  return (
+    frame.type === "ready" &&
+    Number.isSafeInteger(frame.protocolVersion) &&
+    typeof frame.engineRevision === "string" &&
+    frame.engineRevision.length > 0 &&
+    Array.isArray(frame.capabilities) &&
+    frame.capabilities.every((capability) => typeof capability === "string") &&
+    typeof frame.hostInstanceId === "string" &&
+    frame.hostInstanceId.length > 0 &&
+    typeof frame.sessionId === "string" &&
+    frame.sessionId.length > 0
+  );
+}
+
+export function cloudAgentReadyFrame(
+  sessionId: string | null,
+  engineReady: EngineReadyFrame | null,
+  connectionId: string = randomUUID(),
+) {
+  return {
+    channel: "agent",
+    type: "ready",
+    protocol: 1,
+    connectionId,
+    engineSessionId: sessionId,
+    ...(sessionId && engineReady?.sessionId === sessionId ? { engineReady } : {}),
+  };
 }
 
 interface WorkloadIdentity {
@@ -76,17 +121,21 @@ export function startCloudAgent(options: AgentOptions = {}) {
   const workload = workloadIdentity(options);
   const terminalWorkload = terminalIdentity(options);
   const isolationRequired = process.env.VIBE_CLOUD_REQUIRE_ISOLATION === "1";
-  if (isolationRequired && (
-    typeof process.getuid !== "function"
-    || process.getuid() !== 0
-    || !workload
-    || !terminalWorkload
-    || workload.uid === terminalWorkload.uid
-  )) {
-    throw new Error("Cloud control isolation requires a root agent and distinct non-root engine and terminal identities");
+  if (
+    isolationRequired &&
+    (typeof process.getuid !== "function" ||
+      process.getuid() !== 0 ||
+      !workload ||
+      !terminalWorkload ||
+      workload.uid === terminalWorkload.uid)
+  ) {
+    throw new Error(
+      "Cloud control isolation requires a root agent and distinct non-root engine and terminal identities",
+    );
   }
   const modelAccessFile = process.env.VIBE_CLOUD_MODEL_ACCESS_FILE;
-  if (!modelAccessFile) throw new Error("missing-credential: VIBE_CLOUD_MODEL_ACCESS_FILE is required");
+  if (!modelAccessFile)
+    throw new Error("missing-credential: VIBE_CLOUD_MODEL_ACCESS_FILE is required");
   let modelAccess: ReturnType<typeof openCloudModelAccess>;
   try {
     modelAccess = openCloudModelAccess(
@@ -118,6 +167,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
   const state: AgentState = {
     host: null,
     sessionId: null,
+    engineReady: null,
     startupError: null,
     hostClients: new Set(),
     terminals: new Map(),
@@ -125,7 +175,8 @@ export function startCloudAgent(options: AgentOptions = {}) {
 
   const ensureHost = () => {
     if (state.host && state.host.exitCode === null) return state.host;
-    const host = spawn("/bin/sh", ["-c", "umask 002; exec \"$1\"", "vibe-engine", engineHost], {
+    state.engineReady = null;
+    const host = spawn("/bin/sh", ["-c", 'umask 002; exec "$1"', "vibe-engine", engineHost], {
       cwd: workspaceRoot,
       env: {
         ...engineEnvironment,
@@ -159,6 +210,10 @@ export function startCloudAgent(options: AgentOptions = {}) {
             sessionId?: string;
             message?: string;
             event?: { type?: string };
+            protocolVersion?: number;
+            engineRevision?: string;
+            capabilities?: unknown;
+            hostInstanceId?: string;
           };
           if (payload.type === "fatal")
             state.startupError = payload.message ?? "engine bootstrap failed";
@@ -166,7 +221,10 @@ export function startCloudAgent(options: AgentOptions = {}) {
             if (expectedSessionId && payload.sessionId !== expectedSessionId) {
               state.startupError = `cloud engine resumed ${payload.sessionId} instead of ${expectedSessionId}`;
               host.kill("SIGKILL");
-            } else state.sessionId = payload.sessionId;
+            } else {
+              state.sessionId = payload.sessionId;
+              state.engineReady = isEngineReadyFrame(payload) ? payload : null;
+            }
           }
           // Performance samples are machine-local diagnostics. Never proxy them
           // over the cloud transport; the desktop persists only locally observed
@@ -197,6 +255,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
         });
         state.host = null;
         state.sessionId = null;
+        state.engineReady = null;
       }
     });
     host.on("exit", (code, signal) => {
@@ -207,6 +266,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
         });
         state.host = null;
         state.sessionId = null;
+        state.engineReady = null;
       }
     });
     return host;
@@ -224,19 +284,21 @@ export function startCloudAgent(options: AgentOptions = {}) {
       const healthy = sessionReady && !state.startupError;
       response.statusCode = healthy ? 200 : 503;
       response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({
-        ok: healthy,
-        engine: state.host?.exitCode === null,
-        sessionId: state.sessionId,
-        modelAccess: {
-          version: 1,
-          validated: sessionReady && !state.startupError,
-          environment: Object.keys(modelAccess.environment).sort(),
-          requiredModels: modelAccess.profile.requiredModels,
-        },
-        ...(state.startupError ? { error: state.startupError } : {}),
-        terminals: state.terminals.size,
-      }));
+      response.end(
+        JSON.stringify({
+          ok: healthy,
+          engine: state.host?.exitCode === null,
+          sessionId: state.sessionId,
+          modelAccess: {
+            version: 1,
+            validated: sessionReady && !state.startupError,
+            environment: Object.keys(modelAccess.environment).sort(),
+            requiredModels: modelAccess.profile.requiredModels,
+          },
+          ...(state.startupError ? { error: state.startupError } : {}),
+          terminals: state.terminals.size,
+        }),
+      );
       return;
     }
     response.writeHead(426).end("upgrade required");
@@ -254,13 +316,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
   });
   wss.on("connection", (socket) => {
     state.hostClients.add(socket);
-    send(socket, {
-      channel: "agent",
-      type: "ready",
-      protocol: 1,
-      connectionId: randomUUID(),
-      engineSessionId: state.sessionId,
-    });
+    send(socket, cloudAgentReadyFrame(state.sessionId, state.engineReady));
     socket.on("message", async (raw) => {
       const bytes = Array.isArray(raw) ? Buffer.concat(raw) : Buffer.from(raw as ArrayBuffer);
       if (bytes.byteLength > MAX_FRAME_BYTES) return socket.close(1009, "frame too large");
@@ -275,6 +331,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
           const host = state.host;
           state.host = null;
           state.sessionId = null;
+          state.engineReady = null;
           if (host) await terminateHost(host);
           send(socket, { channel: "agent", type: "detached" });
         } else if (frame.channel === "engine") {
@@ -282,8 +339,17 @@ export function startCloudAgent(options: AgentOptions = {}) {
           const line = `${JSON.stringify(frame.payload)}\n`;
           if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error("engine frame too large");
           host.stdin.write(line);
-        } else if (frame.channel === "file") await handleFile(socket, frame, workspaceRoot, workload);
-        else if (frame.channel === "terminal") await handleTerminal(socket, frame, state, workspaceRoot, terminalEnvironment, terminalWorkload);
+        } else if (frame.channel === "file")
+          await handleFile(socket, frame, workspaceRoot, workload);
+        else if (frame.channel === "terminal")
+          await handleTerminal(
+            socket,
+            frame,
+            state,
+            workspaceRoot,
+            terminalEnvironment,
+            terminalWorkload,
+          );
         else if (frame.channel === "ping") send(socket, { channel: "pong", at: Date.now() });
         else throw new Error("unknown channel");
       } catch (error) {
@@ -302,20 +368,26 @@ export function startCloudAgent(options: AgentOptions = {}) {
   server.listen(port, "0.0.0.0", () => {
     if (!expectedSessionId) return;
     const host = ensureHost();
-    host.stdin.write(`${JSON.stringify({
-      op: "bootstrap",
-      cwd: workspaceRoot,
-      resume: expectedSessionId,
-      executionTarget: { kind: "cloud", provider: cloudProvider },
-      ...(modelAccess.profile.requiredModels.length ? { requiredModels: modelAccess.profile.requiredModels } : {}),
-      runtimeProfile: {
-        schemaVersion: 1,
-        theme: modelAccess.profile.theme,
-        ...(modelAccess.profile.accentColor ? { accentColor: modelAccess.profile.accentColor } : {}),
-        details: modelAccess.profile.details,
-      },
-      runtimeCredentials: modelAccess.environment,
-    })}\n`);
+    host.stdin.write(
+      `${JSON.stringify({
+        op: "bootstrap",
+        cwd: workspaceRoot,
+        resume: expectedSessionId,
+        executionTarget: { kind: "cloud", provider: cloudProvider },
+        ...(modelAccess.profile.requiredModels.length
+          ? { requiredModels: modelAccess.profile.requiredModels }
+          : {}),
+        runtimeProfile: {
+          schemaVersion: 1,
+          theme: modelAccess.profile.theme,
+          ...(modelAccess.profile.accentColor
+            ? { accentColor: modelAccess.profile.accentColor }
+            : {}),
+          details: modelAccess.profile.details,
+        },
+        runtimeCredentials: modelAccess.environment,
+      })}\n`,
+    );
   });
   return server;
 }
@@ -452,7 +524,13 @@ export function environmentWithoutControlSecrets(
   environment: NodeJS.ProcessEnv,
 ): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(environment).filter(([key, value]) => key !== "VIBE_CLOUD_ACCESS_TOKEN" && key !== "VIBE_CLOUD_ACCESS_TOKEN_FILE" && key !== "VIBE_CLOUD_MODEL_ACCESS_FILE" && typeof value === "string"),
+    Object.entries(environment).filter(
+      ([key, value]) =>
+        key !== "VIBE_CLOUD_ACCESS_TOKEN" &&
+        key !== "VIBE_CLOUD_ACCESS_TOKEN_FILE" &&
+        key !== "VIBE_CLOUD_MODEL_ACCESS_FILE" &&
+        typeof value === "string",
+    ),
   ) as Record<string, string>;
 }
 
@@ -470,7 +548,11 @@ function terminalIdentity(options: AgentOptions): WorkloadIdentity | null {
   return { uid, gid, home: process.env.VIBE_CLOUD_TERMINAL_HOME || "/home/vibe-terminal" };
 }
 
-async function mkdirForWorkload(root: string, destination: string, workload: WorkloadIdentity | null): Promise<void> {
+async function mkdirForWorkload(
+  root: string,
+  destination: string,
+  workload: WorkloadIdentity | null,
+): Promise<void> {
   await mkdir(destination, { recursive: true });
   if (!workload) return;
   const rel = relative(root, destination);

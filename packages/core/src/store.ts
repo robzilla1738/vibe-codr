@@ -1,8 +1,17 @@
-import { mkdir, readdir, rename, rm, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { ModelMessage } from "ai";
-import { createId, type Message, type Mode, type Task } from "@vibe/shared";
 import { createHash } from "node:crypto";
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { createId, type Message, type Mode, type Task } from "@vibe/shared";
+import type { ModelMessage } from "ai";
 import type { SourceEntry } from "./source-ledger.ts";
 import { ensureStateDir, globalStateDir } from "./state-dir.ts";
 
@@ -313,10 +322,16 @@ export class SessionStore {
         // session truly absent.
         continue;
       }
+      const storedVersion = typeof meta.version === "number" ? meta.version : 0;
+      if (storedVersion > SESSION_META_VERSION) {
+        throw new Error(
+          `Session ${meta.id || id} uses metadata version ${storedVersion}; this build supports up to ${SESSION_META_VERSION}`,
+        );
+      }
       const modelRead = await this.#readJsonl<ModelMessage>(join(dir, "messages.jsonl"));
       const historyRead = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
       const warnings = [...modelRead.warnings, ...historyRead.warnings];
-      if (meta.version !== SESSION_META_VERSION || !Array.isArray(meta.turns)) {
+      if (storedVersion < SESSION_META_VERSION || !Array.isArray(meta.turns)) {
         meta = {
           ...meta,
           version: SESSION_META_VERSION,
@@ -421,37 +436,93 @@ export class SessionStore {
     if (!isSafeSessionId(id) || !atTurnId) throw new Error("session and turn id required");
     const source = await this.load(id);
     if (!source) throw new Error("session not found");
-    const sourceTurns = source.meta.turns ?? deriveTurnBoundaries(id, source.modelMessages, source.history);
+    const sourceTurns =
+      source.meta.turns ?? deriveTurnBoundaries(id, source.modelMessages, source.history);
     const boundary = sourceTurns.find((turn) => turn.id === atTurnId);
     if (boundary?.origin !== "user") throw new Error("fork boundary is not a completed user turn");
-    const modelMessages = source.modelMessages.slice(0, boundary.modelEnd);
+    let modelMessages = source.modelMessages.slice(0, boundary.modelEnd);
     const history = source.history.slice(0, boundary.historyEnd);
     assertCompleteToolPairs(modelMessages, history);
     const forkId = createId("ses");
     const now = Date.now();
-    const meta: SessionMeta = {
-      version: SESSION_META_VERSION,
-      id: forkId,
-      model: source.meta.model,
-      mode: source.meta.mode,
-      goal: source.meta.goal,
-      kind: "root",
-      tasks: [],
-      usage: { inputTokens: 0, outputTokens: 0, costUSD: 0, actualCostUSD: 0 },
-      ...(source.meta.recalledContext ? { recalledContext: source.meta.recalledContext } : {}),
-      title: `${source.meta.title?.trim() || "Session"} (fork)`.slice(0, 120),
-      forkedFrom: { sessionId: id, turnId: atTurnId },
-      createdAt: now,
-      updatedAt: now,
-      turns: sourceTurns.filter((turn) => turn.historyEnd <= boundary.historyEnd),
-    };
     try {
+      const copied = await this.#copyForkArtifacts(
+        id,
+        forkId,
+        source.meta.offloaded,
+        modelMessages,
+      );
+      modelMessages = rewriteOffloadPaths(modelMessages, copied.paths);
+      const meta: SessionMeta = {
+        version: SESSION_META_VERSION,
+        id: forkId,
+        model: source.meta.model,
+        mode: source.meta.mode,
+        goal: source.meta.goal,
+        kind: "root",
+        tasks: [],
+        usage: { inputTokens: 0, outputTokens: 0, costUSD: 0, actualCostUSD: 0 },
+        ...(source.meta.recalledContext ? { recalledContext: source.meta.recalledContext } : {}),
+        ...(copied.records.length ? { offloaded: copied.records } : {}),
+        title: `${source.meta.title?.trim() || "Session"} (fork)`.slice(0, 120),
+        forkedFrom: { sessionId: id, turnId: atTurnId },
+        createdAt: now,
+        updatedAt: now,
+        turns: sourceTurns.filter((turn) => turn.historyEnd <= boundary.historyEnd),
+      };
       await this.save(meta, modelMessages, history);
       return (await this.load(forkId))?.meta ?? meta;
     } catch (error) {
       await rm(this.#dir(forkId), { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
+  }
+
+  async #copyForkArtifacts(
+    sourceId: string,
+    forkId: string,
+    records: SessionMeta["offloaded"],
+    modelMessages: readonly ModelMessage[],
+  ): Promise<{
+    records: NonNullable<SessionMeta["offloaded"]>;
+    paths: ReadonlyMap<string, string>;
+  }> {
+    if (!records?.length) return { records: [], paths: new Map() };
+    const retainedCalls = modelToolResultIds(modelMessages);
+    const selected = records.filter((record) => retainedCalls.has(record.callId));
+    if (!selected.length) return { records: [], paths: new Map() };
+    const allowedRoots = [
+      resolve(this.#dir(sourceId), "tool-results"),
+      resolve(this.#legacy, sourceId, "tool-results"),
+    ];
+    const realAllowedRoots = await Promise.all(
+      allowedRoots.map((root) => realpath(root).catch(() => root)),
+    );
+    const destinationRoot = resolve(this.#dir(forkId), "tool-results");
+    await mkdir(destinationRoot, { recursive: true });
+    const copied: NonNullable<SessionMeta["offloaded"]> = [];
+    const paths = new Map<string, string>();
+    for (const record of selected) {
+      const sourcePath = resolve(record.path);
+      if (!allowedRoots.some((root) => isPathWithin(root, sourcePath))) {
+        throw new Error(`fork artifact path is outside the source session: ${record.callId}`);
+      }
+      const realSourcePath = await realpath(sourcePath).catch(() => null);
+      if (!realSourcePath) {
+        throw new Error(`fork artifact is unavailable: ${record.callId}`);
+      }
+      if (!realAllowedRoots.some((root) => isPathWithin(root, realSourcePath))) {
+        throw new Error(`fork artifact resolves outside the source session: ${record.callId}`);
+      }
+      const safeCallId = record.callId.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 48);
+      const callHash = createHash("sha256").update(record.callId).digest("hex").slice(0, 12);
+      const fileName = `${safeCallId}-${callHash}.txt`;
+      const destinationPath = join(destinationRoot, fileName);
+      await copyFile(realSourcePath, destinationPath);
+      paths.set(record.path, destinationPath);
+      copied.push({ ...record, path: destinationPath });
+    }
+    return { records: copied, paths };
   }
 
   /** Permanently remove a session directory (global + legacy). */
@@ -577,27 +648,40 @@ export function deriveTurnBoundaries(
   prior: readonly PersistedTurnBoundary[] | undefined = undefined,
 ): PersistedTurnBoundary[] {
   const historyUsers = history
-    .map((message, index) => message.role === "user" ? { index, text: comparableHistoryUserText(message) } : null)
+    .map((message, index) =>
+      message.role === "user" ? { index, text: comparableHistoryUserText(message) } : null,
+    )
     .filter((entry): entry is { index: number; text: string } => entry !== null);
   const modelUsers = modelMessages
-    .map((message, index) => message.role === "user"
-      ? { index, text: comparableModelUserText(message) }
-      : null)
+    .map((message, index) =>
+      message.role === "user" ? { index, text: comparableModelUserText(message) } : null,
+    )
     .filter((entry): entry is { index: number; text: string } => entry !== null);
   const aligned: Array<{ modelIndex: number; historyOrdinal: number }> = [];
   let historyCursor = historyUsers.length - 1;
-  for (let modelOrdinal = modelUsers.length - 1; modelOrdinal >= 0 && historyCursor >= 0; modelOrdinal -= 1) {
+  for (
+    let modelOrdinal = modelUsers.length - 1;
+    modelOrdinal >= 0 && historyCursor >= 0;
+    modelOrdinal -= 1
+  ) {
     const modelUser = modelUsers[modelOrdinal]!;
-    if (modelUser.text.startsWith("[Summary of earlier conversation]")) continue;
     let matchingOrdinal = -1;
+    const containsSummary = modelUser.text.startsWith("[Summary of earlier conversation]");
     if (modelUser.text) {
       for (let candidate = historyCursor; candidate >= 0; candidate -= 1) {
-        if (historyUsers[candidate]!.text === modelUser.text) {
+        const historyText = historyUsers[candidate]!.text;
+        const exact = historyText === modelUser.text;
+        const foldedAfterSummary =
+          containsSummary && historyText.length > 0 && modelUser.text.endsWith(` ${historyText}`);
+        if (exact || foldedAfterSummary) {
           matchingOrdinal = candidate;
           break;
         }
       }
     }
+    // A summary-only synthetic user message has no display-history boundary.
+    // A folded summary + retained prompt was matched by suffix above.
+    if (containsSummary && matchingOrdinal < 0) continue;
     // Some engine-authored turns deliberately use a shorter display label than
     // their provider prompt. Newest-first ordinal alignment is the safe fallback.
     if (matchingOrdinal < 0) matchingOrdinal = historyCursor;
@@ -611,10 +695,15 @@ export function deriveTurnBoundaries(
     const historyStart = historyUsers[pair.historyOrdinal]!.index;
     const historyEnd = historyUsers[pair.historyOrdinal + 1]?.index ?? history.length;
     const modelEnd = aligned[turnIndex + 1]?.modelIndex ?? modelMessages.length;
-    if (!history.slice(historyStart + 1, historyEnd).some((message) => message.role === "assistant")) continue;
+    if (
+      !history.slice(historyStart + 1, historyEnd).some((message) => message.role === "assistant")
+    )
+      continue;
     const message = history[historyStart]!;
-    const metadataTurnId = typeof message.metadata?.turnId === "string" ? message.metadata.turnId : undefined;
-    const old = prior?.find((turn) => turn.historyEnd === historyEnd) ?? prior?.[pair.historyOrdinal];
+    const metadataTurnId =
+      typeof message.metadata?.turnId === "string" ? message.metadata.turnId : undefined;
+    const old =
+      prior?.find((turn) => turn.historyEnd === historyEnd) ?? prior?.[pair.historyOrdinal];
     boundaries.push({
       id: metadataTurnId ?? old?.id ?? deterministicTurnId(sessionId, pair.historyOrdinal),
       modelEnd,
@@ -624,6 +713,50 @@ export function deriveTurnBoundaries(
     });
   }
   return boundaries;
+}
+
+function modelToolResultIds(messages: readonly ModelMessage[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "tool" || !Array.isArray(message.content)) continue;
+    for (const part of message.content as Array<{ type?: string; toolCallId?: string }>) {
+      if (part?.type === "tool-result" && part.toolCallId) ids.add(part.toolCallId);
+    }
+  }
+  return ids;
+}
+
+function rewriteOffloadPaths(
+  messages: readonly ModelMessage[],
+  paths: ReadonlyMap<string, string>,
+): ModelMessage[] {
+  if (!paths.size) return [...messages];
+  return messages.map((message) => {
+    if (message.role !== "tool" || !Array.isArray(message.content)) return message;
+    let changed = false;
+    const content = message.content.map((part) => {
+      const candidate = part as {
+        type?: string;
+        output?: { type?: string; value?: unknown };
+      };
+      if (candidate?.type !== "tool-result" || typeof candidate.output?.value !== "string") {
+        return part;
+      }
+      let value = candidate.output.value;
+      for (const [sourcePath, destinationPath] of paths) {
+        value = value.replaceAll(sourcePath, destinationPath);
+      }
+      if (value === candidate.output.value) return part;
+      changed = true;
+      return { ...candidate, output: { ...candidate.output, value } };
+    });
+    return changed ? ({ ...message, content } as ModelMessage) : message;
+  });
+}
+
+function isPathWithin(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function deterministicTurnId(sessionId: string, completedIndex: number): string {
@@ -640,9 +773,11 @@ export function assertCompleteToolPairs(
     for (const partValue of parts) {
       if (!partValue || typeof partValue !== "object") continue;
       const part = partValue as { type?: unknown; toolCallId?: unknown };
-      if (part.type === "tool-call" && typeof part.toolCallId === "string") pending.add(part.toolCallId);
+      if (part.type === "tool-call" && typeof part.toolCallId === "string")
+        pending.add(part.toolCallId);
       if (part.type === "tool-result" && typeof part.toolCallId === "string") {
-        if (!pending.delete(part.toolCallId)) throw new Error("fork boundary contains an unmatched tool result");
+        if (!pending.delete(part.toolCallId))
+          throw new Error("fork boundary contains an unmatched tool result");
       }
     }
     if (pending.size) throw new Error("fork boundary contains an unmatched tool call");

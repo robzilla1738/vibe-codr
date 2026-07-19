@@ -43,7 +43,7 @@
     "test:perf:live": "VIBE_LIVE_PERF=1 bun scripts/live-xai-performance.ts",
     "inspect:tui": "bun packages/tui/scripts/inspect.ts",
     "macos-bridge": "bun packages/macos-bridge/bin/engine-host.ts",
-    "build:macos-bridge": "bun build packages/macos-bridge/bin/engine-host.ts --compile --outfile dist/vibecodr-engine-host",
+    "build:macos-bridge": "bun scripts/build-macos-bridge.ts",
     "build:cloud-runtime": "node scripts/build-cloud-runtime.mjs",
     "smoke:cloud-runtime": "node scripts/smoke-cloud-runtime.mjs",
     "desktop:dev": "npm --prefix apps/desktop run dev",

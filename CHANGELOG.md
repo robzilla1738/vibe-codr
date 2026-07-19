@@ -4,6 +4,12 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.6.14 — 2026-07-19
+
+### Fixed
+
+- Allow the verified runtime-continuity renderer bundle across deterministic macOS/Linux minifier variance while retaining the existing largest-chunk startup ceiling.
+
 ## 0.6.13 — 2026-07-19
 
 ### Added

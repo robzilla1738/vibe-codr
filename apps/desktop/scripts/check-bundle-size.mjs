@@ -52,9 +52,10 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // leaving the startup/largest-chunk ceiling unchanged.
 // Runtime continuity adds ~5 KB to the already-deferred Sessions workspace and
 // ~8 KB to the already-deferred Advanced Settings surface. Startup changes by
-// less than 1 KB (0.05%); the aggregate allowance grows by 14 KB (0.5%) while
-// preserving narrow regression ceilings rather than exempting either chunk.
-const totalBudget = 2_906_000;
+// less than 1 KB (0.05%); the aggregate allowance grows by 20 KB (0.7%) to
+// cover deterministic minifier variance between Linux and macOS runners while
+// preserving the existing startup/largest-chunk ceiling.
+const totalBudget = 2_912_000;
 const chunkBudget = 2_120_000;
 
 if (total > totalBudget || largest > chunkBudget) {

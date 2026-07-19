@@ -46,6 +46,9 @@ export {
   SessionStore,
   type SessionMeta,
   type PersistedSession,
+  type PersistedTurnBoundary,
+  deriveTurnBoundaries,
+  assertCompleteToolPairs,
 } from "./store.ts";
 export { globalStateDir, stateRoot } from "./state-dir.ts";
 export { PortableSessionManager } from "./portable-session.ts";
@@ -76,10 +79,13 @@ export {
 } from "./memory.ts";
 export {
   searchSessions,
+  searchSessionsAcrossProjects,
   formatRecall,
   hasSavedSessions,
   type RecallHit,
   type RecallOptions,
+  type ProjectRecallHit,
+  type CrossProjectRecallOptions,
 } from "./recall.ts";
 export {
   resolveEmbedder,

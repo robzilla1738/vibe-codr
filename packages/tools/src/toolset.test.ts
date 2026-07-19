@@ -61,6 +61,141 @@ test("web_search is read-only (usable while planning)", () => {
   expect(new Toolset().names("plan")).toContain("web_search");
 });
 
+function extensionTool(index: number, readOnly = true): ToolDefinition<Record<string, unknown>> {
+  return {
+    name: `mcp__fixture__tool_${index}`,
+    description: `Search fixture capability ${index} with a deliberately descriptive catalog entry`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: `Fixture query ${index} ${"detail ".repeat(20)}` },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    readOnly,
+    async execute(input) {
+      return { output: { index, input } };
+    },
+  };
+}
+
+test("adaptive discovery cuts a 100-tool extension catalog by at least 60%", () => {
+  const ts = new Toolset([]);
+  for (let index = 0; index < 100; index += 1) {
+    ts.register(extensionTool(index), false, "mcp");
+  }
+  const build = ts.aiToolsAdaptive(
+    "execute",
+    { cwd: ".", sessionId: "s", emit: () => {}, freshness },
+    undefined,
+    { mode: "auto", contextWindow: 128_000 },
+  );
+  expect(build.active).toBe(true);
+  expect(build.deferredToolNames).toHaveLength(100);
+  expect(Object.keys(build.tools).sort()).toEqual(["tool_call", "tool_describe", "tool_search"]);
+  expect(build.schemaTokens).toBeLessThanOrEqual(build.directSchemaTokens * 0.4);
+});
+
+test("adaptive discovery preserves exact tool selection across a 100-tool fixture", async () => {
+  const ts = new Toolset([]);
+  for (let index = 0; index < 100; index += 1) ts.register(extensionTool(index), false, "mcp");
+  const build = ts.aiToolsAdaptive(
+    "execute",
+    { cwd: ".", sessionId: "s", emit: () => {}, freshness },
+    undefined,
+    { mode: "auto", contextWindow: 128_000 },
+  );
+  const search = (build.tools.tool_search as unknown as {
+    execute: (input: unknown, options: { toolCallId: string }) => Promise<{ tools?: Array<{ name?: string }> }>;
+  }).execute;
+  let selected = 0;
+  for (let index = 0; index < 100; index += 1) {
+    const name = `mcp__fixture__tool_${index}`;
+    const result = await search({ query: name, limit: 1 }, { toolCallId: `search-${index}` });
+    if (result.tools?.[0]?.name === name) selected += 1;
+  }
+  // Direct exposure is deterministically 100/100; adaptive stays within the
+  // roadmap's two-percentage-point selection-success budget.
+  expect(selected).toBeGreaterThanOrEqual(98);
+});
+
+test("small catalogs and direct mode retain the real tool map", () => {
+  const ts = new Toolset([]);
+  for (let index = 0; index < 8; index += 1) ts.register(extensionTool(index), false, "plugin");
+  const base = { cwd: ".", sessionId: "s", emit: () => {}, freshness };
+  const automatic = ts.aiToolsAdaptive("execute", base, undefined, {
+    mode: "auto",
+    contextWindow: 128_000,
+  });
+  expect(automatic.active).toBe(false);
+  expect(Object.keys(automatic.tools)).toHaveLength(8);
+  const direct = ts.aiToolsAdaptive("execute", base, undefined, {
+    mode: "direct",
+    contextWindow: 1,
+  });
+  expect(direct.active).toBe(false);
+  expect(Object.keys(direct.tools)).toHaveLength(8);
+});
+
+test("tool_call resolves permissions and hooks against the real tool identity", async () => {
+  const ts = new Toolset([]);
+  for (let index = 0; index < 33; index += 1) {
+    ts.register(extensionTool(index, index !== 7), false, "mcp");
+  }
+  const seen: string[] = [];
+  const build = ts.aiToolsAdaptive(
+    "execute",
+    {
+      cwd: ".",
+      sessionId: "s",
+      emit: () => {},
+      freshness,
+      beforeTool: async (name) => { seen.push(`before:${name}`); return {}; },
+      checkPermission: async (name) => { seen.push(`permission:${name}`); return { allowed: true }; },
+      afterTool: async (name) => { seen.push(`after:${name}`); },
+    },
+    createSerialLock(),
+    { mode: "auto", contextWindow: 128_000 },
+  );
+  const execute = (build.tools.tool_call as unknown as {
+    execute: (input: unknown, options: { toolCallId: string }) => Promise<unknown>;
+  }).execute;
+  const output = await execute(
+    { name: "mcp__fixture__tool_7", input: { query: "hello" } },
+    { toolCallId: "call-7" },
+  );
+  expect(output).toEqual({ index: 7, input: { query: "hello" } });
+  expect(seen).toEqual([
+    "before:mcp__fixture__tool_7",
+    "permission:mcp__fixture__tool_7",
+    "after:mcp__fixture__tool_7",
+  ]);
+});
+
+test("catalog revision invalidates cached discovery after MCP relists", () => {
+  const ts = new Toolset([]);
+  const base = { cwd: ".", sessionId: "s", emit: () => {}, freshness };
+  for (let index = 0; index < 32; index += 1) ts.register(extensionTool(index), false, "mcp");
+  const before = ts.aiToolsAdaptive("execute", base, undefined, {
+    mode: "auto",
+    contextWindow: 1_000_000,
+  });
+  expect(before.active).toBe(false);
+  ts.register(extensionTool(32), false, "mcp");
+  const after = ts.aiToolsAdaptive("execute", base, undefined, {
+    mode: "auto",
+    contextWindow: 1_000_000,
+  });
+  expect(after.active).toBe(true);
+  expect(after.catalogRevision).toBeGreaterThan(before.catalogRevision);
+  ts.unregister("mcp__fixture__tool_32");
+  expect(ts.aiToolsAdaptive("execute", base, undefined, {
+    mode: "auto",
+    contextWindow: 1_000_000,
+  }).active).toBe(false);
+});
+
 test("isConcurrencySafe: read-only or explicitly-safe tools, not mutating ones", () => {
   const byName = (n: string) => builtinTools().find((t) => t.name === n)!;
   expect(isConcurrencySafe(byName("read"))).toBe(true); // readOnly

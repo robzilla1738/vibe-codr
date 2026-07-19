@@ -9,6 +9,7 @@
  * in a separate process, so the TUI freeze class does not apply.
  */
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { loadConfig, type Config } from "@vibe/config";
 import {
@@ -16,12 +17,16 @@ import {
   loadProjectMemory,
   PortableSessionManager,
   SessionStore,
+  searchSessionsAcrossProjects,
   type PersistedSession,
 } from "@vibe/core";
 import type { EngineCommand, ExecutionTarget } from "@vibe/shared";
 import { ProviderAuthManager, ProviderRegistry } from "@vibe/providers";
 import {
   decodeInbound,
+  HOST_PROTOCOL_CAPABILITIES,
+  HOST_PROTOCOL_VERSION,
+  type HostEventFrame,
   type HostInbound,
   type HostOutbound,
   type HostRpcParams,
@@ -37,6 +42,9 @@ import { fitTranscriptPayload, structuredTranscript } from "./transcript-history
 function write(msg: HostOutbound): void {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
+
+const EVENT_REPLAY_MAX_FRAMES = 2_048;
+const EVENT_REPLAY_MAX_BYTES = 8 * 1024 * 1024;
 
 function applyModeOverride(overrides: Partial<Config>, mode: string): boolean {
   if (mode === "plan") {
@@ -58,9 +66,15 @@ function applyModeOverride(overrides: Partial<Config>, mode: string): boolean {
 }
 
 export async function runHost(): Promise<void> {
+  const hostInstanceId = randomUUID();
+  const engineRevision = process.env.VIBE_ENGINE_COMMIT?.trim() || "development";
+  let eventSequence = 0;
+  let replayBytes = 0;
+  const replayFrames: Array<{ frame: HostEventFrame; bytes: number }> = [];
   let engine: Engine | null = null;
   let eventLoop: Promise<void> | null = null;
   let shuttingDown = false;
+  let activeSessionSearch: AbortController | null = null;
   let lastCwd: string = process.cwd();
   let importedResumeAuthorization: {
     cwd: string;
@@ -72,6 +86,25 @@ export async function runHost(): Promise<void> {
   // outer stdin loop's control-flow graph. Read through a typed accessor so the
   // loop can narrow the real mutable runtime state without unsafe `never` casts.
   const currentEngine = (): Engine | null => engine;
+  const currentSessionSearch = (): AbortController | null => activeSessionSearch;
+
+  const writeEvent = (event: HostEventFrame["event"]): void => {
+    const frame: HostEventFrame = {
+      type: "event",
+      hostInstanceId,
+      seq: ++eventSequence,
+      event,
+    };
+    const bytes = Buffer.byteLength(JSON.stringify(frame));
+    replayFrames.push({ frame, bytes });
+    replayBytes += bytes;
+    while (replayFrames.length > EVENT_REPLAY_MAX_FRAMES || replayBytes > EVENT_REPLAY_MAX_BYTES) {
+      const removed = replayFrames.shift();
+      if (!removed) break;
+      replayBytes -= removed.bytes;
+    }
+    write(frame);
+  };
 
   const fatal = (err: unknown) => {
     if (shuttingDown) return;
@@ -93,7 +126,7 @@ export async function runHost(): Promise<void> {
     eventLoop = (async () => {
       try {
         for await (const event of e.events()) {
-          write({ type: "event", event });
+          writeEvent(event);
         }
       } catch (err) {
         fatal(err);
@@ -223,7 +256,14 @@ export async function runHost(): Promise<void> {
     startEventPump(engine);
 
     const snap = engine.snapshot();
-    write({ type: "ready", sessionId: snap.sessionId });
+    write({
+      type: "ready",
+      protocolVersion: HOST_PROTOCOL_VERSION,
+      engineRevision,
+      capabilities: [...HOST_PROTOCOL_CAPABILITIES],
+      hostInstanceId,
+      sessionId: snap.sessionId,
+    });
   };
 
   const handleRpc = async (
@@ -273,6 +313,40 @@ export async function runHost(): Promise<void> {
         write({ type: "resp", id, ok: true, value: metas });
         return;
       }
+      if (method === "searchSessions") {
+        activeSessionSearch?.abort();
+        const searchController = new AbortController();
+        activeSessionSearch = searchController;
+        const query = params?.query?.replace(/\s+/g, " ").trim().slice(0, 512) ?? "";
+        if (!query) {
+          if (activeSessionSearch === searchController) activeSessionSearch = null;
+          write({ type: "resp", id, ok: true, value: [] });
+          return;
+        }
+        const projects = params?.cwd
+          ? [{ cwd: params.cwd }]
+          : await listProjectSummaries(engine ? lastCwd : undefined);
+        const hits = await searchSessionsAcrossProjects(projects.map((project) => project.cwd), query, {
+          limit: Math.max(1, Math.min(100, Math.trunc(params?.limit ?? 20))),
+          concurrency: 4,
+          signal: searchController.signal,
+        });
+        if (activeSessionSearch === searchController) activeSessionSearch = null;
+        write({
+          type: "resp",
+          id,
+          ok: true,
+          value: hits.map((hit) => ({
+            cwd: hit.cwd,
+            sessionId: hit.sessionId,
+            role: hit.role,
+            timestamp: hit.when,
+            snippet: hit.snippet,
+            score: hit.score,
+          })),
+        });
+        return;
+      }
       if (method === "listProjects") {
         // Before bootstrap, process.cwd() is only the host launch directory and
         // must not be presented to desktop clients as a persisted project/capability.
@@ -301,7 +375,7 @@ export async function runHost(): Promise<void> {
         );
         return;
       }
-      if (method === "renameSession" || method === "deleteSession" || method === "archiveSession") {
+      if (method === "renameSession" || method === "deleteSession" || method === "archiveSession" || method === "forkSession") {
         const sessionId = params?.id?.trim();
         if (!sessionId) {
           write({ type: "resp", id, ok: false, error: "session id required" });
@@ -313,6 +387,18 @@ export async function runHost(): Promise<void> {
           return;
         }
         const store = new SessionStore(cwd);
+        if (method === "forkSession") {
+          const loaded = await store.load(sessionId);
+          const atTurnId = params?.atTurnId?.trim()
+            || loaded?.meta.turns?.filter((turn) => turn.origin === "user").at(-1)?.id;
+          if (!atTurnId) {
+            write({ type: "resp", id, ok: false, error: "session has no completed user turn to fork" });
+            return;
+          }
+          const forked = await store.fork(sessionId, atTurnId);
+          write({ type: "resp", id, ok: true, value: { id: forked.id, cwd, atTurnId } });
+          return;
+        }
         if (method === "renameSession") {
           const title = (params?.title ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
           const ok = await store.setTitle(sessionId, title);
@@ -469,10 +555,38 @@ export async function runHost(): Promise<void> {
               type: "resp",
               id,
               ok: true,
-              value: history === snapshot.history ? snapshot : { ...snapshot, history },
+              value: {
+                ...(history === snapshot.history ? snapshot : { ...snapshot, history }),
+                hostInstanceId,
+                lastEventSeq: eventSequence,
+              },
             });
           }
           return;
+        case "replayEvents": {
+          const afterSeq = params?.afterSeq;
+          const sameHost = params?.hostInstanceId === hostInstanceId;
+          if (!Number.isSafeInteger(afterSeq) || afterSeq === undefined || afterSeq < 0) {
+            write({ type: "resp", id, ok: false, error: "non-negative replay cursor required" });
+            return;
+          }
+          const oldestSeq = replayFrames[0]?.frame.seq ?? eventSequence + 1;
+          const truncated = !sameHost || afterSeq < oldestSeq - 1;
+          write({
+            type: "resp",
+            id,
+            ok: true,
+            value: {
+              hostInstanceId,
+              events: truncated
+                ? []
+                : replayFrames.filter(({ frame }) => frame.seq > afterSeq).map(({ frame }) => frame),
+              lastEventSeq: eventSequence,
+              truncated,
+            },
+          });
+          return;
+        }
         case "listModels":
           write({ type: "resp", id, ok: true, value: await engine.listModels() });
           return;
@@ -506,6 +620,14 @@ export async function runHost(): Promise<void> {
             id,
             ok: true,
             value: engine.listMcp(),
+          });
+          return;
+        case "listPluginStatus":
+          write({
+            type: "resp",
+            id,
+            ok: true,
+            value: engine.listPluginStatus(),
           });
           return;
         case "finalize":
@@ -579,10 +701,15 @@ export async function runHost(): Promise<void> {
           await currentEngine()!.send(msg.command as EngineCommand);
           break;
         case "rpc":
-          await handleRpc(msg.id, msg.method, msg.params);
+          // Session recall can span several project stores. Let a replacement
+          // query enter the loop immediately so it can abort obsolete work;
+          // all other RPCs retain ordered request handling.
+          if (msg.method === "searchSessions") void handleRpc(msg.id, msg.method, msg.params);
+          else await handleRpc(msg.id, msg.method, msg.params);
           break;
         case "shutdown": {
           shuttingDown = true;
+          currentSessionSearch()?.abort();
           const activeEngine = currentEngine();
           if (activeEngine) {
             try {

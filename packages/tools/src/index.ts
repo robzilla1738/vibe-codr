@@ -4,10 +4,15 @@ export {
   createSemaphore,
   createSerialLock,
   createFileLock,
+  isToolDiscoveryWrapper,
+  resolveDiscoveredToolCall,
   FileOwnedError,
   type FileLock,
   type SerialLock,
   type ToolRuntimeBase,
+  type ToolDiscoveryBuild,
+  type ToolDiscoveryOptions,
+  type ToolRegistrationSource,
 } from "./toolset.ts";
 export {
   PATH_FIELD_ALIASES,

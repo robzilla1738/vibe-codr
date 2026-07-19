@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { Message } from "@vibe/shared";
 import { SessionStore } from "./store.ts";
 import { globalStateDir } from "./state-dir.ts";
-import { searchSessions, formatRecall, _resetRecallCache } from "./recall.ts";
+import { searchSessions, searchSessionsAcrossProjects, formatRecall, _resetRecallCache } from "./recall.ts";
 import { mkdtempSync } from "node:fs";
 
 // Sessions persist to the per-project GLOBAL state dir — point it at a temp
@@ -68,6 +68,22 @@ test("searchSessions can exclude the live session", async () => {
   const dir = await seed();
   const hits = await searchSessions(dir, "oauth", { excludeId: "ses_b" });
   expect(hits.every((h) => h.sessionId !== "ses_b")).toBe(true);
+});
+
+test("searchSessionsAcrossProjects merges ranked hits and honors cancellation", async () => {
+  const first = await seed();
+  const second = await mkdtemp(join(tmpdir(), "vibe-recall-cross-"));
+  const store = new SessionStore(second);
+  await store.save(
+    { id: "ses_cross", model: "m", mode: "execute", goal: null, createdAt: 1, updatedAt: 3_000 },
+    [],
+    [msg("user", "JSONC loader regression in another project"), msg("assistant", "fixed")],
+  );
+  const hits = await searchSessionsAcrossProjects([first, second], "JSONC loader", { limit: 10, concurrency: 4 });
+  expect(new Set(hits.map((hit) => hit.cwd))).toEqual(new Set([first, second]));
+  const controller = new AbortController();
+  controller.abort();
+  expect(await searchSessionsAcrossProjects([first, second], "JSONC", { signal: controller.signal })).toEqual([]);
 });
 
 test("searchSessions on a dir with no sessions yields no hits", async () => {

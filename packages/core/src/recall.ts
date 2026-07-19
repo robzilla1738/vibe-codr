@@ -84,6 +84,18 @@ export interface RecallOptions {
   limit?: number;
   /** Skip this session id (usually the live one) to surface *other* memory. */
   excludeId?: string;
+  /** Stop an obsolete desktop search between bounded session reads. */
+  signal?: AbortSignal;
+}
+
+export interface ProjectRecallHit extends RecallHit {
+  cwd: string;
+}
+
+export interface CrossProjectRecallOptions extends RecallOptions {
+  /** Maximum concurrent project scans (desktop default 4). */
+  concurrency?: number;
+  signal?: AbortSignal;
 }
 
 /** Flatten a message's renderable text (text + reasoning parts). */
@@ -149,10 +161,12 @@ export async function searchSessions(
   }
   const docs: Doc[] = [];
   for (let m = 0; m < metas.length; m++) {
+    if (opts.signal?.aborted) return [];
     const meta = metas[m]!;
     if (opts.excludeId && meta.id === opts.excludeId) continue;
     const recencyBonus = (metas.length - m) / (metas.length * 2 + 1); // < 0.5
     const history = await loadHistoryCached(cwd, store, meta.id);
+    if (opts.signal?.aborted) return [];
     for (const msg of history) {
       const text = messageText(msg.parts);
       if (!text) continue;
@@ -189,6 +203,37 @@ export async function searchSessions(
 
   hits.sort((a, b) => b.score - a.score);
   return hits.slice(0, limit);
+}
+
+/** Search several project stores with bounded I/O concurrency, then merge by
+ * the same deterministic BM25 score used by single-project recall. */
+export async function searchSessionsAcrossProjects(
+  cwds: readonly string[],
+  query: string,
+  opts: CrossProjectRecallOptions = {},
+): Promise<ProjectRecallHit[]> {
+  const unique = [...new Set(cwds)];
+  const limit = Math.max(1, Math.min(100, opts.limit ?? 20));
+  const concurrency = Math.max(1, Math.min(4, Math.trunc(opts.concurrency ?? 4)));
+  const hits: ProjectRecallHit[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < unique.length) {
+      if (opts.signal?.aborted) return;
+      const cwd = unique[next++]!;
+      const projectHits = await searchSessions(cwd, query, {
+        limit,
+        excludeId: opts.excludeId,
+        signal: opts.signal,
+      });
+      hits.push(...projectHits.map((hit) => ({ ...hit, cwd })));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, unique.length) }, () => worker()));
+  if (opts.signal?.aborted) return [];
+  return hits
+    .sort((a, b) => b.score - a.score || b.when - a.when || a.sessionId.localeCompare(b.sessionId))
+    .slice(0, limit);
 }
 
 /** Render recall hits as a compact, readable block for `/recall` output. */

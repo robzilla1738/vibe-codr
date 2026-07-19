@@ -413,6 +413,15 @@ export const ConfigSchema = z.object({
   mouse: z.boolean().default(true),
   /** Plugin module specifiers (npm names or local paths). */
   plugins: z.array(z.string()).default([]),
+  /** Progressive disclosure for large MCP/plugin catalogs. Core tools always
+   * remain direct; extension tools defer only after the bounded thresholds. */
+  toolDiscovery: z
+    .object({
+      mode: z.enum(["auto", "direct"]).default("auto"),
+      /** Extension tools that must stay directly visible even in auto mode. */
+      directTools: z.array(z.string()).default([]),
+    })
+    .default({ mode: "auto", directTools: [] }),
   /** Declarative lifecycle hooks (shell/HTTP) layered onto the in-process HookBus. */
   hooks: z.array(HookSchema).default([]),
   subagent: z

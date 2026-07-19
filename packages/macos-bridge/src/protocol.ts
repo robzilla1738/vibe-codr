@@ -1,9 +1,33 @@
 import type {
   EngineCommand,
+  EngineSnapshot,
   ExecutionTarget,
   PortableSessionArchiveV1,
   UIEvent,
 } from "@vibe/shared";
+
+export const HOST_PROTOCOL_VERSION = 2 as const;
+export const HOST_PROTOCOL_CAPABILITIES = ["event-replay"] as const;
+export type HostProtocolCapability = (typeof HOST_PROTOCOL_CAPABILITIES)[number];
+
+export interface HostEventFrame {
+  type: "event";
+  hostInstanceId: string;
+  seq: number;
+  event: UIEvent;
+}
+
+export interface HostReplayResult {
+  hostInstanceId: string;
+  events: HostEventFrame[];
+  lastEventSeq: number;
+  truncated: boolean;
+}
+
+export type HostSnapshot = EngineSnapshot & {
+  hostInstanceId: string;
+  lastEventSeq: number;
+};
 
 export interface HostRpcParams {
   cwd?: string;
@@ -22,6 +46,11 @@ export interface HostRpcParams {
   providerId?: "openai-codex" | "xai-oauth";
   authMethod?: "browser" | "device";
   authSessionId?: string;
+  hostInstanceId?: string;
+  afterSeq?: number;
+  query?: string;
+  limit?: number;
+  atTurnId?: string;
 }
 
 /** Desktop client → Bun */
@@ -49,11 +78,13 @@ export type HostInbound =
       id: number;
       method:
         | "snapshot"
+        | "replayEvents"
         | "listModels"
         | "listProviders"
         | "listAgents"
         | "listSkills"
         | "listMcp"
+        | "listPluginStatus"
         | "providerAuthStatus"
         | "beginProviderAuth"
         | "cancelProviderAuth"
@@ -61,6 +92,7 @@ export type HostInbound =
         | "exportProviderAuth"
         | "finalize"
         | "listSessions"
+        | "searchSessions"
         | "listProjects"
         | "renameProject"
         | "archiveProject"
@@ -68,6 +100,7 @@ export type HostInbound =
         | "renameSession"
         | "deleteSession"
         | "archiveSession"
+        | "forkSession"
         | "prepareHandoff"
         | "exportPortableSession"
         | "importPortableSession"
@@ -83,8 +116,15 @@ export type HostInbound =
 
 /** Bun → desktop client */
 export type HostOutbound =
-  | { type: "ready"; sessionId: string }
-  | { type: "event"; event: UIEvent }
+  | {
+      type: "ready";
+      protocolVersion: number;
+      engineRevision: string;
+      capabilities: string[];
+      hostInstanceId: string;
+      sessionId: string;
+    }
+  | HostEventFrame
   | { type: "resp"; id: number; ok: true; value: unknown }
   | { type: "resp"; id: number; ok: false; error: string }
   | { type: "fatal"; message: string };
@@ -97,6 +137,16 @@ export interface ProjectSessionSummary {
   goal: string | null;
   createdAt: number;
   updatedAt: number;
+  latestTurnId?: string;
+}
+
+export interface SessionSearchHit {
+  cwd: string;
+  sessionId: string;
+  role: "user" | "assistant" | "system" | "tool";
+  timestamp: number;
+  snippet: string;
+  score: number;
 }
 
 export interface ProjectSummary {
@@ -110,11 +160,13 @@ export type RpcMethod = Extract<HostInbound, { op: "rpc" }>["method"];
 
 const RPC_METHODS = new Set<RpcMethod>([
   "snapshot",
+  "replayEvents",
   "listModels",
   "listProviders",
   "listAgents",
   "listSkills",
   "listMcp",
+  "listPluginStatus",
   "providerAuthStatus",
   "beginProviderAuth",
   "cancelProviderAuth",
@@ -122,6 +174,7 @@ const RPC_METHODS = new Set<RpcMethod>([
   "exportProviderAuth",
   "finalize",
   "listSessions",
+  "searchSessions",
   "listProjects",
   "renameProject",
   "archiveProject",
@@ -129,6 +182,7 @@ const RPC_METHODS = new Set<RpcMethod>([
   "renameSession",
   "deleteSession",
   "archiveSession",
+  "forkSession",
   "prepareHandoff",
   "exportPortableSession",
   "importPortableSession",
@@ -636,6 +690,11 @@ export function decodeInbound(line: string): HostInbound | null {
           params.authMethod !== "browser" &&
           params.authMethod !== "device") ||
         !optionalString(params.authSessionId) ||
+        !optionalString(params.hostInstanceId) ||
+        !optionalString(params.query) ||
+        !optionalString(params.atTurnId) ||
+        !optionalSafeNonNegativeInteger(params.limit) ||
+        !optionalSafeNonNegativeInteger(params.afterSeq) ||
         !optionalBoolean(params.provisional) ||
         !optionalSafeNonNegativeInteger(params.expectedGeneration) ||
         !optionalSafeNonNegativeInteger(params.ownershipGeneration) ||
@@ -643,6 +702,15 @@ export function decodeInbound(line: string): HostInbound | null {
         (params.archive !== undefined && !portableArchive(params.archive)))
     )
       return null;
+    if (params) {
+      const allowed = new Set([
+        "cwd", "id", "name", "title", "sessionId", "target", "expectedGeneration",
+        "ownershipGeneration", "nonce", "engineRevision", "archive", "archivePath",
+        "provisional", "providerId", "authMethod", "authSessionId", "hostInstanceId",
+        "afterSeq", "query", "limit", "atTurnId",
+      ]);
+      if (Object.keys(params).some((key) => !allowed.has(key))) return null;
+    }
     return value as HostInbound;
   }
   return null;
@@ -658,8 +726,18 @@ export function decodeOutbound(line: string): HostOutbound | null {
   const msg = record(value);
   if (!msg || typeof msg.type !== "string") return null;
   if (msg.type === "ready")
-    return typeof msg.sessionId === "string" && msg.sessionId ? (value as HostOutbound) : null;
-  if (msg.type === "event") return isUIEvent(msg.event) ? (value as HostOutbound) : null;
+    return Number.isSafeInteger(msg.protocolVersion) && (msg.protocolVersion as number) > 0 &&
+      typeof msg.engineRevision === "string" && msg.engineRevision.length > 0 &&
+      Array.isArray(msg.capabilities) && msg.capabilities.length <= 64 &&
+      msg.capabilities.every((capability) => typeof capability === "string" && capability.length > 0 && capability.length <= 128) &&
+      typeof msg.hostInstanceId === "string" && msg.hostInstanceId.length > 0 &&
+      typeof msg.sessionId === "string" && msg.sessionId.length > 0
+      ? (value as HostOutbound)
+      : null;
+  if (msg.type === "event") return typeof msg.hostInstanceId === "string" && msg.hostInstanceId.length > 0 &&
+    Number.isSafeInteger(msg.seq) && (msg.seq as number) > 0 && isUIEvent(msg.event)
+    ? (value as HostOutbound)
+    : null;
   if (msg.type === "fatal") return typeof msg.message === "string" ? (value as HostOutbound) : null;
   if (msg.type === "resp") {
     if (!Number.isSafeInteger(msg.id) || (msg.id as number) < 1 || typeof msg.ok !== "boolean")

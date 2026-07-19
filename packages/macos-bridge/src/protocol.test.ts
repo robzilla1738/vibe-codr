@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { decodeInbound, decodeOutbound } from "./protocol.ts";
 
+const readyFrame = <T>(sessionId: T) => ({
+  type: "ready" as const,
+  protocolVersion: 2,
+  engineRevision: "test",
+  capabilities: ["event-replay"],
+  hostInstanceId: "host-test",
+  sessionId,
+});
+
+const eventFrame = (event: unknown) => ({
+  type: "event",
+  hostInstanceId: "host-test",
+  seq: 1,
+  event,
+});
+
 describe("macOS bridge protocol runtime validation", () => {
   test("accepts valid commands and rejects malformed inbound shapes", () => {
     expect(
@@ -41,6 +57,11 @@ describe("macOS bridge protocol runtime validation", () => {
       id: 1,
       method: "snapshot",
     });
+    expect(decodeInbound(JSON.stringify({ op: "rpc", id: 4, method: "listPluginStatus" }))).toEqual({
+      op: "rpc",
+      id: 4,
+      method: "listPluginStatus",
+    });
     expect(decodeInbound(JSON.stringify({
       op: "rpc",
       id: 2,
@@ -73,59 +94,44 @@ describe("macOS bridge protocol runtime validation", () => {
   });
 
   test("accepts valid host messages and rejects malformed events and responses", () => {
-    expect(decodeOutbound(JSON.stringify({ type: "ready", sessionId: "ses_1" }))).toEqual({
-      type: "ready",
-      sessionId: "ses_1",
-    });
+    expect(decodeOutbound(JSON.stringify(readyFrame("ses_1")))).toEqual(readyFrame("ses_1"));
     expect(
       decodeOutbound(
-        JSON.stringify({ type: "event", event: { type: "notice", level: "info", message: "ok" } }),
+        JSON.stringify(eventFrame({ type: "notice", level: "info", message: "ok" })),
       ),
     ).not.toBeNull();
     expect(
       decodeOutbound(
-        JSON.stringify({
-          type: "event",
-          event: {
+        JSON.stringify(eventFrame({
             type: "user-message",
             sessionId: "ses_1",
             text: "Continue",
             origin: "engine",
             label: "Goal",
-          },
-        }),
+        })),
       ),
     ).not.toBeNull();
     expect(
       decodeOutbound(
-        JSON.stringify({
-          type: "event",
-          event: { type: "user-message", sessionId: "ses_1", text: "Continue", origin: "other" },
-        }),
+        JSON.stringify(eventFrame({ type: "user-message", sessionId: "ses_1", text: "Continue", origin: "other" })),
       ),
     ).toBeNull();
     expect(
       decodeOutbound(
-        JSON.stringify({
-          type: "event",
-          event: {
+        JSON.stringify(eventFrame({
             type: "user-message",
             sessionId: "ses_1",
             text: "Continue",
             label: { text: "Goal" },
-          },
-        }),
+        })),
       ),
     ).toBeNull();
     expect(
-      decodeOutbound(JSON.stringify({ type: "event", event: { type: "notice", level: "info" } })),
+      decodeOutbound(JSON.stringify(eventFrame({ type: "notice", level: "info" }))),
     ).toBeNull();
     expect(
       decodeOutbound(
-        JSON.stringify({
-          type: "event",
-          event: { type: "tasks-updated", sessionId: "s", tasks: null },
-        }),
+        JSON.stringify(eventFrame({ type: "tasks-updated", sessionId: "s", tasks: null })),
       ),
     ).toBeNull();
     expect(decodeOutbound(JSON.stringify({ type: "resp", id: 1, ok: false }))).toBeNull();

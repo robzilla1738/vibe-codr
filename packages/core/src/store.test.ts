@@ -47,7 +47,9 @@ test("save then load round-trips a session", async () => {
 
   const loaded = await store.load("ses_abc");
   expect(loaded).not.toBeNull();
-  expect(loaded!.meta).toEqual(meta);
+  expect(loaded!.meta).toMatchObject(meta);
+  expect(loaded!.meta.version).toBe(2);
+  expect(loaded!.meta.turns).toHaveLength(1);
   expect(loaded!.modelMessages).toEqual(model);
   expect(loaded!.history).toEqual(history);
 });
@@ -305,6 +307,111 @@ test("legacy in-project sessions (<cwd>/.vibe/sessions) are still loadable and l
   await store.save({ ...meta, goal: "updated", updatedAt: 99 }, model, history);
   expect((await store.load(meta.id))?.meta.goal).toBe("updated");
   expect(await store.list()).toHaveLength(1);
+});
+
+test("legacy sessions derive and persist deterministic stable turn ids on first load", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-turn-migrate-"));
+  const { meta, model, history } = fixture();
+  const legacy = join(cwd, ".vibe", "sessions", meta.id);
+  await Bun.write(join(legacy, "meta.json"), JSON.stringify(meta));
+  await Bun.write(join(legacy, "messages.jsonl"), model.map((message) => JSON.stringify(message)).join("\n"));
+  await Bun.write(join(legacy, "history.jsonl"), history.map((message) => JSON.stringify(message)).join("\n"));
+  const store = new SessionStore(cwd);
+  const first = await store.load(meta.id);
+  const second = await store.load(meta.id);
+  expect(first?.meta.version).toBe(2);
+  expect(first?.meta.turns?.[0]?.id).toMatch(/^turn_[0-9a-f]{20}$/);
+  expect(second?.meta.turns?.[0]?.id).toBe(first?.meta.turns?.[0]?.id);
+  expect(existsSync(join(sessionDir(cwd, meta.id), "meta.json"))).toBe(true);
+});
+
+test("fork copies model and display histories through a completed user turn", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-fork-"));
+  const store = new SessionStore(cwd);
+  const meta: SessionMeta = {
+    id: "ses_source", title: "Tool session", model: "m/x", mode: "execute", goal: null,
+    createdAt: 1, updatedAt: 9,
+  };
+  const model = [
+    { role: "user", content: "first" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "call-1", toolName: "read", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "call-1", toolName: "read", output: { type: "text", value: "ok" } }] },
+    { role: "assistant", content: "first done" },
+    { role: "user", content: "second" },
+    { role: "assistant", content: "second done" },
+  ] as ModelMessage[];
+  const history: Message[] = [
+    { id: "u1", role: "user", parts: [{ type: "text", text: "first" }], createdAt: 1, metadata: { turnId: "turn-stable-1" } },
+    { id: "a1", role: "assistant", parts: [
+      { type: "tool-call", toolCallId: "call-1", toolName: "read", input: {} },
+      { type: "tool-result", toolCallId: "call-1", toolName: "read", output: "ok" },
+      { type: "text", text: "first done" },
+    ], createdAt: 2 },
+    { id: "u2", role: "user", parts: [{ type: "text", text: "second" }], createdAt: 3, metadata: { turnId: "turn-stable-2" } },
+    { id: "a2", role: "assistant", parts: [{ type: "text", text: "second done" }], createdAt: 4 },
+  ];
+  await store.save(meta, model, history);
+  const forkedMeta = await store.fork(meta.id, "turn-stable-1");
+  const forked = await store.load(forkedMeta.id);
+  const source = await store.load(meta.id);
+  expect(forked?.modelMessages).toEqual(model.slice(0, 4));
+  expect(forked?.history).toEqual(history.slice(0, 2));
+  expect(forked?.meta.forkedFrom).toEqual({ sessionId: meta.id, turnId: "turn-stable-1" });
+  expect(forked?.meta.usage?.inputTokens).toBe(0);
+  expect(source?.modelMessages).toEqual(model);
+  expect(source?.history).toEqual(history);
+});
+
+test("compacted model history aligns fork boundaries to the latest display turns", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-fork-compacted-"));
+  const store = new SessionStore(cwd);
+  const meta: SessionMeta = {
+    id: "ses_compacted", model: "m/x", mode: "execute", goal: null, createdAt: 1, updatedAt: 9,
+  };
+  const model = [
+    { role: "user", content: "[Summary of earlier conversation]\nThe first turn is summarized." },
+    { role: "assistant", content: "Understood." },
+    { role: "user", content: "second" },
+    { role: "assistant", content: "second done" },
+    { role: "user", content: "third" },
+    { role: "assistant", content: "third done" },
+  ] as ModelMessage[];
+  const history: Message[] = [
+    { id: "u1", role: "user", parts: [{ type: "text", text: "first" }], createdAt: 1, metadata: { turnId: "turn-1" } },
+    { id: "a1", role: "assistant", parts: [{ type: "text", text: "first done" }], createdAt: 2 },
+    { id: "u2", role: "user", parts: [{ type: "text", text: "second" }], createdAt: 3, metadata: { turnId: "turn-2" } },
+    { id: "a2", role: "assistant", parts: [{ type: "text", text: "second done" }], createdAt: 4 },
+    { id: "u3", role: "user", parts: [{ type: "text", text: "third" }], createdAt: 5, metadata: { turnId: "turn-3" } },
+    { id: "a3", role: "assistant", parts: [{ type: "text", text: "third done" }], createdAt: 6 },
+  ];
+  await store.save(meta, model, history);
+  const source = await store.load(meta.id);
+  expect(source?.meta.turns?.map((turn) => turn.id)).toEqual(["turn-2", "turn-3"]);
+  expect(source?.meta.turns?.at(-1)).toMatchObject({ id: "turn-3", modelEnd: model.length, historyEnd: history.length });
+
+  const forkedMeta = await store.fork(meta.id, "turn-3");
+  const forked = await store.load(forkedMeta.id);
+  expect(forked?.modelMessages).toEqual(model);
+  expect(forked?.history).toEqual(history);
+  expect(forked?.meta.forkedFrom).toEqual({ sessionId: meta.id, turnId: "turn-3" });
+});
+
+test("fork refuses a boundary with a dangling tool call and leaves the source unchanged", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-fork-dangling-"));
+  const store = new SessionStore(cwd);
+  const meta: SessionMeta = { id: "ses_dangling", model: "m/x", mode: "execute", goal: null, createdAt: 1, updatedAt: 2 };
+  const model = [
+    { role: "user", content: "first" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "call-open", toolName: "read", input: {} }] },
+  ] as ModelMessage[];
+  const history: Message[] = [
+    { id: "u", role: "user", parts: [{ type: "text", text: "first" }], createdAt: 1, metadata: { turnId: "turn-open" } },
+    { id: "a", role: "assistant", parts: [{ type: "text", text: "partial" }], createdAt: 2 },
+  ];
+  await store.save(meta, model, history);
+  await expect(store.fork(meta.id, "turn-open")).rejects.toThrow("unmatched tool call");
+  expect((await store.list()).map((session) => session.id)).toEqual([meta.id]);
+  expect((await store.load(meta.id))?.modelMessages).toEqual(model);
 });
 
 test("meta round-trips the recalled-context block for --resume fidelity", async () => {

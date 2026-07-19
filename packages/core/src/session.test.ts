@@ -134,6 +134,61 @@ test("runs a full tool-call -> result -> final-text turn", async () => {
   expect(snap.busy).toBe(false);
 });
 
+test("deferred tool calls emit the real MCP identity and input to clients", async () => {
+  const toolset = new Toolset([]);
+  for (let index = 0; index < 33; index += 1) {
+    toolset.register({
+      name: `mcp__fixture__tool_${index}`,
+      description: `Fixture MCP capability ${index}`,
+      inputSchema: z.object({ value: z.string() }),
+      readOnly: true,
+      async execute({ value }) { return { output: `real:${index}:${value}` }; },
+    }, false, "mcp");
+  }
+  const replies = [
+    stream([
+      { type: "stream-start", warnings: [] },
+      {
+        type: "tool-call",
+        toolCallId: "discovered-1",
+        toolName: "tool_call",
+        input: JSON.stringify({ name: "mcp__fixture__tool_7", input: { value: "hello" } }),
+      },
+      { type: "finish", finishReason: { unified: "tool-calls" as const, raw: undefined }, usage: USAGE },
+    ]),
+    stream([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t1" },
+      { type: "text-delta", id: "t1", delta: "done" },
+      { type: "text-end", id: "t1" },
+      { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
+    ]),
+  ];
+  let call = 0;
+  const bus = new EventBus();
+  const session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(new MockLanguageModelV3({ doStream: async () => replies[call++] as never })),
+    toolset,
+    bus,
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/test",
+    mode: "execute",
+  });
+
+  const events = await collect(bus, () => session.run("use the fixture tool"));
+  expect(events.find((event) => event.type === "tool-call-started")).toMatchObject({
+    toolName: "mcp__fixture__tool_7",
+    input: { value: "hello" },
+  });
+  expect(events.find((event) => event.type === "tool-call-finished")).toMatchObject({
+    toolName: "mcp__fixture__tool_7",
+    output: "real:7:hello",
+    isError: false,
+  });
+});
+
 test("streams reasoning and text deltas exactly once in provider order", async () => {
   const model = new MockLanguageModelV3({
     doStream: async () =>

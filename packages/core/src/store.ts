@@ -1,14 +1,25 @@
 import { mkdir, readdir, rename, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
-import type { Message, Mode, Task } from "@vibe/shared";
+import { createId, type Message, type Mode, type Task } from "@vibe/shared";
+import { createHash } from "node:crypto";
 import type { SourceEntry } from "./source-ledger.ts";
 import { ensureStateDir, globalStateDir } from "./state-dir.ts";
 
 /** Current on-disk SessionMeta schema version. Bump when the meta shape changes
  * incompatibly; a loader can then detect + migrate rather than silently misparse
  * an older/newer file. Absent on pre-versioning saves (read as version 0). */
-export const SESSION_META_VERSION = 1;
+export const SESSION_META_VERSION = 2;
+
+export interface PersistedTurnBoundary {
+  /** Stable identity used by desktop fork/revert operations. */
+  id: string;
+  /** Exclusive transcript indexes after the completed assistant response. */
+  modelEnd: number;
+  historyEnd: number;
+  completedAt: number;
+  origin: "user" | "engine";
+}
 
 export interface SessionMeta {
   /** Schema version of this record (see SESSION_META_VERSION); absent = 0. */
@@ -56,6 +67,9 @@ export interface SessionMeta {
   updatedAt: number;
   /** Optional user-set display title; overrides derived history/goal labels. */
   title?: string;
+  /** Completed turn boundaries. Legacy sessions derive deterministic ids. */
+  turns?: PersistedTurnBoundary[];
+  forkedFrom?: { sessionId: string; turnId: string };
 }
 
 export interface PersistedSession {
@@ -224,6 +238,11 @@ export class SessionStore {
       this.#ensured = true;
       await ensureStateDir(this.#cwd);
     }
+    const normalizedMeta: SessionMeta = {
+      ...meta,
+      version: SESSION_META_VERSION,
+      turns: deriveTurnBoundaries(meta.id, modelMessages, history, meta.turns),
+    };
     const dir = this.#dir(meta.id);
     await mkdir(dir, { recursive: true });
     // A PER-WRITE-UNIQUE temp suffix (pid + monotonic counter): two vibe-codr
@@ -236,7 +255,7 @@ export class SessionStore {
     const stamp = `${process.pid}.${SessionStore.#writeSeq++}`;
     const tmp = (name: string) => join(dir, `${name}.${stamp}.tmp`);
     const targets: [string, string, string][] = [
-      [tmp("meta.json"), join(dir, "meta.json"), JSON.stringify(meta, null, 2)],
+      [tmp("meta.json"), join(dir, "meta.json"), JSON.stringify(normalizedMeta, null, 2)],
       [
         tmp("messages.jsonl"),
         join(dir, "messages.jsonl"),
@@ -297,6 +316,16 @@ export class SessionStore {
       const modelRead = await this.#readJsonl<ModelMessage>(join(dir, "messages.jsonl"));
       const historyRead = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
       const warnings = [...modelRead.warnings, ...historyRead.warnings];
+      if (meta.version !== SESSION_META_VERSION || !Array.isArray(meta.turns)) {
+        meta = {
+          ...meta,
+          version: SESSION_META_VERSION,
+          turns: deriveTurnBoundaries(meta.id, modelRead.items, historyRead.items, meta.turns),
+        };
+        // First load upgrades stable turn identities atomically. Migration is
+        // best-effort: a read remains usable even if the disk is read-only.
+        await this.save(meta, modelRead.items, historyRead.items).catch(() => undefined);
+      }
       return {
         meta,
         modelMessages: modelRead.items,
@@ -387,6 +416,44 @@ export class SessionStore {
     return true;
   }
 
+  /** Copy a completed user turn into a new independently writable session. */
+  async fork(id: string, atTurnId: string): Promise<SessionMeta> {
+    if (!isSafeSessionId(id) || !atTurnId) throw new Error("session and turn id required");
+    const source = await this.load(id);
+    if (!source) throw new Error("session not found");
+    const sourceTurns = source.meta.turns ?? deriveTurnBoundaries(id, source.modelMessages, source.history);
+    const boundary = sourceTurns.find((turn) => turn.id === atTurnId);
+    if (boundary?.origin !== "user") throw new Error("fork boundary is not a completed user turn");
+    const modelMessages = source.modelMessages.slice(0, boundary.modelEnd);
+    const history = source.history.slice(0, boundary.historyEnd);
+    assertCompleteToolPairs(modelMessages, history);
+    const forkId = createId("ses");
+    const now = Date.now();
+    const meta: SessionMeta = {
+      version: SESSION_META_VERSION,
+      id: forkId,
+      model: source.meta.model,
+      mode: source.meta.mode,
+      goal: source.meta.goal,
+      kind: "root",
+      tasks: [],
+      usage: { inputTokens: 0, outputTokens: 0, costUSD: 0, actualCostUSD: 0 },
+      ...(source.meta.recalledContext ? { recalledContext: source.meta.recalledContext } : {}),
+      title: `${source.meta.title?.trim() || "Session"} (fork)`.slice(0, 120),
+      forkedFrom: { sessionId: id, turnId: atTurnId },
+      createdAt: now,
+      updatedAt: now,
+      turns: sourceTurns.filter((turn) => turn.historyEnd <= boundary.historyEnd),
+    };
+    try {
+      await this.save(meta, modelMessages, history);
+      return (await this.load(forkId))?.meta ?? meta;
+    } catch (error) {
+      await rm(this.#dir(forkId), { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
   /** Permanently remove a session directory (global + legacy). */
   async delete(id: string): Promise<boolean> {
     if (!isSafeSessionId(id)) return false;
@@ -472,4 +539,118 @@ export class SessionStore {
     }
     return true;
   }
+}
+
+/** Flatten the text used to align compacted model turns with full display history. */
+function comparableModelUserText(message: ModelMessage): string {
+  const content = message.content;
+  if (typeof content === "string") return content.replace(/\s+/g, " ").trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .flatMap((part) => {
+      if (!part || typeof part !== "object") return [];
+      const value = part as { type?: unknown; text?: unknown };
+      return (value.type === "text" || value.type === "reasoning") && typeof value.text === "string"
+        ? [value.text]
+        : [];
+    })
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function comparableHistoryUserText(message: Message): string {
+  return message.parts
+    .flatMap((part) => (part.type === "text" || part.type === "reasoning" ? [part.text] : []))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Derive a stable user-turn map without changing the provider-facing message
+ * representation. Alignment proceeds newest-first because compaction retains a
+ * provider-facing suffix while display history remains complete. */
+export function deriveTurnBoundaries(
+  sessionId: string,
+  modelMessages: readonly ModelMessage[],
+  history: readonly Message[],
+  prior: readonly PersistedTurnBoundary[] | undefined = undefined,
+): PersistedTurnBoundary[] {
+  const historyUsers = history
+    .map((message, index) => message.role === "user" ? { index, text: comparableHistoryUserText(message) } : null)
+    .filter((entry): entry is { index: number; text: string } => entry !== null);
+  const modelUsers = modelMessages
+    .map((message, index) => message.role === "user"
+      ? { index, text: comparableModelUserText(message) }
+      : null)
+    .filter((entry): entry is { index: number; text: string } => entry !== null);
+  const aligned: Array<{ modelIndex: number; historyOrdinal: number }> = [];
+  let historyCursor = historyUsers.length - 1;
+  for (let modelOrdinal = modelUsers.length - 1; modelOrdinal >= 0 && historyCursor >= 0; modelOrdinal -= 1) {
+    const modelUser = modelUsers[modelOrdinal]!;
+    if (modelUser.text.startsWith("[Summary of earlier conversation]")) continue;
+    let matchingOrdinal = -1;
+    if (modelUser.text) {
+      for (let candidate = historyCursor; candidate >= 0; candidate -= 1) {
+        if (historyUsers[candidate]!.text === modelUser.text) {
+          matchingOrdinal = candidate;
+          break;
+        }
+      }
+    }
+    // Some engine-authored turns deliberately use a shorter display label than
+    // their provider prompt. Newest-first ordinal alignment is the safe fallback.
+    if (matchingOrdinal < 0) matchingOrdinal = historyCursor;
+    aligned.push({ modelIndex: modelUser.index, historyOrdinal: matchingOrdinal });
+    historyCursor = matchingOrdinal - 1;
+  }
+  aligned.reverse();
+  const boundaries: PersistedTurnBoundary[] = [];
+  for (let turnIndex = 0; turnIndex < aligned.length; turnIndex += 1) {
+    const pair = aligned[turnIndex]!;
+    const historyStart = historyUsers[pair.historyOrdinal]!.index;
+    const historyEnd = historyUsers[pair.historyOrdinal + 1]?.index ?? history.length;
+    const modelEnd = aligned[turnIndex + 1]?.modelIndex ?? modelMessages.length;
+    if (!history.slice(historyStart + 1, historyEnd).some((message) => message.role === "assistant")) continue;
+    const message = history[historyStart]!;
+    const metadataTurnId = typeof message.metadata?.turnId === "string" ? message.metadata.turnId : undefined;
+    const old = prior?.find((turn) => turn.historyEnd === historyEnd) ?? prior?.[pair.historyOrdinal];
+    boundaries.push({
+      id: metadataTurnId ?? old?.id ?? deterministicTurnId(sessionId, pair.historyOrdinal),
+      modelEnd,
+      historyEnd,
+      completedAt: history[historyEnd - 1]?.createdAt ?? message.createdAt,
+      origin: message.metadata?.origin === "engine" ? "engine" : "user",
+    });
+  }
+  return boundaries;
+}
+
+function deterministicTurnId(sessionId: string, completedIndex: number): string {
+  return `turn_${createHash("sha256").update(`${sessionId}:${completedIndex}`).digest("hex").slice(0, 20)}`;
+}
+
+/** Refuse a fork that cuts through a tool-call/tool-result pair. */
+export function assertCompleteToolPairs(
+  modelMessages: readonly ModelMessage[],
+  history: readonly Message[],
+): void {
+  const validate = (parts: readonly unknown[]) => {
+    const pending = new Set<string>();
+    for (const partValue of parts) {
+      if (!partValue || typeof partValue !== "object") continue;
+      const part = partValue as { type?: unknown; toolCallId?: unknown };
+      if (part.type === "tool-call" && typeof part.toolCallId === "string") pending.add(part.toolCallId);
+      if (part.type === "tool-result" && typeof part.toolCallId === "string") {
+        if (!pending.delete(part.toolCallId)) throw new Error("fork boundary contains an unmatched tool result");
+      }
+    }
+    if (pending.size) throw new Error("fork boundary contains an unmatched tool call");
+  };
+  const modelParts: unknown[] = [];
+  for (const message of modelMessages) {
+    if (Array.isArray(message.content)) modelParts.push(...message.content);
+  }
+  validate(modelParts);
+  validate(history.flatMap((message) => message.parts));
 }

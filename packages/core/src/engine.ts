@@ -61,7 +61,14 @@ import {
   resolveSandboxPolicy,
   type SandboxPolicy,
 } from "@vibe/tools";
-import { HookBus, CommandRegistry, SkillRegistry, PluginHost, parseSlash } from "@vibe/plugins";
+import {
+  HookBus,
+  CommandRegistry,
+  SkillRegistry,
+  PluginHost,
+  parseSlash,
+  type PluginStatus,
+} from "@vibe/plugins";
 import { EventBus } from "./event-bus.ts";
 import { Session, isReviewClean } from "./session.ts";
 import { BUILTIN_COMMANDS } from "./commands.ts";
@@ -286,6 +293,7 @@ export class Engine implements EngineClient {
   /** Last computed working-tree git state, seeded into the snapshot. */
   #gitState: GitInfo | undefined;
   #config: Config;
+  #pluginHost: PluginHost | undefined;
   #cwd: string;
   /** Resolved OS-sandbox policy (config + live env + state dirs), threaded to the
    * toolset, background jobs, the build gate, and verify. Its warning (if any) is
@@ -522,7 +530,7 @@ export class Engine implements EngineClient {
     // to this session on the shared cwd-keyed checkpoints file.
     this.#checkpoints = new CheckpointManager(this.#cwd, () => this.#session?.id);
     this.#mcp = new McpHub({
-      registerTool: (def) => this.toolset.register(def),
+      registerTool: (def) => this.toolset.register(def, false, "mcp"),
       unregisterTool: (name) => this.toolset.unregister(name),
       ...(opts.mcpConnect ? { connect: opts.mcpConnect } : {}),
     });
@@ -1106,7 +1114,7 @@ export class Engine implements EngineClient {
       hooks: this.hooks,
       commands: this.commands,
       skills: this.skills,
-      registerTool: (def) => this.toolset.register(def),
+      registerTool: (def) => this.toolset.register(def, false, "plugin"),
       unregisterTool: (name) => this.toolset.unregister(name),
       registerProvider: (def) => this.registry.register(def),
       unregisterProvider: (id) => this.registry.unregister(id),
@@ -1117,6 +1125,7 @@ export class Engine implements EngineClient {
       },
       logger: this.#log,
     });
+    this.#pluginHost = host;
     await host.load(this.#config.plugins);
 
     for (const dir of extraSkillDirs) {
@@ -2371,6 +2380,11 @@ export class Engine implements EngineClient {
         ...(s?.error ? { error: s.error } : {}),
       };
     });
+  }
+
+  /** Versioned plugin load health for desktop diagnostics/settings. */
+  listPluginStatus(): PluginStatus[] {
+    return this.#pluginHost?.listPluginStatus() ?? [];
   }
 
   /** Reload `.vibe/agents/*.md` into `#agents` after a write. */

@@ -236,6 +236,9 @@ npm --prefix apps/desktop/mobile test
 
 See [docs/AUDIT.md](docs/AUDIT.md), [apps/desktop/VERIFICATION.md](apps/desktop/VERIFICATION.md), and [apps/desktop/ACCEPTANCE.md](apps/desktop/ACCEPTANCE.md) for the deeper evidence and release checklist.
 
+Plugin authors should use the versioned pre-import manifest and health contract
+documented in [docs/plugins.md](docs/plugins.md).
+
 ## Release model
 
 Vibe Codr uses one version and one tag for the entire product. A `vX.Y.Z` tag verifies the committed version, builds every CLI target, builds the revision-locked cloud runtime, signs/notarizes Desktop, and builds the Windows installer. Only after every gate succeeds does it create a draft GitHub release, publish npm, and make the single release public with all assets and checksums.

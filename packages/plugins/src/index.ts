@@ -18,4 +18,8 @@ export {
   type Plugin,
   type PluginApi,
   type PluginHostDeps,
+  type PluginManifestV1,
+  type PluginStatus,
+  type PluginContributionType,
+  PLUGIN_API_VERSION,
 } from "./plugin.ts";

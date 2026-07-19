@@ -101,6 +101,9 @@ async function summarizeProject(cwd: string): Promise<ProjectSummary | null> {
             goal: meta.goal,
             createdAt: meta.createdAt,
             updatedAt: meta.updatedAt,
+            ...(meta.turns?.filter((turn) => turn.origin === "user").at(-1)?.id
+              ? { latestTurnId: meta.turns.filter((turn) => turn.origin === "user").at(-1)!.id }
+              : {}),
           };
         } catch {
           return null;

@@ -243,6 +243,9 @@ export interface GoalRunInfo {
 
 /** Static, read-only snapshot of engine state for the UI to render. */
 export interface EngineSnapshot {
+  /** macOS-host cursor fields are attached at the transport boundary. */
+  hostInstanceId?: string;
+  lastEventSeq?: number;
   sessionId: string;
   model: string;
   mode: Mode;

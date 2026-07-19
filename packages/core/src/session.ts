@@ -23,6 +23,8 @@ import {
   type Toolset,
   toAISDKTool,
   createSerialLock,
+  isToolDiscoveryWrapper,
+  resolveDiscoveredToolCall,
   type ToolRuntimeBase,
   type FileLock,
   type SandboxPolicy,
@@ -1083,6 +1085,7 @@ export class Session {
     let firstVisibleTextMs: number | undefined;
     let generationMs = 0;
     let toolMs = 0;
+    let toolSchemaTokens = 0;
     let persistMs = 0;
     // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
     // cancel that arrives mid-turn aborts this turn's signal and the NEXT turn
@@ -1333,7 +1336,19 @@ export class Session {
       // per-session tools below — a manually-registered mutating tool
       // (save_memory, run_check) must serialize with edit/write/bash, not race them.
       const serialize = createSerialLock();
-      const tools = toolset.aiTools(this.mode, base, serialize);
+      const filter = this.#deps.toolFilter;
+      const discovery = toolset.aiToolsAdaptive(this.mode, base, serialize, {
+        mode: config.toolDiscovery.mode,
+        contextWindow: this.#contextWindow,
+        directTools: [
+          ...config.toolDiscovery.directTools,
+          ...(filter?.allow ?? []),
+        ],
+        ...(filter?.allow?.length ? { allowTools: filter.allow } : {}),
+        ...(filter?.deny?.length ? { denyTools: filter.deny } : {}),
+      });
+      const tools = discovery.tools;
+      toolSchemaTokens = discovery.schemaTokens;
       // Handoff is a privileged request, not a transfer. Interactive UIs must
       // still show their own confirmation sheet before any bytes move.
       if (this.#deps.interactive && this.mode !== "plan") {
@@ -1430,9 +1445,9 @@ export class Session {
 
       // Per-agent tool restriction (from a named agent's frontmatter): keep only
       // the allowlist (when set) minus the denylist, applied to the whole map.
-      const filter = this.#deps.toolFilter;
       if (filter && (filter.allow?.length || filter.deny?.length)) {
         for (const name of Object.keys(tools)) {
+          if (discovery.active && isToolDiscoveryWrapper(name)) continue;
           const allowed = !filter.allow?.length || filter.allow.includes(name);
           const denied = filter.deny?.includes(name) ?? false;
           if (!allowed || denied) delete tools[name];
@@ -1807,6 +1822,7 @@ export class Session {
           ...(firstVisibleTextMs !== undefined ? { firstVisibleTextMs } : {}),
           generationMs,
           toolMs,
+          toolSchemaTokens,
           persistMs,
           inputTokens: this.#usage.inputTokens - usageBefore.inputTokens,
           cachedInputTokens:
@@ -2233,7 +2249,12 @@ export class Session {
       role: "user",
       parts,
       createdAt: Date.now(),
-      ...(origin === "engine" ? { metadata: { origin, ...(label ? { label } : {}) } } : {}),
+      ...((origin === "engine" || turnId) ? {
+        metadata: {
+          ...(origin === "engine" ? { origin, ...(label ? { label } : {}) } : {}),
+          ...(turnId ? { turnId } : {}),
+        },
+      } : {}),
     });
     // `display === null` suppresses the visible user bubble (e.g. the internal
     // plan→execute handoff directive, which the model needs but the user shouldn't
@@ -2349,35 +2370,41 @@ export class Session {
             break;
           }
           case "tool-call": {
-            this.#usedTools.add(part.toolName);
-            pendingTools.set(part.toolCallId, part.toolName);
+            const resolved = resolveDiscoveredToolCall(
+              part.toolName,
+              part.input ?? part.args,
+            );
+            const resolvedToolName = resolved.toolName;
+            this.#usedTools.add(resolvedToolName);
+            pendingTools.set(part.toolCallId, resolvedToolName);
             // Mutation is latched in the tool adapter AFTER a successful non-
             // readOnly execute (recordMutation) — not here on tool-call intent —
             // so a permission-denied write does not trip green-gate / auto-verify.
             // Child mutations still fold in via onChildSettled.
             // Capture the URL webfetch was asked to fetch (its output is the page
             // body, not a URL list) so the ledger records the page actually pulled.
-            if (part.toolName === "webfetch") {
-              const inp = (part.input ?? part.args) as { url?: unknown } | undefined;
+            if (resolvedToolName === "webfetch") {
+              const inp = resolved.input as { url?: unknown } | undefined;
               if (inp && typeof inp.url === "string")
                 this.#fetchInputUrls.set(part.toolCallId, inp.url);
             }
             ensure().parts.push({
               type: "tool-call",
               toolCallId: part.toolCallId,
-              toolName: part.toolName,
-              input: part.input ?? part.args,
+              toolName: resolvedToolName,
+              input: resolved.input,
             });
             bus.emit({
               type: "tool-call-started",
               sessionId: this.id,
               toolCallId: part.toolCallId,
-              toolName: part.toolName,
-              input: part.input ?? part.args,
+              toolName: resolvedToolName,
+              input: resolved.input,
             });
             break;
           }
           case "tool-result": {
+            const resolvedToolName = pendingTools.get(part.toolCallId) ?? part.toolName;
             pendingTools.delete(part.toolCallId);
             // A handled error (permission deny, plugin veto, `isError` execute
             // result) comes back as an ordinary string result, so the SDK reports
@@ -2396,23 +2423,23 @@ export class Session {
             // (zero results) can't satisfy the gate's "you researched" requirement.
             if (!isError) {
               const unproductive =
-                part.toolName === "web_search" && /^No results for /.test(resultText.trim());
-              if (!unproductive) this.#turnGate?.recordToolUse(part.toolName);
+                resolvedToolName === "web_search" && /^No results for /.test(resultText.trim());
+              if (!unproductive) this.#turnGate?.recordToolUse(resolvedToolName);
             }
             // Harvest sources: on a SUCCESSFUL research-tool result, extract the
             // URLs it surfaced and record them in the session's source ledger
             // (deduped + stably numbered), so later turns can cite them by [n].
-            if (!isError && RESEARCH_TOOL_NAMES.has(part.toolName)) {
-              if (part.toolName === "webfetch") {
+            if (!isError && RESEARCH_TOOL_NAMES.has(resolvedToolName)) {
+              if (resolvedToolName === "webfetch") {
                 // Record the URL actually fetched (the tool INPUT), not links
                 // harvested from the page body — those weren't pulled by the agent.
                 const fetched = this.#fetchInputUrls.get(part.toolCallId);
-                if (fetched) this.#sources.record({ url: fetched, via: part.toolName });
+                if (fetched) this.#sources.record({ url: fetched, via: resolvedToolName });
               } else {
                 // web_search / crawl_docs OUTPUT is a list of result/page URLs — those
                 // ARE the sources surfaced, so harvest them from the rendered text.
                 for (const url of harvestUrls(resultText)) {
-                  this.#sources.record({ url, via: part.toolName });
+                  this.#sources.record({ url, via: resolvedToolName });
                 }
               }
             }
@@ -2424,7 +2451,7 @@ export class Session {
             ensure().parts.push({
               type: "tool-result",
               toolCallId: part.toolCallId,
-              toolName: part.toolName,
+              toolName: resolvedToolName,
               output: historyToolOutput(
                 historyOutput,
                 !hasRawOutput,
@@ -2436,19 +2463,20 @@ export class Session {
               type: "tool-call-finished",
               sessionId: this.id,
               toolCallId: part.toolCallId,
-              toolName: part.toolName,
+              toolName: resolvedToolName,
               output: part.output,
               isError,
             });
             break;
           }
           case "tool-error": {
+            const resolvedToolName = pendingTools.get(part.toolCallId) ?? part.toolName;
             pendingTools.delete(part.toolCallId);
             const output = historyToolOutput(String((part.error as Error)?.message ?? part.error));
             ensure().parts.push({
               type: "tool-result",
               toolCallId: part.toolCallId,
-              toolName: part.toolName,
+              toolName: resolvedToolName,
               output,
               isError: true,
             });
@@ -2456,7 +2484,7 @@ export class Session {
               type: "tool-call-finished",
               sessionId: this.id,
               toolCallId: part.toolCallId,
-              toolName: part.toolName,
+              toolName: resolvedToolName,
               output,
               isError: true,
             });

@@ -7,6 +7,25 @@ import { CommandRegistry, parseSlash } from "./commands.ts";
 import { SkillRegistry } from "./skills.ts";
 import { PluginHost } from "./plugin.ts";
 
+async function writeManifest(
+  pluginPath: string,
+  overrides: Record<string, unknown> = {},
+): Promise<void> {
+  await Bun.write(
+    `${pluginPath}.manifest.json`,
+    JSON.stringify({
+      schemaVersion: 1,
+      name: "test-plugin",
+      version: "1.0.0",
+      apiVersion: 1,
+      contributions: ["commands"],
+      requiredCapabilities: ["commands"],
+      provenance: { source: "local" },
+      ...overrides,
+    }),
+  );
+}
+
 test("PluginHost loads a plugin that registers a command and a hook", async () => {
   const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-"));
   const pluginPath = join(dir, "plugin.ts");
@@ -43,6 +62,117 @@ test("PluginHost loads a plugin that registers a command and a hook", async () =
 
   const result = await hooks.run("user.prompt.submit", { text: "hi" });
   expect(result.text).toBe("hi [seen]");
+});
+
+test("PluginHost reads PluginManifestV1 before import and reports local health", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-manifest-"));
+  const pluginPath = join(dir, "plugin.ts");
+  await Bun.write(
+    pluginPath,
+    `export function register(api) {
+       api.registerCommand({ name: "manifested", description: "x", source: "plugin", run: () => ({ kind: "notice", message: "ok" }) });
+     }`,
+  );
+  await writeManifest(pluginPath);
+  const commands = new CommandRegistry();
+  const host = new PluginHost({
+    hooks: new HookBus(),
+    commands,
+    skills: new SkillRegistry(),
+    registerTool: () => {},
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+
+  await host.load([pluginPath]);
+
+  expect(commands.get("manifested")).toBeDefined();
+  expect(host.listPluginStatus()).toEqual([
+    expect.objectContaining({
+      name: "test-plugin",
+      version: "1.0.0",
+      status: "degraded",
+      reason: "Local plugin is unverified",
+      declaredContributions: ["commands"],
+      registeredContributions: expect.objectContaining({ commands: ["manifested"] }),
+      provenance: expect.objectContaining({ source: "local", verified: false }),
+    }),
+  ]);
+});
+
+test("PluginHost rejects incompatible manifests before importing executable code", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-incompatible-"));
+  const pluginPath = join(dir, "plugin.ts");
+  const marker = `__vibe_plugin_imported_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  await Bun.write(pluginPath, `globalThis[${JSON.stringify(marker)}] = true; export function register() {}`);
+  await writeManifest(pluginPath, { apiVersion: 2 });
+  const host = new PluginHost({
+    hooks: new HookBus(),
+    commands: new CommandRegistry(),
+    skills: new SkillRegistry(),
+    registerTool: () => {},
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+
+  await host.load([pluginPath]);
+
+  expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+  expect(host.listPluginStatus()[0]).toEqual(expect.objectContaining({ status: "incompatible" }));
+});
+
+test("PluginHost rejects malformed manifests before import", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-malformed-"));
+  const pluginPath = join(dir, "plugin.ts");
+  const marker = `__vibe_plugin_malformed_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  await Bun.write(pluginPath, `globalThis[${JSON.stringify(marker)}] = true; export function register() {}`);
+  await Bun.write(`${pluginPath}.manifest.json`, "{broken-json");
+  const host = new PluginHost({
+    hooks: new HookBus(),
+    commands: new CommandRegistry(),
+    skills: new SkillRegistry(),
+    registerTool: () => {},
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+
+  await host.load([pluginPath]);
+
+  expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+  expect(host.listPluginStatus()[0]).toEqual(expect.objectContaining({
+    status: "incompatible",
+    reason: expect.stringContaining("Invalid plugin manifest JSON"),
+  }));
+});
+
+test("PluginHost rolls back and reports undeclared contributions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-plugin-undeclared-"));
+  const pluginPath = join(dir, "plugin.ts");
+  await Bun.write(
+    pluginPath,
+    `export function register(api) {
+       api.registerTool({ name: "undeclared_tool", description: "x", parameters: {}, execute: async () => ({ output: "x" }) });
+     }`,
+  );
+  await writeManifest(pluginPath);
+  const tools = new Map<string, unknown>();
+  const host = new PluginHost({
+    hooks: new HookBus(),
+    commands: new CommandRegistry(),
+    skills: new SkillRegistry(),
+    registerTool: (definition) => tools.set(definition.name, definition),
+    unregisterTool: (name) => tools.delete(name),
+    registerProvider: () => {},
+    addSkillDir: () => {},
+  });
+
+  await host.load([pluginPath]);
+
+  expect(tools.has("undeclared_tool")).toBe(false);
+  expect(host.listPluginStatus()[0]).toEqual(expect.objectContaining({
+    status: "incompatible",
+    reason: expect.stringContaining("undeclared tools contribution"),
+  }));
 });
 
 test("a broken plugin leaks no partial registrations and does not poison a later good plugin", async () => {

@@ -81,9 +81,36 @@ describe("engine host protocol boundary", () => {
       executionTarget: { kind: "cloud", provider: "e2b" },
     });
 
-    expect(await proc.next((value) => value.type === "ready")).toEqual({
+    const ready = await proc.next((value) => value.type === "ready");
+    expect(ready).toMatchObject({
       type: "ready",
+      protocolVersion: 2,
+      capabilities: ["event-replay"],
       sessionId,
+    });
+    expect(ready.hostInstanceId).toEqual(expect.any(String));
+    proc.send({
+      op: "rpc",
+      id: 1,
+      method: "replayEvents",
+      params: { hostInstanceId: ready.hostInstanceId, afterSeq: 0 },
+    });
+    expect(await proc.next((value) => value.type === "resp" && value.id === 1)).toMatchObject({
+      ok: true,
+      value: {
+        hostInstanceId: ready.hostInstanceId,
+        truncated: false,
+      },
+    });
+    proc.send({
+      op: "rpc",
+      id: 2,
+      method: "replayEvents",
+      params: { hostInstanceId: "retired-host", afterSeq: 0 },
+    });
+    expect(await proc.next((value) => value.type === "resp" && value.id === 2)).toMatchObject({
+      ok: true,
+      value: { hostInstanceId: ready.hostInstanceId, events: [], truncated: true },
     });
     proc.send({ op: "shutdown" });
   });
@@ -133,8 +160,10 @@ describe("engine host protocol boundary", () => {
       runtimeProfile: { schemaVersion: 1, theme: "light", accentColor: "#e6e6e6", details: "normal" },
     });
 
-    expect(await proc.next((value) => value.type === "ready")).toEqual({
+    expect(await proc.next((value) => value.type === "ready")).toMatchObject({
       type: "ready",
+      protocolVersion: 2,
+      capabilities: ["event-replay"],
       sessionId,
     });
     proc.send({ op: "rpc", id: 1, method: "snapshot" });
@@ -179,8 +208,10 @@ describe("engine host protocol boundary", () => {
       requiredModels: ["ollama/glm-5.2"],
     });
 
-    expect(await proc.next((value) => value.type === "ready")).toEqual({
+    expect(await proc.next((value) => value.type === "ready")).toMatchObject({
       type: "ready",
+      protocolVersion: 2,
+      capabilities: ["event-replay"],
       sessionId,
     });
     proc.send({ op: "shutdown" });
@@ -224,8 +255,10 @@ describe("engine host protocol boundary", () => {
     });
 
     try {
-      expect(await proc.next((value) => value.type === "ready")).toEqual({
+      expect(await proc.next((value) => value.type === "ready")).toMatchObject({
         type: "ready",
+        protocolVersion: 2,
+        capabilities: ["event-replay"],
         sessionId,
       });
     } finally {

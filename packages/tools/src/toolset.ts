@@ -1,5 +1,5 @@
 import { tool, jsonSchema, type Tool } from "ai";
-import type { ZodType } from "zod";
+import { toJSONSchema, z, type ZodType } from "zod";
 import type {
   CheckPermission,
   FreshnessRegistryLike,
@@ -96,6 +96,38 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
   freshness: FreshnessRegistryLike;
 };
 
+export type ToolRegistrationSource = "builtin" | "mcp" | "plugin" | "extension";
+
+export interface ToolDiscoveryOptions {
+  mode: "auto" | "direct";
+  contextWindow: number;
+  directTools?: readonly string[];
+  allowTools?: readonly string[];
+  denyTools?: readonly string[];
+}
+
+export interface ToolDiscoveryBuild {
+  tools: Record<string, Tool>;
+  active: boolean;
+  deferredToolNames: string[];
+  schemaTokens: number;
+  directSchemaTokens: number;
+  catalogRevision: number;
+}
+
+interface SearchableTool {
+  definition: ToolDefinition;
+  source: ToolRegistrationSource;
+  schema: unknown;
+  serialized: string;
+  haystack: string;
+}
+
+const TOOL_DISCOVERY_COUNT_THRESHOLD = 32;
+const TOOL_DISCOVERY_CONTEXT_RATIO = 0.1;
+const TOOL_DISCOVERY_RESULTS_MAX = 20;
+const TOOL_DISCOVERY_WRAPPERS = new Set(["tool_search", "tool_describe", "tool_call"]);
+
 /**
  * Holds tool definitions and produces the AI-SDK tool map for a given mode.
  * Plan mode exposes only read-only tools, so the model literally cannot emit a
@@ -103,6 +135,9 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
  */
 export class Toolset {
   #tools = new Map<string, ToolDefinition>();
+  #sources = new Map<string, ToolRegistrationSource>();
+  #revision = 0;
+  #catalogCache = new Map<string, { revision: number; entries: SearchableTool[] }>();
   /** Names of the trusted built-in tools — never let an extension shadow these. */
   #builtins = new Set<string>();
   /** Optional sink for collision warnings (engine wires it to a UI notice). */
@@ -117,7 +152,11 @@ export class Toolset {
    * later registrations (MCP servers, plugins) must not shadow a built-in — an
    * MCP tool named `bash`/`edit` could otherwise silently hijack a core tool.
    */
-  register(def: ToolDefinition, builtin = false): void {
+  register(
+    def: ToolDefinition,
+    builtin = false,
+    source: ToolRegistrationSource = builtin ? "builtin" : "extension",
+  ): void {
     if (builtin) {
       this.#builtins.add(def.name);
     } else if (this.#builtins.has(def.name)) {
@@ -127,6 +166,9 @@ export class Toolset {
       this.onConflict?.(`Tool "${def.name}" is registered more than once; the later one wins.`);
     }
     this.#tools.set(def.name, def);
+    this.#sources.set(def.name, builtin ? "builtin" : source);
+    this.#revision += 1;
+    this.#catalogCache.clear();
   }
 
   /**
@@ -136,7 +178,11 @@ export class Toolset {
    */
   unregister(name: string): void {
     if (this.#builtins.has(name)) return;
-    this.#tools.delete(name);
+    if (this.#tools.delete(name)) {
+      this.#sources.delete(name);
+      this.#revision += 1;
+      this.#catalogCache.clear();
+    }
   }
 
   all(): ToolDefinition[] {
@@ -180,6 +226,203 @@ export class Toolset {
     }
     return map;
   }
+
+  /** Build a turn tool map with bounded progressive disclosure for MCP/plugin
+   * catalogs. The wrapper delegates to the target's normal adapter, so the real
+   * tool name reaches hooks, permissions, mutation tracking, and error telemetry. */
+  aiToolsAdaptive(
+    mode: Mode,
+    base: ToolRuntimeBase,
+    serialize: SerialLock | undefined,
+    options: ToolDiscoveryOptions,
+  ): ToolDiscoveryBuild {
+    const allowed = options.allowTools?.length ? new Set(options.allowTools) : null;
+    const denied = new Set(options.denyTools ?? []);
+    const direct = new Set(options.directTools ?? []);
+    const permitted = this.#catalog(mode).filter(({ definition }) =>
+      (!allowed || allowed.has(definition.name)) && !denied.has(definition.name));
+    const deferrable = permitted.filter(({ definition, source }) =>
+      (source === "mcp" || source === "plugin") && !direct.has(definition.name));
+    const deferrableTokens = estimateCatalogTokens(deferrable);
+    const shouldDefer = options.mode === "auto" && deferrable.length > 0 && (
+      deferrable.length > TOOL_DISCOVERY_COUNT_THRESHOLD ||
+      deferrableTokens > Math.max(1, options.contextWindow) * TOOL_DISCOVERY_CONTEXT_RATIO
+    );
+    if (!shouldDefer) {
+      const tools = Object.fromEntries(permitted.map(({ definition }) => [
+        definition.name,
+        toAISDKTool(definition, base, serialize),
+      ]));
+      const tokens = estimateCatalogTokens(permitted);
+      return {
+        tools,
+        active: false,
+        deferredToolNames: [],
+        schemaTokens: tokens,
+        directSchemaTokens: tokens,
+        catalogRevision: this.#revision,
+      };
+    }
+
+    const deferredNames = new Set(deferrable.map(({ definition }) => definition.name));
+    const visible = permitted.filter(({ definition }) => !deferredNames.has(definition.name));
+    const tools = Object.fromEntries(visible.map(({ definition }) => [
+      definition.name,
+      toAISDKTool(definition, base, serialize),
+    ]));
+    const searchable = new Map(deferrable.map((entry) => [entry.definition.name, entry]));
+    Object.assign(tools, buildDiscoveryTools(searchable, base, serialize));
+    return {
+      tools,
+      active: true,
+      deferredToolNames: [...searchable.keys()].sort(),
+      schemaTokens: estimateToolMapTokens(tools),
+      directSchemaTokens: estimateCatalogTokens(permitted),
+      catalogRevision: this.#revision,
+    };
+  }
+
+  #catalog(mode: Mode): SearchableTool[] {
+    const key = mode;
+    const cached = this.#catalogCache.get(key);
+    if (cached?.revision === this.#revision) return cached.entries;
+    const entries = this.forMode(mode).map((definition): SearchableTool => {
+      const schema = toolSchema(definition);
+      const serialized = JSON.stringify({
+        name: definition.name,
+        description: definition.description,
+        inputSchema: schema,
+      });
+      return {
+        definition,
+        source: this.#sources.get(definition.name) ?? "extension",
+        schema,
+        serialized,
+        haystack: `${definition.name} ${definition.description}`.toLowerCase(),
+      };
+    });
+    this.#catalogCache.set(key, { revision: this.#revision, entries });
+    return entries;
+  }
+}
+
+function toolSchema(definition: ToolDefinition): unknown {
+  if (!isZodSchema(definition.inputSchema)) return definition.inputSchema;
+  try {
+    return toJSONSchema(definition.inputSchema as ZodType);
+  } catch {
+    return { type: "object", description: "Schema available when the tool is called." };
+  }
+}
+
+function estimateCatalogTokens(entries: readonly SearchableTool[]): number {
+  return Math.ceil(entries.reduce((total, entry) => total + entry.serialized.length, 0) / 4);
+}
+
+function estimateToolMapTokens(tools: Record<string, Tool>): number {
+  let chars = 0;
+  for (const [name, definition] of Object.entries(tools)) {
+    const value = definition as { description?: string; inputSchema?: unknown };
+    chars += JSON.stringify({ name, description: value.description, inputSchema: value.inputSchema }).length;
+  }
+  return Math.ceil(chars / 4);
+}
+
+function scoreSearch(entry: SearchableTool, query: string): number {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return 0;
+  let score = 0;
+  for (const term of terms) {
+    if (entry.definition.name.toLowerCase() === term) score += 20;
+    else if (entry.definition.name.toLowerCase().includes(term)) score += 8;
+    if (entry.haystack.includes(term)) score += 3;
+  }
+  return score;
+}
+
+function buildDiscoveryTools(
+  catalog: ReadonlyMap<string, SearchableTool>,
+  base: ToolRuntimeBase,
+  serialize?: SerialLock,
+): Record<string, Tool> {
+  const search = toAISDKTool({
+    name: "tool_search",
+    description: "Search deferred MCP and plugin tools by capability. Returns real tool names and short descriptions.",
+    inputSchema: z.object({
+      query: z.string().min(1).max(512),
+      limit: z.number().int().min(1).max(TOOL_DISCOVERY_RESULTS_MAX).default(8),
+    }),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async ({ query, limit }) => ({
+      output: {
+        tools: [...catalog.values()]
+          .map((entry) => ({ entry, score: scoreSearch(entry, query) }))
+          .filter(({ score }) => score > 0)
+          .sort((a, b) => b.score - a.score || a.entry.definition.name.localeCompare(b.entry.definition.name))
+          .slice(0, limit)
+          .map(({ entry }) => ({
+            name: entry.definition.name,
+            description: entry.definition.description.slice(0, 400),
+            readOnly: entry.definition.readOnly,
+            source: entry.source,
+          })),
+      },
+    }),
+  }, base, serialize);
+  const describe = toAISDKTool({
+    name: "tool_describe",
+    description: "Describe one deferred MCP or plugin tool, including its bounded input schema.",
+    inputSchema: z.object({ name: z.string().min(1).max(256) }),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async ({ name }) => {
+      const entry = catalog.get(name);
+      if (!entry) return { output: `Unknown or unavailable deferred tool: ${name}`, isError: true };
+      return {
+        output: {
+          name: entry.definition.name,
+          description: entry.definition.description,
+          inputSchema: entry.schema,
+          readOnly: entry.definition.readOnly,
+          network: entry.definition.network ?? false,
+          source: entry.source,
+        },
+      };
+    },
+  }, base, serialize);
+  const call = tool({
+    description: "Call one deferred MCP or plugin tool. The real tool identity is used for permissions, hooks, telemetry, and UI events.",
+    inputSchema: z.object({
+      name: z.string().min(1).max(256),
+      input: z.record(z.string(), z.unknown()).default({}),
+    }),
+    execute: async ({ name, input }, options) => {
+      const entry = catalog.get(name);
+      if (!entry) return `ERROR: unknown or unavailable deferred tool "${name}".`;
+      const adapted = toAISDKTool(entry.definition, base, serialize) as {
+        execute?: (value: unknown, opts: typeof options) => PromiseLike<unknown> | unknown;
+      };
+      if (!adapted.execute) return `ERROR: deferred tool "${name}" cannot execute.`;
+      return adapted.execute(input, options);
+    },
+  });
+  return { tool_search: search, tool_describe: describe, tool_call: call };
+}
+
+export function isToolDiscoveryWrapper(name: string): boolean {
+  return TOOL_DISCOVERY_WRAPPERS.has(name);
+}
+
+/** Map the public wrapper call to its real target before UI/telemetry handling. */
+export function resolveDiscoveredToolCall(
+  toolName: string,
+  input: unknown,
+): { toolName: string; input: unknown } {
+  if (toolName !== "tool_call" || !input || typeof input !== "object") return { toolName, input };
+  const value = input as { name?: unknown; input?: unknown };
+  if (typeof value.name !== "string" || !value.name) return { toolName, input };
+  return { toolName: value.name, input: value.input ?? {} };
 }
 
 /** A tool is safe to run in parallel if it's read-only or explicitly marked so. */

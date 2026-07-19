@@ -29,9 +29,9 @@ test("cloud control credentials are not inherited by engine or terminal children
   ).toEqual({ PATH: "/usr/bin" });
 });
 
-test("content-free performance samples remain machine-local", () => {
+test("sequenced performance frames preserve cloud event cursors", () => {
   expect(shouldProxyEngineFrame({ type: "event", event: { type: "turn-performance" } })).toBe(
-    false,
+    true,
   );
   expect(shouldProxyEngineFrame({ type: "event", event: { type: "assistant-text-delta" } })).toBe(
     true,

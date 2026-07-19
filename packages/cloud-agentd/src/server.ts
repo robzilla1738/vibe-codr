@@ -55,10 +55,11 @@ interface AgentOptions {
   cloudProvider?: "e2b" | "vercel";
 }
 
-export function shouldProxyEngineFrame(payload: unknown): boolean {
-  if (!payload || typeof payload !== "object") return true;
-  const frame = payload as { type?: unknown; event?: { type?: unknown } };
-  return frame.type !== "event" || frame.event?.type !== "turn-performance";
+export function shouldProxyEngineFrame(_payload: unknown): boolean {
+  // Protocol-v2 sequence numbers are assigned by the host. Dropping any frame
+  // here creates a false cursor gap for desktop/mobile reconnect logic. Local
+  // consumers may ignore content-free performance samples after delivery.
+  return true;
 }
 
 export function isEngineReadyFrame(value: unknown): value is EngineReadyFrame {

@@ -37,6 +37,13 @@ and first-paint phases without prompts, paths, credentials, tool inputs, or tool
 outputs. Advanced Settings exposes 1-day/7-day p50/p95 summaries and a local
 diagnostics export; no network sender exists.
 
+The canonical seven-day/50 MiB run-event ledger is also inspectable under
+Advanced → Local Diagnostics. List/read RPCs are bounded and validated; the
+viewer and CLI strip content by default. `vibe trace export <run-id>` writes a
+static escaped local HTML file, while `--include-redacted` is the only path that
+includes content captured under the explicit redacted policy. There is no
+script, remote resource, or hosted upload path.
+
 ## Continuity and discovery acceptance
 
 ```bash

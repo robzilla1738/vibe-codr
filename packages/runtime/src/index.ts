@@ -25,3 +25,8 @@ export {
   type RunEventRecorderOptions,
   type RuntimeEventRecorder,
 } from "./run-event-recorder.ts";
+export {
+  listRunTraces,
+  readRunTrace,
+  renderRunTraceHtml,
+} from "./run-event-reader.ts";

@@ -113,6 +113,23 @@ describe("macOS bridge protocol runtime validation", () => {
     ).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: "1", method: "snapshot" }))).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: 1, method: "unknown" }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({ op: "rpc", id: 5, method: "listTraces" }))).toEqual({
+      op: "rpc",
+      id: 5,
+      method: "listTraces",
+    });
+    expect(decodeInbound(JSON.stringify({
+      op: "rpc",
+      id: 6,
+      method: "readTrace",
+      params: { runId: "run-safe", afterSeq: 4, limit: 100 },
+    }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "rpc",
+      id: 7,
+      method: "readTrace",
+      params: { runId: "../escape" },
+    }))).toBeNull();
     expect(
       decodeInbound(
         JSON.stringify({

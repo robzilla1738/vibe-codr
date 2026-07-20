@@ -67,7 +67,10 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // less than 1 KB (0.05%); the aggregate allowance grows by 20 KB (0.7%) to
 // cover deterministic minifier variance between Linux and macOS runners while
 // preserving the existing startup/largest-chunk ceiling.
-const totalBudget = 2_912_000;
+// The trace viewer adds 1,849 bytes to the exact 542d784 base (which had
+// already drifted 488 bytes over the prior cap). Keep 1,663 bytes of aggregate
+// variance room while preserving the unchanged startup/largest-chunk ceiling.
+const totalBudget = 2_916_000;
 const chunkBudget = 2_120_000;
 
 if (total > totalBudget || largest > chunkBudget) {

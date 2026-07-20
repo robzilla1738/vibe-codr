@@ -203,6 +203,39 @@
   --font-mono: ui-monospace, "Berkeley Mono", "SF Mono", "SFMono-Regular", "JetBrains Mono", "IBM Plex Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
+/* Local run evidence stays inside Advanced diagnostics; it never becomes a
+   second workspace rail or uploads content. */
+.trace-viewer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.trace-viewer summary {
+  color: var(--assistant);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.trace-viewer summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.trace-rows {
+  max-height: 360px;
+  margin: 10px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-menu);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 html[data-scheme="light"] {
   --surface-subtle: color-mix(in oklab, var(--panel) 58%, var(--elevated));
   --overlay: var(--elevated);

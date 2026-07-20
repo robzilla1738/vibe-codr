@@ -4,6 +4,7 @@ import { pluginSpecifiersFromLines } from "../../../shared/plugin-specifiers";
 import type { PluginStatus } from "../../../shared/protocol";
 import { NumberInput, SettingActions, SettingBadge, SettingField, SettingSection, TextArea, TextInput, ToggleSwitch } from "../FormControls";
 import type { SectionProps } from "./types";
+import { TraceViewer } from "./TraceViewer";
 
 export function AdvancedSection({
   config,
@@ -213,6 +214,7 @@ export function AdvancedSection({
             {copyingDiagnostics ? "Copying…" : "Copy diagnostics"}
           </button>
         </SettingActions>
+        <TraceViewer cwd={cwd} />
       </SettingSection>
 
       <SettingSection title="LSP Diagnostics" description="Multi-language language-server diagnostics-in-the-loop after edits.">

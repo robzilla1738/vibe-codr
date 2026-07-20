@@ -11,6 +11,10 @@ export const RUN_EVENT_V1_LIMITS = Object.freeze({
   redactedContentBytes: 64 * 1024,
   redactedCollectionItems: 32,
   redactedDepth: 6,
+  traceRunIdChars: 256,
+  traceListItems: 200,
+  tracePageEvents: 500,
+  traceCorruptions: 100,
 } as const);
 
 export const TraceContentPolicyV1Schema = z.enum(["none", "redacted"]);
@@ -47,6 +51,14 @@ const finite = z.number().finite();
 const nonNegative = finite.min(0);
 const nonNegativeInteger = z.number().int().nonnegative();
 const boundedName = z.string().max(RUN_EVENT_V1_LIMITS.nameChars).refine((value) => !value.includes("\0"));
+/** File-safe because run ids are embedded in ledger segment names. */
+export const TraceRunIdV1Schema = z
+  .string()
+  .min(1)
+  .max(RUN_EVENT_V1_LIMITS.traceRunIdChars)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/)
+  .refine((value) => value !== "." && value !== "..");
+export type TraceRunIdV1 = z.infer<typeof TraceRunIdV1Schema>;
 const utf8Bytes = (value: string): number => new TextEncoder().encode(value).byteLength;
 const optionalCounts = z
   .object({
@@ -197,7 +209,7 @@ const uiEventType = z.enum(UI_EVENT_TYPES as [typeof UI_EVENT_TYPES[number], ...
 export const RunEventV1Schema = z
   .object({
     schemaVersion: z.literal(1),
-    runId: RuntimeIdentifierSchema,
+    runId: TraceRunIdV1Schema,
     seq: z.number().int().positive(),
     at: nonNegative,
     type: uiEventType,
@@ -253,6 +265,77 @@ export const RunEventV1Schema = z
   })
   .strict();
 export type RunEventV1 = z.infer<typeof RunEventV1Schema>;
+
+export interface TraceCorruptionV1 {
+  segment: string;
+  line?: number;
+  reason: "invalid-row" | "non-monotonic-sequence" | "sequence-gap";
+  detail?: string;
+}
+
+export interface TraceSummaryV1 {
+  schemaVersion: 1;
+  runId: string;
+  startedAt: number;
+  updatedAt: number;
+  firstSeq: number;
+  lastSeq: number;
+  eventCount: number;
+  segmentCount: number;
+  hasRedactedContent: boolean;
+  corruptionCount: number;
+}
+
+export interface TraceListResultV1 {
+  schemaVersion: 1;
+  traces: TraceSummaryV1[];
+  truncated: boolean;
+}
+
+export interface TracePageV1 {
+  schemaVersion: 1;
+  runId: string;
+  events: RunEventV1[];
+  corruptions: TraceCorruptionV1[];
+  lastSeq: number;
+  nextAfterSeq: number | null;
+  truncated: boolean;
+  hasRedactedContent: boolean;
+}
+
+const traceRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const traceInteger = (value: unknown, positive = false): value is number =>
+  Number.isSafeInteger(value) && (positive ? (value as number) > 0 : (value as number) >= 0);
+const traceRunId = (value: unknown): value is string => TraceRunIdV1Schema.safeParse(value).success;
+const traceSummary = (value: unknown): value is TraceSummaryV1 => traceRecord(value)
+  && value.schemaVersion === 1 && traceRunId(value.runId)
+  && typeof value.startedAt === "number" && value.startedAt >= 0
+  && typeof value.updatedAt === "number" && value.updatedAt >= 0
+  && traceInteger(value.firstSeq, true) && traceInteger(value.lastSeq, true)
+  && traceInteger(value.eventCount) && traceInteger(value.segmentCount)
+  && typeof value.hasRedactedContent === "boolean" && traceInteger(value.corruptionCount);
+const traceCorruption = (value: unknown): value is TraceCorruptionV1 => traceRecord(value)
+  && typeof value.segment === "string" && value.segment.length > 0 && value.segment.length <= 512
+  && !/[\\/\0]/.test(value.segment)
+  && (value.line === undefined || traceInteger(value.line, true))
+  && ["invalid-row", "non-monotonic-sequence", "sequence-gap"].includes(value.reason as string)
+  && (value.detail === undefined || (typeof value.detail === "string" && value.detail.length <= 1_024));
+
+export const TraceCorruptionV1Schema = z.custom<TraceCorruptionV1>(traceCorruption);
+export const TraceSummaryV1Schema = z.custom<TraceSummaryV1>(traceSummary);
+export const TraceListResultV1Schema = z.custom<TraceListResultV1>((value) => traceRecord(value)
+  && value.schemaVersion === 1 && Array.isArray(value.traces)
+  && value.traces.length <= RUN_EVENT_V1_LIMITS.traceListItems && value.traces.every(traceSummary)
+  && typeof value.truncated === "boolean");
+export const TracePageV1Schema = z.custom<TracePageV1>((value) => traceRecord(value)
+  && value.schemaVersion === 1 && traceRunId(value.runId)
+  && Array.isArray(value.events) && value.events.length <= RUN_EVENT_V1_LIMITS.tracePageEvents
+  && value.events.every((event) => RunEventV1Schema.safeParse(event).success)
+  && Array.isArray(value.corruptions) && value.corruptions.length <= RUN_EVENT_V1_LIMITS.traceCorruptions
+  && value.corruptions.every(traceCorruption) && traceInteger(value.lastSeq)
+  && (value.nextAfterSeq === null || traceInteger(value.nextAfterSeq))
+  && typeof value.truncated === "boolean" && typeof value.hasRedactedContent === "boolean");
 
 export function contentFreeRunEventV1(event: RunEventV1): RunEventV1 {
   if (event.content === undefined) return event;

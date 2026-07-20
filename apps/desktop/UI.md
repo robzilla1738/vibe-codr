@@ -453,6 +453,10 @@ snippet. External links go through `ExternalLink` / host bridge.
   desktop pool limit immediately (1–8, default 3); lowering it preserves every
   protected runtime and retires idle excess. It introduces no telemetry or new
   visual primitive.
+- Run evidence remains inside Advanced → Local Diagnostics. The latest bounded
+  trace appears in a compact disclosure, events keep ledger sequence,
+  content is absent by default, and an explicit control is required to reveal
+  content that was already recorded under the redacted trace policy.
 - Jobs exposes the protected-launch FIFO with stable position
   and Cancel. These rows mean waiting for a local runtime slot, never a running
   engine job. Background attention and completion notifications contain only

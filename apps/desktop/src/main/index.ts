@@ -782,6 +782,15 @@ function registerIpc(): void {
     try {
       let historyMutation: { cwd: string; sessionId?: string } | null = null;
       let rpcParams = message.params;
+      if ((message.method === "listTraces" || message.method === "readTrace") && message.params?.cwd !== undefined) {
+        const cwd = message.params.cwd;
+        if (typeof cwd !== "string" || !isAllowedProjectRoot(cwd)) {
+          return {
+            ok: false as const,
+            error: "Run traces are limited to opened or recent projects",
+          };
+        }
+      }
       if (message.method === "searchSessions" && message.params?.cwd !== undefined) {
         const cwd = message.params.cwd;
         if (typeof cwd !== "string" || !isAllowedProjectRoot(cwd)) {

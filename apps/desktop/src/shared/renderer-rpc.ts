@@ -14,6 +14,8 @@ const RENDERER_RPC_METHODS = new Set<RpcMethod>([
   "logoutProviderAuth",
   "finalize",
   "listSessions",
+  "listTraces",
+  "readTrace",
   "searchSessions",
   "listProjects",
   "renameProject",

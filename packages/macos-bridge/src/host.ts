@@ -19,7 +19,13 @@ import {
 } from "@vibe/core";
 import type { EngineCommand, ExecutionTarget } from "@vibe/shared";
 import { ProviderAuthManager } from "@vibe/providers";
-import { openRuntimeSession, type RuntimeService } from "@vibe/runtime";
+import {
+  listRunTraces,
+  openRuntimeSession,
+  readRunTrace,
+  runEventLedgerDir,
+  type RuntimeService,
+} from "@vibe/runtime";
 import {
   decodeInbound,
   HOST_PROTOCOL_CAPABILITIES,
@@ -251,6 +257,26 @@ export async function runHost(): Promise<void> {
       if (method === "listSessions") {
         const metas = await new SessionStore(lastCwd).list();
         write({ type: "resp", id, ok: true, value: metas });
+        return;
+      }
+      if (method === "listTraces") {
+        const cwd = params?.cwd?.trim() || lastCwd;
+        const value = await listRunTraces(runEventLedgerDir(cwd), { limit: params?.limit });
+        write({ type: "resp", id, ok: true, value });
+        return;
+      }
+      if (method === "readTrace") {
+        const cwd = params?.cwd?.trim() || lastCwd;
+        if (!params?.runId) {
+          write({ type: "resp", id, ok: false, error: "trace run id required" });
+          return;
+        }
+        const value = await readRunTrace(runEventLedgerDir(cwd), params.runId, {
+          afterSeq: params.afterSeq,
+          limit: params.limit,
+          includeRedacted: params.includeRedacted,
+        });
+        write({ type: "resp", id, ok: true, value });
         return;
       }
       if (method === "searchSessions") {

@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { RUN_EVENT_V1_LIMITS, RunEventV1Schema } from "./run-event.ts";
+import {
+  RUN_EVENT_V1_LIMITS,
+  RunEventV1Schema,
+  TraceListResultV1Schema,
+  TracePageV1Schema,
+  TraceRunIdV1Schema,
+} from "./run-event.ts";
 import {
   AgentInfoSchema,
   CatalogDisplayStringSchema,
@@ -164,6 +170,8 @@ const rpcParamFields = {
   query: boundedQuery,
   limit: nonNegativeSafeInteger,
   atTurnId: RuntimeIdentifierSchema,
+  runId: TraceRunIdV1Schema,
+  includeRedacted: z.boolean(),
 } as const;
 export const HostRpcParamsSchema = z.object(rpcParamFields).partial().strict();
 export type HostRpcParams = z.infer<typeof HostRpcParamsSchema>;
@@ -316,6 +324,21 @@ const portableImportSettlementParamsSchema = z
     ownershipGeneration: positiveSafeInteger,
   })
   .strict();
+const traceListParamsSchema = z
+  .object({
+    cwd: boundedPath.optional(),
+    limit: positiveSafeInteger.max(RUN_EVENT_V1_LIMITS.traceListItems).optional(),
+  })
+  .strict();
+const traceReadParamsSchema = z
+  .object({
+    cwd: boundedPath.optional(),
+    runId: TraceRunIdV1Schema,
+    afterSeq: nonNegativeSafeInteger.optional(),
+    limit: positiveSafeInteger.max(RUN_EVENT_V1_LIMITS.tracePageEvents).optional(),
+    includeRedacted: z.boolean().optional(),
+  })
+  .strict();
 
 export const HOST_RPC_SCHEMAS = {
   snapshot: parameterlessRpc(HostSnapshotSchema),
@@ -333,6 +356,8 @@ export const HOST_RPC_SCHEMAS = {
   exportProviderAuth: rpc(params(["providerId"], []), ExportedProviderCredentialSchema),
   finalize: parameterlessRpc(nullResult),
   listSessions: parameterlessRpc(z.array(SessionMetaSchema)),
+  listTraces: optionalParamsRpc(traceListParamsSchema, TraceListResultV1Schema),
+  readTrace: rpc(traceReadParamsSchema, TracePageV1Schema),
   searchSessions: optionalParamsRpc(
     params([], ["cwd", "query", "limit"]),
     z.array(SessionSearchHitSchema).max(PROTOCOL_LIMITS_V1.searchHits),
@@ -413,6 +438,8 @@ export const HOST_RPC_REQUEST_SCHEMAS = {
   exportProviderAuth: rpcRequestSchema("exportProviderAuth"),
   finalize: rpcRequestSchema("finalize"),
   listSessions: rpcRequestSchema("listSessions"),
+  listTraces: rpcRequestSchema("listTraces"),
+  readTrace: rpcRequestSchema("readTrace"),
   searchSessions: rpcRequestSchema("searchSessions"),
   listProjects: rpcRequestSchema("listProjects"),
   renameProject: rpcRequestSchema("renameProject"),

@@ -764,6 +764,10 @@ npm run dev
 - [x] Advanced Settings reports content-free local p50/p95 phase attribution,
   dominant bottleneck, seven-day/2 MiB retention, export/copy diagnostics, and
   plugin health without central telemetry or new presentation primitives.
+- [x] Advanced → Local Diagnostics inspects the latest canonical run-event
+  trace through bounded host RPC. Content stays hidden by default, explicitly
+  recorded redactions require a deliberate reveal, corruption is surfaced
+  without row reordering, and no upload path exists.
 - [x] Sessions merges immediate metadata filtering with cancellable cross-project
   BM25 transcript recall, persists stable completed-turn IDs, and atomically
   forks model/display history without dangling tool calls or mutating the source.

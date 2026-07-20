@@ -20,6 +20,7 @@ import { createWorkerEngineClient } from "./engine-worker-client.ts";
 import { needsOnboarding, runOnboarding } from "./onboarding.ts";
 import { upgradeInstructions } from "./upgrade.ts";
 import { VERSION } from "./version.ts";
+import { runTraceCommand } from "./trace-command.ts";
 
 // Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
 // literal now lives in ./version.ts (stamped at release by set-version.ts).
@@ -69,6 +70,9 @@ USAGE
   vibecodr -p "<prompt>" [options]   run one prompt headlessly and print the result
   vibecodr models [options]          list available models for configured providers
   vibecodr sessions                  list saved sessions (resume with --resume <id>)
+  vibecodr trace list                list machine-local run traces
+  vibecodr trace show <run-id>       inspect a bounded trace page
+  vibecodr trace export <run-id>     write a static local HTML trace
   vibecodr setup                     run the guided provider/model setup (alias: login)
   vibecodr upgrade                   print how to update to the latest version
 
@@ -79,6 +83,8 @@ OPTIONS
       --cwd <dir>       working directory (default: current)
       --output-format   one-shot output: text (default) | json
       --reasoning       print model reasoning to stderr
+      --output <file>   output path for trace export
+      --include-redacted include explicitly recorded redacted trace content
   -c, --continue        resume the most recent session
       --resume <id>     resume a specific session by id
   -v, --version         print version and exit
@@ -137,6 +143,8 @@ export async function run(argv: string[]): Promise<number> {
       cwd: { type: "string" },
       "output-format": { type: "string" },
       reasoning: { type: "boolean" },
+      output: { type: "string" },
+      "include-redacted": { type: "boolean" },
       continue: { type: "boolean", short: "c" },
       resume: { type: "string" },
       version: { type: "boolean", short: "v" },
@@ -175,6 +183,18 @@ export async function run(argv: string[]): Promise<number> {
       `vibecodr: invalid --output-format "${values["output-format"]}" (expected "json" or "text")\n`,
     );
     return 1;
+  }
+
+  if (positionals[0] === "trace") {
+    const result = await runTraceCommand({
+      cwd,
+      args: positionals.slice(1),
+      output: values.output,
+      includeRedacted: values["include-redacted"],
+    });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    return result.exitCode;
   }
 
   // `vibecodr sessions` — list saved sessions and exit (no engine needed).

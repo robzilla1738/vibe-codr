@@ -19,6 +19,7 @@ import { runOneShot, startTui } from "@vibe/tui";
 import { createWorkerEngineClient } from "./engine-worker-client.ts";
 import { needsOnboarding, runOnboarding } from "./onboarding.ts";
 import { upgradeInstructions } from "./upgrade.ts";
+import { runServeCommand } from "./serve-command.ts";
 import { VERSION } from "./version.ts";
 import { runTraceCommand } from "./trace-command.ts";
 
@@ -73,6 +74,7 @@ USAGE
   vibecodr trace list                list machine-local run traces
   vibecodr trace show <run-id>       inspect a bounded trace page
   vibecodr trace export <run-id>     write a static local HTML trace
+  vibecodr serve [options]           serve the authenticated API on 127.0.0.1
   vibecodr setup                     run the guided provider/model setup (alias: login)
   vibecodr upgrade                   print how to update to the latest version
 
@@ -81,6 +83,8 @@ OPTIONS
   -m, --model <id>      model string, e.g. anthropic/claude-opus-4-8, lmstudio/<id>
       --mode <mode>     start mode: plan | execute | yolo  (default: execute)
       --cwd <dir>       working directory (default: current)
+      --host <address>  API bind address (only 127.0.0.1 is permitted)
+      --port <number>   API port (default: an available loopback port)
       --output-format   one-shot output: text (default) | json
       --reasoning       print model reasoning to stderr
       --output <file>   output path for trace export
@@ -141,6 +145,8 @@ export async function run(argv: string[]): Promise<number> {
       model: { type: "string", short: "m" },
       mode: { type: "string" },
       cwd: { type: "string" },
+      host: { type: "string" },
+      port: { type: "string" },
       "output-format": { type: "string" },
       reasoning: { type: "boolean" },
       output: { type: "string" },
@@ -162,6 +168,18 @@ export async function run(argv: string[]): Promise<number> {
   }
 
   const cwd = values.cwd ?? process.cwd();
+
+  // Route the loopback API before config loading, onboarding, project memory,
+  // or any parent runtime startup. The server opens only requested sessions.
+  if (positionals[0] === "serve") {
+    try {
+      return await runServeCommand({ cwd, hostname: values.host, port: values.port });
+    } catch (error) {
+      process.stderr.write(`vibecodr serve: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  }
+
   const overrides: Partial<Config> = {};
   if (values.model) overrides.model = values.model;
   if (values.mode !== undefined) {

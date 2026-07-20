@@ -1,15 +1,9 @@
 {
-  "name": "@vibe/cli",
+  "name": "@vibe/server",
   "version": "0.6.14",
   "private": true,
   "type": "module",
-  "bin": {
-    "vibecodr": "./bin/vibecodr.ts",
-    "vibe": "./bin/vibecodr.ts"
-  },
-  "exports": {
-    ".": "./src/index.ts"
-  },
+  "exports": { ".": "./src/index.ts" },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
@@ -18,13 +12,9 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@vibe/config": "workspace:*",
     "@vibe/core": "workspace:*",
     "@vibe/protocol": "workspace:*",
-    "@vibe/providers": "workspace:*",
     "@vibe/runtime": "workspace:*",
-    "@vibe/server": "workspace:*",
-    "@vibe/shared": "workspace:*",
-    "@vibe/tui": "workspace:*"
+    "@vibe/shared": "workspace:*"
   }
 }

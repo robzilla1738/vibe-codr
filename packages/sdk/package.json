@@ -1,0 +1,16 @@
+{
+  "name": "@vibe/sdk",
+  "version": "0.6.14",
+  "description": "Typed loopback client for Vibe Codr",
+  "license": "MIT",
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test",
+    "lint": "echo \"(no lint configured)\"",
+    "build": "echo \"(release builder emits dist/sdk)\"",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": { "@vibe/protocol": "workspace:*" }
+}

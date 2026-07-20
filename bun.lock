@@ -42,6 +42,7 @@
         "@vibe/protocol": "workspace:*",
         "@vibe/providers": "workspace:*",
         "@vibe/runtime": "workspace:*",
+        "@vibe/server": "workspace:*",
         "@vibe/shared": "workspace:*",
         "@vibe/tui": "workspace:*",
       },
@@ -156,6 +157,23 @@
         "@vibe/core": "workspace:*",
         "@vibe/protocol": "workspace:*",
         "@vibe/providers": "workspace:*",
+        "@vibe/shared": "workspace:*",
+      },
+    },
+    "packages/sdk": {
+      "name": "@vibe/sdk",
+      "version": "0.6.14",
+      "dependencies": {
+        "@vibe/protocol": "workspace:*",
+      },
+    },
+    "packages/server": {
+      "name": "@vibe/server",
+      "version": "0.6.14",
+      "dependencies": {
+        "@vibe/core": "workspace:*",
+        "@vibe/protocol": "workspace:*",
+        "@vibe/runtime": "workspace:*",
         "@vibe/shared": "workspace:*",
       },
     },
@@ -444,6 +462,10 @@
     "@vibe/providers": ["@vibe/providers@workspace:packages/providers"],
 
     "@vibe/runtime": ["@vibe/runtime@workspace:packages/runtime"],
+
+    "@vibe/sdk": ["@vibe/sdk@workspace:packages/sdk"],
+
+    "@vibe/server": ["@vibe/server@workspace:packages/server"],
 
     "@vibe/shared": ["@vibe/shared@workspace:packages/shared"],
 

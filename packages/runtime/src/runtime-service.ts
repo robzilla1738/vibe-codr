@@ -14,6 +14,8 @@ import type {
 import type { Engine } from "@vibe/core";
 import type { RuntimeErrorDataV1 } from "@vibe/protocol";
 import { AsyncQueue } from "@vibe/shared";
+import type { RunEventV1 } from "@vibe/protocol";
+import type { RuntimeEventRecorder } from "./run-event-recorder.ts";
 
 export type RuntimeServiceState = "starting" | "ready" | "closing" | "closed";
 
@@ -67,7 +69,15 @@ export interface RuntimeServiceOptions {
   afterFinalize?: () => void | Promise<void>;
   /** Bounded replay for callers that subscribe after bootstrap completes. */
   eventHistoryLimit?: number;
+  /** Sole exactly-once observation sink; called before raw-event fanout. */
+  recorder?: RuntimeEventRecorder;
 }
+
+const NOOP_RECORDER: RuntimeEventRecorder = {
+  observe: () => undefined,
+  close: async () => undefined,
+  crashTail: () => [],
+};
 
 /**
  * Transport-neutral lifecycle facade for one Engine session.
@@ -80,17 +90,20 @@ export class RuntimeService implements EngineClient {
   readonly #engine: RuntimeEngine;
   readonly #afterFinalize?: () => void | Promise<void>;
   readonly #eventHistoryLimit: number;
+  readonly #recorder: RuntimeEventRecorder;
   readonly #subscribers = new Set<AsyncQueue<UIEvent>>();
   readonly #eventHistory: UIEvent[] = [];
   #state: RuntimeServiceState = "starting";
   #openPromise: Promise<this> | undefined;
   #closePromise: Promise<void> | undefined;
   #eventIterator: AsyncIterator<UIEvent> | undefined;
+  #eventPump: Promise<void> | undefined;
 
   constructor(engine: RuntimeEngine, options: RuntimeServiceOptions = {}) {
     this.#engine = engine;
     this.#afterFinalize = options.afterFinalize;
     this.#eventHistoryLimit = Math.max(1, options.eventHistoryLimit ?? 64);
+    this.#recorder = options.recorder ?? NOOP_RECORDER;
   }
 
   get state(): RuntimeServiceState {
@@ -110,7 +123,7 @@ export class RuntimeService implements EngineClient {
     // when a presentation transport subscribes only after open() resolves.
     const iterator = this.#engine.events()[Symbol.asyncIterator]();
     this.#eventIterator = iterator;
-    void this.#pumpEvents(iterator).catch(() => undefined);
+    this.#eventPump = this.#pumpEvents(iterator).catch(() => undefined);
     try {
       await this.#engine.bootstrap();
       if (this.#state !== "starting") throw this.#closedError("start");
@@ -130,6 +143,9 @@ export class RuntimeService implements EngineClient {
         const next = await iterator.next();
         if (next.done) break;
         const event = next.value;
+        // The durable ledger observes each source event exactly once, before
+        // replay history or any presentation subscriber sees the raw event.
+        this.#recorder.observe(event);
         this.#eventHistory.push(event);
         if (this.#eventHistory.length > this.#eventHistoryLimit) this.#eventHistory.shift();
         for (const subscriber of this.#subscribers) subscriber.push(event);
@@ -235,6 +251,11 @@ export class RuntimeService implements EngineClient {
     return this.close();
   }
 
+  /** Synchronous content-free ring for fatal diagnostics. */
+  crashTail(): readonly RunEventV1[] {
+    return this.#recorder.crashTail();
+  }
+
   /** Concurrent close/finalize calls share one teardown and one engine finalize. */
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise;
@@ -251,6 +272,8 @@ export class RuntimeService implements EngineClient {
     } catch (error) {
       failure = error;
     }
+    await this.#eventPump;
+    await this.#recorder.close().catch(() => undefined);
     try {
       await this.#afterFinalize?.();
     } catch (error) {

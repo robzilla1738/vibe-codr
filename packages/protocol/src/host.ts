@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RUN_EVENT_V1_LIMITS, RunEventV1Schema } from "./run-event.ts";
 import {
   AgentInfoSchema,
   CatalogDisplayStringSchema,
@@ -474,7 +475,11 @@ export const HostRpcErrorSchema = loose({
   error: z.string(),
 });
 export type HostRpcError = z.infer<typeof HostRpcErrorSchema>;
-export const HostFatalErrorSchema = loose({ type: z.literal("fatal"), message: z.string() });
+export const HostFatalErrorSchema = loose({
+  type: z.literal("fatal"),
+  message: z.string(),
+  runEventTail: z.array(RunEventV1Schema).max(RUN_EVENT_V1_LIMITS.crashTailEvents).optional(),
+});
 export type HostFatalError = z.infer<typeof HostFatalErrorSchema>;
 export const HostRpcResponseSchema = z.union([HostRpcSuccessSchema, HostRpcErrorSchema]);
 export const HOST_OUTBOUND_FRAME_SCHEMAS = {

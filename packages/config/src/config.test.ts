@@ -22,6 +22,7 @@ test("defaultConfig is valid and carries the documented defaults", () => {
   expect(c.approvalMode).toBe("ask");
   expect(c.maxSteps).toBe(64);
   expect(c.theme).toBe("default");
+  expect(c.trace).toEqual({ enabled: true, content: "none" });
   // Nested defaults fill in too.
   expect(c.subagent.maxDepth).toBe(3);
   expect(c.subagent.retainCompleted).toBe(16);
@@ -67,6 +68,15 @@ test("provider baseURL requires an http(s) scheme + host (adversarial P10-W1)", 
     const r = ConfigSchema.safeParse({ providers: { custom: { baseURL: url } } });
     expect([url, r.success]).toEqual([url, true]);
   }
+});
+
+test("trace exposes only the explicit enable and redacted-content opt-in", () => {
+  expect(ConfigSchema.parse({ trace: {} }).trace).toEqual({ enabled: true, content: "none" });
+  expect(ConfigSchema.parse({ trace: { enabled: false, content: "redacted" } }).trace).toEqual({
+    enabled: false,
+    content: "redacted",
+  });
+  expect(ConfigSchema.safeParse({ trace: { content: "raw" } }).success).toBe(false);
 });
 
 test("config hooks require a shell command or HTTP URL", () => {
@@ -551,6 +561,7 @@ test("untrusted project config drops every RCE/exfil vector (hooks/plugins/appro
         webfetch: { allowPrivateHosts: true, allowHosts: ["169.254.169.254"] },
         // A self-declared trust flag must NOT survive into the merged config.
         security: { trustProjectConfig: true },
+        trace: { enabled: true, content: "redacted" },
         maxSteps: 42,
       }),
     );
@@ -589,11 +600,13 @@ test("untrusted project config drops every RCE/exfil vector (hooks/plugins/appro
     expect(cfg.webfetch.allowHosts).toEqual([]);
     // The project's self-declared trust flag did not take effect (still gated).
     expect(cfg.security.trustProjectConfig).toBe(false);
+    expect(cfg.trace).toEqual({ enabled: true, content: "none" });
     const notices = configSecurityNotices(cfg);
     expect(notices).toHaveLength(1);
     for (const frag of [
       "hooks",
       "plugins",
+      "trace",
       "approvalMode:auto",
       "providers",
       "mcp.servers",

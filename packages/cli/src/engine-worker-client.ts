@@ -31,6 +31,8 @@
  * passthrough with no marshalling.
  */
 import type { Worker as WorkerType } from "node:worker_threads";
+import { setCrashRunEventTail } from "@vibe/core";
+import type { RunEventV1 } from "@vibe/protocol";
 import {
   type AgentInfo,
   AsyncQueue,
@@ -86,7 +88,7 @@ export interface WorkerEngineOptions {
   /** Fatal handler — owns terminal restore + crash-log + `process.exit(1)`.
    * The host calls this when the worker reports `__fatal__` OR exits with a
    * non-zero code abnormally. Mirrors in-process `crash.ts`. */
-  onFatal?: (message: string) => void;
+  onFatal?: (message: string, runEventTail: readonly RunEventV1[]) => void;
   /** Environment forwarded into the worker as `workerData.env`. Workers
    * inherit a fresh `process.env` at spawn time; XDG/runtime token-file
    * overrides the parent reads LIVE today must be forwarded explicitly.
@@ -121,7 +123,7 @@ export class WorkerEngineClient implements EngineClient {
   readonly #timerApi: WorkerEngineTimerApi;
   #nextReq = 1;
   #closed = false;
-  #onFatal?: (message: string) => void;
+  #onFatal?: (message: string, runEventTail: readonly RunEventV1[]) => void;
   #snapshotCache: EngineSnapshot | undefined;
   /** True while a snapshot RPC is in flight (dedupes concurrent cache misses). */
   #snapshotPending = false;
@@ -207,8 +209,10 @@ export class WorkerEngineClient implements EngineClient {
   #onMessage(msg: EngineWorkerOutbound): void {
     if (isEngineWorkerFatal(msg)) {
       const cb = this.#onFatal;
+      const runEventTail = msg.runEventTail ?? [];
+      setCrashRunEventTail(runEventTail);
       this.#close("fatal");
-      cb?.(msg.message);
+      cb?.(msg.message, runEventTail);
       return;
     }
     if (isEngineWorkerRpcResponse(msg)) {
@@ -260,10 +264,11 @@ export class WorkerEngineClient implements EngineClient {
   }
 
   /** Hand the fatal surface back to the host, then close. */
-  #fatal(message: string): void {
+  #fatal(message: string, runEventTail: readonly RunEventV1[] = []): void {
     const cb = this.#onFatal;
+    if (runEventTail.length > 0) setCrashRunEventTail(runEventTail);
     this.#close("fatal");
-    cb?.(message);
+    cb?.(message, runEventTail);
   }
 
   /** Reject every pending RPC + close the event stream. Idempotent. */

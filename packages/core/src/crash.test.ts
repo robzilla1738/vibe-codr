@@ -10,7 +10,30 @@ import {
   recentCrashes,
   redactCrash,
   writeCrashLog,
+  registerCrashRunEventTail,
 } from "./crash.ts";
+
+test("crash records synchronously include only the newest 256 content-free run events", () => {
+  const events = Array.from({ length: 300 }, (_, index) => ({
+    schemaVersion: 1,
+    runId: "run-1",
+    seq: index + 1,
+    at: index,
+    type: "notice",
+    content: { message: `secret-${index}` },
+  }));
+  const unregister = registerCrashRunEventTail(() => events);
+  const record = buildCrashRecord("test", new Error("boom"), {
+    version: "1",
+    now: new Date(0),
+    argv: [],
+  });
+  unregister();
+  expect(record.runEventTail).toHaveLength(256);
+  expect((record.runEventTail[0] as { seq: number }).seq).toBe(45);
+  expect((record.runEventTail.at(-1) as { seq: number }).seq).toBe(300);
+  expect(JSON.stringify(record.runEventTail)).not.toContain("secret-");
+});
 
 test("redactCrash masks secret-bearing keys", () => {
   const out = redactCrash({

@@ -348,7 +348,7 @@ function sanitizeUntrustedProjectConfig(project: Record<string, unknown>): {
   // `hooks` (shell exec on lifecycle events), `plugins` (module import), and the
   // project's own `security` block (must never influence the merged trust state)
   // are removed outright.
-  for (const key of ["hooks", "plugins", "security"] as const) {
+  for (const key of ["hooks", "plugins", "security", "trace"] as const) {
     if (key in clean) {
       delete clean[key];
       if (key !== "security") dropped.push(key);

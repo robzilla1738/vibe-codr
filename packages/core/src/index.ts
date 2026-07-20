@@ -187,6 +187,9 @@ export {
   recentCrashes,
   crashDoctorCheck,
   crashesDir,
+  registerCrashRunEventTail,
+  setCrashRunEventTail,
+  currentCrashRunEventTail,
   type CrashRecord,
   type CrashHandlerDeps,
 } from "./crash.ts";

@@ -10,6 +10,11 @@ import {
 import { ProviderRegistry } from "@vibe/providers";
 import type { ExecutionTarget, Mode } from "@vibe/shared";
 import { RuntimeService, type RuntimeEngine } from "./runtime-service.ts";
+import {
+  RunEventRecorder,
+  resolvedTracePolicyV1,
+  runEventLedgerDir,
+} from "./run-event-recorder.ts";
 
 export type RuntimeSessionStore = Pick<
   SessionStore,
@@ -136,6 +141,10 @@ export async function openRuntimeSession(
     const engine = options.engineFactory?.(engineOptions) ?? dependencies.createEngine(engineOptions);
     const service = new RuntimeService(engine, {
       ...(releaseOwnedLease ? { afterFinalize: releaseOwnedLease } : {}),
+      recorder: new RunEventRecorder({
+        directory: runEventLedgerDir(options.cwd),
+        policy: resolvedTracePolicyV1(config.trace),
+      }),
     });
     return await service.open();
   } catch (error) {

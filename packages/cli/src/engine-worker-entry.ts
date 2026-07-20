@@ -21,7 +21,7 @@
  * `engine-worker-entry.ts` directly via `new Worker(path)`.
  */
 import type { UIEvent } from "@vibe/shared";
-import { openRuntimeSession } from "@vibe/runtime";
+import { openRuntimeSession, type RuntimeService } from "@vibe/runtime";
 import {
   isEngineWorkerRpcRequest,
   type EngineWorkerData,
@@ -64,11 +64,16 @@ if (data?.env) {
 // paths land on the host's `onFatal`; the explicit sentinel carries the
 // message text the host's crash log wants.
 let fatalFired = false;
+let activeEngine: RuntimeService | undefined;
 const reportFatal = (message: string): void => {
   if (fatalFired) return;
   fatalFired = true;
   try {
-    port.postMessage({ __fatal__: true, message });
+    port.postMessage({
+      __fatal__: true,
+      message,
+      runEventTail: activeEngine?.crashTail() ?? [],
+    });
   } catch {
     // Worker is being torn down — `on('error')` / `on('exit')` will inform.
   }
@@ -92,6 +97,7 @@ const engine = await openRuntimeSession({
   ...(opts.modelOverride ? { modelOverride: opts.modelOverride } : {}),
   ...(opts.modeOverride ? { modeOverride: opts.modeOverride as never } : {}),
 });
+activeEngine = engine;
 
 // Accept host RPC/commands as soon as the worker starts (host beginHydrate
 // races bootstrap). Queue until bootstrap finishes so snapshot includes

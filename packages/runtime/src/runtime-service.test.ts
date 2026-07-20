@@ -7,6 +7,7 @@ import {
   RuntimeServiceError,
   type RuntimeEngine,
 } from "./runtime-service.ts";
+import type { RuntimeEventRecorder } from "./run-event-recorder.ts";
 
 const SNAPSHOT = { sessionId: "session-1" } as EngineSnapshot;
 
@@ -71,6 +72,25 @@ async function first<T>(iterable: AsyncIterable<T>): Promise<T | undefined> {
 }
 
 describe("RuntimeService", () => {
+  test("observes each source event once before fanout and drains the recorder on close", async () => {
+    const engine = new MockEngine();
+    const calls: string[] = [];
+    const recorder: RuntimeEventRecorder = {
+      observe: (event) => calls.push(`observe:${event.type}`),
+      close: async () => {
+        calls.push("close");
+      },
+      crashTail: () => [],
+    };
+    const service = await new RuntimeService(engine, { recorder }).open();
+    const iterator = service.events()[Symbol.asyncIterator]();
+    const bootstrap = await iterator.next();
+    calls.push(`fanout:${bootstrap.value?.type}`);
+    expect(calls).toEqual(["observe:notice", "fanout:notice"]);
+    await service.close();
+    expect(calls).toEqual(["observe:notice", "fanout:notice", "close"]);
+  });
+
   test("subscribes before bootstrap, starts once, and replays raw bootstrap events", async () => {
     const engine = new MockEngine();
     const service = new RuntimeService(engine);

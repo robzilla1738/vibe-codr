@@ -6,6 +6,7 @@ import type {
   ProviderInfo,
   SkillInfo,
   UIEvent,
+  RunEventV1,
 } from "@vibe/protocol";
 
 export interface EngineWorkerRpcResults {
@@ -50,6 +51,8 @@ export interface EngineWorkerRpcError {
 export interface EngineWorkerFatal {
   __fatal__: true;
   message: string;
+  /** Optional only for one-release compatibility with an older worker binary. */
+  runEventTail?: RunEventV1[];
 }
 
 /** Host → worker. Commands remain unwrapped for zero-copy structured cloning. */

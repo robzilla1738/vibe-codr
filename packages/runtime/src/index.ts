@@ -14,3 +14,14 @@ export {
   type RuntimeResumeRequest,
   type RuntimeSessionStore,
 } from "./open-runtime-session.ts";
+export {
+  RunEventRecorder,
+  enforceRunEventRetention,
+  projectRunEventV1,
+  recoverRunEventLedger,
+  redactTraceValue,
+  resolvedTracePolicyV1,
+  runEventLedgerDir,
+  type RunEventRecorderOptions,
+  type RuntimeEventRecorder,
+} from "./run-event-recorder.ts";

@@ -64,12 +64,54 @@ export interface CrashRecord {
   stack: string;
   argv: string[];
   platform: string;
+  /** Newest content-free runtime events, captured synchronously before exit. */
+  runEventTail: unknown[];
+}
+
+const CRASH_RUN_EVENT_TAIL_MAX = 256;
+const crashTailProviders: Array<() => readonly unknown[]> = [];
+let transferredCrashTail: readonly unknown[] = [];
+
+function contentFreeCrashTail(events: readonly unknown[]): unknown[] {
+  const tail: unknown[] = [];
+  for (const value of events.slice(-CRASH_RUN_EVENT_TAIL_MAX)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const { content: _content, ...base } = value as Record<string, unknown>;
+    tail.push({ ...base });
+  }
+  return tail;
+}
+
+/** Register the live synchronous ring used by process-level crash diagnostics. */
+export function registerCrashRunEventTail(provider: () => readonly unknown[]): () => void {
+  crashTailProviders.push(provider);
+  return () => {
+    const index = crashTailProviders.lastIndexOf(provider);
+    if (index >= 0) crashTailProviders.splice(index, 1);
+  };
+}
+
+/** Transfer a worker-owned crash ring into the host before its crash handler runs. */
+export function setCrashRunEventTail(events: readonly unknown[]): void {
+  transferredCrashTail = contentFreeCrashTail(events);
+}
+
+export function currentCrashRunEventTail(): unknown[] {
+  for (let index = crashTailProviders.length - 1; index >= 0; index -= 1) {
+    try {
+      const tail = contentFreeCrashTail(crashTailProviders[index]?.() ?? []);
+      if (tail.length > 0) return tail;
+    } catch {
+      // A crash-tail provider is diagnostic-only; try the next source.
+    }
+  }
+  return contentFreeCrashTail(transferredCrashTail);
 }
 
 export function buildCrashRecord(
   kind: string,
   err: unknown,
-  opts: { version: string; now: Date; argv: string[] },
+  opts: { version: string; now: Date; argv: string[]; runEventTail?: readonly unknown[] },
 ): CrashRecord {
   const e = err as { message?: unknown; stack?: unknown };
   return {
@@ -80,6 +122,7 @@ export function buildCrashRecord(
     stack: typeof e?.stack === "string" ? e.stack : "",
     argv: opts.argv,
     platform: `${process.platform}-${process.arch}`,
+    runEventTail: contentFreeCrashTail(opts.runEventTail ?? currentCrashRunEventTail()),
   };
 }
 

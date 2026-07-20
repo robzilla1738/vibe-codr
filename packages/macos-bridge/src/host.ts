@@ -104,10 +104,14 @@ export async function runHost(): Promise<void> {
     write(frame);
   };
 
+  const writeFatal = (message: string): void => {
+    write({ type: "fatal", message, runEventTail: currentEngine()?.crashTail() ?? [] });
+  };
+
   const fatal = (err: unknown) => {
     if (shuttingDown) return;
     const message = err instanceof Error ? err.message : String(err);
-    write({ type: "fatal", message });
+    writeFatal(message);
   };
 
   const crash = (err: unknown) => {
@@ -134,7 +138,7 @@ export async function runHost(): Promise<void> {
 
   const bootstrap = async (msg: Extract<HostInbound, { op: "bootstrap" }>) => {
     if (engine) {
-      write({ type: "fatal", message: "already bootstrapped" });
+      writeFatal("already bootstrapped");
       return;
     }
 
@@ -162,7 +166,7 @@ export async function runHost(): Promise<void> {
       overrides.details = msg.runtimeProfile.details;
     }
     if (msg.mode !== undefined && !applyModeOverride(overrides, msg.mode)) {
-      write({ type: "fatal", message: `invalid mode "${msg.mode}"` });
+      writeFatal(`invalid mode "${msg.mode}"`);
       return;
     }
 
@@ -615,12 +619,12 @@ export async function runHost(): Promise<void> {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed.length > 1_000_000) {
-      write({ type: "fatal", message: "protocol message exceeds 1 MB" });
+      writeFatal("protocol message exceeds 1 MB");
       continue;
     }
     const msg = decodeInbound(trimmed);
     if (!msg) {
-      write({ type: "fatal", message: `invalid protocol message: ${trimmed.slice(0, 120)}` });
+      writeFatal(`invalid protocol message: ${trimmed.slice(0, 120)}`);
       continue;
     }
 
@@ -631,7 +635,7 @@ export async function runHost(): Promise<void> {
           break;
         case "send":
           if (!currentEngine()) {
-            write({ type: "fatal", message: "send before bootstrap" });
+            writeFatal("send before bootstrap");
             break;
           }
           await currentEngine()!.send(msg.command as EngineCommand);

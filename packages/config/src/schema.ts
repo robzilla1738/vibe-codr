@@ -405,6 +405,13 @@ export const ConfigSchema = z.object({
    * a tool ran. `/details` and Ctrl+D cycle this; persisted globally.
    */
   details: z.enum(["quiet", "normal", "verbose"]).default("normal"),
+  /** Machine-local ledger. Content capture requires an explicit opt-in. */
+  trace: z
+    .object({
+      enabled: z.boolean().default(true),
+      content: z.enum(["none", "redacted"]).default("none"),
+    })
+    .default({ enabled: true, content: "none" }),
   /**
    * Capture mouse in the OpenTUI app (click-to-expand, select-to-copy).
    * Set false (`/mouse off`) to preserve the terminal's native selection and

@@ -105,7 +105,7 @@ export async function runHost(): Promise<void> {
   };
 
   const writeFatal = (message: string): void => {
-    write({ type: "fatal", message, runEventTail: currentEngine()?.crashTail() ?? [] });
+    write({ type: "fatal", message, runEventTail: [...(currentEngine()?.crashTail() ?? [])] });
   };
 
   const fatal = (err: unknown) => {

@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { encodeInbound, decodeInbound, decodeOutbound, type HostInbound } from "@shared/protocol";
-import type { EngineCommand } from "@shared/commands";
+import {
+  encodeInbound,
+  decodeInbound,
+  decodeOutbound,
+  type EngineCommand,
+  type HostInbound,
+} from "../../../src/shared/protocol";
 import { isRelayInbound, isRelayOutbound, MOBILE_UPLOAD_MAX_BASE64_CHARS } from "../../../relay/protocol";
 
 // Locks the phone↔relay wire contract: the NDJSON the mobile RemoteEngineClient
@@ -22,6 +27,7 @@ describe("remote protocol parity (mobile client ↔ relay)", () => {
       { type: "resolve-permission", id: "p1", decision: "always" },
       { type: "resolve-plan", decision: "accept", approvals: "auto" },
       { type: "resolve-question", id: "q1", answers: ["yes"] },
+      { type: "cancel-activity", id: "activity-1" },
       { type: "abort" },
       { type: "compact" },
     ];
@@ -45,6 +51,17 @@ describe("remote protocol parity (mobile client ↔ relay)", () => {
     expect(ev?.type).toBe("event");
     const correlated = decodeOutbound('{"type":"event","hostInstanceId":"host-1","seq":2,"event":{"type":"user-message","sessionId":"s1","turnId":"turn-opaque","text":"hi"}}');
     expect(correlated).toMatchObject({ type: "event", event: { type: "user-message", turnId: "turn-opaque" } });
+
+    const currentEvents = [
+      { type: "plan-state-changed", sessionId: "s1", state: { status: "pending", updatedAt: 1 } },
+      { type: "question-request", sessionId: "s1", question: { id: "q1", question: "Proceed?", choices: [{ label: "Yes" }], multiple: false, allowFreeform: false, createdAt: 1 } },
+      { type: "question-settled", sessionId: "s1", id: "q1", reason: "answered" },
+      { type: "activities-changed", sessionId: "s1", activities: [{ id: "activity-1", kind: "shell", label: "Tests", status: "running" }] },
+    ];
+    for (const [index, event] of currentEvents.entries()) {
+      expect(decodeOutbound(JSON.stringify({ type: "event", hostInstanceId: "host-1", seq: index + 3, event })))
+        .toMatchObject({ type: "event", event });
+    }
   });
 
   it("shutdown round-trips", () => {

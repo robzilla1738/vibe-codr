@@ -194,77 +194,101 @@ const RPC_METHODS = new Set<RpcMethod>([
   "abortHandoff",
 ]);
 
-const ENGINE_COMMAND_TYPES = new Set([
-  "submit-prompt",
-  "run-slash",
-  "set-mode",
-  "set-approvals",
-  "set-model",
-  "set-subagent-model",
-  "set-agent-model",
-  "create-agent",
-  "set-goal",
-  "resume-goal",
-  "abort",
-  "dequeue",
-  "steer",
-  "compact",
-  "request-runtime-handoff",
-  "resolve-external-capability",
-  "resolve-permission",
-  "resolve-plan",
-  "shutdown",
-]);
+/** Exhaustive map — TypeScript fails compile if a command type is missing. */
+const ENGINE_COMMAND_TYPE_MAP = {
+  "submit-prompt": 1,
+  "run-slash": 1,
+  "set-mode": 1,
+  "set-approvals": 1,
+  "set-model": 1,
+  "set-subagent-model": 1,
+  "set-agent-model": 1,
+  "create-agent": 1,
+  "set-goal": 1,
+  "resume-goal": 1,
+  abort: 1,
+  dequeue: 1,
+  steer: 1,
+  compact: 1,
+  "request-runtime-handoff": 1,
+  "resolve-external-capability": 1,
+  "resolve-permission": 1,
+  "resolve-plan": 1,
+  "resolve-question": 1,
+  "cancel-activity": 1,
+  shutdown: 1,
+} as const satisfies Record<EngineCommand["type"], 1>;
 
-const UI_EVENT_TYPES = new Set<UIEvent["type"]>([
-  "session-start",
-  "user-message",
-  "assistant-text-delta",
-  "reasoning-delta",
-  "tool-call-started",
-  "tool-call-progress",
-  "tool-call-finished",
-  "step-finished",
-  "usage-updated",
-  "context-updated",
-  "mode-changed",
-  "model-changed",
-  "goal-changed",
-  "goal-run",
-  "theme-changed",
-  "accent-changed",
-  "details-changed",
-  "mouse-changed",
-  "git-updated",
-  "jobs-changed",
-  "approvals-changed",
-  "plan-presented",
-  "permission-request",
-  "permission-settled",
-  "tasks-updated",
-  "orchestration-task",
-  "queue-changed",
-  "file-changed",
-  "checkpoint-created",
-  "checkpoint-restored",
-  "verify-started",
-  "verify-finished",
-  "compacted",
-  "runtime-handoff-requested",
-  "external-capability-pending",
-  "external-capability-resolved",
-  "subagent-started",
-  "subagent-activity",
-  "subagent-finished",
-  "loop-tick",
-  "loop-stopped",
-  "notice",
-  "engine-error",
-  "turn-finished",
-  "turn-performance",
-  "session-idle",
-  "engine-idle",
-]);
+const ENGINE_COMMAND_TYPES = new Set<string>(Object.keys(ENGINE_COMMAND_TYPE_MAP));
+
+/** Exhaustive map — TypeScript fails compile if a UIEvent type is missing. */
+const UI_EVENT_TYPE_MAP = {
+  "session-start": 1,
+  "user-message": 1,
+  "assistant-text-delta": 1,
+  "reasoning-delta": 1,
+  "tool-call-started": 1,
+  "tool-call-progress": 1,
+  "tool-call-finished": 1,
+  "step-finished": 1,
+  "usage-updated": 1,
+  "context-updated": 1,
+  "mode-changed": 1,
+  "model-changed": 1,
+  "goal-changed": 1,
+  "goal-run": 1,
+  "plan-state-changed": 1,
+  "question-request": 1,
+  "question-settled": 1,
+  "activities-changed": 1,
+  "theme-changed": 1,
+  "accent-changed": 1,
+  "details-changed": 1,
+  "mouse-changed": 1,
+  "git-updated": 1,
+  "jobs-changed": 1,
+  "approvals-changed": 1,
+  "plan-presented": 1,
+  "permission-request": 1,
+  "permission-settled": 1,
+  "tasks-updated": 1,
+  "orchestration-task": 1,
+  "queue-changed": 1,
+  "file-changed": 1,
+  "checkpoint-created": 1,
+  "checkpoint-restored": 1,
+  "verify-started": 1,
+  "verify-finished": 1,
+  compacted: 1,
+  "runtime-handoff-requested": 1,
+  "external-capability-pending": 1,
+  "external-capability-resolved": 1,
+  "subagent-started": 1,
+  "subagent-activity": 1,
+  "subagent-finished": 1,
+  "loop-tick": 1,
+  "loop-stopped": 1,
+  notice: 1,
+  "engine-error": 1,
+  "turn-finished": 1,
+  "turn-performance": 1,
+  "session-idle": 1,
+  "engine-idle": 1,
+} as const satisfies Record<UIEvent["type"], 1>;
+
+const UI_EVENT_TYPES = new Set<UIEvent["type"]>(
+  Object.keys(UI_EVENT_TYPE_MAP) as UIEvent["type"][],
+);
+
+/** For unit tests and source-parity checks: every UIEvent type is registered. */
+export function listedUIEventTypes(): readonly UIEvent["type"][] {
+  return Object.keys(UI_EVENT_TYPE_MAP) as UIEvent["type"][];
+}
+
+/** For unit tests and source-parity checks: every EngineCommand type is registered. */
+export function listedEngineCommandTypes(): readonly string[] {
+  return Object.keys(ENGINE_COMMAND_TYPE_MAP);
+}
 
 const SESSION_EVENT_TYPES = new Set<UIEvent["type"]>([
   "session-start",
@@ -281,6 +305,10 @@ const SESSION_EVENT_TYPES = new Set<UIEvent["type"]>([
   "model-changed",
   "goal-changed",
   "goal-run",
+  "plan-state-changed",
+  "question-request",
+  "question-settled",
+  "activities-changed",
   "git-updated",
   "jobs-changed",
   "plan-presented",
@@ -353,6 +381,10 @@ function optionalNumber(value: unknown): boolean {
   return value === undefined || Number.isFinite(value);
 }
 
+function optionalNonNegativeNumber(value: unknown): boolean {
+  return value === undefined || (Number.isFinite(value) && (value as number) >= 0);
+}
+
 function optionalSafeNonNegativeInteger(value: unknown): boolean {
   return value === undefined || (Number.isSafeInteger(value) && (value as number) >= 0);
 }
@@ -384,6 +416,17 @@ function portableArchive(value: unknown): boolean {
 
 function stringArray(value: unknown): boolean {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+const RUNTIME_IDENTIFIER_MAX_CHARS = 1_024;
+
+function isRuntimeIdentifier(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= RUNTIME_IDENTIFIER_MAX_CHARS &&
+    !value.includes("\0")
+  );
 }
 
 function sessionUsage(value: unknown): boolean {
@@ -440,6 +483,14 @@ function engineCommand(value: unknown): value is EngineCommand {
         optionalString(command.edit) &&
         (command.approvals === undefined || command.approvals === "auto")
       );
+    case "resolve-question":
+      return (
+        isRuntimeIdentifier(command.id) &&
+        stringArray(command.answers) &&
+        optionalString(command.freeform)
+      );
+    case "cancel-activity":
+      return isRuntimeIdentifier(command.id);
     case "request-runtime-handoff":
       return executionTarget(command.target) && optionalString(command.instruction);
     case "resolve-external-capability":
@@ -520,6 +571,80 @@ export function isUIEvent(value: unknown): value is UIEvent {
       return event.goal === null || typeof event.goal === "string";
     case "goal-run":
       return record(event.run) !== null;
+    case "plan-state-changed": {
+      const state = record(event.state);
+      return (
+        !!state &&
+        ["inactive", "active", "pending", "exit_pending"].includes(String(state.status)) &&
+        optionalString(state.plan) &&
+        (state.sources === undefined ||
+          (Array.isArray(state.sources) &&
+            state.sources.every((value) => {
+              const source = record(value);
+              return !!source && typeof source.url === "string" && optionalString(source.title);
+            }))) &&
+        (state.assumptions === undefined || stringArray(state.assumptions)) &&
+        optionalBoolean(state.ungrounded) &&
+        Number.isFinite(state.updatedAt) &&
+        (state.updatedAt as number) >= 0
+      );
+    }
+    case "question-request": {
+      const question = record(event.question);
+      return (
+        !!question &&
+        isRuntimeIdentifier(question.id) &&
+        typeof question.question === "string" &&
+        optionalString(question.header) &&
+        Array.isArray(question.choices) &&
+        question.choices.every((choice) => {
+          const item = record(choice);
+          return !!item && typeof item.label === "string" && optionalString(item.description);
+        }) &&
+        typeof question.multiple === "boolean" &&
+        typeof question.allowFreeform === "boolean" &&
+        Number.isFinite(question.createdAt) &&
+        (question.createdAt as number) >= 0
+      );
+    }
+    case "question-settled":
+      return (
+        isRuntimeIdentifier(event.id) &&
+        ["answered", "aborted", "shutdown", "timeout"].includes(String(event.reason))
+      );
+    case "activities-changed":
+      return (
+        Array.isArray(event.activities) &&
+        event.activities.every((value) => {
+          const activity = record(value);
+          return (
+            !!activity &&
+            isRuntimeIdentifier(activity.id) &&
+            ["shell", "subagent", "tasks", "monitor"].includes(String(activity.kind)) &&
+            typeof activity.label === "string" &&
+            ["queued", "running", "completed", "failed", "cancelled"].includes(
+              String(activity.status),
+            ) &&
+            optionalNonNegativeNumber(activity.startedAt) &&
+            optionalNonNegativeNumber(activity.finishedAt) &&
+            optionalString(activity.summary) &&
+            optionalString(activity.outputTail) &&
+            (activity.metrics === undefined || (() => {
+              const metrics = record(activity.metrics);
+              return (
+                !!metrics &&
+                optionalNonNegativeNumber(metrics.turns) &&
+                optionalNonNegativeNumber(metrics.toolCalls) &&
+                optionalNonNegativeNumber(metrics.inputTokens) &&
+                optionalNonNegativeNumber(metrics.outputTokens) &&
+                optionalNonNegativeNumber(metrics.contextTokens) &&
+                optionalNonNegativeNumber(metrics.contextWindow) &&
+                optionalNonNegativeNumber(metrics.errors)
+              );
+            })())
+          );
+        })
+      );
     case "theme-changed":
       return typeof event.theme === "string";
     case "accent-changed":

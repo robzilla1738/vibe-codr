@@ -140,6 +140,76 @@ function declarations(path, contents = readFileSync(path, "utf8")) {
   return out;
 }
 
+function propertyName(node) {
+  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) {
+    return node.text;
+  }
+  return null;
+}
+
+function unionDiscriminators(path, typeName, contents = readFileSync(path, "utf8")) {
+  const source = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declaration = source.statements.find(
+    (node) => ts.isTypeAliasDeclaration(node) && node.name.text === typeName,
+  );
+  if (!declaration || !ts.isTypeAliasDeclaration(declaration)) {
+    throw new Error(`${path}: missing type alias ${typeName}`);
+  }
+  const members = ts.isUnionTypeNode(declaration.type) ? declaration.type.types : [declaration.type];
+  const discriminators = new Set();
+  for (const member of members) {
+    if (!ts.isTypeLiteralNode(member)) continue;
+    const typeProperty = member.members.find(
+      (node) => ts.isPropertySignature(node) && propertyName(node.name) === "type",
+    );
+    if (
+      typeProperty &&
+      ts.isPropertySignature(typeProperty) &&
+      typeProperty.type &&
+      ts.isLiteralTypeNode(typeProperty.type) &&
+      ts.isStringLiteral(typeProperty.type.literal)
+    ) {
+      discriminators.add(typeProperty.type.literal.text);
+    }
+  }
+  return discriminators;
+}
+
+function unwrapExpression(node) {
+  let current = node;
+  while (
+    ts.isAsExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isParenthesizedExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function objectMapKeys(path, variableName, contents = readFileSync(path, "utf8")) {
+  const source = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || declaration.name.text !== variableName || !declaration.initializer) continue;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (!ts.isObjectLiteralExpression(initializer)) {
+        throw new Error(`${path}: ${variableName} must be an object literal`);
+      }
+      return new Set(initializer.properties.map((property) => propertyName(property.name)).filter(Boolean));
+    }
+  }
+  throw new Error(`${path}: missing ${variableName}`);
+}
+
+function requireEqualDiscriminators(label, expected, actual, failures) {
+  const missing = [...expected].filter((type) => !actual.has(type));
+  const unexpected = [...actual].filter((type) => !expected.has(type));
+  if (missing.length) failures.push(`${label}: missing discriminators ${missing.join(", ")}`);
+  if (unexpected.length) failures.push(`${label}: unexpected discriminators ${unexpected.join(", ")}`);
+}
+
 const failures = [];
 for (const [upstreamRel, electronRel, allowElectronExtras] of pairs) {
   const upstreamPath = join(vibeRoot, upstreamRel);
@@ -175,6 +245,42 @@ for (const [upstreamRel, electronRel, allowElectronExtras] of pairs) {
       if (!upstream.has(key) && !extraDeclarations.has(key)) failures.push(`${electronRel}: unexpected declaration ${key}`);
     }
   }
+}
+
+// Runtime allowlists are derived from the existing shared unions, never from a
+// third contract copy. Check both live validators so a new discriminator cannot
+// be accepted by TypeScript while being silently rejected on either side of the
+// bridge. The `satisfies Record<...>` declarations also enforce this at compile time.
+try {
+  for (const [label, protocolPath, commandsPath, eventsPath] of [
+    [
+      "packages/macos-bridge/src/protocol.ts",
+      join(vibeRoot, "packages/macos-bridge/src/protocol.ts"),
+      join(vibeRoot, "packages/shared/src/commands.ts"),
+      join(vibeRoot, "packages/shared/src/events.ts"),
+    ],
+    [
+      "src/shared/protocol.ts",
+      join(electronRoot, "src/shared/protocol.ts"),
+      join(electronRoot, "src/shared/commands.ts"),
+      join(electronRoot, "src/shared/events.ts"),
+    ],
+  ]) {
+    requireEqualDiscriminators(
+      `${label} ENGINE_COMMAND_TYPE_MAP`,
+      unionDiscriminators(commandsPath, "EngineCommand"),
+      objectMapKeys(protocolPath, "ENGINE_COMMAND_TYPE_MAP"),
+      failures,
+    );
+    requireEqualDiscriminators(
+      `${label} UI_EVENT_TYPE_MAP`,
+      unionDiscriminators(eventsPath, "UIEvent"),
+      objectMapKeys(protocolPath, "UI_EVENT_TYPE_MAP"),
+      failures,
+    );
+  }
+} catch (error) {
+  failures.push(error instanceof Error ? error.message : String(error));
 }
 
 // The Electron palette intentionally groups and describes commands differently

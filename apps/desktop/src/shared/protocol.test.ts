@@ -185,6 +185,48 @@ describe("NDJSON protocol runtime validation", () => {
     }))).toBeNull();
   });
 
+  it("validates question and activity commands field by field", () => {
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "resolve-question", id: "question-1", answers: ["Safe"], freeform: "note" },
+    }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "cancel-activity", id: "activity-1" },
+    }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "resolve-question", id: "question-1", answers: [7] },
+    }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "cancel-activity", id: "" },
+    }))).toBeNull();
+  });
+
+  it("validates plan, question, and activity events field by field", () => {
+    const valid = [
+      { type: "plan-state-changed", sessionId: "s", state: { status: "pending", plan: "Ship", sources: [{ url: "https://example.com" }], assumptions: [], ungrounded: false, updatedAt: 1 } },
+      { type: "question-request", sessionId: "s", question: { id: "q", question: "Proceed?", header: "Decision", choices: [{ label: "Yes", description: "Continue" }], multiple: false, allowFreeform: true, createdAt: 1 } },
+      { type: "question-settled", sessionId: "s", id: "q", reason: "answered" },
+      { type: "activities-changed", sessionId: "s", activities: [{ id: "a", kind: "shell", label: "Tests", status: "running", startedAt: 1, metrics: { toolCalls: 2 } }] },
+    ];
+    for (const event of valid) {
+      expect(decodeOutbound(JSON.stringify(eventFrame(event)))).not.toBeNull();
+    }
+
+    const malformed = [
+      { type: "plan-state-changed", sessionId: "s", state: { status: "pending", sources: [{ url: 7 }], updatedAt: 1 } },
+      { type: "question-request", sessionId: "s", question: { id: "q", question: "Proceed?", choices: ["yes"], multiple: false, allowFreeform: false, createdAt: 1 } },
+      { type: "question-settled", sessionId: "s", id: "q", reason: "unknown" },
+      { type: "activities-changed", sessionId: "s", activities: [{ id: "a", kind: "shell", label: "Tests", status: "running", metrics: { errors: -1 } }] },
+      { type: "activities-changed", activities: [] },
+    ];
+    for (const event of malformed) {
+      expect(decodeOutbound(JSON.stringify(eventFrame(event)))).toBeNull();
+    }
+  });
+
   it("lists exhaustive UIEvent and EngineCommand allowlists", () => {
     const events = listedUIEventTypes();
     const commands = listedEngineCommandTypes();
@@ -193,6 +235,12 @@ describe("NDJSON protocol runtime validation", () => {
     expect(events.length).toBeGreaterThanOrEqual(40);
     expect(commands).toContain("submit-prompt");
     expect(commands).toContain("resolve-permission");
+    expect(commands).toContain("resolve-question");
+    expect(commands).toContain("cancel-activity");
+    expect(events).toContain("plan-state-changed");
+    expect(events).toContain("question-request");
+    expect(events).toContain("question-settled");
+    expect(events).toContain("activities-changed");
     expect(new Set(events).size).toBe(events.length);
     expect(new Set(commands).size).toBe(commands.length);
   });

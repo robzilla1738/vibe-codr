@@ -1,6 +1,6 @@
+import type { ExecutionTarget } from "./cloud";
 import type { EngineCommand } from "./commands";
 import type { UIEvent } from "./events";
-import type { ExecutionTarget } from "./cloud";
 import type { PortableSessionArchiveV1 } from "./handoff";
 import type { EngineSnapshot } from "./types";
 
@@ -532,19 +532,40 @@ export function isUIEvent(value: unknown): value is UIEvent {
     case "plan-state-changed": {
       const state = record(event.state);
       return !!state && ["inactive", "active", "pending", "exit_pending"].includes(String(state.status))
-        && optionalString(state.plan) && nonNegativeNumber(state.updatedAt);
+        && optionalString(state.plan)
+        && (state.sources === undefined || (Array.isArray(state.sources) && state.sources.every(uiPlanSource)))
+        && (state.assumptions === undefined || stringArray(state.assumptions))
+        && optionalBoolean(state.ungrounded)
+        && nonNegativeNumber(state.updatedAt);
     }
     case "question-request": {
       const question = record(event.question);
       return !!question && isRuntimeIdentifier(question.id) && typeof question.question === "string"
-        && Array.isArray(question.choices) && typeof question.multiple === "boolean"
+        && optionalString(question.header)
+        && Array.isArray(question.choices) && question.choices.every((value) => {
+          const choice = record(value);
+          return !!choice && typeof choice.label === "string" && optionalString(choice.description);
+        }) && typeof question.multiple === "boolean"
         && typeof question.allowFreeform === "boolean" && nonNegativeNumber(question.createdAt);
     }
     case "question-settled": return isRuntimeIdentifier(event.id) && ["answered", "aborted", "shutdown", "timeout"].includes(String(event.reason));
     case "activities-changed": return Array.isArray(event.activities) && event.activities.every((value) => {
       const activity = record(value);
       return !!activity && isRuntimeIdentifier(activity.id) && ["shell", "subagent", "tasks", "monitor"].includes(String(activity.kind))
-        && typeof activity.label === "string" && ["queued", "running", "completed", "failed", "cancelled"].includes(String(activity.status));
+        && typeof activity.label === "string" && ["queued", "running", "completed", "failed", "cancelled"].includes(String(activity.status))
+        && optionalNonNegativeNumber(activity.startedAt) && optionalNonNegativeNumber(activity.finishedAt)
+        && optionalString(activity.summary) && optionalString(activity.outputTail)
+        && (activity.metrics === undefined || (() => {
+          const metrics = record(activity.metrics);
+          return !!metrics
+            && optionalNonNegativeNumber(metrics.turns)
+            && optionalNonNegativeNumber(metrics.toolCalls)
+            && optionalNonNegativeNumber(metrics.inputTokens)
+            && optionalNonNegativeNumber(metrics.outputTokens)
+            && optionalNonNegativeNumber(metrics.contextTokens)
+            && optionalNonNegativeNumber(metrics.contextWindow)
+            && optionalNonNegativeNumber(metrics.errors);
+        })());
     });
     case "theme-changed": return typeof event.theme === "string";
     case "accent-changed": return typeof event.accent === "string";

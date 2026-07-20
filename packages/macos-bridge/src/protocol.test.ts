@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { decodeInbound, decodeOutbound } from "./protocol.ts";
+import {
+  decodeInbound,
+  decodeOutbound,
+  listedEngineCommandTypes,
+  listedUIEventTypes,
+} from "./protocol.ts";
 
 const readyFrame = <T>(sessionId: T) => ({
   type: "ready" as const,
@@ -93,6 +98,29 @@ describe("macOS bridge protocol runtime validation", () => {
     expect(decodeInbound("[]")).toBeNull();
   });
 
+  test("validates question and activity commands field by field", () => {
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "resolve-question", id: "question-1", answers: ["Safe"], freeform: "note" },
+    }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "cancel-activity", id: "activity-1" },
+    }))).not.toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "resolve-question", id: "question-1", answers: [7] },
+    }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "resolve-question", id: "", answers: [] },
+    }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({
+      op: "send",
+      command: { type: "cancel-activity", id: 7 },
+    }))).toBeNull();
+  });
+
   test("accepts valid host messages and rejects malformed events and responses", () => {
     expect(decodeOutbound(JSON.stringify(readyFrame("ses_1")))).toEqual(readyFrame("ses_1"));
     expect(
@@ -135,5 +163,79 @@ describe("macOS bridge protocol runtime validation", () => {
       ),
     ).toBeNull();
     expect(decodeOutbound(JSON.stringify({ type: "resp", id: 1, ok: false }))).toBeNull();
+  });
+
+  test("validates plan, question, and activity events field by field", () => {
+    const events = [
+      {
+        type: "plan-state-changed",
+        sessionId: "ses_1",
+        state: {
+          status: "pending",
+          plan: "Ship it",
+          sources: [{ url: "https://example.com", title: "Example" }],
+          assumptions: ["Tests pass"],
+          ungrounded: false,
+          updatedAt: 1,
+        },
+      },
+      {
+        type: "question-request",
+        sessionId: "ses_1",
+        question: {
+          id: "question-1",
+          question: "Proceed?",
+          header: "Decision",
+          choices: [{ label: "Yes", description: "Continue" }],
+          multiple: false,
+          allowFreeform: true,
+          createdAt: 1,
+        },
+      },
+      { type: "question-settled", sessionId: "ses_1", id: "question-1", reason: "answered" },
+      {
+        type: "activities-changed",
+        sessionId: "ses_1",
+        activities: [{
+          id: "activity-1",
+          kind: "shell",
+          label: "Tests",
+          status: "running",
+          startedAt: 1,
+          metrics: { toolCalls: 2 },
+        }],
+      },
+    ];
+    for (const event of events) {
+      expect(decodeOutbound(JSON.stringify(eventFrame(event)))).not.toBeNull();
+    }
+
+    const malformed = [
+      { type: "plan-state-changed", sessionId: "ses_1", state: { status: "pending", updatedAt: "now" } },
+      {
+        type: "question-request",
+        sessionId: "ses_1",
+        question: { id: "question-1", question: "Proceed?", choices: ["yes"], multiple: false, allowFreeform: false, createdAt: 1 },
+      },
+      { type: "question-settled", sessionId: "ses_1", id: "question-1", reason: "unknown" },
+      { type: "activities-changed", sessionId: "ses_1", activities: [{ id: "activity-1", kind: "shell", label: "Tests", status: "running", metrics: { errors: -1 } }] },
+      { type: "activities-changed", activities: [] },
+    ];
+    for (const event of malformed) {
+      expect(decodeOutbound(JSON.stringify(eventFrame(event)))).toBeNull();
+    }
+  });
+
+  test("lists every current command and event discriminator once", () => {
+    const commands = listedEngineCommandTypes();
+    const events = listedUIEventTypes();
+    expect(commands).toContain("resolve-question");
+    expect(commands).toContain("cancel-activity");
+    expect(events).toContain("plan-state-changed");
+    expect(events).toContain("question-request");
+    expect(events).toContain("question-settled");
+    expect(events).toContain("activities-changed");
+    expect(new Set(commands).size).toBe(commands.length);
+    expect(new Set(events).size).toBe(events.length);
   });
 });

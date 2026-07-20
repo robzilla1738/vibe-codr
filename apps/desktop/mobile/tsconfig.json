@@ -6,12 +6,16 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": ["node"],
     "noEmit": true,
     "paths": {
+      "@vibe/protocol": [
+        "../../../packages/protocol/src/index.ts"
+      ],
       "@shared/*": [
         "../src/shared/*"
       ],

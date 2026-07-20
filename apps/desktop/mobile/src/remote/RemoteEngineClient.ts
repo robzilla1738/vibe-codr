@@ -5,7 +5,7 @@
 // contract is byte-identical to the desktop shell — 1:1 by construction.
 import type { EngineCommand } from "@shared/commands";
 import { estimateJsonUtf8Bytes } from "@shared/json-size";
-import { encodeInbound, decodeOutbound, HOST_PROTOCOL_VERSION, type HostEventFrame, type HostOutbound, type HostReplayResult, type RpcMethod, type HostRpcParams } from "@shared/protocol";
+import { encodeInbound, decodeOutbound, HOST_PROTOCOL_VERSION, incompatibleHostProtocolVersion, type HostEventFrame, type HostOutbound, type HostReplayResult, type RpcMethod, type HostRpcParams } from "@shared/protocol";
 import { isUIEvent } from "@shared/protocol";
 import { isEngineSnapshot, isRpcResult } from "@shared/runtime-guards";
 import { isRelayOutbound, type CloudRelayRequest, type CloudRelayResult, type GitRelayRequest, type GitRelayResult, type MobileUploadResult, type RelayOutbound } from "../../../relay/protocol";
@@ -189,7 +189,16 @@ export class RemoteEngineClient {
         continue;
       }
       const msg = decodeOutbound(line);
-      if (!msg) continue;
+      if (!msg) {
+        const incompatibleVersion = incompatibleHostProtocolVersion(line);
+        if (incompatibleVersion !== null) {
+          this.#recoverFromContinuityFailure(
+            `Engine protocol ${incompatibleVersion} is incompatible with mobile protocol ${HOST_PROTOCOL_VERSION}`,
+            false,
+          );
+        }
+        continue;
+      }
       this.#dispatch(msg);
     }
   }

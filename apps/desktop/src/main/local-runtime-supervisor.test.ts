@@ -132,7 +132,12 @@ describe("LocalRuntimeSupervisor", () => {
     bridges[0]!.emit({
       type: "turn-performance",
       sessionId: "s1",
-      sample: { turnId: "turn-1", model: "m/x", serviceTier: "default", totalMs: 20 },
+      sample: {
+        turnId: "turn-1", sessionId: "s1", model: "m/x", serviceTier: "default",
+        startedAt: 0, queueDelayMs: 0, hooksMs: 0, checkpointMs: 0, recallMs: 0,
+        attachmentsMs: 0, modelResolveMs: 0, contextPrepareMs: 0, generationMs: 20,
+        toolMs: 0, persistMs: 0, postTurnMs: 0, totalMs: 20,
+      },
     });
 
     expect(forwarded).toEqual([]);

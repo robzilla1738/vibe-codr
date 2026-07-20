@@ -8,6 +8,7 @@ import {
   encodeInbound,
   HOST_PROTOCOL_VERSION,
   HOST_INBOUND_SAFE_BYTES,
+  incompatibleHostProtocolVersion,
   type HostEventFrame,
   type HostInbound,
   type HostReplayResult,
@@ -800,6 +801,15 @@ export class EngineBridge implements EngineTransport {
     if (this.proc !== proc || this.generation !== generation) return;
     const msg = decodeOutbound(line);
     if (!msg) {
+      const incompatibleVersion = incompatibleHostProtocolVersion(line);
+      if (incompatibleVersion !== null) {
+        this.terminateFatal(
+          `Engine host protocol ${incompatibleVersion} is incompatible with desktop protocol ${HOST_PROTOCOL_VERSION}`,
+          proc,
+          generation,
+        );
+        return;
+      }
       const excerpt = line.trim().slice(0, 160);
       const message = `Engine host emitted invalid protocol output${excerpt ? `: ${excerpt}` : ""}`;
       this.terminateFatal(message, proc, generation);

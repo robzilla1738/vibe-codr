@@ -8,6 +8,13 @@ import {
   openCloudModelAccess,
   terminalEnvironmentWithoutModelAccess,
 } from "@vibe/shared/cloud-runtime";
+import {
+  HostInboundSchema,
+  HostReadyFrameSchema,
+  decodeOutbound,
+  type HostInbound,
+  type HostReadyFrame,
+} from "@vibe/protocol";
 import * as pty from "node-pty";
 import WebSocket, { WebSocketServer } from "ws";
 
@@ -33,14 +40,7 @@ interface AgentState {
   terminals: Map<string, TerminalSession>;
 }
 
-export interface EngineReadyFrame {
-  type: "ready";
-  protocolVersion: number;
-  engineRevision: string;
-  capabilities: string[];
-  hostInstanceId: string;
-  sessionId: string;
-}
+export type EngineReadyFrame = HostReadyFrame;
 
 interface AgentOptions {
   port?: number;
@@ -63,20 +63,11 @@ export function shouldProxyEngineFrame(_payload: unknown): boolean {
 }
 
 export function isEngineReadyFrame(value: unknown): value is EngineReadyFrame {
-  if (!value || typeof value !== "object") return false;
-  const frame = value as Partial<EngineReadyFrame>;
-  return (
-    frame.type === "ready" &&
-    Number.isSafeInteger(frame.protocolVersion) &&
-    typeof frame.engineRevision === "string" &&
-    frame.engineRevision.length > 0 &&
-    Array.isArray(frame.capabilities) &&
-    frame.capabilities.every((capability) => typeof capability === "string") &&
-    typeof frame.hostInstanceId === "string" &&
-    frame.hostInstanceId.length > 0 &&
-    typeof frame.sessionId === "string" &&
-    frame.sessionId.length > 0
-  );
+  return HostReadyFrameSchema.safeParse(value).success;
+}
+
+export function isEngineInboundFrame(value: unknown): value is HostInbound {
+  return HostInboundSchema.safeParse(value).success;
 }
 
 export function cloudAgentReadyFrame(
@@ -206,16 +197,8 @@ export function startCloudAgent(options: AgentOptions = {}) {
           break;
         }
         try {
-          const payload = JSON.parse(line) as {
-            type?: string;
-            sessionId?: string;
-            message?: string;
-            event?: { type?: string };
-            protocolVersion?: number;
-            engineRevision?: string;
-            capabilities?: unknown;
-            hostInstanceId?: string;
-          };
+          const payload = decodeOutbound(line);
+          if (!payload) throw new Error("engine emitted malformed protocol frame");
           if (payload.type === "fatal")
             state.startupError = payload.message ?? "engine bootstrap failed";
           if (payload.type === "ready" && typeof payload.sessionId === "string") {
@@ -337,6 +320,7 @@ export function startCloudAgent(options: AgentOptions = {}) {
           send(socket, { channel: "agent", type: "detached" });
         } else if (frame.channel === "engine") {
           const host = ensureHost();
+          if (!isEngineInboundFrame(frame.payload)) throw new Error("invalid engine protocol frame");
           const line = `${JSON.stringify(frame.payload)}\n`;
           if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error("engine frame too large");
           host.stdin.write(line);

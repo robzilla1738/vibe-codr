@@ -38,6 +38,8 @@ async function pollUntil(
 }
 
 const snapshot = {
+  hostInstanceId: "fixture-host",
+  lastEventSeq: 1,
   sessionId: "fixture-session",
   model: "fixture",
   mode: "execute",

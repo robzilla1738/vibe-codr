@@ -43,7 +43,6 @@ const ALLOW_EXTRAS = new Set([
   "tool-icons",  // permissionKind/permissionDetail/permissionPreview for the GUI card
   "themes",      // Electron-specific palette values (Graphite default differs)
   "trail",       // Electron hard-caps newline-free reasoning streams for renderer safety
-  "protocol",    // encodeInbound helper not in the macos-bridge host
   "file-fuzzy",  // formatAtPath + quoted/space-safe applyAtMention for Electron @ pick / paste
 ]);
 
@@ -61,9 +60,6 @@ const ALLOW_DECLARATION_EXTRAS = new Map([
   ],
 ]);
 const ALLOW_DECLARATION_DRIFT = new Map([
-  // Forward-compatible engine-authored user-message labels are already rendered
-  // by this shell but are not yet included in the v0.5.1 release declaration.
-  ["events", new Set(["TypeAliasDeclaration:UIEvent"])],
   // Electron writes external-editor drafts with 0600 permissions; upstream's
   // behavior is otherwise identical but still uses the default file mode.
   ["editor-compose", new Set(["FunctionDeclaration:composeInEditor"])],
@@ -74,13 +70,6 @@ const pairs = [
   ["packages/shared/src/cloud-runtime.ts", "src/main/cloud/cloud-runtime.ts", {}],
   ["packages/providers/src/runtime-metadata.ts", "src/shared/provider-runtime-metadata.ts", {}],
   ["packages/providers/src/provider-manifest.ts", "src/shared/provider-manifest.ts", {}],
-  ["packages/shared/src/commands.ts", "src/shared/commands.ts", { extras: true }],
-  ["packages/shared/src/events.ts", "src/shared/events.ts", {
-    extras: true,
-    driftDeclarations: ALLOW_DECLARATION_DRIFT.get("events"),
-  }],
-  ["packages/shared/src/types.ts", "src/shared/types.ts", { extras: true }],
-  ["packages/macos-bridge/src/protocol.ts", "src/shared/protocol.ts", { extras: true, drift: true }],
   ...[
     "slash",
     "reducer",
@@ -147,34 +136,6 @@ function propertyName(node) {
   return null;
 }
 
-function unionDiscriminators(path, typeName, contents = readFileSync(path, "utf8")) {
-  const source = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const declaration = source.statements.find(
-    (node) => ts.isTypeAliasDeclaration(node) && node.name.text === typeName,
-  );
-  if (!declaration || !ts.isTypeAliasDeclaration(declaration)) {
-    throw new Error(`${path}: missing type alias ${typeName}`);
-  }
-  const members = ts.isUnionTypeNode(declaration.type) ? declaration.type.types : [declaration.type];
-  const discriminators = new Set();
-  for (const member of members) {
-    if (!ts.isTypeLiteralNode(member)) continue;
-    const typeProperty = member.members.find(
-      (node) => ts.isPropertySignature(node) && propertyName(node.name) === "type",
-    );
-    if (
-      typeProperty &&
-      ts.isPropertySignature(typeProperty) &&
-      typeProperty.type &&
-      ts.isLiteralTypeNode(typeProperty.type) &&
-      ts.isStringLiteral(typeProperty.type.literal)
-    ) {
-      discriminators.add(typeProperty.type.literal.text);
-    }
-  }
-  return discriminators;
-}
-
 function unwrapExpression(node) {
   let current = node;
   while (
@@ -203,50 +164,11 @@ function objectMapKeys(path, variableName, contents = readFileSync(path, "utf8")
   throw new Error(`${path}: missing ${variableName}`);
 }
 
-function setLiteralKeys(path, variableName, contents = readFileSync(path, "utf8")) {
-  const source = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  for (const statement of source.statements) {
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name) || declaration.name.text !== variableName || !declaration.initializer) continue;
-      const initializer = unwrapExpression(declaration.initializer);
-      if (
-        !ts.isNewExpression(initializer) ||
-        !ts.isIdentifier(initializer.expression) ||
-        initializer.expression.text !== "Set" ||
-        !initializer.arguments?.length ||
-        !ts.isArrayLiteralExpression(initializer.arguments[0])
-      ) {
-        throw new Error(`${path}: ${variableName} must be a literal Set`);
-      }
-      return new Set(
-        initializer.arguments[0].elements
-          .filter(ts.isStringLiteral)
-          .map((element) => element.text),
-      );
-    }
-  }
-  throw new Error(`${path}: missing ${variableName}`);
-}
-
-function runtimeRegistryKeys(path, mapName, setName, contents) {
-  return contents.includes(`const ${mapName}`)
-    ? objectMapKeys(path, mapName, contents)
-    : setLiteralKeys(path, setName, contents);
-}
-
 function requireEqualDiscriminators(label, expected, actual, failures) {
   const missing = [...expected].filter((type) => !actual.has(type));
   const unexpected = [...actual].filter((type) => !expected.has(type));
   if (missing.length) failures.push(`${label}: missing discriminators ${missing.join(", ")}`);
   if (unexpected.length) failures.push(`${label}: unexpected discriminators ${unexpected.join(", ")}`);
-}
-
-function requireKnownOmissions(label, unionTypes, registeredTypes, expectedOmissions, failures) {
-  const omissions = new Set([...unionTypes].filter((type) => !registeredTypes.has(type)));
-  requireEqualDiscriminators(`${label} omissions`, expectedOmissions, omissions, failures);
-  const unknown = [...registeredTypes].filter((type) => !unionTypes.has(type));
-  if (unknown.length) failures.push(`${label}: unknown discriminators ${unknown.join(", ")}`);
 }
 
 const failures = [];
@@ -286,67 +208,39 @@ for (const [upstreamRel, electronRel, allowElectronExtras] of pairs) {
   }
 }
 
-// Keep the release parity gate pinned to ENGINE_COMMIT: both the upstream unions
-// and the upstream runtime registries come from `git show`, never a newer live
-// checkout. The locked revision predates T00 and has exactly these six known
-// registry omissions; any additional drift fails, and advancing ENGINE_COMMIT
-// forces this temporary omission record to be removed. The live bridge's
-// `satisfies Record<...>` maps remain the compile-time gate for current source.
+// Protocol parity is schema-driven. Desktop compatibility files may re-export
+// canonical APIs, but must never regain discriminator maps or copied unions.
+// The golden fixture covers every host frame family so adding a transport frame
+// without fixture evidence fails this release gate deterministically.
 try {
-  const lockedCommandsPath = "packages/shared/src/commands.ts";
-  const lockedEventsPath = "packages/shared/src/events.ts";
-  const lockedProtocolPath = "packages/macos-bridge/src/protocol.ts";
-  const lockedCommands = unionDiscriminators(
-    lockedCommandsPath,
-    "EngineCommand",
-    lockedEngineSource(lockedCommandsPath),
-  );
-  const lockedEvents = unionDiscriminators(
-    lockedEventsPath,
-    "UIEvent",
-    lockedEngineSource(lockedEventsPath),
-  );
-  const lockedProtocol = lockedEngineSource(lockedProtocolPath);
-  const lockedCommandRegistrations = runtimeRegistryKeys(
-    lockedProtocolPath,
-    "ENGINE_COMMAND_TYPE_MAP",
-    "ENGINE_COMMAND_TYPES",
-    lockedProtocol,
-  );
-  const lockedEventRegistrations = runtimeRegistryKeys(
-    lockedProtocolPath,
-    "UI_EVENT_TYPE_MAP",
-    "UI_EVENT_TYPES",
-    lockedProtocol,
-  );
-  requireKnownOmissions(
-    `${lockedProtocolPath} command registry`,
-    lockedCommands,
-    lockedCommandRegistrations,
-    new Set(["resolve-question", "cancel-activity"]),
-    failures,
-  );
-  requireKnownOmissions(
-    `${lockedProtocolPath} event registry`,
-    lockedEvents,
-    lockedEventRegistrations,
-    new Set(["plan-state-changed", "question-request", "question-settled", "activities-changed"]),
-    failures,
-  );
-
+  const canonicalDomainPath = join(vibeRoot, "packages/protocol/src/domain.ts");
+  const canonicalHostPath = join(vibeRoot, "packages/protocol/src/host.ts");
   const desktopProtocolPath = join(electronRoot, "src/shared/protocol.ts");
-  requireEqualDiscriminators(
-    "src/shared/protocol.ts ENGINE_COMMAND_TYPE_MAP",
-    lockedCommands,
-    objectMapKeys(desktopProtocolPath, "ENGINE_COMMAND_TYPE_MAP"),
-    failures,
-  );
-  requireEqualDiscriminators(
-    "src/shared/protocol.ts UI_EVENT_TYPE_MAP",
-    lockedEvents,
-    objectMapKeys(desktopProtocolPath, "UI_EVENT_TYPE_MAP"),
-    failures,
-  );
+  const desktopProtocol = readFileSync(desktopProtocolPath, "utf8");
+  if (!desktopProtocol.includes('from "@vibe/protocol"')) {
+    failures.push("src/shared/protocol.ts: canonical @vibe/protocol facade missing");
+  }
+  for (const copiedAuthority of ["ENGINE_COMMAND_TYPE_MAP", "UI_EVENT_TYPE_MAP", "const RPC_METHODS = new Set"]) {
+    if (desktopProtocol.includes(copiedAuthority)) {
+      failures.push(`src/shared/protocol.ts: copied protocol authority ${copiedAuthority}`);
+    }
+  }
+
+  const hostOps = objectMapKeys(canonicalHostPath, "HOST_INBOUND_FRAME_SCHEMAS");
+  const hostTypes = objectMapKeys(canonicalHostPath, "HOST_OUTBOUND_FRAME_SCHEMAS");
+  const fixtureLines = readFileSync(
+    join(vibeRoot, "packages/protocol/fixtures/host-protocol-v2.jsonl"),
+    "utf8",
+  ).trim().split("\n").map((line) => JSON.parse(line));
+  const fixtureOps = new Set(fixtureLines.flatMap((frame) => typeof frame.op === "string" ? [frame.op] : []));
+  const fixtureTypes = new Set(fixtureLines.flatMap((frame) => typeof frame.type === "string" ? [frame.type] : []));
+  requireEqualDiscriminators("protocol golden inbound frames", hostOps, fixtureOps, failures);
+  requireEqualDiscriminators("protocol golden outbound frames", hostTypes, fixtureTypes, failures);
+
+  // Reading both registries makes malformed/missing canonical discriminator
+  // maps fail the gate even though desktop no longer copies them.
+  objectMapKeys(canonicalDomainPath, "ENGINE_COMMAND_SCHEMAS");
+  objectMapKeys(canonicalDomainPath, "eventSchemas");
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 }

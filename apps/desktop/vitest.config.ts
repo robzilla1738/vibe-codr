@@ -26,6 +26,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@vibe/protocol": resolve("../../packages/protocol/src/index.ts"),
       "@shared": resolve("src/shared"),
     },
   },

@@ -14,7 +14,7 @@ import { homedir, networkInterfaces } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import qrcode from "qrcode-terminal";
 import { resolveHostLaunch, enrichedEnv } from "../src/main/host-resolver.js";
-import type { UIEvent } from "../src/shared/events.js";
+import type { UIEvent } from "@vibe/protocol";
 import type { EngineStartOptions } from "../src/main/engine-bridge.js";
 import { EngineTransportController } from "../src/main/engine-transport-controller.js";
 import { cloudFailureDetails, CloudManager } from "../src/main/cloud/manager.js";
@@ -40,13 +40,13 @@ import { parseGhPrList, validateGhPrCreateRequest, type GitResult } from "../src
 import { safeExternalUrl } from "../src/shared/external-url.js";
 import { createServer as createHttpsServer } from "node:https";
 import {
+  HOST_PROTOCOL_VERSION,
   decodeInbound,
-  encodeInbound,
   type HostInbound,
   type HostOutbound,
   type HostRpcParams,
   type RpcMethod,
-} from "../src/shared/protocol.js";
+} from "@vibe/protocol";
 import { isPrivateNetworkAddress, privateLanIPv4 } from "../src/shared/private-network.js";
 
 const PROJECT_INDEX_RPCS = new Set<RpcMethod>(["listProjects", "searchSessions", "renameProject", "archiveProject", "deleteProject", "renameSession", "deleteSession", "archiveSession", "forkSession"]);
@@ -191,7 +191,7 @@ async function main(): Promise<void> {
   bridge.onReady = (sessionId, info) => {
     activeSessionId = sessionId;
     activeProtocolInfo = info ? {
-      protocolVersion: info.protocolVersion,
+      protocolVersion: HOST_PROTOCOL_VERSION,
       engineRevision: info.engineRevision,
       capabilities: ["event-replay"],
       hostInstanceId: info.hostInstanceId,

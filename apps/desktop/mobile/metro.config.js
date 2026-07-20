@@ -3,20 +3,25 @@ const fs = require("fs");
 const path = require("path");
 
 const projectRoot = __dirname;
+const workspaceRoot = path.resolve(projectRoot, "..", "..", "..");
 // The Electron app's pure shared contract layer is the single source of truth.
 const sharedRoot = path.resolve(projectRoot, "..", "src", "shared");
 const electronRoot = path.resolve(projectRoot, "..");
 const hooksRoot = path.resolve(electronRoot, "src", "renderer", "hooks");
 const relayRoot = path.resolve(electronRoot, "relay");
+const protocolRoot = path.resolve(projectRoot, "..", "..", "..", "packages", "protocol", "src");
 
 const config = getDefaultConfig(projectRoot);
 
 // Keep Expo's native-tooling project root on mobile, but widen Metro's server
-// boundary so its file map can hash the shared Electron source. This is the
-// supported monorepo boundary in Metro 0.83 and keeps Hermes resolution local.
-config.server.unstable_serverRoot = electronRoot;
-config.watchFolders = [sharedRoot, hooksRoot, relayRoot];
+// boundary so its file map can hash both shared Electron and canonical protocol
+// source. The app entry remains explicitly rooted below.
+config.server.unstable_serverRoot = workspaceRoot;
+config.watchFolders = [sharedRoot, hooksRoot, relayRoot, protocolRoot];
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === "@vibe/protocol") {
+    return { type: "sourceFile", filePath: path.join(protocolRoot, "index.ts") };
+  }
   // Expo forms the entry request relative to the app root, while Metro serves
   // from the wider graph root above. Preserve the app entry explicitly.
   if (moduleName === "./index.ts") {

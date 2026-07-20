@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   decodeInbound,
   decodeOutbound,
+  ENGINE_COMMAND_TYPES,
   encodedEngineCommandBytes,
   HOST_INBOUND_SAFE_BYTES,
   listedEngineCommandTypes,
   listedUIEventTypes,
+  UI_EVENT_TYPES,
 } from "./protocol";
 
 const readyFrame = (sessionId: unknown) => ({
@@ -24,13 +26,6 @@ const eventFrame = (event: unknown) => ({
   seq: 1,
   event,
 });
-
-function explicitCases(source: string, start: string, end: string): string[] {
-  const body = source.slice(source.indexOf(start), source.indexOf(end));
-  return [...body.matchAll(/case "([^"]+)"/g)].flatMap((match) =>
-    match[1] ? [match[1]] : [],
-  );
-}
 
 describe("NDJSON protocol runtime validation", () => {
   it("rejects malformed inbound messages", () => {
@@ -258,12 +253,20 @@ describe("NDJSON protocol runtime validation", () => {
     expect(new Set(commands).size).toBe(commands.length);
   });
 
-  it("requires an explicit payload decision for every registered discriminator", () => {
-    const source = readFileSync(new URL("./protocol.ts", import.meta.url), "utf8");
-    expect(explicitCases(source, "function engineCommand", "export function isUIEvent").sort())
-      .toEqual([...listedEngineCommandTypes()].sort());
-    expect(explicitCases(source, "export function isUIEvent", "export function decodeInbound").sort())
-      .toEqual([...listedUIEventTypes()].sort());
+  it("derives compatibility discriminator lists from the canonical registries", () => {
+    expect(listedEngineCommandTypes()).toBe(ENGINE_COMMAND_TYPES);
+    expect(listedUIEventTypes()).toBe(UI_EVENT_TYPES);
+  });
+
+  it("decodes every canonical host-v2 golden wire fixture", () => {
+    const fixture = readFileSync(
+      new URL("../../../../packages/protocol/fixtures/host-protocol-v2.jsonl", import.meta.url),
+      "utf8",
+    ).trim().split("\n");
+    for (const line of fixture) {
+      const frame = JSON.parse(line) as { op?: unknown };
+      expect(frame.op === undefined ? decodeOutbound(line) : decodeInbound(line)).not.toBeNull();
+    }
   });
 
   it("measures encoded command bytes against the host-safe ceiling", () => {

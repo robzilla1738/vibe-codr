@@ -3,6 +3,9 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 
+const protocolSource = resolve("../../packages/protocol/src/index.ts");
+const protocolAlias = { "@vibe/protocol": protocolSource };
+
 function extractRendererLegalNotices(): Plugin {
   const notices = new Set<string>();
   return {
@@ -32,7 +35,8 @@ function extractRendererLegalNotices(): Plugin {
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    resolve: { alias: protocolAlias },
+    plugins: [externalizeDepsPlugin({ exclude: ["@vibe/protocol"] })],
     build: {
       rollupOptions: {
         external: ["electron-liquid-glass"],
@@ -44,7 +48,8 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    resolve: { alias: protocolAlias },
+    plugins: [externalizeDepsPlugin({ exclude: ["@vibe/protocol"] })],
     build: {
       rollupOptions: {
         input: {
@@ -63,6 +68,7 @@ export default defineConfig({
   renderer: {
     resolve: {
       alias: {
+        ...protocolAlias,
         "@shared": resolve("src/shared"),
         "@renderer": resolve("src/renderer"),
       },

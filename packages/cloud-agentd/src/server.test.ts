@@ -5,10 +5,12 @@ import { join } from "node:path";
 import {
   cloudAgentReadyFrame,
   environmentWithoutControlSecrets,
+  isEngineInboundFrame,
   isEngineReadyFrame,
   resolveCloudPath,
   sharedProjectFileMode,
   shouldProxyEngineFrame,
+  type EngineReadyFrame,
 } from "./server.ts";
 
 const roots: string[] = [];
@@ -39,8 +41,8 @@ test("sequenced performance frames preserve cloud event cursors", () => {
 });
 
 test("reconnecting clients receive the cached versioned engine identity", () => {
-  const engineReady = {
-    type: "ready" as const,
+  const engineReady: EngineReadyFrame = {
+    type: "ready",
     protocolVersion: 2,
     engineRevision: "revision-1",
     capabilities: ["event-replay"],
@@ -48,6 +50,8 @@ test("reconnecting clients receive the cached versioned engine identity", () => 
     sessionId: "session-1",
   };
   expect(isEngineReadyFrame(engineReady)).toBe(true);
+  expect(isEngineReadyFrame({ ...engineReady, protocolVersion: 1 })).toBe(false);
+  expect(isEngineReadyFrame({ ...engineReady, capabilities: [] })).toBe(false);
   expect(cloudAgentReadyFrame("session-1", engineReady, "connection-1")).toEqual({
     channel: "agent",
     type: "ready",
@@ -59,6 +63,12 @@ test("reconnecting clients receive the cached versioned engine identity", () => 
   expect(cloudAgentReadyFrame("session-other", engineReady, "connection-2")).not.toHaveProperty(
     "engineReady",
   );
+});
+
+test("cloud engine channel uses canonical host-v2 inbound validation", () => {
+  expect(isEngineInboundFrame({ op: "send", command: { type: "abort" } })).toBe(true);
+  expect(isEngineInboundFrame({ op: "send", command: { type: "not-a-command" } })).toBe(false);
+  expect(isEngineInboundFrame({ op: "rpc", id: 0, method: "snapshot" })).toBe(false);
 });
 
 describe("resolveCloudPath", () => {

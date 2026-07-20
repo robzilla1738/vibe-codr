@@ -10,6 +10,7 @@ import {
 } from "./runtime-guards";
 
 const snapshot = {
+  hostInstanceId: "host-1", lastEventSeq: 0,
   sessionId: "ses_1", model: "provider/model", mode: "execute", goal: null,
   history: [], tasks: [], usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0 }, busy: false,
   theme: "default", accentColor: "", details: "normal", mouse: false,

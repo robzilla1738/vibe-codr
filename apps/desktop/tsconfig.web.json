@@ -8,6 +8,7 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
@@ -15,9 +16,11 @@
     "types": ["vite/client"],
     "baseUrl": ".",
     "paths": {
+      "@vibe/protocol": ["../../packages/protocol/src/index.ts"],
       "@shared/*": ["src/shared/*"],
       "@renderer/*": ["src/renderer/*"]
     }
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/index.d.ts"]
+  "include": ["src/renderer/**/*", "src/shared/**/*", "src/preload/index.d.ts", "../../packages/protocol/src/**/*.ts"],
+  "exclude": ["../../packages/protocol/src/**/*.test.ts"]
 }

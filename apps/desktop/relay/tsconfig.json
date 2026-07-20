@@ -3,6 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "strict": true,
@@ -13,6 +14,9 @@
     ],
     "baseUrl": "..",
     "paths": {
+      "@vibe/protocol": [
+        "../../packages/protocol/src/index.ts"
+      ],
       "@shared/*": [
         "src/shared/*"
       ]
@@ -33,6 +37,8 @@
     "../src/main/terminal-manager.ts",
     "../src/shared/terminal.ts",
     "../src/shared/cwd-allowlist.ts",
-    "../src/shared/path-safe.ts"
-  ]
+    "../src/shared/path-safe.ts",
+    "../../../packages/protocol/src/**/*.ts"
+  ],
+  "exclude": ["../../../packages/protocol/src/**/*.test.ts"]
 }

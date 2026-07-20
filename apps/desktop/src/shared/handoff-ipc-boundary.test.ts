@@ -350,7 +350,7 @@ describe("cloud release invariants", () => {
     const runtimeGuards = readFileSync(join(process.cwd(), "src/shared/runtime-guards.ts"), "utf8");
     expect(sessionHook).toContain("snap.pendingCapabilities ?? []");
     expect(appSource).toContain("session.pendingCapabilities.find");
-    expect(runtimeGuards).toContain('result.outcome === "aborted"');
+    expect(runtimeGuards).toContain("validateRpcResult(method, value)");
     expect(mainSource).toContain("projectCwdAllowlist.add(value.cwd)");
     expect(controller).toContain("#remoteActivationEvents");
     expect(controller).toContain('method === "snapshot"');

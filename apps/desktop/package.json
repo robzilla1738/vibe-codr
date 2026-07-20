@@ -65,7 +65,8 @@
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "streamdown": "^2.5.0",
-    "ws": "^8.21.1"
+    "ws": "^8.21.1",
+    "zod": "^4.0.0"
   },
   "optionalDependencies": {
     "electron-liquid-glass": "^1.1.1"

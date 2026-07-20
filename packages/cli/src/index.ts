@@ -24,6 +24,7 @@ import { VERSION } from "./version.ts";
 import { runTraceCommand } from "./trace-command.ts";
 import { runShareCommand } from "./share-command.ts";
 import { runEvalCommand } from "./eval-command.ts";
+import { runAcpCommand } from "./acp-command.ts";
 
 // Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
 // literal now lives in ./version.ts (stamped at release by set-version.ts).
@@ -79,6 +80,7 @@ USAGE
   vibecodr serve [options]           serve the authenticated API on 127.0.0.1
   vibecodr share [session-id]        write a private redacted local HTML session
   vibecodr eval run <fixture.json>   run an isolated model/profile evaluation matrix
+  vibecodr acp [options]             serve ACP v1 over bounded NDJSON stdio
   vibecodr setup                     run the guided provider/model setup (alias: login)
   vibecodr upgrade                   print how to update to the latest version
 
@@ -203,6 +205,16 @@ export async function run(argv: string[]): Promise<number> {
       return 0;
     } catch (error) {
       process.stderr.write(`vibecodr share: ${(error as Error).message}\n`);
+      return 1;
+    }
+  }
+
+  // ACP owns stdio, so route it before config/onboarding or any parent runtime.
+  if (positionals[0] === "acp") {
+    try {
+      return await runAcpCommand(cwd);
+    } catch (error) {
+      process.stderr.write(`vibecodr acp: ${error instanceof Error ? error.message : String(error)}\n`);
       return 1;
     }
   }

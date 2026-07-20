@@ -268,6 +268,14 @@ Evidence base: `engine.ts` (3866 lines), `session.ts` (2253),
 
 ## What's already industry-leading (keep & reinforce)
 
+- **IMPLEMENTED — ACP v1 and thin VS Code client (2026-07-20).** `vibe acp`
+  exposes the canonical `RuntimeService` over size-, concurrency-, and
+  shutdown-bounded NDJSON stdio. Standard ACP lifecycle/prompt updates are
+  complemented by validated Vibe extensions for commands, snapshots,
+  idempotent decisions, and cursor replay. The VS Code extension is presentation
+  only and contains no engine, PTY, credential, workspace-transfer, or cloud
+  ownership logic. Both clients are emitted as versioned release artifacts.
+
 - **OS sandbox as kernel backstop under the permission engine** (`sandbox.ts`)
   — seatbelt/bwrap with realpath canonicalization, bwrap userns smoke test,
   honest unavailable-warning. This is more than most CLI agents ship.

@@ -25,7 +25,7 @@
   "repository": { "type": "git", "url": "git+https://github.com/robzilla1738/vibe-codr.git" },
   "homepage": "https://www.vibe-codr.com",
   "funding": "https://buymeacoffee.com/robcourson",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "extensions/*"],
   "bin": {
     "vibecodr": "packages/cli/bin/vibecodr.ts",
     "vibe": "packages/cli/bin/vibecodr.ts"
@@ -36,6 +36,8 @@
     "build:all": "bun run build && npm --prefix apps/desktop run build",
     "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr && bun build packages/cli/src/engine-worker-entry.ts --compile --outfile dist/vibecodr-engine-worker && bun scripts/release/build-app.ts dist/vibecodr-app.js",
     "build:sdk": "bun scripts/release/build-sdk.ts",
+    "build:acp": "bun scripts/release/build-acp.ts",
+    "build:vscode": "bun scripts/release/build-vscode.ts",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "smoke:tui": "bun packages/tui/scripts/smoke.ts",

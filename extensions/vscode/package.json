@@ -1,0 +1,41 @@
+{
+  "name": "@vibe/vscode",
+  "displayName": "Vibe Codr",
+  "description": "Thin ACP client for the Vibe Codr runtime",
+  "version": "0.6.14",
+  "publisher": "vibe-codr",
+  "license": "MIT",
+  "engines": { "vscode": "^1.95.0" },
+  "categories": ["Chat", "Machine Learning"],
+  "activationEvents": [
+    "onChatParticipant:vibe.chat",
+    "onCommand:vibe.newSession",
+    "onCommand:vibe.continueSession",
+    "onCommand:vibe.reviewDiff"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [{ "id": "vibe.chat", "name": "vibe", "fullName": "Vibe Codr", "description": "Work with the Vibe Codr agent" }],
+    "commands": [
+      { "command": "vibe.newSession", "title": "Vibe: New Session" },
+      { "command": "vibe.continueSession", "title": "Vibe: Continue Session" },
+      { "command": "vibe.reviewDiff", "title": "Vibe: Review Last Diff" }
+    ],
+    "configuration": {
+      "title": "Vibe Codr",
+      "properties": {
+        "vibe.executable": { "type": "string", "default": "vibe", "description": "Path to the Vibe CLI executable" }
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test src",
+    "build": "bun ../../scripts/release/build-vscode.ts"
+  },
+  "dependencies": {
+    "@vibe/acp": "workspace:*",
+    "@vibe/sdk": "workspace:*"
+  },
+  "devDependencies": { "@types/vscode": "^1.95.0" }
+}

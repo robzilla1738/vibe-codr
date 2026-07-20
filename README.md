@@ -209,6 +209,14 @@ Run the CLI from source:
 bun packages/cli/bin/vibecodr.ts
 ```
 
+External clients can use the same engine through ACP v1 over bounded NDJSON
+stdio with `vibe acp --cwd /absolute/workspace`. The adapter supports durable
+session create/load/resume/fork, prompts, interruption, idempotent decisions,
+snapshots, and cursor replay without embedding a second agent loop. The release
+also includes a thin VS Code chat extension that starts this ACP endpoint; it
+does not own credentials, terminals, cloud state, workspace transfer, or engine
+execution.
+
 Run Desktop:
 
 ```bash

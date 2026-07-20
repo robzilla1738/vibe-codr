@@ -1,32 +1,25 @@
 {
-  "name": "@vibe/cli",
+  "name": "@vibe/acp",
   "version": "0.6.14",
   "private": true,
   "type": "module",
-  "bin": {
-    "vibecodr": "./bin/vibecodr.ts",
-    "vibe": "./bin/vibecodr.ts"
-  },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./client": "./src/process-client.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "bun test",
     "lint": "echo \"(no lint configured)\"",
-    "build": "echo \"(bun runs from source)\"",
+    "build": "echo \"(release builder emits the ACP artifact)\"",
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
-    "@vibe/acp": "workspace:*",
-    "@vibe/config": "workspace:*",
+    "@agentclientprotocol/sdk": "1.2.1",
     "@vibe/core": "workspace:*",
-    "@vibe/eval": "workspace:*",
     "@vibe/protocol": "workspace:*",
-    "@vibe/providers": "workspace:*",
     "@vibe/runtime": "workspace:*",
-    "@vibe/server": "workspace:*",
     "@vibe/shared": "workspace:*",
-    "@vibe/tui": "workspace:*"
+    "zod": "^4.0.0"
   }
 }

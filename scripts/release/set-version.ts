@@ -95,6 +95,8 @@ function workspacePackageJsons(root: string): string[] {
   const paths = [join(root, "package.json")];
   const glob = new Bun.Glob("packages/*/package.json");
   for (const rel of glob.scanSync({ cwd: root })) paths.push(join(root, rel));
+  const extensionGlob = new Bun.Glob("extensions/*/package.json");
+  for (const rel of extensionGlob.scanSync({ cwd: root })) paths.push(join(root, rel));
   const desktop = join(root, "apps", "desktop", "package.json");
   if (existsSync(desktop)) paths.push(desktop);
   return paths;

@@ -50,3 +50,11 @@ identities, version ranges/tags, malformed integrity, unsafe artifact locators,
 unknown fields, and self-declared bundled or trusted-in-process state. It
 returns deeply immutable review data only; fetching, installation, locking,
 rollback, and execution are separate lifecycle operations.
+
+`ExtensionLifecycleStore` owns the next local boundary. It accepts staged
+artifacts associated with a verified catalog entry, streams and SHA-512 hashes
+the complete artifact into an immutable machine-local store, and only then
+atomically activates its exact version in a mode-0600 lock. Updates retain a
+bounded activation history; enable/disable and rollback are explicit and
+idempotent. The lifecycle store deliberately performs no network fetch,
+archive extraction, execution, or automatic deletion.

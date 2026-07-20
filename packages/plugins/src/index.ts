@@ -40,3 +40,8 @@ export {
   type VerifiedCatalogV1,
   type TrustedCatalogKeys,
 } from "./catalog.ts";
+export {
+  ExtensionLifecycleStore,
+  type InstalledExtensionV1,
+  type InstalledExtensionVersionV1,
+} from "./lifecycle.ts";

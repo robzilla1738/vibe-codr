@@ -18,8 +18,25 @@ export {
   type Plugin,
   type PluginApi,
   type PluginHostDeps,
-  type PluginManifestV1,
   type PluginStatus,
-  type PluginContributionType,
-  PLUGIN_API_VERSION,
 } from "./plugin.ts";
+export {
+  parsePluginManifest,
+  manifestCompatibilityError,
+  type PluginManifestV1,
+  type PluginContributionType,
+  type PluginCapability,
+  type PluginCapabilityType,
+  PLUGIN_API_VERSION,
+  PLUGIN_CONTRIBUTION_TYPES,
+  PLUGIN_CAPABILITY_TYPES,
+} from "./manifest.ts";
+export {
+  verifyCatalogIndex,
+  canonicalCatalogBytes,
+  type CatalogEntryV1,
+  type CatalogEntryKind,
+  type CatalogArtifactSource,
+  type VerifiedCatalogV1,
+  type TrustedCatalogKeys,
+} from "./catalog.ts";

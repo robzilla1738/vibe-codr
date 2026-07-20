@@ -19,7 +19,7 @@ async function writeManifest(
       version: "1.0.0",
       apiVersion: 1,
       contributions: ["commands"],
-      requiredCapabilities: ["commands"],
+      requiredCapabilities: [],
       provenance: { source: "local" },
       ...overrides,
     }),

@@ -7,6 +7,13 @@ import { fileURLToPath } from "node:url";
 import type { HookBus, HookName } from "./hooks.ts";
 import type { CommandRegistry, SlashCommand } from "./commands.ts";
 import type { SkillRegistry } from "./skills.ts";
+import {
+  PLUGIN_CONTRIBUTION_TYPES,
+  manifestCompatibilityError,
+  parsePluginManifest,
+  type PluginContributionType,
+  type PluginManifestV1,
+} from "./manifest.ts";
 
 /** Surface handed to a plugin's `register(api)` entrypoint. */
 export interface PluginApi {
@@ -21,20 +28,6 @@ export interface PluginApi {
 /** A plugin module exports `register`. */
 export interface Plugin {
   register(api: PluginApi): void | Promise<void>;
-}
-
-export const PLUGIN_API_VERSION = 1 as const;
-export const PLUGIN_CONTRIBUTION_TYPES = ["tools", "providers", "commands", "skills", "hooks"] as const;
-export type PluginContributionType = (typeof PLUGIN_CONTRIBUTION_TYPES)[number];
-
-export interface PluginManifestV1 {
-  schemaVersion: 1;
-  name: string;
-  version: string;
-  apiVersion: 1;
-  contributions: PluginContributionType[];
-  requiredCapabilities: string[];
-  provenance: { source: "npm" | "local"; package?: string };
 }
 
 export interface PluginStatus {
@@ -310,32 +303,6 @@ async function resolvePluginMetadata(specifier: string): Promise<ResolvedPluginM
     ...(parsed.error ? { manifestError: parsed.error } : {}),
     provenance,
   };
-}
-
-function parsePluginManifest(value: unknown): { manifest: PluginManifestV1 | null; error?: string } {
-  if (value === undefined) return { manifest: null };
-  if (!value || typeof value !== "object" || Array.isArray(value)) return { manifest: null, error: "Plugin manifest must be an object" };
-  const manifest = value as Partial<PluginManifestV1>;
-  if (manifest.schemaVersion !== 1 || typeof manifest.name !== "string" || !manifest.name.trim()
-    || typeof manifest.version !== "string" || !manifest.version.trim()
-    || !Array.isArray(manifest.contributions) || !manifest.contributions.every(isContributionType)
-    || !Array.isArray(manifest.requiredCapabilities) || !manifest.requiredCapabilities.every((item) => typeof item === "string")
-    || !manifest.provenance || (manifest.provenance.source !== "npm" && manifest.provenance.source !== "local")
-    || (manifest.provenance.package !== undefined && typeof manifest.provenance.package !== "string")) {
-    return { manifest: null, error: "Invalid PluginManifestV1" };
-  }
-  return { manifest: manifest as PluginManifestV1 };
-}
-
-function manifestCompatibilityError(manifest: PluginManifestV1): string | undefined {
-  if (manifest.apiVersion !== PLUGIN_API_VERSION) return `Plugin API ${String(manifest.apiVersion)} is incompatible with host API ${PLUGIN_API_VERSION}`;
-  const unsupported = manifest.requiredCapabilities.filter((capability) => !isContributionType(capability));
-  if (unsupported.length) return `Unsupported plugin capabilities: ${unsupported.join(", ")}`;
-  return undefined;
-}
-
-function isContributionType(value: unknown): value is PluginContributionType {
-  return typeof value === "string" && PLUGIN_CONTRIBUTION_TYPES.includes(value as PluginContributionType);
 }
 
 function isLocalSpecifier(specifier: string): boolean {

@@ -4,9 +4,8 @@ import {
   UI_EVENT_SCHEMAS,
   decodeInbound,
   decodeOutbound,
-  listedEngineCommandTypes,
-  listedUIEventTypes,
-} from "./protocol.ts";
+} from "@vibe/protocol/host-v2";
+import { listedEngineCommandTypes, listedUIEventTypes } from "./protocol.ts";
 
 const readyFrame = <T>(sessionId: T) => ({
   type: "ready" as const,

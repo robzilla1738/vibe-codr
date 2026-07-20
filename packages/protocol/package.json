@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./host-v2": "./src/host-v2.ts",
     "./fixtures": "./src/fixtures.ts"
   },
   "scripts": {

@@ -12,7 +12,7 @@ export {
   validateRpcResult,
   ENGINE_COMMAND_TYPES,
   UI_EVENT_TYPES,
-} from "@vibe/protocol";
+} from "@vibe/protocol/host-v2";
 
 export type {
   HostProtocolCapability,
@@ -31,9 +31,9 @@ export type {
   SessionSearchHit,
   ProjectSummary,
   RpcMethod,
-} from "@vibe/protocol";
+} from "@vibe/protocol/host-v2";
 
-import { ENGINE_COMMAND_TYPES, UI_EVENT_TYPES } from "@vibe/protocol";
+import { ENGINE_COMMAND_TYPES, UI_EVENT_TYPES } from "@vibe/protocol/host-v2";
 
 export function listedEngineCommandTypes(): readonly string[] {
   return ENGINE_COMMAND_TYPES;

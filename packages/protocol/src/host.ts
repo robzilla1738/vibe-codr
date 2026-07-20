@@ -21,6 +21,12 @@ const nonNegativeSafeInteger = safeInteger.refine(
   "expected a non-negative integer",
 );
 const nonEmpty = z.string().min(1);
+const schemaUnion = <S extends z.ZodType>(schemas: readonly S[]) => {
+  const first = schemas[0];
+  const second = schemas[1];
+  if (!first || !second) throw new Error("schema union requires at least two variants");
+  return z.union([first, second, ...schemas.slice(2)]);
+};
 
 export const HOST_PROTOCOL_VERSION = 2 as const;
 export const HOST_PROTOCOL_CAPABILITIES = ["event-replay"] as const;
@@ -96,42 +102,52 @@ export type HostBootstrap = z.infer<typeof HostBootstrapSchema>;
 
 const providerIdSchema = z.enum(["openai-codex", "xai-oauth"]);
 const authMethodSchema = z.enum(["browser", "device"]);
-const allRpcParamsShape = {
-  cwd: z.string().optional(),
-  id: z.string().optional(),
-  name: z.string().optional(),
-  title: z.string().optional(),
-  sessionId: z.string().optional(),
-  target: ExecutionTargetSchema.optional(),
-  expectedGeneration: nonNegativeSafeInteger.optional(),
-  ownershipGeneration: nonNegativeSafeInteger.optional(),
-  nonce: z.string().optional(),
-  engineRevision: z.string().optional(),
-  archive: PortableSessionArchiveV1Schema.optional(),
-  archivePath: z.string().optional(),
-  provisional: z.boolean().optional(),
-  providerId: providerIdSchema.optional(),
-  authMethod: authMethodSchema.optional(),
-  authSessionId: z.string().optional(),
-  hostInstanceId: z.string().optional(),
-  afterSeq: nonNegativeSafeInteger.optional(),
-  query: z.string().optional(),
-  limit: nonNegativeSafeInteger.optional(),
-  atTurnId: z.string().optional(),
+const rpcParamFields = {
+  cwd: z.string(),
+  id: z.string(),
+  name: z.string(),
+  title: z.string(),
+  sessionId: z.string(),
+  target: ExecutionTargetSchema,
+  expectedGeneration: nonNegativeSafeInteger,
+  ownershipGeneration: nonNegativeSafeInteger,
+  nonce: z.string(),
+  engineRevision: z.string(),
+  archive: PortableSessionArchiveV1Schema,
+  archivePath: z.string(),
+  provisional: z.boolean(),
+  providerId: providerIdSchema,
+  authMethod: authMethodSchema,
+  authSessionId: z.string(),
+  hostInstanceId: z.string(),
+  afterSeq: nonNegativeSafeInteger,
+  query: z.string(),
+  limit: nonNegativeSafeInteger,
+  atTurnId: z.string(),
 } as const;
-export const HostRpcParamsSchema = z.object(allRpcParamsShape).strict();
+export const HostRpcParamsSchema = z.object(rpcParamFields).partial().strict();
 export type HostRpcParams = z.infer<typeof HostRpcParamsSchema>;
 
 const noParams = z.object({}).strict();
-const params = <K extends keyof typeof allRpcParamsShape>(...keys: K[]) =>
-  z
-    .object(
-      Object.fromEntries(keys.map((key) => [key, allRpcParamsShape[key]])) as Pick<
-        typeof allRpcParamsShape,
-        K
-      >,
-    )
-    .strict();
+type RpcParamKey = keyof typeof rpcParamFields;
+type RpcParamShape<R extends RpcParamKey, O extends RpcParamKey> = {
+  [K in R]: (typeof rpcParamFields)[K];
+} & {
+  [K in O]: z.ZodOptional<(typeof rpcParamFields)[K]>;
+};
+const params = <
+  const Required extends readonly RpcParamKey[],
+  const Optional extends readonly Exclude<RpcParamKey, Required[number]>[],
+>(
+  required: Required,
+  optional: Optional,
+) => {
+  const shape = {} as RpcParamShape<Required[number], Optional[number]>;
+  const mutable = shape as Partial<Record<RpcParamKey, z.ZodType>>;
+  for (const key of required) mutable[key] = rpcParamFields[key];
+  for (const key of optional) mutable[key] = rpcParamFields[key].optional();
+  return z.object(shape).strict();
+};
 
 export const ProjectSessionSummarySchema = loose({
   id: z.string(),
@@ -236,63 +252,100 @@ export type ExportedProviderCredential = z.infer<typeof ExportedProviderCredenti
 const nullResult = z.null();
 const idResult = loose({ id: z.string() });
 const cwdResult = loose({ cwd: z.string() });
-const rpc = <P extends z.ZodType, R extends z.ZodType>(paramsSchema: P, result: R) => ({
-  params: paramsSchema,
-  result,
+const rpc = <P extends z.ZodType, R extends z.ZodType>(paramsSchema: P, result: R) =>
+  ({ params: paramsSchema, result, paramsRequired: true }) as const;
+const optionalParamsRpc = <P extends z.ZodType, R extends z.ZodType>(paramsSchema: P, result: R) =>
+  ({ params: paramsSchema, result, paramsRequired: false }) as const;
+const parameterlessRpc = <R extends z.ZodType>(result: R) =>
+  ({ params: noParams, result, paramsRequired: false }) as const;
+
+const importPortableSessionParamsSchema = params(
+  ["engineRevision"],
+  ["cwd", "archive", "archivePath", "provisional"],
+).superRefine((value, ctx) => {
+  if (value.archive === undefined && value.archivePath === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      message: "archive or archivePath is required",
+    });
+  }
 });
+const recoverLostCloudOwnershipParamsSchema = z
+  .object({
+    cwd: rpcParamFields.cwd.optional(),
+    sessionId: rpcParamFields.sessionId,
+    target: z.object({ kind: z.literal("cloud"), provider: z.enum(["e2b", "vercel"]) }),
+    expectedGeneration: rpcParamFields.expectedGeneration,
+  })
+  .strict();
+const abortInterruptedHandoffParamsSchema = z
+  .object({
+    cwd: rpcParamFields.cwd.optional(),
+    sessionId: rpcParamFields.sessionId,
+    target: rpcParamFields.target,
+    expectedGeneration: positiveSafeInteger.optional(),
+  })
+  .strict();
+const portableImportSettlementParamsSchema = z
+  .object({
+    cwd: rpcParamFields.cwd.optional(),
+    sessionId: rpcParamFields.sessionId,
+    ownershipGeneration: positiveSafeInteger,
+  })
+  .strict();
 
 export const HOST_RPC_SCHEMAS = {
-  snapshot: rpc(noParams, HostSnapshotSchema),
-  replayEvents: rpc(params("hostInstanceId", "afterSeq"), HostReplayResultSchema),
-  listModels: rpc(noParams, z.array(ModelSummarySchema)),
-  listProviders: rpc(noParams, z.array(ProviderInfoSchema)),
-  listAgents: rpc(noParams, z.array(AgentInfoSchema)),
-  listSkills: rpc(noParams, z.array(SkillInfoSchema)),
-  listMcp: rpc(noParams, z.array(McpServerSummarySchema)),
-  listPluginStatus: rpc(noParams, z.array(PluginStatusSchema)),
-  providerAuthStatus: rpc(params("providerId", "authSessionId"), SubscriptionAuthStatusSchema),
-  beginProviderAuth: rpc(params("providerId", "authMethod"), SubscriptionAuthStartSchema),
-  cancelProviderAuth: rpc(params("providerId", "authSessionId"), nullResult),
-  logoutProviderAuth: rpc(params("providerId"), nullResult),
-  exportProviderAuth: rpc(params("providerId"), ExportedProviderCredentialSchema),
-  finalize: rpc(noParams, nullResult),
-  listSessions: rpc(noParams, z.array(SessionMetaSchema)),
-  searchSessions: rpc(params("cwd", "query", "limit"), z.array(SessionSearchHitSchema)),
-  listProjects: rpc(noParams, z.array(ProjectSummarySchema)),
-  renameProject: rpc(params("cwd", "name"), loose({ cwd: z.string(), name: z.string() })),
-  archiveProject: rpc(params("cwd"), cwdResult),
-  deleteProject: rpc(params("cwd"), cwdResult),
-  renameSession: rpc(params("cwd", "id", "title"), loose({ id: z.string(), title: z.string() })),
-  deleteSession: rpc(params("cwd", "id"), idResult),
-  archiveSession: rpc(params("cwd", "id"), idResult),
+  snapshot: parameterlessRpc(HostSnapshotSchema),
+  replayEvents: rpc(params(["afterSeq"], ["hostInstanceId"]), HostReplayResultSchema),
+  listModels: parameterlessRpc(z.array(ModelSummarySchema)),
+  listProviders: parameterlessRpc(z.array(ProviderInfoSchema)),
+  listAgents: parameterlessRpc(z.array(AgentInfoSchema)),
+  listSkills: parameterlessRpc(z.array(SkillInfoSchema)),
+  listMcp: parameterlessRpc(z.array(McpServerSummarySchema)),
+  listPluginStatus: parameterlessRpc(z.array(PluginStatusSchema)),
+  providerAuthStatus: rpc(params(["providerId"], ["authSessionId"]), SubscriptionAuthStatusSchema),
+  beginProviderAuth: rpc(params(["providerId", "authMethod"], []), SubscriptionAuthStartSchema),
+  cancelProviderAuth: rpc(params(["providerId", "authSessionId"], []), nullResult),
+  logoutProviderAuth: rpc(params(["providerId"], []), nullResult),
+  exportProviderAuth: rpc(params(["providerId"], []), ExportedProviderCredentialSchema),
+  finalize: parameterlessRpc(nullResult),
+  listSessions: parameterlessRpc(z.array(SessionMetaSchema)),
+  searchSessions: optionalParamsRpc(
+    params([], ["cwd", "query", "limit"]),
+    z.array(SessionSearchHitSchema),
+  ),
+  listProjects: parameterlessRpc(z.array(ProjectSummarySchema)),
+  renameProject: rpc(params(["name"], ["cwd"]), loose({ cwd: z.string(), name: z.string() })),
+  archiveProject: optionalParamsRpc(params([], ["cwd"]), cwdResult),
+  deleteProject: optionalParamsRpc(params([], ["cwd"]), cwdResult),
+  renameSession: rpc(
+    params(["id", "title"], ["cwd"]),
+    loose({ id: z.string(), title: z.string() }),
+  ),
+  deleteSession: rpc(params(["id"], ["cwd"]), idResult),
+  archiveSession: rpc(params(["id"], ["cwd"]), idResult),
   forkSession: rpc(
-    params("cwd", "id", "atTurnId"),
+    params(["id"], ["cwd", "atTurnId"]),
     loose({ id: z.string(), cwd: z.string(), atTurnId: z.string() }),
   ),
-  prepareHandoff: rpc(params("target", "expectedGeneration"), HandoffPreparationSchema),
+  prepareHandoff: rpc(params(["target"], ["expectedGeneration"]), HandoffPreparationSchema),
   exportPortableSession: rpc(
-    params("engineRevision", "ownershipGeneration"),
+    params(["engineRevision", "ownershipGeneration"], []),
     PortableSessionArchiveV1Schema,
   ),
-  importPortableSession: rpc(
-    params("cwd", "archive", "archivePath", "engineRevision", "provisional"),
-    loose({ sessionId: z.string() }),
-  ),
-  commitPortableImport: rpc(params("cwd", "sessionId", "ownershipGeneration"), nullResult),
-  abortPortableImport: rpc(params("cwd", "sessionId", "ownershipGeneration"), nullResult),
-  recoverLostCloudOwnership: rpc(
-    params("cwd", "sessionId", "target", "expectedGeneration"),
-    nonNegativeSafeInteger,
-  ),
+  importPortableSession: rpc(importPortableSessionParamsSchema, loose({ sessionId: z.string() })),
+  commitPortableImport: rpc(portableImportSettlementParamsSchema, nullResult),
+  abortPortableImport: rpc(portableImportSettlementParamsSchema, nullResult),
+  recoverLostCloudOwnership: rpc(recoverLostCloudOwnershipParamsSchema, nonNegativeSafeInteger),
   abortInterruptedHandoff: rpc(
-    params("cwd", "sessionId", "target", "expectedGeneration"),
+    abortInterruptedHandoffParamsSchema,
     loose({
       outcome: z.enum(["aborted", "already-committed"]),
       generation: nonNegativeSafeInteger,
     }),
   ),
-  commitHandoff: rpc(params("cwd", "sessionId", "nonce"), nullResult),
-  abortHandoff: rpc(params("cwd", "sessionId", "nonce"), nullResult),
+  commitHandoff: rpc(params(["nonce"], ["cwd", "sessionId"]), nullResult),
+  abortHandoff: rpc(params(["nonce"], ["cwd", "sessionId"]), nullResult),
 } as const;
 
 export type RpcMethod = keyof typeof HOST_RPC_SCHEMAS;
@@ -304,31 +357,75 @@ export type HostRpcMethodResult<M extends RpcMethod> = z.infer<
   (typeof HOST_RPC_SCHEMAS)[M]["result"]
 >;
 export type HostRpcRequest<M extends RpcMethod = RpcMethod> = {
-  [K in M]: { op: "rpc"; id: number; method: K; params?: HostRpcMethodParams<K> };
+  [K in M]: (typeof HOST_RPC_SCHEMAS)[K]["paramsRequired"] extends true
+    ? { op: "rpc"; id: number; method: K; params: HostRpcMethodParams<K> }
+    : { op: "rpc"; id: number; method: K; params?: HostRpcMethodParams<K> };
 }[M];
 
-const genericRpcSchema = loose({
-  op: z.literal("rpc"),
-  id: positiveSafeInteger,
-  method: z.enum(RPC_METHODS as [RpcMethod, ...RpcMethod[]]),
-  params: HostRpcParamsSchema.optional(),
-});
+const rpcRequestSchema = <M extends RpcMethod>(method: M) => {
+  const spec = HOST_RPC_SCHEMAS[method];
+  return loose({
+    op: z.literal("rpc"),
+    id: positiveSafeInteger,
+    method: z.literal(method),
+    params: spec.paramsRequired ? spec.params : spec.params.optional(),
+  });
+};
+export const HOST_RPC_REQUEST_SCHEMAS = {
+  snapshot: rpcRequestSchema("snapshot"),
+  replayEvents: rpcRequestSchema("replayEvents"),
+  listModels: rpcRequestSchema("listModels"),
+  listProviders: rpcRequestSchema("listProviders"),
+  listAgents: rpcRequestSchema("listAgents"),
+  listSkills: rpcRequestSchema("listSkills"),
+  listMcp: rpcRequestSchema("listMcp"),
+  listPluginStatus: rpcRequestSchema("listPluginStatus"),
+  providerAuthStatus: rpcRequestSchema("providerAuthStatus"),
+  beginProviderAuth: rpcRequestSchema("beginProviderAuth"),
+  cancelProviderAuth: rpcRequestSchema("cancelProviderAuth"),
+  logoutProviderAuth: rpcRequestSchema("logoutProviderAuth"),
+  exportProviderAuth: rpcRequestSchema("exportProviderAuth"),
+  finalize: rpcRequestSchema("finalize"),
+  listSessions: rpcRequestSchema("listSessions"),
+  searchSessions: rpcRequestSchema("searchSessions"),
+  listProjects: rpcRequestSchema("listProjects"),
+  renameProject: rpcRequestSchema("renameProject"),
+  archiveProject: rpcRequestSchema("archiveProject"),
+  deleteProject: rpcRequestSchema("deleteProject"),
+  renameSession: rpcRequestSchema("renameSession"),
+  deleteSession: rpcRequestSchema("deleteSession"),
+  archiveSession: rpcRequestSchema("archiveSession"),
+  forkSession: rpcRequestSchema("forkSession"),
+  prepareHandoff: rpcRequestSchema("prepareHandoff"),
+  exportPortableSession: rpcRequestSchema("exportPortableSession"),
+  importPortableSession: rpcRequestSchema("importPortableSession"),
+  commitPortableImport: rpcRequestSchema("commitPortableImport"),
+  abortPortableImport: rpcRequestSchema("abortPortableImport"),
+  recoverLostCloudOwnership: rpcRequestSchema("recoverLostCloudOwnership"),
+  abortInterruptedHandoff: rpcRequestSchema("abortInterruptedHandoff"),
+  commitHandoff: rpcRequestSchema("commitHandoff"),
+  abortHandoff: rpcRequestSchema("abortHandoff"),
+} as const satisfies Record<RpcMethod, z.ZodType>;
+export const HostRpcRequestSchema = schemaUnion(Object.values(HOST_RPC_REQUEST_SCHEMAS));
 export const HostSendSchema = loose({
   op: z.literal("send"),
   command: EngineCommandSchema,
 });
 export const HostShutdownSchema = loose({ op: z.literal("shutdown") });
-export const HostInboundSchema = z.union([
-  HostBootstrapSchema,
-  HostSendSchema,
-  genericRpcSchema,
-  HostShutdownSchema,
-]);
+export const HOST_INBOUND_FRAME_SCHEMAS = {
+  bootstrap: HostBootstrapSchema,
+  send: HostSendSchema,
+  rpc: HostRpcRequestSchema,
+  shutdown: HostShutdownSchema,
+} as const;
+export type HostInboundOp = keyof typeof HOST_INBOUND_FRAME_SCHEMAS;
+export const HOST_INBOUND_OPS = Object.freeze(
+  Object.keys(HOST_INBOUND_FRAME_SCHEMAS) as HostInboundOp[],
+);
 export type HostInbound =
-  | HostBootstrap
-  | z.infer<typeof HostSendSchema>
-  | HostRpcRequest
-  | z.infer<typeof HostShutdownSchema>;
+  | z.infer<typeof HostBootstrapSchema | typeof HostSendSchema | typeof HostShutdownSchema>
+  | HostRpcRequest;
+export const HostInboundSchema = schemaUnion(Object.values(HOST_INBOUND_FRAME_SCHEMAS));
 
 export const HostReadyFrameSchema = loose({
   type: z.literal("ready"),
@@ -354,14 +451,21 @@ export const HostRpcErrorSchema = loose({
 export type HostRpcError = z.infer<typeof HostRpcErrorSchema>;
 export const HostFatalErrorSchema = loose({ type: z.literal("fatal"), message: z.string() });
 export type HostFatalError = z.infer<typeof HostFatalErrorSchema>;
-export const HostOutboundSchema = z.union([
-  HostReadyFrameSchema,
-  HostEventFrameSchema,
-  HostRpcSuccessSchema,
-  HostRpcErrorSchema,
-  HostFatalErrorSchema,
-]);
-export type HostOutbound = z.infer<typeof HostOutboundSchema>;
+export const HostRpcResponseSchema = z.union([HostRpcSuccessSchema, HostRpcErrorSchema]);
+export const HOST_OUTBOUND_FRAME_SCHEMAS = {
+  ready: HostReadyFrameSchema,
+  event: HostEventFrameSchema,
+  resp: HostRpcResponseSchema,
+  fatal: HostFatalErrorSchema,
+} as const;
+export type HostOutboundType = keyof typeof HOST_OUTBOUND_FRAME_SCHEMAS;
+export const HOST_OUTBOUND_TYPES = Object.freeze(
+  Object.keys(HOST_OUTBOUND_FRAME_SCHEMAS) as HostOutboundType[],
+);
+export type HostOutbound = z.infer<
+  (typeof HOST_OUTBOUND_FRAME_SCHEMAS)[keyof typeof HOST_OUTBOUND_FRAME_SCHEMAS]
+>;
+export const HostOutboundSchema = schemaUnion(Object.values(HOST_OUTBOUND_FRAME_SCHEMAS));
 
 /** Validate without returning Zod's stripped clone. v2 allows compatible extra keys. */
 export function decodeInbound(line: string): HostInbound | null {
@@ -373,10 +477,6 @@ export function decodeInbound(line: string): HostInbound | null {
   }
   const parsed = HostInboundSchema.safeParse(value);
   if (!parsed.success) return null;
-  if (parsed.data.op === "rpc") {
-    const spec = HOST_RPC_SCHEMAS[parsed.data.method];
-    if (!spec.params.safeParse(parsed.data.params ?? {}).success) return null;
-  }
   return value as HostInbound;
 }
 

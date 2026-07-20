@@ -25,6 +25,7 @@ import { runTraceCommand } from "./trace-command.ts";
 import { runShareCommand } from "./share-command.ts";
 import { runEvalCommand } from "./eval-command.ts";
 import { runAcpCommand } from "./acp-command.ts";
+import { runExtensionsCommand } from "./extensions-command.ts";
 
 // Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
 // literal now lives in ./version.ts (stamped at release by set-version.ts).
@@ -81,6 +82,7 @@ USAGE
   vibecodr share [session-id]        write a private redacted local HTML session
   vibecodr eval run <fixture.json>   run an isolated model/profile evaluation matrix
   vibecodr acp [options]             serve ACP v1 over bounded NDJSON stdio
+  vibecodr extensions <action>       manage signed local extensions
   vibecodr setup                     run the guided provider/model setup (alias: login)
   vibecodr upgrade                   print how to update to the latest version
 
@@ -99,6 +101,11 @@ OPTIONS
       --profile <names>  eval profiles, comma-separated (default: default)
       --samples <count>  eval repetitions per model/profile cell (1-50)
       --keep-checkouts   retain isolated eval checkouts for debugging
+      --catalog-key <file> trusted Ed25519 catalog public key
+      --key-id <id>      trusted catalog signing key id
+      --entry <identity> exact extension kind:id@version
+      --artifact <file>  staged extension artifact
+      --confirm-capabilities confirm reviewed extension capabilities
   -c, --continue        resume the most recent session
       --resume <id>     resume a specific session by id
   -v, --version         print version and exit
@@ -165,6 +172,11 @@ export async function run(argv: string[]): Promise<number> {
       profile: { type: "string" },
       samples: { type: "string" },
       "keep-checkouts": { type: "boolean" },
+      "catalog-key": { type: "string" },
+      "key-id": { type: "string" },
+      entry: { type: "string" },
+      artifact: { type: "string" },
+      "confirm-capabilities": { type: "boolean" },
       continue: { type: "boolean", short: "c" },
       resume: { type: "string" },
       version: { type: "boolean", short: "v" },
@@ -235,6 +247,16 @@ export async function run(argv: string[]): Promise<number> {
       process.stderr.write(`vibecodr eval: ${error instanceof Error ? error.message : String(error)}\n`);
       return 1;
     }
+  }
+
+  if (positionals[0] === "extensions") {
+    const result = await runExtensionsCommand({
+      args: positionals.slice(1), catalogKey: values["catalog-key"], keyId: values["key-id"],
+      entry: values.entry, artifact: values.artifact, confirmCapabilities: values["confirm-capabilities"],
+    });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    return result.exitCode;
   }
 
   const overrides: Partial<Config> = {};

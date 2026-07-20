@@ -71,6 +71,7 @@
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
         "@vibe/eval": "workspace:*",
+        "@vibe/plugins": "workspace:*",
         "@vibe/protocol": "workspace:*",
         "@vibe/providers": "workspace:*",
         "@vibe/runtime": "workspace:*",
@@ -485,8 +486,9 @@
 
     "@vercel/oidc": ["@vercel/oidc@3.2.0", "", {}, "sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug=="],
 
-    "@vibe/automation": ["@vibe/automation@workspace:packages/automation"],
     "@vibe/acp": ["@vibe/acp@workspace:packages/acp"],
+
+    "@vibe/automation": ["@vibe/automation@workspace:packages/automation"],
 
     "@vibe/cli": ["@vibe/cli@workspace:packages/cli"],
 

@@ -51,13 +51,13 @@ const TextPartSchema = loose({ type: z.literal("text"), text: z.string() });
 const ReasoningPartSchema = loose({ type: z.literal("reasoning"), text: z.string() });
 const ToolCallPartSchema = loose({
   type: z.literal("tool-call"),
-  toolCallId: z.string(),
+  toolCallId: runtimeIdentifier,
   toolName: z.string(),
   input: z.unknown(),
 });
 const ToolResultPartSchema = loose({
   type: z.literal("tool-result"),
-  toolCallId: z.string(),
+  toolCallId: runtimeIdentifier,
   toolName: z.string(),
   output: z.unknown(),
   isError: z.boolean().optional(),
@@ -72,7 +72,11 @@ export type Part = z.infer<typeof PartSchema>;
 
 export const TaskStatusSchema = z.enum(["pending", "in_progress", "completed"]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
-export const TaskSchema = loose({ id: z.string(), title: z.string(), status: TaskStatusSchema });
+export const TaskSchema = loose({
+  id: runtimeIdentifier,
+  title: z.string(),
+  status: TaskStatusSchema,
+});
 export type Task = z.infer<typeof TaskSchema>;
 
 export const ModelSummarySchema = loose({
@@ -186,7 +190,7 @@ export const SkillInfoSchema = loose({
   description: CatalogDisplayStringSchema,
 });
 export type SkillInfo = z.infer<typeof SkillInfoSchema>;
-export const QueuedItemSchema = loose({ id: z.string(), label: z.string() });
+export const QueuedItemSchema = loose({ id: runtimeIdentifier, label: z.string() });
 export type QueuedItem = z.infer<typeof QueuedItemSchema>;
 
 export const UsageSchema = loose({
@@ -207,12 +211,12 @@ export const SessionUsageSchema = loose({
 export type SessionUsage = z.infer<typeof SessionUsageSchema>;
 
 export const MessageSchema = loose({
-  id: z.string(),
+  id: runtimeIdentifier,
   role: RoleSchema,
   parts: z.array(PartSchema),
   createdAt: finite,
   usage: UsageSchema.optional(),
-  subagentId: z.string().optional(),
+  subagentId: runtimeIdentifier.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type Message = z.infer<typeof MessageSchema>;
@@ -299,7 +303,7 @@ export const PortableSessionFileV1Schema = loose({
 export type PortableSessionFileV1 = z.infer<typeof PortableSessionFileV1Schema>;
 export const PortableSessionArchiveV1Schema = loose({
   schemaVersion: z.literal(1),
-  sessionId: z.string(),
+  sessionId: runtimeIdentifier,
   sourceRoot: z.string(),
   sourceStateRoot: z.string(),
   ownershipGeneration: nonNegativeSafeInteger,
@@ -312,7 +316,7 @@ export const PortableSessionArchiveV1Schema = loose({
 });
 export type PortableSessionArchiveV1 = z.infer<typeof PortableSessionArchiveV1Schema>;
 export const HandoffPreparationSchema = loose({
-  sessionId: z.string(),
+  sessionId: runtimeIdentifier,
   ownershipGeneration: nonNegativeSafeInteger,
   previousGeneration: nonNegativeSafeInteger,
   nonce: z.string(),
@@ -322,9 +326,9 @@ export const HandoffPreparationSchema = loose({
 export type HandoffPreparation = z.infer<typeof HandoffPreparationSchema>;
 
 export const EngineSnapshotSchema = loose({
-  hostInstanceId: z.string().optional(),
+  hostInstanceId: runtimeIdentifier.optional(),
   lastEventSeq: nonNegativeSafeInteger.optional(),
-  sessionId: z.string(),
+  sessionId: runtimeIdentifier,
   model: z.string(),
   mode: ModeSchema,
   goal: z.string().nullable(),
@@ -379,8 +383,8 @@ const CreateAgentCommandSchema = loose({ type: z.literal("create-agent"), name: 
 const SetGoalCommandSchema = loose({ type: z.literal("set-goal"), goal: z.string().nullable() });
 const ResumeGoalCommandSchema = loose({ type: z.literal("resume-goal") });
 const AbortCommandSchema = loose({ type: z.literal("abort") });
-const DequeueCommandSchema = loose({ type: z.literal("dequeue"), id: z.string() });
-const SteerCommandSchema = loose({ type: z.literal("steer"), id: z.string() });
+const DequeueCommandSchema = loose({ type: z.literal("dequeue"), id: runtimeIdentifier });
+const SteerCommandSchema = loose({ type: z.literal("steer"), id: runtimeIdentifier });
 const CompactCommandSchema = loose({ type: z.literal("compact") });
 const RequestRuntimeHandoffCommandSchema = loose({
   type: z.literal("request-runtime-handoff"),
@@ -389,14 +393,14 @@ const RequestRuntimeHandoffCommandSchema = loose({
 });
 const ResolveExternalCapabilityCommandSchema = loose({
   type: z.literal("resolve-external-capability"),
-  id: z.string(),
+  id: runtimeIdentifier,
   decision: z.enum(["approve", "deny"]),
   result: z.unknown().optional(),
   error: z.string().optional(),
 });
 const ResolvePermissionCommandSchema = loose({
   type: z.literal("resolve-permission"),
-  id: z.string(),
+  id: runtimeIdentifier,
   decision: z.enum(["once", "always", "always-project", "deny"]),
   feedback: z.string().optional(),
 });
@@ -512,40 +516,40 @@ const eventSchemas = {
     text: z.string(),
     origin: z.enum(["user", "engine"]).optional(),
     label: z.string().optional(),
-    turnId: z.string().optional(),
+    turnId: runtimeIdentifier.optional(),
   }),
   "assistant-text-delta": loose({
     type: z.literal("assistant-text-delta"),
     ...session,
-    subagentId: z.string().optional(),
+    subagentId: runtimeIdentifier.optional(),
     delta: z.string(),
   }),
   "reasoning-delta": loose({
     type: z.literal("reasoning-delta"),
     ...session,
-    subagentId: z.string().optional(),
+    subagentId: runtimeIdentifier.optional(),
     delta: z.string(),
   }),
   "tool-call-started": loose({
     type: z.literal("tool-call-started"),
     ...session,
-    subagentId: z.string().optional(),
-    toolCallId: z.string(),
+    subagentId: runtimeIdentifier.optional(),
+    toolCallId: runtimeIdentifier,
     toolName: z.string(),
     input: z.unknown(),
   }),
   "tool-call-progress": loose({
     type: z.literal("tool-call-progress"),
     ...session,
-    subagentId: z.string().optional(),
-    toolCallId: z.string(),
+    subagentId: runtimeIdentifier.optional(),
+    toolCallId: runtimeIdentifier,
     chunk: z.string(),
   }),
   "tool-call-finished": loose({
     type: z.literal("tool-call-finished"),
     ...session,
-    subagentId: z.string().optional(),
-    toolCallId: z.string(),
+    subagentId: runtimeIdentifier.optional(),
+    toolCallId: runtimeIdentifier,
     toolName: z.string(),
     output: z.unknown(),
     isError: z.boolean(),
@@ -623,14 +627,14 @@ const eventSchemas = {
   "permission-request": loose({
     type: z.literal("permission-request"),
     ...session,
-    id: z.string(),
+    id: runtimeIdentifier,
     toolName: z.string(),
     input: z.unknown(),
   }),
   "permission-settled": loose({
     type: z.literal("permission-settled"),
     ...session,
-    ids: z.array(z.string()),
+    ids: z.array(runtimeIdentifier),
     reason: z.enum(["aborted", "shutdown"]),
   }),
   "tasks-updated": loose({
@@ -641,7 +645,7 @@ const eventSchemas = {
   "orchestration-task": loose({
     type: z.literal("orchestration-task"),
     ...session,
-    taskId: z.string(),
+    taskId: runtimeIdentifier,
     objective: z.string(),
     status: z.enum(["running", "completed", "failed", "skipped"]),
     attempts: nonNegative.optional(),
@@ -655,7 +659,7 @@ const eventSchemas = {
   "file-changed": loose({
     type: z.literal("file-changed"),
     ...session,
-    toolCallId: z.string(),
+    toolCallId: runtimeIdentifier,
     path: z.string(),
     action: z.enum(["edit", "write"]),
     diff: z.string(),
@@ -664,12 +668,12 @@ const eventSchemas = {
   }),
   "checkpoint-created": loose({
     type: z.literal("checkpoint-created"),
-    id: z.string(),
+    id: runtimeIdentifier,
     label: z.string(),
   }),
   "checkpoint-restored": loose({
     type: z.literal("checkpoint-restored"),
-    id: z.string(),
+    id: runtimeIdentifier,
     label: z.string(),
   }),
   "verify-started": loose({ type: z.literal("verify-started"), command: z.string() }),
@@ -693,21 +697,21 @@ const eventSchemas = {
   "external-capability-resolved": loose({
     type: z.literal("external-capability-resolved"),
     ...session,
-    id: z.string(),
+    id: runtimeIdentifier,
     status: z.enum(["denied", "resolved"]),
   }),
   "subagent-started": loose({
     type: z.literal("subagent-started"),
     ...session,
-    subagentId: z.string(),
+    subagentId: runtimeIdentifier,
     prompt: z.string(),
     agent: z.string().optional(),
-    startedAt: finite.optional(),
+    startedAt: nonNegative.optional(),
   }),
   "subagent-activity": loose({
     type: z.literal("subagent-activity"),
     ...session,
-    subagentId: z.string(),
+    subagentId: runtimeIdentifier,
     label: z.string(),
     transcriptDelta: z.string().optional(),
     metrics: ActivityMetricsSchema.optional(),
@@ -715,9 +719,9 @@ const eventSchemas = {
   "subagent-finished": loose({
     type: z.literal("subagent-finished"),
     ...session,
-    subagentId: z.string(),
+    subagentId: runtimeIdentifier,
     result: z.string(),
-    finishedAt: finite.optional(),
+    finishedAt: nonNegative.optional(),
     transcript: z.string().optional(),
     metrics: ActivityMetricsSchema.optional(),
   }),
@@ -728,7 +732,7 @@ const eventSchemas = {
   }),
   "loop-stopped": loose({
     type: z.literal("loop-stopped"),
-    loopId: z.string(),
+    loopId: runtimeIdentifier,
     reason: z.string(),
   }),
   notice: loose({
@@ -738,7 +742,7 @@ const eventSchemas = {
   }),
   "engine-error": loose({
     type: z.literal("engine-error"),
-    sessionId: z.string().optional(),
+    sessionId: runtimeIdentifier.optional(),
     message: z.string(),
   }),
   "turn-finished": loose({ type: z.literal("turn-finished"), ...session }),

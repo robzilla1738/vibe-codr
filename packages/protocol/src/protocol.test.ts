@@ -256,6 +256,31 @@ describe("canonical protocol schemas", () => {
 
     const oversizedId = "x".repeat(PROTOCOL_LIMITS_V1.runtimeIdentifierChars + 1);
     expect(
+      EngineSnapshotSchema.safeParse({ ...snapshot, sessionId: oversizedId }).success,
+    ).toBeFalse();
+    expect(
+      EngineCommandSchema.safeParse({
+        type: "resolve-permission",
+        id: oversizedId,
+        decision: "deny",
+      }).success,
+    ).toBeFalse();
+    expect(
+      UIEventSchema.safeParse({
+        type: "tool-call-progress",
+        sessionId: "session-1",
+        toolCallId: oversizedId,
+        chunk: "data",
+      }).success,
+    ).toBeFalse();
+    expect(
+      UIEventSchema.safeParse({
+        type: "queue-changed",
+        active: { id: oversizedId, label: "queued" },
+        pending: [],
+      }).success,
+    ).toBeFalse();
+    expect(
       decodeInbound(
         JSON.stringify({ op: "rpc", id: 1, method: "deleteSession", params: { id: oversizedId } }),
       ),

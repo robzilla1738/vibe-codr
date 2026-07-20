@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { killTreeAndWait } from "./builtins/process-tree.ts";
 
 /**
  * A thin OS-level sandbox — defense-in-depth UNDER the permission engine. The
@@ -68,6 +69,32 @@ export interface SandboxResolveOptions {
    * installed yet EPERMs every launch.
    */
   smokeBwrap?: () => boolean;
+}
+
+/** Fixed safety limits for `/loop --until-cmd`. These are deliberately not
+ * derived from the model-facing bash tool or the user's sandbox config. */
+export const READ_ONLY_COMMAND_TIMEOUT_MS = 30_000;
+export const READ_ONLY_COMMAND_OUTPUT_CAP = 8 * 1024;
+
+export interface ReadOnlyCommandResult {
+  code: number;
+  /** Combined stdout/stderr, retained up to {@link READ_ONLY_COMMAND_OUTPUT_CAP}. */
+  output: string;
+}
+
+/** Test-only platform/process probes. Production callers should omit this. */
+export interface ReadOnlyCommandRunnerDeps {
+  platform?: NodeJS.Platform;
+  which?: (bin: string) => string | null | undefined;
+  smokeBwrap?: () => boolean;
+  timeoutMs?: number;
+  killGraceMs?: number;
+}
+
+export interface ReadOnlyCommandOptions {
+  signal?: AbortSignal;
+  /** Injectable probes keep unavailable/timeout behavior deterministic in tests. */
+  deps?: ReadOnlyCommandRunnerDeps;
 }
 
 function dedupeAbsolute(paths: string[]): string[] {
@@ -289,6 +316,142 @@ export function wrapCommand(
     return ["bwrap", ...bwrapArgs(policy, opts.cwd), ...base];
   }
   return base;
+}
+
+function abortError(): Error {
+  const err = new Error("read-only command check aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+/** Drain a byte stream while retaining at most `cap` bytes across both streams. */
+async function drainCombinedBytes(
+  stream: ReadableStream<Uint8Array>,
+  chunks: Uint8Array[],
+  state: { retained: number },
+  cap: number,
+): Promise<void> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || state.retained >= cap) continue;
+      const kept = value.slice(0, cap - state.retained);
+      if (kept.byteLength) {
+        chunks.push(kept);
+        state.retained += kept.byteLength;
+      }
+    }
+  } catch {
+    // A timeout/abort cancels the process tree and closes its pipes. Preserve
+    // whatever was captured before that expected cancellation race.
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * Run a user-authored stop check under a mandatory kernel sandbox.
+ *
+ * This is intentionally separate from `bunExec`, `policyForChecks`, and the
+ * model-facing sandbox policy: loop checks are untrusted shell strings and must
+ * always see a read-only filesystem with networking disabled. Missing Seatbelt
+ * or bwrap is an error (fail closed); there is no unsandboxed fallback, even
+ * when config or `VIBE_SANDBOX` says `off`.
+ */
+export async function runSandboxedReadOnlyCommand(
+  command: string,
+  cwd: string,
+  opts: ReadOnlyCommandOptions = {},
+): Promise<ReadOnlyCommandResult> {
+  if (opts.signal?.aborted) throw abortError();
+  const deps = opts.deps;
+  const policy = resolveSandboxPolicy(
+    { mode: "read-only", network: "off", writablePaths: [] },
+    {
+      cwd,
+      platform: deps?.platform,
+      which: deps?.which,
+      smokeBwrap: deps?.smokeBwrap,
+      // An empty environment is security-significant: the required policy must
+      // ignore a process-level VIBE_SANDBOX=off override.
+      env: {},
+    },
+  );
+  if (!policy.available || policy.mode !== "read-only" || policy.backend === "none") {
+    throw new Error(
+      `read-only command sandbox unavailable: ${policy.warning ?? "no supported kernel backend"}`,
+    );
+  }
+
+  const argv = wrapCommand(policy, { cwd, command });
+  // `wrapCommand` normally degrades for unavailable policies. The explicit
+  // prefix assertion makes this high-risk caller fail closed if that behavior
+  // ever changes or a malformed policy slips through.
+  if (argv[0] !== "sandbox-exec" && argv[0] !== "bwrap") {
+    throw new Error("read-only command sandbox unavailable: refusing an unsandboxed fallback");
+  }
+
+  const proc = (() => {
+    try {
+      return Bun.spawn(argv, {
+        cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+      });
+    } catch (err) {
+      throw new Error(`read-only command sandbox failed to start: ${(err as Error).message}`);
+    }
+  })();
+
+  let timedOut = false;
+  let aborted = false;
+  let killing: Promise<void> | undefined;
+  const kill = () => (killing ??= killTreeAndWait(proc.pid, deps?.killGraceMs).catch(() => {}));
+  const timeoutMs = deps?.timeoutMs ?? READ_ONLY_COMMAND_TIMEOUT_MS;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void kill();
+  }, timeoutMs);
+  const onAbort = () => {
+    aborted = true;
+    void kill();
+  };
+  if (opts.signal) {
+    if (opts.signal.aborted) onAbort();
+    else opts.signal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  const chunks: Uint8Array[] = [];
+  const state = { retained: 0 };
+  const pumps = Promise.all([
+    drainCombinedBytes(proc.stdout, chunks, state, READ_ONLY_COMMAND_OUTPUT_CAP),
+    drainCombinedBytes(proc.stderr, chunks, state, READ_ONLY_COMMAND_OUTPUT_CAP),
+  ]);
+  let code: number;
+  try {
+    code = await proc.exited;
+    await pumps;
+    if (killing) await killing;
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onAbort);
+  }
+
+  const bytes = new Uint8Array(state.retained);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const output = new TextDecoder().decode(bytes);
+  if (aborted) throw abortError();
+  if (timedOut) {
+    throw new Error(`read-only command check timed out after ${READ_ONLY_COMMAND_TIMEOUT_MS}ms`);
+  }
+  return { code, output };
 }
 
 /** A sandbox-denial signature in a failed command's combined output. */

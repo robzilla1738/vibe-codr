@@ -54,5 +54,11 @@ export {
   annotateDenial,
   seatbeltProfile,
   bwrapArgs,
+  runSandboxedReadOnlyCommand,
+  READ_ONLY_COMMAND_TIMEOUT_MS,
+  READ_ONLY_COMMAND_OUTPUT_CAP,
+  type ReadOnlyCommandResult,
+  type ReadOnlyCommandOptions,
+  type ReadOnlyCommandRunnerDeps,
 } from "./sandbox.ts";
 export { statResolve, normalizeSpaces } from "./fs/stat-resolve.ts";

@@ -88,7 +88,7 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       {
         name: "loop",
         description:
-          "Recurring prompt (/loop [interval] <prompt> [--max N] · stop · default max 20 · defaults)",
+          'Recurring prompt (/loop [interval] <prompt> [--until text | --until-cmd "command"] [--max N] · stop)',
       },
       { name: "queue", description: "Show the prompt queue (/queue clear to empty it)" },
     ],

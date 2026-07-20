@@ -1,12 +1,14 @@
-import { test, expect } from "bun:test";
-import { existsSync, realpathSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   annotateDenial,
   bwrapArgs,
   policyForChecks,
+  READ_ONLY_COMMAND_OUTPUT_CAP,
   resolveSandboxPolicy,
+  runSandboxedReadOnlyCommand,
   type SandboxMode,
   type SandboxNetwork,
   type SandboxPolicy,
@@ -338,3 +340,108 @@ test("wrapCommand: seatbelt prefixes sandbox-exec -p <profile>; bwrap prefixes b
   expect(bw).toContain("--unshare-net");
   expect(bw.slice(-3)).toEqual(["bash", "-lc", "echo hi"]);
 });
+
+// ---------------------------------------------- mandatory read-only command runner
+
+const realBackendAvailable = (() => {
+  if (process.platform === "darwin") return Boolean(Bun.which("sandbox-exec"));
+  if (process.platform !== "linux" || !Bun.which("bwrap")) return false;
+  try {
+    return Bun.spawnSync(["bwrap", "--ro-bind", "/", "/", "true"], {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    }).success;
+  } catch {
+    return false;
+  }
+})();
+
+test("runSandboxedReadOnlyCommand fails closed when containment is unavailable", async () => {
+  await expect(
+    runSandboxedReadOnlyCommand("true", "/work", {
+      deps: { platform: "win32", which: () => null },
+    }),
+  ).rejects.toThrow("sandbox unavailable");
+});
+
+test.skipIf(!realBackendAvailable)(
+  "runSandboxedReadOnlyCommand ignores VIBE_SANDBOX=off and blocks workspace mutation",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-ro-"));
+    const target = join(cwd, "MUTATED");
+    const previous = process.env.VIBE_SANDBOX;
+    process.env.VIBE_SANDBOX = "off";
+    try {
+      const readable = await runSandboxedReadOnlyCommand("test -d .", cwd);
+      expect(readable.code).toBe(0);
+      const mutation = await runSandboxedReadOnlyCommand("touch MUTATED", cwd);
+      expect(mutation.code).not.toBe(0);
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.VIBE_SANDBOX;
+      else process.env.VIBE_SANDBOX = previous;
+    }
+  },
+);
+
+test.skipIf(!realBackendAvailable || !Bun.which("curl"))(
+  "runSandboxedReadOnlyCommand blocks network access",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-net-"));
+    const result = await runSandboxedReadOnlyCommand(
+      `${Bun.which("curl")} -fsS --max-time 2 https://example.com`,
+      cwd,
+    );
+    expect(result.code).not.toBe(0);
+  },
+);
+
+test.skipIf(!realBackendAvailable)(
+  "runSandboxedReadOnlyCommand caps combined output at 8KiB",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-cap-"));
+    const result = await runSandboxedReadOnlyCommand(
+      "(yes stdout | head -c 12000) & (yes stderr | head -c 12000 >&2) & wait; exit 1",
+      cwd,
+    );
+    expect(result.code).not.toBe(0);
+    expect(new TextEncoder().encode(result.output).byteLength).toBeLessThanOrEqual(
+      READ_ONLY_COMMAND_OUTPUT_CAP,
+    );
+  },
+);
+
+test.skipIf(!realBackendAvailable)(
+  "runSandboxedReadOnlyCommand enforces its timeout and kills the process tree",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-timeout-"));
+    const started = performance.now();
+    await expect(
+      runSandboxedReadOnlyCommand("sleep 60", cwd, {
+        deps: { timeoutMs: 20, killGraceMs: 10 },
+      }),
+    ).rejects.toThrow("timed out after 30000ms");
+    expect(performance.now() - started).toBeLessThan(2_000);
+  },
+);
+
+test.skipIf(!realBackendAvailable)(
+  "runSandboxedReadOnlyCommand aborts and reaps an active process tree",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-abort-"));
+    const abort = new AbortController();
+    setTimeout(() => abort.abort(), 20);
+    const started = performance.now();
+    try {
+      await runSandboxedReadOnlyCommand("sleep 60", cwd, {
+        signal: abort.signal,
+        deps: { killGraceMs: 10 },
+      });
+      throw new Error("expected abort");
+    } catch (err) {
+      expect((err as Error).name).toBe("AbortError");
+    }
+    expect(performance.now() - started).toBeLessThan(2_000);
+  },
+);

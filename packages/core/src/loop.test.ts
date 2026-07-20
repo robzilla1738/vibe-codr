@@ -1,11 +1,11 @@
-import { test, expect } from "bun:test";
+import { expect, test } from "bun:test";
 import type { UIEvent } from "@vibe/shared";
 import {
   LoopCancelledError,
   LoopController,
-  parseLoopArgs,
-  parseDuration,
   MAX_UNTIL_EVAL_FAILURES,
+  parseDuration,
+  parseLoopArgs,
 } from "./loop.ts";
 
 test("parseDuration handles s/m/h", () => {
@@ -34,7 +34,7 @@ test("parseLoopArgs extracts interval, prompt, --until, --max", () => {
   expect(p).not.toBeNull();
   expect(p!.intervalMs).toBe(30_000);
   expect(p!.prompt).toBe("check the build");
-  expect(p!.until).toBe("tests pass");
+  expect(p!.condition).toEqual({ kind: "model", text: "tests pass" });
   expect(p!.max).toBe(5);
 });
 
@@ -42,7 +42,7 @@ test("parseLoopArgs defaults interval, max, and allows bare prompt", () => {
   const p = parseLoopArgs("keep polling status");
   expect(p!.intervalMs).toBe(600_000);
   expect(p!.prompt).toBe("keep polling status");
-  expect(p!.until).toBeUndefined();
+  expect(p!.condition).toBeUndefined();
   expect(p!.max).toBe(12);
   expect(p!.maxDefaulted).toBe(true);
   expect(p!.unlimited).toBeUndefined();
@@ -94,7 +94,7 @@ test("parseLoopArgs warns when --max/--until is typed but not applied", () => {
 
   const badUntil = parseLoopArgs("deploy --until");
   expect(badUntil).not.toBeNull();
-  expect(badUntil!.until).toBeUndefined();
+  expect(badUntil!.condition).toBeUndefined();
   expect(badUntil!.warnings?.some((w) => w.includes('"--until"'))).toBe(true);
 });
 
@@ -107,6 +107,70 @@ test("parseLoopArgs stays silent on legitimate prompts that merely contain -- te
   // A fully well-formed invocation is warning-free too.
   const ok = parseLoopArgs('30s check ci --until "tests pass" --max 5');
   expect(ok!.warnings).toBeUndefined();
+});
+
+test("parseLoopArgs table: --until-cmd is quoted, lossless, and discriminated", () => {
+  const cases = [
+    {
+      input: '30s check release --until-cmd "test -f READY && git diff --quiet" --max 4',
+      prompt: "check release",
+      command: "test -f READY && git diff --quiet",
+    },
+    {
+      input: String.raw`--until-cmd "printf \"a\\b\" | grep ✓ && echo --max --until" 5m inspect Unicode`,
+      prompt: "inspect Unicode",
+      command: String.raw`printf "a\b" | grep ✓ && echo --max --until`,
+    },
+    {
+      input: String.raw`1s poll --max 2 --until-cmd "test \"$STATE\" = done || exit 7"`,
+      prompt: "poll",
+      command: 'test "$STATE" = done || exit 7',
+    },
+    {
+      input: String.raw`poll --until-cmd 'printf \'it\\works\''`,
+      prompt: "poll",
+      command: String.raw`printf 'it\works'`,
+    },
+  ];
+  for (const row of cases) {
+    const parsed = parseLoopArgs(row.input);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.prompt).toBe(row.prompt);
+    expect(parsed!.condition).toEqual({ kind: "command", command: row.command });
+  }
+});
+
+test("parseLoopArgs rejects empty/bare/unclosed, duplicate, and mixed conditions", () => {
+  for (const input of [
+    "poll --until-cmd true",
+    'poll --until-cmd ""',
+    'poll --until-cmd "   "',
+    'poll --until-cmd "test -f ready',
+    'poll --until-cmd "true" --until-cmd "false"',
+    'poll --until done --until-cmd "true"',
+    "poll --until one --until two",
+  ]) {
+    expect(parseLoopArgs(input)).toBeNull();
+  }
+});
+
+test("parseLoopArgs fuzz table: option-looking text inside quotes is never consumed", () => {
+  const quotedFragments = [
+    '"--max 99"',
+    '"--until done"',
+    '"--until-cmd \\"false\\""',
+    "'--unlimited'",
+    '"λ --max --until ✓"',
+  ];
+  for (const fragment of quotedFragments) {
+    const parsed = parseLoopArgs(`10s explain ${fragment} safely --max 2`);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.prompt).toContain(fragment);
+    expect(parsed!.condition).toBeUndefined();
+    expect(parsed!.max).toBe(2);
+  }
+  const spaced = parseLoopArgs('10s explain "✓  --max  99" exactly --max 2');
+  expect(spaced!.prompt).toBe('explain "✓  --max  99" exactly');
 });
 
 test("LoopController stops after max iterations", async () => {
@@ -141,7 +205,7 @@ test("LoopController stops when the --until condition is met", async () => {
     id: "L2",
     intervalMs: 1,
     prompt: "build",
-    until: "build passes",
+    condition: { kind: "model", text: "build passes" },
     run: async () => {
       runs += 1;
       return runs >= 2 ? "BUILD PASSED" : "errors";
@@ -155,6 +219,86 @@ test("LoopController stops when the --until condition is met", async () => {
   loop.start();
   await loop.whenDone();
   expect(runs).toBe(2);
+});
+
+test("LoopController treats command nonzero as not-yet and checks before max", async () => {
+  let runs = 0;
+  let checks = 0;
+  const events: UIEvent[] = [];
+  const loop = new LoopController({
+    id: "L-command",
+    intervalMs: 1,
+    prompt: "poll",
+    max: 2,
+    condition: { kind: "command", command: "test -f READY" },
+    run: async () => {
+      runs += 1;
+      return "iteration complete";
+    },
+    evaluate: async (_result, condition) => {
+      expect(condition.kind).toBe("command");
+      checks += 1;
+      return { done: checks === 2, reason: "command exited 0" };
+    },
+    emit: (event) => events.push(event),
+  });
+  loop.start();
+  await loop.whenDone();
+  expect({ runs, checks }).toEqual({ runs: 2, checks: 2 });
+  const stopped = events.find((event) => event.type === "loop-stopped");
+  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toContain("condition met");
+});
+
+test("LoopController aborts an active condition evaluation on stop", async () => {
+  let evaluationSignal: AbortSignal | undefined;
+  const loop = new LoopController({
+    id: "L-command-abort",
+    intervalMs: 1,
+    prompt: "poll",
+    condition: { kind: "command", command: "sleep 60" },
+    run: async () => "iteration complete",
+    evaluate: async (_result, _condition, signal) => {
+      evaluationSignal = signal;
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
+      throw new Error("aborted");
+    },
+    emit: () => {},
+  });
+  loop.start();
+  for (let i = 0; i < 20 && !evaluationSignal; i++) await Bun.sleep(1);
+  loop.stop("queue cleared");
+  await loop.whenDone();
+  expect(evaluationSignal?.aborted).toBe(true);
+});
+
+test("LoopController bounds command evaluator failures and surfaces a concise diagnostic", async () => {
+  let runs = 0;
+  const events: UIEvent[] = [];
+  const loop = new LoopController({
+    id: "L-command-failure",
+    intervalMs: 1,
+    prompt: "poll",
+    max: 100,
+    maxUntilEvalFailures: 2,
+    condition: { kind: "command", command: "true" },
+    run: async () => {
+      runs += 1;
+      return "complete";
+    },
+    evaluate: async () => {
+      throw new Error("read-only command sandbox unavailable");
+    },
+    emit: (event) => events.push(event),
+  });
+  loop.start();
+  await loop.whenDone();
+  expect(runs).toBe(2);
+  const stopped = events.find((event) => event.type === "loop-stopped");
+  expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toContain(
+    "read-only command sandbox unavailable",
+  );
 });
 
 test("an external stop reports 'stopped by user' and fires no iteration after the stop", async () => {
@@ -228,7 +372,7 @@ test("a genuinely failing iteration still stops with an 'iteration failed' reaso
 test("parseLoopArgs does not steal prose --until (BUG-076)", () => {
   const p = parseLoopArgs("30s explain how --until loops work");
   expect(p).not.toBeNull();
-  expect(p!.until).toBeUndefined();
+  expect(p!.condition).toBeUndefined();
   expect(p!.prompt).toContain("--until loops work");
 });
 
@@ -239,7 +383,7 @@ test("LoopController stops after consecutive --until eval failures", async () =>
     id: "L-evalfail",
     intervalMs: 1,
     prompt: "x",
-    until: "done",
+    condition: { kind: "model", text: "done" },
     max: 100,
     run: async () => {
       runs += 1;

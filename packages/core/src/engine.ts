@@ -98,6 +98,7 @@ import {
   globalSkillsDir,
 } from "./loaders.ts";
 import { LoopCancelledError, LoopController, parseLoopArgs } from "./loop.ts";
+import { evaluateLoopCommandCondition } from "./loop-condition-command.ts";
 import { SessionStore, type PersistedSession } from "./store.ts";
 import { PortableSessionManager } from "./portable-session.ts";
 import { MemoryService } from "./memory-service.ts";
@@ -1641,6 +1642,12 @@ export class Engine implements EngineClient {
           notice:
             "Goal run paused by the interrupt — the ★ goal stays set. /goal resume re-arms it; /goal clear drops it.",
         });
+        // Esc is a durable stop for loops as well as goal runs. The controller
+        // aborts an active condition evaluator/process tree before it can tick.
+        if (this.#loop) {
+          this.#loop.stop("aborted");
+          this.#loop = undefined;
+        }
         // Drop everything still waiting, then cancel the in-flight turn — which
         // may be a loop iteration running on an ephemeral session (`#loopSession`
         // is set only for the duration of that iteration), not the main session.
@@ -2019,6 +2026,12 @@ export class Engine implements EngineClient {
   /** `/queue` (show pending) and `/queue clear` (drop everything waiting). */
   #handleQueueCommand(args: string): void {
     if (args.trim() === "clear") {
+      // Queue clear is a stop boundary for recurring work too. In particular it
+      // aborts an active --until-cmd subprocess even when no iteration is queued.
+      if (this.#loop) {
+        this.#loop.stop("queue cleared");
+        this.#loop = undefined;
+      }
       const dropped = this.#pending;
       if (dropped.length) {
         this.#pending = [];
@@ -2182,6 +2195,7 @@ export class Engine implements EngineClient {
   async #evaluateCondition(
     result: string,
     condition: string,
+    signal: AbortSignal,
   ): Promise<{ done: boolean; reason: string }> {
     const model = await withRetry(
       () => this.registry.resolveModel(this.#session.model, this.#config),
@@ -2208,7 +2222,7 @@ export class Engine implements EngineClient {
         generateStructuredObject({
           model,
           schema: z.object({ done: z.boolean(), reason: z.string() }),
-          abortSignal: AbortSignal.timeout(60_000),
+          abortSignal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
           maxRetries: this.#config.retry.maxAttempts,
           supportsStructuredOutput,
           prompt:
@@ -2219,7 +2233,7 @@ export class Engine implements EngineClient {
             `If the condition depends on tests/checks/git cleanliness, prefer the gate and ` +
             `workspace signals over the agent's self-report. When unsure, done=false.`,
         }),
-      AbortSignal.timeout(90_000),
+      AbortSignal.any([signal, AbortSignal.timeout(90_000)]),
     );
   }
 
@@ -2561,7 +2575,7 @@ export class Engine implements EngineClient {
     const parsed = parseLoopArgs(args, { defaultMax: this.#config.loop.defaultMax });
     if (!parsed) {
       this.#notice(
-        "Usage: /loop [interval] <prompt|/command> [--until <condition>] [--max N] [--unlimited]\n" +
+        'Usage: /loop [interval] <prompt|/command> [--until <condition> | --until-cmd "<command>"] [--max N] [--unlimited]\n' +
           "Defaults: /loop defaults · /loop default max 20 · /config loop default max unlimited",
         "warn",
       );
@@ -2576,8 +2590,17 @@ export class Engine implements EngineClient {
       ...parsed,
       maxUntilEvalFailures: this.#config.loop.maxUntilEvalFailures,
       run: (p) => this.#runLoopIteration(p),
-      ...(parsed.until
-        ? { evaluate: (r: string, c: string) => this.#evaluateCondition(r, c) }
+      ...(parsed.condition
+        ? {
+            evaluate: (result, condition, signal) =>
+              condition.kind === "model"
+                ? this.#evaluateCondition(result, condition.text, signal)
+                : evaluateLoopCommandCondition({
+                    cwd: this.#cwd,
+                    command: condition.command,
+                    signal,
+                  }),
+          }
         : {}),
       onStop: () => this.#loopSession?.abort(),
       emit: (e) => this.#bus.emit(e),
@@ -2596,7 +2619,11 @@ export class Engine implements EngineClient {
         : "unlimited";
     this.#notice(
       `Loop started (every ${Math.round(parsed.intervalMs / 1000)}s)` +
-        (parsed.until ? `, until: ${parsed.until}` : "") +
+        (parsed.condition?.kind === "model"
+          ? `, until: ${parsed.condition.text}`
+          : parsed.condition?.kind === "command"
+            ? `, until command exits 0: ${parsed.condition.command}`
+            : "") +
         `, ${maxLabel}` +
         ". Run /loop stop to cancel.",
     );

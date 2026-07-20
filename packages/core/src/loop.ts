@@ -3,7 +3,7 @@ import type { UIEvent } from "@vibe/shared";
 export interface ParsedLoop {
   intervalMs: number;
   prompt: string;
-  until?: string;
+  condition?: LoopCondition;
   max?: number;
   /** True when the user opted into an unbounded loop (`--unlimited`). */
   unlimited?: boolean;
@@ -13,6 +13,10 @@ export interface ParsedLoop {
    * text) for the caller to surface — the loop still starts. */
   warnings?: string[];
 }
+
+/** A model judgment preserves the original `--until` behavior; a command
+ * condition is satisfied only by a sandboxed exit status of zero. */
+export type LoopCondition = { kind: "model"; text: string } | { kind: "command"; command: string };
 
 const DEFAULT_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -49,9 +53,87 @@ export interface ParseLoopOpts {
   defaultMax?: number;
 }
 
+interface ArgToken {
+  start: number;
+  end: number;
+  value: string;
+  fullyQuoted: boolean;
+}
+
+/** Shell-like option lexer. Quotes are only syntax for `/loop` parsing: the
+ * prompt itself is retained from the original source slices. Inside quotes we
+ * unescape only the active quote and backslash; every other backslash is kept
+ * verbatim so regexes and shell expressions survive. */
+function lexLoopArgs(input: string): ArgToken[] | null {
+  const tokens: ArgToken[] = [];
+  let i = 0;
+  while (i < input.length) {
+    while (/\s/u.test(input[i] ?? "")) i += 1;
+    if (i >= input.length) break;
+    const start = i;
+    let value = "";
+    let quote: '"' | "'" | undefined;
+    let sawQuoted = false;
+    let sawUnquoted = false;
+    while (i < input.length) {
+      const ch = input[i]!;
+      if (quote) {
+        if (ch === "\\") {
+          const next = input[i + 1];
+          if (next === quote || next === "\\") {
+            value += next;
+            i += 2;
+            continue;
+          }
+          value += ch;
+          i += 1;
+          continue;
+        }
+        if (ch === quote) {
+          quote = undefined;
+          i += 1;
+          continue;
+        }
+        value += ch;
+        i += 1;
+        continue;
+      }
+      if (/\s/u.test(ch)) break;
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        sawQuoted = true;
+        i += 1;
+        continue;
+      }
+      sawUnquoted = true;
+      if (ch === "\\" && i + 1 < input.length) {
+        value += input[i + 1]!;
+        i += 2;
+      } else {
+        value += ch;
+        i += 1;
+      }
+    }
+    if (quote) return null;
+    tokens.push({ start, end: i, value, fullyQuoted: sawQuoted && !sawUnquoted });
+  }
+  return tokens;
+}
+
+function withoutRanges(input: string, ranges: Array<[number, number]>): string {
+  const tokens = lexLoopArgs(input);
+  if (!tokens) return input.trim();
+  return tokens
+    .filter((token) => !ranges.some(([start, end]) => token.start >= start && token.end <= end))
+    .map((token) => input.slice(token.start, token.end))
+    .join(" ")
+    .trim();
+}
+
 /**
  * Parse `/loop` arguments:
- *   [interval] <prompt or /command> [--until <condition>] [--max <N>] [--unlimited]
+ *   [interval] <prompt or /command> [--until <condition> | --until-cmd "<command>"]
+ *     [--max <N>] [--unlimited]
  * Returns null if no prompt is present.
  *
  * When neither `--max` nor `--unlimited` is set, the configured default max
@@ -63,47 +145,69 @@ export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoo
   const warnings: string[] = [];
   const configuredDefault = opts.defaultMax !== undefined ? opts.defaultMax : DEFAULT_LOOP_MAX;
 
+  const initialTokens = lexLoopArgs(rest);
+  if (!initialTokens) return null;
+  let tokens: ArgToken[] = initialTokens;
+
   let unlimited = false;
-  if (/(?:^|\s)--unlimited(?:\s|$)/.test(rest)) {
+  const unlimitedTokens = tokens.filter((t) => !t.fullyQuoted && t.value === "--unlimited");
+  if (unlimitedTokens.length) {
     unlimited = true;
-    rest = rest
-      .replace(/(?:^|\s)--unlimited(?=\s|$)/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    rest = withoutRanges(
+      rest,
+      unlimitedTokens.map((t) => [t.start, t.end]),
+    );
+    tokens = lexLoopArgs(rest)!;
   }
 
   let max: number | undefined;
-  const maxMatch = rest.match(/--max\s+(\d+)/);
-  if (maxMatch) {
+  const validMax = tokens
+    .map((token, index) => ({ token, value: tokens[index + 1] }))
+    .filter(
+      ({ token, value }) =>
+        !token.fullyQuoted &&
+        token.value === "--max" &&
+        value !== undefined &&
+        !value.fullyQuoted &&
+        /^\d+$/u.test(value.value),
+    );
+  if (validMax.length > 1) return null;
+  if (validMax[0]) {
     // `--max 0` is rejected (returns null → usage message) rather than being
     // silently dropped, which would turn "run at most zero times" into an
     // UNBOUNDED loop. Use `--unlimited` for intentional forever.
-    max = Number(maxMatch[1]);
+    max = Number(validMax[0].value!.value);
     if (max < 1) return null;
-    rest = rest.replace(maxMatch[0], "").trim();
+    rest = withoutRanges(rest, [[validMax[0].token.start, validMax[0].value!.end]]);
+    tokens = lexLoopArgs(rest)!;
   }
 
-  // BUG-076: only accept a TRAILING `--until` with a single token or a quoted
-  // value. `/--until\s+(.+)$/` stole prose like "explain how --until loops work".
-  let until: string | undefined;
-  const untilQuoted =
-    rest.match(/\s--until\s+"([^"]+)"\s*$/) ?? rest.match(/\s--until\s+'([^']+)'\s*$/);
-  const untilBare = untilQuoted ? null : rest.match(/\s--until\s+(\S+)\s*$/);
-  const untilLeadQuoted =
-    rest.match(/^--until\s+"([^"]+)"\s+/) ?? rest.match(/^--until\s+'([^']+)'\s+/);
-  const untilLeadBare = untilLeadQuoted ? null : rest.match(/^--until\s+(\S+)(?:\s+|$)/);
-  if (untilQuoted) {
-    until = untilQuoted[1]!.trim();
-    rest = rest.slice(0, untilQuoted.index).trim();
-  } else if (untilBare) {
-    until = untilBare[1]!.trim();
-    rest = rest.slice(0, untilBare.index).trim();
-  } else if (untilLeadQuoted) {
-    until = untilLeadQuoted[1]!.trim();
-    rest = rest.slice(untilLeadQuoted[0].length).trim();
-  } else if (untilLeadBare) {
-    until = untilLeadBare[1]!.trim();
-    rest = rest.slice(untilLeadBare[0].length).trim();
+  // BUG-076: a condition is only recognized at the leading/trailing boundary
+  // (after bound flags are removed), so prose like "explain --until loops" is
+  // still a prompt. Duplicate or mixed condition flags are rejected rather than
+  // silently choosing one. Quoted flag-looking text is never treated as a flag.
+  const conditionFlags = tokens
+    .map((token, index) => ({ token, index }))
+    .filter(
+      ({ token }) =>
+        !token.fullyQuoted && (token.value === "--until" || token.value === "--until-cmd"),
+    );
+  if (conditionFlags.length > 1) return null;
+  let condition: LoopCondition | undefined;
+  const foundCondition = conditionFlags[0];
+  if (foundCondition) {
+    const value = tokens[foundCondition.index + 1];
+    const atBoundary = foundCondition.index === 0 || foundCondition.index + 1 === tokens.length - 1;
+    if (foundCondition.token.value === "--until-cmd") {
+      // Unlike model conditions, commands must be explicitly quoted: this keeps
+      // shell operators and option-looking substrings inside one unambiguous value.
+      if (!atBoundary || !value?.fullyQuoted || !value.value.trim()) return null;
+      condition = { kind: "command", command: value.value };
+      rest = withoutRanges(rest, [[foundCondition.token.start, value.end]]);
+    } else if (atBoundary && value?.value.trim()) {
+      condition = { kind: "model", text: value.value.trim() };
+      rest = withoutRanges(rest, [[foundCondition.token.start, value.end]]);
+    }
   }
 
   // Optional leading interval token.
@@ -129,11 +233,14 @@ export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoo
 
   // BUG-077: warn only for failed flag applications, not prose that mentions
   // `--watch` etc. Detect a bare trailing `--until`/`--max`, or `--max <non-int>`.
-  if (/\s--(?:max|until)\s*$/i.test(rest) || /^--(?:max|until)\s*$/i.test(rest)) {
-    const token = rest.match(/--(max|until)\s*$/i)?.[0] ?? "--until";
+  if (
+    /\s--(?:max|until|until-cmd)\s*$/i.test(rest) ||
+    /^--(?:max|until|until-cmd)\s*$/i.test(rest)
+  ) {
+    const token = rest.match(/--(max|until|until-cmd)\s*$/i)?.[0] ?? "--until";
     warnings.push(
       `"${token}" was not applied (missing or invalid value) and was kept as prompt text — ` +
-        "usage: --until <condition>, --max <N>, --unlimited.",
+        'usage: --until <condition>, --until-cmd "<command>", --max <N>, --unlimited.',
     );
   } else if (/\s--max\s+\S+/i.test(rest) && max === undefined) {
     // e.g. `--max ten` — present but not applied as a number.
@@ -163,7 +270,7 @@ export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoo
   return {
     intervalMs,
     prompt: rest,
-    ...(until ? { until } : {}),
+    ...(condition ? { condition } : {}),
     ...(max !== undefined ? { max } : {}),
     ...(unlimited ? { unlimited: true } : {}),
     ...(maxDefaulted ? { maxDefaulted: true } : {}),
@@ -175,8 +282,12 @@ export interface LoopOptions extends ParsedLoop {
   id: string;
   /** Run one iteration and return the result text. */
   run: (prompt: string) => Promise<string>;
-  /** Evaluate whether `until` has been satisfied by `result`. */
-  evaluate?: (result: string, condition: string) => Promise<{ done: boolean; reason: string }>;
+  /** Evaluate whether the discriminated stop condition has been satisfied. */
+  evaluate?: (
+    result: string,
+    condition: LoopCondition,
+    signal: AbortSignal,
+  ) => Promise<{ done: boolean; reason: string }>;
   /** Called when the loop is stopped — lets the host abort an in-flight turn. */
   onStop?: () => void;
   emit: (event: UIEvent) => void;
@@ -197,6 +308,7 @@ export class LoopController {
    * (bad model id, dead key) would otherwise silently make the condition inert
    * and, with no `--max`, loop forever. Stops after {@link MAX_UNTIL_EVAL_FAILURES}. */
   #evalFailStreak = 0;
+  #evaluationAbort: AbortController | undefined;
   #resolveDone!: () => void;
   #done: Promise<void>;
 
@@ -221,6 +333,8 @@ export class LoopController {
     if (this.#stopped) return;
     this.#stopped = true;
     if (this.#timer) clearTimeout(this.#timer);
+    this.#evaluationAbort?.abort();
+    this.#evaluationAbort = undefined;
     // Cancel an iteration that's mid-flight (otherwise the model turn — and its
     // side-effecting tools — would keep running after the user stopped the loop).
     this.#opts.onStop?.();
@@ -250,25 +364,35 @@ export class LoopController {
     }
     if (this.#stopped) return;
 
-    if (this.#opts.until && this.#opts.evaluate) {
+    if (this.#opts.condition && this.#opts.evaluate) {
+      const evaluationAbort = new AbortController();
+      this.#evaluationAbort = evaluationAbort;
       try {
-        const verdict = await this.#opts.evaluate(result, this.#opts.until);
+        const verdict = await this.#opts.evaluate(
+          result,
+          this.#opts.condition,
+          evaluationAbort.signal,
+        );
+        if (this.#stopped) return;
         this.#evalFailStreak = 0;
         if (verdict.done) {
           this.stop(`condition met: ${verdict.reason}`);
           return;
         }
-      } catch {
+      } catch (err) {
+        if (this.#stopped || evaluationAbort.signal.aborted) return;
         // Treat evaluation failure as "not yet" and keep looping — but a
         // PERSISTENTLY failing check (model unreachable / bad id) silently turns
         // `--until` into "never", so stop after a short streak instead of
         // burning iterations forever.
         this.#evalFailStreak += 1;
         const failCap = this.#opts.maxUntilEvalFailures ?? MAX_UNTIL_EVAL_FAILURES;
+        const detail =
+          err instanceof Error ? err.message.replace(/\s+/gu, " ").slice(0, 240) : "unknown error";
         if (this.#evalFailStreak >= failCap) {
           this.stop(
-            `--until check failed ${this.#evalFailStreak}× in a row (model unreachable or the ` +
-              "condition can't be evaluated) — stopping. /loop with a fixed evaluator or --max.",
+            `--until check failed ${this.#evalFailStreak}× in a row (${detail}) — stopping. ` +
+              "/loop with a fixed evaluator or --max.",
           );
           return;
         }
@@ -277,10 +401,12 @@ export class LoopController {
             type: "notice",
             level: "warn",
             message:
-              `Loop --until check failed ${this.#evalFailStreak}× (model unreachable or the ` +
-              `condition can't be evaluated); continues (stops after ${failCap}). /loop stop to cancel.`,
+              `Loop --until check failed ${this.#evalFailStreak}× (${detail}); continues ` +
+              `(stops after ${failCap}). /loop stop to cancel.`,
           });
         }
+      } finally {
+        if (this.#evaluationAbort === evaluationAbort) this.#evaluationAbort = undefined;
       }
     }
 

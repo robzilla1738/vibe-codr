@@ -477,3 +477,131 @@ test("/loop iteration runs built-in /status without prompting the model (BUG-075
   expect(statusNotice).toBeDefined();
   expect(modelCalls).toBe(0);
 });
+
+const realLoopCommandSandbox = (() => {
+  if (process.platform === "darwin") return Boolean(Bun.which("sandbox-exec"));
+  if (process.platform !== "linux" || !Bun.which("bwrap")) return false;
+  try {
+    return Bun.spawnSync(["bwrap", "--ro-bind", "/", "/", "true"], {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    }).success;
+  } catch {
+    return false;
+  }
+})();
+
+test.skipIf(!realLoopCommandSandbox)(
+  "/loop --until-cmd evaluates a completed iteration and exit 0 wins before max",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-loop-cmd-"));
+    let modelCalls = 0;
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        modelCalls += 1;
+        return textStep("model should not run for /status loop tick") as never;
+      },
+    });
+    const registry = new ProviderRegistry([
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
+    ]);
+    const engine = new Engine({
+      config: { ...defaultConfig(), model: "mock/test" },
+      cwd,
+      registry,
+      interactive: false,
+    });
+    const events: UIEvent[] = [];
+    const collector = (async () => {
+      for await (const event of engine.events()) events.push(event);
+    })();
+    await engine.bootstrap();
+
+    engine.send({
+      type: "run-slash",
+      name: "loop",
+      args: '1s /status --until-cmd "true" --max 2',
+    });
+    for (let i = 0; i < 80; i++) {
+      if (events.some((event) => event.type === "loop-stopped")) break;
+      await Bun.sleep(25);
+    }
+    engine.send({ type: "shutdown" });
+    await collector;
+
+    const stopped = events.find((event) => event.type === "loop-stopped");
+    expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toBe(
+      "condition met: command exited 0",
+    );
+    expect(events.filter((event) => event.type === "loop-tick")).toHaveLength(1);
+    expect(modelCalls).toBe(0);
+  },
+);
+
+test.skipIf(!realLoopCommandSandbox)(
+  "/queue clear aborts an active --until-cmd process and stops the loop",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-scn-loop-cmd-clear-"));
+    const model = new MockLanguageModelV3({
+      doStream: async () => textStep("model should not run") as never,
+    });
+    const registry = new ProviderRegistry([
+      {
+        id: "mock",
+        auth: { env: [], keyless: true },
+        create: () => model,
+        listModels: async () => [],
+      },
+    ]);
+    const engine = new Engine({
+      config: { ...defaultConfig(), model: "mock/test" },
+      cwd,
+      registry,
+      interactive: false,
+    });
+    const events: UIEvent[] = [];
+    const collector = (async () => {
+      for await (const event of engine.events()) events.push(event);
+    })();
+    await engine.bootstrap();
+
+    engine.send({
+      type: "run-slash",
+      name: "loop",
+      args: '1s /status --until-cmd "sleep 60" --max 2',
+    });
+    for (let i = 0; i < 80; i++) {
+      if (
+        events.some(
+          (event) => event.type === "notice" && /model|cwd|session/i.test(event.message),
+        )
+      ) {
+        break;
+      }
+      await Bun.sleep(10);
+    }
+    // Give the evaluator one scheduling turn to spawn its contained process.
+    await Bun.sleep(25);
+    const clearedAt = performance.now();
+    engine.send({ type: "run-slash", name: "queue", args: "clear" });
+    for (let i = 0; i < 80; i++) {
+      if (events.some((event) => event.type === "loop-stopped")) break;
+      await Bun.sleep(10);
+    }
+    engine.send({ type: "shutdown" });
+    await collector;
+
+    const stopped = events.find((event) => event.type === "loop-stopped");
+    expect(stopped && stopped.type === "loop-stopped" && stopped.reason).toBe(
+      "queue cleared",
+    );
+    expect(performance.now() - clearedAt).toBeLessThan(2_000);
+    expect(events.filter((event) => event.type === "loop-tick")).toHaveLength(1);
+  },
+);

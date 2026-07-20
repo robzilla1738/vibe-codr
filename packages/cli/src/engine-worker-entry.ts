@@ -1,6 +1,6 @@
 /**
  * Worker entry script for the `WorkerEngineClient` (UI lives on the main
- * thread, `Engine` lives here). It constructs the in-process `Engine`
+ * thread, `Engine` lives here). It opens the in-process RuntimeService
  * exactly as `packages/cli/src/index.ts` used to, then:
  *
  *   • forwards `parentPort` commands (`EngineCommand`) into `engine.send`
@@ -20,8 +20,8 @@
  * main binary spawns it by path. In source/dev runs, the main script spawns
  * `engine-worker-entry.ts` directly via `new Worker(path)`.
  */
-import { Engine } from "@vibe/core";
 import type { UIEvent } from "@vibe/shared";
+import { openRuntimeSession } from "@vibe/runtime";
 import {
   isEngineWorkerRpcRequest,
   type EngineWorkerData,
@@ -80,12 +80,15 @@ process.on("unhandledRejection", (reason: unknown) => {
 });
 
 const opts = data as EngineWorkerData;
-const engine = new Engine({
+const engine = await openRuntimeSession({
   config: opts.config as never,
   cwd: opts.cwd,
   interactive: opts.interactive,
-  ...(opts.projectMemory ? { projectMemory: opts.projectMemory } : {}),
-  ...(opts.resume ? { resume: opts.resume as never } : {}),
+  projectMemory: opts.projectMemory ?? "",
+  resume: opts.resume
+    ? { kind: "loaded", session: opts.resume as never }
+    : { kind: "new" },
+  acquireLease: false,
   ...(opts.modelOverride ? { modelOverride: opts.modelOverride } : {}),
   ...(opts.modeOverride ? { modeOverride: opts.modeOverride as never } : {}),
 });
@@ -135,10 +138,6 @@ void (async () => {
 })();
 
 await Promise.resolve();
-await engine.bootstrap();
-// Identity event for first-paint chrome (model/mode).
-engine.start();
-
 bootstrapped = true;
 for (const msg of inboundQueue.splice(0)) {
   await handleInbound(msg);

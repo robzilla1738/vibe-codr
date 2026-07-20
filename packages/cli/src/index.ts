@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadConfig, defaultConfig, type Config } from "@vibe/config";
 import {
-  Engine,
   configureStandaloneMcpRuntime,
   formatModelList,
   handleCrash,
@@ -14,6 +13,7 @@ import {
 } from "@vibe/core";
 import { checkForUpdate, isNewer, readUpdateCache } from "@vibe/core";
 import { ProviderRegistry } from "@vibe/providers";
+import { openRuntimeSession } from "@vibe/runtime";
 import type { EngineClient } from "@vibe/shared";
 import { runOneShot, startTui } from "@vibe/tui";
 import { createWorkerEngineClient } from "./engine-worker-client.ts";
@@ -272,10 +272,10 @@ export async function run(argv: string[]): Promise<number> {
   // into every system prompt so the agent knows the project's conventions.
   const projectMemory = await loadProjectMemory(cwd);
 
-  // The shared Engine-construction shape used by every branch below. The TUI
+  // The shared runtime-session shape used by every branch below. The TUI
   // path forwards this verbatim to the worker entry (`engine-worker-entry.ts`),
-  // which constructs `new Engine({...})` exactly as the in-process branches do
-  // — keeping bootstrap/lifecycle identical across hostings. The interactive
+  // which opens the same RuntimeService as the in-process branches — keeping
+  // bootstrap/lifecycle identical across hostings. The interactive
   // (-p / `models` excluded) TUI is the only path that BENEFITS from the worker
   // (single-shot-and-list paths are throughput-sensitive and have no real-time
   // consumer to starve — they stay in-process with no serialization tax).
@@ -291,14 +291,25 @@ export async function run(argv: string[]): Promise<number> {
     ...(overrides.mode ? { modeOverride: overrides.mode } : {}),
   };
 
+  const openInProcessRuntime = () =>
+    openRuntimeSession({
+      config,
+      cwd,
+      interactive,
+      projectMemory,
+      resume: resume ? { kind: "loaded", session: resume } : { kind: "new" },
+      acquireLease: false,
+      ...(values.model && !onboardingRan ? { modelOverride: values.model } : {}),
+      ...(overrides.mode ? { modeOverride: overrides.mode } : {}),
+    });
+
   // `vibe models` — list available models for configured providers and exit.
   // Stays in-process: it doesn't stream UI events and gains nothing from the
   // worker's freeze fix. Heavy MCP/recon bootstrap is preserved as before.
   if (positionals[0] === "models") {
-    const engine = new Engine(engineOpts);
-    await engine.bootstrap();
-    process.stdout.write(`${formatModelList(await engine.listModels())}\n`);
-    await engine.finalize();
+    const runtime = await openInProcessRuntime();
+    process.stdout.write(`${formatModelList(await runtime.listModels())}\n`);
+    await runtime.close();
     if (leaseStore && leaseId) await leaseStore.releaseLease(leaseId);
     return 0;
   }
@@ -306,8 +317,7 @@ export async function run(argv: string[]): Promise<number> {
   // Headless `-p` path — output only, no real-time consumer to starve. Keep
   // in-process to avoid per-event structured-clone tax on a single-shot run.
   if (values.prompt !== undefined) {
-    const engine = new Engine(engineOpts);
-    await engine.bootstrap();
+    const runtime = await openInProcessRuntime();
     const outputFormat = values["output-format"] === "json" ? "json" : "text";
     // `-p -` (or an empty `-p` with piped input) reads the prompt from stdin,
     // so `cat task.md | vibecodr -p -` works for scripting. On a TTY with no
@@ -319,16 +329,16 @@ export async function run(argv: string[]): Promise<number> {
         "vibecodr: -p reads the prompt from stdin here, but stdin is a terminal (no piped input). " +
           'Pipe input (`cat task.md | vibecodr -p -`) or pass the prompt directly (`vibecodr -p "…"`).\n',
       );
-      await engine.finalize();
+      await runtime.close();
       return 1;
     }
     const prompt = wantsStdin ? (await Bun.stdin.text()).trim() : values.prompt;
-    const ok = await runOneShot(engine, prompt, {
+    const ok = await runOneShot(runtime, prompt, {
       showReasoning: values.reasoning,
       outputFormat,
     });
     // Finalize (write the session digest when enabled, then tear down) before exit.
-    await engine.finalize();
+    await runtime.close();
     if (leaseStore && leaseId) await leaseStore.releaseLease(leaseId);
     // Propagate failure so `vibecodr -p … && next` and CI behave correctly.
     return ok ? 0 : 1;
@@ -344,7 +354,7 @@ export async function run(argv: string[]): Promise<number> {
   // burst can never again starve paint/stdin (the freeze root cause — see
   // `engine-worker-client.ts`). `VIBE_NO_WORKER=1` OR a missing worker entry
   // (e.g. an incomplete release tarball) silently fall back to the in-process
-  // `Engine` so a packaging hiccup never bricks the CLI. In that mode the
+  // runtime so a packaging hiccup never bricks the CLI. In that mode the
   // cooperative-yield gate on `app.tsx`'s `for await` (Option B) alone bounds
   // the freeze.
   const wantWorker = !process.env.VIBE_NO_WORKER;
@@ -364,12 +374,7 @@ export async function run(argv: string[]): Promise<number> {
       },
     });
   } else {
-    const engine = new Engine(engineOpts);
-    await engine.bootstrap();
-    // session-start for first-paint identity; EventBus history (BUG-085)
-    // delivers bootstrap notices to the TUI when it later subscribes.
-    engine.start();
-    client = engine;
+    client = await openInProcessRuntime();
   }
 
   await startTui(client);

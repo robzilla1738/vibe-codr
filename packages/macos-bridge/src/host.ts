@@ -11,17 +11,15 @@
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { loadConfig, type Config } from "@vibe/config";
+import type { Config } from "@vibe/config";
 import {
-  Engine,
-  loadProjectMemory,
   PortableSessionManager,
   SessionStore,
   searchSessionsAcrossProjects,
-  type PersistedSession,
 } from "@vibe/core";
 import type { EngineCommand, ExecutionTarget } from "@vibe/shared";
-import { ProviderAuthManager, ProviderRegistry } from "@vibe/providers";
+import { ProviderAuthManager } from "@vibe/providers";
+import { openRuntimeSession, type RuntimeService } from "@vibe/runtime";
 import {
   decodeInbound,
   HOST_PROTOCOL_CAPABILITIES,
@@ -71,7 +69,7 @@ export async function runHost(): Promise<void> {
   let eventSequence = 0;
   let replayBytes = 0;
   const replayFrames: Array<{ frame: HostEventFrame; bytes: number }> = [];
-  let engine: Engine | null = null;
+  let engine: RuntimeService | null = null;
   let eventLoop: Promise<void> | null = null;
   let shuttingDown = false;
   let activeSessionSearch: AbortController | null = null;
@@ -85,7 +83,7 @@ export async function runHost(): Promise<void> {
   // TypeScript does not carry assignments made inside `bootstrap` into the
   // outer stdin loop's control-flow graph. Read through a typed accessor so the
   // loop can narrow the real mutable runtime state without unsafe `never` casts.
-  const currentEngine = (): Engine | null => engine;
+  const currentEngine = (): RuntimeService | null => engine;
   const currentSessionSearch = (): AbortController | null => activeSessionSearch;
 
   const writeEvent = (event: HostEventFrame["event"]): void => {
@@ -122,7 +120,7 @@ export async function runHost(): Promise<void> {
   process.on("uncaughtException", crash);
   process.on("unhandledRejection", crash);
 
-  const startEventPump = (e: Engine) => {
+  const startEventPump = (e: RuntimeService) => {
     eventLoop = (async () => {
       try {
         for await (const event of e.events()) {
@@ -168,91 +166,29 @@ export async function runHost(): Promise<void> {
       return;
     }
 
-    let config: Config;
-    try {
-      config = await loadConfig({ cwd, overrides });
-    } catch (err) {
-      write({
-        type: "fatal",
-        message: `config load failed: ${(err as Error).message}`,
-      });
-      return;
-    }
-
-    if (msg.requiredModels) {
-      // requiredModels is a Cloud-handoff field; the Cloud agent is its only
-      // sender. Validate every model regardless of the VIBE_CLOUD_RUNTIME flag so
-      // a deployment skew that drops the flag cannot block the handoff with a
-      // confusing "only accepted by the Cloud runtime" fatal. A genuinely
-      // unresolvable model still fails fast with an actionable missing-credential.
-      const registry = new ProviderRegistry();
-      try {
-        for (const model of msg.requiredModels) await registry.resolveModel(model, config);
-      } catch (error) {
-        write({
-          type: "fatal",
-          message: `missing-credential: resumed engine could not resolve required model: ${(error as Error).message}`,
-        });
-        return;
-      }
-    }
-
-    let resume: PersistedSession | undefined;
-    if (msg.continue || msg.resume) {
-      const store = new SessionStore(cwd);
-      const id = msg.resume ?? (await store.latestId());
-      const loaded = id ? await store.load(id) : null;
-      if (loaded) resume = loaded;
-      else if (msg.resume) {
-        write({ type: "fatal", message: `requested session not found: ${msg.resume}` });
-        return;
-      }
-    }
-
-    if (resume) {
-      const cloudProvider = process.env.VIBE_CLOUD_PROVIDER;
-      let target: ExecutionTarget = { kind: "local" };
-      const importedTarget =
-        importedResumeAuthorization?.cwd === cwd &&
-        importedResumeAuthorization.sessionId === resume.meta.id
-          ? importedResumeAuthorization.target
-          : null;
-      if (importedTarget) {
-        target = importedTarget;
-        importedResumeAuthorization = null;
-      } else if (msg.executionTarget) {
-        target = msg.executionTarget;
-      } else if (process.env.VIBE_CLOUD_RUNTIME === "1") {
-        if (cloudProvider !== "e2b" && cloudProvider !== "vercel") {
-          write({ type: "fatal", message: "cloud runtime is missing a valid VIBE_CLOUD_PROVIDER" });
-          return;
-        }
-        target = { kind: "cloud", provider: cloudProvider };
-      }
-      try {
-        await PortableSessionManager.assertOwner(cwd, resume.meta.id, target);
-      } catch (error) {
-        write({
-          type: "fatal",
-          message: `session ownership check failed for ${target.kind === "local" ? "local" : `cloud/${target.provider}`}: ${(error as Error).message}`,
-        });
-        return;
-      }
-    }
-
-    const projectMemory = await loadProjectMemory(cwd);
-    engine = new Engine({
-      config,
+    engine = await openRuntimeSession({
       cwd,
       interactive: true,
-      ...(projectMemory ? { projectMemory } : {}),
-      ...(resume ? { resume } : {}),
+      configOverrides: overrides,
+      requiredModels: msg.requiredModels,
+      resume: msg.resume
+        ? { kind: "session", sessionId: msg.resume }
+        : msg.continue
+          ? { kind: "latest" }
+          : { kind: "new" },
+      executionTarget: msg.executionTarget,
+      executionTargetForResume: (resume) => {
+        const authorization = importedResumeAuthorization;
+        if (authorization?.cwd !== cwd || authorization.sessionId !== resume.meta.id) {
+          return undefined;
+        }
+        importedResumeAuthorization = null;
+        return authorization.target;
+      },
+      acquireLease: false,
       ...(msg.model ? { modelOverride: msg.model } : {}),
       ...(overrides.mode ? { modeOverride: overrides.mode } : {}),
     });
-
-    await engine.bootstrap();
-    engine.start();
     startEventPump(engine);
 
     const snap = engine.snapshot();
@@ -595,7 +531,7 @@ export async function runHost(): Promise<void> {
             type: "resp",
             id,
             ok: true,
-            value: engine.listProviders(),
+            value: await engine.listProviders(),
           });
           return;
         case "listAgents":
@@ -603,7 +539,7 @@ export async function runHost(): Promise<void> {
             type: "resp",
             id,
             ok: true,
-            value: engine.listAgents(),
+            value: await engine.listAgents(),
           });
           return;
         case "listSkills":
@@ -611,7 +547,7 @@ export async function runHost(): Promise<void> {
             type: "resp",
             id,
             ok: true,
-            value: engine.listSkills(),
+            value: await engine.listSkills(),
           });
           return;
         case "listMcp":
@@ -631,7 +567,7 @@ export async function runHost(): Promise<void> {
           });
           return;
         case "finalize":
-          await engine.finalize?.();
+          await engine.close();
           write({ type: "resp", id, ok: true, value: null });
           return;
         case "prepareHandoff": {
@@ -713,12 +649,7 @@ export async function runHost(): Promise<void> {
           const activeEngine = currentEngine();
           if (activeEngine) {
             try {
-              await activeEngine.finalize?.();
-            } catch {
-              /* ignore */
-            }
-            try {
-              await activeEngine.send({ type: "shutdown" });
+              await activeEngine.close();
             } catch {
               /* ignore */
             }
@@ -740,7 +671,7 @@ export async function runHost(): Promise<void> {
   const activeEngine = currentEngine();
   if (activeEngine) {
     try {
-      await activeEngine.finalize?.();
+      await activeEngine.close();
     } catch {
       /* ignore */
     }

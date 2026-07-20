@@ -21,6 +21,7 @@
     "@vibe/core": "workspace:*",
     "@vibe/protocol": "workspace:*",
     "@vibe/providers": "workspace:*",
+    "@vibe/runtime": "workspace:*",
     "@vibe/shared": "workspace:*"
   }
 }

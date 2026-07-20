@@ -1,12 +1,8 @@
 {
-  "name": "@vibe/cli",
+  "name": "@vibe/runtime",
   "version": "0.6.14",
   "private": true,
   "type": "module",
-  "bin": {
-    "vibecodr": "./bin/vibecodr.ts",
-    "vibe": "./bin/vibecodr.ts"
-  },
   "exports": {
     ".": "./src/index.ts"
   },
@@ -20,10 +16,7 @@
   "dependencies": {
     "@vibe/config": "workspace:*",
     "@vibe/core": "workspace:*",
-    "@vibe/protocol": "workspace:*",
     "@vibe/providers": "workspace:*",
-    "@vibe/runtime": "workspace:*",
-    "@vibe/shared": "workspace:*",
-    "@vibe/tui": "workspace:*"
+    "@vibe/shared": "workspace:*"
   }
 }

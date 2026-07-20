@@ -1,4 +1,4 @@
-import type { EngineClient, SessionUsage, Task, UIEvent } from "@vibe/shared";
+import type { EngineClient, GoalCompletionStatus, SessionUsage, Task, UIEvent } from "@vibe/shared";
 import { ansi } from "./ansi.ts";
 import { GLYPH } from "./glyphs.ts";
 import { truncateWidth } from "./markdown-blocks.ts";
@@ -127,6 +127,8 @@ export interface HeadlessOptions {
   /** Single-prompt `-p` run: suppress interactive hints ("approve with
    * /execute") that nothing can act on once the process exits. */
   oneShot?: boolean;
+  /** Internal CLI hook for deterministic exit-code selection. */
+  onOutcome?: (outcome: OneShotRunOutcome) => void;
 }
 
 /** The machine-readable result of a one-shot run (`--output-format json`). */
@@ -146,7 +148,20 @@ export interface OneShotResult {
   assumptions?: string[];
   /** True when the plan was presented WITHOUT the research the gate required. */
   ungrounded?: boolean;
+  /** Authoritative terminal goal evidence from `engine-idle`. `null` means the
+   * run produced no goal-completion evidence. */
+  goalCompletionStatus?: GoalCompletionStatus | null;
   error?: string;
+}
+
+/** Execution facts the CLI needs to choose a deterministic process exit code. */
+export interface OneShotRunOutcome {
+  /** Ordinary one-shot compatibility: false for engine errors or a red gate. */
+  ok: boolean;
+  /** Provider/runtime/engine failure. This takes precedence in strict mode. */
+  engineFailed: boolean;
+  /** Authoritative terminal evidence copied only from the final `engine-idle`. */
+  goalCompletionStatus?: GoalCompletionStatus;
 }
 
 /** Serialize a one-shot result as a stable, pretty JSON document. */
@@ -297,6 +312,17 @@ export async function runOneShot(
   prompt: string,
   opts: HeadlessOptions = {},
 ): Promise<boolean> {
+  const outcome = await runOneShotWithOutcome(engine, prompt, opts);
+  opts.onOutcome?.(outcome);
+  return outcome.ok;
+}
+
+/** Drive one prompt while retaining authoritative terminal evidence for CI. */
+export async function runOneShotWithOutcome(
+  engine: EngineClient,
+  prompt: string,
+  opts: HeadlessOptions = {},
+): Promise<OneShotRunOutcome> {
   opts = { ...opts, oneShot: true };
   const json = opts.outputFormat === "json";
   const events = engine.events();
@@ -309,6 +335,7 @@ export async function runOneShot(
   let sources: OneShotResult["sources"];
   let assumptions: OneShotResult["assumptions"];
   let ungrounded: boolean | undefined;
+  let goalCompletionStatus: GoalCompletionStatus | undefined;
   for await (const event of events) {
     if (event.type === "usage-updated") usage = event.usage;
     // In JSON mode, accumulate the answer silently instead of streaming it; in
@@ -327,7 +354,12 @@ export async function runOneShot(
     }
     if (event.type === "tasks-updated")
       tasks = event.tasks.map((t) => ({ title: t.title, status: t.status }));
-    if (event.type === "engine-idle" && event.gate) gate = event.gate;
+    if (event.type === "engine-idle") {
+      if (event.gate) gate = event.gate;
+      // This is the sole goal authority. Never infer success from assistant
+      // prose or the temporary legacy `met` compatibility field.
+      goalCompletionStatus = event.goalCompletionStatus;
+    }
     if (event.type === "engine-error") error = event.message;
     if (!json) render(event, opts);
     // Stop on `engine-idle` — the queue is FULLY drained, i.e. the prompt AND
@@ -360,10 +392,15 @@ export async function runOneShot(
         ...(sources?.length ? { sources } : {}),
         ...(assumptions?.length ? { assumptions } : {}),
         ...(ungrounded ? { ungrounded: true } : {}),
+        goalCompletionStatus: goalCompletionStatus ?? null,
         ...(error ? { error } : {}),
       })}\n`,
     );
-    return ok;
+    return {
+      ok,
+      engineFailed: error !== undefined,
+      ...(goalCompletionStatus ? { goalCompletionStatus } : {}),
+    };
   }
 
   process.stdout.write("\n");
@@ -371,7 +408,11 @@ export async function runOneShot(
     process.stderr.write(`${ansi.dim(formatUsage(finalUsage))}\n`);
   }
   // false → the caller exits non-zero (scripting/CI correctness).
-  return ok;
+  return {
+    ok,
+    engineFailed: error !== undefined,
+    ...(goalCompletionStatus ? { goalCompletionStatus } : {}),
+  };
 }
 
 function emptyUsage(): SessionUsage {

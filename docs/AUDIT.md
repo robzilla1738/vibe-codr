@@ -190,7 +190,7 @@ Evidence base: `engine.ts` (3866 lines), `session.ts` (2253),
 
 46. DOCUMENTED -- the two magic numbers (50 parts) must agree for the freeze fix. They're defined in separate packages with no shared constant. Extracting to `@vibe/shared` would prevent drift. A future enhancement: extract `YIELD_GATE_PARTS` to `@vibe/shared`.
 
-47. DOCUMENTED -- a headless CI run that hits a goal-run pause exits 0 with an incomplete goal. A `--strict` flag that fails CI on a non-met goal would be a future enhancement.
+47. ~~**Headless CI can exit successfully with an incomplete goal.**~~ FIXED -- `-p … --strict-goal` now uses only the terminal `engine-idle.goalCompletionStatus`: verified exits 0; met-unverified, paused, unmet, or missing evidence exit 2; and provider/runtime/engine failures retain precedence at exit 1. Ordinary one-shot compatibility is unchanged when the flag is absent, and JSON output includes the authoritative status.
 
 ---
 

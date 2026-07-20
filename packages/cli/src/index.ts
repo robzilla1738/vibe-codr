@@ -14,7 +14,7 @@ import {
 import { checkForUpdate, isNewer, readUpdateCache } from "@vibe/core";
 import { ProviderRegistry } from "@vibe/providers";
 import { openRuntimeSession } from "@vibe/runtime";
-import type { EngineClient } from "@vibe/shared";
+import type { EngineClient, GoalCompletionStatus } from "@vibe/shared";
 import { runOneShot, startTui } from "@vibe/tui";
 import { createWorkerEngineClient } from "./engine-worker-client.ts";
 import { needsOnboarding, runOnboarding } from "./onboarding.ts";
@@ -86,6 +86,7 @@ OPTIONS
       --host <address>  API bind address (only 127.0.0.1 is permitted)
       --port <number>   API port (default: an available loopback port)
       --output-format   one-shot output: text (default) | json
+      --strict-goal     CI mode: exit 0 only for a verified goal (2 otherwise)
       --reasoning       print model reasoning to stderr
       --output <file>   output path for trace export
       --include-redacted include explicitly recorded redacted trace content
@@ -148,6 +149,7 @@ export async function run(argv: string[]): Promise<number> {
       host: { type: "string" },
       port: { type: "string" },
       "output-format": { type: "string" },
+      "strict-goal": { type: "boolean" },
       reasoning: { type: "boolean" },
       output: { type: "string" },
       "include-redacted": { type: "boolean" },
@@ -200,6 +202,10 @@ export async function run(argv: string[]): Promise<number> {
     process.stderr.write(
       `vibecodr: invalid --output-format "${values["output-format"]}" (expected "json" or "text")\n`,
     );
+    return 1;
+  }
+  if (values["strict-goal"] && values.prompt === undefined) {
+    process.stderr.write("vibecodr: --strict-goal requires a headless -p/--prompt run\n");
     return 1;
   }
 
@@ -356,7 +362,7 @@ export async function run(argv: string[]): Promise<number> {
   // in-process to avoid per-event structured-clone tax on a single-shot run.
   if (values.prompt !== undefined) {
     const runtime = await openInProcessRuntime();
-    const outputFormat = values["output-format"] === "json" ? "json" : "text";
+    const outputFormat: "json" | "text" = values["output-format"] === "json" ? "json" : "text";
     // `-p -` (or an empty `-p` with piped input) reads the prompt from stdin,
     // so `cat task.md | vibecodr -p -` works for scripting. On a TTY with no
     // pipe, `Bun.stdin.text()` would block on EOF (looks like a hang) — error
@@ -371,15 +377,23 @@ export async function run(argv: string[]): Promise<number> {
       return 1;
     }
     const prompt = wantsStdin ? (await Bun.stdin.text()).trim() : values.prompt;
-    const ok = await runOneShot(runtime, prompt, {
+    let outcome: OneShotProcessOutcome | undefined;
+    const headlessOptions = {
       showReasoning: values.reasoning,
       outputFormat,
-    });
+      onOutcome: (value: OneShotProcessOutcome) => {
+        outcome = value;
+      },
+    };
+    const ok = await runOneShot(runtime, prompt, headlessOptions);
     // Finalize (write the session digest when enabled, then tear down) before exit.
     await runtime.close();
     if (leaseStore && leaseId) await leaseStore.releaseLease(leaseId);
     // Propagate failure so `vibecodr -p … && next` and CI behave correctly.
-    return ok ? 0 : 1;
+    return oneShotProcessExitCode(
+      outcome ?? { ok, engineFailed: !ok },
+      values["strict-goal"] ?? false,
+    );
   }
 
   // Quiet, non-blocking update hint — interactive TUI path only. We only READ the
@@ -423,6 +437,24 @@ export async function run(argv: string[]): Promise<number> {
   await client.finalize?.();
   if (leaseStore && leaseId) await leaseStore.releaseLease(leaseId);
   return 0;
+}
+
+/** Preserve legacy one-shot exits unless strict goal evidence was requested. */
+export interface OneShotProcessOutcome {
+  ok: boolean;
+  engineFailed: boolean;
+  goalCompletionStatus?: GoalCompletionStatus;
+}
+
+export function oneShotProcessExitCode(
+  outcome: OneShotProcessOutcome,
+  strictGoal: boolean,
+): 0 | 1 | 2 {
+  if (strictGoal) {
+    if (outcome.engineFailed) return 1;
+    return outcome.goalCompletionStatus === "verified" ? 0 : 2;
+  }
+  return outcome.ok ? 0 : 1;
 }
 
 /** Print a one-line "update available" hint from the cached check, then refresh

@@ -90,12 +90,14 @@ test("formatJsonResult emits a parseable result with the expected fields", () =>
     mode: "execute",
     text: "done",
     usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUSD: 0.01 },
+    goalCompletionStatus: "met-unverified",
   });
   const parsed = JSON.parse(json) as Record<string, unknown>;
   expect(parsed.sessionId).toBe("ses_1");
   expect(parsed.model).toBe("anthropic/claude-opus-4-8");
   expect(parsed.text).toBe("done");
   expect((parsed.usage as { totalTokens: number }).totalTokens).toBe(15);
+  expect(parsed.goalCompletionStatus).toBe("met-unverified");
   expect(parsed.error).toBeUndefined();
 });
 

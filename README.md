@@ -22,6 +22,8 @@ Vibe Codr is a local-first AI coding workspace built around a model-agnostic age
 
 Both interfaces share the same sessions, configuration, providers, tools, permissions, memory, plans, orchestration, and event protocol. This repository is the single source of truth for the complete product.
 
+For CI, `vibecodr -p "…" --strict-goal` exits `0` only when the engine reports a verified goal, `2` for unmet, paused, unverified, or missing goal evidence, and `1` for provider/runtime failure. Add `--output-format json` to receive the terminal `goalCompletionStatus` alongside the answer and usage.
+
 ## See it in action
 
 ### Desktop workspace

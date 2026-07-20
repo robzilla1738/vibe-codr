@@ -47,7 +47,14 @@ test("--help prints usage and exits 0", async () => {
   expect(code).toBe(0);
   expect(out).toContain("USAGE");
   expect(out).toContain("--prompt");
+  expect(out).toContain("--strict-goal");
   expect(out).toContain("plan | execute | yolo");
+});
+
+test("--strict-goal is rejected clearly without a headless prompt", async () => {
+  const { code, err } = await capture(["--strict-goal"]);
+  expect(code).toBe(1);
+  expect(err).toContain("--strict-goal requires a headless -p/--prompt run");
 });
 
 test("`sessions` on a fresh dir reports none and exits 0", async () => {

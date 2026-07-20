@@ -39,6 +39,7 @@
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
+        "@vibe/protocol": "workspace:*",
         "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
         "@vibe/tui": "workspace:*",
@@ -95,6 +96,7 @@
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
+        "@vibe/protocol": "workspace:*",
         "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
       },
@@ -105,6 +107,13 @@
       "dependencies": {
         "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
+      },
+    },
+    "packages/protocol": {
+      "name": "@vibe/protocol",
+      "version": "0.6.0",
+      "dependencies": {
+        "zod": "^4.0.0",
       },
     },
     "packages/providers": {
@@ -140,6 +149,7 @@
       "name": "@vibe/shared",
       "version": "0.6.0",
       "dependencies": {
+        "@vibe/protocol": "workspace:*",
         "zod": "^4.0.0",
       },
     },
@@ -414,6 +424,8 @@
     "@vibe/macos-bridge": ["@vibe/macos-bridge@workspace:packages/macos-bridge"],
 
     "@vibe/plugins": ["@vibe/plugins@workspace:packages/plugins"],
+
+    "@vibe/protocol": ["@vibe/protocol@workspace:packages/protocol"],
 
     "@vibe/providers": ["@vibe/providers@workspace:packages/providers"],
 

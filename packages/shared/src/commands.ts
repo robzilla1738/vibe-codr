@@ -1,92 +1,14 @@
 import type {
-  Mode,
+  AgentInfo,
+  EngineCommand,
   EngineSnapshot,
   ModelSummary,
   ProviderInfo,
-  AgentInfo,
   SkillInfo,
-} from "./types.ts";
-import type { UIEvent } from "./events.ts";
-import type { ExecutionTarget } from "./handoff.ts";
+  UIEvent,
+} from "@vibe/protocol";
 
-/**
- * Commands sent from a UI (TUI or CLI) into the engine. This is the only way
- * the UI mutates engine state — keeping the boundary one-directional and typed.
- */
-export type EngineCommand =
-  | { type: "submit-prompt"; text: string }
-  | { type: "run-slash"; name: string; args: string }
-  /**
-   * Switch agent mode. When leaving plan with a live presented plan, `start:
-   * true` (card Enter / `/execute`) approves and begins implementation;
-   * bare set-mode (Shift+Tab) does NOT auto-approve — the plan card stays the
-   * approval surface.
-   */
-  | { type: "set-mode"; mode: Mode; start?: boolean }
-  // `quiet` suppresses the confirmation notice — the Shift+Tab mode cycle sets
-  // it (the mode chip is the feedback there); a typed `/approvals <v>` doesn't,
-  // so an explicit switch gets its one-line confirm in the transcript.
-  | { type: "set-approvals"; mode: "ask" | "auto"; quiet?: boolean }
-  | { type: "set-model"; model: string }
-  // Set (or, with `null`, clear → inherit main) the dedicated subagent model.
-  | { type: "set-subagent-model"; model: string | null }
-  // Set (or, with `null`, clear → inherit) a NAMED agent's model; persists to
-  // `.vibe/agents/<name>.md`.
-  | { type: "set-agent-model"; name: string; model: string | null }
-  // Scaffold a new named subagent file (`.vibe/agents/<name>.md`) to edit.
-  | { type: "create-agent"; name: string }
-  | { type: "set-goal"; goal: string | null }
-  // Re-arm a paused goal run with the stored goal (fresh round budget), at the
-  // phase it paused in — unlike `set-goal`, which restarts the pipeline.
-  | { type: "resume-goal" }
-  | { type: "abort" }
-  // Drop one queued (waiting) prompt without running it.
-  | { type: "dequeue"; id: string }
-  // "Steer": jump a queued prompt to the front and interrupt the running turn so
-  // it runs next — redirect the agent now instead of waiting for the queue.
-  | { type: "steer"; id: string }
-  | { type: "compact" }
-  | { type: "request-runtime-handoff"; target: ExecutionTarget; instruction?: string }
-  | {
-      type: "resolve-external-capability";
-      id: string;
-      decision: "approve" | "deny";
-      result?: unknown;
-      error?: string;
-    }
-  | {
-      type: "resolve-permission";
-      id: string;
-      // `always` grants for the rest of THIS session (in-memory); `always-project`
-      // ALSO persists a scoped allow rule into the project config so the grant
-      // survives across sessions. Both are interactive-only (headless never
-      // sends them). `once`/`deny` are single-call.
-      decision: "once" | "always" | "always-project" | "deny";
-      /** Free-text the user typed instead of y/a/n — forwarded to the model as
-       * the deny reason ("denied by user — use staging instead"), so a denial
-       * can steer the next attempt rather than leave the model guessing. */
-      feedback?: string;
-    }
-  // Resolve a presented plan: accept → switch to execute + start against the plan;
-  // edit → re-plan with the feedback text; keep-planning → dismiss, stay in plan.
-  // `approvals:"auto"` on an accept launches execution in YOLO (no per-tool
-  // prompts) — the plan card's `Y` shortcut sends it.
-  | {
-      type: "resolve-plan";
-      decision: "accept" | "edit" | "keep-planning";
-      edit?: string;
-      approvals?: "auto";
-    }
-  | {
-      type: "resolve-question";
-      id: string;
-      answers: string[];
-      freeform?: string;
-    }
-  | { type: "cancel-activity"; id: string }
-  | { type: "shutdown" };
-
-export type EngineCommandType = EngineCommand["type"];
+export type { EngineCommand, EngineCommandType } from "@vibe/protocol";
 
 /**
  * The contract a UI uses to talk to the engine. The engine implementation

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import {
+  ENGINE_COMMAND_SCHEMAS,
+  UI_EVENT_SCHEMAS,
   decodeInbound,
   decodeOutbound,
   listedEngineCommandTypes,
@@ -23,70 +24,94 @@ const eventFrame = (event: unknown) => ({
   event,
 });
 
-function explicitCases(source: string, start: string, end: string): string[] {
-  const body = source.slice(source.indexOf(start), source.indexOf(end));
-  return [...body.matchAll(/case "([^"]+)"/g)].flatMap((match) =>
-    match[1] ? [match[1]] : [],
-  );
-}
-
 describe("macOS bridge protocol runtime validation", () => {
   test("accepts valid commands and rejects malformed inbound shapes", () => {
     expect(
       decodeInbound(JSON.stringify({ op: "bootstrap", cwd: "/tmp/project", mode: "plan" })),
     ).toMatchObject({ op: "bootstrap", cwd: "/tmp/project" });
     expect(
-      decodeInbound(JSON.stringify({
-        op: "bootstrap",
-        cwd: "/tmp/project",
-        resume: "ses_cloud",
-        executionTarget: { kind: "cloud", provider: "e2b" },
-      })),
+      decodeInbound(
+        JSON.stringify({
+          op: "bootstrap",
+          cwd: "/tmp/project",
+          resume: "ses_cloud",
+          executionTarget: { kind: "cloud", provider: "e2b" },
+        }),
+      ),
     ).toMatchObject({ executionTarget: { kind: "cloud", provider: "e2b" } });
-    expect(decodeInbound(JSON.stringify({
-      op: "bootstrap",
-      cwd: "/tmp/project",
-      requiredModels: ["crof/glm-5.2"],
-    }))).not.toBeNull();
-    expect(decodeInbound(JSON.stringify({
-      op: "bootstrap",
-      cwd: "/tmp/project",
-      requiredModels: ["glm-5.2"],
-    }))).toBeNull();
-    expect(decodeInbound(JSON.stringify({
-      op: "bootstrap",
-      cwd: "/tmp/project",
-      runtimeProfile: { schemaVersion: 1, theme: "light", accentColor: "#e6e6e6", details: "normal" },
-    }))).not.toBeNull();
     expect(
-      decodeInbound(JSON.stringify({
-        op: "bootstrap",
-        cwd: "/tmp/project",
-        executionTarget: { kind: "cloud", provider: "unknown" },
-      })),
+      decodeInbound(
+        JSON.stringify({
+          op: "bootstrap",
+          cwd: "/tmp/project",
+          requiredModels: ["crof/glm-5.2"],
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "bootstrap",
+          cwd: "/tmp/project",
+          requiredModels: ["glm-5.2"],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "bootstrap",
+          cwd: "/tmp/project",
+          runtimeProfile: {
+            schemaVersion: 1,
+            theme: "light",
+            accentColor: "#e6e6e6",
+            details: "normal",
+          },
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "bootstrap",
+          cwd: "/tmp/project",
+          executionTarget: { kind: "cloud", provider: "unknown" },
+        }),
+      ),
     ).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: 1, method: "snapshot" }))).toEqual({
       op: "rpc",
       id: 1,
       method: "snapshot",
     });
-    expect(decodeInbound(JSON.stringify({ op: "rpc", id: 4, method: "listPluginStatus" }))).toEqual({
-      op: "rpc",
-      id: 4,
-      method: "listPluginStatus",
-    });
-    expect(decodeInbound(JSON.stringify({
-      op: "rpc",
-      id: 2,
-      method: "beginProviderAuth",
-      params: { providerId: "xai-oauth", authMethod: "device" },
-    }))).not.toBeNull();
-    expect(decodeInbound(JSON.stringify({
-      op: "rpc",
-      id: 3,
-      method: "beginProviderAuth",
-      params: { providerId: "unknown", authMethod: "device" },
-    }))).toBeNull();
+    expect(decodeInbound(JSON.stringify({ op: "rpc", id: 4, method: "listPluginStatus" }))).toEqual(
+      {
+        op: "rpc",
+        id: 4,
+        method: "listPluginStatus",
+      },
+    );
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "rpc",
+          id: 2,
+          method: "beginProviderAuth",
+          params: { providerId: "xai-oauth", authMethod: "device" },
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "rpc",
+          id: 3,
+          method: "beginProviderAuth",
+          params: { providerId: "unknown", authMethod: "device" },
+        }),
+      ),
+    ).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: "1", method: "snapshot" }))).toBeNull();
     expect(decodeInbound(JSON.stringify({ op: "rpc", id: 1, method: "unknown" }))).toBeNull();
     expect(
@@ -107,59 +132,95 @@ describe("macOS bridge protocol runtime validation", () => {
   });
 
   test("validates question and activity commands field by field", () => {
-    expect(decodeInbound(JSON.stringify({
-      op: "send",
-      command: { type: "resolve-question", id: "question-1", answers: ["Safe"], freeform: "note" },
-    }))).not.toBeNull();
-    expect(decodeInbound(JSON.stringify({
-      op: "send",
-      command: { type: "cancel-activity", id: "activity-1" },
-    }))).not.toBeNull();
-    expect(decodeInbound(JSON.stringify({
-      op: "send",
-      command: { type: "resolve-question", id: "question-1", answers: [7] },
-    }))).toBeNull();
-    expect(decodeInbound(JSON.stringify({
-      op: "send",
-      command: { type: "resolve-question", id: "", answers: [] },
-    }))).toBeNull();
-    expect(decodeInbound(JSON.stringify({
-      op: "send",
-      command: { type: "cancel-activity", id: 7 },
-    }))).toBeNull();
-  });
-
-  test("accepts valid host messages and rejects malformed events and responses", () => {
-    expect(decodeOutbound(JSON.stringify(readyFrame("ses_1")))).toEqual(readyFrame("ses_1"));
     expect(
-      decodeOutbound(
-        JSON.stringify(eventFrame({ type: "notice", level: "info", message: "ok" })),
+      decodeInbound(
+        JSON.stringify({
+          op: "send",
+          command: {
+            type: "resolve-question",
+            id: "question-1",
+            answers: ["Safe"],
+            freeform: "note",
+          },
+        }),
       ),
     ).not.toBeNull();
     expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "send",
+          command: { type: "cancel-activity", id: "activity-1" },
+        }),
+      ),
+    ).not.toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "send",
+          command: { type: "resolve-question", id: "question-1", answers: [7] },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "send",
+          command: { type: "resolve-question", id: "", answers: [] },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "send",
+          command: { type: "cancel-activity", id: 7 },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  test("accepts valid host messages and rejects malformed events and responses", () => {
+    expect(JSON.stringify(decodeOutbound(JSON.stringify(readyFrame("ses_1"))))).toBe(
+      JSON.stringify(readyFrame("ses_1")),
+    );
+    expect(
+      decodeOutbound(JSON.stringify(eventFrame({ type: "notice", level: "info", message: "ok" }))),
+    ).not.toBeNull();
+    expect(
       decodeOutbound(
-        JSON.stringify(eventFrame({
+        JSON.stringify(
+          eventFrame({
             type: "user-message",
             sessionId: "ses_1",
             text: "Continue",
             origin: "engine",
             label: "Goal",
-        })),
+          }),
+        ),
       ),
     ).not.toBeNull();
     expect(
       decodeOutbound(
-        JSON.stringify(eventFrame({ type: "user-message", sessionId: "ses_1", text: "Continue", origin: "other" })),
+        JSON.stringify(
+          eventFrame({
+            type: "user-message",
+            sessionId: "ses_1",
+            text: "Continue",
+            origin: "other",
+          }),
+        ),
       ),
     ).toBeNull();
     expect(
       decodeOutbound(
-        JSON.stringify(eventFrame({
+        JSON.stringify(
+          eventFrame({
             type: "user-message",
             sessionId: "ses_1",
             text: "Continue",
             label: { text: "Goal" },
-        })),
+          }),
+        ),
       ),
     ).toBeNull();
     expect(
@@ -204,14 +265,16 @@ describe("macOS bridge protocol runtime validation", () => {
       {
         type: "activities-changed",
         sessionId: "ses_1",
-        activities: [{
-          id: "activity-1",
-          kind: "shell",
-          label: "Tests",
-          status: "running",
-          startedAt: 1,
-          metrics: { toolCalls: 2 },
-        }],
+        activities: [
+          {
+            id: "activity-1",
+            kind: "shell",
+            label: "Tests",
+            status: "running",
+            startedAt: 1,
+            metrics: { toolCalls: 2 },
+          },
+        ],
       },
     ];
     for (const event of events) {
@@ -219,21 +282,42 @@ describe("macOS bridge protocol runtime validation", () => {
     }
     for (const sessionId of ["", "bad\0id", "x".repeat(1_025)]) {
       for (const event of events) {
-        expect(
-          decodeOutbound(JSON.stringify(eventFrame({ ...event, sessionId }))),
-        ).toBeNull();
+        expect(decodeOutbound(JSON.stringify(eventFrame({ ...event, sessionId })))).toBeNull();
       }
     }
 
     const malformed = [
-      { type: "plan-state-changed", sessionId: "ses_1", state: { status: "pending", updatedAt: "now" } },
+      {
+        type: "plan-state-changed",
+        sessionId: "ses_1",
+        state: { status: "pending", updatedAt: "now" },
+      },
       {
         type: "question-request",
         sessionId: "ses_1",
-        question: { id: "question-1", question: "Proceed?", choices: ["yes"], multiple: false, allowFreeform: false, createdAt: 1 },
+        question: {
+          id: "question-1",
+          question: "Proceed?",
+          choices: ["yes"],
+          multiple: false,
+          allowFreeform: false,
+          createdAt: 1,
+        },
       },
       { type: "question-settled", sessionId: "ses_1", id: "question-1", reason: "unknown" },
-      { type: "activities-changed", sessionId: "ses_1", activities: [{ id: "activity-1", kind: "shell", label: "Tests", status: "running", metrics: { errors: -1 } }] },
+      {
+        type: "activities-changed",
+        sessionId: "ses_1",
+        activities: [
+          {
+            id: "activity-1",
+            kind: "shell",
+            label: "Tests",
+            status: "running",
+            metrics: { errors: -1 },
+          },
+        ],
+      },
       { type: "activities-changed", activities: [] },
     ];
     for (const event of malformed) {
@@ -254,11 +338,10 @@ describe("macOS bridge protocol runtime validation", () => {
     expect(new Set(events).size).toBe(events.length);
   });
 
-  test("requires an explicit payload decision for every registered discriminator", () => {
-    const source = readFileSync(new URL("./protocol.ts", import.meta.url), "utf8");
-    expect(explicitCases(source, "function engineCommand", "export function isUIEvent").sort())
-      .toEqual([...listedEngineCommandTypes()].sort());
-    expect(explicitCases(source, "export function isUIEvent", "export function decodeInbound").sort())
-      .toEqual([...listedUIEventTypes()].sort());
+  test("requires an explicit schema for every registered discriminator", () => {
+    expect(Object.keys(ENGINE_COMMAND_SCHEMAS).sort()).toEqual(
+      [...listedEngineCommandTypes()].sort(),
+    );
+    expect(Object.keys(UI_EVENT_SCHEMAS).sort()).toEqual([...listedUIEventTypes()].sort());
   });
 });

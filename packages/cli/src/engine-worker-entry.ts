@@ -21,42 +21,16 @@
  * `engine-worker-entry.ts` directly via `new Worker(path)`.
  */
 import { Engine } from "@vibe/core";
-import type { EngineCommand, EngineSnapshot, UIEvent } from "@vibe/shared";
-
-type RpcOp = "snapshot" | "listModels" | "listProviders" | "listAgents" | "listSkills" | "finalize";
-
-interface HostWorkerData {
-  config: unknown;
-  cwd: string;
-  interactive: boolean;
-  projectMemory?: string;
-  resume?: unknown;
-  modelOverride?: string;
-  modeOverride?: string;
-  env?: Record<string, string | undefined>;
-}
-
-interface RpcRequest {
-  __req: number;
-  op: RpcOp;
-}
-
-interface RpcRespOk {
-  __resp: number;
-  ok: true;
-  value: unknown;
-}
-
-interface RpcRespErr {
-  __resp: number;
-  ok: false;
-  error: string;
-}
-
-type Inbound = EngineCommand | RpcRequest;
-
-const isRpc = (m: unknown): m is RpcRequest =>
-  m !== null && typeof m === "object" && "__req" in (m as Record<string, unknown>);
+import type { UIEvent } from "@vibe/shared";
+import {
+  isEngineWorkerRpcRequest,
+  type EngineWorkerData,
+  type EngineWorkerInbound,
+  type EngineWorkerRpcError,
+  type EngineWorkerRpcOp,
+  type EngineWorkerRpcResults,
+  type EngineWorkerRpcSuccess,
+} from "./engine-worker-protocol.ts";
 
 // `parentPort` is set when this file runs inside a worker — defensive in case
 // it's ever imported from a non-worker context (tests), where it would be
@@ -69,7 +43,7 @@ if (!parentPort) {
 }
 
 const port: NonNullable<typeof parentPort> = parentPort;
-const data = workerData as HostWorkerData | undefined;
+const data = workerData as EngineWorkerData | undefined;
 
 // Apply the env snapshot the host forwarded. Bun workers inherit the parent's
 // env at spawn, but the host explicitly re-forwards `process.env` anyway so a
@@ -105,7 +79,7 @@ process.on("unhandledRejection", (reason: unknown) => {
   reportFatal(`engine worker: unhandled rejection — ${message}`);
 });
 
-const opts = data as HostWorkerData;
+const opts = data as EngineWorkerData;
 const engine = new Engine({
   config: opts.config as never,
   cwd: opts.cwd,
@@ -120,16 +94,16 @@ const engine = new Engine({
 // races bootstrap). Queue until bootstrap finishes so snapshot includes
 // commands/skills/plugins and model resolution is stable (BUG-084).
 let bootstrapped = false;
-const inboundQueue: Inbound[] = [];
+const inboundQueue: EngineWorkerInbound[] = [];
 
-async function handleInbound(msg: Inbound): Promise<void> {
-  if (isRpc(msg)) {
+async function handleInbound(msg: EngineWorkerInbound): Promise<void> {
+  if (isEngineWorkerRpcRequest(msg)) {
     try {
       const value = await handleRpc(msg.op);
-      const resp: RpcRespOk = { __resp: msg.__req, ok: true, value };
+      const resp: EngineWorkerRpcSuccess = { __resp: msg.__req, ok: true, value };
       port.postMessage(resp);
     } catch (err) {
-      const resp: RpcRespErr = {
+      const resp: EngineWorkerRpcError = {
         __resp: msg.__req,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
@@ -141,7 +115,7 @@ async function handleInbound(msg: Inbound): Promise<void> {
   engine.send(msg);
 }
 
-port.on("message", (msg: Inbound) => {
+port.on("message", (msg: EngineWorkerInbound) => {
   if (!bootstrapped) {
     inboundQueue.push(msg);
     return;
@@ -170,10 +144,12 @@ for (const msg of inboundQueue.splice(0)) {
   await handleInbound(msg);
 }
 
-async function handleRpc(op: RpcOp): Promise<unknown> {
+async function handleRpc(
+  op: EngineWorkerRpcOp,
+): Promise<EngineWorkerRpcResults[EngineWorkerRpcOp]> {
   switch (op) {
     case "snapshot":
-      return engine.snapshot() as EngineSnapshot;
+      return engine.snapshot();
     case "listModels":
       return engine.listModels();
     case "listProviders":

@@ -42,18 +42,16 @@ import {
   type SkillInfo,
   type UIEvent,
 } from "@vibe/shared";
-
-/** Wire messages (UI → core). Commands are forwarded raw; RPC calls carry
- * their own envelope so the worker can correlate the reply. */
-type Outbound = EngineCommand | { __req: number; op: RpcOp };
-type RpcOp = "snapshot" | "listModels" | "listProviders" | "listAgents" | "listSkills" | "finalize";
-
-/** Wire messages (core → UI). */
-type Inbound =
-  | UIEvent
-  | { __resp: number; ok: true; value: unknown }
-  | { __resp: number; ok: false; error: string }
-  | { __fatal__: true; message: string };
+import {
+  isEngineWorkerEvent,
+  isEngineWorkerFatal,
+  isEngineWorkerRpcResponse,
+  type EngineWorkerData,
+  type EngineWorkerInbound,
+  type EngineWorkerOutbound,
+  type EngineWorkerRpcOp,
+  type EngineWorkerRpcResults,
+} from "./engine-worker-protocol.ts";
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 const FINALIZE_TIMEOUT_MS = 5_000;
@@ -75,12 +73,6 @@ const DEFAULT_TIMER_API: WorkerEngineTimerApi = {
   clearTimeout: (handle) => clearTimeout(handle),
 };
 
-const hasKey = (m: unknown, k: string): m is Record<string, unknown> =>
-  m !== null && typeof m === "object" && k in (m as Record<string, unknown>);
-const isResp = (m: Inbound): m is Extract<Inbound, { __resp: number }> => hasKey(m, "__resp");
-const isFatal = (m: Inbound): m is Extract<Inbound, { __fatal__: true }> => hasKey(m, "__fatal__");
-const isInboundEvent = (m: Inbound): m is UIEvent => !isResp(m) && !isFatal(m) && hasKey(m, "type");
-
 export interface WorkerEngineOptions {
   /** Absolute path to the worker entry script. In source: the in-repo
    * `engine-worker-entry.ts`; in the compiled binary: the sibling
@@ -90,15 +82,7 @@ export interface WorkerEngineOptions {
   /** Forwarded to the entry script as `workerData`: the constructor args the
    * in-process CLI used to pass directly to `new Engine({...})`. All
    * structured-cloneable. */
-  workerData: {
-    config: unknown;
-    cwd: string;
-    interactive: boolean;
-    projectMemory?: string;
-    resume?: unknown;
-    modelOverride?: string;
-    modeOverride?: string;
-  };
+  workerData: Omit<EngineWorkerData, "env">;
   /** Fatal handler — owns terminal restore + crash-log + `process.exit(1)`.
    * The host calls this when the worker reports `__fatal__` OR exits with a
    * non-zero code abnormally. Mirrors in-process `crash.ts`. */
@@ -156,7 +140,7 @@ export class WorkerEngineClient implements EngineClient {
     this.#ready = new Promise<void>((r) => {
       this.#resolveReady = r;
     });
-    worker.on("message", (msg: Inbound) => this.#onMessage(msg));
+    worker.on("message", (msg: EngineWorkerOutbound) => this.#onMessage(msg));
     worker.on("error", (err: Error) => this.#onWorkerError(err));
     worker.on("exit", (code: number) => this.#onWorkerExit(code));
     // Tail the worker's stderr into the parent's so engine logs surface. Tests
@@ -207,7 +191,7 @@ export class WorkerEngineClient implements EngineClient {
   #fetchSnapshot(): Promise<EngineSnapshot | undefined> {
     if (this.#closed) return Promise.resolve(undefined);
     this.#snapshotPending = true;
-    return this.#rpc<EngineSnapshot>("snapshot")
+    return this.#rpc("snapshot")
       .then((s) => {
         this.#snapshotCache = s;
         return s;
@@ -220,21 +204,21 @@ export class WorkerEngineClient implements EngineClient {
 
   /** Main message router — events → `events()` queue, RPC replies →
    *  waiters, fatal → caller. */
-  #onMessage(msg: Inbound): void {
-    if (isFatal(msg)) {
+  #onMessage(msg: EngineWorkerOutbound): void {
+    if (isEngineWorkerFatal(msg)) {
       const cb = this.#onFatal;
       this.#close("fatal");
       cb?.(msg.message);
       return;
     }
-    if (isResp(msg)) {
+    if (isEngineWorkerRpcResponse(msg)) {
       const waiter = this.#takePending(msg.__resp);
       if (!waiter) return;
       if (msg.ok) waiter.resolve(msg.value);
       else waiter.reject(new Error(msg.error));
       return;
     }
-    if (isInboundEvent(msg)) {
+    if (isEngineWorkerEvent(msg)) {
       // Live state changed — refresh the snapshot cache via re-RPC so
       // refreshStatus() still sees real commandNames/busy (not PLACEHOLDER).
       // Keep the last-good cache until the new RPC lands so we never wipe the
@@ -339,7 +323,7 @@ export class WorkerEngineClient implements EngineClient {
       // cap (per CHANGELOG 8fff1e5). The worker is force-terminated
       // after the bound — same outcome, no leak.
       await Promise.race([
-        this.#rpc<void>("finalize"),
+        this.#rpc("finalize"),
         new Promise<void>((resolve) => {
           finalizeTimer = this.#timerApi.setTimeout(resolve, FINALIZE_TIMEOUT_MS);
         }),
@@ -359,19 +343,23 @@ export class WorkerEngineClient implements EngineClient {
   };
 
   /** Issue an RPC to the worker and await its envelope reply. */
-  readonly #rpc = <T>(op: RpcOp): Promise<T> => {
+  readonly #rpc = <Op extends EngineWorkerRpcOp>(op: Op): Promise<EngineWorkerRpcResults[Op]> => {
     if (this.#closed) return Promise.reject(new Error("engine worker closed"));
     const id = this.#nextReq++;
-    return new Promise<T>((resolve, reject) => {
+    return new Promise<EngineWorkerRpcResults[Op]>((resolve, reject) => {
       const timer = this.#timerApi.setTimeout(() => {
         const waiter = this.#takePending(id);
         waiter?.reject(
           new Error(`engine worker RPC ${op} timed out after ${this.#rpcTimeoutMs}ms`),
         );
       }, this.#rpcTimeoutMs);
-      this.#pending.set(id, { resolve: (v: unknown) => resolve(v as T), reject, timer });
+      this.#pending.set(id, {
+        resolve: (v: unknown) => resolve(v as EngineWorkerRpcResults[Op]),
+        reject,
+        timer,
+      });
       try {
-        this.#worker.postMessage({ __req: id, op } satisfies Outbound);
+        this.#worker.postMessage({ __req: id, op } satisfies EngineWorkerInbound);
       } catch (error) {
         const waiter = this.#takePending(id);
         waiter?.reject(error instanceof Error ? error : new Error(String(error)));

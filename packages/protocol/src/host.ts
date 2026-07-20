@@ -1,19 +1,24 @@
 import { z } from "zod";
 import {
   AgentInfoSchema,
+  CatalogDisplayStringSchema,
+  CatalogIdentifierSchema,
   EngineCommandSchema,
   EngineSnapshotSchema,
   ExecutionTargetSchema,
   HandoffPreparationSchema,
   ModelSummarySchema,
   PortableSessionArchiveV1Schema,
+  PROTOCOL_LIMITS_V1,
   ProviderInfoSchema,
+  RuntimeIdentifierSchema,
   SkillInfoSchema,
   UIEventSchema,
 } from "./domain.ts";
 
 const loose = <T extends z.ZodRawShape>(shape: T) => z.object(shape);
 const finite = z.number().finite();
+const nonNegative = finite.min(0);
 const safeInteger = z.number().refine(Number.isSafeInteger, "expected a safe integer");
 const positiveSafeInteger = safeInteger.refine((value) => value > 0, "expected a positive integer");
 const nonNegativeSafeInteger = safeInteger.refine(
@@ -21,6 +26,16 @@ const nonNegativeSafeInteger = safeInteger.refine(
   "expected a non-negative integer",
 );
 const nonEmpty = z.string().min(1);
+const boundedPath = z
+  .string()
+  .max(PROTOCOL_LIMITS_V1.pathChars)
+  .refine((value) => !value.includes("\0"));
+const boundedTitle = z.string().max(PROTOCOL_LIMITS_V1.titleChars);
+const boundedNonce = z.string().max(PROTOCOL_LIMITS_V1.runtimeIdentifierChars);
+const boundedRevision = z.string().max(PROTOCOL_LIMITS_V1.engineRevisionChars);
+const boundedQuery = z.string().max(PROTOCOL_LIMITS_V1.queryChars);
+const catalogArray = <S extends z.ZodType>(schema: S) =>
+  z.array(schema).max(PROTOCOL_LIMITS_V1.catalogItems);
 const schemaUnion = <S extends z.ZodType>(schemas: readonly S[]) => {
   const first = schemas[0];
   const second = schemas[1];
@@ -35,22 +50,22 @@ export type HostProtocolCapability = z.infer<typeof HostProtocolCapabilitySchema
 
 export const HostEventFrameSchema = loose({
   type: z.literal("event"),
-  hostInstanceId: nonEmpty,
+  hostInstanceId: RuntimeIdentifierSchema,
   seq: positiveSafeInteger,
   event: UIEventSchema,
 });
 export type HostEventFrame = z.infer<typeof HostEventFrameSchema>;
 
 export const HostReplayResultSchema = loose({
-  hostInstanceId: nonEmpty,
-  events: z.array(HostEventFrameSchema),
+  hostInstanceId: RuntimeIdentifierSchema,
+  events: z.array(HostEventFrameSchema).max(PROTOCOL_LIMITS_V1.replayEvents),
   lastEventSeq: nonNegativeSafeInteger,
   truncated: z.boolean(),
 });
 export type HostReplayResult = z.infer<typeof HostReplayResultSchema>;
 
 export const HostSnapshotSchema = EngineSnapshotSchema.extend({
-  hostInstanceId: nonEmpty,
+  hostInstanceId: RuntimeIdentifierSchema,
   lastEventSeq: nonNegativeSafeInteger,
 });
 export type HostSnapshot = z.infer<typeof HostSnapshotSchema>;
@@ -88,8 +103,8 @@ const runtimeCredentialsSchema = z
 
 export const HostBootstrapSchema = loose({
   op: z.literal("bootstrap"),
-  cwd: z.string().trim().min(1),
-  resume: z.string().optional(),
+  cwd: boundedPath.refine((value) => value.trim().length > 0),
+  resume: RuntimeIdentifierSchema.optional(),
   continue: z.boolean().optional(),
   model: z.string().optional(),
   mode: z.enum(["plan", "execute", "yolo"]).optional(),
@@ -103,27 +118,27 @@ export type HostBootstrap = z.infer<typeof HostBootstrapSchema>;
 const providerIdSchema = z.enum(["openai-codex", "xai-oauth"]);
 const authMethodSchema = z.enum(["browser", "device"]);
 const rpcParamFields = {
-  cwd: z.string(),
-  id: z.string(),
-  name: z.string(),
-  title: z.string(),
-  sessionId: z.string(),
+  cwd: boundedPath,
+  id: RuntimeIdentifierSchema,
+  name: boundedTitle,
+  title: boundedTitle,
+  sessionId: RuntimeIdentifierSchema,
   target: ExecutionTargetSchema,
   expectedGeneration: nonNegativeSafeInteger,
   ownershipGeneration: nonNegativeSafeInteger,
-  nonce: z.string(),
-  engineRevision: z.string(),
+  nonce: boundedNonce,
+  engineRevision: boundedRevision,
   archive: PortableSessionArchiveV1Schema,
-  archivePath: z.string(),
+  archivePath: boundedPath,
   provisional: z.boolean(),
   providerId: providerIdSchema,
   authMethod: authMethodSchema,
-  authSessionId: z.string(),
-  hostInstanceId: z.string(),
+  authSessionId: RuntimeIdentifierSchema,
+  hostInstanceId: RuntimeIdentifierSchema,
   afterSeq: nonNegativeSafeInteger,
-  query: z.string(),
+  query: boundedQuery,
   limit: nonNegativeSafeInteger,
-  atTurnId: z.string(),
+  atTurnId: RuntimeIdentifierSchema,
 } as const;
 export const HostRpcParamsSchema = z.object(rpcParamFields).partial().strict();
 export type HostRpcParams = z.infer<typeof HostRpcParamsSchema>;
@@ -150,28 +165,28 @@ const params = <
 };
 
 export const ProjectSessionSummarySchema = loose({
-  id: z.string(),
+  id: RuntimeIdentifierSchema,
   title: z.string(),
   model: z.string(),
   mode: z.enum(["plan", "execute"]),
   goal: z.string().nullable(),
   createdAt: finite,
   updatedAt: finite,
-  latestTurnId: z.string().optional(),
+  latestTurnId: RuntimeIdentifierSchema.optional(),
 });
 export type ProjectSessionSummary = z.infer<typeof ProjectSessionSummarySchema>;
 export const SessionSearchHitSchema = loose({
-  cwd: z.string(),
-  sessionId: z.string(),
+  cwd: boundedPath,
+  sessionId: RuntimeIdentifierSchema,
   role: z.enum(["user", "assistant", "system", "tool"]),
   timestamp: finite,
-  snippet: z.string(),
+  snippet: z.string().max(PROTOCOL_LIMITS_V1.searchSnippetChars),
   score: finite,
 });
 export type SessionSearchHit = z.infer<typeof SessionSearchHitSchema>;
 export const ProjectSummarySchema = loose({
-  cwd: z.string(),
-  name: z.string(),
+  cwd: boundedPath,
+  name: CatalogDisplayStringSchema,
   updatedAt: finite,
   sessions: z.array(ProjectSessionSummarySchema),
 });
@@ -179,12 +194,12 @@ export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
 
 export const SessionMetaSchema = loose({
   version: finite.optional(),
-  id: z.string(),
+  id: RuntimeIdentifierSchema,
   model: z.string(),
   mode: z.enum(["plan", "execute"]),
   goal: z.string().nullable(),
   kind: z.enum(["root", "subagent"]).optional(),
-  parentSessionId: z.string().optional(),
+  parentSessionId: RuntimeIdentifierSchema.optional(),
   agentName: z.string().optional(),
   createdAt: finite,
   updatedAt: finite,
@@ -193,30 +208,41 @@ export const SessionMetaSchema = loose({
 export type SessionMeta = z.infer<typeof SessionMetaSchema>;
 
 export const McpServerSummarySchema = loose({
-  name: z.string(),
+  name: CatalogIdentifierSchema,
   connected: z.boolean(),
-  toolCount: finite,
-  resourceCount: finite,
-  promptCount: finite,
-  error: z.string().optional(),
+  toolCount: nonNegative,
+  resourceCount: nonNegative,
+  promptCount: nonNegative,
+  error: z
+    .string()
+    .max(PROTOCOL_LIMITS_V1.catalogErrorChars)
+    .refine((value) => !value.includes("\0"))
+    .optional(),
   configured: z.boolean(),
 });
 export type McpServerSummary = z.infer<typeof McpServerSummarySchema>;
 
 const contributionSchema = z.enum(["tools", "providers", "commands", "skills", "hooks"]);
 export const PluginStatusSchema = loose({
-  specifier: z.string(),
-  name: z.string(),
-  version: z.string().optional(),
+  specifier: CatalogIdentifierSchema,
+  name: CatalogIdentifierSchema,
+  version: CatalogDisplayStringSchema.optional(),
   status: z.enum(["loaded", "degraded", "incompatible", "failed"]),
-  reason: z.string().optional(),
+  reason: z
+    .string()
+    .max(PROTOCOL_LIMITS_V1.catalogErrorChars)
+    .refine((value) => !value.includes("\0"))
+    .optional(),
   declaredContributions: z.array(contributionSchema),
-  registeredContributions: z.record(contributionSchema, z.array(z.string())),
+  registeredContributions: z.record(
+    contributionSchema,
+    z.array(CatalogIdentifierSchema).max(PROTOCOL_LIMITS_V1.catalogItems),
+  ),
   provenance: loose({
     source: z.enum(["npm", "local"]),
     verified: z.boolean(),
-    packageVersion: z.string().optional(),
-    integrity: z.string().optional(),
+    packageVersion: CatalogDisplayStringSchema.optional(),
+    integrity: CatalogDisplayStringSchema.optional(),
   }),
 });
 export type PluginStatus = z.infer<typeof PluginStatusSchema>;
@@ -297,12 +323,12 @@ const portableImportSettlementParamsSchema = z
 export const HOST_RPC_SCHEMAS = {
   snapshot: parameterlessRpc(HostSnapshotSchema),
   replayEvents: rpc(params(["afterSeq"], ["hostInstanceId"]), HostReplayResultSchema),
-  listModels: parameterlessRpc(z.array(ModelSummarySchema)),
-  listProviders: parameterlessRpc(z.array(ProviderInfoSchema)),
-  listAgents: parameterlessRpc(z.array(AgentInfoSchema)),
-  listSkills: parameterlessRpc(z.array(SkillInfoSchema)),
-  listMcp: parameterlessRpc(z.array(McpServerSummarySchema)),
-  listPluginStatus: parameterlessRpc(z.array(PluginStatusSchema)),
+  listModels: parameterlessRpc(catalogArray(ModelSummarySchema)),
+  listProviders: parameterlessRpc(catalogArray(ProviderInfoSchema)),
+  listAgents: parameterlessRpc(catalogArray(AgentInfoSchema)),
+  listSkills: parameterlessRpc(catalogArray(SkillInfoSchema)),
+  listMcp: parameterlessRpc(catalogArray(McpServerSummarySchema)),
+  listPluginStatus: parameterlessRpc(catalogArray(PluginStatusSchema)),
   providerAuthStatus: rpc(params(["providerId"], ["authSessionId"]), SubscriptionAuthStatusSchema),
   beginProviderAuth: rpc(params(["providerId", "authMethod"], []), SubscriptionAuthStartSchema),
   cancelProviderAuth: rpc(params(["providerId", "authSessionId"], []), nullResult),
@@ -312,7 +338,7 @@ export const HOST_RPC_SCHEMAS = {
   listSessions: parameterlessRpc(z.array(SessionMetaSchema)),
   searchSessions: optionalParamsRpc(
     params([], ["cwd", "query", "limit"]),
-    z.array(SessionSearchHitSchema),
+    z.array(SessionSearchHitSchema).max(PROTOCOL_LIMITS_V1.searchHits),
   ),
   listProjects: parameterlessRpc(z.array(ProjectSummarySchema)),
   renameProject: rpc(params(["name"], ["cwd"]), loose({ cwd: z.string(), name: z.string() })),
@@ -336,7 +362,7 @@ export const HOST_RPC_SCHEMAS = {
   importPortableSession: rpc(importPortableSessionParamsSchema, loose({ sessionId: z.string() })),
   commitPortableImport: rpc(portableImportSettlementParamsSchema, nullResult),
   abortPortableImport: rpc(portableImportSettlementParamsSchema, nullResult),
-  recoverLostCloudOwnership: rpc(recoverLostCloudOwnershipParamsSchema, nonNegativeSafeInteger),
+  recoverLostCloudOwnership: rpc(recoverLostCloudOwnershipParamsSchema, positiveSafeInteger),
   abortInterruptedHandoff: rpc(
     abortInterruptedHandoffParamsSchema,
     loose({
@@ -432,8 +458,8 @@ export const HostReadyFrameSchema = loose({
   protocolVersion: z.literal(HOST_PROTOCOL_VERSION),
   engineRevision: nonEmpty,
   capabilities: z.tuple([HostProtocolCapabilitySchema]),
-  hostInstanceId: nonEmpty,
-  sessionId: nonEmpty,
+  hostInstanceId: RuntimeIdentifierSchema,
+  sessionId: RuntimeIdentifierSchema,
 });
 export type HostReadyFrame = z.infer<typeof HostReadyFrameSchema>;
 export const HostRpcSuccessSchema = loose({

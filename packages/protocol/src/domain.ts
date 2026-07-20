@@ -3,16 +3,43 @@ import { z } from "zod";
 const loose = <T extends z.ZodRawShape>(shape: T) => z.object(shape);
 const finite = z.number().finite();
 const nonNegative = finite.min(0);
+const positive = finite.gt(0);
 const safeInteger = z.number().refine(Number.isSafeInteger, "expected a safe integer");
 const nonNegativeSafeInteger = safeInteger.refine(
   (value) => value >= 0,
   "expected a non-negative integer",
 );
-const runtimeIdentifier = z
+export const PROTOCOL_LIMITS_V1 = Object.freeze({
+  runtimeIdentifierChars: 1_024,
+  catalogItems: 20_000,
+  catalogFieldChars: 16 * 1_024,
+  catalogErrorChars: 64 * 1_024,
+  providerEnvItems: 64,
+  providerEnvChars: 1_024,
+  searchHits: 100,
+  searchSnippetChars: 260,
+  replayEvents: 2_048,
+  pathChars: 32_768,
+  queryChars: 512,
+  titleChars: 1_024,
+  engineRevisionChars: 256,
+} as const);
+
+export const RuntimeIdentifierSchema = z
   .string()
   .min(1)
-  .max(1_024)
+  .max(PROTOCOL_LIMITS_V1.runtimeIdentifierChars)
   .refine((value) => !value.includes("\0"));
+export const CatalogIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(PROTOCOL_LIMITS_V1.catalogFieldChars)
+  .refine((value) => !value.includes("\0"));
+export const CatalogDisplayStringSchema = z
+  .string()
+  .max(PROTOCOL_LIMITS_V1.catalogFieldChars)
+  .refine((value) => !value.includes("\0"));
+const runtimeIdentifier = RuntimeIdentifierSchema;
 
 export const ModeSchema = z.enum(["plan", "execute"]);
 export type Mode = z.infer<typeof ModeSchema>;
@@ -49,18 +76,26 @@ export const TaskSchema = loose({ id: z.string(), title: z.string(), status: Tas
 export type Task = z.infer<typeof TaskSchema>;
 
 export const ModelSummarySchema = loose({
-  id: z.string(),
-  providerId: z.string(),
-  name: z.string().optional(),
-  contextWindow: finite.optional(),
+  id: CatalogIdentifierSchema,
+  providerId: CatalogIdentifierSchema,
+  name: CatalogDisplayStringSchema.optional(),
+  contextWindow: positive.optional(),
 });
 export type ModelSummary = z.infer<typeof ModelSummarySchema>;
 
 export const ProviderInfoSchema = loose({
-  id: z.string(),
+  id: CatalogIdentifierSchema,
   configured: z.boolean(),
   keyless: z.boolean(),
-  env: z.array(z.string()),
+  env: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(PROTOCOL_LIMITS_V1.providerEnvChars)
+        .refine((value) => !value.includes("\0")),
+    )
+    .max(PROTOCOL_LIMITS_V1.providerEnvItems),
 });
 export type ProviderInfo = z.infer<typeof ProviderInfoSchema>;
 
@@ -74,9 +109,9 @@ export const AgentCapabilitySchema = z.enum([
 ]);
 export type AgentCapability = z.infer<typeof AgentCapabilitySchema>;
 export const AgentInfoSchema = loose({
-  name: z.string(),
-  description: z.string(),
-  model: z.string().nullable(),
+  name: CatalogIdentifierSchema,
+  description: CatalogDisplayStringSchema,
+  model: CatalogIdentifierSchema.nullable(),
   mode: ModeSchema,
   persona: z.string().optional(),
   capabilities: z.array(AgentCapabilitySchema).optional(),
@@ -146,25 +181,28 @@ export const ActivityInfoSchema = loose({
 });
 export type ActivityInfo = z.infer<typeof ActivityInfoSchema>;
 
-export const SkillInfoSchema = loose({ name: z.string(), description: z.string() });
+export const SkillInfoSchema = loose({
+  name: CatalogIdentifierSchema,
+  description: CatalogDisplayStringSchema,
+});
 export type SkillInfo = z.infer<typeof SkillInfoSchema>;
 export const QueuedItemSchema = loose({ id: z.string(), label: z.string() });
 export type QueuedItem = z.infer<typeof QueuedItemSchema>;
 
 export const UsageSchema = loose({
-  inputTokens: finite.optional(),
-  outputTokens: finite.optional(),
-  totalTokens: finite.optional(),
-  cachedInputTokens: finite.optional(),
+  inputTokens: nonNegative.optional(),
+  outputTokens: nonNegative.optional(),
+  totalTokens: nonNegative.optional(),
+  cachedInputTokens: nonNegative.optional(),
 });
 export type Usage = z.infer<typeof UsageSchema>;
 export const SessionUsageSchema = loose({
-  inputTokens: finite,
-  outputTokens: finite,
-  totalTokens: finite,
-  costUSD: finite,
+  inputTokens: nonNegative,
+  outputTokens: nonNegative,
+  totalTokens: nonNegative,
+  costUSD: nonNegative,
   costEstimated: z.boolean().optional(),
-  cachedInputTokens: finite.optional(),
+  cachedInputTokens: nonNegative.optional(),
 });
 export type SessionUsage = z.infer<typeof SessionUsageSchema>;
 
@@ -181,9 +219,9 @@ export type Message = z.infer<typeof MessageSchema>;
 
 export const GitInfoSchema = loose({
   branch: z.string(),
-  dirty: finite,
-  ahead: finite,
-  behind: finite,
+  dirty: nonNegative,
+  ahead: nonNegative,
+  behind: nonNegative,
   worktree: z.boolean(),
 });
 export type GitInfo = z.infer<typeof GitInfoSchema>;
@@ -193,7 +231,7 @@ export const JobInfoSchema = loose({
   command: z.string(),
   status: z.enum(["running", "exited", "killed"]),
   exitCode: finite.nullable(),
-  pid: finite.optional(),
+  pid: positive.optional(),
   servers: z.array(z.string()),
   outputTail: z.string(),
 });
@@ -202,13 +240,13 @@ export type JobInfo = z.infer<typeof JobInfoSchema>;
 export const GoalRunInfoSchema = loose({
   active: z.boolean(),
   phase: z.enum(["plan", "execute"]).nullable(),
-  round: finite,
-  max: finite,
+  round: nonNegative,
+  max: nonNegative,
   pausedReason: z.string().nullable(),
   met: z.boolean(),
   contract: GoalContractSchema.optional(),
-  stagnationCount: finite.optional(),
-  strategyResets: finite.optional(),
+  stagnationCount: nonNegative.optional(),
+  strategyResets: nonNegative.optional(),
 });
 export type GoalRunInfo = z.infer<typeof GoalRunInfoSchema>;
 
@@ -231,14 +269,14 @@ export const CloudSessionStatusSchema = z.enum([
 export type CloudSessionStatus = z.infer<typeof CloudSessionStatusSchema>;
 
 export const PendingCapabilityRequestSchema = loose({
-  id: z.string(),
+  id: runtimeIdentifier,
   integration: z.string(),
   toolName: z.string(),
   arguments: z.unknown(),
   approvalScope: z.enum(["once", "session", "integration"]),
-  originatingTurn: z.string(),
+  originatingTurn: runtimeIdentifier,
   status: z.enum(["pending", "approved", "denied", "resolved"]),
-  createdAt: finite,
+  createdAt: nonNegative,
   result: z.unknown().optional(),
   error: z.string().optional(),
 });
@@ -433,30 +471,30 @@ export const ENGINE_COMMAND_TYPES = Object.freeze(
 );
 
 export const TurnPerformanceSampleSchema = loose({
-  turnId: z.string(),
-  sessionId: z.string(),
+  turnId: runtimeIdentifier,
+  sessionId: runtimeIdentifier,
   model: z.string(),
   serviceTier: z.enum(["default", "priority"]),
-  startedAt: finite,
-  queueDelayMs: finite,
-  hooksMs: finite,
-  checkpointMs: finite,
-  recallMs: finite,
-  attachmentsMs: finite,
-  modelResolveMs: finite,
-  contextPrepareMs: finite,
-  providerTtftMs: finite.optional(),
-  firstReasoningMs: finite.optional(),
-  firstVisibleTextMs: finite.optional(),
-  generationMs: finite,
-  toolMs: finite,
-  toolSchemaTokens: finite.optional(),
-  persistMs: finite,
-  postTurnMs: finite,
-  totalMs: finite,
-  inputTokens: finite.optional(),
-  cachedInputTokens: finite.optional(),
-  outputTokens: finite.optional(),
+  startedAt: nonNegative,
+  queueDelayMs: nonNegative,
+  hooksMs: nonNegative,
+  checkpointMs: nonNegative,
+  recallMs: nonNegative,
+  attachmentsMs: nonNegative,
+  modelResolveMs: nonNegative,
+  contextPrepareMs: nonNegative,
+  providerTtftMs: nonNegative.optional(),
+  firstReasoningMs: nonNegative.optional(),
+  firstVisibleTextMs: nonNegative.optional(),
+  generationMs: nonNegative,
+  toolMs: nonNegative,
+  toolSchemaTokens: nonNegative.optional(),
+  persistMs: nonNegative,
+  postTurnMs: nonNegative,
+  totalMs: nonNegative,
+  inputTokens: nonNegative.optional(),
+  cachedInputTokens: nonNegative.optional(),
+  outputTokens: nonNegative.optional(),
 });
 export type TurnPerformanceSample = z.infer<typeof TurnPerformanceSampleSchema>;
 
@@ -525,8 +563,8 @@ const eventSchemas = {
   "context-updated": loose({
     type: z.literal("context-updated"),
     ...session,
-    usedTokens: finite,
-    contextWindow: finite,
+    usedTokens: nonNegative,
+    contextWindow: positive,
   }),
   "mode-changed": loose({ type: z.literal("mode-changed"), ...session, mode: ModeSchema }),
   "model-changed": loose({ type: z.literal("model-changed"), ...session, model: z.string() }),
@@ -606,8 +644,8 @@ const eventSchemas = {
     taskId: z.string(),
     objective: z.string(),
     status: z.enum(["running", "completed", "failed", "skipped"]),
-    attempts: finite.optional(),
-    durationMs: finite.optional(),
+    attempts: nonNegative.optional(),
+    durationMs: nonNegative.optional(),
   }),
   "queue-changed": loose({
     type: z.literal("queue-changed"),
@@ -621,8 +659,8 @@ const eventSchemas = {
     path: z.string(),
     action: z.enum(["edit", "write"]),
     diff: z.string(),
-    added: finite,
-    removed: finite,
+    added: nonNegative,
+    removed: nonNegative,
   }),
   "checkpoint-created": loose({
     type: z.literal("checkpoint-created"),
@@ -640,7 +678,7 @@ const eventSchemas = {
     ok: z.boolean(),
     output: z.string(),
   }),
-  compacted: loose({ type: z.literal("compacted"), ...session, freedTokens: finite }),
+  compacted: loose({ type: z.literal("compacted"), ...session, freedTokens: nonNegative }),
   "runtime-handoff-requested": loose({
     type: z.literal("runtime-handoff-requested"),
     ...session,
@@ -683,7 +721,11 @@ const eventSchemas = {
     transcript: z.string().optional(),
     metrics: ActivityMetricsSchema.optional(),
   }),
-  "loop-tick": loose({ type: z.literal("loop-tick"), loopId: z.string(), iteration: finite }),
+  "loop-tick": loose({
+    type: z.literal("loop-tick"),
+    loopId: runtimeIdentifier,
+    iteration: nonNegative,
+  }),
   "loop-stopped": loose({
     type: z.literal("loop-stopped"),
     loopId: z.string(),

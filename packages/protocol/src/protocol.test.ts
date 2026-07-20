@@ -21,6 +21,7 @@ import {
 import {
   EngineCommandSchema,
   EngineSnapshotSchema,
+  PROTOCOL_LIMITS_V1,
   RuntimeErrorDataV1Schema,
   UIEventSchema,
 } from "./index.ts";
@@ -177,6 +178,98 @@ describe("canonical protocol schemas", () => {
         .success,
     ).toBeFalse();
     expect(RuntimeErrorDataV1Schema.safeParse({ ...failure, stack: "secret" }).success).toBeFalse();
+  });
+
+  test("centralizes renderer-safe numeric, identifier, catalog, and RPC bounds", () => {
+    expect(
+      EngineSnapshotSchema.safeParse({
+        ...snapshot,
+        usage: { ...snapshot.usage, costUSD: -0.01 },
+      }).success,
+    ).toBeFalse();
+    expect(
+      EngineSnapshotSchema.safeParse({
+        ...snapshot,
+        git: { branch: "main", dirty: -1, ahead: 0, behind: 0, worktree: false },
+      }).success,
+    ).toBeFalse();
+    expect(
+      UIEventSchema.safeParse({
+        type: "context-updated",
+        sessionId: "session-1",
+        usedTokens: -1,
+        contextWindow: 128_000,
+      }).success,
+    ).toBeFalse();
+    expect(
+      UIEventSchema.safeParse({
+        type: "context-updated",
+        sessionId: "session-1",
+        usedTokens: 1,
+        contextWindow: 0,
+      }).success,
+    ).toBeFalse();
+    expect(
+      UIEventSchema.safeParse({
+        type: "file-changed",
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        path: "a.ts",
+        action: "edit",
+        diff: "",
+        added: -1,
+        removed: 0,
+      }).success,
+    ).toBeFalse();
+    expect(
+      UIEventSchema.safeParse({ type: "loop-tick", loopId: "loop-1", iteration: -1 }).success,
+    ).toBeFalse();
+
+    expect(
+      validateRpcResult("listModels", [{ id: "m", providerId: "p", contextWindow: 0 }]),
+    ).toBeFalse();
+    expect(validateRpcResult("listModels", [{ id: "", providerId: "p" }])).toBeFalse();
+    expect(
+      validateRpcResult(
+        "listAgents",
+        Array.from({ length: PROTOCOL_LIMITS_V1.catalogItems + 1 }, (_, index) => ({
+          name: `agent-${index}`,
+          description: "",
+          model: null,
+          mode: "execute",
+        })),
+      ),
+    ).toBeFalse();
+    expect(
+      validateRpcResult("searchSessions", [
+        {
+          cwd: "/repo",
+          sessionId: "session-1",
+          role: "user",
+          timestamp: 1,
+          snippet: "x".repeat(PROTOCOL_LIMITS_V1.searchSnippetChars + 1),
+          score: 1,
+        },
+      ]),
+    ).toBeFalse();
+    expect(validateRpcResult("recoverLostCloudOwnership", 0)).toBeFalse();
+
+    const oversizedId = "x".repeat(PROTOCOL_LIMITS_V1.runtimeIdentifierChars + 1);
+    expect(
+      decodeInbound(
+        JSON.stringify({ op: "rpc", id: 1, method: "deleteSession", params: { id: oversizedId } }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeInbound(
+        JSON.stringify({
+          op: "rpc",
+          id: 1,
+          method: "searchSessions",
+          params: { query: "x".repeat(PROTOCOL_LIMITS_V1.queryChars + 1) },
+        }),
+      ),
+    ).toBeNull();
   });
 
   test("validates exact RPC result contracts", () => {

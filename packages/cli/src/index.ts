@@ -23,6 +23,7 @@ import { runServeCommand } from "./serve-command.ts";
 import { VERSION } from "./version.ts";
 import { runTraceCommand } from "./trace-command.ts";
 import { runShareCommand } from "./share-command.ts";
+import { runEvalCommand } from "./eval-command.ts";
 
 // Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
 // literal now lives in ./version.ts (stamped at release by set-version.ts).
@@ -77,6 +78,7 @@ USAGE
   vibecodr trace export <run-id>     write a static local HTML trace
   vibecodr serve [options]           serve the authenticated API on 127.0.0.1
   vibecodr share [session-id]        write a private redacted local HTML session
+  vibecodr eval run <fixture.json>   run an isolated model/profile evaluation matrix
   vibecodr setup                     run the guided provider/model setup (alias: login)
   vibecodr upgrade                   print how to update to the latest version
 
@@ -92,6 +94,9 @@ OPTIONS
       --reasoning       print model reasoning to stderr
       --output <file>   output path for trace export
       --include-redacted include explicitly recorded redacted trace content
+      --profile <names>  eval profiles, comma-separated (default: default)
+      --samples <count>  eval repetitions per model/profile cell (1-50)
+      --keep-checkouts   retain isolated eval checkouts for debugging
   -c, --continue        resume the most recent session
       --resume <id>     resume a specific session by id
   -v, --version         print version and exit
@@ -155,6 +160,9 @@ export async function run(argv: string[]): Promise<number> {
       reasoning: { type: "boolean" },
       output: { type: "string" },
       "include-redacted": { type: "boolean" },
+      profile: { type: "string" },
+      samples: { type: "string" },
+      "keep-checkouts": { type: "boolean" },
       continue: { type: "boolean", short: "c" },
       resume: { type: "string" },
       version: { type: "boolean", short: "v" },
@@ -195,6 +203,24 @@ export async function run(argv: string[]): Promise<number> {
       return 0;
     } catch (error) {
       process.stderr.write(`vibecodr share: ${(error as Error).message}\n`);
+      return 1;
+    }
+  }
+
+  if (positionals[0] === "eval") {
+    if (positionals[1] !== "run") {
+      process.stderr.write("vibecodr eval: expected `run <fixture.json>`\n");
+      return 1;
+    }
+    try {
+      const result = await runEvalCommand({
+        fixturePath: positionals[2], models: values.model, profiles: values.profile,
+        samples: values.samples, keepCheckouts: values["keep-checkouts"],
+      });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return result.results.every((item) => item.score === 100) ? 0 : 2;
+    } catch (error) {
+      process.stderr.write(`vibecodr eval: ${error instanceof Error ? error.message : String(error)}\n`);
       return 1;
     }
   }

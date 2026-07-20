@@ -46,6 +46,7 @@
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
+        "@vibe/eval": "workspace:*",
         "@vibe/protocol": "workspace:*",
         "@vibe/providers": "workspace:*",
         "@vibe/runtime": "workspace:*",
@@ -96,6 +97,10 @@
         "ai": "^7.0.30",
         "zod": "^4.0.0",
       },
+    },
+    "packages/eval": {
+      "name": "@vibe/eval",
+      "version": "0.6.14",
     },
     "packages/macos-bridge": {
       "name": "@vibe/macos-bridge",
@@ -461,6 +466,8 @@
     "@vibe/config": ["@vibe/config@workspace:packages/config"],
 
     "@vibe/core": ["@vibe/core@workspace:packages/core"],
+
+    "@vibe/eval": ["@vibe/eval@workspace:packages/eval"],
 
     "@vibe/macos-bridge": ["@vibe/macos-bridge@workspace:packages/macos-bridge"],
 

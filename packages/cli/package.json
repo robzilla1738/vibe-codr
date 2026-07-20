@@ -20,6 +20,7 @@
   "dependencies": {
     "@vibe/config": "workspace:*",
     "@vibe/core": "workspace:*",
+    "@vibe/eval": "workspace:*",
     "@vibe/protocol": "workspace:*",
     "@vibe/providers": "workspace:*",
     "@vibe/runtime": "workspace:*",

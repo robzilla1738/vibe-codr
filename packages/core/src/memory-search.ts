@@ -11,8 +11,18 @@ export interface MemoryHit {
   heading: string;
   text: string;
   kind: "memory" | "session";
+  /** Stable, user-visible origin metadata. Recall must never present a note as
+   * detached model truth: callers can always show where and when it came from. */
+  provenance: MemoryProvenance;
   /** Fused relevance score (higher = more relevant). */
   score: number;
+}
+
+export interface MemoryProvenance {
+  source: string;
+  scope: "project" | "global" | "session" | "unknown";
+  createdAt?: number;
+  pinned?: boolean;
 }
 
 /**
@@ -45,6 +55,8 @@ export interface SearchMemoryOptions {
    * 0.38 — low enough for real paraphrases, high enough to drop weak neighbors.
    */
   minDenseCosine?: number;
+  /** Injectable wall clock for deterministic freshness tests. */
+  now?: number;
 }
 
 /** Keep a hit only if its per-hit relevance is at least this fraction of the top
@@ -57,6 +69,42 @@ const FRACTION_OF_TOP = 0.25;
 const PROACTIVE_FRACTION_OF_TOP = 0.4;
 /** Default min cosine for proactive dense exemption (see SearchMemoryOptions). */
 export const DEFAULT_PROACTIVE_MIN_DENSE_COSINE = 0.38;
+
+const DATED_MEMORY_SOURCE = /(?:^|\/)(\d{4}-\d{2}-\d{2})\.md$/;
+
+function hasPinnedTag(text: string): boolean {
+  for (const match of text.matchAll(/_\(([^\n)]*)\)_/g)) {
+    if (match[1]!.split(",").some((tag) => tag.trim().toLowerCase() === "pinned")) return true;
+  }
+  return false;
+}
+
+function memoryProvenance(source: string, text: string): MemoryProvenance {
+  const date = DATED_MEMORY_SOURCE.exec(source)?.[1];
+  const createdAt = date ? Date.parse(`${date}T00:00:00.000Z`) : Number.NaN;
+  return {
+    source,
+    scope: source.startsWith(".vibe/memory/")
+      ? "project"
+      : source.startsWith("global-memory/")
+        ? "global"
+        : "unknown",
+    ...(Number.isFinite(createdAt) ? { createdAt } : {}),
+    ...(hasPinnedTag(text) ? { pinned: true } : {}),
+  };
+}
+
+/** Small recency nudge after relevance fusion. It cannot rescue an irrelevant
+ * hit (the relevance floor already removed those), and its 1% ceiling lets a
+ * materially stronger old result retain rank. Pinned facts never decay. */
+function freshnessMultiplier(hit: MemoryHit, now: number): number {
+  if (hit.provenance.scope === "session") return 1; // searchSessions already scores recency
+  if (hit.provenance.pinned) return 1.01;
+  const createdAt = hit.provenance.createdAt;
+  if (createdAt === undefined || createdAt > now) return 1;
+  const ageDays = (now - createdAt) / 86_400_000;
+  return 1 + 0.01 * Math.exp(-ageDays / 180);
+}
 
 /**
  * Relevance floor for the fused hit list. Proactive recall injects the top-k hits
@@ -152,6 +200,7 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
     limit = 8,
     mode = "explicit",
     minDenseCosine = DEFAULT_PROACTIVE_MIN_DENSE_COSINE,
+    now = Date.now(),
   } = opts;
   // Proactive injection must not fuse raw past-session transcripts — those are
   // the noisiest source of "make a website" false positives. Explicit `/recall`
@@ -172,6 +221,7 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
       heading: c.heading,
       text: c.text,
       kind: "memory",
+      provenance: memoryProvenance(c.source, c.text),
       score: 0,
     });
   }
@@ -182,6 +232,16 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
       query,
       chunks.map((c) => c.text),
     );
+    // BM25 returns a deterministic input-order tie. For genuinely equal
+    // relevance only, prefer the fresher/pinned source before RRF assigns rank
+    // positions. A non-tie is untouched, so freshness cannot beat relevance.
+    lex.sort((a, b) => {
+      const relevance = b.score - a.score;
+      if (Math.abs(relevance) > 1e-12) return relevance;
+      const ah = byId.get(chunks[a.index]!.id)!;
+      const bh = byId.get(chunks[b.index]!.id)!;
+      return freshnessMultiplier(bh, now) - freshnessMultiplier(ah, now);
+    });
     rankings.push(lex.map((h) => chunks[h.index]!.id));
   }
 
@@ -191,10 +251,12 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
   // return cosine-nearest chunks as if relevant (the lexical BM25 pass already
   // returns nothing for empty terms). Still reconcile the index so a later real
   // query is fresh, but don't rank on a meaningless embedding.
-  if (semantic && chunks.length && query.trim()) {
+  if (semantic) {
     try {
+      // Reconcile even an empty corpus: deleting the final fact must prune the
+      // last stale vector instead of leaving the shadow populated forever.
       await semantic.index(sources);
-      const dense = await semantic.search(query, limit * 3);
+      const dense = chunks.length && query.trim() ? await semantic.search(query, limit * 3) : [];
       rankings.push(dense.map((h) => h.id));
       for (const h of dense) {
         denseCosine.set(h.id, h.score);
@@ -205,6 +267,7 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
             heading: h.heading,
             text: h.text,
             kind: "memory",
+            provenance: memoryProvenance(h.source, h.text),
             score: 0,
           });
         }
@@ -227,6 +290,7 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
         heading: h.goal ?? "",
         text: h.snippet,
         kind: "session",
+        provenance: { source: h.sessionId, scope: "session", createdAt: h.when },
         score: 0,
       });
     });
@@ -242,14 +306,17 @@ export async function searchMemory(opts: SearchMemoryOptions): Promise<MemoryHit
   // Apply the relevance floor BEFORE the limit cut: a weak hit near the top must
   // not shadow a stronger one below it, and a junk-only set must return empty
   // rather than a `limit`-length list of noise.
-  return applyRelevanceFloor(query, fused, denseCosine, mode, minDenseCosine).slice(0, limit);
+  return applyRelevanceFloor(query, fused, denseCosine, mode, minDenseCosine)
+    .map((hit) => ({ ...hit, score: hit.score * freshnessMultiplier(hit, now) }))
+    .sort((a, b) => b.score - a.score || a.source.localeCompare(b.source))
+    .slice(0, limit);
 }
 
 /** Render hybrid memory hits as a compact block for the model / `/recall`. */
 export function formatMemoryHits(query: string, hits: MemoryHit[]): string {
   if (!hits.length) return `No memory matches for "${query}".`;
   const lines = hits.map((h) => {
-    const label = h.kind === "session" ? `session ${h.source}` : h.source;
+    const label = h.kind === "session" ? `session ${h.provenance.source}` : h.provenance.source;
     const head = h.heading ? `${label} · ${h.heading}` : label;
     const snippet = h.text.replace(/\s+/g, " ").trim().slice(0, 280);
     return `  • ${head}\n    ${snippet}`;

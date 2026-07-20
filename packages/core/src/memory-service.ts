@@ -53,6 +53,22 @@ export class MemoryService {
     return this.#semantic !== undefined;
   }
 
+  /** Rebuildable shadow reconciliation. A transient read failure skips the
+   * entire semantic update rather than presenting a partial corpus as truth and
+   * pruning vectors for the unreadable source. */
+  async reconcile(): Promise<void> {
+    if (!this.#semantic) return;
+    try {
+      const gathered = await gatherMemoryDocs(this.#cwd);
+      if (gathered.failedSources.length) return;
+      // Empty is meaningful: the final memory was deleted, so prune the shadow.
+      await this.#semantic.index(gathered.docs);
+    } catch {
+      // The index is a rebuildable enhancement; a memory write remains durable
+      // and the next healthy search/save retries reconciliation.
+    }
+  }
+
   /** Hybrid recall over saved memory + past sessions. Reconciles the index on
    * read (cheap when unchanged), so a just-saved fact is searchable immediately. */
   async search(
@@ -69,18 +85,19 @@ export class MemoryService {
     try {
       const gathered = await gatherMemoryDocs(this.#cwd);
       sources = gathered.docs;
-      // Preserve vectors for files that failed to read (don't let the index
-      // reconciler prune them). Add their source names to the corpus as "keep"
-      // markers so pruneSourcesExcept doesn't drop them — their chunks stay
-      // indexed and searchable even though their source file is temporarily
-      // unreadable. The next successful read will reconcile them normally.
-      if (gathered.failedSources.length && this.#semantic) {
-        // Mark failed sources as "kept" by adding empty docs — the index reconciler
-        // will see them as existing sources and preserve their vectors without
-        // re-embedding (no new chunks to add from an empty doc).
-        for (const src of gathered.failedSources) {
-          sources.push({ source: src, text: "" });
-        }
+      // A partial corpus must not reach reconcile-on-read: an empty keep marker
+      // would be interpreted as deletion by SemanticMemory.index. Lexical recall
+      // over healthy files still works; dense recall returns next healthy read.
+      if (gathered.failedSources.length) {
+        return searchMemory({
+          cwd: this.#cwd,
+          query,
+          sources,
+          limit,
+          ...(opts.mode ? { mode: opts.mode } : {}),
+          ...(opts.minDenseCosine !== undefined ? { minDenseCosine: opts.minDenseCosine } : {}),
+          ...(opts.includeSessions !== undefined ? { includeSessions: opts.includeSessions } : {}),
+        });
       }
     } catch {
       return searchMemory({
@@ -109,7 +126,17 @@ export class MemoryService {
    * (scope "user" lands in the always-injected USER.md instead). An equivalent
    * already-stored fact is skipped and reported via `deduped`. */
   async save(input: SaveMemoryInput): Promise<SaveMemoryResult> {
-    return appendMemory(this.#cwd, input);
+    // The summarizer is instructed to stay within 80 words, but provider output
+    // is not a contract. Enforce the compact-index boundary before persistence.
+    const bounded = input.tags?.includes("session-digest")
+      ? { ...input, fact: input.fact.trim().split(/\s+/).slice(0, 80).join(" ") }
+      : input;
+    const saved = await appendMemory(this.#cwd, bounded);
+    // Finalize awaits save(), so a compact session digest is embedded before
+    // the engine closes the semantic store. The raw transcript is never an
+    // input here: gatherMemoryDocs reads only curated/saved markdown.
+    await this.reconcile();
+    return saved;
   }
 
   close(): void {

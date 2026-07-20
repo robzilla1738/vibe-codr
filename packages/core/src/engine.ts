@@ -113,7 +113,7 @@ import { readGitInfo, spawnGit, type GitRunResult } from "./git-info.ts";
 import { withRetry } from "./retry.ts";
 import { expandMentions, type ImageAttachment } from "./mentions.ts";
 import { captionImages, captionsToContextBlock, shouldRelay } from "./vision-relay.ts";
-import { cleanProactiveRecallSeed } from "./proactive-recall.ts";
+import { ProactiveRecallController, type ProactiveRecallSnapshot } from "./proactive-recall.ts";
 import { freezeGoalContract, formatGoalContract, gapFingerprint } from "./goal-contract.ts";
 import { OrchestrationTelemetry } from "./orchestration/telemetry.ts";
 import {
@@ -372,8 +372,8 @@ export class Engine implements EngineClient {
   #checkpoints: CheckpointManager;
   #mcp: McpHub;
   #memory: MemoryService | undefined;
-  /** Whether proactive recall has already injected context this session (once). */
-  #proactiveRecallDone = false;
+  /** Durable, user-turn-only budget + topic-shift state for proactive recall. */
+  #proactiveRecall = new ProactiveRecallController();
   /** Memoized finalize promise (digest + teardown runs once). */
   #finalizing: Promise<void> | undefined;
   #shutdownRequested = false;
@@ -656,9 +656,12 @@ export class Engine implements EngineClient {
           }
         : {}),
     });
-    // A resumed session that already carries a recalled block must not run
-    // proactive recall again (it would stack a second, possibly divergent one).
-    if (resume?.meta.recalledContext) this.#proactiveRecallDone = true;
+    // Old sessions persisted only the injected block. Treat it as one prior
+    // recall until engine.json restores the richer controller snapshot.
+    this.#proactiveRecall = ProactiveRecallController.fromLegacy(
+      resume?.history.filter((message) => message.role === "user").length ?? 0,
+      Boolean(resume?.meta.recalledContext),
+    );
 
     // Watch our own (fan-out) event stream to capture a presented plan: persist
     // it under the global state dir's plans/ and remember it for the plan→execute
@@ -716,6 +719,7 @@ export class Engine implements EngineClient {
             goalStagnationCount: this.#goalStagnationCount,
             goalStrategyResets: this.#goalStrategyResets,
             pendingCapabilityRequests: [...this.#pendingCapabilityRequests.values()],
+            proactiveRecall: this.#proactiveRecall.snapshot(),
           }),
         );
       } catch {
@@ -743,8 +747,10 @@ export class Engine implements EngineClient {
         goalStagnationCount?: number;
         goalStrategyResets?: number;
         pendingCapabilityRequests?: PendingCapabilityRequest[];
+        proactiveRecall?: ProactiveRecallSnapshot;
       };
       if (state.pendingHandoff) this.#pendingHandoff = true;
+      if (state.proactiveRecall) this.#proactiveRecall.restore(state.proactiveRecall);
       if (state.planState) this.#planState = state.planState;
       if (state.planState?.status === "pending" && state.planState.plan) {
         this.#lastPlan = state.planState.plan;
@@ -2070,30 +2076,37 @@ export class Engine implements EngineClient {
     });
   }
 
-  /** Once per session (when `memory.proactiveRecall` is on), search long-term
-   * memory seeded by the first prompt + goal and inject the top hits as a
-   * prior-notes block. Uses a cleaned seed + strict relevance floor so path
-   * tokens and weak website digests cannot hijack the live turn. Best-effort;
-   * never throws. */
-  async #maybeProactiveRecall(prompt: string): Promise<void> {
-    if (this.#proactiveRecallDone) return;
+  /** Bounded first-turn + topic-shift recall. The pure controller counts only
+   * real user turns, spaces attempts, and avoids per-prompt embedding calls. */
+  async #maybeProactiveRecall(prompt: string, origin: "user" | "engine"): Promise<void> {
     if (!this.#config.memory.proactiveRecall || !this.#memory) return;
-    this.#proactiveRecallDone = true;
+    const decision = this.#proactiveRecall.consider(origin, this.#session.goal, prompt);
+    if (!decision.attempt || !decision.seed) return;
+    // Persist the ATTEMPT before I/O: a crash/restart cannot reset the bounded
+    // budget and repeatedly charge the same lookup.
+    void this.#persistEngineState();
     try {
-      const seed = cleanProactiveRecallSeed(this.#session.goal, prompt);
-      if (!seed.trim()) return;
-      const hits = await this.#memory.search(seed, 3, { mode: "proactive" });
+      const hits = await this.#memory.search(decision.seed, 3, { mode: "proactive" });
       if (!hits.length) return;
       const block = hits
-        .map((h) => `- ${h.text.replace(/\s+/g, " ").trim().slice(0, 300)}`)
+        .map((h) => {
+          const source = h.provenance.source.replace(/\s+/g, " ").trim().slice(0, 160);
+          return `- [source: ${source}] ${h.text.replace(/\s+/g, " ").trim().slice(0, 300)}`;
+        })
         .join("\n");
       this.#session.setRecalledContext(block);
+      this.#proactiveRecall.recordRecall();
+      void this.#persistEngineState();
       // Do not claim "relevant" — the floor is heuristic; the model must still
       // prefer the live user request (and any attached images) over these notes.
-      const snippets = hits.map((h) => h.text.replace(/\s+/g, " ").trim().slice(0, 60));
-      const preview = snippets.join(" · ");
+      const snippets = hits.map((h) => {
+        const source = h.provenance.source.replace(/\s+/g, " ").trim().slice(0, 80);
+        return `${source} — ${h.text.replace(/\s+/g, " ").trim().slice(0, 60)}`;
+      });
+      const preview = snippets.join(" ## ");
+      const truncated = hits.some((h) => h.text.replace(/\s+/g, " ").trim().length > 60);
       this.#notice(
-        `Recalled ${hits.length} prior note(s) (ignore if unrelated to this request): ${preview}${snippets.some((s) => s.length >= 60) ? "…" : ""}`,
+        `Recalled ${hits.length} prior note(s) (ignore if unrelated to this request): ${preview}${truncated ? "…" : ""}`,
         "info",
       );
     } catch {
@@ -2918,7 +2931,7 @@ export class Engine implements EngineClient {
     // block from long-term memory using the first prompt + goal, injected into
     // the system prompt. Best-effort — a failure must not block the turn.
     const recallStarted = performance.now();
-    await this.#maybeProactiveRecall(text);
+    await this.#maybeProactiveRecall(text, opts.origin ?? "user");
     const recallMs = performance.now() - recallStarted;
     const attachmentsStarted = performance.now();
     // Determine vision relay active status ONCE (session-stable). The system

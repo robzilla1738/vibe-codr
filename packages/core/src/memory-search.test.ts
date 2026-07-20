@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Embedder } from "./embeddings.ts";
 import { openSemanticMemory } from "./semantic-memory.ts";
-import { searchMemory } from "./memory-search.ts";
+import { formatMemoryHits, searchMemory } from "./memory-search.ts";
 
 function spyEmbedder(dim = 64): Embedder {
   const one = (text: string): number[] => {
@@ -282,4 +282,68 @@ test("proactive mode: strong dense paraphrase still injects", async () => {
   expect(hits.length).toBeGreaterThan(0);
   expect(hits[0]!.text).toContain("automobile");
   semantic.close();
+});
+
+test("dated memory gets a modest freshness tie-break while retaining source provenance", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-ms-fresh-"));
+  const hits = await searchMemory({
+    cwd: dir,
+    query: "postgres neon pooling",
+    sources: [
+      { source: ".vibe/memory/2024-01-01.md", text: "# DB\npostgres neon pooling" },
+      { source: ".vibe/memory/2026-07-01.md", text: "# DB\npostgres neon pooling" },
+    ],
+    includeSessions: false,
+    now: Date.parse("2026-07-20T00:00:00Z"),
+  });
+  expect(hits.map((hit) => hit.source)).toEqual([
+    ".vibe/memory/2026-07-01.md",
+    ".vibe/memory/2024-01-01.md",
+  ]);
+  expect(hits[0]!.provenance).toMatchObject({
+    source: ".vibe/memory/2026-07-01.md",
+    scope: "project",
+    createdAt: Date.parse("2026-07-01T00:00:00.000Z"),
+  });
+  expect(formatMemoryHits("postgres", hits)).toContain(".vibe/memory/2026-07-01.md");
+});
+
+test("pinned old memory is freshness-protected without letting weaker fresh hits outrank relevance", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-ms-pinned-"));
+  const hits = await searchMemory({
+    cwd: dir,
+    query: "postgres neon pooling",
+    sources: [
+      {
+        source: ".vibe/memory/2024-01-01.md",
+        text: "# DB\npostgres neon pooling pgbouncer\n_(pinned, database)_",
+      },
+      {
+        source: ".vibe/memory/2026-07-01.md",
+        text: "# DB\npostgres neon",
+      },
+    ],
+    includeSessions: false,
+    now: Date.parse("2026-07-20T00:00:00Z"),
+  });
+  expect(hits[0]!.source).toBe(".vibe/memory/2024-01-01.md");
+  expect(hits[0]!.provenance.pinned).toBe(true);
+});
+
+test("freshness never lets a weaker new note outrank a materially stronger old note", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-ms-fresh-relevance-"));
+  const hits = await searchMemory({
+    cwd: dir,
+    query: "postgres neon pooling pgbouncer",
+    sources: [
+      {
+        source: ".vibe/memory/2024-01-01.md",
+        text: "# Exact\npostgres neon pooling pgbouncer configuration",
+      },
+      { source: ".vibe/memory/2026-07-01.md", text: "# Partial\npostgres neon" },
+    ],
+    includeSessions: false,
+    now: Date.parse("2026-07-20T00:00:00Z"),
+  });
+  expect(hits[0]!.source).toBe(".vibe/memory/2024-01-01.md");
 });

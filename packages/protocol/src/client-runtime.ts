@@ -112,6 +112,11 @@ function optionalRuntimeIdentifier(value: unknown): boolean {
   return value === undefined || isRuntimeIdentifier(value);
 }
 
+function catalogIdentifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 16 * 1_024
+    && !value.includes("\0");
+}
+
 function runtimeIdentifierArray(value: unknown): boolean {
   return Array.isArray(value) && value.every(isRuntimeIdentifier);
 }
@@ -187,8 +192,8 @@ function goalRun(value: unknown): boolean {
 
 function pendingCapability(value: unknown): boolean {
   const item = record(value);
-  return !!item && isRuntimeIdentifier(item.id) && typeof item.integration === "string"
-    && typeof item.toolName === "string" && isRuntimeIdentifier(item.originatingTurn)
+  return !!item && isRuntimeIdentifier(item.id) && catalogIdentifier(item.integration)
+    && catalogIdentifier(item.toolName) && isRuntimeIdentifier(item.originatingTurn)
     && (item.approvalScope === "once" || item.approvalScope === "session" || item.approvalScope === "integration")
     && (item.status === "pending" || item.status === "approved" || item.status === "denied" || item.status === "resolved")
     && nonNegative(item.createdAt);

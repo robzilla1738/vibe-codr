@@ -274,8 +274,8 @@ export type CloudSessionStatus = z.infer<typeof CloudSessionStatusSchema>;
 
 export const PendingCapabilityRequestSchema = loose({
   id: runtimeIdentifier,
-  integration: z.string(),
-  toolName: z.string(),
+  integration: CatalogIdentifierSchema,
+  toolName: CatalogIdentifierSchema,
   arguments: z.unknown(),
   approvalScope: z.enum(["once", "session", "integration"]),
   originatingTurn: runtimeIdentifier,

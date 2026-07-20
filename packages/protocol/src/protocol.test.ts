@@ -77,6 +77,43 @@ describe("canonical protocol schemas", () => {
         usage: { ...snapshot.usage, costUSD: -1 },
       }),
     ).toBeFalse();
+    for (const unsafe of ["", "bad\0name"]) {
+      const withUnsafeCapability = {
+        ...snapshot,
+        pendingCapabilities: [{
+          id: "capability-1",
+          integration: unsafe,
+          toolName: "tool",
+          arguments: {},
+          approvalScope: "once",
+          originatingTurn: "turn-1",
+          status: "pending",
+          createdAt: 1,
+        }],
+      };
+      expect(EngineSnapshotSchema.safeParse(withUnsafeCapability).success).toBeFalse();
+      expect(isClientEngineSnapshot(withUnsafeCapability)).toBeFalse();
+      expect(
+        EngineSnapshotSchema.safeParse({
+          ...withUnsafeCapability,
+          pendingCapabilities: [{
+            ...withUnsafeCapability.pendingCapabilities[0],
+            integration: "integration",
+            toolName: unsafe,
+          }],
+        }).success,
+      ).toBeFalse();
+      expect(
+        isClientEngineSnapshot({
+          ...withUnsafeCapability,
+          pendingCapabilities: [{
+            ...withUnsafeCapability.pendingCapabilities[0],
+            integration: "integration",
+            toolName: unsafe,
+          }],
+        }),
+      ).toBeFalse();
+    }
     expect(
       isClientProjectSummaryArray([
         {

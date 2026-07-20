@@ -20,7 +20,10 @@ import { applyConfigPatch, buildConfigPatch } from "../shared/config-diff";
 import { contextUsagePercent } from "../shared/context-usage";
 import { densityLabel, nextDensity } from "../shared/density";
 import { parseHandoffCommand, resolveHandoffCommandAction } from "../shared/handoff-command";
-import type { LocalRuntimeStatus } from "../shared/local-runtime";
+import type {
+  LocalRuntimeLaunchQueueSnapshot,
+  LocalRuntimeStatus,
+} from "../shared/local-runtime";
 import { planResolutionBlockedReason } from "../shared/plan-resolution";
 import {
   isChatsCwd,
@@ -173,6 +176,10 @@ export function App() {
   const [localRuntimeStatuses, setLocalRuntimeStatuses] = useState<Map<string, LocalRuntimeStatus>>(
     () => new Map(),
   );
+  const [localRuntimeQueue, setLocalRuntimeQueue] = useState<LocalRuntimeLaunchQueueSnapshot>({
+    capacity: 3,
+    items: [],
+  });
   const localRuntimeStateRef = useRef(new Map<string, LocalRuntimeStatus["state"]>());
   const busySessionRef = useRef<string | null>(null);
   const projectRefreshBusyRef = useRef(false);
@@ -889,6 +896,10 @@ export function App() {
     },
     [session, refreshProjects, invalidateCatalogs, confirmLeaveSettings],
   );
+
+  useEffect(() => window.vibe.onLocalRuntimeNotificationActivation((target) => {
+    void resumeSession(target.cwd, target.sessionId);
+  }), [resumeSession]);
 
   const continueLatest = useCallback(async () => {
     if (!cwd) return;
@@ -2006,6 +2017,18 @@ export function App() {
     }
   }), [persistSessionStatus, refreshProjects]);
   useEffect(() => {
+    let current = true;
+    let observedPush = false;
+    const off = window.vibe.onLocalRuntimeLaunchQueue((snapshot) => {
+      observedPush = true;
+      if (current) setLocalRuntimeQueue(snapshot);
+    });
+    void window.vibe.localRuntimeLaunchQueue().then((result) => {
+      if (current && !observedPush && result.ok) setLocalRuntimeQueue(result.value);
+    }).catch(() => undefined);
+    return () => { current = false; off(); };
+  }, []);
+  useEffect(() => {
     if (!chrome.sessionId) return;
     if (sessionNeedsInput) {
       busySessionRef.current = chrome.sessionId;
@@ -2180,6 +2203,7 @@ export function App() {
                 projects={projects}
                 cloudSessions={cloudSessions}
                 localRuntimes={[...localRuntimeStatuses.values()]}
+                launchQueue={localRuntimeQueue}
                 chatsCwd={chatsCwd}
                 activeCwd={cwd}
                 activeSessionId={chrome.sessionId}
@@ -2194,6 +2218,7 @@ export function App() {
                 error={projectsError}
                 onRetry={() => void refreshProjects()}
                 onOpen={(projectCwd, id) => void resumeSession(projectCwd, id)}
+                onCancelLaunch={(id) => void window.vibe.cancelLocalRuntimeLaunch(id)}
                 onNewChat={() => void startNewChat()}
                 onFork={forkSession}
                 onRename={renameSession}
@@ -2605,7 +2630,7 @@ export function App() {
               active={renderedEndPanel}
               closing={endPanelPresence.closing}
               changedCount={session.transcript.changedFiles.length}
-              jobCount={chrome.jobsTotal + chrome.activities.filter((activity) => activity.kind !== "shell").length}
+              jobCount={chrome.jobsTotal + chrome.activities.filter((activity) => activity.kind !== "shell").length + localRuntimeQueue.items.length}
               onSelect={selectActivityTool}
               onClose={closeActiveEndPanel}
             >
@@ -2618,8 +2643,10 @@ export function App() {
                     jobs={chrome.jobs}
                     activities={chrome.activities}
                     totalCount={chrome.jobsTotal}
+                    launchQueue={localRuntimeQueue.items}
                     onClose={() => session.setJobsView(false)}
                     onCancelActivity={(id) => void session.send({ type: "cancel-activity", id })}
+                    onCancelLaunch={(id) => void window.vibe.cancelLocalRuntimeLaunch(id)}
                   />
                 </section>
               )}

@@ -48,12 +48,14 @@ bun test packages/macos-bridge/src/protocol.test.ts packages/macos-bridge/src/ho
 
 cd /path/to/vbcode-electron
 npm test -- --run src/main/engine-bridge.test.ts src/main/remote-engine-transport.test.ts \
-  src/main/local-runtime-supervisor.test.ts src/main/performance-store.test.ts \
+  src/main/local-runtime-supervisor.test.ts src/main/local-runtime-notifications.test.ts \
+  src/main/runtime-settings-store.test.ts src/main/performance-store.test.ts \
   src/shared/protocol.test.ts
 ```
 
 These fixtures cover duplicate/gap/replay/restart/version behavior, concurrent
-local runtime capacity and eviction, real-identity tool discovery with at least
+local runtime capacity, FIFO/cancel behavior, idle-only eviction, privacy-safe
+notification payloads/click routing, real-identity tool discovery with at least
 60% schema-token reduction, 10,000-message recall at no more than 150 ms p95,
 safe compacted-history forks, plugin preflight/rollback, and diagnostics
 redaction/retention/percentiles.
@@ -396,7 +398,14 @@ npm run dev
    presented as model work. Transcript-only matches should merge without
    clearing immediate metadata hits. Start turns in three local sessions,
    switch rapidly, and confirm each continues with only the selected transcript
-   visible; a fourth pinned runtime must show the capacity explanation. Use
+   visible. With capacity set to 3, a fourth protected launch must appear once
+   in both Sessions and Jobs with the same FIFO position; cancel it and confirm
+   no runtime starts. Queue two launches, free one slot, and confirm only the
+   oldest starts. Lower capacity while protected runtimes are active and confirm
+   only idle excess retires. Background permission/question/plan waits, failure,
+   and completion must use content-free native notifications; foreground work
+   stays silent. Clicking a notification must focus its exact project/session,
+   while a stale target does nothing. Use
    **Fork here** and confirm the source is unchanged and the fork opens through
    the selected completed turn. Open, rename, archive,
    and delete records from both Board and List; destructive actions must use the

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { PERFORMANCE_PHASES, type PerformanceSummary } from "../../../shared/performance";
 import { pluginSpecifiersFromLines } from "../../../shared/plugin-specifiers";
 import type { PluginStatus } from "../../../shared/protocol";
-import { NumberInput, SettingActions, SettingBadge, SettingField, SettingSection, TextArea, TextInput, ToggleSwitch } from "../FormControls";
+import { NumberInput, SelectInput, SettingActions, SettingBadge, SettingField, SettingSection, TextArea, TextInput, ToggleSwitch } from "../FormControls";
 import type { SectionProps } from "./types";
 
 export function AdvancedSection({
@@ -29,6 +29,8 @@ export function AdvancedSection({
   const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
   const [pluginStatuses, setPluginStatuses] = useState<PluginStatus[]>([]);
   const [pluginHealthError, setPluginHealthError] = useState<string | null>(null);
+  const [localCapacity, setLocalCapacity] = useState(3);
+  const [capacitySaving, setCapacitySaving] = useState(false);
   const lspDraftKey = `advanced:${scope}:${cwd ?? ""}:lsp-language`;
 
   useEffect(() => {
@@ -56,6 +58,30 @@ export function AdvancedSection({
     });
     return () => { current = false; };
   }, [active, cwd, runtimeIdentity]);
+  useEffect(() => {
+    if (!active) return;
+    let current = true;
+    void window.vibe.localRuntimeSettings().then((result) => {
+      if (current && result.ok) setLocalCapacity(result.value.capacity);
+    }).catch(() => undefined);
+    return () => { current = false; };
+  }, [active]);
+
+  const updateLocalCapacity = async (value: string) => {
+    const capacity = Number(value);
+    if (!Number.isInteger(capacity) || capacity < 1 || capacity > 8 || capacitySaving) return;
+    setCapacitySaving(true);
+    try {
+      const result = await window.vibe.updateLocalRuntimeSettings({ capacity });
+      if (!result.ok) throw new Error(result.error);
+      setLocalCapacity(result.value.capacity);
+      showToast?.(`Local runtime capacity set to ${result.value.capacity}`, "info");
+    } catch (error) {
+      showToast?.(error instanceof Error ? error.message : "Couldn’t update local runtime capacity", "error");
+    } finally {
+      setCapacitySaving(false);
+    }
+  };
   useEffect(() => {
     if (!active) return;
     let current = true;
@@ -115,6 +141,20 @@ export function AdvancedSection({
   };
   return (
     <>
+      <SettingSection title="Desktop runtime pool" description="Keep local sessions alive in the background without exceeding this machine's safe engine-host capacity.">
+        <SettingField label="Local capacity" description="One through eight. Changes apply immediately; protected foreground, working, review, input, and job-owning sessions are never stopped.">
+          <SelectInput
+            value={String(localCapacity)}
+            onChange={(value) => void updateLocalCapacity(value)}
+            disabled={capacitySaving}
+            options={Array.from({ length: 8 }, (_, index) => {
+              const value = String(index + 1);
+              return { value, label: `${value} runtime${value === "1" ? "" : "s"}` };
+            })}
+          />
+        </SettingField>
+      </SettingSection>
+
       <SettingSection title="Plugins" description="NPM module specifiers or local paths for trusted engine plugins.">
         <SettingField label="Plugin modules" description="One per line. Plugins execute code with the agent's privileges at startup; project plugins are ignored unless project config is globally trusted.">
           <TextArea

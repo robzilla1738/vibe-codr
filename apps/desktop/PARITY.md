@@ -750,10 +750,16 @@ npm run dev
   only large MCP/plugin catalogs, preserves real tool identity through hooks,
   permissions, approvals, telemetry, and UI, and reduces the 100-tool fixture's
   schema tokens by at least 60% without exceeding the two-point selection budget.
-- [x] A three-runtime local supervisor lets two background turns continue while
-  one session owns the renderer, pins working/input/review states, rejects
-  capacity exhaustion clearly, evicts expired idle runtimes, and drains all
-  owned hosts on quit.
+- [x] The local runtime pool is configurable from 1–8 (default 3), reclaims the
+  least-recently-used idle runtime before admitting work, and never evicts a
+  working/input/review runtime. When every slot is protected, launches enter a
+  deduplicated FIFO with stable IDs and explicit cancellation; Sessions and
+  Jobs show queue position, and capacity reductions retire only idle excess.
+- [x] Background permission/question/plan waits, failures, and completed work
+  emit deduplicated native notifications containing only project/session labels
+  and static action copy. Foreground work is silent, unsupported platforms are
+  a no-op, and clicks focus the exact live `{cwd, sessionId}` without reviving a
+  stale runtime.
 - [x] Advanced Settings reports content-free local p50/p95 phase attribution,
   dominant bottleneck, seven-day/2 MiB retention, export/copy diagnostics, and
   plugin health without central telemetry or new presentation primitives.

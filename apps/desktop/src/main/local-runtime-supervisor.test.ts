@@ -144,6 +144,67 @@ describe("LocalRuntimeSupervisor", () => {
     expect(background).toEqual(["turn-performance"]);
   });
 
+  it("emits deduplicated content-free background notification transitions", async () => {
+    const { supervisor, bridges } = fixture();
+    const transitions: Array<{ kind: string; cwd: string; sessionId: string }> = [];
+    supervisor.onNotification = (transition) => transitions.push(transition);
+    await supervisor.start({ cwd: "/repo/background" });
+    bridges[0]!.emit({ type: "user-message", sessionId: "s1", text: "private prompt" });
+    await supervisor.start({ cwd: "/repo/foreground" });
+
+    const permission = {
+      type: "permission-request" as const,
+      sessionId: "s1",
+      id: "p1",
+      toolName: "bash",
+      input: { secret: "never forward" },
+    };
+    bridges[0]!.emit(permission);
+    bridges[0]!.emit(permission);
+    expect(transitions).toEqual([
+      expect.objectContaining({ kind: "permission", cwd: "/repo/background", sessionId: "s1" }),
+    ]);
+
+    bridges[0]!.emit({ type: "permission-settled", sessionId: "s1", ids: ["p1"], reason: "aborted" });
+    bridges[0]!.emit({ type: "engine-idle", sessionId: "s1", gate: "green" });
+    expect(transitions.map((transition) => transition.kind)).toEqual(["permission", "completed"]);
+
+    const question = {
+      type: "question-request" as const,
+      sessionId: "s1",
+      question: {
+        id: "q1",
+        question: "private question",
+        header: "Decision",
+        choices: [{ label: "Yes", description: "Continue" }],
+        multiple: false,
+        allowFreeform: false,
+        createdAt: 1,
+      },
+    };
+    bridges[0]!.emit(question);
+    bridges[0]!.emit(question);
+    bridges[0]!.emit({ type: "question-settled", sessionId: "s1", id: "q1", reason: "answered" });
+    bridges[0]!.emit({ type: "plan-presented", sessionId: "s1", plan: "private plan" });
+    bridges[0]!.emit({ type: "plan-presented", sessionId: "s1", plan: "private plan" });
+    bridges[0]!.emit({ type: "plan-state-changed", sessionId: "s1", state: { status: "active", updatedAt: 1 } });
+    bridges[0]!.emit({ type: "engine-error", sessionId: "s1", message: "private failure detail" });
+    bridges[0]!.emit({ type: "engine-error", sessionId: "s1", message: "private failure detail" });
+
+    expect(transitions.map((transition) => transition.kind)).toEqual([
+      "permission",
+      "completed",
+      "question",
+      "plan-review",
+      "failure",
+    ]);
+    expect(JSON.stringify(transitions)).not.toContain("private");
+
+    bridges[1]!.emit({ ...permission, sessionId: "s2", id: "foreground-permission" });
+    bridges[1]!.emit({ type: "engine-idle", sessionId: "s2", gate: "green" });
+    expect(transitions).toHaveLength(5);
+  });
+
   it("never publishes a temporary key for a resumed runtime", async () => {
     const { supervisor } = fixture();
     const keys: string[] = [];
@@ -155,16 +216,23 @@ describe("LocalRuntimeSupervisor", () => {
     expect(keys.some((key) => key.startsWith("pending:"))).toBe(false);
   });
 
-  it("refuses a fourth runtime when all three are pinned", async () => {
+  it("queues a fourth runtime while all three are pinned, then drains FIFO", async () => {
     const { supervisor, bridges } = fixture();
+    const snapshots: Array<{ items: Array<{ id: string; position: number }> }> = [];
+    supervisor.onQueueChanged = (snapshot) => snapshots.push(snapshot);
     for (let index = 0; index < 3; index += 1) {
       await supervisor.start({ cwd: `/repo/${index}` });
       bridges[index]!.emit({ type: "user-message", sessionId: `s${index + 1}`, text: "busy" });
     }
-    await expect(supervisor.start({ cwd: "/repo/4" })).rejects.toThrow(
-      "Local runtime capacity (3) is full",
-    );
+    const queued = supervisor.start({ cwd: "/repo/4" });
+    await vi.waitFor(() => expect(supervisor.queueSnapshot().items).toHaveLength(1));
     expect(bridges).toHaveLength(3);
+    expect(snapshots.at(-1)?.items[0]?.position).toBe(1);
+
+    bridges[0]!.emit({ type: "engine-idle", sessionId: "s1", gate: "green" });
+    await expect(queued).resolves.toBe("s4");
+    expect(bridges[0]!.stopped).toBe(1);
+    expect(supervisor.queueSnapshot().items).toEqual([]);
   });
 
   it("reclaims the least-recently-used fresh idle background runtime at capacity", async () => {
@@ -188,7 +256,7 @@ describe("LocalRuntimeSupervisor", () => {
     expect(supervisor.size).toBe(3);
   });
 
-  it("preserves the capacity error when every runtime is blocked or foreground", async () => {
+  it("keeps blocked and foreground runtimes protected while a launch waits", async () => {
     const { supervisor, bridges } = fixture({ capacity: 3 });
     await supervisor.start({ cwd: "/repo/input" });
     bridges[0]!.emit({
@@ -203,13 +271,49 @@ describe("LocalRuntimeSupervisor", () => {
     await supervisor.start({ cwd: "/repo/foreground" });
     bridges[2]!.emit({ type: "engine-idle", sessionId: "s3", gate: "green" });
 
-    await expect(supervisor.start({ cwd: "/repo/4" })).rejects.toThrow(
-      "Local runtime capacity (3) is full",
-    );
+    const queued = supervisor.start({ cwd: "/repo/4" });
+    await vi.waitFor(() => expect(supervisor.queueSnapshot().items).toHaveLength(1));
 
     expect(bridges.map((bridge) => bridge.stopped)).toEqual([0, 0, 0]);
     expect(bridges).toHaveLength(3);
     expect(supervisor.size).toBe(3);
+    expect(supervisor.cancelLaunch(supervisor.queueSnapshot().items[0]!.id)).toBe(true);
+    await expect(queued).rejects.toThrow("launch was cancelled");
+  });
+
+  it("deduplicates equivalent pending launches and cancellation prevents bridge creation", async () => {
+    const { supervisor, bridges } = fixture({ capacity: 1 });
+    await supervisor.start({ cwd: "/repo/active" });
+    bridges[0]!.emit({ type: "user-message", sessionId: "s1", text: "busy" });
+
+    const first = supervisor.start({ cwd: "/repo/waiting", resume: "saved" });
+    const duplicate = supervisor.start({ cwd: "/repo/waiting", resume: "saved" });
+    expect(duplicate).toBe(first);
+    await vi.waitFor(() => expect(supervisor.queueSnapshot().items).toHaveLength(1));
+    const [{ id }] = supervisor.queueSnapshot().items;
+    expect(supervisor.cancelLaunch(id)).toBe(true);
+    expect(supervisor.cancelLaunch(id)).toBe(false);
+    await expect(first).rejects.toThrow("launch was cancelled");
+    await expect(duplicate).rejects.toThrow("launch was cancelled");
+    expect(bridges).toHaveLength(1);
+  });
+
+  it("normalizes capacity and reconciles reductions only through idle LRU retirement", async () => {
+    const { supervisor, bridges } = fixture({ capacity: 99 });
+    expect(supervisor.capacity).toBe(3);
+    for (let index = 0; index < 3; index += 1) {
+      await supervisor.start({ cwd: `/repo/${index}` });
+      bridges[index]!.emit({ type: "user-message", sessionId: `s${index + 1}`, text: "busy" });
+    }
+
+    expect(supervisor.setCapacity(1)).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(bridges.map((bridge) => bridge.stopped)).toEqual([0, 0, 0]);
+
+    bridges[0]!.emit({ type: "engine-idle", sessionId: "s1", gate: "green" });
+    bridges[1]!.emit({ type: "engine-idle", sessionId: "s2", gate: "green" });
+    await vi.waitFor(() => expect(supervisor.size).toBe(1));
+    expect(bridges[2]!.stopped).toBe(0);
   });
 
   it("prevents two writable hosts from owning the same canonical workspace", async () => {

@@ -862,6 +862,18 @@ const mock = {
   onReady: () => () => undefined,
   onResync: () => () => undefined,
   onLocalRuntimeStatus: () => () => undefined,
+  localRuntimeSettings: async () => ({ ok: true as const, value: { capacity: 3 } }),
+  updateLocalRuntimeSettings: async ({ capacity }: { capacity: number }) => ({
+    ok: true as const,
+    value: { capacity },
+  }),
+  localRuntimeLaunchQueue: async () => ({
+    ok: true as const,
+    value: { capacity: 3, active: 1, items: [] },
+  }),
+  cancelLocalRuntimeLaunch: async () => ({ ok: true as const, cancelled: false }),
+  onLocalRuntimeLaunchQueue: () => () => undefined,
+  onLocalRuntimeNotificationActivation: () => () => undefined,
   onFatal: () => () => undefined,
   onMenuAction: () => () => undefined,
   cloudSettings: async () => ({ ok: true as const, value: {
@@ -1079,7 +1091,9 @@ const mock = {
 const REQUIRED_VIBE_KEYS = [
   "bootstrap", "send", "rpc", "listProjects", "renameProject", "archiveProject",
   "deleteProject", "renameSession", "deleteSession", "archiveSession", "searchSessions", "forkSession", "stop",
-  "quit", "recordFirstPaint", "getPerformanceSummary", "exportDiagnosticsBundle", "onEvent", "onReady", "onResync", "onLocalRuntimeStatus", "onFatal", "onMenuAction", "cloudSettings",
+  "quit", "recordFirstPaint", "getPerformanceSummary", "exportDiagnosticsBundle", "onEvent", "onReady", "onResync", "onLocalRuntimeStatus",
+  "localRuntimeSettings", "updateLocalRuntimeSettings", "localRuntimeLaunchQueue", "cancelLocalRuntimeLaunch", "onLocalRuntimeLaunchQueue", "onLocalRuntimeNotificationActivation",
+  "onFatal", "onMenuAction", "cloudSettings",
   "updateCloudSettings", "connectCloudProvider", "disconnectCloudProvider", "testCloudProvider", "saveCloudCredentialBinding", "removeCloudCredentialBinding",
   "listCloudSessions", "deleteCloudSessionCopy", "recoverLostCloudSession", "handoffToCloud", "reconnectCloudSession", "resumeCloudSessionLocally", "onCloudStatus",
   "setSettingsDirty", "openProject",

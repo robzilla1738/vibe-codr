@@ -1,9 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { commandsExpectBusy } from "../shared/command-busy";
 import type { EngineCommand } from "../shared/commands";
 import type { UIEvent } from "../shared/events";
-import type { LocalRuntimeState, LocalRuntimeStatus } from "../shared/local-runtime";
+import {
+  type LocalRuntimeLaunchQueueSnapshot,
+  type LocalRuntimeNotificationKind,
+  type LocalRuntimeNotificationTransition,
+  type LocalRuntimeState,
+  type LocalRuntimeStatus,
+  normalizeLocalRuntimeCapacity,
+} from "../shared/local-runtime";
 import type { PerformancePhaseSample } from "../shared/performance";
 import { normalizeCwd } from "../shared/project-index";
 import type { HostRpcParams, RpcMethod } from "../shared/protocol";
@@ -17,8 +25,29 @@ import type {
   EngineTransportResyncHandler,
 } from "./engine-transport";
 
-const DEFAULT_CAPACITY = 3;
 const DEFAULT_IDLE_TTL_MS = 10 * 60_000;
+
+class LocalRuntimeCapacityUnavailableError extends Error {}
+
+class LocalRuntimeLaunchCancelledError extends Error {
+  constructor() { super("Local runtime launch was cancelled"); }
+}
+
+interface LaunchRequest {
+  id: string;
+  dedupeKey: string;
+  options: EngineStartOptions;
+  cwd: string;
+  sessionId?: string;
+  createdAt: number;
+  stagedBridge: EngineBridge | null;
+  started: boolean;
+  cancelled: boolean;
+  settled: boolean;
+  promise: Promise<string>;
+  resolve: (sessionId: string) => void;
+  reject: (error: unknown) => void;
+}
 
 interface RuntimeRecord {
   key: string;
@@ -29,6 +58,8 @@ interface RuntimeRecord {
   state: LocalRuntimeState;
   updatedAt: number;
   jobCount: number;
+  performedWork: boolean;
+  attentionKey?: string;
   readyInfo?: Parameters<EngineTransportReadyHandler>[1];
   idleTimer?: NodeJS.Timeout;
 }
@@ -49,13 +80,17 @@ export type RuntimeRetirementResult =
  * idle runtimes age out. */
 export class LocalRuntimeSupervisor {
   readonly #records = new Map<string, RuntimeRecord>();
-  readonly #capacity: number;
+  readonly #pending: LaunchRequest[] = [];
+  readonly #requestsById = new Map<string, LaunchRequest>();
+  readonly #requestsByDedupeKey = new Map<string, LaunchRequest>();
+  #capacity: number;
   readonly #idleTtlMs: number;
   readonly #now: () => number;
   readonly #createBridge: () => EngineBridge;
   #active: RuntimeRecord | null = null;
   #stagedBridge: EngineBridge | null = null;
   #lifecycle: Promise<void> = Promise.resolve();
+  #maintenanceScheduled = false;
   #disposed = false;
 
   onEvent: EngineTransportEventHandler | null = null;
@@ -65,10 +100,12 @@ export class LocalRuntimeSupervisor {
   onPerformancePhase: ((sample: PerformancePhaseSample) => void) | null = null;
   onBackgroundEvent: ((event: unknown) => void) | null = null;
   onStatus: ((status: LocalRuntimeStatus) => void) | null = null;
+  onQueueChanged: ((snapshot: LocalRuntimeLaunchQueueSnapshot) => void) | null = null;
+  onNotification: ((transition: LocalRuntimeNotificationTransition) => void) | null = null;
   onWillSwitch: (() => void) | null = null;
 
   constructor(options: LocalRuntimeSupervisorOptions = {}) {
-    this.#capacity = Math.max(1, Math.trunc(options.capacity ?? DEFAULT_CAPACITY));
+    this.#capacity = normalizeLocalRuntimeCapacity(options.capacity);
     this.#idleTtlMs = Math.max(0, Math.trunc(options.idleTtlMs ?? DEFAULT_IDLE_TTL_MS));
     this.#now = options.now ?? Date.now;
     this.#createBridge = options.createBridge ?? (() => new EngineBridge());
@@ -81,6 +118,7 @@ export class LocalRuntimeSupervisor {
   get lastLaunchDescription(): string { return this.#active?.bridge.lastLaunchDescription ?? ""; }
   get lastStderr(): string { return this.#active?.bridge.lastStderr ?? ""; }
   get size(): number { return this.#records.size; }
+  get capacity(): number { return this.#capacity; }
 
   stageNextBridge(bridge: EngineBridge): void {
     if (this.#disposed) {
@@ -97,18 +135,100 @@ export class LocalRuntimeSupervisor {
     return [...this.#records.values()].map((record) => this.#status(record));
   }
 
-  start(options: EngineStartOptions): Promise<string> {
-    if (this.#disposed) return Promise.reject(new Error("Local runtime supervisor has been disposed"));
-    const operation = this.#lifecycle.then(() => {
-      if (this.#disposed) throw new Error("Local runtime supervisor has been disposed");
-      return this.#start(options);
-    });
-    this.#lifecycle = operation.then(() => undefined, () => undefined);
-    return operation;
+  queueSnapshot(): LocalRuntimeLaunchQueueSnapshot {
+    return {
+      capacity: this.#capacity,
+      items: this.#pending.filter((request) => !request.cancelled).map((request, index) => ({
+        id: request.id,
+        cwd: request.cwd,
+        ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+        createdAt: request.createdAt,
+        position: index + 1,
+        status: "queued" as const,
+      })),
+    };
   }
 
-  async #start(options: EngineStartOptions): Promise<string> {
+  setCapacity(value: unknown): number {
+    this.#capacity = normalizeLocalRuntimeCapacity(value);
+    this.#emitQueue();
+    this.#scheduleMaintenance();
+    return this.#capacity;
+  }
+
+  hasRuntime(cwd: string, sessionId: string): boolean {
+    const record = this.#records.get(runtimeKey(cwd, sessionId));
+    return record?.bridge.isReady === true && record.state !== "stopped";
+  }
+
+  start(options: EngineStartOptions): Promise<string> {
+    if (this.#disposed) return Promise.reject(new Error("Local runtime supervisor has been disposed"));
+    const dedupeKey = launchDedupeKey(options);
+    const duplicate = this.#requestsByDedupeKey.get(dedupeKey);
+    if (duplicate && !duplicate.cancelled && !duplicate.settled) return duplicate.promise;
+
+    let resolve!: (sessionId: string) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<string>((res, rej) => { resolve = res; reject = rej; });
+    const request: LaunchRequest = {
+      id: randomUUID(),
+      dedupeKey,
+      options: { ...options },
+      cwd: normalizedRuntimeCwd(options.cwd),
+      ...(options.resume ? { sessionId: options.resume } : {}),
+      createdAt: this.#now(),
+      stagedBridge: this.#stagedBridge,
+      started: false,
+      cancelled: false,
+      settled: false,
+      promise,
+      resolve,
+      reject,
+    };
+    this.#stagedBridge = null;
+    this.#requestsById.set(request.id, request);
+    this.#requestsByDedupeKey.set(request.dedupeKey, request);
+    const operation = this.#lifecycle.then(async () => {
+      try {
+        if (this.#disposed) throw new Error("Local runtime supervisor has been disposed");
+        if (request.cancelled) throw new LocalRuntimeLaunchCancelledError();
+        const sessionId = await this.#start(request);
+        this.#settleRequest(request, { sessionId });
+      } catch (error) {
+        if (error instanceof LocalRuntimeCapacityUnavailableError) {
+          if (!request.cancelled && !this.#disposed) {
+            this.#pending.push(request);
+            this.#emitQueue();
+            return;
+          }
+        }
+        this.#settleRequest(request, { error });
+      }
+    });
+    this.#lifecycle = operation.then(() => undefined, () => undefined);
+    return promise;
+  }
+
+  cancelLaunch(requestId: string): boolean {
+    const request = this.#requestsById.get(requestId);
+    if (!request || request.cancelled || request.settled || !this.#pending.includes(request)) return false;
+    request.cancelled = true;
+    this.#removePendingRequest(request);
+    this.#settleRequest(request, { error: new LocalRuntimeLaunchCancelledError() });
+    if (request.stagedBridge) {
+      const staged = request.stagedBridge;
+      request.stagedBridge = null;
+      void staged.disposeForQuit().catch(() => undefined);
+    }
+    this.#emitQueue();
+    this.#scheduleMaintenance();
+    return true;
+  }
+
+  async #start(request: LaunchRequest): Promise<string> {
+    const options = request.options;
     await this.#evictExpired();
+    if (request.cancelled) throw new LocalRuntimeLaunchCancelledError();
     const cwd = normalizedRuntimeCwd(options.cwd);
     const ownershipRoot = canonicalOwnershipRoot(options.cwd);
     const existing = options.resume
@@ -142,10 +262,14 @@ export class LocalRuntimeSupervisor {
     }
     for (const owner of workspaceOwners) await this.#remove(owner, true);
     await this.#ensureCapacity();
+    if (request.cancelled) throw new LocalRuntimeLaunchCancelledError();
 
     const previous = this.#active;
-    const bridge = this.#stagedBridge ?? this.#createBridge();
-    this.#stagedBridge = null;
+    this.#removePendingRequest(request);
+    this.#emitQueue();
+    request.started = true;
+    const bridge = request.stagedBridge ?? this.#createBridge();
+    request.stagedBridge = null;
     const pendingKey = options.resume
       ? runtimeKey(ownershipRoot, options.resume)
       : `pending:${this.#now()}:${Math.random().toString(36).slice(2)}`;
@@ -158,6 +282,7 @@ export class LocalRuntimeSupervisor {
       state: "idle",
       updatedAt: this.#now(),
       jobCount: 0,
+      performedWork: false,
     };
     this.#records.set(record.key, record);
     this.#wire(record);
@@ -222,6 +347,7 @@ export class LocalRuntimeSupervisor {
 
   /** Stop every writable local owner before control crosses a process boundary. */
   stopAll(): Promise<void> {
+    this.#cancelAllRequests(new Error("Local runtime ownership was released before launch"));
     const operation = this.#lifecycle.then(async () => {
       const records = [...this.#records.values()];
       const results = await Promise.allSettled(records.map((record) => this.#remove(record, true)));
@@ -294,6 +420,7 @@ export class LocalRuntimeSupervisor {
   disposeForQuit(): Promise<void> {
     if (this.#disposed) return this.#lifecycle;
     this.#disposed = true;
+    this.#cancelAllRequests(new Error("Local runtime supervisor has been disposed"));
     const operation = this.#lifecycle.then(async () => {
       const records = [...this.#records.values()];
       this.#records.clear();
@@ -331,7 +458,9 @@ export class LocalRuntimeSupervisor {
       else if (isUIEvent(event) && event.type === "turn-performance") this.onBackgroundEvent?.(event);
     };
     bridge.onFatal = (message) => {
+      const wasFailed = record.state === "failed";
       this.#setState(record, "failed");
+      if (!wasFailed) this.#notify(record, "failure", "fatal");
       if (this.#active === record) this.onFatal?.(message);
     };
     bridge.onReady = (sessionId, info) => {
@@ -355,6 +484,7 @@ export class LocalRuntimeSupervisor {
     if (!isUIEvent(raw)) return;
     const event: UIEvent = raw;
     if ("sessionId" in event && record.sessionId && event.sessionId !== record.sessionId) return;
+    const priorState = record.state;
     switch (event.type) {
       case "user-message":
       case "permission-settled":
@@ -364,15 +494,25 @@ export class LocalRuntimeSupervisor {
       case "reasoning-delta":
       case "tool-call-started":
       case "tool-call-progress":
+        record.performedWork = true;
+        record.attentionKey = undefined;
         this.#setState(record, "working");
         break;
       case "permission-request":
-      case "question-request":
+        this.#setState(record, "needs-input");
+        this.#notify(record, "permission", `permission:${event.id}`);
+        break;
       case "external-capability-pending":
         this.#setState(record, "needs-input");
+        this.#notify(record, "permission", `capability:${event.request.id}`);
+        break;
+      case "question-request":
+        this.#setState(record, "needs-input");
+        this.#notify(record, "question", `question:${event.question.id}`);
         break;
       case "plan-presented":
         this.#setState(record, "needs-review");
+        this.#notify(record, "plan-review", "plan-review");
         break;
       case "plan-state-changed":
         if (event.state.status === "pending") this.#setState(record, "needs-review");
@@ -382,6 +522,7 @@ export class LocalRuntimeSupervisor {
         break;
       case "engine-error":
         this.#setState(record, "failed");
+        if (priorState !== "failed") this.#notify(record, "failure", `failure:${record.updatedAt}`);
         break;
       case "engine-idle":
         if (record.state === "needs-input" || record.state === "needs-review" || record.state === "failed") {
@@ -390,7 +531,14 @@ export class LocalRuntimeSupervisor {
           // resolution paths and must survive ordinary engine-idle delivery.
           this.#touch(record);
           this.#emitStatus(record);
-        } else this.#setState(record, event.gate === "red" ? "needs-review" : "idle");
+        } else {
+          this.#setState(record, event.gate === "red" ? "needs-review" : "idle");
+          if (event.gate !== "red" && event.gate !== "aborted" && record.performedWork) {
+            this.#notify(record, "completed", `completed:${record.updatedAt}`);
+          }
+        }
+        record.performedWork = false;
+        record.attentionKey = undefined;
         break;
       case "jobs-changed":
         record.jobCount = event.jobs.filter((job) => job.status === "running").length;
@@ -399,6 +547,7 @@ export class LocalRuntimeSupervisor {
         record.idleTimer = undefined;
         if (record.jobCount === 0 && record.state === "idle" && this.#active !== record) {
           this.#scheduleIdleEviction(record);
+          this.#scheduleMaintenance();
         }
         this.#emitStatus(record);
         break;
@@ -410,6 +559,8 @@ export class LocalRuntimeSupervisor {
 
   #observeCommand(record: RuntimeRecord, command: EngineCommand): void {
     if (commandsExpectBusy([command])) {
+      record.performedWork = true;
+      record.attentionKey = undefined;
       this.#setState(record, "working");
       return;
     }
@@ -417,9 +568,11 @@ export class LocalRuntimeSupervisor {
       case "resolve-permission":
       case "resolve-question":
       case "resolve-external-capability":
+        record.attentionKey = undefined;
         this.#setState(record, "working");
         break;
       case "resolve-plan":
+        record.attentionKey = undefined;
         this.#setState(record, command.decision === "keep-planning" ? "idle" : "working");
         break;
       default:
@@ -436,6 +589,7 @@ export class LocalRuntimeSupervisor {
     if (state === "idle" && record.jobCount === 0 && this.#active !== record && this.#idleTtlMs >= 0) {
       this.#scheduleIdleEviction(record);
     }
+    if (state === "idle" || state === "failed") this.#scheduleMaintenance();
   }
 
   #scheduleIdleEviction(record: RuntimeRecord): void {
@@ -484,16 +638,108 @@ export class LocalRuntimeSupervisor {
     for (const record of this.#records.values()) this.#emitStatus(record);
   }
 
-  async #ensureCapacity(): Promise<void> {
-    if (this.#records.size < this.#capacity) return;
+  #emitQueue(): void {
+    this.onQueueChanged?.(this.queueSnapshot());
+  }
+
+  #notify(record: RuntimeRecord, kind: LocalRuntimeNotificationKind, transitionId: string): void {
+    if (this.#active === record || !record.sessionId || record.attentionKey === transitionId) return;
+    record.attentionKey = transitionId;
+    this.onNotification?.({
+      kind,
+      cwd: record.cwd,
+      sessionId: record.sessionId,
+      transitionId,
+    });
+  }
+
+  #removePendingRequest(request: LaunchRequest): void {
+    const index = this.#pending.indexOf(request);
+    if (index >= 0) this.#pending.splice(index, 1);
+  }
+
+  #settleRequest(
+    request: LaunchRequest,
+    outcome: { sessionId: string } | { error: unknown },
+  ): void {
+    if (request.settled) return;
+    request.settled = true;
+    this.#removePendingRequest(request);
+    if (this.#requestsById.get(request.id) === request) this.#requestsById.delete(request.id);
+    if (this.#requestsByDedupeKey.get(request.dedupeKey) === request) {
+      this.#requestsByDedupeKey.delete(request.dedupeKey);
+    }
+    if ("sessionId" in outcome) request.resolve(outcome.sessionId);
+    else request.reject(outcome.error);
+  }
+
+  #cancelAllRequests(error: Error): void {
+    for (const request of [...this.#requestsById.values()]) {
+      if (request.started) continue;
+      request.cancelled = true;
+      if (request.stagedBridge) {
+        const staged = request.stagedBridge;
+        request.stagedBridge = null;
+        void staged.disposeForQuit().catch(() => undefined);
+      }
+      this.#settleRequest(request, { error });
+    }
+    this.#pending.length = 0;
+    this.#emitQueue();
+  }
+
+  #scheduleMaintenance(): void {
+    if (this.#maintenanceScheduled || this.#disposed) return;
+    this.#maintenanceScheduled = true;
+    const operation = this.#lifecycle.then(async () => {
+      this.#maintenanceScheduled = false;
+      if (this.#disposed) return;
+      await this.#reconcileCapacity();
+      await this.#drainQueue();
+    });
+    this.#lifecycle = operation.then(() => undefined, () => undefined);
+  }
+
+  async #drainQueue(): Promise<void> {
+    while (!this.#disposed) {
+      const request = this.#pending.find((candidate) => !candidate.cancelled && !candidate.settled);
+      if (!request) return;
+      try {
+        const sessionId = await this.#start(request);
+        this.#settleRequest(request, { sessionId });
+        this.#emitQueue();
+      } catch (error) {
+        if (error instanceof LocalRuntimeCapacityUnavailableError) return;
+        this.#settleRequest(request, { error });
+        this.#emitQueue();
+      }
+    }
+  }
+
+  async #reconcileCapacity(): Promise<void> {
     await this.#evictExpired();
-    if (this.#records.size < this.#capacity) return;
-    const candidate = [...this.#records.values()]
+    while (this.#records.size > this.#capacity) {
+      const candidate = this.#idleRetirementCandidate();
+      if (!candidate) return;
+      await this.#remove(candidate, true);
+    }
+  }
+
+  #idleRetirementCandidate(): RuntimeRecord | undefined {
+    return [...this.#records.values()]
       .filter((record) => record !== this.#active && record.state === "idle" && record.jobCount === 0)
       .sort((a, b) => a.updatedAt - b.updatedAt)[0];
-    if (candidate) await this.#remove(candidate, true);
+  }
+
+  async #ensureCapacity(): Promise<void> {
+    await this.#reconcileCapacity();
+    while (this.#records.size >= this.#capacity) {
+      const candidate = this.#idleRetirementCandidate();
+      if (!candidate) break;
+      await this.#remove(candidate, true);
+    }
     if (this.#records.size < this.#capacity) return;
-    throw new Error(
+    throw new LocalRuntimeCapacityUnavailableError(
       `Local runtime capacity (${this.#capacity}) is full. Finish or stop a working session, or retry after an idle background session ages out.`,
     );
   }
@@ -539,6 +785,7 @@ export class LocalRuntimeSupervisor {
     this.#emitStatus(record);
     if (this.#records.get(record.key) === record) this.#records.delete(record.key);
     if (this.#active === record) this.#active = null;
+    this.#scheduleMaintenance();
   }
 }
 
@@ -549,6 +796,16 @@ export function runtimeKey(cwd: string, sessionId: string): string {
 function normalizedRuntimeCwd(cwd: string): string {
   const normalized = normalizeCwd(cwd);
   return process.platform === "win32" ? normalized.toLocaleLowerCase() : normalized;
+}
+
+function launchDedupeKey(options: EngineStartOptions): string {
+  return JSON.stringify({
+    cwd: canonicalOwnershipRoot(options.cwd),
+    resume: options.resume ?? null,
+    continueLatest: options.continueLatest === true,
+    model: options.model ?? null,
+    mode: options.mode ?? null,
+  });
 }
 
 function canonicalOwnershipRoot(cwd: string): string {

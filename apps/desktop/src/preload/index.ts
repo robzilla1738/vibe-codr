@@ -31,7 +31,12 @@ import type {
   GitPushRequest,
 } from "../shared/git-types";
 import { isMenuAction, type MenuAction } from "../shared/menu-actions";
-import type { LocalRuntimeStatus } from "../shared/local-runtime";
+import type {
+  LocalRuntimeLaunchQueueSnapshot,
+  LocalRuntimeNotificationTarget,
+  LocalRuntimeSettings,
+  LocalRuntimeStatus,
+} from "../shared/local-runtime";
 import type { PerformanceDiagnosticsBundle, PerformanceSummary } from "../shared/performance";
 import type { ProjectSummary, RpcMethod, SessionSearchHit } from "../shared/protocol";
 import type {
@@ -82,6 +87,12 @@ export interface VibeApi {
   onReady(cb: (sessionId: string) => void): () => void;
   onResync(cb: () => void): () => void;
   onLocalRuntimeStatus(cb: (status: LocalRuntimeStatus) => void): () => void;
+  localRuntimeSettings(): Promise<{ ok: true; value: LocalRuntimeSettings } | { ok: false; error: string }>;
+  updateLocalRuntimeSettings(input: { capacity: number }): Promise<{ ok: true; value: LocalRuntimeSettings } | { ok: false; error: string }>;
+  localRuntimeLaunchQueue(): Promise<{ ok: true; value: LocalRuntimeLaunchQueueSnapshot } | { ok: false; error: string }>;
+  cancelLocalRuntimeLaunch(id: string): Promise<{ ok: true; cancelled: boolean } | { ok: false; error: string }>;
+  onLocalRuntimeLaunchQueue(cb: (snapshot: LocalRuntimeLaunchQueueSnapshot) => void): () => void;
+  onLocalRuntimeNotificationActivation(cb: (target: LocalRuntimeNotificationTarget) => void): () => void;
   onFatal(cb: (message: string) => void): () => void;
   onMenuAction(cb: (action: MenuAction) => void): () => void;
   cloudSettings(): Promise<{ ok: true; value: CloudSettingsPublic } | { ok: false; error: string }>;
@@ -197,6 +208,20 @@ const api: VibeApi = {
     const handler = (_: Electron.IpcRendererEvent, status: LocalRuntimeStatus) => cb(status);
     ipcRenderer.on("engine:runtime-status", handler);
     return () => ipcRenderer.removeListener("engine:runtime-status", handler);
+  },
+  localRuntimeSettings: () => ipcRenderer.invoke("runtime:settings"),
+  updateLocalRuntimeSettings: (input) => ipcRenderer.invoke("runtime:updateSettings", input),
+  localRuntimeLaunchQueue: () => ipcRenderer.invoke("runtime:launchQueue"),
+  cancelLocalRuntimeLaunch: (id) => ipcRenderer.invoke("runtime:cancelLaunch", id),
+  onLocalRuntimeLaunchQueue: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, snapshot: LocalRuntimeLaunchQueueSnapshot) => cb(snapshot);
+    ipcRenderer.on("runtime:launchQueueChanged", handler);
+    return () => ipcRenderer.removeListener("runtime:launchQueueChanged", handler);
+  },
+  onLocalRuntimeNotificationActivation: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, target: LocalRuntimeNotificationTarget) => cb(target);
+    ipcRenderer.on("runtime:notificationActivation", handler);
+    return () => ipcRenderer.removeListener("runtime:notificationActivation", handler);
   },
   onFatal: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, message: string) => cb(message);

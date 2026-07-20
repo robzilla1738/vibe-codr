@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { chmod, open as fsOpen, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { MessageBoxSyncOptions } from "electron";
-import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, safeStorage, session, shell } from "electron";
+import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, safeStorage, session, shell } from "electron";
 import { readTextFileCapped } from "../shared/capped-read";
 import type { EngineCommand } from "../shared/commands";
 import { isAllowedCwd, isAllowedProjectRoot, isAllowedRevealPath, projectCwdAllowlist } from "../shared/cwd-allowlist";
@@ -13,9 +13,10 @@ import { composeInEditor, EDITOR_DRAFT_MAX_BYTES } from "../shared/editor-compos
 import { safeExternalUrl } from "../shared/external-url";
 import { listProjectFiles, rankPaths } from "../shared/file-fuzzy";
 import type { MenuAction } from "../shared/menu-actions";
+import { isLocalRuntimeCapacity, type LocalRuntimeNotificationTarget } from "../shared/local-runtime";
 import { resolvePathInsideRoot, resolveWritablePathInsideRoot } from "../shared/path-safe";
 import { diagnosticLaunchKind } from "../shared/performance";
-import { chatsCwdFromHome } from "../shared/project-index";
+import { chatsCwdFromHome, normalizeCwd } from "../shared/project-index";
 import type { ProjectSummary } from "../shared/protocol";
 import { decodeInbound, HOST_PROTOCOL_VERSION, type HostInbound, type RpcMethod } from "../shared/protocol";
 import { isRendererRpcMethod } from "../shared/renderer-rpc";
@@ -30,13 +31,16 @@ import { registerGitIpc } from "./git-ipc";
 import { enrichedEnv } from "./host-resolver";
 import { assertTrustedIpc, assertTrustedSender, getMainWindow, setMainWindow } from "./ipc-security";
 import { MobileRelayController } from "./mobile-relay-controller";
+import { LocalRuntimeNotificationRouter } from "./local-runtime-notifications";
 import { PerformanceStore } from "./performance-store";
+import { RuntimeSettingsStore } from "./runtime-settings-store";
 import { TerminalManager } from "./terminal-manager";
 
 let mainWindow: BrowserWindow | null = null;
 let settingsDirty = false;
 let appUpdater: AppUpdaterController | null = null;
-const bridge = new EngineTransportController();
+const runtimeSettingsStore = new RuntimeSettingsStore(app.getPath("userData"));
+const bridge = new EngineTransportController({ localCapacity: runtimeSettingsStore.get().capacity });
 const cloudManager = new CloudManager(bridge, app.getPath("userData"), safeStorage);
 cloudManager.runtimeLocation = { isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath };
 const performanceStore = new PerformanceStore(app.getPath("userData"));
@@ -51,6 +55,57 @@ bridge.onPerformancePhase = (sample) => performanceStore.recordPhase(sample);
 bridge.onBackgroundEvent = (event) => performanceStore.observeEngineEvent(event);
 let lastDesktopCwd = "";
 let lastDesktopSessionId = "";
+const runtimeTargetLabels = new Map<string, { projectTitle: string; sessionTitle: string }>();
+
+const runtimeNotifications = new LocalRuntimeNotificationRouter({
+  adapter: {
+    isSupported: () => Notification.isSupported(),
+    show: (payload, onClick) => {
+      const notification = new Notification(payload);
+      notification.once("click", onClick);
+      notification.show();
+    },
+  },
+  labelsFor: (target) => runtimeTargetLabels.get(runtimeTargetKey(target)) ?? {
+    projectTitle: basename(target.cwd) || "Project",
+    sessionTitle: "Background session",
+  },
+  activate: activateRuntimeNotificationTarget,
+});
+
+function runtimeTargetKey(target: LocalRuntimeNotificationTarget): string {
+  return `${normalizeCwd(target.cwd)}\0${target.sessionId}`;
+}
+
+function rememberRuntimeTargetLabels(projects: ProjectSummary[]): void {
+  for (const project of projects) {
+    for (const saved of project.sessions) {
+      runtimeTargetLabels.set(runtimeTargetKey({ cwd: project.cwd, sessionId: saved.id }), {
+        projectTitle: project.name || basename(project.cwd) || "Project",
+        sessionTitle: saved.title || "Background session",
+      });
+    }
+  }
+}
+
+function activateRuntimeNotificationTarget(target: LocalRuntimeNotificationTarget): void {
+  if (!bridge.hasLocalRuntime(target.cwd, target.sessionId)) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    bridge.restoreLocalRuntimeOwnership();
+    createWindow();
+  }
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  const deliver = () => {
+    if (!bridge.hasLocalRuntime(target.cwd, target.sessionId) || win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    sendToRenderer("runtime:notificationActivation", target);
+  };
+  if (win.webContents.isLoading()) win.webContents.once("did-finish-load", deliver);
+  else deliver();
+}
 
 const mobileRelay = new MobileRelayController({
   getParent: () => mainWindow,
@@ -530,6 +585,8 @@ function wireBridge(): void {
   };
   bridge.onResync = () => { engineEventCoalescer.flush(); sendToRenderer("engine:resync"); };
   bridge.onLocalRuntimeStatus = (status) => sendToRenderer("engine:runtime-status", status);
+  bridge.onLocalRuntimeQueueChanged = (snapshot) => sendToRenderer("runtime:launchQueueChanged", snapshot);
+  bridge.onLocalRuntimeNotification = (transition) => runtimeNotifications.observe(transition);
   bridge.onTerminalEvent = (event) => sendToRenderer("terminal:event", event);
   cloudManager.onStatus = (status) => sendToRenderer("cloud:status", status);
 }
@@ -585,6 +642,38 @@ function registerIpc(): void {
   ipcMain.on("settings:dirty", (event, dirty: unknown) => {
     assertTrustedSender(event.sender);
     settingsDirty = dirty === true;
+  });
+
+  ipcMain.handle("runtime:settings", (event) => {
+    assertTrustedIpc(event);
+    return { ok: true as const, value: runtimeSettingsStore.get() };
+  });
+  ipcMain.handle("runtime:updateSettings", async (event, input: unknown) => {
+    assertTrustedIpc(event);
+    const capacity = input && typeof input === "object"
+      ? (input as { capacity?: unknown }).capacity
+      : undefined;
+    if (!isLocalRuntimeCapacity(capacity)) {
+      return { ok: false as const, error: "Local runtime capacity must be an integer from 1 through 8" };
+    }
+    try {
+      const value = await runtimeSettingsStore.update({ capacity });
+      bridge.setLocalRuntimeCapacity(value.capacity);
+      return { ok: true as const, value };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  ipcMain.handle("runtime:launchQueue", (event) => {
+    assertTrustedIpc(event);
+    return { ok: true as const, value: bridge.localRuntimeQueue() };
+  });
+  ipcMain.handle("runtime:cancelLaunch", (event, requestId: unknown) => {
+    assertTrustedIpc(event);
+    if (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128) {
+      return { ok: false as const, error: "Invalid local runtime launch request" };
+    }
+    return { ok: true as const, cancelled: bridge.cancelLocalRuntimeLaunch(requestId) };
   });
 
   ipcMain.handle(
@@ -765,6 +854,9 @@ function registerIpc(): void {
       const value = message.method === "listProjects"
         ? authorizeProjectIndex(rawValue)
         : rawValue;
+      if (message.method === "listProjects" && isProjectSummaryArray(value)) {
+        rememberRuntimeTargetLabels(value);
+      }
       return { ok: true as const, value };
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) };

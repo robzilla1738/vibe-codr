@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { belowBreakpoint } from "../../shared/breakpoints";
 import { jobsForDisplay } from "../../shared/live-list-bounds";
+import type { LocalRuntimeLaunchQueueItem } from "../../shared/local-runtime";
 import type { ActivityInfo, JobInfo } from "../../shared/types";
 import { CopyButton } from "../CopyButton";
 import { IconLink } from "../icons";
@@ -120,15 +121,19 @@ function JobTerminal({
 export function JobsView({
   jobs,
   activities = [],
+  launchQueue = [],
   totalCount = jobs.length,
   onClose,
   onCancelActivity,
+  onCancelLaunch,
 }: {
   jobs: JobInfo[];
   activities?: ActivityInfo[];
+  launchQueue?: LocalRuntimeLaunchQueueItem[];
   totalCount?: number;
   onClose?: () => void;
   onCancelActivity?: (id: string) => void;
+  onCancelLaunch?: (id: string) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [isDrawer, setIsDrawer] = useState(() => belowBreakpoint("compact"));
@@ -183,7 +188,7 @@ export function JobsView({
 
   const visibleJobs = jobsForDisplay(jobs);
   const orchestrationActivities = activities.filter((activity) => activity.kind !== "shell").slice(-100);
-  const combinedTotal = jobs.length + orchestrationActivities.length;
+  const combinedTotal = jobs.length + orchestrationActivities.length + launchQueue.length;
 
   const heading = onClose ? (
     <ActivityPanelHeader
@@ -222,10 +227,24 @@ export function JobsView({
       className="jobs-view"
       tabIndex={-1}
       aria-labelledby="jobs-panel-title"
-      aria-label={`Background jobs, ${totalCount} total`}
+      aria-label={`Background jobs and launches, ${combinedTotal} total`}
     >
       {heading}
       <div className="jobs-list">
+        {launchQueue.map((request) => (
+          <article key={request.id} className="job-card is-queued" aria-labelledby={`launch-label-${request.id}`}>
+            <div className="job-header">
+              <span className="job-status job-status-queued">Queued · {request.position}</span>
+              <span className="job-command" id={`launch-label-${request.id}`}>
+                Open {runtimeProjectTitle(request.cwd)}{request.sessionId ? " session" : " workspace"}
+              </span>
+              {onCancelLaunch ? (
+                <button type="button" className="chip" onClick={() => onCancelLaunch(request.id)}>Cancel</button>
+              ) : null}
+            </div>
+            <p className="job-queue-note">Waiting for a protected local runtime slot.</p>
+          </article>
+        ))}
         {orchestrationActivities.map((activity) => (
           <article
             key={activity.id}
@@ -300,4 +319,9 @@ export function JobsView({
       </div>
     </div>
   );
+}
+
+function runtimeProjectTitle(cwd: string): string {
+  const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.at(-1) || "project";
 }

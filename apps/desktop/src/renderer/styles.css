@@ -7360,6 +7360,19 @@ html.electron-transparent .sidebar-heading-row { background: var(--drawer-bg); }
   border-color: color-mix(in oklab, var(--assistant) 16%, var(--border));
 }
 
+.job-card.is-queued .job-command { font-family: var(--font-sans); }
+.job-status-queued {
+  color: var(--notice);
+  border-color: color-mix(in oklab, var(--notice) 24%, transparent);
+  background: color-mix(in oklab, var(--notice) 7%, transparent);
+}
+
+.job-queue-note {
+  margin: var(--space-xs) 0 0;
+  color: var(--text-subtle);
+  font: var(--text-caption)/1.4 var(--font-sans);
+}
+
 .job-header {
   display: flex;
   flex-wrap: wrap;
@@ -11313,6 +11326,92 @@ html.electron-transparent .sessions-toolbar {
 }
 
 .sessions-search input::placeholder { color: var(--text-subtle); }
+
+.session-launch-queue {
+  display: grid;
+  flex: 0 0 auto;
+  gap: var(--space-xs);
+  margin: 0 var(--space-lg) var(--space-xs);
+  padding: var(--space-sm);
+  border: 1px solid color-mix(in oklab, var(--border) 32%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--surface-subtle) 72%, transparent);
+  box-shadow: var(--edge-highlight);
+}
+
+.session-launch-queue-heading h2,
+.session-launch-queue-heading p { margin: 0; }
+.session-launch-queue-heading h2 {
+  color: var(--assistant);
+  font-size: var(--text-ui);
+  font-weight: var(--weight-semibold);
+}
+.session-launch-queue-heading p {
+  margin-top: var(--space-2xs);
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+}
+
+.session-launch-queue ol {
+  display: grid;
+  gap: var(--space-2xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-launch-queue li {
+  display: grid;
+  grid-template-columns: var(--space-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 40px;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--surface) 44%, transparent);
+}
+
+.session-launch-position {
+  display: inline-flex;
+  width: var(--space-lg);
+  height: var(--space-lg);
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in oklab, var(--notice) 22%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--notice);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.session-launch-copy { display: grid; min-width: 0; gap: 2px; }
+.session-launch-copy strong {
+  overflow: hidden;
+  color: var(--assistant);
+  font-size: var(--text-ui);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-launch-copy span {
+  overflow: hidden;
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-launch-queue button {
+  min-height: 28px;
+  padding: 0 var(--space-sm);
+  border: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: transparent;
+  font: var(--text-caption)/1 var(--font-sans);
+}
+.session-launch-queue button:hover { color: var(--assistant); background: var(--surface); }
+.session-launch-queue button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.session-launch-queue button:active { transform: translateY(var(--press-offset)); }
 
 .sessions-filters {
   display: grid;

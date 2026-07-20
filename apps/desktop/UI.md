@@ -449,7 +449,15 @@ snippet. External links go through `ExternalLink` / host bridge.
   clears the shell dirty guard.
 - Advanced reuses existing setting cards, badges, and buttons for content-free
   local performance summaries, Copy diagnostics, and plugin loaded/degraded/
-  incompatible/failed health. It introduces no telemetry or new visual primitive.
+  incompatible/failed health. Its Runtime group also applies the desktop local
+  runtime pool limit immediately (1–8, default 3); lowering it preserves every
+  protected runtime and retires idle excess. It introduces no telemetry or new
+  visual primitive.
+- Sessions and Jobs expose the same protected-launch FIFO with stable position
+  and Cancel. These rows mean waiting for a local runtime slot, never a running
+  engine job. Background attention and completion notifications contain only
+  project/session labels plus static action text; clicking one returns to its
+  exact live session while stale targets are ignored.
 
 ## Key files
 
@@ -461,6 +469,7 @@ snippet. External links go through `ExternalLink` / host bridge.
 | Native dropped-file paths | `src/preload/index.ts` (`webUtils.getPathForFile`) |
 | Project rail | `src/renderer/layout/ProjectRail.tsx` |
 | Sessions workspace | `src/renderer/sessions/SessionsWorkspace.tsx`, `src/renderer/sessions/session-live-insight.ts`, `src/shared/session-board.ts` |
+| Local runtime pool, queue, notifications | `src/main/local-runtime-supervisor.ts`, `src/main/runtime-settings-store.ts`, `src/main/local-runtime-notifications.ts`, `src/shared/local-runtime.ts` |
 | Workspace dock | `src/renderer/layout/WorkspaceDock.tsx` |
 | Changed-files footer chip | `src/renderer/panels/TurnChangesCard.tsx` |
 | Diff display helpers | `src/shared/diff-view.ts`, `changed-files.ts` |

@@ -1,7 +1,11 @@
 import type { CappedReadResult } from "../shared/capped-read";
 import type { EngineCommand } from "../shared/commands";
 import { estimateJsonUtf8Bytes } from "../shared/json-size";
-import type { LocalRuntimeStatus } from "../shared/local-runtime";
+import type {
+  LocalRuntimeLaunchQueueSnapshot,
+  LocalRuntimeNotificationTransition,
+  LocalRuntimeStatus,
+} from "../shared/local-runtime";
 import type { PerformancePhaseSample } from "../shared/performance";
 import type { HostRpcParams, RpcMethod } from "../shared/protocol";
 import { isSchemaEngineSnapshot } from "../shared/schema-runtime-guards";
@@ -43,10 +47,13 @@ export class EngineTransportController implements EngineTransport {
   onPerformancePhase: ((sample: PerformancePhaseSample) => void) | null = null;
   onBackgroundEvent: ((event: unknown) => void) | null = null;
   onLocalRuntimeStatus: ((status: LocalRuntimeStatus) => void) | null = null;
+  onLocalRuntimeQueueChanged: ((snapshot: LocalRuntimeLaunchQueueSnapshot) => void) | null = null;
+  onLocalRuntimeNotification: ((transition: LocalRuntimeNotificationTransition) => void) | null = null;
   onTransportWillSwitch: (() => void) | null = null;
 
-  constructor() {
+  constructor(options: { localCapacity?: number } = {}) {
     this.#locals = new LocalRuntimeSupervisor({
+      capacity: options.localCapacity,
       createBridge: () => {
         if (!this.#indexBridgeConsumed) {
           this.#indexBridgeConsumed = true;
@@ -57,6 +64,8 @@ export class EngineTransportController implements EngineTransport {
     });
     this.#locals.onWillSwitch = () => this.onTransportWillSwitch?.();
     this.#locals.onStatus = (status) => this.onLocalRuntimeStatus?.(status);
+    this.#locals.onQueueChanged = (snapshot) => this.onLocalRuntimeQueueChanged?.(snapshot);
+    this.#locals.onNotification = (transition) => this.onLocalRuntimeNotification?.(transition);
     this.#locals.onBackgroundEvent = (event) => this.onBackgroundEvent?.(event);
     this.#active = this.#locals;
     this.#wire(this.#locals);
@@ -79,6 +88,11 @@ export class EngineTransportController implements EngineTransport {
   get isRemote(): boolean { return this.#active !== this.#locals; }
   get lastLaunchDescription(): string { return this.isRemote ? "Cloud agent" : this.#locals.lastLaunchDescription; }
   get lastStderr(): string { return this.isRemote ? "" : this.#locals.lastStderr; }
+
+  localRuntimeQueue(): LocalRuntimeLaunchQueueSnapshot { return this.#locals.queueSnapshot(); }
+  setLocalRuntimeCapacity(value: unknown): number { return this.#locals.setCapacity(value); }
+  cancelLocalRuntimeLaunch(requestId: string): boolean { return this.#locals.cancelLaunch(requestId); }
+  hasLocalRuntime(cwd: string, sessionId: string): boolean { return this.#locals.hasRuntime(cwd, sessionId); }
 
   start(options: EngineStartOptions): Promise<string> {
     const ownershipEpoch = this.#localOwnershipEpoch;

@@ -22,6 +22,7 @@ import { upgradeInstructions } from "./upgrade.ts";
 import { runServeCommand } from "./serve-command.ts";
 import { VERSION } from "./version.ts";
 import { runTraceCommand } from "./trace-command.ts";
+import { runShareCommand } from "./share-command.ts";
 
 // Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
 // literal now lives in ./version.ts (stamped at release by set-version.ts).
@@ -75,6 +76,7 @@ USAGE
   vibecodr trace show <run-id>       inspect a bounded trace page
   vibecodr trace export <run-id>     write a static local HTML trace
   vibecodr serve [options]           serve the authenticated API on 127.0.0.1
+  vibecodr share [session-id]        write a private redacted local HTML session
   vibecodr setup                     run the guided provider/model setup (alias: login)
   vibecodr upgrade                   print how to update to the latest version
 
@@ -178,6 +180,21 @@ export async function run(argv: string[]): Promise<number> {
       return await runServeCommand({ cwd, hostname: values.host, port: values.port });
     } catch (error) {
       process.stderr.write(`vibecodr serve: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+  }
+
+  if (positionals[0] === "share") {
+    try {
+      const result = await runShareCommand({
+        cwd,
+        sessionId: positionals[1],
+        output: values.output,
+      });
+      process.stdout.write(`${result.path}\n`);
+      return 0;
+    } catch (error) {
+      process.stderr.write(`vibecodr share: ${(error as Error).message}\n`);
       return 1;
     }
   }

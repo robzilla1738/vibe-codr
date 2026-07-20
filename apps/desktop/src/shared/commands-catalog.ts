@@ -46,6 +46,8 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   { name: "jobs", description: "Show background shell jobs + localhost servers" },
   { name: "compact", description: "Compact the conversation to free context" },
   { name: "resume", description: "List saved sessions to resume" },
+  { name: "fork", description: "Fork at a completed user turn", arg: "[turn-id]" },
+  { name: "tree", description: "Show this session's fork ancestry" },
   { name: "recall", description: "Search past sessions", arg: "<text>" },
   { name: "sources", description: "Web sources gathered this session (citations)" },
   { name: "export", description: "Export the conversation to Markdown", arg: "[path]" },

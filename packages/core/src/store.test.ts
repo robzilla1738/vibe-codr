@@ -478,6 +478,8 @@ test("fork copies model and display histories through a completed user turn", as
   expect(forked?.modelMessages).toEqual(model.slice(0, 4));
   expect(forked?.history).toEqual(history.slice(0, 2));
   expect(forked?.meta.forkedFrom).toEqual({ sessionId: meta.id, turnId: "turn-stable-1" });
+  expect(forked?.meta.parentSessionId).toBe(meta.id);
+  expect(forked?.meta.forkedAtTurnId).toBe("turn-stable-1");
   expect(forked?.meta.usage?.inputTokens).toBe(0);
   expect(forked?.meta.usage?.byModel?.[meta.model]).toMatchObject({
     inputTokens: 0,
@@ -487,6 +489,9 @@ test("fork copies model and display histories through a completed user turn", as
   });
   expect(source?.modelMessages).toEqual(model);
   expect(source?.history).toEqual(history);
+  const tree = await store.sessionTree(forkedMeta.id);
+  expect(tree?.meta.id).toBe(meta.id);
+  expect(tree?.children.map((child) => child.meta.id)).toEqual([forkedMeta.id]);
 });
 
 test("compacted model history aligns fork boundaries to the latest display turns", async () => {

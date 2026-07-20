@@ -115,11 +115,16 @@ Useful commands:
 /yolo         execute without interactive approval prompts
 /goal         run a durable goal until verified or paused
 /loop         run a bounded recurring instruction
+/fork /tree   branch a completed turn and inspect session ancestry
 /undo /redo   restore engine checkpoints and conversation state
 /status       inspect the current session and runtime
 /doctor       diagnose provider, sandbox, update, and environment health
 /help         show the complete command surface
 ```
+
+`vibecodr share [session-id] --output run.html` writes a mode-0600, static,
+script-free local HTML transcript. It redacts secrets and machine paths and
+omits reasoning, tool arguments, and tool outputs; it never uploads anything.
 
 ## Desktop workspace
 

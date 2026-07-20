@@ -76,6 +76,8 @@ class FakeStore implements LoopbackSessionStore {
       goal: null,
       createdAt: now,
       updatedAt: now,
+      parentSessionId: id,
+      forkedAtTurnId: atTurnId,
       forkedFrom: { sessionId: id, turnId: atTurnId },
     };
     this.sessions.set(meta.id, { meta, modelMessages: [], history: [] });

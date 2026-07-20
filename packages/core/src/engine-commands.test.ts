@@ -11,9 +11,11 @@ import { CheckpointManager } from "./checkpoints.ts";
 import {
   buildSkillPrompt,
   formatStoredMemory,
+  formatSessionTree,
   goalStatusText,
   handleSlash,
   parseMemoryControl,
+  resolveForkTurnId,
 } from "./engine-commands.ts";
 
 async function git(cwd: string, args: string[]): Promise<void> {
@@ -544,6 +546,27 @@ test("/goal accept routes to the explicit unverified-completion command", async 
   } as unknown as Parameters<typeof handleSlash>[0];
   await handleSlash(handle, "goal", "accept");
   expect(sent).toEqual([{ type: "accept-goal-completion" }]);
+});
+
+test("fork turn prefixes fail closed and session trees show ancestry", () => {
+  const turns = [
+    { id: "turn-user-111", modelEnd: 1, historyEnd: 1, completedAt: 1, origin: "user" as const },
+    { id: "turn-engine-1", modelEnd: 2, historyEnd: 2, completedAt: 2, origin: "engine" as const },
+    { id: "turn-user-222", modelEnd: 3, historyEnd: 3, completedAt: 3, origin: "user" as const },
+  ];
+  expect(resolveForkTurnId(turns)).toBe("turn-user-222");
+  expect(resolveForkTurnId(turns, "turn-user-1")).toBe("turn-user-111");
+  expect(() => resolveForkTurnId(turns, "turn-user")).toThrow("ambiguous");
+  expect(() => resolveForkTurnId(turns, "short")).toThrow("at least 6");
+  const text = formatSessionTree({
+    meta: { id: "ses_root", model: "m/x", mode: "execute", goal: null, title: "Root", createdAt: 1, updatedAt: 1 },
+    children: [{
+      meta: { id: "ses_child", model: "m/x", mode: "execute", goal: null, title: "Fork", parentSessionId: "ses_root", forkedAtTurnId: "turn-user-111", createdAt: 2, updatedAt: 2 },
+      children: [],
+    }],
+  }, "ses_child");
+  expect(text).toContain("Root");
+  expect(text).toContain("Fork  @ turn-user-111  ← current");
 });
 
 test("/memory control parser is strict and merge uses an explicit replacement separator", () => {

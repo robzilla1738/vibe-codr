@@ -205,6 +205,11 @@ export const SessionMetaSchema = loose({
   goal: z.string().nullable(),
   kind: z.enum(["root", "subagent"]).optional(),
   parentSessionId: RuntimeIdentifierSchema.optional(),
+  forkedAtTurnId: RuntimeIdentifierSchema.optional(),
+  forkedFrom: loose({
+    sessionId: RuntimeIdentifierSchema,
+    turnId: RuntimeIdentifierSchema,
+  }).optional(),
   agentName: z.string().optional(),
   createdAt: finite,
   updatedAt: finite,

@@ -27,6 +27,8 @@ export const COMMAND_GROUPS: CommandGroup[] = [
       { name: "jobs", description: "Show background shell jobs + detected localhost servers" },
       { name: "compact", description: "Compact the conversation to free context" },
       { name: "resume", description: "List saved sessions to resume" },
+      { name: "fork", description: "Fork at the latest completed user turn (/fork [turn-id])" },
+      { name: "tree", description: "Show this session's fork ancestry" },
       { name: "recall", description: "Search past sessions' memory (/recall <text>)" },
       { name: "sources", description: "List web sources gathered this session (citations)" },
       {

@@ -47,9 +47,15 @@ export {
   type SessionMeta,
   type PersistedSession,
   type PersistedTurnBoundary,
+  type SessionTreeNode,
   deriveTurnBoundaries,
   assertCompleteToolPairs,
 } from "./store.ts";
+export {
+  renderSessionShareHtml,
+  redactSessionShareText,
+  type SessionShareOptions,
+} from "./session-share.ts";
 export { globalStateDir, stateRoot } from "./state-dir.ts";
 export { PortableSessionManager } from "./portable-session.ts";
 export {

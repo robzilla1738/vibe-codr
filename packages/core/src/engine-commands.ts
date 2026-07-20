@@ -30,7 +30,7 @@ import type { StoredMemoryEntry } from "./memory-store.ts";
 import { loadMemorySources, formatMemory } from "./memory.ts";
 import { reasoningCategory } from "./model-tuning.ts";
 import type { CheckpointManager } from "./checkpoints.ts";
-import type { SessionStore } from "./store.ts";
+import type { PersistedTurnBoundary, SessionStore, SessionTreeNode } from "./store.ts";
 import type { GitRunResult } from "./git-info.ts";
 import type { McpServerStatus } from "./mcp.ts";
 import type { LspStatus } from "./diagnostics.ts";
@@ -84,6 +84,38 @@ export function formatStoredMemory(entries: StoredMemoryEntry[]): string {
     return `  [${entry.id}] ${entry.source} · ${when}${pin}\n    ${entry.fact}`;
   });
   return `Memory — ${entries.length} saved note(s):\n${lines.join("\n")}`;
+}
+
+export function resolveForkTurnId(
+  turns: readonly PersistedTurnBoundary[],
+  prefix?: string,
+): string {
+  const userTurns = turns.filter((turn) => turn.origin === "user");
+  if (!prefix) {
+    const latest = userTurns.at(-1);
+    if (!latest) throw new Error("No completed user turn is available to fork");
+    return latest.id;
+  }
+  const clean = prefix.trim();
+  if (clean.length < 6 || !/^[A-Za-z0-9._-]+$/.test(clean))
+    throw new Error("Fork turn id must be a safe prefix of at least 6 characters");
+  const matches = userTurns.filter((turn) => turn.id.startsWith(clean));
+  if (matches.length !== 1) throw new Error(matches.length ? "Fork turn prefix is ambiguous" : "Fork turn was not found");
+  return matches[0]!.id;
+}
+
+export function formatSessionTree(tree: SessionTreeNode, currentId: string): string {
+  const lines: string[] = ["Session tree:"];
+  const visit = (node: SessionTreeNode, prefix: string, last: boolean, root: boolean) => {
+    const branch = root ? "" : last ? "└─ " : "├─ ";
+    const current = node.meta.id === currentId ? "  ← current" : "";
+    const fork = node.meta.forkedAtTurnId ?? node.meta.forkedFrom?.turnId;
+    lines.push(`${prefix}${branch}${node.meta.title || node.meta.id}${fork ? `  @ ${fork}` : ""}${current}`);
+    const childPrefix = root ? "" : `${prefix}${last ? "   " : "│  "}`;
+    node.children.forEach((child, index) => visit(child, childPrefix, index === node.children.length - 1, false));
+  };
+  visit(tree, "", true, true);
+  return lines.join("\n");
 }
 
 /**
@@ -687,6 +719,26 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
     case "resume":
       await handleResume(h);
       break;
+    case "fork": {
+      const loaded = await h.store.load(h.session.id);
+      if (!loaded) {
+        h.notice("The current session has not been saved yet, so it cannot be forked.", "warn");
+        break;
+      }
+      try {
+        const turnId = resolveForkTurnId(loaded.meta.turns ?? [], args.trim() || undefined);
+        const forked = await h.store.fork(h.session.id, turnId);
+        h.notice(`Forked session ${forked.id} at ${turnId}. Resume it with --resume ${forked.id}.`);
+      } catch (error) {
+        h.notice(`Fork refused: ${(error as Error).message}`, "warn");
+      }
+      break;
+    }
+    case "tree": {
+      const tree = await h.store.sessionTree(h.session.id);
+      h.notice(tree ? formatSessionTree(tree, h.session.id) : "No saved ancestry tree exists for this session.");
+      break;
+    }
     case "export":
       await handleExport(h, args);
       break;

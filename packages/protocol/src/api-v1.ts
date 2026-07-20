@@ -106,6 +106,8 @@ export const ApiV1SessionSchema = exact({
   updatedAt: z.number().finite().nonnegative(),
   active: z.boolean(),
   forkedFrom: exact({ sessionId: id, turnId: id }).optional(),
+  parentSessionId: id.optional(),
+  forkedAtTurnId: id.optional(),
 });
 export type ApiV1Session = z.infer<typeof ApiV1SessionSchema>;
 

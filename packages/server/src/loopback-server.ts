@@ -374,6 +374,8 @@ function sessionFromMeta(meta: SessionMeta, active: boolean): ApiV1Session {
     updatedAt: meta.updatedAt,
     active,
     ...(meta.forkedFrom ? { forkedFrom: meta.forkedFrom } : {}),
+    ...(meta.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
+    ...(meta.forkedAtTurnId ? { forkedAtTurnId: meta.forkedAtTurnId } : {}),
   };
 }
 

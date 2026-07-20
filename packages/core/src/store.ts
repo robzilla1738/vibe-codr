@@ -39,6 +39,8 @@ export interface SessionMeta {
   goal: string | null;
   kind?: "root" | "subagent";
   parentSessionId?: string;
+  /** Stable completed user turn in the parent where a root session forked. */
+  forkedAtTurnId?: string;
   agentName?: string;
   /** The working task list at the time of the last save. */
   tasks?: Task[];
@@ -84,6 +86,11 @@ export interface SessionMeta {
   /** Completed turn boundaries. Legacy sessions derive deterministic ids. */
   turns?: PersistedTurnBoundary[];
   forkedFrom?: { sessionId: string; turnId: string };
+}
+
+export interface SessionTreeNode {
+  meta: SessionMeta;
+  children: SessionTreeNode[];
 }
 
 export interface PersistedSession {
@@ -518,6 +525,37 @@ export class SessionStore {
     return (await this.list())[0]?.id;
   }
 
+  /** Root-session ancestry tree containing `id`, cycle-safe and ordered by
+   * creation time. Legacy `forkedFrom` remains a parent fallback. */
+  async sessionTree(id: string): Promise<SessionTreeNode | null> {
+    if (!isSafeSessionId(id)) return null;
+    const sessions = await this.list();
+    const byId = new Map(sessions.map((meta) => [meta.id, meta]));
+    let root: SessionMeta | undefined = byId.get(id);
+    if (!root) return null;
+    const ascended = new Set<string>();
+    while (root) {
+      if (ascended.has(root.id)) break;
+      ascended.add(root.id);
+      const parentId: string | undefined = root.parentSessionId ?? root.forkedFrom?.sessionId;
+      const parent: SessionMeta | undefined = parentId ? byId.get(parentId) : undefined;
+      if (!parent) break;
+      root = parent;
+    }
+    const build = (meta: SessionMeta, path: Set<string>): SessionTreeNode => {
+      const nextPath = new Set(path).add(meta.id);
+      const children = sessions
+        .filter((candidate) =>
+          (candidate.parentSessionId ?? candidate.forkedFrom?.sessionId) === meta.id &&
+          !nextPath.has(candidate.id))
+        .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+        .map((child) => build(child, nextPath));
+      return { meta: { ...meta }, children };
+    };
+    if (!root) return null;
+    return build(root, new Set());
+  }
+
   /** Persist a user-facing title override on an existing session. */
   async setTitle(id: string, title: string): Promise<boolean> {
     if (!isSafeSessionId(id)) return false;
@@ -582,6 +620,8 @@ export class SessionStore {
         ...(source.meta.recalledContext ? { recalledContext: source.meta.recalledContext } : {}),
         ...(copied.records.length ? { offloaded: copied.records } : {}),
         title: `${source.meta.title?.trim() || "Session"} (fork)`.slice(0, 120),
+        parentSessionId: id,
+        forkedAtTurnId: atTurnId,
         forkedFrom: { sessionId: id, turnId: atTurnId },
         createdAt: now,
         updatedAt: now,

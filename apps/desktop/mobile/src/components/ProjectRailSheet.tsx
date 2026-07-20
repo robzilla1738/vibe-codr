@@ -209,7 +209,7 @@ export function ProjectRailSheet({ open, onClose, client, activeCwd, activeSessi
                           <Txt variant="caption" color={colors.textSubtle} numberOfLines={1}>{c.model} · {relativeSessionTime(c.updatedAt)}</Txt>
                         </View>
                         {cloudSessionIds.has(c.id) ? <Icon name="Cloud" size={13} color={colors.tool} /> : null}
-                        <IconBtn name="MoreVertical" onPress={() => showActions({ kind: "session", cwd: chats?.cwd ?? activeCwd, id: c.id, label: normalizeSessionTitle(c.title) })} label={`Actions for ${normalizeSessionTitle(c.title)}`} size={16} />
+                        <IconBtn name="MoreVertical" onPress={() => showActions({ kind: "session", cwd: chats?.cwd ?? activeCwd, id: c.id, label: normalizeSessionTitle(c.title), parentSessionId: c.parentSessionId, children: (chats?.sessions ?? []).filter((item) => item.parentSessionId === c.id).map((item) => ({ id: item.id, label: normalizeSessionTitle(item.title) })) })} label={`Actions for ${normalizeSessionTitle(c.title)}`} size={16} />
                       </Pressable>
                     );
                   }
@@ -229,10 +229,11 @@ export function ProjectRailSheet({ open, onClose, client, activeCwd, activeSessi
                   const active = ses.id === activeSessionId;
                   return (
                     <Pressable onPress={() => pick(p.cwd, ses.id)} style={({ pressed }) => [s.subRow, active && s.rowActive, pressed && { opacity: 0.7 }]}>
+                      {ses.parentSessionId ? <Icon name="GitBranch" size={12} color={colors.textSubtle} /> : null}
                       <Txt variant="caption" color={colors.textSecondary} style={{ flex: 1 }} numberOfLines={1}>{normalizeSessionTitle(ses.title)}</Txt>
                       {cloudSessionIds.has(ses.id) ? <Icon name="Cloud" size={13} color={colors.tool} /> : null}
                       <Txt variant="caption" color={colors.textSubtle}>{relativeSessionTime(ses.updatedAt)}</Txt>
-                      <IconBtn name="MoreVertical" onPress={() => showActions({ kind: "session", cwd: p.cwd, id: ses.id, label: normalizeSessionTitle(ses.title) })} label={`Actions for ${normalizeSessionTitle(ses.title)}`} size={16} />
+                      <IconBtn name="MoreVertical" onPress={() => showActions({ kind: "session", cwd: p.cwd, id: ses.id, label: normalizeSessionTitle(ses.title), parentSessionId: ses.parentSessionId, children: p.sessions.filter((item) => item.parentSessionId === ses.id).map((item) => ({ id: item.id, label: normalizeSessionTitle(item.title) })) })} label={`Actions for ${normalizeSessionTitle(ses.title)}`} size={16} />
                     </Pressable>
                   );
                 }}
@@ -253,6 +254,8 @@ export function ProjectRailSheet({ open, onClose, client, activeCwd, activeSessi
             </View>
             {actionMode === "menu" ? (
               <View style={s.actionList}>
+                {actionTarget?.kind === "session" && actionTarget.parentSessionId ? <ActionRow icon="GitBranch" label="Open parent" onPress={() => { pick(actionTarget.cwd, actionTarget.parentSessionId); closeActions(); }} /> : null}
+                {actionTarget?.kind === "session" ? actionTarget.children.slice(0, 3).map((child) => <ActionRow key={child.id} icon="GitBranch" label={`Open fork: ${child.label}`} onPress={() => { pick(actionTarget.cwd, child.id); closeActions(); }} />) : null}
                 <ActionRow icon="Pencil" label="Rename" onPress={() => setActionMode("rename")} />
                 <ActionRow icon="Archive" label="Archive" onPress={() => setActionMode("archive")} />
                 <ActionRow icon="Trash2" label="Delete" danger onPress={() => setActionMode("delete")} />
@@ -293,7 +296,7 @@ async function assertRpcOk(request: Promise<unknown>) {
   if (result?.ok === false) throw new Error(result.error || "The action failed.");
 }
 
-function ActionRow({ icon, label, onPress, danger }: { icon: "Pencil" | "Archive" | "Trash2"; label: string; onPress: () => void; danger?: boolean }) {
+function ActionRow({ icon, label, onPress, danger }: { icon: "Pencil" | "Archive" | "Trash2" | "GitBranch"; label: string; onPress: () => void; danger?: boolean }) {
   const { colors } = useTheme();
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", gap: T.sSm, minHeight: 48, paddingHorizontal: T.sSm, borderRadius: T.radiusSm, opacity: pressed ? 0.6 : 1 }]}>
@@ -314,7 +317,7 @@ function ActionButton({ label, onPress, primary, danger, disabled }: { label: st
 
 type ActionTarget =
   | { kind: "project"; cwd: string; label: string }
-  | { kind: "session"; cwd: string; id: string; label: string };
+  | { kind: "session"; cwd: string; id: string; label: string; parentSessionId?: string; children: Array<{ id: string; label: string }> };
 
 type Row =
   | { kind: "head"; key: string; label: string }

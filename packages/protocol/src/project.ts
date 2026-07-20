@@ -22,6 +22,8 @@ export const ProjectSessionSummarySchema = loose({
   createdAt: finite,
   updatedAt: finite,
   latestTurnId: RuntimeIdentifierSchema.optional(),
+  parentSessionId: RuntimeIdentifierSchema.optional(),
+  forkedAtTurnId: RuntimeIdentifierSchema.optional(),
 });
 export type ProjectSessionSummary = z.infer<typeof ProjectSessionSummarySchema>;
 

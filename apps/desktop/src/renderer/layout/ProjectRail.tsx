@@ -1102,6 +1102,36 @@ export function ProjectRail({
             </div>
           ) : (
             <>
+              {menu.session.parentSessionId ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    onResume(menu.cwd, menu.session.parentSessionId!);
+                    setMenu(null);
+                  }}
+                >
+                  <IconGitBranch size={14} />
+                  Open parent
+                </button>
+              ) : null}
+              {(projects.find((project) => normalizeCwd(project.cwd) === normalizeCwd(menu.cwd))?.sessions ?? [])
+                .filter((session) => session.parentSessionId === menu.session.id)
+                .slice(0, 5)
+                .map((child) => (
+                  <button
+                    key={child.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onResume(menu.cwd, child.id);
+                      setMenu(null);
+                    }}
+                  >
+                    <IconGitBranch size={14} />
+                    Open fork: {normalizeSessionTitle(child.title)}
+                  </button>
+                ))}
               <button
                 type="button"
                 role="menuitem"

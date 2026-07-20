@@ -162,6 +162,51 @@ describe("LocalRuntimeSupervisor", () => {
     expect(bridges).toHaveLength(3);
   });
 
+  it("reclaims the least-recently-used fresh idle background runtime at capacity", async () => {
+    let now = 1_000;
+    const { supervisor, bridges } = fixture({ capacity: 3, idleTtlMs: 10_000, now: () => now });
+    await supervisor.start({ cwd: "/repo/1" });
+    bridges[0]!.emit({ type: "engine-idle", sessionId: "s1", gate: "green" });
+    now += 10;
+    await supervisor.start({ cwd: "/repo/2" });
+    bridges[1]!.emit({ type: "engine-idle", sessionId: "s2", gate: "green" });
+    now += 10;
+    await supervisor.start({ cwd: "/repo/3" });
+    now += 10;
+
+    await expect(supervisor.start({ cwd: "/repo/4" })).resolves.toBe("s4");
+
+    expect(bridges[0]!.stopped).toBe(1);
+    expect(bridges[1]!.stopped).toBe(0);
+    expect(bridges[2]!.stopped).toBe(0);
+    expect(bridges).toHaveLength(4);
+    expect(supervisor.size).toBe(3);
+  });
+
+  it("preserves the capacity error when every runtime is blocked or foreground", async () => {
+    const { supervisor, bridges } = fixture({ capacity: 3 });
+    await supervisor.start({ cwd: "/repo/input" });
+    bridges[0]!.emit({
+      type: "permission-request",
+      sessionId: "s1",
+      id: "p1",
+      toolName: "bash",
+      input: {},
+    });
+    await supervisor.start({ cwd: "/repo/review" });
+    bridges[1]!.emit({ type: "plan-presented", sessionId: "s2", plan: "Review me" });
+    await supervisor.start({ cwd: "/repo/foreground" });
+    bridges[2]!.emit({ type: "engine-idle", sessionId: "s3", gate: "green" });
+
+    await expect(supervisor.start({ cwd: "/repo/4" })).rejects.toThrow(
+      "Local runtime capacity (3) is full",
+    );
+
+    expect(bridges.map((bridge) => bridge.stopped)).toEqual([0, 0, 0]);
+    expect(bridges).toHaveLength(3);
+    expect(supervisor.size).toBe(3);
+  });
+
   it("prevents two writable hosts from owning the same canonical workspace", async () => {
     const { supervisor, bridges } = fixture();
     await supervisor.start({ cwd: "/repo/shared" });

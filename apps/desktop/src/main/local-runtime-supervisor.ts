@@ -488,6 +488,11 @@ export class LocalRuntimeSupervisor {
     if (this.#records.size < this.#capacity) return;
     await this.#evictExpired();
     if (this.#records.size < this.#capacity) return;
+    const candidate = [...this.#records.values()]
+      .filter((record) => record !== this.#active && record.state === "idle" && record.jobCount === 0)
+      .sort((a, b) => a.updatedAt - b.updatedAt)[0];
+    if (candidate) await this.#remove(candidate, true);
+    if (this.#records.size < this.#capacity) return;
     throw new Error(
       `Local runtime capacity (${this.#capacity}) is full. Finish or stop a working session, or retry after an idle background session ages out.`,
     );

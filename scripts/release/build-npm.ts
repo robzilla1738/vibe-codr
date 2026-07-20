@@ -63,6 +63,7 @@ type Pkg = {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  overrides?: Record<string, string>;
   patchedDependencies?: Record<string, string>;
 };
 
@@ -141,6 +142,7 @@ export function generateNpmPackageJson(opts: {
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },
     files: ["vibecodr.js", "vibecodr-engine-worker.js", "app.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
     optionalDependencies: opts.optionalDependencies,
+    ...(rootPkg.overrides ? { overrides: rootPkg.overrides } : {}),
     ...(hasOptionalPeers
       ? {
           peerDependencies: optionalPeerDependencies,

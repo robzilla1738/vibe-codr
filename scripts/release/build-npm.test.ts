@@ -66,6 +66,7 @@ test("generateNpmPackageJson produces the published shape", () => {
       license: "MIT",
       description: "A model-agnostic CLI coding agent for the terminal.",
       engines: { bun: ">=1.2.0" },
+      overrides: { "@babel/core": "7.29.6" },
       patchedDependencies: {
         "@opentui/core@0.4.2": "patches/@opentui%2Fcore@0.4.2.patch",
       },
@@ -82,6 +83,7 @@ test("generateNpmPackageJson produces the published shape", () => {
   expect(pkg.files).toContain("vibecodr.js");
   expect(pkg.files).toContain("patches");
   expect(pkg.optionalDependencies).toEqual({ "@ai-sdk/anthropic": "^2.0.83" });
+  expect(pkg.overrides).toEqual({ "@babel/core": "7.29.6" });
   expect(pkg.peerDependencies).toEqual({ "@huggingface/transformers": "*" });
   expect(pkg.peerDependenciesMeta).toEqual({ "@huggingface/transformers": { optional: true } });
   expect(pkg.patchedDependencies).toEqual({

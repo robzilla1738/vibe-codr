@@ -310,11 +310,13 @@ for await (const line of rl) {
         continue;
       }
       if (message.method === "renameSession") {
-        savedSessions[index] = { ...savedSessions[index], title: message.params.title.trim() };
+        const title = message.params.title.trim();
+        savedSessions[index] = { ...savedSessions[index], title };
+        write({ type: "resp", id: message.id, ok: true, value: { id, title } });
       } else {
         savedSessions.splice(index, 1);
+        write({ type: "resp", id: message.id, ok: true, value: { id } });
       }
-      write({ type: "resp", id: message.id, ok: true, value: { id } });
       continue;
     }
     if (["renameProject", "archiveProject", "deleteProject"].includes(message.method)) {

@@ -103,7 +103,7 @@ test("/goal starts a run, continues past gaps, and finishes only after 2 clean p
     doGenerate: assess.doGenerate,
   });
   const engine = new Engine({
-    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false } },
+    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" } },
     cwd,
     registry: mockRegistry(model),
     interactive: false,
@@ -158,7 +158,7 @@ test("/goal run stops at goal.maxRounds with a warn — the ★ stays set", asyn
     doGenerate: assess.doGenerate,
   });
   const engine = new Engine({
-    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 2, planFirst: false } },
+    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 2, planFirst: false, checklessCompletion: "self-report" } },
     cwd,
     registry: mockRegistry(model),
     interactive: false,
@@ -217,7 +217,7 @@ test("/goal clear mid-run sweeps queued goal turns but NOT a queued loop iterati
       ...defaultConfig(),
       model: "mock/test",
       checkpoints: { enabled: false },
-      goal: { maxRounds: 25, planFirst: false },
+      goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" },
     },
     cwd,
     registry: mockRegistry(model),
@@ -274,7 +274,7 @@ test("Esc (abort) mid-run stops the goal run; the ★ goal stays set", async () 
       ...defaultConfig(),
       model: "mock/test",
       checkpoints: { enabled: false },
-      goal: { maxRounds: 25, planFirst: false },
+      goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" },
     },
     cwd,
     registry: mockRegistry(model),
@@ -327,7 +327,7 @@ test("a typed prompt mid-run STEERS the goal run instead of killing it", async (
       ...defaultConfig(),
       model: "mock/test",
       checkpoints: { enabled: false },
-      goal: { maxRounds: 25, planFirst: false },
+      goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" },
     },
     cwd,
     registry: mockRegistry(model),
@@ -537,7 +537,7 @@ test("pipeline: task continuations charge the UNIFIED goal budget and exhaust wi
       ...defaultConfig(),
       model: "mock/test",
       checkpoints: { enabled: false },
-      goal: { maxRounds: 2, planFirst: true },
+      goal: { maxRounds: 2, planFirst: true, checklessCompletion: "self-report" },
     },
     cwd,
     registry: mockRegistry(model),
@@ -730,7 +730,7 @@ test("/goal from plan mode flips to execute WITHOUT hijacking a presented plan",
       model: "mock/test",
       mode: "plan",
       checkpoints: { enabled: false },
-      goal: { maxRounds: 25, planFirst: false },
+      goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" },
     },
     cwd,
     registry: mockRegistry(model),
@@ -1089,7 +1089,7 @@ test("an Esc landing DURING the self-assessment does not launch one more turn", 
       ...defaultConfig(),
       model: "mock/test",
       checkpoints: { enabled: false },
-      goal: { maxRounds: 25, planFirst: false },
+      goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" },
     },
     cwd,
     registry: mockRegistry(model),
@@ -1138,7 +1138,7 @@ test("a steer's round-budget re-grant is PERSISTED (a kill mid-steer resumes wit
       ...defaultConfig(),
       model: "mock/test",
       checkpoints: { enabled: false },
-      goal: { maxRounds: 25, planFirst: false },
+      goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" },
     },
     cwd,
     registry: mockRegistry(model),
@@ -1275,7 +1275,7 @@ test("a gate that exhausts its fix budget STILL RED pauses the run instead of we
   const config = defaultConfig();
   config.model = "mock/test";
   config.checkpoints = { ...config.checkpoints, enabled: false };
-  config.goal = { maxRounds: 25, planFirst: false };
+  config.goal = { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" };
   config.build.gate.maxRounds = 0; // no fix rounds: first red is terminal
   const engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: false });
   await engine.bootstrap();
@@ -1491,7 +1491,7 @@ test("switching to plan mode mid-goal-run pauses the run (no read-only continuat
     doGenerate: assess.doGenerate,
   });
   const engine = new Engine({
-    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false } },
+    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" } },
     cwd,
     registry: mockRegistry(model),
     interactive: false,
@@ -1526,7 +1526,7 @@ test("a resolve-plan accept during an active goal run cannot reseed the task spi
     doGenerate: assess.doGenerate,
   });
   const engine = new Engine({
-    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false } },
+    config: { ...defaultConfig(), model: "mock/test", goal: { maxRounds: 25, planFirst: false, checklessCompletion: "self-report" } },
     cwd,
     registry: mockRegistry(model),
     interactive: false,

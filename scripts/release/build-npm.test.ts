@@ -9,6 +9,7 @@ import {
   REQUIRED_INLINED_SYMBOLS,
   resolveOptionalDeps,
   resolveOptionalPeerDeps,
+  unresolvedAppSolidImports,
 } from "./build-npm.ts";
 
 test("collectWorkspaceVersions: root deps/devDeps win over per-package peers", () => {
@@ -45,6 +46,7 @@ test("resolveOptionalDeps: uses workspace versions, pins patched deps, falls bac
   expect(opt["@ai-sdk/deepseek"]).toBeUndefined();
   expect(opt["@ai-sdk/openai-compatible"]).toBeUndefined();
   expect(opt["@opentui/core"]).toBe("0.4.2");
+  expect(opt["@opentui/solid"]).toBeUndefined();
   expect(opt["web-tree-sitter"]).toBe("0.25.10");
   // The repo doesn't pin this — fall back to `*`.
   expect(opt["@modelcontextprotocol/sdk"]).toBe("*");
@@ -83,7 +85,7 @@ test("generateNpmPackageJson produces the published shape", () => {
   expect(pkg.files).toContain("vibecodr.js");
   expect(pkg.files).toContain("patches");
   expect(pkg.optionalDependencies).toEqual({ "@ai-sdk/anthropic": "^2.0.83" });
-  expect(pkg.overrides).toEqual({ "@babel/core": "7.29.6" });
+  expect(pkg.overrides).toBeUndefined();
   expect(pkg.peerDependencies).toEqual({ "@huggingface/transformers": "*" });
   expect(pkg.peerDependenciesMeta).toEqual({ "@huggingface/transformers": { optional: true } });
   expect(pkg.patchedDependencies).toEqual({
@@ -119,4 +121,21 @@ test("missingInlinedSymbols catches an externalized SDK the module-id grep can't
   expect(externalized).toContain("@ai-sdk/anthropic"); // module ids survive externalizing
   expect(externalized).toContain("createOpenAICompatible"); // factory names survive too
   expect(missingInlinedSymbols(externalized)).toEqual([...REQUIRED_INLINED_SYMBOLS]);
+});
+
+test("unresolvedAppSolidImports rejects externalized @opentui/solid runtime imports", () => {
+  expect(
+    unresolvedAppSolidImports(`
+      import { createCliRenderer } from "@opentui/core";
+      import { createSignal } from "solid-js";
+      import Parser from "web-tree-sitter";
+      // Bundled source-path comments may mention @opentui/solid without importing it.
+    `),
+  ).toEqual([]);
+  expect(
+    unresolvedAppSolidImports(`
+      import { render } from "@opentui/solid";
+      const renderer = import("@opentui/solid/renderer");
+    `),
+  ).toEqual(["@opentui/solid", "@opentui/solid/renderer"]);
 });

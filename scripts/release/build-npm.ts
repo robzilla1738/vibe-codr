@@ -14,10 +14,11 @@ import { join } from "node:path";
  *
  * CRITICAL: no `--external` for the provider SDKs — the `PROVIDER_MODULES`
  * literal-import map in @vibe/providers must be inlined so the bundle is
- * self-contained (mirrors the standalone binary). The optional peers we load via
- * *variable* specifiers (OpenTUI, MCP SDK, transformers) can't be bundled.
- * OpenTUI/MCP are installed for out-of-the-box TUI/MCP support. Provider SDKs
- * are bundled into vibecodr.js and are NOT installed separately. The semantic
+ * self-contained (mirrors the standalone binary). OpenTUI core, the MCP SDK,
+ * and transformers are loaded via *variable* specifiers and can't be bundled
+ * into the main CLI. The OpenTUI Solid runtime is instead bundled into app.js;
+ * OpenTUI core/MCP are installed for out-of-the-box TUI/MCP support. Provider
+ * SDKs are bundled into vibecodr.js and are NOT installed separately. The semantic
  * memory transformer stack stays a true optional peer because the app degrades
  * to BM25 recall when it is absent, and installing it by default pulls a large
  * native inference stack into every CLI install.
@@ -34,7 +35,6 @@ const REPO_SLUG = "robzilla1738/vibe-codr";
  * and exposes avoidable transitive advisories. */
 export const OPTIONAL_DEP_NAMES = [
   "@opentui/core",
-  "@opentui/solid",
   "solid-js",
   "web-tree-sitter",
   "@modelcontextprotocol/sdk",
@@ -142,7 +142,6 @@ export function generateNpmPackageJson(opts: {
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },
     files: ["vibecodr.js", "vibecodr-engine-worker.js", "app.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
     optionalDependencies: opts.optionalDependencies,
-    ...(rootPkg.overrides ? { overrides: rootPkg.overrides } : {}),
     ...(hasOptionalPeers
       ? {
           peerDependencies: optionalPeerDependencies,
@@ -179,6 +178,15 @@ export const REQUIRED_INLINED_SYMBOLS = [
 /** The inlined-only SDK symbols absent from `bundle` — empty when self-contained. */
 export function missingInlinedSymbols(bundle: string): string[] {
   return REQUIRED_INLINED_SYMBOLS.filter((sym) => !bundle.includes(sym));
+}
+
+/** Any @opentui/solid import Bun left unresolved in the generated app bundle. */
+export function unresolvedAppSolidImports(bundle: string): string[] {
+  return new Bun.Transpiler({ loader: "js" })
+    .scan(bundle)
+    .imports
+    .map((entry) => entry.path)
+    .filter((path) => path === "@opentui/solid" || path.startsWith("@opentui/solid/"));
 }
 
 async function main(): Promise<void> {
@@ -246,13 +254,18 @@ async function main(): Promise<void> {
     outdir: outDir,
     naming: "app.js",
     plugins: [createSolidPlugin()],
-    // External: the optional peer deps are installed by the package's
-    // optionalDependencies and resolved at runtime — don't inline them.
-    external: ["@opentui/core", "@opentui/solid", "solid-js", "web-tree-sitter"],
+    // Keep the native/runtime dependencies external. @opentui/solid itself is
+    // intentionally bundled so npm consumers don't install its build-time Babel
+    // dependency tree (npm ignores overrides declared by installed packages).
+    external: ["@opentui/core", "solid-js", "web-tree-sitter"],
   });
   if (!appBuild.success) {
     const logs = appBuild.logs.map((l) => l.message).join("\n");
     throw new Error(`bun build (app.tsx) failed: ${logs}`);
+  }
+  const unresolvedSolid = unresolvedAppSolidImports(readFileSync(appFile, "utf8"));
+  if (unresolvedSolid.length) {
+    throw new Error(`app.js has unresolved @opentui/solid import(s): ${unresolvedSolid.join(", ")}`);
   }
 
   // 2. shebang + executable bit on the main bundle.

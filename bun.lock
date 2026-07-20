@@ -68,6 +68,7 @@
       },
       "dependencies": {
         "@vibe/acp": "workspace:*",
+        "@vibe/automation": "workspace:*",
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
         "@vibe/eval": "workspace:*",

@@ -18,6 +18,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
+    "@vibe/automation": "workspace:*",
     "@vibe/acp": "workspace:*",
     "@vibe/config": "workspace:*",
     "@vibe/core": "workspace:*",

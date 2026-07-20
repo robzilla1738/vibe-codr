@@ -26,6 +26,7 @@ import { runShareCommand } from "./share-command.ts";
 import { runEvalCommand } from "./eval-command.ts";
 import { runAcpCommand } from "./acp-command.ts";
 import { runExtensionsCommand } from "./extensions-command.ts";
+import { runAutomationCommand } from "./automation-command.ts";
 
 // Re-export so existing importers of `@vibe/cli`'s VERSION keep working; the
 // literal now lives in ./version.ts (stamped at release by set-version.ts).
@@ -83,6 +84,7 @@ USAGE
   vibecodr eval run <fixture.json>   run an isolated model/profile evaluation matrix
   vibecodr acp [options]             serve ACP v1 over bounded NDJSON stdio
   vibecodr extensions <action>       manage signed local extensions
+  vibecodr automation <action>       manage durable local automations
   vibecodr setup                     run the guided provider/model setup (alias: login)
   vibecodr upgrade                   print how to update to the latest version
 
@@ -106,6 +108,7 @@ OPTIONS
       --entry <identity> exact extension kind:id@version
       --artifact <file>  staged extension artifact
       --confirm-capabilities confirm reviewed extension capabilities
+      --confirm-mutation confirm unattended mutating automation
   -c, --continue        resume the most recent session
       --resume <id>     resume a specific session by id
   -v, --version         print version and exit
@@ -177,6 +180,7 @@ export async function run(argv: string[]): Promise<number> {
       entry: { type: "string" },
       artifact: { type: "string" },
       "confirm-capabilities": { type: "boolean" },
+      "confirm-mutation": { type: "boolean" },
       continue: { type: "boolean", short: "c" },
       resume: { type: "string" },
       version: { type: "boolean", short: "v" },
@@ -254,6 +258,13 @@ export async function run(argv: string[]): Promise<number> {
       args: positionals.slice(1), catalogKey: values["catalog-key"], keyId: values["key-id"],
       entry: values.entry, artifact: values.artifact, confirmCapabilities: values["confirm-capabilities"],
     });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
+
+  if (positionals[0] === "automation") {
+    const result = await runAutomationCommand({ args: positionals.slice(1), confirmMutation: values["confirm-mutation"] });
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     return result.exitCode;

@@ -12,6 +12,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@vibe/protocol/client-runtime": path.resolve(__dirname, "..", "..", "..", "packages", "protocol", "src", "client-runtime.ts"),
+      "@vibe/protocol/domain": path.resolve(__dirname, "..", "..", "..", "packages", "protocol", "src", "domain.ts"),
+      "@vibe/protocol/host-v2": path.resolve(__dirname, "..", "..", "..", "packages", "protocol", "src", "host-v2.ts"),
+      "@vibe/protocol/project": path.resolve(__dirname, "..", "..", "..", "packages", "protocol", "src", "project.ts"),
       "@vibe/protocol": protocolSource,
       "@shared": sharedRoot,
       "@hooks": hooksRoot,

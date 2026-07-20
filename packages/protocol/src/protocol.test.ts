@@ -25,6 +25,11 @@ import {
   RuntimeErrorDataV1Schema,
   UIEventSchema,
 } from "./index.ts";
+import {
+  isEngineSnapshot as isClientEngineSnapshot,
+  isProjectSummaryArray as isClientProjectSummaryArray,
+  isUIEvent as isClientUIEvent,
+} from "./client-runtime.ts";
 import { GOLDEN_HOST_WIRE_LINES } from "./fixtures.ts";
 
 const snapshot = {
@@ -62,6 +67,44 @@ describe("canonical protocol schemas", () => {
     expect(JSON.stringify(EngineCommandSchema.parse(command))).toBe(JSON.stringify(command));
     expect(JSON.stringify(UIEventSchema.parse(event))).toBe(JSON.stringify(event));
     expect(JSON.stringify(EngineSnapshotSchema.parse(snapshot))).toBe(JSON.stringify(snapshot));
+  });
+
+  test("keeps dependency-free client guards aligned on renderer safety boundaries", () => {
+    expect(isClientEngineSnapshot(snapshot)).toBeTrue();
+    expect(
+      isClientEngineSnapshot({
+        ...snapshot,
+        usage: { ...snapshot.usage, costUSD: -1 },
+      }),
+    ).toBeFalse();
+    expect(
+      isClientProjectSummaryArray([
+        {
+          cwd: "/repo",
+          name: "repo",
+          updatedAt: 1,
+          sessions: [
+            {
+              id: "session-1",
+              title: "Session",
+              model: "test/model",
+              mode: "execute",
+              goal: null,
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ],
+        },
+      ]),
+    ).toBeTrue();
+    expect(
+      isClientUIEvent({
+        type: "tool-call-progress",
+        sessionId: "session-1",
+        toolCallId: "bad\0id",
+        chunk: "data",
+      }),
+    ).toBeFalse();
   });
 
   test("keeps exhaustive, duplicate-free discriminator and RPC registries", () => {
@@ -311,6 +354,78 @@ describe("canonical protocol schemas", () => {
       }),
     ).toBeTrue();
     expect(validateRpcResult("recoverLostCloudOwnership", -1)).toBeFalse();
+  });
+
+  test("rejects unsafe identifiers and credentials in RPC results", () => {
+    for (const method of ["deleteSession", "archiveSession"] as const) {
+      expect(validateRpcResult(method, { id: "session-1" })).toBeTrue();
+      expect(validateRpcResult(method, { id: "" })).toBeFalse();
+      expect(validateRpcResult(method, { id: "bad\0id" })).toBeFalse();
+    }
+    expect(
+      validateRpcResult("forkSession", {
+        id: "session-2",
+        cwd: "/repo",
+        atTurnId: "turn-1",
+      }),
+    ).toBeTrue();
+    expect(
+      validateRpcResult("forkSession", { id: "", cwd: "/repo", atTurnId: "turn-1" }),
+    ).toBeFalse();
+    expect(
+      validateRpcResult("forkSession", { id: "session-1", cwd: "/repo", atTurnId: "" }),
+    ).toBeFalse();
+    expect(validateRpcResult("importPortableSession", { sessionId: "" })).toBeFalse();
+    expect(validateRpcResult("importPortableSession", { sessionId: "session-1" })).toBeTrue();
+    expect(
+      validateRpcResult("prepareHandoff", {
+        sessionId: "session-1",
+        ownershipGeneration: 2,
+        previousGeneration: 1,
+        nonce: "",
+        target: { kind: "cloud", provider: "e2b" },
+        preparedAt: 1,
+      }),
+    ).toBeFalse();
+    expect(
+      validateRpcResult("exportProviderAuth", { providerId: "openai-codex", access: "" }),
+    ).toBeFalse();
+    expect(
+      validateRpcResult("exportProviderAuth", {
+        providerId: "openai-codex",
+        access: "credential",
+      }),
+    ).toBeTrue();
+  });
+
+  test("requires replayed event host identity to match its envelope", () => {
+    const event = {
+      type: "event",
+      hostInstanceId: "host-1",
+      seq: 1,
+      event: { type: "notice", level: "info", message: "same host" },
+    } as const;
+    expect(
+      validateRpcResult("replayEvents", {
+        hostInstanceId: "host-1",
+        events: [event],
+        lastEventSeq: 1,
+        truncated: false,
+      }),
+    ).toBeTrue();
+    expect(
+      validateRpcResult("replayEvents", {
+        hostInstanceId: "host-1",
+        events: [
+          {
+            ...event,
+            hostInstanceId: "host-2",
+          },
+        ],
+        lastEventSeq: 1,
+        truncated: false,
+      }),
+    ).toBeFalse();
   });
 
   test("matches golden wire lines and preserves compatible extra keys", () => {

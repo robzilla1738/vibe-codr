@@ -4,7 +4,7 @@ import { estimateJsonUtf8Bytes } from "../shared/json-size";
 import type { LocalRuntimeStatus } from "../shared/local-runtime";
 import type { PerformancePhaseSample } from "../shared/performance";
 import type { HostRpcParams, RpcMethod } from "../shared/protocol";
-import { isEngineSnapshot } from "../shared/runtime-guards";
+import { isSchemaEngineSnapshot } from "../shared/schema-runtime-guards";
 import type { TerminalCommandResult, TerminalEvent, TerminalOpenRequest, TerminalOpenResult } from "../shared/terminal";
 import type { EngineSnapshot } from "../shared/types";
 import { EngineBridge, type EngineStartOptions } from "./engine-bridge";
@@ -366,7 +366,7 @@ export class EngineTransportController implements EngineTransport {
   async snapshotForHandoff(): Promise<EngineSnapshot> {
     if (!this.isRemote) throw new Error("Cloud transport is not active");
     const value = await this.#active.rpc("snapshot");
-    if (!isEngineSnapshot(value)) throw new Error("Cloud session continuity failed: remote snapshot is invalid");
+    if (!isSchemaEngineSnapshot(value)) throw new Error("Cloud session continuity failed: remote snapshot is invalid");
     return value;
   }
 

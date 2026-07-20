@@ -15,7 +15,8 @@ import {
   type HostRpcParams,
   type RpcMethod,
 } from "../shared/protocol";
-import { isRenderableUIEvent, isRpcResult } from "../shared/runtime-guards";
+import { isRpcResult } from "../shared/rpc-result-guards";
+import { isSchemaUIEvent } from "../shared/schema-runtime-guards";
 import type { EngineSnapshot } from "../shared/types";
 import { StdinWriteQueue } from "../shared/stdin-write-queue";
 import type { PerformancePhaseSample } from "../shared/performance";
@@ -847,7 +848,7 @@ export class EngineBridge implements EngineTransport {
         this.readyWaiters = [];
         break;
       case "event":
-        if (!isRenderableUIEvent(msg.event)) {
+        if (!isSchemaUIEvent(msg.event)) {
           this.terminateFatal("Engine host emitted an invalid nested event payload", proc, generation);
         } else {
           this.acceptEventFrame(msg, proc, generation);

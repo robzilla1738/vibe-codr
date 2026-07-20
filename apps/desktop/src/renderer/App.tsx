@@ -15,6 +15,7 @@ import { sortChangedFilesForDisplay } from "../shared/changed-files";
 import { type CloudProviderId, type CloudSessionCatalogEntry, type CloudStatusEvent, isCloudSessionRemoteOwned, latestRemoteOwnedCloudSession, type PendingCapabilityRequest } from "../shared/cloud";
 import { cloudStatusBelongsToSession } from "../shared/cloud-progress";
 import { commandsExpectBusy } from "../shared/command-busy";
+import { encodedEngineCommandBytes, HOST_INBOUND_SAFE_BYTES } from "../shared/command-wire";
 import { applyConfigPatch, buildConfigPatch } from "../shared/config-diff";
 import { contextUsagePercent } from "../shared/context-usage";
 import { densityLabel, nextDensity } from "../shared/density";
@@ -28,13 +29,8 @@ import {
   startupProjectCandidates,
   terminalCwdForWorkspace,
 } from "../shared/project-index";
-import {
-  type EngineCommand,
-  encodedEngineCommandBytes,
-  HOST_INBOUND_SAFE_BYTES,
-  isUIEvent,
-  type ProjectSummary,
-} from "../shared/protocol";
+import type { EngineCommand, ProjectSummary } from "../shared/protocol";
+import { isUIEvent } from "@vibe/protocol/client-runtime";
 import { hasUsableOnboardingProvider } from "../shared/provider-readiness";
 import { isProjectSummaryArray } from "../shared/runtime-guards";
 import {

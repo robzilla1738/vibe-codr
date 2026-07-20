@@ -26,6 +26,10 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@vibe/protocol/client-runtime": resolve("../../packages/protocol/src/client-runtime.ts"),
+      "@vibe/protocol/domain": resolve("../../packages/protocol/src/domain.ts"),
+      "@vibe/protocol/host-v2": resolve("../../packages/protocol/src/host-v2.ts"),
+      "@vibe/protocol/project": resolve("../../packages/protocol/src/project.ts"),
       "@vibe/protocol": resolve("../../packages/protocol/src/index.ts"),
       "@shared": resolve("src/shared"),
     },

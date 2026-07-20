@@ -5,7 +5,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./client-runtime": "./src/client-runtime.ts",
+    "./domain": "./src/domain.ts",
     "./host-v2": "./src/host-v2.ts",
+    "./project": "./src/project.ts",
     "./fixtures": "./src/fixtures.ts"
   },
   "scripts": {

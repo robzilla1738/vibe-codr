@@ -4,7 +4,17 @@ import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 
 const protocolSource = resolve("../../packages/protocol/src/index.ts");
-const protocolAlias = { "@vibe/protocol": protocolSource };
+const protocolClientRuntimeSource = resolve("../../packages/protocol/src/client-runtime.ts");
+const protocolDomainSource = resolve("../../packages/protocol/src/domain.ts");
+const protocolHostV2Source = resolve("../../packages/protocol/src/host-v2.ts");
+const protocolProjectSource = resolve("../../packages/protocol/src/project.ts");
+const protocolAlias = {
+  "@vibe/protocol/client-runtime": protocolClientRuntimeSource,
+  "@vibe/protocol/domain": protocolDomainSource,
+  "@vibe/protocol/host-v2": protocolHostV2Source,
+  "@vibe/protocol/project": protocolProjectSource,
+  "@vibe/protocol": protocolSource,
+};
 
 function extractRendererLegalNotices(): Plugin {
   const notices = new Set<string>();

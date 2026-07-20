@@ -6,11 +6,11 @@ import {
   decodeInbound,
   decodeOutbound,
   isUIEvent,
-  type EngineCommand,
   type HostInbound as CanonicalHostInbound,
   type HostRpcParams,
   type RpcMethod,
 } from "@vibe/protocol";
+export { encodedEngineCommandBytes, HOST_INBOUND_SAFE_BYTES } from "./command-wire";
 
 /**
  * One-release compatibility facade for Electron renderer/mobile imports.
@@ -98,9 +98,6 @@ export function encodeInbound(msg: HostInbound): string {
   return `${JSON.stringify(msg)}\n`;
 }
 
-/** Safely below the host's one-million-character inbound line ceiling. */
-export const HOST_INBOUND_SAFE_BYTES = 900_000;
-
 /**
  * Preserve the presentation shells' actionable version-mismatch diagnostic
  * after canonical decoding rejects an incompatible ready frame.
@@ -119,10 +116,6 @@ export function incompatibleHostProtocolVersion(line: string): number | null {
     && frame.protocolVersion !== HOST_PROTOCOL_VERSION
     ? frame.protocolVersion as number
     : null;
-}
-
-export function encodedEngineCommandBytes(command: EngineCommand): number {
-  return new TextEncoder().encode(encodeInbound({ op: "send", command })).byteLength;
 }
 
 // Retain value imports in this facade so bundler regression tests exercise the

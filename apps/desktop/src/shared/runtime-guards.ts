@@ -1,13 +1,10 @@
 import {
-  EngineSnapshotSchema,
-  ProjectSummarySchema,
-  UIEventSchema,
-  validateRpcResult,
-  type EngineSnapshot,
-  type ProjectSummary,
-  type RpcMethod,
-  type UIEvent,
-} from "@vibe/protocol";
+  isEngineSnapshot as isCanonicalEngineSnapshot,
+  isProjectSummaryArray as isCanonicalProjectSummaryArray,
+  isUIEvent,
+} from "@vibe/protocol/client-runtime";
+import type { EngineSnapshot, UIEvent } from "@vibe/protocol/domain";
+import type { ProjectSummary } from "@vibe/protocol/project";
 
 // Compatibility exports retained for callers/tests during the facade release.
 // Enforcement now belongs to the canonical result schemas.
@@ -19,20 +16,14 @@ export const RPC_PROVIDER_ENV_MAX_CHARS = 1_024;
 
 /** Validate a direct/in-process snapshot, which need not carry host replay cursors. */
 export function isEngineSnapshot(value: unknown): value is EngineSnapshot {
-  return EngineSnapshotSchema.safeParse(value).success;
+  return isCanonicalEngineSnapshot(value);
 }
 
 export function isProjectSummaryArray(value: unknown): value is ProjectSummary[] {
-  return Array.isArray(value)
-    && value.every((project) => ProjectSummarySchema.safeParse(project).success);
+  return isCanonicalProjectSummaryArray(value);
 }
 
-/** Host RPC results use the canonical method-specific result registry. */
-export function isRpcResult(method: RpcMethod, value: unknown): boolean {
-  return validateRpcResult(method, value);
-}
-
-/** Renderer events use the same canonical schema that validates host event frames. */
+/** Renderer events use the dependency-free canonical client validator. */
 export function isRenderableUIEvent(value: UIEvent): boolean {
-  return UIEventSchema.safeParse(value).success;
+  return isUIEvent(value);
 }

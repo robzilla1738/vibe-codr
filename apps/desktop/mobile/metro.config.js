@@ -19,6 +19,18 @@ const config = getDefaultConfig(projectRoot);
 config.server.unstable_serverRoot = workspaceRoot;
 config.watchFolders = [sharedRoot, hooksRoot, relayRoot, protocolRoot];
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  if (moduleName === "@vibe/protocol/client-runtime") {
+    return { type: "sourceFile", filePath: path.join(protocolRoot, "client-runtime.ts") };
+  }
+  if (moduleName === "@vibe/protocol/domain") {
+    return { type: "sourceFile", filePath: path.join(protocolRoot, "domain.ts") };
+  }
+  if (moduleName === "@vibe/protocol/host-v2") {
+    return { type: "sourceFile", filePath: path.join(protocolRoot, "host-v2.ts") };
+  }
+  if (moduleName === "@vibe/protocol/project") {
+    return { type: "sourceFile", filePath: path.join(protocolRoot, "project.ts") };
+  }
   if (moduleName === "@vibe/protocol") {
     return { type: "sourceFile", filePath: path.join(protocolRoot, "index.ts") };
   }

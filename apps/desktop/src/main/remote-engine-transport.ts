@@ -14,7 +14,8 @@ import {
   type HostRpcParams,
   type RpcMethod,
 } from "../shared/protocol";
-import { isEngineSnapshot, isRpcResult } from "../shared/runtime-guards";
+import { isRpcResult } from "../shared/rpc-result-guards";
+import { isSchemaEngineSnapshot } from "../shared/schema-runtime-guards";
 import type { TerminalCommandResult, TerminalEvent, TerminalOpenRequest, TerminalOpenResult } from "../shared/terminal";
 import type { EngineSnapshot } from "../shared/types";
 import type { EngineStartOptions } from "./engine-bridge";
@@ -173,7 +174,7 @@ export class RemoteEngineTransport implements EngineTransport {
       this.#hostInstanceId = "";
       this.#lastEventSeq = 0;
       const value = await this.rpc("snapshot");
-      if (!isEngineSnapshot(value) || !value.hostInstanceId || !Number.isSafeInteger(value.lastEventSeq)) {
+      if (!isSchemaEngineSnapshot(value) || !value.hostInstanceId || !Number.isSafeInteger(value.lastEventSeq)) {
         throw new Error("Cloud engine did not provide a resumable protocol cursor");
       }
       if (existing.ready && existing.ready.hostInstanceId !== value.hostInstanceId) {

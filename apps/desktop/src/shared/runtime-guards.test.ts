@@ -3,11 +3,11 @@ import {
   isEngineSnapshot,
   isProjectSummaryArray,
   isRenderableUIEvent,
-  isRpcResult,
   RPC_CATALOG_FIELD_MAX_CHARS,
   RPC_CATALOG_MAX_ITEMS,
   RPC_PROVIDER_ENV_MAX_ITEMS,
 } from "./runtime-guards";
+import { isRpcResult } from "./rpc-result-guards";
 
 const snapshot = {
   hostInstanceId: "host-1", lastEventSeq: 0,

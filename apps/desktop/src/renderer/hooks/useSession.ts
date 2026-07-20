@@ -14,7 +14,7 @@ import {
   selectModeAction,
   type UiMode,
 } from "../../shared/modes";
-import { isUIEvent } from "../../shared/protocol";
+import { isUIEvent } from "@vibe/protocol/client-runtime";
 import {
   ASSISTANT_OUTPUT_MAX_CHARS,
   capTranscriptState,

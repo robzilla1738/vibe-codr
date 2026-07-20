@@ -8,7 +8,7 @@ import type { PerformancePhaseSample } from "../shared/performance";
 import { normalizeCwd } from "../shared/project-index";
 import type { HostRpcParams, RpcMethod } from "../shared/protocol";
 import { isUIEvent } from "../shared/protocol";
-import { isEngineSnapshot } from "../shared/runtime-guards";
+import { isSchemaEngineSnapshot } from "../shared/schema-runtime-guards";
 import type { EngineSnapshot } from "../shared/types";
 import { EngineBridge, type EngineStartOptions } from "./engine-bridge";
 import type {
@@ -191,7 +191,7 @@ export class LocalRuntimeSupervisor {
         this.onReady?.(previous.sessionId, previous.readyInfo);
         try {
           const snapshot = await previous.bridge.rpc("snapshot");
-          if (isEngineSnapshot(snapshot)) this.onResync?.(snapshot);
+          if (isSchemaEngineSnapshot(snapshot)) this.onResync?.(snapshot);
         } catch {
           // The restored transport remains usable even if its opportunistic
           // renderer resync fails; the renderer can request another snapshot.

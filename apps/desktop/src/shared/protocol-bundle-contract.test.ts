@@ -17,11 +17,30 @@ describe("canonical protocol production bundling contract", () => {
       };
       expect(config.compilerOptions?.paths?.["@vibe/protocol"])
         .toEqual(["../../packages/protocol/src/index.ts"]);
+      expect(config.compilerOptions?.paths?.["@vibe/protocol/client-runtime"])
+        .toEqual(["../../packages/protocol/src/client-runtime.ts"]);
     }
   });
 
   it("maps the same source in desktop unit tests", () => {
     const config = readFileSync(new URL("../../vitest.config.ts", import.meta.url), "utf8");
     expect(config).toContain('"@vibe/protocol": resolve("../../packages/protocol/src/index.ts")');
+    expect(config).toContain('"@vibe/protocol/client-runtime": resolve("../../packages/protocol/src/client-runtime.ts")');
+  });
+
+  it("keeps renderer validation on the dependency-free canonical client subpath", () => {
+    const clientRuntime = readFileSync(
+      new URL("../../../../packages/protocol/src/client-runtime.ts", import.meta.url),
+      "utf8",
+    );
+    const runtimeGuards = readFileSync(new URL("./runtime-guards.ts", import.meta.url), "utf8");
+    const app = readFileSync(new URL("../renderer/App.tsx", import.meta.url), "utf8");
+    const sessionHook = readFileSync(new URL("../renderer/hooks/useSession.ts", import.meta.url), "utf8");
+    expect(clientRuntime).not.toContain('from "zod"');
+    expect(clientRuntime).toContain('import type { EngineSnapshot, UIEvent } from "./domain.ts"');
+    expect(runtimeGuards).toContain('from "@vibe/protocol/client-runtime"');
+    expect(runtimeGuards).not.toContain("Schema.safeParse");
+    expect(app).toContain('from "@vibe/protocol/client-runtime"');
+    expect(sessionHook).toContain('from "@vibe/protocol/client-runtime"');
   });
 });

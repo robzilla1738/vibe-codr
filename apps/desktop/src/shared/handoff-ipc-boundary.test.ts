@@ -347,10 +347,10 @@ describe("cloud release invariants", () => {
 
   it("restores durable capability waits and activates recovery worktrees safely", () => {
     const sessionHook = readFileSync(join(process.cwd(), "src/renderer/hooks/useSession.ts"), "utf8");
-    const runtimeGuards = readFileSync(join(process.cwd(), "src/shared/runtime-guards.ts"), "utf8");
+    const rpcResultGuards = readFileSync(join(process.cwd(), "src/shared/rpc-result-guards.ts"), "utf8");
     expect(sessionHook).toContain("snap.pendingCapabilities ?? []");
     expect(appSource).toContain("session.pendingCapabilities.find");
-    expect(runtimeGuards).toContain("validateRpcResult(method, value)");
+    expect(rpcResultGuards).toContain("validateRpcResult(method, value)");
     expect(mainSource).toContain("projectCwdAllowlist.add(value.cwd)");
     expect(controller).toContain("#remoteActivationEvents");
     expect(controller).toContain('method === "snapshot"');

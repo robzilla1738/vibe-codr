@@ -40,6 +40,7 @@ import { parseGhPrList, validateGhPrCreateRequest, type GitResult } from "../src
 import { safeExternalUrl } from "../src/shared/external-url.js";
 import { createServer as createHttpsServer } from "node:https";
 import {
+  HOST_PROTOCOL_CAPABILITIES,
   HOST_PROTOCOL_VERSION,
   decodeInbound,
   type HostInbound,
@@ -193,7 +194,7 @@ async function main(): Promise<void> {
     activeProtocolInfo = info ? {
       protocolVersion: HOST_PROTOCOL_VERSION,
       engineRevision: info.engineRevision,
-      capabilities: ["event-replay"],
+      capabilities: [...HOST_PROTOCOL_CAPABILITIES],
       hostInstanceId: info.hostInstanceId,
     } : null;
     if (controller && activeProtocolInfo) send(controller, { type: "ready", sessionId, ...activeProtocolInfo });

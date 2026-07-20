@@ -15,6 +15,20 @@ import {
   SkillInfoSchema,
   UIEventSchema,
 } from "./domain.ts";
+import {
+  ProjectSummarySchema,
+  SessionSearchHitSchema,
+} from "./project.ts";
+export type {
+  ProjectSessionSummary,
+  ProjectSummary,
+  SessionSearchHit,
+} from "./project.ts";
+export {
+  ProjectSessionSummarySchema,
+  ProjectSummarySchema,
+  SessionSearchHitSchema,
+} from "./project.ts";
 
 const loose = <T extends z.ZodRawShape>(shape: T) => z.object(shape);
 const finite = z.number().finite();
@@ -61,6 +75,16 @@ export const HostReplayResultSchema = loose({
   events: z.array(HostEventFrameSchema).max(PROTOCOL_LIMITS_V1.replayEvents),
   lastEventSeq: nonNegativeSafeInteger,
   truncated: z.boolean(),
+}).superRefine((result, ctx) => {
+  for (const [index, event] of result.events.entries()) {
+    if (event.hostInstanceId !== result.hostInstanceId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["events", index, "hostInstanceId"],
+        message: "replayed event hostInstanceId must match the replay envelope",
+      });
+    }
+  }
 });
 export type HostReplayResult = z.infer<typeof HostReplayResultSchema>;
 
@@ -164,34 +188,6 @@ const params = <
   return z.object(shape).strict();
 };
 
-export const ProjectSessionSummarySchema = loose({
-  id: RuntimeIdentifierSchema,
-  title: z.string(),
-  model: z.string(),
-  mode: z.enum(["plan", "execute"]),
-  goal: z.string().nullable(),
-  createdAt: finite,
-  updatedAt: finite,
-  latestTurnId: RuntimeIdentifierSchema.optional(),
-});
-export type ProjectSessionSummary = z.infer<typeof ProjectSessionSummarySchema>;
-export const SessionSearchHitSchema = loose({
-  cwd: boundedPath,
-  sessionId: RuntimeIdentifierSchema,
-  role: z.enum(["user", "assistant", "system", "tool"]),
-  timestamp: finite,
-  snippet: z.string().max(PROTOCOL_LIMITS_V1.searchSnippetChars),
-  score: finite,
-});
-export type SessionSearchHit = z.infer<typeof SessionSearchHitSchema>;
-export const ProjectSummarySchema = loose({
-  cwd: boundedPath,
-  name: CatalogDisplayStringSchema,
-  updatedAt: finite,
-  sessions: z.array(ProjectSessionSummarySchema),
-});
-export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
-
 export const SessionMetaSchema = loose({
   version: finite.optional(),
   id: RuntimeIdentifierSchema,
@@ -270,13 +266,13 @@ export const SubscriptionAuthStatusSchema = loose({
 export type SubscriptionAuthStatus = z.infer<typeof SubscriptionAuthStatusSchema>;
 export const ExportedProviderCredentialSchema = loose({
   providerId: providerIdSchema,
-  access: z.string(),
+  access: nonEmpty,
   accountId: z.string().optional(),
 }).nullable();
 export type ExportedProviderCredential = z.infer<typeof ExportedProviderCredentialSchema>;
 
 const nullResult = z.null();
-const idResult = loose({ id: z.string() });
+const idResult = loose({ id: RuntimeIdentifierSchema });
 const cwdResult = loose({ cwd: z.string() });
 const rpc = <P extends z.ZodType, R extends z.ZodType>(paramsSchema: P, result: R) =>
   ({ params: paramsSchema, result, paramsRequired: true }) as const;
@@ -346,20 +342,23 @@ export const HOST_RPC_SCHEMAS = {
   deleteProject: optionalParamsRpc(params([], ["cwd"]), cwdResult),
   renameSession: rpc(
     params(["id", "title"], ["cwd"]),
-    loose({ id: z.string(), title: z.string() }),
+    loose({ id: RuntimeIdentifierSchema, title: z.string() }),
   ),
   deleteSession: rpc(params(["id"], ["cwd"]), idResult),
   archiveSession: rpc(params(["id"], ["cwd"]), idResult),
   forkSession: rpc(
     params(["id"], ["cwd", "atTurnId"]),
-    loose({ id: z.string(), cwd: z.string(), atTurnId: z.string() }),
+    loose({ id: RuntimeIdentifierSchema, cwd: z.string(), atTurnId: RuntimeIdentifierSchema }),
   ),
   prepareHandoff: rpc(params(["target"], ["expectedGeneration"]), HandoffPreparationSchema),
   exportPortableSession: rpc(
     params(["engineRevision", "ownershipGeneration"], []),
     PortableSessionArchiveV1Schema,
   ),
-  importPortableSession: rpc(importPortableSessionParamsSchema, loose({ sessionId: z.string() })),
+  importPortableSession: rpc(
+    importPortableSessionParamsSchema,
+    loose({ sessionId: RuntimeIdentifierSchema }),
+  ),
   commitPortableImport: rpc(portableImportSettlementParamsSchema, nullResult),
   abortPortableImport: rpc(portableImportSettlementParamsSchema, nullResult),
   recoverLostCloudOwnership: rpc(recoverLostCloudOwnershipParamsSchema, positiveSafeInteger),

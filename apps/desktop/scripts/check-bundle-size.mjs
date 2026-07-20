@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const assets = resolve("out/renderer/assets");
@@ -19,6 +19,18 @@ if (files.length === 0) {
   process.exit(1);
 }
 const sizes = await Promise.all(files.map(async (name) => ({ name, bytes: (await stat(join(assets, name))).size })));
+const forbiddenProtocolGraphMarkers = [
+  "replayed event hostInstanceId must match the replay envelope",
+  "archive or archivePath is required",
+];
+for (const name of files) {
+  const source = await readFile(join(assets, name), "utf8");
+  const marker = forbiddenProtocolGraphMarkers.find((candidate) => source.includes(candidate));
+  if (marker) {
+    console.error(`Renderer bundle contains the host schema graph (${name}: ${marker})`);
+    process.exit(1);
+  }
+}
 const total = sizes.reduce((sum, item) => sum + item.bytes, 0);
 const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // xterm is a project-terminal feature and is code-split from chat startup.
@@ -64,6 +76,7 @@ if (total > totalBudget || largest > chunkBudget) {
 }
 
 console.log(`Renderer bundle budget OK: ${total} total bytes, ${largest} largest chunk`);
+console.log("Renderer canonical client runtime OK: host schema graph excluded");
 console.log(`Renderer third-party notices OK: ${rendererNotices}`);
 
 // Host binary budget when present (pack / copy-host). Not required for verify

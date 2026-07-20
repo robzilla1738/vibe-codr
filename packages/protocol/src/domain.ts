@@ -319,7 +319,7 @@ export const HandoffPreparationSchema = loose({
   sessionId: runtimeIdentifier,
   ownershipGeneration: nonNegativeSafeInteger,
   previousGeneration: nonNegativeSafeInteger,
-  nonce: z.string(),
+  nonce: runtimeIdentifier,
   target: ExecutionTargetSchema,
   preparedAt: finite,
 });

@@ -194,6 +194,63 @@ parentPort.on("message", (m) => {
   expect(timers.active.size).toBe(0);
 });
 
+test("a stale response after timeout does not disrupt later RPCs or finalize", async () => {
+  const path = writeStubWorker(`
+parentPort.on("message", (m) => {
+  if (!m.__req) return;
+  if (m.op === "snapshot") {
+    parentPort.postMessage({
+      __resp: m.__req,
+      ok: true,
+      value: { sessionId: "s", model: "m", mode: "execute" },
+    });
+    return;
+  }
+  if (m.op === "listModels") {
+    const staleId = m.__req;
+    setTimeout(() => {
+      parentPort.postMessage({ __resp: staleId, ok: true, value: [{ id: "too-late" }] });
+      parentPort.postMessage({ type: "engine-idle", sessionId: "stale-response-posted" });
+    }, 60);
+    return;
+  }
+  if (m.op === "listProviders") {
+    parentPort.postMessage({
+      __resp: m.__req,
+      ok: true,
+      value: [{ id: "healthy", configured: true, keyless: true, env: [] }],
+    });
+    return;
+  }
+  if (m.op === "finalize") {
+    parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
+  }
+});
+`);
+  const timers = trackedTimers();
+  const client = await createWorkerEngineClient(
+    makeOpts(path, {}, { rpcTimeoutMs: 20, timerApi: timers.timerApi }),
+  );
+
+  await expect(client.listModels()).rejects.toThrow(
+    "engine worker RPC listModels timed out after 20ms",
+  );
+  for await (const event of client.events()) {
+    if (event.type === "engine-idle" && event.sessionId === "stale-response-posted") break;
+  }
+  expect(timers.active.size).toBe(0);
+
+  await expect(client.listProviders()).resolves.toEqual([
+    { id: "healthy", configured: true, keyless: true, env: [] },
+  ]);
+  expect(timers.active.size).toBe(0);
+  expect(fatalMessages).toEqual([]);
+
+  await client.finalize();
+  expect(timers.active.size).toBe(0);
+  expect(fatalMessages).toEqual([]);
+});
+
 test("ready snapshot carries approvalMode auto (BUG-084 YOLO chrome)", async () => {
   const path = writeStubWorker(`
 parentPort.on("message", (m) => {

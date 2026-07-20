@@ -12,26 +12,36 @@ import type {
   UIEvent,
 } from "@vibe/shared";
 import type { Engine } from "@vibe/core";
+import type { RuntimeErrorDataV1 } from "@vibe/protocol";
 import { AsyncQueue } from "@vibe/shared";
 
 export type RuntimeServiceState = "starting" | "ready" | "closing" | "closed";
 
-export interface RuntimeServiceErrorData {
-  version: 1;
-  code: "RUNTIME_CLOSED";
-  state: "closing" | "closed";
-  operation: string;
-}
+export const RUNTIME_LIFECYCLE_ERROR_CODES = Object.freeze({
+  closing: "runtime-closing",
+  closed: "runtime-closed",
+} as const);
+
+export type RuntimeLifecycleErrorCode =
+  (typeof RUNTIME_LIFECYCLE_ERROR_CODES)[keyof typeof RUNTIME_LIFECYCLE_ERROR_CODES];
 
 /** Stable lifecycle error exposed to transports without prescribing wire encoding. */
 export class RuntimeServiceError extends Error {
-  readonly code = "RUNTIME_CLOSED";
-  readonly data: RuntimeServiceErrorData;
+  readonly code: RuntimeLifecycleErrorCode;
+  readonly data: RuntimeErrorDataV1;
 
   constructor(state: "closing" | "closed", operation: string) {
-    super(`runtime is ${state}; cannot ${operation}`);
+    const message = `runtime is ${state}; cannot ${operation}`;
+    super(message);
     this.name = "RuntimeServiceError";
-    this.data = { version: 1, code: this.code, state, operation };
+    this.code = RUNTIME_LIFECYCLE_ERROR_CODES[state];
+    this.data = {
+      schemaVersion: 1,
+      code: this.code,
+      message,
+      retryable: false,
+      details: { state, operation },
+    };
   }
 }
 

@@ -11,6 +11,34 @@ import { ProviderRegistry } from "@vibe/providers";
 import type { ExecutionTarget, Mode } from "@vibe/shared";
 import { RuntimeService, type RuntimeEngine } from "./runtime-service.ts";
 
+export type RuntimeSessionStore = Pick<
+  SessionStore,
+  "latestId" | "load" | "acquireLease" | "releaseLease"
+>;
+
+export interface RuntimeModelResolver {
+  resolveModel(model: string, config: Config): Promise<unknown>;
+}
+
+export interface OpenRuntimeSessionDependencies {
+  loadConfig(input: { cwd: string; overrides: Partial<Config> }): Promise<Config>;
+  createSessionStore(cwd: string): RuntimeSessionStore;
+  createRegistry(): RuntimeModelResolver;
+  assertOwner(cwd: string, sessionId: string, target: ExecutionTarget): Promise<void>;
+  loadProjectMemory(cwd: string): Promise<string | undefined>;
+  createEngine(options: EngineOptions): RuntimeEngine;
+}
+
+const DEFAULT_DEPENDENCIES: OpenRuntimeSessionDependencies = {
+  loadConfig,
+  createSessionStore: (cwd) => new SessionStore(cwd),
+  createRegistry: () => new ProviderRegistry(),
+  assertOwner: (cwd, sessionId, target) =>
+    PortableSessionManager.assertOwner(cwd, sessionId, target),
+  loadProjectMemory,
+  createEngine: (options) => new Engine(options),
+};
+
 export type RuntimeResumeRequest =
   | { kind: "new" }
   | { kind: "latest" }
@@ -35,16 +63,19 @@ export interface OpenRuntimeSessionOptions {
   modeOverride?: Mode;
   registry?: ProviderRegistry;
   engineFactory?: (options: EngineOptions) => RuntimeEngine;
+  /** Narrow construction seams for deterministic lifecycle tests. */
+  dependencies?: Partial<OpenRuntimeSessionDependencies>;
 }
 
 /** Resolve and open one Engine session without introducing transport concerns. */
 export async function openRuntimeSession(
   options: OpenRuntimeSessionOptions,
 ): Promise<RuntimeService> {
-  const config = options.config ?? (await loadRuntimeConfig(options));
+  const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
+  const config = options.config ?? (await loadRuntimeConfig(options, dependencies));
 
   if (options.requiredModels) {
-    const registry = options.registry ?? new ProviderRegistry();
+    const registry = options.registry ?? dependencies.createRegistry();
     try {
       for (const model of options.requiredModels) await registry.resolveModel(model, config);
     } catch (error) {
@@ -54,7 +85,7 @@ export async function openRuntimeSession(
     }
   }
 
-  const store = new SessionStore(options.cwd);
+  const store = dependencies.createSessionStore(options.cwd);
   const resume = await resolveResume(store, options.resume);
   if (resume) {
     for (const warning of resume.warnings ?? []) options.onWarning?.(warning);
@@ -62,7 +93,7 @@ export async function openRuntimeSession(
       options.executionTargetForResume?.(resume) ?? options.executionTarget,
     );
     try {
-      await PortableSessionManager.assertOwner(options.cwd, resume.meta.id, target);
+      await dependencies.assertOwner(options.cwd, resume.meta.id, target);
     } catch (error) {
       throw new Error(
         `session ownership check failed for ${target.kind === "local" ? "local" : `cloud/${target.provider}`}: ${errorMessage(error)}`,
@@ -70,11 +101,17 @@ export async function openRuntimeSession(
     }
   }
 
-  let leasedSessionId: string | undefined;
+  let releaseOwnedLease: (() => Promise<void>) | undefined;
   if (resume && options.acquireLease !== false) {
     const lease = await store.acquireLease(resume.meta.id);
-    leasedSessionId = resume.meta.id;
-    if (!lease.ok) {
+    if (lease.ok) {
+      let released = false;
+      releaseOwnedLease = async () => {
+        if (released) return;
+        released = true;
+        await store.releaseLease(resume.meta.id);
+      };
+    } else {
       options.onWarning?.(
         `session ${resume.meta.id} may be active in another process (PID ${lease.holderPid}).\n` +
           "Two terminals on the same session can lose work — proceed with caution.",
@@ -86,7 +123,7 @@ export async function openRuntimeSession(
     const projectMemory =
       options.projectMemory !== undefined
         ? options.projectMemory
-        : await loadProjectMemory(options.cwd);
+        : await dependencies.loadProjectMemory(options.cwd);
     const engineOptions: EngineOptions = {
       config,
       cwd: options.cwd,
@@ -96,29 +133,33 @@ export async function openRuntimeSession(
       ...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
       ...(options.modeOverride ? { modeOverride: options.modeOverride } : {}),
     };
-    const engine = options.engineFactory?.(engineOptions) ?? new Engine(engineOptions);
+    const engine = options.engineFactory?.(engineOptions) ?? dependencies.createEngine(engineOptions);
     const service = new RuntimeService(engine, {
-      ...(leasedSessionId
-        ? { afterFinalize: () => store.releaseLease(leasedSessionId) }
-        : {}),
+      ...(releaseOwnedLease ? { afterFinalize: releaseOwnedLease } : {}),
     });
     return await service.open();
   } catch (error) {
-    if (leasedSessionId) await store.releaseLease(leasedSessionId);
+    await releaseOwnedLease?.();
     throw error;
   }
 }
 
-async function loadRuntimeConfig(options: OpenRuntimeSessionOptions): Promise<Config> {
+async function loadRuntimeConfig(
+  options: OpenRuntimeSessionOptions,
+  dependencies: OpenRuntimeSessionDependencies,
+): Promise<Config> {
   try {
-    return await loadConfig({ cwd: options.cwd, overrides: options.configOverrides ?? {} });
+    return await dependencies.loadConfig({
+      cwd: options.cwd,
+      overrides: options.configOverrides ?? {},
+    });
   } catch (error) {
     throw new Error(`config load failed: ${errorMessage(error)}`);
   }
 }
 
 async function resolveResume(
-  store: SessionStore,
+  store: RuntimeSessionStore,
   request: RuntimeResumeRequest | undefined,
 ): Promise<PersistedSession | undefined> {
   if (!request || request.kind === "new") return undefined;

@@ -153,6 +153,7 @@
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
+        "@vibe/protocol": "workspace:*",
         "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
       },

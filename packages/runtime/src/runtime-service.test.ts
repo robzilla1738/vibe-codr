@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { RuntimeErrorDataV1Schema } from "@vibe/protocol";
 import { AsyncQueue, type EngineCommand, type EngineSnapshot, type UIEvent } from "@vibe/shared";
 import {
+  RUNTIME_LIFECYCLE_ERROR_CODES,
   RuntimeService,
   RuntimeServiceError,
   type RuntimeEngine,
@@ -15,6 +17,7 @@ class MockEngine implements RuntimeEngine {
   readonly models = [{ id: "mock/model", providerId: "mock", name: "model" }];
   readonly providers = [{ id: "mock", configured: true, keyless: true, env: [] }];
   bootstrapError: Error | undefined;
+  finalizeGate: Promise<void> | undefined;
   finalizeCount = 0;
 
   events(): AsyncIterable<UIEvent> {
@@ -58,6 +61,7 @@ class MockEngine implements RuntimeEngine {
 
   async finalize(): Promise<void> {
     this.finalizeCount += 1;
+    await this.finalizeGate;
     this.stream.close();
   }
 }
@@ -124,8 +128,32 @@ describe("RuntimeService", () => {
   test("concurrent close/finalize is idempotent and later work has versioned errors", async () => {
     const engine = new MockEngine();
     const service = await new RuntimeService(engine).open();
+    let finishFinalize!: () => void;
+    engine.finalizeGate = new Promise<void>((resolve) => {
+      finishFinalize = resolve;
+    });
 
-    await Promise.all([service.close(), service.close(), service.finalize()]);
+    const closing = service.close();
+    let closingError: unknown;
+    try {
+      service.snapshot();
+    } catch (caught) {
+      closingError = caught;
+    }
+    expect(closingError).toBeInstanceOf(RuntimeServiceError);
+    expect((closingError as RuntimeServiceError).code).toBe(
+      RUNTIME_LIFECYCLE_ERROR_CODES.closing,
+    );
+    expect(RuntimeErrorDataV1Schema.parse((closingError as RuntimeServiceError).data)).toEqual({
+      schemaVersion: 1,
+      code: "runtime-closing",
+      message: "runtime is closing; cannot snapshot",
+      retryable: false,
+      details: { state: "closing", operation: "snapshot" },
+    });
+
+    finishFinalize();
+    await Promise.all([closing, service.close(), service.finalize()]);
     expect(engine.finalizeCount).toBe(1);
     expect(service.state).toBe("closed");
 
@@ -136,14 +164,15 @@ describe("RuntimeService", () => {
       error = caught;
     }
     expect(error).toBeInstanceOf(RuntimeServiceError);
-    expect((error as RuntimeServiceError).data).toEqual({
-      version: 1,
-      code: "RUNTIME_CLOSED",
-      state: "closed",
-      operation: "snapshot",
+    expect(RuntimeErrorDataV1Schema.parse((error as RuntimeServiceError).data)).toEqual({
+      schemaVersion: 1,
+      code: "runtime-closed",
+      message: "runtime is closed; cannot snapshot",
+      retryable: false,
+      details: { state: "closed", operation: "snapshot" },
     });
     expect(() => service.send({ type: "shutdown" })).toThrow(RuntimeServiceError);
-    await expect(service.listModels()).rejects.toMatchObject({ code: "RUNTIME_CLOSED" });
+    await expect(service.listModels()).rejects.toMatchObject({ code: "runtime-closed" });
     expect(await first(service.events())).toBeUndefined();
   });
 });

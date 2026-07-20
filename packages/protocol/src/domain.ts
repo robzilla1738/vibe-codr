@@ -508,6 +508,7 @@ const SetAgentModelCommandSchema = loose({
 const CreateAgentCommandSchema = loose({ type: z.literal("create-agent"), name: z.string() });
 const SetGoalCommandSchema = loose({ type: z.literal("set-goal"), goal: z.string().nullable() });
 const ResumeGoalCommandSchema = loose({ type: z.literal("resume-goal") });
+const AcceptGoalCompletionCommandSchema = loose({ type: z.literal("accept-goal-completion") });
 const AbortCommandSchema = loose({ type: z.literal("abort") });
 const DequeueCommandSchema = loose({ type: z.literal("dequeue"), id: runtimeIdentifier });
 const SteerCommandSchema = loose({ type: z.literal("steer"), id: runtimeIdentifier });
@@ -559,6 +560,7 @@ export const EngineCommandSchema = z.discriminatedUnion("type", [
   CreateAgentCommandSchema,
   SetGoalCommandSchema,
   ResumeGoalCommandSchema,
+  AcceptGoalCompletionCommandSchema,
   AbortCommandSchema,
   DequeueCommandSchema,
   SteerCommandSchema,
@@ -584,6 +586,7 @@ export const ENGINE_COMMAND_SCHEMAS = {
   "create-agent": CreateAgentCommandSchema,
   "set-goal": SetGoalCommandSchema,
   "resume-goal": ResumeGoalCommandSchema,
+  "accept-goal-completion": AcceptGoalCompletionCommandSchema,
   abort: AbortCommandSchema,
   dequeue: DequeueCommandSchema,
   steer: SteerCommandSchema,

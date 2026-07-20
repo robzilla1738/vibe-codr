@@ -6,7 +6,7 @@ import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
 import { ProviderRegistry } from "@vibe/providers";
 import { defaultConfig } from "@vibe/config";
 import type { UIEvent } from "@vibe/shared";
-import { Engine, applyGateToVerdict } from "./engine.ts";
+import { Engine, applyGateToVerdict, goalAssessorModel } from "./engine.ts";
 import { globalStateDir } from "./state-dir.ts";
 
 // Machine state lives in the per-project GLOBAL state dir — point it at a temp
@@ -135,13 +135,14 @@ test("/goal starts a run, continues past gaps, and finishes only after 2 clean p
   // from the splash to the working view.
   expect(events.filter((e) => e.type === "user-message")).toHaveLength(3);
 
-  // Convergence: assessed after each turn, then declared verified-met.
+  // Convergence: assessed after each turn, then declared met-unverified because
+  // this fixture intentionally has no runnable repository checks.
   expect(assess.calls()).toBe(3);
   expect(
     events.some(
       (e) =>
         e.type === "notice" &&
-        /Goal met after .* verified across 2 consecutive clean passes/.test(e.message),
+        /Goal met after .* completion is unverified/.test(e.message),
     ),
   ).toBe(true);
 });
@@ -171,10 +172,10 @@ test("/goal run stops at goal.maxRounds with a warn — the ★ stays set", asyn
   engine.send({ type: "shutdown" });
   await done;
 
-  // Drive turn + exactly maxRounds continuations, then the bound trips (the
-  // bound is checked before a new assessment, so only 2 assessments ran).
+  // Drive turn + exactly maxRounds continuations, then one final zero-cost
+  // assessment records the terminal evidence before the bound trips.
   expect(prompts).toHaveLength(3);
-  expect(assess.calls()).toBe(2);
+  expect(assess.calls()).toBe(3);
   expect(
     events.some(
       (e) =>
@@ -357,7 +358,7 @@ test("a typed prompt mid-run STEERS the goal run instead of killing it", async (
     events.some(
       (e) =>
         e.type === "notice" &&
-        /Goal met after .* verified across 2 consecutive clean passes/.test(e.message),
+        /Goal met after .* completion is unverified/.test(e.message),
     ),
   ).toBe(true);
   expect(engine.snapshot().goal).toBe("ship the feature");
@@ -589,6 +590,91 @@ test("applyGateToVerdict: a met verdict requires a green gate", () => {
   const notMet = { met: false, gaps: ["x"], reason: "gaps" };
   expect(applyGateToVerdict(notMet, "red")).toEqual(notMet);
   expect(applyGateToVerdict(notMet, "unverified")).toEqual(notMet);
+});
+
+test("goal assessor precedence is explicit, then strong, then active", () => {
+  const config = defaultConfig();
+  config.build.models.strong = "mock/strong";
+  expect(goalAssessorModel(config, "mock/active")).toBe("mock/strong");
+  config.goal.assessorModel = "mock/auditor";
+  expect(goalAssessorModel(config, "mock/active")).toBe("mock/auditor");
+  delete config.goal.assessorModel;
+  delete config.build.models.strong;
+  expect(goalAssessorModel(config, "mock/active")).toBe("mock/active");
+});
+
+test("checkless pause requires acceptance and never upgrades to verified", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-checkless-pause-"));
+  const assess = assessments([{ met: true, gaps: [], reason: "done" }]);
+  const model = new MockLanguageModelV3({
+    doStream: async () => textStep("done") as never,
+    doGenerate: assess.doGenerate,
+  });
+  const config = defaultConfig();
+  config.model = "mock/test";
+  config.goal = { maxRounds: 1, planFirst: false, checklessCompletion: "pause" };
+  const engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: false });
+  await engine.bootstrap();
+  const { events, done } = collect(engine);
+  engine.send({ type: "run-slash", name: "goal", args: "finish without checks" });
+  await engine.whenIdle();
+
+  expect(engine.snapshot().goalRun).toMatchObject({
+    active: false,
+    goalCompletionStatus: "met-unverified",
+    met: true,
+    pausedReason: expect.stringContaining("acceptance required"),
+  });
+  expect(events.some((event) => event.type === "notice" && /verified across/.test(event.message))).toBe(false);
+
+  engine.send({ type: "accept-goal-completion" });
+  expect(engine.snapshot().goalRun).toMatchObject({
+    active: false,
+    phase: null,
+    pausedReason: null,
+    goalCompletionStatus: "met-unverified",
+    met: true,
+  });
+  engine.send({ type: "shutdown" });
+  await done;
+  expect(
+    events.some(
+      (event) =>
+        event.type === "engine-idle" &&
+        event.goalCompletionStatus === "met-unverified" &&
+        event.met === true,
+    ),
+  ).toBe(true);
+});
+
+test("a clean adversarial evidence turn does not consume the work-round budget", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-goal-evidence-budget-"));
+  const prompts: string[] = [];
+  const assess = assessments([
+    { met: false, gaps: ["one repair"], reason: "repair needed" },
+    { met: true, gaps: [], reason: "done" },
+    { met: true, gaps: [], reason: "still done" },
+  ]);
+  const model = new MockLanguageModelV3({
+    doStream: async (options) => {
+      prompts.push(JSON.stringify(options.prompt));
+      return textStep("done") as never;
+    },
+    doGenerate: assess.doGenerate,
+  });
+  const config = defaultConfig();
+  config.model = "mock/test";
+  config.goal = { maxRounds: 1, planFirst: false, checklessCompletion: "self-report" };
+  const engine = new Engine({ config, cwd, registry: mockRegistry(model), interactive: false });
+  await engine.bootstrap();
+  const { done } = collect(engine);
+  engine.send({ type: "run-slash", name: "goal", args: "use the full work budget" });
+  await engine.whenIdle();
+  expect(prompts).toHaveLength(3);
+  expect(prompts[2]).toContain("TRULY met");
+  expect(engine.snapshot().goalRun).toMatchObject({ round: 1, max: 1, goalCompletionStatus: "met-unverified" });
+  engine.send({ type: "shutdown" });
+  await done;
 });
 
 test("pipeline: a live run persists to engine.json and --resume re-enters it", async () => {

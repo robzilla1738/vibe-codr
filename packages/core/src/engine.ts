@@ -23,6 +23,7 @@ import {
   type GateSummary,
   type GitInfo,
   type GoalRunInfo,
+  type GoalCompletionStatus,
   type GoalContract,
   type PlanState,
   type StructuredQuestion,
@@ -210,6 +211,12 @@ export function applyGateToVerdict(
         ? "the gate is red — checks must pass before the goal can be met"
         : "the gate is unverified — checks must run green before the goal can be met",
   };
+}
+
+/** Deterministic assessor precedence, exported so clients/tests never grow a
+ * second interpretation of the model fallback chain. */
+export function goalAssessorModel(config: Pick<Config, "goal" | "build">, activeModel: string): string {
+  return config.goal.assessorModel ?? config.build.models.strong ?? activeModel;
 }
 
 export function manifestSignature(cwd: string): string {
@@ -446,6 +453,9 @@ export class Engine implements EngineClient {
   #goalPauseReason: string | undefined;
   /** True once a run finished verified-met (the ★ goal stays until cleared). */
   #goalMet = false;
+  /** Authoritative evidence status. `#goalMet` is retained for the one-release
+   * compatibility field only and is always derived from this value. */
+  #goalCompletionStatus: GoalCompletionStatus | undefined;
   #goalContract: GoalContract | undefined;
   #goalGapFingerprint = "";
   #goalStagnationCount = 0;
@@ -714,6 +724,7 @@ export class Engine implements EngineClient {
             goalCleanPasses: this.#goalCleanPasses,
             goalPauseReason: this.#goalPauseReason ?? null,
             goalMet: this.#goalMet,
+            goalCompletionStatus: this.#goalCompletionStatus ?? null,
             goalContract: this.#goalContract,
             goalGapFingerprint: this.#goalGapFingerprint,
             goalStagnationCount: this.#goalStagnationCount,
@@ -742,6 +753,7 @@ export class Engine implements EngineClient {
         goalCleanPasses?: number;
         goalPauseReason?: string | null;
         goalMet?: boolean;
+        goalCompletionStatus?: GoalCompletionStatus | null;
         goalContract?: GoalContract;
         goalGapFingerprint?: string;
         goalStagnationCount?: number;
@@ -760,7 +772,11 @@ export class Engine implements EngineClient {
       // the ★ header keeps showing paused/met across a restart.
       this.#goalPhase = state.goalPhase ?? undefined;
       this.#goalPauseReason = state.goalPauseReason ?? undefined;
-      this.#goalMet = state.goalMet ?? false;
+      // Old engine state only carried `goalMet`; migrate conservatively because
+      // it cannot prove a green gate existed in a checkless repository.
+      this.#setGoalCompletionStatus(
+        state.goalCompletionStatus ?? (state.goalMet ? "met-unverified" : undefined),
+      );
       this.#goalContract = state.goalContract;
       this.#goalGapFingerprint = state.goalGapFingerprint ?? "";
       this.#goalStagnationCount = state.goalStagnationCount ?? 0;
@@ -1628,6 +1644,25 @@ export class Engine implements EngineClient {
         } else {
           this.#resumeGoalRun(storedGoal);
         }
+        break;
+      }
+      case "accept-goal-completion": {
+        if (
+          this.#goalRunActive ||
+          this.#goalCompletionStatus !== "met-unverified" ||
+          !this.#goalPauseReason
+        ) {
+          this.#notice("No paused unverified goal completion is waiting for acceptance.", "warn");
+          break;
+        }
+        this.#goalPauseReason = undefined;
+        this.#goalPhase = undefined;
+        void this.#persistEngineState();
+        this.#emitGoalRun();
+        this.#notice(
+          "Unverified goal completion accepted. It remains recorded as met-unverified, not verified.",
+          "info",
+        );
         break;
       }
       case "abort":
@@ -2784,6 +2819,12 @@ export class Engine implements EngineClient {
         type: "engine-idle",
         sessionId: this.#session.id,
         ...(this.#lastGateOutcome ? { gate: this.#lastGateOutcome } : {}),
+        ...(this.#goalCompletionStatus
+          ? {
+              goalCompletionStatus: this.#goalCompletionStatus,
+              met: this.#goalMet,
+            }
+          : {}),
       });
       for (const resolve of this.#idleResolvers.splice(0)) resolve();
     }
@@ -3344,7 +3385,7 @@ export class Engine implements EngineClient {
       to: "plan",
     });
     this.#goalRunEpoch += 1;
-    this.#goalMet = false;
+    this.#setGoalCompletionStatus(undefined);
     this.#goalContract = undefined;
     this.#goalGapFingerprint = "";
     this.#goalStagnationCount = 0;
@@ -3360,7 +3401,7 @@ export class Engine implements EngineClient {
     this.#notice(
       `Goal set: ${goal}\nStarting an autonomous run — ` +
         (planFirst ? "plan first, then execute the plan task by task, " : "the agent works, ") +
-        "self-assessing and continuing until the goal is verified met. " +
+        "self-assessing and continuing until the configured evidence bar is reached. " +
         "/goal clear (or Esc) stops it; typing steers it.",
     );
     if (planFirst) {
@@ -3458,7 +3499,7 @@ export class Engine implements EngineClient {
     this.#session.acknowledgeStop();
     this.#goalRunActive = true;
     this.#goalRunEpoch += 1;
-    this.#goalMet = false;
+    this.#setGoalCompletionStatus(undefined);
     this.#goalGapFingerprint = "";
     this.#goalStagnationCount = 0;
     this.#goalStrategyResets = 0;
@@ -3495,11 +3536,19 @@ export class Engine implements EngineClient {
       round: this.#goalContinueRounds,
       max: this.#config.goal.maxRounds,
       pausedReason: this.#goalPauseReason ?? null,
+      ...(this.#goalCompletionStatus
+        ? { goalCompletionStatus: this.#goalCompletionStatus }
+        : {}),
       met: this.#goalMet,
       ...(this.#goalContract ? { contract: this.#goalContract } : {}),
       stagnationCount: this.#goalStagnationCount,
       strategyResets: this.#goalStrategyResets,
     };
+  }
+
+  #setGoalCompletionStatus(status: GoalCompletionStatus | undefined): void {
+    this.#goalCompletionStatus = status;
+    this.#goalMet = status === "verified" || status === "met-unverified";
   }
 
   #emitGoalRun(): void {
@@ -3522,6 +3571,7 @@ export class Engine implements EngineClient {
     });
     this.#goalRunEpoch += 1;
     this.#goalPauseReason = reason;
+    this.#setGoalCompletionStatus("paused");
     void this.#persistEngineState();
     this.#sweepQueuedGoalTurns(`goal run paused — ${reason}`);
     this.#emitGoalRun();
@@ -3609,7 +3659,7 @@ export class Engine implements EngineClient {
     this.#goalRunEpoch += 1;
     this.#goalPhase = undefined;
     this.#goalPauseReason = undefined;
-    this.#goalMet = false;
+    this.#setGoalCompletionStatus(undefined);
     this.#goalContract = undefined;
     this.#goalGapFingerprint = "";
     this.#goalStagnationCount = 0;
@@ -3726,7 +3776,13 @@ export class Engine implements EngineClient {
     // turn re-enters this check when it finishes.
     if (this.#pending.some((p) => p.origin === "goal")) return;
     const max = this.#config.goal.maxRounds;
-    if (this.#goalContinueRounds >= max) {
+    // Unfinished seeded tasks are a deterministic "not met" — no model call.
+    // This keeps pressure on the task list (the plan's visible spine) and saves
+    // an assessment per round while the work is obviously incomplete.
+    const unfinished = this.#session.tasks
+      .map((t, i) => ({ ref: `t${i + 1}`, title: t.title, status: t.status }))
+      .filter((t) => t.status !== "completed");
+    if (unfinished.length && this.#goalContinueRounds >= max) {
       this.#pauseGoalRun("round budget exhausted", {
         notice:
           `Goal not confirmed met after ${max} continuation round${max === 1 ? "" : "s"} — needs your ` +
@@ -3735,12 +3791,6 @@ export class Engine implements EngineClient {
       });
       return;
     }
-    // Unfinished seeded tasks are a deterministic "not met" — no model call.
-    // This keeps pressure on the task list (the plan's visible spine) and saves
-    // an assessment per round while the work is obviously incomplete.
-    const unfinished = this.#session.tasks
-      .map((t, i) => ({ ref: `t${i + 1}`, title: t.title, status: t.status }))
-      .filter((t) => t.status !== "completed");
     const epoch = this.#goalRunEpoch;
     // When the repo has runnable checks (or the gate is on and recon found
     // commands), a missing gate report is NOT a free pass for "met".
@@ -3774,33 +3824,52 @@ export class Engine implements EngineClient {
       this.#goalStagnationCount = 0;
       this.#goalCleanPasses += 1;
       if (this.#goalCleanPasses >= MAX_GOAL_CLEAN_PASSES) {
+        const completionStatus: GoalCompletionStatus = checksAvailable
+          ? "verified"
+          : "met-unverified";
         this.#goalRunActive = false;
         void this.hooks.run("goal.transition", {
           sessionId: this.#session.id,
           from: "execute",
-          to: "met",
+          to: completionStatus,
         });
-        this.#goalPhase = undefined;
-        this.#goalMet = true;
-        this.#goalPauseReason = undefined;
+        this.#setGoalCompletionStatus(completionStatus);
+        const requiresAcceptance =
+          completionStatus === "met-unverified" &&
+          this.#config.goal.checklessCompletion === "pause";
+        this.#goalPhase = requiresAcceptance ? "execute" : undefined;
+        this.#goalPauseReason = requiresAcceptance
+          ? "completion is met but unverified; explicit acceptance required"
+          : undefined;
         void this.#persistEngineState();
         this.#emitGoalRun();
         const tasks = this.#session.tasks;
         const taskSummary = tasks.length ? `, ${tasks.length}/${tasks.length} tasks completed` : "";
         const gateSummary = this.#lastGateOutcome ? `, gate ${this.#lastGateOutcome}` : "";
-        this.#notice(
-          `Goal met after ${this.#goalContinueRounds} round${this.#goalContinueRounds === 1 ? "" : "s"}` +
-            `${taskSummary}${gateSummary} — verified across ${MAX_GOAL_CLEAN_PASSES} consecutive clean passes.` +
-            (reason ? ` ${reason}.` : ""),
-        );
+        if (completionStatus === "verified") {
+          this.#notice(
+            `Goal met after ${this.#goalContinueRounds} round${this.#goalContinueRounds === 1 ? "" : "s"}` +
+              `${taskSummary}${gateSummary} — verified across ${MAX_GOAL_CLEAN_PASSES} consecutive clean passes.` +
+              (reason ? ` ${reason}.` : ""),
+          );
+        } else {
+          this.#notice(
+            `Goal met after ${this.#goalContinueRounds} round${this.#goalContinueRounds === 1 ? "" : "s"}` +
+              `${taskSummary}, but this repository has no runnable checks — completion is unverified.` +
+              (requiresAcceptance
+                ? " Review the result, then use /goal accept to accept the unverified completion or /goal resume to continue."
+                : " Compatibility mode accepted the model self-report.") +
+              (reason ? ` ${reason}.` : ""),
+            requiresAcceptance ? "warn" : "info",
+          );
+        }
         return;
       }
       // First clean pass buys an adversarial verify turn, not the finish line.
-      this.#goalContinueRounds += 1;
       void this.#persistEngineState();
       this.#emitGoalRun();
       this.#notice(
-        `Goal round ${this.#goalContinueRounds}/${max} — verifying the claimed completion.`,
+        `Goal evidence pass — checking the claimed completion without consuming a work round.`,
       );
       this.#enqueue(
         `goal: verify ${queueLabel(goal)}`,
@@ -3821,7 +3890,7 @@ export class Engine implements EngineClient {
               "in touched code, empty handlers, mismatched style, or claims without proof. Any task still " +
               "in_progress or pending is NOT done — finish it, or mark it completed only if verified. If " +
               "ANY gap exists, fix it now. Only stop when nothing remains.",
-            `★ goal — adversarial verify (round ${this.#goalContinueRounds}/${max})`,
+            `★ goal — adversarial evidence check`,
           );
         },
         { origin: "goal" },
@@ -3829,6 +3898,15 @@ export class Engine implements EngineClient {
       return;
     }
     this.#goalCleanPasses = 0; // any gap resets convergence
+    if (this.#goalContinueRounds >= max) {
+      this.#pauseGoalRun("round budget exhausted", {
+        notice:
+          `Goal not confirmed met after ${max} continuation round${max === 1 ? "" : "s"} — needs your ` +
+          "attention. The ★ goal stays set: /goal resume re-arms the run, /goal clear drops it.",
+        level: "warn",
+      });
+      return;
+    }
     const fingerprint = gapFingerprint(verdict.gaps.length ? verdict.gaps : [reason]);
     if (fingerprint && fingerprint === this.#goalGapFingerprint) this.#goalStagnationCount += 1;
     else {
@@ -3897,8 +3975,9 @@ export class Engine implements EngineClient {
       if (diff.length > GOAL_ASSESS_DIFF_CAP) {
         diff = `${diff.slice(0, GOAL_ASSESS_DIFF_CAP)}\n…(diff truncated)`;
       }
+      const assessorModel = goalAssessorModel(this.#config, this.#session.model);
       const model = await withRetry(
-        () => this.registry.resolveModel(this.#session.model, this.#config),
+        () => this.registry.resolveModel(assessorModel, this.#config),
         {
           maxAttempts: this.#config.retry.maxAttempts,
           baseDelayMs: this.#config.retry.baseDelayMs,
@@ -3907,7 +3986,7 @@ export class Engine implements EngineClient {
       // Same structured-object path as #evaluateCondition: ollama/local models
       // that lack response_format JSON must not brick /goal assessment (the
       // "assessment unavailable — continuing" + AI SDK warning data point).
-      const supportsStructuredOutput = await this.#supportsStructuredOutput(this.#session.model);
+      const supportsStructuredOutput = await this.#supportsStructuredOutput(assessorModel);
       return await this.#limiter.run(
         () =>
           generateStructuredObject({

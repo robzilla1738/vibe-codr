@@ -482,6 +482,10 @@ function engineCommand(value: unknown): value is EngineCommand {
     case "set-agent-model": return typeof command.name === "string" && (command.model === null || typeof command.model === "string");
     case "create-agent": return typeof command.name === "string";
     case "set-goal": return command.goal === null || typeof command.goal === "string";
+    case "resume-goal":
+    case "abort":
+    case "compact":
+    case "shutdown": return true;
     case "dequeue":
     case "steer": return isRuntimeIdentifier(command.id);
     case "resolve-permission": return isRuntimeIdentifier(command.id) && ["once", "always", "always-project", "deny"].includes(String(command.decision)) && optionalString(command.feedback);
@@ -491,7 +495,7 @@ function engineCommand(value: unknown): value is EngineCommand {
     case "request-runtime-handoff": return executionTarget(command.target) && optionalString(command.instruction);
     case "resolve-external-capability": return isRuntimeIdentifier(command.id)
       && (command.decision === "approve" || command.decision === "deny") && optionalString(command.error);
-    default: return true;
+    default: return false;
   }
 }
 
@@ -610,7 +614,9 @@ export function isUIEvent(value: unknown): value is UIEvent {
     case "loop-tick": return isRuntimeIdentifier(event.loopId) && nonNegativeNumber(event.iteration);
     case "loop-stopped": return isRuntimeIdentifier(event.loopId) && typeof event.reason === "string";
     case "engine-idle": return event.gate === undefined || ["green", "red", "unverified", "aborted"].includes(String(event.gate));
-    default: return true;
+    case "turn-finished":
+    case "session-idle": return true;
+    default: return false;
   }
 }
 

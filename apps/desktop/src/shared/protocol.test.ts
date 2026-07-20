@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   decodeInbound,
@@ -23,6 +24,13 @@ const eventFrame = (event: unknown) => ({
   seq: 1,
   event,
 });
+
+function explicitCases(source: string, start: string, end: string): string[] {
+  const body = source.slice(source.indexOf(start), source.indexOf(end));
+  return [...body.matchAll(/case "([^"]+)"/g)].flatMap((match) =>
+    match[1] ? [match[1]] : [],
+  );
+}
 
 describe("NDJSON protocol runtime validation", () => {
   it("rejects malformed inbound messages", () => {
@@ -214,6 +222,11 @@ describe("NDJSON protocol runtime validation", () => {
     for (const event of valid) {
       expect(decodeOutbound(JSON.stringify(eventFrame(event)))).not.toBeNull();
     }
+    for (const sessionId of ["", "bad\0id", "x".repeat(1_025)]) {
+      for (const event of valid) {
+        expect(decodeOutbound(JSON.stringify(eventFrame({ ...event, sessionId })))).toBeNull();
+      }
+    }
 
     const malformed = [
       { type: "plan-state-changed", sessionId: "s", state: { status: "pending", sources: [{ url: 7 }], updatedAt: 1 } },
@@ -243,6 +256,14 @@ describe("NDJSON protocol runtime validation", () => {
     expect(events).toContain("activities-changed");
     expect(new Set(events).size).toBe(events.length);
     expect(new Set(commands).size).toBe(commands.length);
+  });
+
+  it("requires an explicit payload decision for every registered discriminator", () => {
+    const source = readFileSync(new URL("./protocol.ts", import.meta.url), "utf8");
+    expect(explicitCases(source, "function engineCommand", "export function isUIEvent").sort())
+      .toEqual([...listedEngineCommandTypes()].sort());
+    expect(explicitCases(source, "export function isUIEvent", "export function decodeInbound").sort())
+      .toEqual([...listedUIEventTypes()].sort());
   });
 
   it("measures encoded command bytes against the host-safe ceiling", () => {

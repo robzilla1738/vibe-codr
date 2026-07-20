@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   decodeInbound,
   decodeOutbound,
@@ -21,6 +22,13 @@ const eventFrame = (event: unknown) => ({
   seq: 1,
   event,
 });
+
+function explicitCases(source: string, start: string, end: string): string[] {
+  const body = source.slice(source.indexOf(start), source.indexOf(end));
+  return [...body.matchAll(/case "([^"]+)"/g)].flatMap((match) =>
+    match[1] ? [match[1]] : [],
+  );
+}
 
 describe("macOS bridge protocol runtime validation", () => {
   test("accepts valid commands and rejects malformed inbound shapes", () => {
@@ -209,6 +217,13 @@ describe("macOS bridge protocol runtime validation", () => {
     for (const event of events) {
       expect(decodeOutbound(JSON.stringify(eventFrame(event)))).not.toBeNull();
     }
+    for (const sessionId of ["", "bad\0id", "x".repeat(1_025)]) {
+      for (const event of events) {
+        expect(
+          decodeOutbound(JSON.stringify(eventFrame({ ...event, sessionId }))),
+        ).toBeNull();
+      }
+    }
 
     const malformed = [
       { type: "plan-state-changed", sessionId: "ses_1", state: { status: "pending", updatedAt: "now" } },
@@ -237,5 +252,13 @@ describe("macOS bridge protocol runtime validation", () => {
     expect(events).toContain("activities-changed");
     expect(new Set(commands).size).toBe(commands.length);
     expect(new Set(events).size).toBe(events.length);
+  });
+
+  test("requires an explicit payload decision for every registered discriminator", () => {
+    const source = readFileSync(new URL("./protocol.ts", import.meta.url), "utf8");
+    expect(explicitCases(source, "function engineCommand", "export function isUIEvent").sort())
+      .toEqual([...listedEngineCommandTypes()].sort());
+    expect(explicitCases(source, "export function isUIEvent", "export function decodeInbound").sort())
+      .toEqual([...listedUIEventTypes()].sort());
   });
 });

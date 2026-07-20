@@ -468,6 +468,11 @@ function engineCommand(value: unknown): value is EngineCommand {
       return typeof command.name === "string";
     case "set-goal":
       return command.goal === null || typeof command.goal === "string";
+    case "resume-goal":
+    case "abort":
+    case "compact":
+    case "shutdown":
+      return true;
     case "dequeue":
     case "steer":
       return typeof command.id === "string";
@@ -500,7 +505,7 @@ function engineCommand(value: unknown): value is EngineCommand {
         optionalString(command.error)
       );
     default:
-      return true;
+      return false;
   }
 }
 
@@ -512,7 +517,10 @@ export function isUIEvent(value: unknown): value is UIEvent {
     !UI_EVENT_TYPES.has(event.type as UIEvent["type"])
   )
     return false;
-  if (SESSION_EVENT_TYPES.has(event.type as UIEvent["type"]) && typeof event.sessionId !== "string")
+  if (
+    SESSION_EVENT_TYPES.has(event.type as UIEvent["type"]) &&
+    !isRuntimeIdentifier(event.sessionId)
+  )
     return false;
   switch (event.type) {
     case "session-start":
@@ -748,8 +756,11 @@ export function isUIEvent(value: unknown): value is UIEvent {
         event.gate === undefined ||
         ["green", "red", "unverified", "aborted"].includes(String(event.gate))
       );
-    default:
+    case "turn-finished":
+    case "session-idle":
       return true;
+    default:
+      return false;
   }
 }
 

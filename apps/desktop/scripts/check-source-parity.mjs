@@ -203,11 +203,50 @@ function objectMapKeys(path, variableName, contents = readFileSync(path, "utf8")
   throw new Error(`${path}: missing ${variableName}`);
 }
 
+function setLiteralKeys(path, variableName, contents = readFileSync(path, "utf8")) {
+  const source = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || declaration.name.text !== variableName || !declaration.initializer) continue;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (
+        !ts.isNewExpression(initializer) ||
+        !ts.isIdentifier(initializer.expression) ||
+        initializer.expression.text !== "Set" ||
+        !initializer.arguments?.length ||
+        !ts.isArrayLiteralExpression(initializer.arguments[0])
+      ) {
+        throw new Error(`${path}: ${variableName} must be a literal Set`);
+      }
+      return new Set(
+        initializer.arguments[0].elements
+          .filter(ts.isStringLiteral)
+          .map((element) => element.text),
+      );
+    }
+  }
+  throw new Error(`${path}: missing ${variableName}`);
+}
+
+function runtimeRegistryKeys(path, mapName, setName, contents) {
+  return contents.includes(`const ${mapName}`)
+    ? objectMapKeys(path, mapName, contents)
+    : setLiteralKeys(path, setName, contents);
+}
+
 function requireEqualDiscriminators(label, expected, actual, failures) {
   const missing = [...expected].filter((type) => !actual.has(type));
   const unexpected = [...actual].filter((type) => !expected.has(type));
   if (missing.length) failures.push(`${label}: missing discriminators ${missing.join(", ")}`);
   if (unexpected.length) failures.push(`${label}: unexpected discriminators ${unexpected.join(", ")}`);
+}
+
+function requireKnownOmissions(label, unionTypes, registeredTypes, expectedOmissions, failures) {
+  const omissions = new Set([...unionTypes].filter((type) => !registeredTypes.has(type)));
+  requireEqualDiscriminators(`${label} omissions`, expectedOmissions, omissions, failures);
+  const unknown = [...registeredTypes].filter((type) => !unionTypes.has(type));
+  if (unknown.length) failures.push(`${label}: unknown discriminators ${unknown.join(", ")}`);
 }
 
 const failures = [];
@@ -247,38 +286,67 @@ for (const [upstreamRel, electronRel, allowElectronExtras] of pairs) {
   }
 }
 
-// Runtime allowlists are derived from the existing shared unions, never from a
-// third contract copy. Check both live validators so a new discriminator cannot
-// be accepted by TypeScript while being silently rejected on either side of the
-// bridge. The `satisfies Record<...>` declarations also enforce this at compile time.
+// Keep the release parity gate pinned to ENGINE_COMMIT: both the upstream unions
+// and the upstream runtime registries come from `git show`, never a newer live
+// checkout. The locked revision predates T00 and has exactly these six known
+// registry omissions; any additional drift fails, and advancing ENGINE_COMMIT
+// forces this temporary omission record to be removed. The live bridge's
+// `satisfies Record<...>` maps remain the compile-time gate for current source.
 try {
-  for (const [label, protocolPath, commandsPath, eventsPath] of [
-    [
-      "packages/macos-bridge/src/protocol.ts",
-      join(vibeRoot, "packages/macos-bridge/src/protocol.ts"),
-      join(vibeRoot, "packages/shared/src/commands.ts"),
-      join(vibeRoot, "packages/shared/src/events.ts"),
-    ],
-    [
-      "src/shared/protocol.ts",
-      join(electronRoot, "src/shared/protocol.ts"),
-      join(electronRoot, "src/shared/commands.ts"),
-      join(electronRoot, "src/shared/events.ts"),
-    ],
-  ]) {
-    requireEqualDiscriminators(
-      `${label} ENGINE_COMMAND_TYPE_MAP`,
-      unionDiscriminators(commandsPath, "EngineCommand"),
-      objectMapKeys(protocolPath, "ENGINE_COMMAND_TYPE_MAP"),
-      failures,
-    );
-    requireEqualDiscriminators(
-      `${label} UI_EVENT_TYPE_MAP`,
-      unionDiscriminators(eventsPath, "UIEvent"),
-      objectMapKeys(protocolPath, "UI_EVENT_TYPE_MAP"),
-      failures,
-    );
-  }
+  const lockedCommandsPath = "packages/shared/src/commands.ts";
+  const lockedEventsPath = "packages/shared/src/events.ts";
+  const lockedProtocolPath = "packages/macos-bridge/src/protocol.ts";
+  const lockedCommands = unionDiscriminators(
+    lockedCommandsPath,
+    "EngineCommand",
+    lockedEngineSource(lockedCommandsPath),
+  );
+  const lockedEvents = unionDiscriminators(
+    lockedEventsPath,
+    "UIEvent",
+    lockedEngineSource(lockedEventsPath),
+  );
+  const lockedProtocol = lockedEngineSource(lockedProtocolPath);
+  const lockedCommandRegistrations = runtimeRegistryKeys(
+    lockedProtocolPath,
+    "ENGINE_COMMAND_TYPE_MAP",
+    "ENGINE_COMMAND_TYPES",
+    lockedProtocol,
+  );
+  const lockedEventRegistrations = runtimeRegistryKeys(
+    lockedProtocolPath,
+    "UI_EVENT_TYPE_MAP",
+    "UI_EVENT_TYPES",
+    lockedProtocol,
+  );
+  requireKnownOmissions(
+    `${lockedProtocolPath} command registry`,
+    lockedCommands,
+    lockedCommandRegistrations,
+    new Set(["resolve-question", "cancel-activity"]),
+    failures,
+  );
+  requireKnownOmissions(
+    `${lockedProtocolPath} event registry`,
+    lockedEvents,
+    lockedEventRegistrations,
+    new Set(["plan-state-changed", "question-request", "question-settled", "activities-changed"]),
+    failures,
+  );
+
+  const desktopProtocolPath = join(electronRoot, "src/shared/protocol.ts");
+  requireEqualDiscriminators(
+    "src/shared/protocol.ts ENGINE_COMMAND_TYPE_MAP",
+    lockedCommands,
+    objectMapKeys(desktopProtocolPath, "ENGINE_COMMAND_TYPE_MAP"),
+    failures,
+  );
+  requireEqualDiscriminators(
+    "src/shared/protocol.ts UI_EVENT_TYPE_MAP",
+    lockedEvents,
+    objectMapKeys(desktopProtocolPath, "UI_EVENT_TYPE_MAP"),
+    failures,
+  );
 } catch (error) {
   failures.push(error instanceof Error ? error.message : String(error));
 }

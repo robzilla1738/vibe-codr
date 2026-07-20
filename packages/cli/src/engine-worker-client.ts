@@ -32,12 +32,12 @@
  */
 import type { Worker as WorkerType } from "node:worker_threads";
 import {
+  type AgentInfo,
   AsyncQueue,
   type EngineClient,
   type EngineCommand,
   type EngineSnapshot,
   type ModelSummary,
-  type AgentInfo,
   type ProviderInfo,
   type SkillInfo,
   type UIEvent,
@@ -54,6 +54,26 @@ type Inbound =
   | { __resp: number; ok: true; value: unknown }
   | { __resp: number; ok: false; error: string }
   | { __fatal__: true; message: string };
+
+const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+const FINALIZE_TIMEOUT_MS = 5_000;
+
+type TimerHandle = ReturnType<typeof setTimeout>;
+export interface WorkerEngineTimerApi {
+  setTimeout(callback: () => void, timeoutMs: number): TimerHandle;
+  clearTimeout(handle: TimerHandle): void;
+}
+
+interface PendingRpc {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: TimerHandle;
+}
+
+const DEFAULT_TIMER_API: WorkerEngineTimerApi = {
+  setTimeout: (callback, timeoutMs) => setTimeout(callback, timeoutMs),
+  clearTimeout: (handle) => clearTimeout(handle),
+};
 
 const hasKey = (m: unknown, k: string): m is Record<string, unknown> =>
   m !== null && typeof m === "object" && k in (m as Record<string, unknown>);
@@ -92,6 +112,11 @@ export interface WorkerEngineOptions {
    * (tests want isolation). Defaults to true in production so engine logs
    * surface in the user's terminal. */
   inheritStderr?: boolean;
+  /** Maximum time to wait for any worker RPC reply. Defaults to 30 seconds.
+   * Kept injectable so timeout behavior can be tested without a long wait. */
+  rpcTimeoutMs?: number;
+  /** Internal timer seam for deterministic deadline cleanup tests. */
+  timerApi?: WorkerEngineTimerApi;
 }
 
 /**
@@ -107,10 +132,9 @@ export interface WorkerEngineOptions {
 export class WorkerEngineClient implements EngineClient {
   readonly #worker: WorkerType;
   readonly #events = new AsyncQueue<UIEvent>();
-  readonly #pending = new Map<
-    number,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void }
-  >();
+  readonly #pending = new Map<number, PendingRpc>();
+  readonly #rpcTimeoutMs: number;
+  readonly #timerApi: WorkerEngineTimerApi;
   #nextReq = 1;
   #closed = false;
   #onFatal?: (message: string) => void;
@@ -121,11 +145,14 @@ export class WorkerEngineClient implements EngineClient {
   #ready: Promise<void>;
   #resolveReady!: () => void;
   #readySettled = false;
+  #readyTimer: TimerHandle | undefined;
 
   /** Internal — use `createWorkerEngineClient` (resolves `Worker` ctor lazily). */
   constructor(worker: WorkerType, opts: WorkerEngineOptions) {
     this.#worker = worker;
     this.#onFatal = opts.onFatal;
+    this.#rpcTimeoutMs = opts.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+    this.#timerApi = opts.timerApi ?? DEFAULT_TIMER_API;
     this.#ready = new Promise<void>((r) => {
       this.#resolveReady = r;
     });
@@ -143,6 +170,10 @@ export class WorkerEngineClient implements EngineClient {
   #settleReady(): void {
     if (this.#readySettled) return;
     this.#readySettled = true;
+    if (this.#readyTimer !== undefined) {
+      this.#timerApi.clearTimeout(this.#readyTimer);
+      this.#readyTimer = undefined;
+    }
     this.#resolveReady();
   }
 
@@ -165,11 +196,11 @@ export class WorkerEngineClient implements EngineClient {
    * (or a test stub that never answers); session-start still re-seeds App chrome.
    */
   beginHydrate(): void {
+    this.#readyTimer = this.#timerApi.setTimeout(() => this.#settleReady(), 15_000);
     void this.#fetchSnapshot()
       .catch(() => undefined)
       .finally(() => this.#settleReady());
-    const soft = setTimeout(() => this.#settleReady(), 15_000);
-    (soft as { unref?: () => void }).unref?.();
+    (this.#readyTimer as { unref?: () => void }).unref?.();
   }
 
   /** Fire a snapshot RPC and refresh `#snapshotCache` (shared by hydrate + miss). */
@@ -197,9 +228,8 @@ export class WorkerEngineClient implements EngineClient {
       return;
     }
     if (isResp(msg)) {
-      const waiter = this.#pending.get(msg.__resp);
+      const waiter = this.#takePending(msg.__resp);
       if (!waiter) return;
-      this.#pending.delete(msg.__resp);
       if (msg.ok) waiter.resolve(msg.value);
       else waiter.reject(new Error(msg.error));
       return;
@@ -256,10 +286,22 @@ export class WorkerEngineClient implements EngineClient {
   #close(reason: string): void {
     if (this.#closed) return;
     this.#closed = true;
-    for (const waiter of this.#pending.values())
+    this.#settleReady();
+    for (const waiter of this.#pending.values()) {
+      this.#timerApi.clearTimeout(waiter.timer);
       waiter.reject(new Error(`engine worker closed (${reason})`));
+    }
     this.#pending.clear();
     this.#events.close();
+  }
+
+  /** Remove one waiter and dispose its deadline before settling it. */
+  #takePending(id: number): PendingRpc | undefined {
+    const waiter = this.#pending.get(id);
+    if (!waiter) return undefined;
+    this.#pending.delete(id);
+    this.#timerApi.clearTimeout(waiter.timer);
+    return waiter;
   }
 
   events(): AsyncIterable<UIEvent> {
@@ -289,6 +331,7 @@ export class WorkerEngineClient implements EngineClient {
 
   finalize = async (): Promise<void> => {
     if (this.#closed) return;
+    let finalizeTimer: TimerHandle | undefined;
     try {
       // Bound the finalize handshake so a wedged in-worker teardown (a
       // stuck MCP server, an unyielding child process) can't trap the CLI
@@ -297,11 +340,15 @@ export class WorkerEngineClient implements EngineClient {
       // after the bound — same outcome, no leak.
       await Promise.race([
         this.#rpc<void>("finalize"),
-        new Promise<void>((r) => setTimeout(r, 5_000)),
+        new Promise<void>((resolve) => {
+          finalizeTimer = this.#timerApi.setTimeout(resolve, FINALIZE_TIMEOUT_MS);
+        }),
       ]);
     } catch {
       // Worker already exited (e.g. a fatal ran onFatal then the host
       // awaited finalize); treat as best-effort teardown.
+    } finally {
+      if (finalizeTimer !== undefined) this.#timerApi.clearTimeout(finalizeTimer);
     }
     this.#close("finalize");
     try {
@@ -316,8 +363,19 @@ export class WorkerEngineClient implements EngineClient {
     if (this.#closed) return Promise.reject(new Error("engine worker closed"));
     const id = this.#nextReq++;
     return new Promise<T>((resolve, reject) => {
-      this.#pending.set(id, { resolve: (v: unknown) => resolve(v as T), reject });
-      this.#worker.postMessage({ __req: id, op } satisfies Outbound);
+      const timer = this.#timerApi.setTimeout(() => {
+        const waiter = this.#takePending(id);
+        waiter?.reject(
+          new Error(`engine worker RPC ${op} timed out after ${this.#rpcTimeoutMs}ms`),
+        );
+      }, this.#rpcTimeoutMs);
+      this.#pending.set(id, { resolve: (v: unknown) => resolve(v as T), reject, timer });
+      try {
+        this.#worker.postMessage({ __req: id, op } satisfies Outbound);
+      } catch (error) {
+        const waiter = this.#takePending(id);
+        waiter?.reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   };
 }

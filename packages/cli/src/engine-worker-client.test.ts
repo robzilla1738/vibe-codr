@@ -1,8 +1,12 @@
-import { test, expect, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createWorkerEngineClient, type WorkerEngineOptions } from "./engine-worker-client.ts";
+import {
+  createWorkerEngineClient,
+  type WorkerEngineOptions,
+  type WorkerEngineTimerApi,
+} from "./engine-worker-client.ts";
 
 /**
  * End-to-end `WorkerEngineClient` contract tests. We DON'T drive a real
@@ -43,13 +47,47 @@ ${body}
 }
 
 /** Build options with a fatal handler that records the message. */
-function makeOpts(workerPath: string, workerData: unknown): WorkerEngineOptions {
+function makeOpts(
+  workerPath: string,
+  workerData: unknown,
+  overrides: Partial<WorkerEngineOptions> = {},
+): WorkerEngineOptions {
   return {
     workerPath,
     workerData: workerData as WorkerEngineOptions["workerData"],
     onFatal: (m) => fatalMessages.push(m),
     env: { ...process.env },
     inheritStderr: false,
+    ...overrides,
+  };
+}
+
+function trackedTimers(): {
+  timerApi: WorkerEngineTimerApi;
+  active: Set<ReturnType<typeof setTimeout>>;
+  delays: number[];
+} {
+  const active = new Set<ReturnType<typeof setTimeout>>();
+  const delays: number[] = [];
+  return {
+    active,
+    delays,
+    timerApi: {
+      setTimeout(callback, timeoutMs) {
+        delays.push(timeoutMs);
+        let handle!: ReturnType<typeof setTimeout>;
+        handle = setTimeout(() => {
+          active.delete(handle);
+          callback();
+        }, timeoutMs);
+        active.add(handle);
+        return handle;
+      },
+      clearTimeout(handle) {
+        active.delete(handle);
+        clearTimeout(handle);
+      },
+    },
   };
 }
 
@@ -100,6 +138,60 @@ function stub(op) {
   const snap = client.snapshot();
   expect(snap.model).toBe("stub/m");
   await client.finalize();
+});
+
+test("RPCs default to 30s deadlines and clear reply/finalize timers", async () => {
+  const path = writeStubWorker(`
+parentPort.on("message", (m) => {
+  if (!m.__req) return;
+  const value = m.op === "snapshot"
+    ? { sessionId: "s", model: "m", mode: "execute" }
+    : m.op === "listModels"
+      ? []
+      : undefined;
+  parentPort.postMessage({ __resp: m.__req, ok: true, value });
+});
+`);
+  const timers = trackedTimers();
+  const client = await createWorkerEngineClient(makeOpts(path, {}, { timerApi: timers.timerApi }));
+  expect(timers.active.size).toBe(0);
+
+  await client.listModels();
+  expect(timers.delays.at(-1)).toBe(30_000);
+  expect(timers.active.size).toBe(0);
+
+  await client.finalize();
+  expect(timers.delays).toContain(5_000);
+  expect(timers.active.size).toBe(0);
+});
+
+test("an unanswered RPC rejects at the injected deadline and removes its timer", async () => {
+  const path = writeStubWorker(`
+parentPort.on("message", (m) => {
+  if (!m.__req) return;
+  if (m.op === "snapshot") {
+    parentPort.postMessage({
+      __resp: m.__req,
+      ok: true,
+      value: { sessionId: "s", model: "m", mode: "execute" },
+    });
+  }
+  if (m.op === "finalize") {
+    parentPort.postMessage({ __resp: m.__req, ok: true, value: undefined });
+  }
+});
+`);
+  const timers = trackedTimers();
+  const client = await createWorkerEngineClient(
+    makeOpts(path, {}, { rpcTimeoutMs: 25, timerApi: timers.timerApi }),
+  );
+
+  await expect(client.listModels()).rejects.toThrow(
+    "engine worker RPC listModels timed out after 25ms",
+  );
+  expect(timers.active.size).toBe(0);
+  await client.finalize();
+  expect(timers.active.size).toBe(0);
 });
 
 test("ready snapshot carries approvalMode auto (BUG-084 YOLO chrome)", async () => {
@@ -236,6 +328,36 @@ parentPort.postMessage({ __fatal__: true, message: "synthetic crash" });
   for await (const _e of client.events()) count++;
   expect(count).toBe(0); // stream closed without any events
   expect(fatalMessages).toContain("synthetic crash");
+});
+
+test("fatal close rejects pending RPCs and clears their deadlines", async () => {
+  const path = writeStubWorker(`
+parentPort.on("message", (m) => {
+  if (!m.__req) return;
+  if (m.op === "snapshot") {
+    parentPort.postMessage({
+      __resp: m.__req,
+      ok: true,
+      value: { sessionId: "s", model: "m", mode: "execute" },
+    });
+    return;
+  }
+  if (m.op === "listModels") {
+    setTimeout(() => {
+      parentPort.postMessage({ __fatal__: true, message: "fatal during RPC" });
+      setTimeout(() => process.exit(1), 5);
+    }, 5);
+  }
+});
+`);
+  const timers = trackedTimers();
+  const client = await createWorkerEngineClient(
+    makeOpts(path, {}, { rpcTimeoutMs: 1_000, timerApi: timers.timerApi }),
+  );
+
+  await expect(client.listModels()).rejects.toThrow("engine worker closed (fatal)");
+  expect(fatalMessages).toContain("fatal during RPC");
+  expect(timers.active.size).toBe(0);
 });
 
 test("worker error event surfaces as fatal", async () => {

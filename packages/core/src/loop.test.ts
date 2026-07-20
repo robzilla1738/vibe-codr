@@ -154,6 +154,22 @@ test("parseLoopArgs rejects empty/bare/unclosed, duplicate, and mixed conditions
   }
 });
 
+test("parseLoopArgs rejects duplicate unlimited and mixed valid/invalid max applications", () => {
+  for (const input of [
+    "poll --unlimited --unlimited",
+    "poll --max 2 --max 3",
+    "poll --max 2 --max nope",
+    "poll --max nope --max 2",
+    "poll --max 2 --max",
+    "poll --max nope --max",
+  ]) {
+    expect(parseLoopArgs(input)).toBeNull();
+  }
+  // Quoted flag text remains prompt/command content, not a duplicate.
+  expect(parseLoopArgs('poll "--unlimited" --unlimited')).not.toBeNull();
+  expect(parseLoopArgs('poll --until-cmd "echo --max --max" --max 2')).not.toBeNull();
+});
+
 test("parseLoopArgs fuzz table: option-looking text inside quotes is never consumed", () => {
   const quotedFragments = [
     '"--max 99"',

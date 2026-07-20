@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -365,6 +365,39 @@ test("runSandboxedReadOnlyCommand fails closed when containment is unavailable",
   ).rejects.toThrow("sandbox unavailable");
 });
 
+function fakeSeatbelt(script: string): { cwd: string; binary: string } {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-fake-seatbelt-"));
+  const binary = join(cwd, "sandbox-exec");
+  writeFileSync(binary, `#!/bin/sh\n${script}\n`);
+  chmodSync(binary, 0o755);
+  return { cwd, binary };
+}
+
+test("runSandboxedReadOnlyCommand treats backend setup failure as an evaluator error", async () => {
+  const { cwd, binary } = fakeSeatbelt('echo "profile rejected" >&2\nexit 73');
+  await expect(
+    runSandboxedReadOnlyCommand("exit 1", cwd, {
+      deps: {
+        platform: "darwin",
+        which: (name) => (name === "sandbox-exec" ? binary : null),
+        killGraceMs: 10,
+      },
+    }),
+  ).rejects.toThrow("failed before command start (exit 73): profile rejected");
+});
+
+test("runSandboxedReadOnlyCommand keeps a post-handshake exit 1 as ordinary not-yet", async () => {
+  const { cwd, binary } = fakeSeatbelt('[ "$1" = "-p" ] || exit 90\nshift 2\nexec "$@"');
+  const result = await runSandboxedReadOnlyCommand("exit 1", cwd, {
+    deps: {
+      platform: "darwin",
+      which: (name) => (name === "sandbox-exec" ? binary : null),
+      killGraceMs: 10,
+    },
+  });
+  expect(result).toEqual({ code: 1, output: "" });
+});
+
 test.skipIf(!realBackendAvailable)(
   "runSandboxedReadOnlyCommand ignores VIBE_SANDBOX=off and blocks workspace mutation",
   async () => {
@@ -409,6 +442,37 @@ test.skipIf(!realBackendAvailable)(
     expect(new TextEncoder().encode(result.output).byteLength).toBeLessThanOrEqual(
       READ_ONLY_COMMAND_OUTPUT_CAP,
     );
+  },
+);
+
+test.skipIf(!realBackendAvailable)(
+  "runSandboxedReadOnlyCommand reaps a closed-fd descendant on normal wrapper exit",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-normal-exit-"));
+    const started = performance.now();
+    const result = await runSandboxedReadOnlyCommand(
+      'sleep 30 <&- >&- 2>&- & child=$!; printf "child=%s\\n" "$child"; exit 1',
+      cwd,
+      { deps: { timeoutMs: 20, killGraceMs: 100 } },
+    );
+    expect(result.code).toBe(1);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    const childPid = Number(result.output.match(/child=(\d+)/u)?.[1]);
+    expect(childPid).toBeGreaterThan(1);
+    expect(() => process.kill(childPid, 0)).toThrow();
+  },
+);
+
+test.skipIf(!realBackendAvailable)(
+  "runSandboxedReadOnlyCommand closes inherited pipes for the exact sleep repro",
+  async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-normal-exit-timing-"));
+    const started = performance.now();
+    const result = await runSandboxedReadOnlyCommand("sleep 1 & exit 1", cwd, {
+      deps: { timeoutMs: 20, killGraceMs: 100 },
+    });
+    expect(result.code).toBe(1);
+    expect(performance.now() - started).toBeLessThan(500);
   },
 );
 

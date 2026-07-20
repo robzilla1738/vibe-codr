@@ -151,6 +151,7 @@ export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoo
 
   let unlimited = false;
   const unlimitedTokens = tokens.filter((t) => !t.fullyQuoted && t.value === "--unlimited");
+  if (unlimitedTokens.length > 1) return null;
   if (unlimitedTokens.length) {
     unlimited = true;
     rest = withoutRanges(
@@ -161,6 +162,11 @@ export function parseLoopArgs(args: string, opts: ParseLoopOpts = {}): ParsedLoo
   }
 
   let max: number | undefined;
+  const maxFlagTokens = tokens.filter((token) => !token.fullyQuoted && token.value === "--max");
+  // Multiple applications are ambiguous even when only one has a valid value:
+  // `--max 2 --max nope` must not silently accept the first and leak the second
+  // into the prompt.
+  if (maxFlagTokens.length > 1) return null;
   const validMax = tokens
     .map((token, index) => ({ token, value: tokens[index + 1] }))
     .filter(

@@ -1,7 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { killTreeAndWait } from "./builtins/process-tree.ts";
 
 /**
  * A thin OS-level sandbox — defense-in-depth UNDER the permission engine. The
@@ -75,6 +74,7 @@ export interface SandboxResolveOptions {
  * derived from the model-facing bash tool or the user's sandbox config. */
 export const READ_ONLY_COMMAND_TIMEOUT_MS = 30_000;
 export const READ_ONLY_COMMAND_OUTPUT_CAP = 8 * 1024;
+const READ_ONLY_COMMAND_STARTED = "__VIBE_READ_ONLY_COMMAND_STARTED__";
 
 export interface ReadOnlyCommandResult {
   code: number;
@@ -330,13 +330,16 @@ async function drainCombinedBytes(
   chunks: Uint8Array[],
   state: { retained: number },
   cap: number,
+  onChunk?: (chunk: Uint8Array) => void,
 ): Promise<void> {
   const reader = stream.getReader();
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!value || state.retained >= cap) continue;
+      if (!value) continue;
+      onChunk?.(value);
+      if (state.retained >= cap) continue;
       const kept = value.slice(0, cap - state.retained);
       if (kept.byteLength) {
         chunks.push(kept);
@@ -349,6 +352,31 @@ async function drainCombinedBytes(
   } finally {
     await reader.cancel().catch(() => {});
   }
+}
+
+function signalProcessGroup(groupId: number, signal: NodeJS.Signals | 0): boolean {
+  // A detached child is its own process-group leader. The strict positive guard
+  // prevents a malformed/unknown pid from ever becoming a broad negative kill.
+  if (!Number.isSafeInteger(groupId) || groupId <= 1 || groupId === process.pid) return false;
+  try {
+    process.kill(-groupId, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Terminate only the dedicated group created for this sandbox invocation.
+ * Unlike parent/child discovery, the PGID still names background descendants
+ * after the short-lived shell wrapper exits and they are reparented. */
+async function terminateProcessGroup(groupId: number, graceMs = 1_500): Promise<void> {
+  if (!signalProcessGroup(groupId, "SIGTERM")) return;
+  const deadline = performance.now() + graceMs;
+  while (performance.now() < deadline) {
+    await Bun.sleep(Math.min(20, Math.max(1, deadline - performance.now())));
+    if (!signalProcessGroup(groupId, 0)) return;
+  }
+  signalProcessGroup(groupId, "SIGKILL");
 }
 
 /**
@@ -392,6 +420,19 @@ export async function runSandboxedReadOnlyCommand(
   if (argv[0] !== "sandbox-exec" && argv[0] !== "bwrap") {
     throw new Error("read-only command sandbox unavailable: refusing an unsandboxed fallback");
   }
+  const backendBinary =
+    policy.backend === "seatbelt"
+      ? (deps?.which ?? ((bin: string) => Bun.which(bin)))("sandbox-exec")
+      : (deps?.which ?? ((bin: string) => Bun.which(bin)))("bwrap");
+  if (!backendBinary) {
+    throw new Error("read-only command sandbox unavailable: backend disappeared before launch");
+  }
+  argv[0] = backendBinary;
+  // The marker is written by bash only AFTER the kernel backend has admitted
+  // the process. Its absence distinguishes backend/profile launch failure from
+  // an ordinary nonzero user command (which remains a healthy "not yet").
+  argv[argv.length - 1] =
+    `printf '%s\\n' '${READ_ONLY_COMMAND_STARTED}'\n${argv[argv.length - 1]}`;
 
   const proc = (() => {
     try {
@@ -400,6 +441,9 @@ export async function runSandboxedReadOnlyCommand(
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
+        // A fresh process group survives wrapper exit as the stable containment
+        // handle for every background descendant holding stdout/stderr open.
+        detached: true,
       });
     } catch (err) {
       throw new Error(`read-only command sandbox failed to start: ${(err as Error).message}`);
@@ -409,7 +453,8 @@ export async function runSandboxedReadOnlyCommand(
   let timedOut = false;
   let aborted = false;
   let killing: Promise<void> | undefined;
-  const kill = () => (killing ??= killTreeAndWait(proc.pid, deps?.killGraceMs).catch(() => {}));
+  const kill = () =>
+    (killing ??= terminateProcessGroup(proc.pid, deps?.killGraceMs).catch(() => {}));
   const timeoutMs = deps?.timeoutMs ?? READ_ONLY_COMMAND_TIMEOUT_MS;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -426,15 +471,28 @@ export async function runSandboxedReadOnlyCommand(
 
   const chunks: Uint8Array[] = [];
   const state = { retained: 0 };
+  const stdoutPrefix: number[] = [];
+  const markerBytes = new TextEncoder().encode(`${READ_ONLY_COMMAND_STARTED}\n`);
   const pumps = Promise.all([
-    drainCombinedBytes(proc.stdout, chunks, state, READ_ONLY_COMMAND_OUTPUT_CAP),
+    drainCombinedBytes(proc.stdout, chunks, state, READ_ONLY_COMMAND_OUTPUT_CAP, (chunk) => {
+      const needed = markerBytes.byteLength - stdoutPrefix.length;
+      if (needed > 0) stdoutPrefix.push(...chunk.slice(0, needed));
+    }),
     drainCombinedBytes(proc.stderr, chunks, state, READ_ONLY_COMMAND_OUTPUT_CAP),
   ]);
   let code: number;
   try {
     code = await proc.exited;
+    // The command itself has completed. Disarm its wall-clock deadline now;
+    // descendant reap below is cleanup, not a reason to relabel exit 1 as a
+    // timeout merely because a background pipe holder takes another tick to die.
+    clearTimeout(timer);
+    // Always reap the dedicated group BEFORE awaiting stream EOF. A command can
+    // exit while `sleep &` is already reparented yet still owns the pipe; PGID
+    // containment closes that leak promptly on the normal-exit path too.
+    void kill();
     await pumps;
-    if (killing) await killing;
+    await killing;
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", onAbort);
@@ -446,10 +504,19 @@ export async function runSandboxedReadOnlyCommand(
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  const output = new TextDecoder().decode(bytes);
+  const markerSeen =
+    stdoutPrefix.length === markerBytes.byteLength &&
+    stdoutPrefix.every((byte, index) => byte === markerBytes[index]);
+  const output = new TextDecoder().decode(bytes).replace(`${READ_ONLY_COMMAND_STARTED}\n`, "");
   if (aborted) throw abortError();
   if (timedOut) {
     throw new Error(`read-only command check timed out after ${READ_ONLY_COMMAND_TIMEOUT_MS}ms`);
+  }
+  if (!markerSeen) {
+    const detail = output.trim().replace(/\s+/gu, " ").slice(0, 240);
+    throw new Error(
+      `read-only command sandbox failed before command start (exit ${code})${detail ? `: ${detail}` : ""}`,
+    );
   }
   return { code, output };
 }

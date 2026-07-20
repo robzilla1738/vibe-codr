@@ -146,17 +146,30 @@ let bwrapUsernsOk: boolean | undefined;
  * `bwrap` on the PATH does not mean it WORKS: a minimal launch still fails when
  * unprivileged user namespaces are disabled (a common hardened-kernel default —
  * `kernel.unprivileged_userns_clone=0`), which would EPERM every sandboxed
- * command confusingly. Probe the smallest possible sandboxed invocation and
- * require exit 0. Cached so it costs at most one cheap spawn per process.
+ * command confusingly. Probe the required lifecycle namespace as well as the
+ * read-only mount and require exit 0. Cached so it costs at most one cheap
+ * spawn per process.
  */
 function defaultBwrapSmoke(): boolean {
   if (bwrapUsernsOk !== undefined) return bwrapUsernsOk;
   try {
-    const proc = Bun.spawnSync(["bwrap", "--ro-bind", "/", "/", "true"], {
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore",
-    });
+    const proc = Bun.spawnSync(
+      [
+        "bwrap",
+        "--die-with-parent",
+        "--unshare-pid",
+        "--new-session",
+        "--ro-bind",
+        "/",
+        "/",
+        "true",
+      ],
+      {
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+      },
+    );
     bwrapUsernsOk = proc.success;
   } catch {
     bwrapUsernsOk = false;
@@ -283,11 +296,27 @@ export function seatbeltProfile(policy: SandboxPolicy, cwd: string): string {
 /**
  * Build the `bwrap` argv (after the `bwrap` binary, before the base command).
  * The whole FS is bound read-only, then each writable root is re-bound
- * read-write (workspace-write only), `/dev` + `/proc` are fresh, and the network
- * namespace is unshared when network is off. Pure + snapshot-testable.
+ * read-write (workspace-write only), `/dev` + `/proc` are fresh, the process
+ * namespace is owned by bwrap's PID-1 reaper, and the network namespace is
+ * unshared when network is off. Pure + snapshot-testable.
  */
 export function bwrapArgs(policy: SandboxPolicy, cwd: string): string[] {
-  const args = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"];
+  const args = [
+    // Keep bwrap as PID 1 so its built-in reaper supervises the namespace.
+    // `--as-pid-1` would disable that ownership boundary and is deliberately
+    // absent. Namespace teardown then kills descendants even if they call
+    // setsid(2), while parent death cannot orphan the sandbox launcher.
+    "--die-with-parent",
+    "--unshare-pid",
+    "--new-session",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+  ];
   if (policy.mode === "workspace-write") {
     for (const root of writableRoots(policy, cwd)) {
       args.push("--bind", root, root);
@@ -366,9 +395,10 @@ function signalProcessGroup(groupId: number, signal: NodeJS.Signals | 0): boolea
   }
 }
 
-/** Terminate only the dedicated group created for this sandbox invocation.
- * Unlike parent/child discovery, the PGID still names background descendants
- * after the short-lived shell wrapper exits and they are reparented. */
+/** Terminate only the dedicated launcher group created for this invocation.
+ * This is prompt timeout/abort cleanup, not the all-descendant ownership
+ * boundary: descendants can call setsid(2), so that boundary is the PID
+ * namespace required below. */
 async function terminateProcessGroup(groupId: number, graceMs = 1_500): Promise<void> {
   if (!signalProcessGroup(groupId, "SIGTERM")) return;
   const deadline = performance.now() + graceMs;
@@ -384,9 +414,10 @@ async function terminateProcessGroup(groupId: number, graceMs = 1_500): Promise<
  *
  * This is intentionally separate from `bunExec`, `policyForChecks`, and the
  * model-facing sandbox policy: loop checks are untrusted shell strings and must
- * always see a read-only filesystem with networking disabled. Missing Seatbelt
- * or bwrap is an error (fail closed); there is no unsandboxed fallback, even
- * when config or `VIBE_SANDBOX` says `off`.
+ * always see a read-only filesystem with networking disabled. Linux requires
+ * bwrap's owned PID namespace. Seatbelt is rejected because it cannot own every
+ * descendant lifecycle; there is no unsandboxed fallback, even when config or
+ * `VIBE_SANDBOX` says `off`.
  */
 export async function runSandboxedReadOnlyCommand(
   command: string,
@@ -412,18 +443,20 @@ export async function runSandboxedReadOnlyCommand(
       `read-only command sandbox unavailable: ${policy.warning ?? "no supported kernel backend"}`,
     );
   }
+  if (policy.backend === "seatbelt") {
+    throw new Error(
+      "read-only command sandbox unsupported on macOS: Seatbelt does not provide an owned all-descendant lifecycle boundary for --until-cmd; use Linux with bubblewrap or use a model --until condition",
+    );
+  }
 
   const argv = wrapCommand(policy, { cwd, command });
   // `wrapCommand` normally degrades for unavailable policies. The explicit
   // prefix assertion makes this high-risk caller fail closed if that behavior
   // ever changes or a malformed policy slips through.
-  if (argv[0] !== "sandbox-exec" && argv[0] !== "bwrap") {
+  if (argv[0] !== "bwrap") {
     throw new Error("read-only command sandbox unavailable: refusing an unsandboxed fallback");
   }
-  const backendBinary =
-    policy.backend === "seatbelt"
-      ? (deps?.which ?? ((bin: string) => Bun.which(bin)))("sandbox-exec")
-      : (deps?.which ?? ((bin: string) => Bun.which(bin)))("bwrap");
+  const backendBinary = (deps?.which ?? ((bin: string) => Bun.which(bin)))("bwrap");
   if (!backendBinary) {
     throw new Error("read-only command sandbox unavailable: backend disappeared before launch");
   }
@@ -441,8 +474,9 @@ export async function runSandboxedReadOnlyCommand(
         stdout: "pipe",
         stderr: "pipe",
         stdin: "ignore",
-        // A fresh process group survives wrapper exit as the stable containment
-        // handle for every background descendant holding stdout/stderr open.
+        // The process group bounds prompt launcher cleanup. All-descendant
+        // ownership comes from bwrap's PID namespace, not this PGID: a child
+        // may create a new session, but cannot escape namespace teardown.
         detached: true,
       });
     } catch (err) {
@@ -487,10 +521,9 @@ export async function runSandboxedReadOnlyCommand(
     // descendant reap below is cleanup, not a reason to relabel exit 1 as a
     // timeout merely because a background pipe holder takes another tick to die.
     clearTimeout(timer);
-    // Always reap the dedicated group BEFORE awaiting stream EOF. A command can
-    // exit while `sleep &` is already reparented yet still owns the pipe; PGID
-    // containment closes that leak promptly on the normal-exit path too.
-    void kill();
+    // Bubblewrap has already torn down its owned PID namespace here, including
+    // re-sessioned descendants. Stream EOF therefore cannot depend on PGID
+    // cleanup on the normal-exit path.
     await pumps;
     await killing;
   } finally {

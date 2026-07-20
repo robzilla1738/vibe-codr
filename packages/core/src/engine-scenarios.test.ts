@@ -479,14 +479,25 @@ test("/loop iteration runs built-in /status without prompting the model (BUG-075
 });
 
 const realLoopCommandSandbox = (() => {
-  if (process.platform === "darwin") return Boolean(Bun.which("sandbox-exec"));
   if (process.platform !== "linux" || !Bun.which("bwrap")) return false;
   try {
-    return Bun.spawnSync(["bwrap", "--ro-bind", "/", "/", "true"], {
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore",
-    }).success;
+    return Bun.spawnSync(
+      [
+        "bwrap",
+        "--die-with-parent",
+        "--unshare-pid",
+        "--new-session",
+        "--ro-bind",
+        "/",
+        "/",
+        "true",
+      ],
+      {
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+      },
+    ).success;
   } catch {
     return false;
   }

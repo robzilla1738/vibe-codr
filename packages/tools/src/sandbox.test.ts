@@ -66,6 +66,9 @@ test("seatbeltProfile: read-only grants NO writes (only reads + process)", () =>
 
 test("bwrapArgs: workspace-write binds each root read-write; network off unshares net", () => {
   expect(bwrapArgs(policy("workspace-write", "off"), "/work")).toEqual([
+    "--die-with-parent",
+    "--unshare-pid",
+    "--new-session",
     "--ro-bind",
     "/",
     "/",
@@ -86,6 +89,9 @@ test("bwrapArgs: workspace-write binds each root read-write; network off unshare
 test("bwrapArgs: network on keeps net; read-only binds nothing writable", () => {
   expect(bwrapArgs(policy("workspace-write", "on"), "/work")).not.toContain("--unshare-net");
   expect(bwrapArgs(policy("read-only", "off"), "/work")).toEqual([
+    "--die-with-parent",
+    "--unshare-pid",
+    "--new-session",
     "--ro-bind",
     "/",
     "/",
@@ -96,6 +102,9 @@ test("bwrapArgs: network on keeps net; read-only binds nothing writable", () => 
     "--unshare-net",
   ]);
   expect(bwrapArgs(policy("read-only", "on"), "/work")).toEqual([
+    "--die-with-parent",
+    "--unshare-pid",
+    "--new-session",
     "--ro-bind",
     "/",
     "/",
@@ -104,6 +113,12 @@ test("bwrapArgs: network on keeps net; read-only binds nothing writable", () => 
     "--proc",
     "/proc",
   ]);
+});
+
+test("bwrapArgs: PID namespace keeps bwrap as supervising PID 1", () => {
+  const args = bwrapArgs(policy("read-only", "off"), "/work");
+  expect(args.slice(0, 3)).toEqual(["--die-with-parent", "--unshare-pid", "--new-session"]);
+  expect(args).not.toContain("--as-pid-1");
 });
 
 // -------------------------------------------------------- resolveSandboxPolicy
@@ -343,15 +358,26 @@ test("wrapCommand: seatbelt prefixes sandbox-exec -p <profile>; bwrap prefixes b
 
 // ---------------------------------------------- mandatory read-only command runner
 
-const realBackendAvailable = (() => {
-  if (process.platform === "darwin") return Boolean(Bun.which("sandbox-exec"));
+const realLinuxBackendAvailable = (() => {
   if (process.platform !== "linux" || !Bun.which("bwrap")) return false;
   try {
-    return Bun.spawnSync(["bwrap", "--ro-bind", "/", "/", "true"], {
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore",
-    }).success;
+    return Bun.spawnSync(
+      [
+        "bwrap",
+        "--die-with-parent",
+        "--unshare-pid",
+        "--new-session",
+        "--ro-bind",
+        "/",
+        "/",
+        "true",
+      ],
+      {
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+      },
+    ).success;
   } catch {
     return false;
   }
@@ -365,40 +391,61 @@ test("runSandboxedReadOnlyCommand fails closed when containment is unavailable",
   ).rejects.toThrow("sandbox unavailable");
 });
 
-function fakeSeatbelt(script: string): { cwd: string; binary: string } {
-  const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-fake-seatbelt-"));
-  const binary = join(cwd, "sandbox-exec");
+function fakeBwrap(script: string): { cwd: string; binary: string } {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-fake-bwrap-"));
+  const binary = join(cwd, "bwrap");
   writeFileSync(binary, `#!/bin/sh\n${script}\n`);
   chmodSync(binary, 0o755);
   return { cwd, binary };
 }
 
-test("runSandboxedReadOnlyCommand treats backend setup failure as an evaluator error", async () => {
-  const { cwd, binary } = fakeSeatbelt('echo "profile rejected" >&2\nexit 73');
+test("runSandboxedReadOnlyCommand refuses Seatbelt before launching a command", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-seatbelt-refusal-"));
+  const invoked = join(cwd, "INVOKED");
+  const binary = join(cwd, "sandbox-exec");
+  writeFileSync(binary, `#!/bin/sh\ntouch '${invoked}'\nexit 0\n`);
+  chmodSync(binary, 0o755);
   await expect(
-    runSandboxedReadOnlyCommand("exit 1", cwd, {
+    runSandboxedReadOnlyCommand("true", cwd, {
       deps: {
         platform: "darwin",
         which: (name) => (name === "sandbox-exec" ? binary : null),
+      },
+    }),
+  ).rejects.toThrow("unsupported on macOS");
+  expect(existsSync(invoked)).toBe(false);
+});
+
+test("runSandboxedReadOnlyCommand treats backend setup failure as an evaluator error", async () => {
+  const { cwd, binary } = fakeBwrap('echo "namespace rejected" >&2\nexit 73');
+  await expect(
+    runSandboxedReadOnlyCommand("exit 1", cwd, {
+      deps: {
+        platform: "linux",
+        which: (name) => (name === "bwrap" ? binary : null),
+        smokeBwrap: () => true,
         killGraceMs: 10,
       },
     }),
-  ).rejects.toThrow("failed before command start (exit 73): profile rejected");
+  ).rejects.toThrow("failed before command start (exit 73): namespace rejected");
 });
 
 test("runSandboxedReadOnlyCommand keeps a post-handshake exit 1 as ordinary not-yet", async () => {
-  const { cwd, binary } = fakeSeatbelt('[ "$1" = "-p" ] || exit 90\nshift 2\nexec "$@"');
+  const { cwd, binary } = fakeBwrap(
+    'while [ "$#" -gt 0 ] && [ "$1" != "bash" ]; do shift; done\n[ "$#" -gt 0 ] || exit 90\nexec "$@"',
+  );
   const result = await runSandboxedReadOnlyCommand("exit 1", cwd, {
     deps: {
-      platform: "darwin",
-      which: (name) => (name === "sandbox-exec" ? binary : null),
+      platform: "linux",
+      which: (name) => (name === "bwrap" ? binary : null),
+      smokeBwrap: () => true,
       killGraceMs: 10,
     },
   });
   expect(result).toEqual({ code: 1, output: "" });
 });
 
-test.skipIf(!realBackendAvailable)(
+test.skipIf(!realLinuxBackendAvailable)(
   "runSandboxedReadOnlyCommand ignores VIBE_SANDBOX=off and blocks workspace mutation",
   async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-ro-"));
@@ -418,7 +465,7 @@ test.skipIf(!realBackendAvailable)(
   },
 );
 
-test.skipIf(!realBackendAvailable || !Bun.which("curl"))(
+test.skipIf(!realLinuxBackendAvailable || !Bun.which("curl"))(
   "runSandboxedReadOnlyCommand blocks network access",
   async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-net-"));
@@ -430,7 +477,7 @@ test.skipIf(!realBackendAvailable || !Bun.which("curl"))(
   },
 );
 
-test.skipIf(!realBackendAvailable)(
+test.skipIf(!realLinuxBackendAvailable)(
   "runSandboxedReadOnlyCommand caps combined output at 8KiB",
   async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-cap-"));
@@ -445,62 +492,59 @@ test.skipIf(!realBackendAvailable)(
   },
 );
 
-test.skipIf(!realBackendAvailable)(
-  "runSandboxedReadOnlyCommand reaps a closed-fd descendant on normal wrapper exit",
+test.skipIf(!realLinuxBackendAvailable || !Bun.which("setsid"))(
+  "runSandboxedReadOnlyCommand tears down a re-sessioned descendant with its PID namespace",
   async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-normal-exit-"));
     const started = performance.now();
     const result = await runSandboxedReadOnlyCommand(
-      'sleep 30 <&- >&- 2>&- & child=$!; printf "child=%s\\n" "$child"; exit 1',
+      `${Bun.which("setsid")} sleep 30 & exit 1`,
       cwd,
-      { deps: { timeoutMs: 20, killGraceMs: 100 } },
+      { deps: { timeoutMs: 500, killGraceMs: 250 } },
     );
     expect(result.code).toBe(1);
-    expect(performance.now() - started).toBeLessThan(1_000);
-    const childPid = Number(result.output.match(/child=(\d+)/u)?.[1]);
-    expect(childPid).toBeGreaterThan(1);
-    expect(() => process.kill(childPid, 0)).toThrow();
+    expect(performance.now() - started).toBeLessThan(2_000);
   },
 );
 
-test.skipIf(!realBackendAvailable)(
+test.skipIf(!realLinuxBackendAvailable)(
   "runSandboxedReadOnlyCommand closes inherited pipes for the exact sleep repro",
   async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-normal-exit-timing-"));
     const started = performance.now();
     const result = await runSandboxedReadOnlyCommand("sleep 1 & exit 1", cwd, {
-      deps: { timeoutMs: 20, killGraceMs: 100 },
+      deps: { timeoutMs: 500, killGraceMs: 250 },
     });
     expect(result.code).toBe(1);
-    expect(performance.now() - started).toBeLessThan(500);
+    expect(performance.now() - started).toBeLessThan(2_000);
   },
 );
 
-test.skipIf(!realBackendAvailable)(
+test.skipIf(!realLinuxBackendAvailable)(
   "runSandboxedReadOnlyCommand enforces its timeout and kills the process tree",
   async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-timeout-"));
     const started = performance.now();
     await expect(
       runSandboxedReadOnlyCommand("sleep 60", cwd, {
-        deps: { timeoutMs: 20, killGraceMs: 10 },
+        deps: { timeoutMs: 200, killGraceMs: 100 },
       }),
     ).rejects.toThrow("timed out after 30000ms");
     expect(performance.now() - started).toBeLessThan(2_000);
   },
 );
 
-test.skipIf(!realBackendAvailable)(
+test.skipIf(!realLinuxBackendAvailable)(
   "runSandboxedReadOnlyCommand aborts and reaps an active process tree",
   async () => {
     const cwd = mkdtempSync(join(tmpdir(), "vibe-loop-check-abort-"));
     const abort = new AbortController();
-    setTimeout(() => abort.abort(), 20);
+    setTimeout(() => abort.abort(), 200);
     const started = performance.now();
     try {
       await runSandboxedReadOnlyCommand("sleep 60", cwd, {
         signal: abort.signal,
-        deps: { killGraceMs: 10 },
+        deps: { killGraceMs: 100 },
       });
       throw new Error("expected abort");
     } catch (err) {

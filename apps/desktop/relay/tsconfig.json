@@ -17,6 +17,18 @@
       "@vibe/protocol": [
         "../../packages/protocol/src/index.ts"
       ],
+      "@vibe/protocol/client-runtime": [
+        "../../packages/protocol/src/client-runtime.ts"
+      ],
+      "@vibe/protocol/domain": [
+        "../../packages/protocol/src/domain.ts"
+      ],
+      "@vibe/protocol/host-v2": [
+        "../../packages/protocol/src/host-v2.ts"
+      ],
+      "@vibe/protocol/project": [
+        "../../packages/protocol/src/project.ts"
+      ],
       "@shared/*": [
         "src/shared/*"
       ]

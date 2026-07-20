@@ -45,3 +45,19 @@ export {
   type InstalledExtensionV1,
   type InstalledExtensionVersionV1,
 } from "./lifecycle.ts";
+export {
+  PluginWorkerClient,
+  PluginWorkerError,
+  resolvePluginWorkerPath,
+  type PluginWorkerOptions,
+  type StartedPluginWorker,
+} from "./worker-client.ts";
+export {
+  PLUGIN_WORKER_LIMITS,
+  type IsolatedCommandMetadata,
+  type IsolatedPluginMetadata,
+  type IsolatedToolMetadata,
+  type JsonValue,
+  type PluginWorkerErrorCode,
+  type PluginWorkerStartResult,
+} from "./worker-protocol.ts";

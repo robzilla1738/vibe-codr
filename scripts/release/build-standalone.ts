@@ -30,6 +30,10 @@ run([
   "bun", "build", "--compile", ...targetFlags,
   "packages/cli/src/engine-worker-entry.ts", "--outfile", join(outDir, `vibecodr-engine-worker${ext}`),
 ]);
+run([
+  "bun", "build", "--compile", ...targetFlags,
+  "packages/plugins/src/worker-entry.ts", "--outfile", join(outDir, `vibecodr-plugin-worker${ext}`),
+]);
 run(["bun", "scripts/release/build-app.ts", join(outDir, "vibecodr-app.js")]);
 
 const rootPackage = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {

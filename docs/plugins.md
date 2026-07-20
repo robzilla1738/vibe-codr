@@ -1,6 +1,6 @@
 # Plugin contract
 
-Plugins remain trusted, in-process modules for this release. New plugins should
+Bundled plugins remain trusted, in-process modules. New plugins should
 declare `PluginManifestV1` before executable code is imported. Put the manifest
 in the package's `vibePlugin` field, beside the resolved entry as
 `<entry>.manifest.json`, or as `vibe.plugin.json` in the entry directory.
@@ -30,6 +30,23 @@ filesystem roots, secret handles, and provider execution. A provider can only
 request `trusted-in-process-approval-required`; a manifest cannot grant trust
 to itself. Unknown fields and capabilities are rejected. Import and
 registration remain bounded by the existing timeout and rollback isolation.
+
+## Isolated executable contributions
+
+Third-party JSON-schema tools, slash commands, and hooks can run through
+`PluginWorkerClient`. The child process imports and retains every executable
+function; the parent receives validated contribution metadata and JSON-safe
+results only. Provider factories are deliberately rejected with
+`trusted-in-process-approval-required` until their contract can safely cross
+RPC. Bundled plugins continue to use the in-process host.
+
+The worker protocol bounds startup, every RPC, frame size, pending and lifetime
+request counts, output, and error surfaces. It starts with a scrubbed environment
+instead of inheriting credentials. Abort, timeout, crash, malformed protocol,
+and oversized output terminate the process group and reject pending calls with
+stable redacted errors. The npm and standalone release builders ship the worker
+entry beside the main executable; no Settings UI or silent trust grant is part
+of this layer.
 
 `listPluginStatus()` reports `loaded`, `degraded`, `incompatible`, or `failed`,
 the declared and registered contributions, and provenance. Resolved npm entries

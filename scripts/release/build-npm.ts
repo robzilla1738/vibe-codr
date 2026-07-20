@@ -140,7 +140,7 @@ export function generateNpmPackageJson(opts: {
     type: "module",
     bin: { vibecodr: "vibecodr.js", vibe: "vibecodr.js" },
     engines: rootPkg.engines ?? { bun: ">=1.2.0" },
-    files: ["vibecodr.js", "vibecodr-engine-worker.js", "app.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
+    files: ["vibecodr.js", "vibecodr-engine-worker.js", "vibecodr-plugin-worker.js", "app.js", "README.md", "CHANGELOG.md", "LICENSE", ...(hasPatches ? ["patches"] : [])],
     optionalDependencies: opts.optionalDependencies,
     ...(hasOptionalPeers
       ? {
@@ -232,6 +232,23 @@ async function main(): Promise<void> {
   if (buildWorker.exitCode !== 0) {
     process.stderr.write(buildWorker.stderr.toString());
     throw new Error("bun build (engine worker) failed");
+  }
+
+  // Third-party executable contributions run behind a separate bounded NDJSON
+  // process. Ship its entry beside the CLI so npm installs do not fall back to
+  // an unavailable source path.
+  const pluginWorkerFile = join(outDir, "vibecodr-plugin-worker.js");
+  const buildPluginWorker = Bun.spawnSync([
+    "bun",
+    "build",
+    join(root, "packages", "plugins", "src", "worker-entry.ts"),
+    "--target=bun",
+    "--outfile",
+    pluginWorkerFile,
+  ]);
+  if (buildPluginWorker.exitCode !== 0) {
+    process.stderr.write(buildPluginWorker.stderr.toString());
+    throw new Error("bun build (plugin worker) failed");
   }
 
   // 1c. build the OpenTUI Solid JSX app (app.tsx) as a separate bundle

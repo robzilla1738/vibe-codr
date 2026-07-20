@@ -160,8 +160,38 @@ describe("canonical protocol schemas", () => {
     expect(
       EngineSnapshotSchema.safeParse({
         ...snapshot,
-        usage: { ...snapshot.usage, byModel: { "test/model": bucket } },
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          totalTokens: 15,
+          cachedInputTokens: 4,
+          cacheWriteTokens: 2,
+          steps: 1,
+          turns: 1,
+          providerLatencyMs: 25,
+          costUSD: 0.01,
+          actualCostUSD: 0.01,
+          byModel: { "test/model": bucket },
+        },
       }).success,
+    ).toBeTrue();
+    expect(
+      isClientEngineSnapshot({
+        ...snapshot,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          totalTokens: 15,
+          cachedInputTokens: 4,
+          cacheWriteTokens: 2,
+          steps: 1,
+          turns: 1,
+          providerLatencyMs: 25,
+          costUSD: 0.01,
+          actualCostUSD: 0.01,
+          byModel: { "test/model": bucket },
+        },
+      }),
     ).toBeTrue();
     // byModel remains optional for the one-release wire compatibility window.
     expect(EngineSnapshotSchema.safeParse(snapshot).success).toBeTrue();
@@ -174,6 +204,16 @@ describe("canonical protocol schemas", () => {
         },
       }).success,
     ).toBeFalse();
+    for (const malformedUsage of [
+      { ...snapshot.usage, byModel: { "": { ...bucket, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUSD: 0, actualCostUSD: 0, cachedInputTokens: 0, cacheWriteTokens: 0, steps: 0, turns: 0, providerLatencyMs: 0 } } },
+      { ...snapshot.usage, byModel: { "test/model": { ...bucket, totalTokens: 99 } } },
+      { ...snapshot.usage, byModel: { "test/model": { ...bucket, actualCostUSD: 0.02 } } },
+      { ...snapshot.usage, byModel: { "test/model": bucket } },
+    ]) {
+      const candidate = { ...snapshot, usage: malformedUsage };
+      expect(EngineSnapshotSchema.safeParse(candidate).success).toBeFalse();
+      expect(isClientEngineSnapshot(candidate)).toBeFalse();
+    }
   });
 
   test("keeps exhaustive, duplicate-free discriminator and RPC registries", () => {

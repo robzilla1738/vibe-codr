@@ -103,6 +103,10 @@ function optionalNonNegative(value: unknown): boolean {
   return value === undefined || nonNegative(value);
 }
 
+function optionalNonNegativeSafeInteger(value: unknown): boolean {
+  return value === undefined || (nonNegative(value) && Number.isSafeInteger(value));
+}
+
 export function isRuntimeIdentifier(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 1_024
     && !value.includes("\0");
@@ -142,9 +146,55 @@ function usage(value: unknown): boolean {
 
 function sessionUsage(value: unknown): boolean {
   const item = record(value);
-  return !!item && nonNegative(item.inputTokens) && nonNegative(item.outputTokens)
-    && nonNegative(item.totalTokens) && nonNegative(item.costUSD)
-    && optionalBoolean(item.costEstimated) && optionalNonNegative(item.cachedInputTokens);
+  if (!item || !nonNegative(item.inputTokens) || !nonNegative(item.outputTokens)
+    || !nonNegative(item.totalTokens) || !nonNegative(item.costUSD)
+    || !optionalNonNegative(item.actualCostUSD) || !optionalBoolean(item.costEstimated)
+    || !optionalNonNegative(item.cachedInputTokens) || !optionalNonNegative(item.cacheWriteTokens)
+    || !optionalNonNegativeSafeInteger(item.steps) || !optionalNonNegativeSafeInteger(item.turns)
+    || !optionalNonNegative(item.providerLatencyMs)) return false;
+  if (item.byModel === undefined) return true;
+  const byModel = record(item.byModel);
+  if (!byModel) return false;
+  const entries = Object.entries(byModel);
+  if (!entries.every(([model, bucket]) => catalogIdentifier(model) && modelUsage(bucket))) return false;
+  const buckets = entries.map(([, bucket]) => bucket as Record<string, unknown>);
+  const sum = (field: string): number => buckets.reduce(
+    (total, bucket) => total + (typeof bucket[field] === "number" ? bucket[field] as number : 0),
+    0,
+  );
+  const close = (left: number, right: number): boolean =>
+    Math.abs(left - right) <= Math.max(1e-12, Math.abs(left) * 1e-12, Math.abs(right) * 1e-12);
+  if (item.inputTokens !== sum("inputTokens") || item.outputTokens !== sum("outputTokens")
+    || item.totalTokens !== sum("totalTokens")
+    || (item.cachedInputTokens ?? 0) !== sum("cachedInputTokens")
+    || (item.cacheWriteTokens ?? 0) !== sum("cacheWriteTokens")
+    || (item.steps ?? 0) !== sum("steps") || (item.turns ?? 0) !== sum("turns")
+    || !close(typeof item.providerLatencyMs === "number" ? item.providerLatencyMs : 0, sum("providerLatencyMs"))
+    || !close(item.costUSD, sum("costUSD"))) return false;
+  const actualCost = buckets.reduce((total, bucket) => {
+    const cost = bucket.costUSD as number;
+    const actual = bucket.actualCostUSD;
+    return total + (typeof actual === "number" ? actual : bucket.costEstimated === true ? 0 : cost);
+  }, 0);
+  if (typeof item.actualCostUSD === "number" && !close(item.actualCostUSD, actualCost)) return false;
+  const estimated = buckets.some((bucket) =>
+    bucket.costEstimated === true
+      || (typeof bucket.actualCostUSD === "number" && bucket.actualCostUSD < (bucket.costUSD as number))
+  );
+  return Boolean(item.costEstimated) === estimated;
+}
+
+function modelUsage(value: unknown): boolean {
+  const item = record(value);
+  if (!item || !nonNegative(item.inputTokens) || !nonNegative(item.outputTokens)
+    || !nonNegative(item.totalTokens) || !nonNegative(item.costUSD)
+    || item.totalTokens !== item.inputTokens + item.outputTokens
+    || !nonNegative(item.cachedInputTokens) || !nonNegative(item.cacheWriteTokens)
+    || !nonNegative(item.steps) || !Number.isSafeInteger(item.steps)
+    || !nonNegative(item.turns) || !Number.isSafeInteger(item.turns)
+    || !nonNegative(item.providerLatencyMs) || !optionalNonNegative(item.actualCostUSD)
+    || !optionalBoolean(item.costEstimated) || !optionalBoolean(item.legacyAttribution)) return false;
+  return typeof item.actualCostUSD !== "number" || item.actualCostUSD <= item.costUSD;
 }
 
 function messagePart(value: unknown): boolean {

@@ -213,6 +213,21 @@ export const ModelUsageSchema = loose({
   actualCostUSD: nonNegative.optional(),
   costEstimated: z.boolean().optional(),
   legacyAttribution: z.boolean().optional(),
+}).superRefine((usage, ctx) => {
+  if (usage.totalTokens !== usage.inputTokens + usage.outputTokens) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["totalTokens"],
+      message: "totalTokens must equal inputTokens plus outputTokens",
+    });
+  }
+  if (usage.actualCostUSD !== undefined && usage.actualCostUSD > usage.costUSD) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["actualCostUSD"],
+      message: "actualCostUSD cannot exceed costUSD",
+    });
+  }
 });
 export type ModelUsage = z.infer<typeof ModelUsageSchema>;
 export const SessionUsageSchema = loose({
@@ -228,7 +243,68 @@ export const SessionUsageSchema = loose({
   turns: nonNegativeSafeInteger.optional(),
   providerLatencyMs: nonNegative.optional(),
   /** Optional for one release so older hosts/clients remain wire-compatible. */
-  byModel: z.record(z.string(), ModelUsageSchema).optional(),
+  byModel: z.record(CatalogIdentifierSchema, ModelUsageSchema).optional(),
+}).superRefine((usage, ctx) => {
+  if (!usage.byModel) return;
+  const buckets = Object.values(usage.byModel);
+  const sum = (field: keyof ModelUsage): number =>
+    buckets.reduce((total, bucket) => total + (typeof bucket[field] === "number" ? bucket[field] : 0), 0);
+  const approximatelyEqual = (left: number, right: number): boolean =>
+    Math.abs(left - right) <= Math.max(1e-12, Math.abs(left) * 1e-12, Math.abs(right) * 1e-12);
+  const exactFields = [
+    "inputTokens",
+    "outputTokens",
+    "totalTokens",
+    "cachedInputTokens",
+    "cacheWriteTokens",
+    "steps",
+    "turns",
+  ] as const;
+  for (const field of exactFields) {
+    if ((usage[field] ?? 0) !== sum(field)) {
+      ctx.addIssue({
+        code: "custom",
+        path: [field],
+        message: `${field} must equal the sum of byModel buckets`,
+      });
+    }
+  }
+  if (!approximatelyEqual(usage.providerLatencyMs ?? 0, sum("providerLatencyMs"))) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["providerLatencyMs"],
+      message: "providerLatencyMs must equal the sum of byModel buckets",
+    });
+  }
+  if (!approximatelyEqual(usage.costUSD, sum("costUSD"))) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["costUSD"],
+      message: "costUSD must equal the sum of byModel buckets",
+    });
+  }
+  const bucketActualCost = buckets.reduce(
+    (total, bucket) => total + (bucket.actualCostUSD ?? (bucket.costEstimated ? 0 : bucket.costUSD)),
+    0,
+  );
+  if (usage.actualCostUSD !== undefined && !approximatelyEqual(usage.actualCostUSD, bucketActualCost)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["actualCostUSD"],
+      message: "actualCostUSD must equal the sum of byModel buckets",
+    });
+  }
+  const hasEstimatedCost = buckets.some((bucket) =>
+    bucket.costEstimated === true
+      || (bucket.actualCostUSD !== undefined && bucket.actualCostUSD < bucket.costUSD)
+  );
+  if (Boolean(usage.costEstimated) !== hasEstimatedCost) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["costEstimated"],
+      message: "costEstimated must match the byModel buckets",
+    });
+  }
 });
 export type SessionUsage = z.infer<typeof SessionUsageSchema>;
 

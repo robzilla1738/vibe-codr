@@ -195,7 +195,13 @@ describe("macOS bridge protocol runtime validation", () => {
               inputTokens: 10,
               outputTokens: 5,
               totalTokens: 15,
+              cachedInputTokens: 4,
+              cacheWriteTokens: 2,
+              steps: 1,
+              turns: 1,
+              providerLatencyMs: 25,
               costUSD: 0.01,
+              actualCostUSD: 0.01,
               byModel: {
                 "test/model": {
                   inputTokens: 10,

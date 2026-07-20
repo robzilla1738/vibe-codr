@@ -115,7 +115,10 @@ export const COMMAND_GROUPS: CommandGroup[] = [
         description:
           "Show or set config (natural language: /config goal max rounds 15 · loop default max 20)",
       },
-      { name: "memory", description: "Show loaded project/global memory files" },
+      {
+        name: "memory",
+        description: "Show memory or manage saved notes (/memory list|pin|unpin|forget|merge)",
+      },
       { name: "permissions", description: "Show the tool permission rules" },
       { name: "tools", description: "List tools available in the current mode" },
       { name: "agents", description: "List named subagents" },

@@ -57,6 +57,13 @@ test("free-form arg commands show no value menu", () => {
   expect(paletteState("/goal ship it")).toEqual({ open: false });
 });
 
+test("memory controls are discoverable without inventing a client-side command path", () => {
+  const memory = PALETTE_COMMANDS.find((command) => command.name === "memory");
+  expect(memory?.description).toContain("manage saved notes");
+  expect(memory?.arg).toContain("pin <id>");
+  expect(memory?.arg).toContain("merge <ids>");
+});
+
 test("applyPalette completes a no-arg command as done", () => {
   const st = paletteState("/plan");
   expect(applyPalette(st, 0)).toEqual({ draft: "/plan", done: true });

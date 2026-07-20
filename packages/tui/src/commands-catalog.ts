@@ -90,7 +90,11 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
     description: "Show or set config (goal max rounds 15 · loop default max 20 · plan …)",
     arg: "[phrase|show goal|loop|plan]",
   },
-  { name: "memory", description: "Show loaded memory files" },
+  {
+    name: "memory",
+    description: "Show memory or manage saved notes",
+    arg: "[list|pin <id>|unpin <id>|forget <id>|merge <ids> -- <replacement>]",
+  },
   { name: "permissions", description: "Show tool permission rules" },
   { name: "tools", description: "List tools in the current mode" },
   {

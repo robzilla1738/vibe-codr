@@ -141,3 +141,50 @@ test("empty-corpus reconciliation prunes the final semantic vector", async () =>
   db.close();
   svc.close();
 });
+
+test("service pin, forget, and merge keep the live corpus authoritative", async () => {
+  const dir = freshDir();
+  const svc = await MemoryService.create(dir, withMemory("off"), new ProviderRegistry());
+  await svc.save({ fact: "first deployment decision" });
+  await svc.save({ fact: "second deployment gotcha" });
+  const entries = await svc.listEntries();
+  expect(entries).toHaveLength(2);
+
+  const first = await svc.setPinned(entries[0]!.id.slice(0, 6), true);
+  expect(first.pinned).toBe(true);
+  const merged = await svc.merge(
+    entries.map((entry) => entry.id.slice(0, 6)),
+    "Deployment uses the first decision and accounts for the second gotcha.",
+  );
+  expect(merged.removed.map((entry) => entry.id).sort()).toEqual(
+    entries.map((entry) => entry.id).sort(),
+  );
+  expect(merged.replacement).toMatchObject({ scope: "project", pinned: true });
+  const remaining = await svc.listEntries();
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0]!.id).toBe(merged.replacement.id);
+
+  await svc.forget(remaining[0]!.id);
+  expect(await svc.listEntries()).toEqual([]);
+  svc.close();
+});
+
+test("merge preserves originals when the replacement already exists", async () => {
+  const dir = freshDir();
+  const svc = await MemoryService.create(dir, withMemory("off"), new ProviderRegistry());
+  await svc.save({ fact: "existing replacement" });
+  await svc.save({ fact: "merge source alpha" });
+  await svc.save({ fact: "merge source beta" });
+  const before = await svc.listEntries();
+  const sources = before.filter((entry) => entry.fact.startsWith("merge source"));
+  await expect(
+    svc.merge(
+      sources.map((entry) => entry.id),
+      "existing replacement",
+    ),
+  ).rejects.toThrow("originals were preserved");
+  expect((await svc.listEntries()).map((entry) => entry.id).sort()).toEqual(
+    before.map((entry) => entry.id).sort(),
+  );
+  svc.close();
+});

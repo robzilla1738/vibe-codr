@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, rename, chmod, rm } from "node:fs/promises";
 import { statSync } from "node:fs";
 import type { MemoryDoc } from "./semantic-memory.ts";
@@ -450,4 +451,219 @@ export async function appendMemory(
     path: scope === "global" ? `~/.config/vibe-codr/memory/${date}.md` : `.vibe/memory/${date}.md`,
     deduped,
   };
+}
+
+/** One engine-formatted episodic memory entry. IDs are stable across pin/unpin
+ * because they derive from source + timestamp + normalized fact, never tags. */
+export interface StoredMemoryEntry {
+  id: string;
+  scope: "project" | "global";
+  source: string;
+  fact: string;
+  tags: string[];
+  pinned: boolean;
+  createdAt: number;
+}
+
+interface LocatedMemoryEntry extends StoredMemoryEntry {
+  filePath: string;
+  sectionStart: number;
+  sectionEnd: number;
+}
+
+const MEMORY_ID_MIN_PREFIX = 6;
+const MEMORY_ID_LENGTH = 16;
+const DATED_MEMORY_FILE = /^\d{4}-\d{2}-\d{2}\.md$/;
+const STORED_FACT_HEADING = /^## (\d{2}:\d{2}:\d{2}) — (.*)$/gm;
+
+function storedMemoryId(
+  scope: "project" | "global",
+  name: string,
+  time: string,
+  fact: string,
+): string {
+  return createHash("sha256")
+    .update(`${scope}\0${name}\0${time}\0${normalizeFact(fact)}`)
+    .digest("hex")
+    .slice(0, MEMORY_ID_LENGTH);
+}
+
+function sectionTags(section: string): string[] {
+  const match = /^_\(([^\n)]*)\)_\s*$/m.exec(section);
+  if (!match) return [];
+  return [
+    ...new Set(
+      match[1]!
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function parseStoredEntries(
+  text: string,
+  opts: { scope: "project" | "global"; name: string; filePath: string; source: string },
+): LocatedMemoryEntry[] {
+  const matches = [...text.matchAll(STORED_FACT_HEADING)];
+  return matches.map((match, index) => {
+    const time = match[1]!;
+    const fact = match[2]!.trim();
+    const sectionStart = match.index!;
+    const sectionEnd = matches[index + 1]?.index ?? text.length;
+    const tags = sectionTags(text.slice(sectionStart, sectionEnd));
+    const date = opts.name.slice(0, 10);
+    return {
+      id: storedMemoryId(opts.scope, opts.name, time, fact),
+      scope: opts.scope,
+      source: opts.source,
+      fact,
+      tags,
+      pinned: tags.some((tag) => tag.toLowerCase() === "pinned"),
+      createdAt: Date.parse(`${date}T${time}.000Z`),
+      filePath: opts.filePath,
+      sectionStart,
+      sectionEnd,
+    };
+  });
+}
+
+async function entriesInScope(
+  dir: string,
+  scope: "project" | "global",
+): Promise<LocatedMemoryEntry[]> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+    throw err;
+  }
+  const entries: LocatedMemoryEntry[] = [];
+  for (const name of names.filter((value) => DATED_MEMORY_FILE.test(value)).sort()) {
+    const filePath = join(dir, name);
+    const text = await Bun.file(filePath).text();
+    const source =
+      scope === "project" ? `.vibe/memory/${name}` : `~/.config/vibe-codr/memory/${name}`;
+    entries.push(...parseStoredEntries(text, { scope, name, filePath, source }));
+  }
+  return entries;
+}
+
+async function locatedMemoryEntries(cwd: string): Promise<LocatedMemoryEntry[]> {
+  const [project, global] = await Promise.all([
+    entriesInScope(projectMemoryDir(cwd), "project"),
+    entriesInScope(globalMemoryDir(), "global"),
+  ]);
+  return [...project, ...global].sort(
+    (a, b) =>
+      b.createdAt - a.createdAt || a.source.localeCompare(b.source) || a.id.localeCompare(b.id),
+  );
+}
+
+function publicEntry(entry: LocatedMemoryEntry): StoredMemoryEntry {
+  const {
+    filePath: _filePath,
+    sectionStart: _sectionStart,
+    sectionEnd: _sectionEnd,
+    ...value
+  } = entry;
+  return value;
+}
+
+export class MemorySelectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MemorySelectionError";
+  }
+}
+
+function normalizeMemoryPrefix(prefix: string): string {
+  const value = prefix.trim().toLowerCase();
+  if (!new RegExp(`^[0-9a-f]{${MEMORY_ID_MIN_PREFIX},${MEMORY_ID_LENGTH}}$`).test(value)) {
+    throw new MemorySelectionError(
+      `memory id must be a ${MEMORY_ID_MIN_PREFIX}-${MEMORY_ID_LENGTH} character hexadecimal prefix`,
+    );
+  }
+  return value;
+}
+
+export function selectMemoryEntry<T extends StoredMemoryEntry>(entries: T[], prefix: string): T {
+  const normalized = normalizeMemoryPrefix(prefix);
+  const matches = entries.filter((entry) => entry.id.startsWith(normalized));
+  if (!matches.length) throw new MemorySelectionError(`unknown memory id: ${normalized}`);
+  if (matches.length > 1) throw new MemorySelectionError(`ambiguous memory id: ${normalized}`);
+  return matches[0]!;
+}
+
+/** List only engine-formatted dated facts. Arbitrary user markdown remains
+ * searchable, but is never destructively rewritten by these controls. */
+export async function listMemoryEntries(cwd: string): Promise<StoredMemoryEntry[]> {
+  return (await locatedMemoryEntries(cwd)).map(publicEntry);
+}
+
+/** Pin/unpin one exact, unambiguous entry while preserving all other content. */
+export async function setMemoryPinned(
+  cwd: string,
+  prefix: string,
+  pinned: boolean,
+): Promise<StoredMemoryEntry> {
+  const chosen = selectMemoryEntry(await locatedMemoryEntries(cwd), prefix);
+  await serializeByPath(chosen.filePath, async () => {
+    const text = await Bun.file(chosen.filePath).text();
+    const live = selectMemoryEntry(
+      parseStoredEntries(text, {
+        scope: chosen.scope,
+        name: chosen.source.split("/").at(-1)!,
+        filePath: chosen.filePath,
+        source: chosen.source,
+      }),
+      chosen.id,
+    );
+    const section = text.slice(live.sectionStart, live.sectionEnd);
+    const tagMatch = /^_\(([^\n)]*)\)_\s*$/m.exec(section);
+    const tags = sectionTags(section).filter((tag) => tag.toLowerCase() !== "pinned");
+    if (pinned) tags.unshift("pinned");
+    let nextSection: string;
+    if (tagMatch?.index !== undefined) {
+      const replacement = tags.length ? `_(${tags.join(", ")})_` : "";
+      nextSection = `${section.slice(0, tagMatch.index)}${replacement}${section.slice(tagMatch.index + tagMatch[0].length)}`;
+    } else if (tags.length) {
+      const headingEnd = section.indexOf("\n");
+      nextSection =
+        headingEnd === -1
+          ? `${section}\n_(${tags.join(", ")})_\n`
+          : `${section.slice(0, headingEnd + 1)}_(${tags.join(", ")})_\n${section.slice(headingEnd + 1)}`;
+    } else {
+      nextSection = section;
+    }
+    await atomicOverwrite(
+      chosen.filePath,
+      `${text.slice(0, live.sectionStart)}${nextSection}${text.slice(live.sectionEnd)}`,
+    );
+  });
+  const updated = selectMemoryEntry(await locatedMemoryEntries(cwd), chosen.id);
+  return publicEntry(updated);
+}
+
+/** Explicitly forget one exact entry. Pinned protects automatic policies only;
+ * a direct user command remains authoritative. */
+export async function forgetMemoryEntry(cwd: string, prefix: string): Promise<StoredMemoryEntry> {
+  const chosen = selectMemoryEntry(await locatedMemoryEntries(cwd), prefix);
+  await serializeByPath(chosen.filePath, async () => {
+    const text = await Bun.file(chosen.filePath).text();
+    const live = selectMemoryEntry(
+      parseStoredEntries(text, {
+        scope: chosen.scope,
+        name: chosen.source.split("/").at(-1)!,
+        filePath: chosen.filePath,
+        source: chosen.source,
+      }),
+      chosen.id,
+    );
+    const next = `${text.slice(0, live.sectionStart)}${text.slice(live.sectionEnd)}`.trimEnd();
+    if (!/^## /m.test(next)) await rm(chosen.filePath, { force: true });
+    else await atomicOverwrite(chosen.filePath, `${next}\n`);
+  });
+  return publicEntry(chosen);
 }

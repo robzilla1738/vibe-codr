@@ -5,7 +5,10 @@ export function MemorySection({ config, updateNested }: SectionProps) {
   const memory = config.memory ?? {};
   const semantic = memory.semantic ?? {};
   return (
-    <SettingSection title="Memory" description="Long-term memory: semantic recall, proactive injection, and session digests for cross-session continuity.">
+    <SettingSection
+      title="Memory"
+      description="Long-term memory with semantic recall, bounded topic-shift injection, and compact session digests. Use /memory list to view provenance and /memory pin, unpin, forget, or merge to manage saved notes."
+    >
       <SettingField label="Semantic recall" description="Embedding-based recall fused with lexical BM25. Needs optional @huggingface/transformers for local embeddings.">
         <ToggleSwitch
           checked={semantic.enabled ?? true}
@@ -20,7 +23,7 @@ export function MemorySection({ config, updateNested }: SectionProps) {
           monospace
         />
       </SettingField>
-      <SettingField label="Proactive recall" description="Inject goal-seeded relevant past context at session start.">
+      <SettingField label="Proactive recall" description="Inject relevant past context at session start and on bounded topic shifts.">
         <ToggleSwitch
           checked={memory.proactiveRecall ?? true}
           onChange={(v) => updateNested("memory", { proactiveRecall: v })}

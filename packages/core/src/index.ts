@@ -122,12 +122,18 @@ export {
 export {
   gatherMemoryDocs,
   appendMemory,
+  listMemoryEntries,
+  selectMemoryEntry,
+  setMemoryPinned,
+  forgetMemoryEntry,
   projectMemoryDir,
   globalMemoryDir,
+  MemorySelectionError,
   type SaveMemoryInput,
   type SaveMemoryResult,
+  type StoredMemoryEntry,
 } from "./memory-store.ts";
-export { MemoryService } from "./memory-service.ts";
+export { MemoryService, type MergeMemoryResult } from "./memory-service.ts";
 export {
   registerConfigHooks,
   parseHookOutput,

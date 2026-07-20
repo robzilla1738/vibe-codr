@@ -8,7 +8,13 @@ import { defaultConfig } from "@vibe/config";
 import type { Skill } from "@vibe/plugins";
 import { Engine } from "./engine.ts";
 import { CheckpointManager } from "./checkpoints.ts";
-import { buildSkillPrompt, goalStatusText, handleSlash } from "./engine-commands.ts";
+import {
+  buildSkillPrompt,
+  formatStoredMemory,
+  goalStatusText,
+  handleSlash,
+  parseMemoryControl,
+} from "./engine-commands.ts";
 
 async function git(cwd: string, args: string[]): Promise<void> {
   await Bun.spawn(["git", ...args], { cwd, stdout: "ignore", stderr: "ignore" }).exited;
@@ -518,4 +524,36 @@ test("goalStatusText names the run's actual state (active / paused / met / detac
   );
   // Goal set but never ran (legacy sessions): resume still offered.
   expect(goalStatusText("ship it", { ...base, active: false })).toContain("No run attached");
+});
+
+test("/memory control parser is strict and merge uses an explicit replacement separator", () => {
+  expect(parseMemoryControl("")).toEqual({ action: "show" });
+  expect(parseMemoryControl("list")).toEqual({ action: "list" });
+  expect(parseMemoryControl("pin abcdef")).toEqual({ action: "pin", id: "abcdef" });
+  expect(parseMemoryControl("unpin abcdef")).toEqual({ action: "unpin", id: "abcdef" });
+  expect(parseMemoryControl("forget abcdef")).toEqual({ action: "forget", id: "abcdef" });
+  expect(parseMemoryControl("merge abcdef 123456 -- one durable replacement")).toEqual({
+    action: "merge",
+    ids: ["abcdef", "123456"],
+    fact: "one durable replacement",
+  });
+  expect(() => parseMemoryControl("merge abcdef -- missing source")).toThrow("Usage: /memory");
+  expect(() => parseMemoryControl("delete abcdef")).toThrow("Usage: /memory");
+});
+
+test("saved-memory list and mutation results retain visible source provenance", () => {
+  const text = formatStoredMemory([
+    {
+      id: "abcdef1234567890",
+      scope: "project",
+      source: ".vibe/memory/2026-07-20.md",
+      fact: "Use the release branch",
+      tags: ["pinned"],
+      pinned: true,
+      createdAt: Date.parse("2026-07-20T12:00:00Z"),
+    },
+  ]);
+  expect(text).toContain("[abcdef1234567890]");
+  expect(text).toContain(".vibe/memory/2026-07-20.md");
+  expect(text).toContain("pinned");
 });

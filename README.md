@@ -52,7 +52,7 @@ Both interfaces share the same sessions, configuration, providers, tools, permis
 - **Proves the work.** Repository recon finds the real checks; the green gate runs them after mutations, reviews the actual diff, scans for stubs, and creates recoverable green checkpoints.
 - **Keeps sessions useful.** Resume, rename, archive, delete, search, filter, and organize sessions across projects. The desktop Board and List views show honest active, review, done, local, cloud, and working state.
 - **Moves between local and cloud safely.** Reviewed handoff transfers the exact workspace and engine-owned session, includes the active model and configured key/subscription access by default with explicit opt-outs, verifies identity and model access before ownership changes, and preserves a recovery path.
-- **Remembers without taking your data.** Project notes, global preferences, session digests, BM25 recall, and optional local semantic recall stay on your machine.
+- **Remembers without taking your data.** Project notes, global preferences, compact session digests, freshness-aware hybrid recall, and bounded topic-shift recall stay on your machine. Every saved note retains provenance and can be pinned, forgotten, or merged with `/memory`.
 - **Keeps you in control.** Plan / Agent / Yolo modes, scoped allow/ask/deny rules, stale-write guards, optional OS sandboxing, bounded tool output, redacted crash logs, and no telemetry.
 - **Connects to your tools.** MCP over stdio and HTTP/SSE, OAuth 2.1, tools, resources, prompts, skills, commands, hooks, Git, terminal jobs, web research, PDFs, and language diagnostics.
 

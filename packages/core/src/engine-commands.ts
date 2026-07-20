@@ -26,6 +26,7 @@ import { MAX_SKILL_BODY } from "./session-tools.ts";
 import { searchSessions, formatRecall } from "./recall.ts";
 import { formatMemoryHits } from "./memory-search.ts";
 import type { MemoryService } from "./memory-service.ts";
+import type { StoredMemoryEntry } from "./memory-store.ts";
 import { loadMemorySources, formatMemory } from "./memory.ts";
 import { reasoningCategory } from "./model-tuning.ts";
 import type { CheckpointManager } from "./checkpoints.ts";
@@ -46,6 +47,44 @@ import {
 /** Char cap for a diff embedded into a `/review` prompt — bounds the token cost
  * of reviewing a large working tree (the model reads specific files for more). */
 const REVIEW_DIFF_CAP = 20_000;
+
+type MemoryControlCommand =
+  | { action: "show" }
+  | { action: "list" }
+  | { action: "pin" | "unpin" | "forget"; id: string }
+  | { action: "merge"; ids: string[]; fact: string };
+
+export function parseMemoryControl(args: string): MemoryControlCommand {
+  const input = args.trim();
+  if (!input) return { action: "show" };
+  if (/^list$/i.test(input)) return { action: "list" };
+  const single = /^(pin|unpin|forget)\s+(\S+)$/i.exec(input);
+  if (single) {
+    return {
+      action: single[1]!.toLowerCase() as "pin" | "unpin" | "forget",
+      id: single[2]!,
+    };
+  }
+  const merge = /^merge\s+(.+?)\s+--\s+(.+)$/is.exec(input);
+  if (merge) {
+    const ids = merge[1]!.trim().split(/\s+/).filter(Boolean);
+    const fact = merge[2]!.replace(/\s+/g, " ").trim();
+    if (ids.length >= 2 && fact) return { action: "merge", ids, fact };
+  }
+  throw new Error(
+    "Usage: /memory list | pin <id> | unpin <id> | forget <id> | merge <id> <id> [id…] -- <replacement>",
+  );
+}
+
+export function formatStoredMemory(entries: StoredMemoryEntry[]): string {
+  if (!entries.length) return "No saved episodic memory notes.";
+  const lines = entries.map((entry) => {
+    const pin = entry.pinned ? " · pinned" : "";
+    const when = new Date(entry.createdAt).toISOString().replace("T", " ").slice(0, 19);
+    return `  [${entry.id}] ${entry.source} · ${when}${pin}\n    ${entry.fact}`;
+  });
+  return `Memory — ${entries.length} saved note(s):\n${lines.join("\n")}`;
+}
 
 /**
  * The minimal Engine surface the slash-command handlers need.
@@ -726,9 +765,43 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       }
       break;
     }
-    case "memory":
-      h.notice(formatMemory(await loadMemorySources(h.cwd)));
+    case "memory": {
+      try {
+        const control = parseMemoryControl(args);
+        if (control.action === "show") {
+          h.notice(formatMemory(await loadMemorySources(h.cwd)));
+          break;
+        }
+        if (!h.memory) {
+          h.notice("Long-term memory is not available in this session.", "warn");
+          break;
+        }
+        if (control.action === "list") {
+          h.notice(formatStoredMemory(await h.memory.listEntries()));
+          break;
+        }
+        if (control.action === "pin" || control.action === "unpin") {
+          const pinned = control.action === "pin";
+          const entry = await h.memory.setPinned(control.id, pinned);
+          h.notice(`${pinned ? "Pinned" : "Unpinned"} [${entry.id}] from ${entry.source}.`);
+          break;
+        }
+        if (control.action === "forget") {
+          const entry = await h.memory.forget(control.id);
+          h.notice(`Forgot [${entry.id}] from ${entry.source}.`);
+          break;
+        }
+        if (control.action === "merge") {
+          const merged = await h.memory.merge(control.ids, control.fact);
+          h.notice(
+            `Merged ${merged.removed.length} notes into [${merged.replacement.id}] at ${merged.replacement.source}.`,
+          );
+        }
+      } catch (err) {
+        h.notice((err as Error).message, "warn");
+      }
       break;
+    }
     case "sources": {
       // The web sources gathered this session (harvested from web_search /
       // webfetch / crawl_docs), with the stable [n] indices the model cites.

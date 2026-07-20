@@ -3,7 +3,16 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appendMemory, gatherMemoryDocs } from "./memory-store.ts";
+import {
+  appendMemory,
+  forgetMemoryEntry,
+  gatherMemoryDocs,
+  listMemoryEntries,
+  MemorySelectionError,
+  selectMemoryEntry,
+  setMemoryPinned,
+  type StoredMemoryEntry,
+} from "./memory-store.ts";
 import { MAX_MEMORY_BYTES } from "./memory.ts";
 import { chunkMarkdown } from "./chunk.ts";
 
@@ -379,4 +388,60 @@ test("concurrent saves to the same dated file don't lose entries (atomic append)
   // Exactly N per-fact headings and a single day header.
   expect(text.match(/^## /gm)).toHaveLength(N);
   expect(text.match(/# Memory/g)).toHaveLength(1);
+});
+
+test("memory controls keep stable bounded ids, provenance, and pin state", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-control-"));
+  await appendMemory(
+    dir,
+    { fact: "keep the release branch linear", tags: ["release"] },
+    new Date("2026-07-20T12:34:56Z"),
+  );
+  const [before] = await listMemoryEntries(dir);
+  expect(before).toMatchObject({
+    scope: "project",
+    source: ".vibe/memory/2026-07-20.md",
+    fact: "keep the release branch linear",
+    pinned: false,
+  });
+  expect(before!.id).toMatch(/^[0-9a-f]{16}$/);
+
+  const pinned = await setMemoryPinned(dir, before!.id.slice(0, 6), true);
+  expect(pinned.id).toBe(before!.id);
+  expect(pinned.pinned).toBe(true);
+  expect(pinned.tags).toEqual(["pinned", "release"]);
+  const unpinned = await setMemoryPinned(dir, before!.id, false);
+  expect(unpinned.id).toBe(before!.id);
+  expect(unpinned.tags).toEqual(["release"]);
+});
+
+test("unknown and ambiguous prefixes fail closed; explicit forget can remove a pinned note", async () => {
+  const synthetic = (id: string): StoredMemoryEntry => ({
+    id,
+    scope: "project",
+    source: ".vibe/memory/2026-07-20.md",
+    fact: id,
+    tags: [],
+    pinned: false,
+    createdAt: 1,
+  });
+  expect(() =>
+    selectMemoryEntry([synthetic("abcdef0000000000"), synthetic("abcdef1111111111")], "abcdef"),
+  ).toThrow(MemorySelectionError);
+  expect(() => selectMemoryEntry([synthetic("abcdef0000000000")], "not-hex")).toThrow(
+    MemorySelectionError,
+  );
+
+  const dir = mkdtempSync(join(tmpdir(), "vibe-mstore-forget-"));
+  await appendMemory(
+    dir,
+    { fact: "explicitly forgettable pinned fact", tags: ["pinned"] },
+    new Date("2026-07-20T12:34:56Z"),
+  );
+  const [entry] = await listMemoryEntries(dir);
+  await expect(forgetMemoryEntry(dir, "ffffff")).rejects.toThrow("unknown memory id");
+  expect(await listMemoryEntries(dir)).toHaveLength(1);
+  const removed = await forgetMemoryEntry(dir, entry!.id.slice(0, 6));
+  expect(removed.pinned).toBe(true);
+  expect(await listMemoryEntries(dir)).toEqual([]);
 });

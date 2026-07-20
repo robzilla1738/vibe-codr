@@ -753,8 +753,9 @@ npm run dev
 - [x] The local runtime pool is configurable from 1–8 (default 3), reclaims the
   least-recently-used idle runtime before admitting work, and never evicts a
   working/input/review runtime. When every slot is protected, launches enter a
-  deduplicated FIFO with stable IDs and explicit cancellation; Sessions and
-  Jobs show queue position, and capacity reductions retire only idle excess.
+  deduplicated FIFO with stable IDs and explicit cancellation; Jobs shows queue
+  position, Tools exposes the 1–8 capacity control, and capacity reductions
+  retire only idle excess.
 - [x] Background permission/question/plan waits, failures, and completed work
   emit deduplicated native notifications containing only project/session labels
   and static action copy. Foreground work is silent, unsupported platforms are

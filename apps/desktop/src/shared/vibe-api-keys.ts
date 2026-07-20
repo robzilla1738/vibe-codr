@@ -24,8 +24,6 @@ export const VIBE_API_KEYS = [
   "onReady",
   "onResync",
   "onLocalRuntimeStatus",
-  "localRuntimeSettings",
-  "updateLocalRuntimeSettings",
   "localRuntimeLaunchQueue",
   "cancelLocalRuntimeLaunch",
   "onLocalRuntimeLaunchQueue",

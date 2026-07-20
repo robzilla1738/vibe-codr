@@ -1,12 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { belowBreakpoint } from "../../shared/breakpoints";
 import { jobsForDisplay } from "../../shared/live-list-bounds";
-import type { LocalRuntimeLaunchQueueItem } from "../../shared/local-runtime";
+import type { LocalRuntimeLaunchQueueSnapshot } from "../../shared/local-runtime";
 import type { ActivityInfo, JobInfo } from "../../shared/types";
 import { CopyButton } from "../CopyButton";
 import { IconLink } from "../icons";
 import { ActivityPanelHeader } from "../layout/ActivityPanelHeader";
 import { ExternalLink } from "../primitives";
+import { projectName } from "./activity-shared";
 
 function statusLabel(status: JobInfo["status"]): string {
   if (status === "running") return "Running";
@@ -121,7 +122,7 @@ function JobTerminal({
 export function JobsView({
   jobs,
   activities = [],
-  launchQueue = [],
+  launchQueue,
   totalCount = jobs.length,
   onClose,
   onCancelActivity,
@@ -129,11 +130,11 @@ export function JobsView({
 }: {
   jobs: JobInfo[];
   activities?: ActivityInfo[];
-  launchQueue?: LocalRuntimeLaunchQueueItem[];
+  launchQueue: LocalRuntimeLaunchQueueSnapshot;
   totalCount?: number;
   onClose?: () => void;
   onCancelActivity?: (id: string) => void;
-  onCancelLaunch?: (id: string) => void;
+  onCancelLaunch: (id: string) => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [isDrawer, setIsDrawer] = useState(() => belowBreakpoint("compact"));
@@ -188,7 +189,7 @@ export function JobsView({
 
   const visibleJobs = jobsForDisplay(jobs);
   const orchestrationActivities = activities.filter((activity) => activity.kind !== "shell").slice(-100);
-  const combinedTotal = jobs.length + orchestrationActivities.length + launchQueue.length;
+  const combinedTotal = jobs.length + orchestrationActivities.length + launchQueue.items.length;
 
   const heading = onClose ? (
     <ActivityPanelHeader
@@ -231,18 +232,13 @@ export function JobsView({
     >
       {heading}
       <div className="jobs-list">
-        {launchQueue.map((request) => (
-          <article key={request.id} className="job-card is-queued" aria-labelledby={`launch-label-${request.id}`}>
+        {launchQueue.items.map((request) => (
+          <article key={request.id} className="job-card is-queued">
             <div className="job-header">
               <span className="job-status job-status-queued">Queued · {request.position}</span>
-              <span className="job-command" id={`launch-label-${request.id}`}>
-                Open {runtimeProjectTitle(request.cwd)}{request.sessionId ? " session" : " workspace"}
-              </span>
-              {onCancelLaunch ? (
-                <button type="button" className="chip" onClick={() => onCancelLaunch(request.id)}>Cancel</button>
-              ) : null}
+              <span className="job-command">Open {projectName(request.cwd)}</span>
+              <button type="button" className="chip" onClick={() => onCancelLaunch(request.id)}>Cancel</button>
             </div>
-            <p className="job-queue-note">Waiting for a protected local runtime slot.</p>
           </article>
         ))}
         {orchestrationActivities.map((activity) => (
@@ -319,9 +315,4 @@ export function JobsView({
       </div>
     </div>
   );
-}
-
-function runtimeProjectTitle(cwd: string): string {
-  const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts.at(-1) || "project";
 }

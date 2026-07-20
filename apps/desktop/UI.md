@@ -449,11 +449,11 @@ snippet. External links go through `ExternalLink` / host bridge.
   clears the shell dirty guard.
 - Advanced reuses existing setting cards, badges, and buttons for content-free
   local performance summaries, Copy diagnostics, and plugin loaded/degraded/
-  incompatible/failed health. Its Runtime group also applies the desktop local
-  runtime pool limit immediately (1–8, default 3); lowering it preserves every
+  incompatible/failed health. Tools > Local Runtime Capacity applies the
+  desktop pool limit immediately (1–8, default 3); lowering it preserves every
   protected runtime and retires idle excess. It introduces no telemetry or new
   visual primitive.
-- Sessions and Jobs expose the same protected-launch FIFO with stable position
+- Jobs exposes the protected-launch FIFO with stable position
   and Cancel. These rows mean waiting for a local runtime slot, never a running
   engine job. Background attention and completion notifications contain only
   project/session labels plus static action text; clicking one returns to its

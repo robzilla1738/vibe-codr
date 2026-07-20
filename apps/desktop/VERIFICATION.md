@@ -398,9 +398,9 @@ npm run dev
    presented as model work. Transcript-only matches should merge without
    clearing immediate metadata hits. Start turns in three local sessions,
    switch rapidly, and confirm each continues with only the selected transcript
-   visible. With capacity set to 3, a fourth protected launch must appear once
-   in both Sessions and Jobs with the same FIFO position; cancel it and confirm
-   no runtime starts. Queue two launches, free one slot, and confirm only the
+   visible. Set capacity to 3 from Tools > Local Runtime Capacity; a fourth
+   protected launch must appear once in Jobs with its FIFO position. Cancel it
+   and confirm no runtime starts. Queue two launches, free one slot, and confirm only the
    oldest starts. Lower capacity while protected runtimes are active and confirm
    only idle excess retires. Background permission/question/plan waits, failure,
    and completion must use content-free native notifications; foreground work

@@ -60,6 +60,7 @@ interface RuntimeRecord {
   jobCount: number;
   performedWork: boolean;
   attentionKey?: string;
+  notificationSequence: number;
   readyInfo?: Parameters<EngineTransportReadyHandler>[1];
   idleTimer?: NodeJS.Timeout;
 }
@@ -283,6 +284,7 @@ export class LocalRuntimeSupervisor {
       updatedAt: this.#now(),
       jobCount: 0,
       performedWork: false,
+      notificationSequence: 0,
     };
     this.#records.set(record.key, record);
     this.#wire(record);
@@ -515,7 +517,10 @@ export class LocalRuntimeSupervisor {
         this.#notify(record, "plan-review", "plan-review");
         break;
       case "plan-state-changed":
-        if (event.state.status === "pending") this.#setState(record, "needs-review");
+        if (event.state.status === "pending") {
+          this.#setState(record, "needs-review");
+          this.#notify(record, "plan-review", "plan-review");
+        }
         else if (event.state.status === "exit_pending") this.#setState(record, "working");
         else if (record.state === "needs-review") this.#setState(record, "idle");
         else this.#touch(record);
@@ -645,11 +650,12 @@ export class LocalRuntimeSupervisor {
   #notify(record: RuntimeRecord, kind: LocalRuntimeNotificationKind, transitionId: string): void {
     if (this.#active === record || !record.sessionId || record.attentionKey === transitionId) return;
     record.attentionKey = transitionId;
+    record.notificationSequence += 1;
     this.onNotification?.({
       kind,
       cwd: record.cwd,
       sessionId: record.sessionId,
-      transitionId,
+      transitionId: `${kind}:${record.notificationSequence}`,
     });
   }
 

@@ -2203,7 +2203,6 @@ export function App() {
                 projects={projects}
                 cloudSessions={cloudSessions}
                 localRuntimes={[...localRuntimeStatuses.values()]}
-                launchQueue={localRuntimeQueue}
                 chatsCwd={chatsCwd}
                 activeCwd={cwd}
                 activeSessionId={chrome.sessionId}
@@ -2218,7 +2217,6 @@ export function App() {
                 error={projectsError}
                 onRetry={() => void refreshProjects()}
                 onOpen={(projectCwd, id) => void resumeSession(projectCwd, id)}
-                onCancelLaunch={(id) => void window.vibe.cancelLocalRuntimeLaunch(id)}
                 onNewChat={() => void startNewChat()}
                 onFork={forkSession}
                 onRename={renameSession}
@@ -2643,7 +2641,7 @@ export function App() {
                     jobs={chrome.jobs}
                     activities={chrome.activities}
                     totalCount={chrome.jobsTotal}
-                    launchQueue={localRuntimeQueue.items}
+                    launchQueue={localRuntimeQueue}
                     onClose={() => session.setJobsView(false)}
                     onCancelActivity={(id) => void session.send({ type: "cancel-activity", id })}
                     onCancelLaunch={(id) => void window.vibe.cancelLocalRuntimeLaunch(id)}

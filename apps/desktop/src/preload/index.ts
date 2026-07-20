@@ -34,7 +34,6 @@ import { isMenuAction, type MenuAction } from "../shared/menu-actions";
 import type {
   LocalRuntimeLaunchQueueSnapshot,
   LocalRuntimeNotificationTarget,
-  LocalRuntimeSettings,
   LocalRuntimeStatus,
 } from "../shared/local-runtime";
 import type { PerformanceDiagnosticsBundle, PerformanceSummary } from "../shared/performance";
@@ -87,8 +86,6 @@ export interface VibeApi {
   onReady(cb: (sessionId: string) => void): () => void;
   onResync(cb: () => void): () => void;
   onLocalRuntimeStatus(cb: (status: LocalRuntimeStatus) => void): () => void;
-  localRuntimeSettings(): Promise<{ ok: true; value: LocalRuntimeSettings } | { ok: false; error: string }>;
-  updateLocalRuntimeSettings(input: { capacity: number }): Promise<{ ok: true; value: LocalRuntimeSettings } | { ok: false; error: string }>;
   localRuntimeLaunchQueue(): Promise<{ ok: true; value: LocalRuntimeLaunchQueueSnapshot } | { ok: false; error: string }>;
   cancelLocalRuntimeLaunch(id: string): Promise<{ ok: true; cancelled: boolean } | { ok: false; error: string }>;
   onLocalRuntimeLaunchQueue(cb: (snapshot: LocalRuntimeLaunchQueueSnapshot) => void): () => void;
@@ -209,8 +206,6 @@ const api: VibeApi = {
     ipcRenderer.on("engine:runtime-status", handler);
     return () => ipcRenderer.removeListener("engine:runtime-status", handler);
   },
-  localRuntimeSettings: () => ipcRenderer.invoke("runtime:settings"),
-  updateLocalRuntimeSettings: (input) => ipcRenderer.invoke("runtime:updateSettings", input),
   localRuntimeLaunchQueue: () => ipcRenderer.invoke("runtime:launchQueue"),
   cancelLocalRuntimeLaunch: (id) => ipcRenderer.invoke("runtime:cancelLaunch", id),
   onLocalRuntimeLaunchQueue: (cb) => {

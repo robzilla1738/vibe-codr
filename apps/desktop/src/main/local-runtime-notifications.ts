@@ -45,15 +45,19 @@ export class LocalRuntimeNotificationRouter {
     const key = `${transition.cwd}\0${transition.sessionId}\0${transition.kind}\0${transition.transitionId}`;
     if (this.#seen.has(key)) return;
     this.#remember(key);
-    if (!this.options.adapter.isSupported()) return;
-    const labels = this.options.labelsFor(target);
-    const projectTitle = safeLabel(labels.projectTitle, "Project");
-    const sessionTitle = safeLabel(labels.sessionTitle, "Background session");
-    this.options.adapter.show({
-      title: "Vibe Codr",
-      body: `${projectTitle} · ${sessionTitle} ${BODY_COPY[transition.kind]}`,
-      silent: false,
-    }, () => this.options.activate(target));
+    try {
+      if (!this.options.adapter.isSupported()) return;
+      const labels = this.options.labelsFor(target);
+      const projectTitle = safeLabel(labels.projectTitle, "Project");
+      const sessionTitle = safeLabel(labels.sessionTitle, "Background session");
+      this.options.adapter.show({
+        title: "Vibe Codr",
+        body: `${projectTitle} · ${sessionTitle} ${BODY_COPY[transition.kind]}`,
+        silent: false,
+      }, () => this.options.activate(target));
+    } catch {
+      // OS notification support is best-effort and must never break the runtime event path.
+    }
   }
 
   #remember(key: string): void {

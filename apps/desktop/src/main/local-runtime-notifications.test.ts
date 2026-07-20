@@ -58,5 +58,15 @@ describe("LocalRuntimeNotificationRouter", () => {
     });
     expect(() => unavailable.observe({ ...transition, transitionId: "turn-2" })).not.toThrow();
     expect(unavailableShow).not.toHaveBeenCalled();
+
+    const failing = new LocalRuntimeNotificationRouter({
+      adapter: {
+        isSupported: () => true,
+        show: () => { throw new Error("notification center unavailable"); },
+      },
+      labelsFor: () => ({ projectTitle: "Repo", sessionTitle: "Session" }),
+      activate: vi.fn(),
+    });
+    expect(() => failing.observe({ ...transition, transitionId: "turn-3" })).not.toThrow();
   });
 });

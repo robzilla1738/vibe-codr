@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { type CloudSessionCatalogEntry, isCloudSessionMutationLocked } from "../../shared/cloud";
-import type { LocalRuntimeLaunchQueueSnapshot, LocalRuntimeStatus } from "../../shared/local-runtime";
+import type { LocalRuntimeStatus } from "../../shared/local-runtime";
 import { normalizeSessionTitle, relativeSessionTime, SESSION_TITLE_LIMIT } from "../../shared/project-index";
 import type { ProjectSummary, SessionSearchHit } from "../../shared/protocol";
 import {
@@ -326,7 +326,6 @@ export function SessionsWorkspace({
   projects,
   cloudSessions,
   localRuntimes,
-  launchQueue,
   chatsCwd,
   activeCwd,
   activeSessionId,
@@ -341,7 +340,6 @@ export function SessionsWorkspace({
   error,
   onRetry,
   onOpen,
-  onCancelLaunch,
   onNewChat,
   onFork,
   onRename,
@@ -352,7 +350,6 @@ export function SessionsWorkspace({
   projects: ProjectSummary[];
   cloudSessions: Pick<CloudSessionCatalogEntry, "sessionId" | "status" | "provider" | "error" | "updatedAt">[];
   localRuntimes: LocalRuntimeStatus[];
-  launchQueue: LocalRuntimeLaunchQueueSnapshot;
   chatsCwd: string | null;
   activeCwd: string | null;
   activeSessionId: string;
@@ -367,7 +364,6 @@ export function SessionsWorkspace({
   error: string | null;
   onRetry: () => void;
   onOpen: (cwd: string, id: string) => void;
-  onCancelLaunch: (id: string) => void;
   onNewChat: () => void;
   onFork: (cwd: string, id: string, atTurnId?: string) => Promise<boolean>;
   onRename: (cwd: string, id: string, title: string) => Promise<boolean>;
@@ -513,16 +509,6 @@ export function SessionsWorkspace({
     for (const item of items) seen.set(item.cwd, item.project);
     return [...seen].sort((a, b) => a[1].localeCompare(b[1]));
   }, [items]);
-  const queuedLabels = useMemo(() => new Map(launchQueue.items.map((request) => {
-    const saved = request.sessionId
-      ? items.find((item) => item.cwd === request.cwd && item.session.id === request.sessionId)
-      : undefined;
-    const project = projects.find((candidate) => candidate.cwd === request.cwd);
-    return [request.id, {
-      project: project?.name || runtimeProjectTitle(request.cwd),
-      session: saved?.session.title || (request.sessionId ? "Saved session" : "New session"),
-    }];
-  })), [items, launchQueue.items, projects]);
   const activeFilterCount = Number(preferences.status !== "all")
     + Number(preferences.project !== "all")
     + Number(preferences.mode !== "all")
@@ -698,32 +684,6 @@ export function SessionsWorkspace({
         </div>
       </header>
 
-      {launchQueue.items.length > 0 ? (
-        <section className="session-launch-queue" aria-label="Queued local session launches" aria-live="polite">
-          <div className="session-launch-queue-heading">
-            <div>
-              <h2>Waiting for local capacity</h2>
-              <p>{launchQueue.items.length} queued · capacity {launchQueue.capacity}</p>
-            </div>
-          </div>
-          <ol>
-            {launchQueue.items.map((request) => {
-              const labels = queuedLabels.get(request.id)!;
-              return (
-                <li key={request.id}>
-                  <span className="session-launch-position">{request.position}</span>
-                  <span className="session-launch-copy">
-                    <strong>{labels.session}</strong>
-                    <span>{labels.project} · Waiting for a protected runtime slot</span>
-                  </span>
-                  <button type="button" onClick={() => onCancelLaunch(request.id)}>Cancel</button>
-                </li>
-              );
-            })}
-          </ol>
-        </section>
-      ) : null}
-
       {filtersOpen ? (
         <section className="sessions-filters" id="sessions-filters" aria-label="Session filters">
           <label>
@@ -877,9 +837,4 @@ export function SessionsWorkspace({
       ) : null}
     </main>
   );
-}
-
-function runtimeProjectTitle(cwd: string): string {
-  const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
-  return parts.at(-1) || "Project";
 }

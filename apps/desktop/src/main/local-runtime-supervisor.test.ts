@@ -200,9 +200,13 @@ describe("LocalRuntimeSupervisor", () => {
     ]);
     expect(JSON.stringify(transitions)).not.toContain("private");
 
+    bridges[0]!.emit({ type: "plan-state-changed", sessionId: "s1", state: { status: "active", updatedAt: 2 } });
+    bridges[0]!.emit({ type: "plan-state-changed", sessionId: "s1", state: { status: "pending", updatedAt: 3 } });
+    expect(transitions.map((transition) => transition.kind).at(-1)).toBe("plan-review");
+
     bridges[1]!.emit({ ...permission, sessionId: "s2", id: "foreground-permission" });
     bridges[1]!.emit({ type: "engine-idle", sessionId: "s2", gate: "green" });
-    expect(transitions).toHaveLength(5);
+    expect(transitions).toHaveLength(6);
   });
 
   it("never publishes a temporary key for a resumed runtime", async () => {

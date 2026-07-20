@@ -13,7 +13,7 @@ import { composeInEditor, EDITOR_DRAFT_MAX_BYTES } from "../shared/editor-compos
 import { safeExternalUrl } from "../shared/external-url";
 import { listProjectFiles, rankPaths } from "../shared/file-fuzzy";
 import type { MenuAction } from "../shared/menu-actions";
-import { isLocalRuntimeCapacity, type LocalRuntimeNotificationTarget } from "../shared/local-runtime";
+import type { LocalRuntimeNotificationTarget } from "../shared/local-runtime";
 import { resolvePathInsideRoot, resolveWritablePathInsideRoot } from "../shared/path-safe";
 import { diagnosticLaunchKind } from "../shared/performance";
 import { chatsCwdFromHome, normalizeCwd } from "../shared/project-index";
@@ -75,6 +75,15 @@ const runtimeNotifications = new LocalRuntimeNotificationRouter({
 
 function runtimeTargetKey(target: LocalRuntimeNotificationTarget): string {
   return `${normalizeCwd(target.cwd)}\0${target.sessionId}`;
+}
+
+async function updateLocalRuntimeCapacity(capacity: number): Promise<void> {
+  try {
+    const value = await runtimeSettingsStore.update({ capacity });
+    bridge.setLocalRuntimeCapacity(value.capacity);
+  } catch {
+    buildApplicationMenu();
+  }
 }
 
 function rememberRuntimeTargetLabels(projects: ProjectSummary[]): void {
@@ -447,6 +456,18 @@ function buildApplicationMenu(): void {
           accelerator: "CmdOrCtrl+Shift+J",
           click: () => sendMenuAction("toggleJobs"),
         },
+        {
+          label: "Local Runtime Capacity",
+          submenu: Array.from({ length: 8 }, (_, index) => {
+            const capacity = index + 1;
+            return {
+              label: `${capacity} runtime${capacity === 1 ? "" : "s"}`,
+              type: "radio" as const,
+              checked: runtimeSettingsStore.get().capacity === capacity,
+              click: () => void updateLocalRuntimeCapacity(capacity),
+            };
+          }),
+        },
         { type: "separator" as const },
         {
           label: "Continue on Phone…",
@@ -644,26 +665,6 @@ function registerIpc(): void {
     settingsDirty = dirty === true;
   });
 
-  ipcMain.handle("runtime:settings", (event) => {
-    assertTrustedIpc(event);
-    return { ok: true as const, value: runtimeSettingsStore.get() };
-  });
-  ipcMain.handle("runtime:updateSettings", async (event, input: unknown) => {
-    assertTrustedIpc(event);
-    const capacity = input && typeof input === "object"
-      ? (input as { capacity?: unknown }).capacity
-      : undefined;
-    if (!isLocalRuntimeCapacity(capacity)) {
-      return { ok: false as const, error: "Local runtime capacity must be an integer from 1 through 8" };
-    }
-    try {
-      const value = await runtimeSettingsStore.update({ capacity });
-      bridge.setLocalRuntimeCapacity(value.capacity);
-      return { ok: true as const, value };
-    } catch (error) {
-      return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
   ipcMain.handle("runtime:launchQueue", (event) => {
     assertTrustedIpc(event);
     return { ok: true as const, value: bridge.localRuntimeQueue() };

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   type LocalRuntimeSettings,
@@ -27,9 +27,13 @@ export class RuntimeSettingsStore {
     const operation = this.#writeTail.then(async () => {
       await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
       const temp = `${this.#path}.${process.pid}.${Date.now()}.tmp`;
-      await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-      await rename(temp, this.#path);
-      this.#settings = next;
+      try {
+        await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        await rename(temp, this.#path);
+        this.#settings = next;
+      } finally {
+        await rm(temp, { force: true });
+      }
     });
     this.#writeTail = operation.then(() => undefined, () => undefined);
     return operation.then(() => this.get());

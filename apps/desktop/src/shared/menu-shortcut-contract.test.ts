@@ -41,6 +41,13 @@ describe("native menu shortcut contract", () => {
     expect(source).toContain("appUpdater?.check(true)");
   });
 
+  it("exposes the bounded local runtime capacity in the native Tools menu", () => {
+    expect(source).toContain('label: "Local Runtime Capacity"');
+    expect(source).toContain("Array.from({ length: 8 }");
+    expect(source).toContain("runtimeSettingsStore.update({ capacity })");
+    expect(source).toContain("bridge.setLocalRuntimeCapacity(value.capacity)");
+  });
+
   it("guards Continue Latest before replacing a session with dirty Settings", () => {
     const continueLatest = appSource.match(
       /const continueLatest = useCallback\(async \(\) => \{([\s\S]*?)\n {2}\}, \[/,

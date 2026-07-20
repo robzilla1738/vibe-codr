@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { createId, type Handoff, type Mode, type ToolDefinition } from "@vibe/shared";
+import {
+  createId,
+  type Handoff,
+  type Mode,
+  type ModelUsage,
+  type ToolDefinition,
+} from "@vibe/shared";
 import { createSemaphore, createSerialLock } from "@vibe/tools";
 import { EventBus as EventBusImpl } from "../event-bus.ts";
 import { ChildRegistry } from "./child-registry.ts";
@@ -97,7 +103,16 @@ function capDiff(s: string): string {
  * parent folds only the delta of THIS run (continue_subagent / structured
  * retries re-use the same Session whose totals accumulate). */
 export interface ChildUsageBaseline {
-  usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    cacheWriteTokens?: number;
+    steps?: number;
+    turns?: number;
+    providerLatencyMs?: number;
+    byModel?: Record<string, ModelUsage>;
+  };
   costUSD: number;
   actualCostUSD: number;
 }

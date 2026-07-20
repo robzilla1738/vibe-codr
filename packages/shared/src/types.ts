@@ -17,6 +17,7 @@ export type {
   SkillInfo,
   QueuedItem,
   Usage,
+  ModelUsage,
   SessionUsage,
   Message,
   GitInfo,

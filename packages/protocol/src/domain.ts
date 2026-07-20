@@ -200,13 +200,35 @@ export const UsageSchema = loose({
   cachedInputTokens: nonNegative.optional(),
 });
 export type Usage = z.infer<typeof UsageSchema>;
+export const ModelUsageSchema = loose({
+  inputTokens: nonNegative,
+  outputTokens: nonNegative,
+  totalTokens: nonNegative,
+  cachedInputTokens: nonNegative,
+  cacheWriteTokens: nonNegative,
+  steps: nonNegativeSafeInteger,
+  turns: nonNegativeSafeInteger,
+  providerLatencyMs: nonNegative,
+  costUSD: nonNegative,
+  actualCostUSD: nonNegative.optional(),
+  costEstimated: z.boolean().optional(),
+  legacyAttribution: z.boolean().optional(),
+});
+export type ModelUsage = z.infer<typeof ModelUsageSchema>;
 export const SessionUsageSchema = loose({
   inputTokens: nonNegative,
   outputTokens: nonNegative,
   totalTokens: nonNegative,
   costUSD: nonNegative,
+  actualCostUSD: nonNegative.optional(),
   costEstimated: z.boolean().optional(),
   cachedInputTokens: nonNegative.optional(),
+  cacheWriteTokens: nonNegative.optional(),
+  steps: nonNegativeSafeInteger.optional(),
+  turns: nonNegativeSafeInteger.optional(),
+  providerLatencyMs: nonNegative.optional(),
+  /** Optional for one release so older hosts/clients remain wire-compatible. */
+  byModel: z.record(z.string(), ModelUsageSchema).optional(),
 });
 export type SessionUsage = z.infer<typeof SessionUsageSchema>;
 
@@ -498,7 +520,14 @@ export const TurnPerformanceSampleSchema = loose({
   totalMs: nonNegative,
   inputTokens: nonNegative.optional(),
   cachedInputTokens: nonNegative.optional(),
+  cacheWriteTokens: nonNegative.optional(),
   outputTokens: nonNegative.optional(),
+  steps: nonNegativeSafeInteger.optional(),
+  providerLatencyMs: nonNegative.optional(),
+  costUSD: nonNegative.optional(),
+  actualCostUSD: nonNegative.optional(),
+  costEstimated: z.boolean().optional(),
+  outcome: z.enum(["completed", "failed", "cancelled"]).optional(),
 });
 export type TurnPerformanceSample = z.infer<typeof TurnPerformanceSampleSchema>;
 

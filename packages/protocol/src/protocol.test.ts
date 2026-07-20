@@ -144,6 +144,38 @@ describe("canonical protocol schemas", () => {
     ).toBeFalse();
   });
 
+  test("accepts authoritative by-model usage while retaining legacy payload compatibility", () => {
+    const bucket = {
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      cachedInputTokens: 4,
+      cacheWriteTokens: 2,
+      steps: 1,
+      turns: 1,
+      providerLatencyMs: 25,
+      costUSD: 0.01,
+      actualCostUSD: 0.01,
+    };
+    expect(
+      EngineSnapshotSchema.safeParse({
+        ...snapshot,
+        usage: { ...snapshot.usage, byModel: { "test/model": bucket } },
+      }).success,
+    ).toBeTrue();
+    // byModel remains optional for the one-release wire compatibility window.
+    expect(EngineSnapshotSchema.safeParse(snapshot).success).toBeTrue();
+    expect(
+      EngineSnapshotSchema.safeParse({
+        ...snapshot,
+        usage: {
+          ...snapshot.usage,
+          byModel: { "test/model": { ...bucket, providerLatencyMs: -1 } },
+        },
+      }).success,
+    ).toBeFalse();
+  });
+
   test("keeps exhaustive, duplicate-free discriminator and RPC registries", () => {
     expect(Object.keys(ENGINE_COMMAND_SCHEMAS)).toEqual([...ENGINE_COMMAND_TYPES]);
     expect(Object.keys(UI_EVENT_SCHEMAS)).toEqual([...UI_EVENT_TYPES]);

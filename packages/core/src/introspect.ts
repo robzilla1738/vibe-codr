@@ -84,6 +84,16 @@ export function formatCost(usage: SessionUsage, model: string, price?: ModelPric
   if (price?.input !== undefined || price?.output !== undefined) {
     lines.push(["rate /1M", `$${price?.input ?? "?"} in · $${price?.output ?? "?"} out`]);
   }
+  const byModel = Object.entries(usage.byModel ?? {});
+  if (byModel.length > 1) {
+    for (const [modelId, bucket] of byModel.sort(([a], [b]) => a.localeCompare(b))) {
+      const cost = `$${bucket.costUSD.toFixed(bucket.costUSD < 1 ? 4 : 2)}`;
+      lines.push([
+        modelId,
+        `${bucket.costEstimated ? "~" : ""}${cost} · ${bucket.inputTokens} in / ${bucket.outputTokens} out${bucket.legacyAttribution ? " · legacy" : ""}`,
+      ]);
+    }
+  }
   lines.push([
     "cost",
     usage.costUSD > 0

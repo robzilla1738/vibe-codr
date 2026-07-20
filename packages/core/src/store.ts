@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { createId, type Message, type Mode, type Task } from "@vibe/shared";
+import { createId, type Message, type Mode, type ModelUsage, type Task } from "@vibe/shared";
 import type { ModelMessage } from "ai";
 import type { SourceEntry } from "./source-ledger.ts";
 import { ensureStateDir, globalStateDir } from "./state-dir.ts";
@@ -18,7 +18,7 @@ import { ensureStateDir, globalStateDir } from "./state-dir.ts";
 /** Current on-disk SessionMeta schema version. Bump when the meta shape changes
  * incompatibly; a loader can then detect + migrate rather than silently misparse
  * an older/newer file. Absent on pre-versioning saves (read as version 0). */
-export const SESSION_META_VERSION = 2;
+export const SESSION_META_VERSION = 3;
 
 export interface PersistedTurnBoundary {
   /** Stable identity used by desktop fork/revert operations. */
@@ -54,6 +54,11 @@ export interface SessionMeta {
     /** True when any accrued cost came from estimated/base-model pricing. */
     costEstimated?: boolean;
     cachedInputTokens?: number;
+    cacheWriteTokens?: number;
+    steps?: number;
+    turns?: number;
+    providerLatencyMs?: number;
+    byModel?: Record<string, ModelUsage>;
   };
   /** The last turn's REAL provider input-token count (context fill), so a resumed
    * session's first compaction check uses the true prior prompt size instead of
@@ -86,6 +91,97 @@ export interface PersistedSession {
   modelMessages: ModelMessage[];
   history: Message[];
   warnings?: string[];
+}
+
+type PersistedUsage = NonNullable<SessionMeta["usage"]>;
+
+function zeroPersistedModelUsage(): ModelUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    steps: 0,
+    turns: 0,
+    providerLatencyMs: 0,
+    costUSD: 0,
+    actualCostUSD: 0,
+  };
+}
+
+/** Canonicalize persistence around per-model buckets. A v0-v2 aggregate cannot
+ * reveal historical switches, so it is attributed once to the saved model and
+ * marked honestly instead of inventing precision. */
+function normalizePersistedUsage(
+  model: string,
+  usage: PersistedUsage,
+  derivedTurns: number,
+): PersistedUsage {
+  const byModel: Record<string, ModelUsage> = {};
+  if (usage.byModel && Object.keys(usage.byModel).length) {
+    for (const [modelId, value] of Object.entries(usage.byModel)) {
+      const inputTokens = Math.max(0, value.inputTokens ?? 0);
+      const outputTokens = Math.max(0, value.outputTokens ?? 0);
+      const costUSD = Math.max(0, value.costUSD ?? 0);
+      const actualCostUSD = Math.min(
+        costUSD,
+        Math.max(0, value.actualCostUSD ?? (value.costEstimated ? 0 : costUSD)),
+      );
+      byModel[modelId] = {
+        ...zeroPersistedModelUsage(),
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+        cachedInputTokens: Math.max(0, value.cachedInputTokens ?? 0),
+        cacheWriteTokens: Math.max(0, value.cacheWriteTokens ?? 0),
+        steps: Math.max(0, Math.trunc(value.steps ?? 0)),
+        turns: Math.max(0, Math.trunc(value.turns ?? 0)),
+        providerLatencyMs: Math.max(0, value.providerLatencyMs ?? 0),
+        costUSD,
+        actualCostUSD,
+        ...(costUSD > actualCostUSD ? { costEstimated: true } : {}),
+        ...(value.legacyAttribution ? { legacyAttribution: true } : {}),
+      };
+    }
+  } else {
+    const costUSD = Math.max(0, usage.costUSD ?? 0);
+    const actualCostUSD = Math.min(
+      costUSD,
+      Math.max(0, usage.actualCostUSD ?? (usage.costEstimated ? 0 : costUSD)),
+    );
+    const inputTokens = Math.max(0, usage.inputTokens ?? 0);
+    const outputTokens = Math.max(0, usage.outputTokens ?? 0);
+    byModel[model] = {
+      ...zeroPersistedModelUsage(),
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+      cachedInputTokens: Math.max(0, usage.cachedInputTokens ?? 0),
+      cacheWriteTokens: Math.max(0, usage.cacheWriteTokens ?? 0),
+      steps: Math.max(0, Math.trunc(usage.steps ?? 0)),
+      turns: Math.max(0, Math.trunc(usage.turns ?? derivedTurns)),
+      providerLatencyMs: Math.max(0, usage.providerLatencyMs ?? 0),
+      costUSD,
+      actualCostUSD,
+      ...(costUSD > actualCostUSD ? { costEstimated: true } : {}),
+      legacyAttribution: true,
+    };
+  }
+  const buckets = Object.values(byModel);
+  return {
+    inputTokens: buckets.reduce((sum, bucket) => sum + bucket.inputTokens, 0),
+    outputTokens: buckets.reduce((sum, bucket) => sum + bucket.outputTokens, 0),
+    cachedInputTokens: buckets.reduce((sum, bucket) => sum + bucket.cachedInputTokens, 0),
+    cacheWriteTokens: buckets.reduce((sum, bucket) => sum + bucket.cacheWriteTokens, 0),
+    steps: buckets.reduce((sum, bucket) => sum + bucket.steps, 0),
+    turns: buckets.reduce((sum, bucket) => sum + bucket.turns, 0),
+    providerLatencyMs: buckets.reduce((sum, bucket) => sum + bucket.providerLatencyMs, 0),
+    costUSD: buckets.reduce((sum, bucket) => sum + bucket.costUSD, 0),
+    actualCostUSD: buckets.reduce((sum, bucket) => sum + (bucket.actualCostUSD ?? 0), 0),
+    ...(buckets.some((bucket) => bucket.costEstimated) ? { costEstimated: true } : {}),
+    byModel,
+  };
 }
 
 /** Tag key for a base64-encoded binary blob in persisted JSONL. Deliberately
@@ -247,10 +343,14 @@ export class SessionStore {
       this.#ensured = true;
       await ensureStateDir(this.#cwd);
     }
+    const turns = deriveTurnBoundaries(meta.id, modelMessages, history, meta.turns);
     const normalizedMeta: SessionMeta = {
       ...meta,
       version: SESSION_META_VERSION,
-      turns: deriveTurnBoundaries(meta.id, modelMessages, history, meta.turns),
+      ...(meta.usage
+        ? { usage: normalizePersistedUsage(meta.model, meta.usage, turns.length) }
+        : {}),
+      turns,
     };
     const dir = this.#dir(meta.id);
     await mkdir(dir, { recursive: true });
@@ -332,10 +432,14 @@ export class SessionStore {
       const historyRead = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
       const warnings = [...modelRead.warnings, ...historyRead.warnings];
       if (storedVersion < SESSION_META_VERSION || !Array.isArray(meta.turns)) {
+        const turns = deriveTurnBoundaries(meta.id, modelRead.items, historyRead.items, meta.turns);
         meta = {
           ...meta,
           version: SESSION_META_VERSION,
-          turns: deriveTurnBoundaries(meta.id, modelRead.items, historyRead.items, meta.turns),
+          ...(meta.usage
+            ? { usage: normalizePersistedUsage(meta.model, meta.usage, turns.length) }
+            : {}),
+          turns,
         };
         // First load upgrades stable turn identities atomically. Migration is
         // best-effort: a read remains usable even if the disk is read-only.
@@ -461,7 +565,20 @@ export class SessionStore {
         goal: source.meta.goal,
         kind: "root",
         tasks: [],
-        usage: { inputTokens: 0, outputTokens: 0, costUSD: 0, actualCostUSD: 0 },
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          costUSD: 0,
+          actualCostUSD: 0,
+          cachedInputTokens: 0,
+          cacheWriteTokens: 0,
+          steps: 0,
+          turns: 0,
+          providerLatencyMs: 0,
+          byModel: {
+            [source.meta.model]: zeroPersistedModelUsage(),
+          },
+        },
         ...(source.meta.recalledContext ? { recalledContext: source.meta.recalledContext } : {}),
         ...(copied.records.length ? { offloaded: copied.records } : {}),
         title: `${source.meta.title?.trim() || "Session"} (fork)`.slice(0, 120),

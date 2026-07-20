@@ -48,7 +48,7 @@ test("save then load round-trips a session", async () => {
   const loaded = await store.load("ses_abc");
   expect(loaded).not.toBeNull();
   expect(loaded!.meta).toMatchObject(meta);
-  expect(loaded!.meta.version).toBe(2);
+  expect(loaded!.meta.version).toBe(3);
   expect(loaded!.meta.turns).toHaveLength(1);
   expect(loaded!.modelMessages).toEqual(model);
   expect(loaded!.history).toEqual(history);
@@ -59,7 +59,7 @@ test("load rejects newer metadata versions without rewriting them", async () => 
   const dir = sessionDir(cwd, "ses_future");
   mkdirSync(dir, { recursive: true });
   const futureMeta = {
-    version: 3,
+    version: 4,
     id: "ses_future",
     model: "m/x",
     mode: "execute",
@@ -73,7 +73,7 @@ test("load rejects newer metadata versions without rewriting them", async () => 
   writeFileSync(join(dir, "history.jsonl"), "", "utf8");
   const store = new SessionStore(cwd);
 
-  await expect(store.load("ses_future")).rejects.toThrow("metadata version 3");
+  await expect(store.load("ses_future")).rejects.toThrow("metadata version 4");
   expect(await Bun.file(join(dir, "meta.json")).json()).toEqual(futureMeta);
 });
 
@@ -309,6 +309,63 @@ test("meta round-trips the cumulative cache-read total (usage fidelity on --resu
   // The cached-token slice survives persistence, so resumed cost/usage stays truthful.
   expect(loaded?.meta.usage?.cachedInputTokens).toBe(640);
   expect(loaded?.meta.usage?.inputTokens).toBe(1000);
+  expect(loaded?.meta.usage?.byModel?.["anthropic/claude-x"]).toMatchObject({
+    inputTokens: 1000,
+    outputTokens: 200,
+    cachedInputTokens: 640,
+    costUSD: 0.05,
+    actualCostUSD: 0.05,
+    legacyAttribution: true,
+  });
+});
+
+test("v0-v2 usage migrates once into the saved model without promoting estimated spend", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-usage-migrate-"));
+  const id = "ses_legacy_usage";
+  const dir = sessionDir(cwd, id);
+  mkdirSync(dir, { recursive: true });
+  const meta = {
+    version: 2,
+    id,
+    model: "local/free-model",
+    mode: "execute",
+    goal: null,
+    usage: {
+      inputTokens: 120,
+      outputTokens: 30,
+      cachedInputTokens: 80,
+      costUSD: 1.25,
+      costEstimated: true,
+    },
+    createdAt: 1,
+    updatedAt: 2,
+  };
+  writeFileSync(join(dir, "meta.json"), `${JSON.stringify(meta)}\n`, "utf8");
+  writeFileSync(join(dir, "messages.jsonl"), "", "utf8");
+  writeFileSync(join(dir, "history.jsonl"), "", "utf8");
+
+  const store = new SessionStore(cwd);
+  const first = await store.load(id);
+  expect(first?.meta.version).toBe(3);
+  expect(first?.meta.usage).toMatchObject({
+    inputTokens: 120,
+    outputTokens: 30,
+    costUSD: 1.25,
+    actualCostUSD: 0,
+    costEstimated: true,
+  });
+  expect(first?.meta.usage?.byModel?.["local/free-model"]).toMatchObject({
+    totalTokens: 150,
+    cachedInputTokens: 80,
+    actualCostUSD: 0,
+    costEstimated: true,
+    legacyAttribution: true,
+  });
+
+  // The migrated v3 record is stable on subsequent loads; no second bucket or
+  // inferred model history appears.
+  const second = await store.load(id);
+  expect(second?.meta.usage?.byModel).toEqual(first?.meta.usage?.byModel);
 });
 
 test("legacy in-project sessions (<cwd>/.vibe/sessions) are still loadable and listed", async () => {
@@ -348,7 +405,7 @@ test("legacy sessions derive and persist deterministic stable turn ids on first 
   const store = new SessionStore(cwd);
   const first = await store.load(meta.id);
   const second = await store.load(meta.id);
-  expect(first?.meta.version).toBe(2);
+  expect(first?.meta.version).toBe(3);
   expect(first?.meta.turns?.[0]?.id).toMatch(/^turn_[0-9a-f]{20}$/);
   expect(second?.meta.turns?.[0]?.id).toBe(first?.meta.turns?.[0]?.id);
   expect(existsSync(join(sessionDir(cwd, meta.id), "meta.json"))).toBe(true);
@@ -422,6 +479,12 @@ test("fork copies model and display histories through a completed user turn", as
   expect(forked?.history).toEqual(history.slice(0, 2));
   expect(forked?.meta.forkedFrom).toEqual({ sessionId: meta.id, turnId: "turn-stable-1" });
   expect(forked?.meta.usage?.inputTokens).toBe(0);
+  expect(forked?.meta.usage?.byModel?.[meta.model]).toMatchObject({
+    inputTokens: 0,
+    outputTokens: 0,
+    costUSD: 0,
+    turns: 0,
+  });
   expect(source?.modelMessages).toEqual(model);
   expect(source?.history).toEqual(history);
 });

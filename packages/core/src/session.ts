@@ -5,6 +5,7 @@ import {
   type EngineSnapshot,
   type FreshnessRegistryLike,
   type Message,
+  type ModelUsage,
   type Mode,
   type Part,
   type RepoProfile,
@@ -54,7 +55,18 @@ import { formatRepoFacts } from "./build/profile.ts";
 import type { SessionStore } from "./store.ts";
 import { SESSION_META_VERSION } from "./store.ts";
 import type { MemoryService } from "./memory-service.ts";
-import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
+import {
+  addModelStep,
+  addModelUsage,
+  addUsage,
+  cloneModelUsage,
+  computeCost,
+  diffModelUsage,
+  emptyModelUsage,
+  settleModelTurn,
+  sumModelUsage,
+  type TokenTotals,
+} from "./usage.ts";
 import {
   buildModelTuning,
   ANTHROPIC_CACHE_CONTROL,
@@ -273,6 +285,9 @@ export class Session {
   #history: Message[];
   #tasks: Task[];
   #usage: TokenTotals;
+  /** Authoritative cumulative attribution. Top-level compatibility totals are
+   * maintained too, but snapshots are projected from these buckets. */
+  #byModel: Record<string, ModelUsage>;
   /** The provider's real input-token count for the last step — the TRUE current
    * context size (system prompt + tool schemas + messages + cache), far more
    * accurate than the JSON estimate. 0 until the first step reports usage. */
@@ -388,6 +403,14 @@ export class Session {
       ...(deps.initialUsage?.cachedInputTokens
         ? { cachedInputTokens: deps.initialUsage.cachedInputTokens }
         : {}),
+      ...(deps.initialUsage?.cacheWriteTokens
+        ? { cacheWriteTokens: deps.initialUsage.cacheWriteTokens }
+        : {}),
+      ...(deps.initialUsage?.steps ? { steps: deps.initialUsage.steps } : {}),
+      ...(deps.initialUsage?.turns ? { turns: deps.initialUsage.turns } : {}),
+      ...(deps.initialUsage?.providerLatencyMs
+        ? { providerLatencyMs: deps.initialUsage.providerLatencyMs }
+        : {}),
     };
     this.#costUSD = deps.initialCostUSD ?? 0;
     // BUG-103: never blindly promote costUSD → actualCostUSD.
@@ -403,6 +426,34 @@ export class Session {
           ? 0
           : (deps.initialCostUSD ?? 0);
     this.#costEstimated = deps.initialCostEstimated ?? false;
+    this.#byModel = cloneModelUsage(deps.initialUsage?.byModel);
+    // Direct Session construction can still provide pre-v3 totals. Store.load()
+    // performs the durable migration, while this keeps an in-memory resume just
+    // as honest and guarantees bucket sums match its first snapshot.
+    if (!Object.keys(this.#byModel).length) {
+      const hasLegacyTotals =
+        this.#usage.inputTokens > 0 ||
+        this.#usage.outputTokens > 0 ||
+        (this.#usage.cachedInputTokens ?? 0) > 0 ||
+        (this.#usage.cacheWriteTokens ?? 0) > 0 ||
+        this.#costUSD > 0;
+      if (hasLegacyTotals) {
+        this.#byModel[this.model] = {
+          ...emptyModelUsage(true),
+          inputTokens: this.#usage.inputTokens,
+          outputTokens: this.#usage.outputTokens,
+          totalTokens: this.#usage.inputTokens + this.#usage.outputTokens,
+          cachedInputTokens: this.#usage.cachedInputTokens ?? 0,
+          cacheWriteTokens: this.#usage.cacheWriteTokens ?? 0,
+          steps: this.#usage.steps ?? 0,
+          turns: this.#usage.turns ?? 0,
+          providerLatencyMs: this.#usage.providerLatencyMs ?? 0,
+          costUSD: this.#costUSD,
+          actualCostUSD: this.#actualCostUSD,
+          ...(this.#costEstimated && this.#costUSD > 0 ? { costEstimated: true } : {}),
+        };
+      }
+    }
     this.#lastInputTokens = deps.initialLastInputTokens ?? 0;
     // Restore offload map from meta so prune/re-plan stay correct after --resume.
     if (deps.initialOffloaded?.length) {
@@ -488,14 +539,30 @@ export class Session {
       0,
       (cu.cachedInputTokens ?? 0) - (baseline.usage.cachedInputTokens ?? 0),
     );
+    const dCacheWrites = Math.max(
+      0,
+      (cu.cacheWriteTokens ?? 0) - (baseline.usage.cacheWriteTokens ?? 0),
+    );
     addUsage(this.#usage, {
       inputTokens: dIn,
       outputTokens: dOut,
       ...(dCached ? { cachedInputTokens: dCached } : {}),
     });
+    if (dCacheWrites) {
+      this.#usage.cacheWriteTokens = (this.#usage.cacheWriteTokens ?? 0) + dCacheWrites;
+    }
+    this.#usage.steps =
+      (this.#usage.steps ?? 0) + Math.max(0, (cu.steps ?? 0) - (baseline.usage.steps ?? 0));
+    this.#usage.turns =
+      (this.#usage.turns ?? 0) + Math.max(0, (cu.turns ?? 0) - (baseline.usage.turns ?? 0));
+    this.#usage.providerLatencyMs =
+      (this.#usage.providerLatencyMs ?? 0) +
+      Math.max(0, (cu.providerLatencyMs ?? 0) - (baseline.usage.providerLatencyMs ?? 0));
+    const modelDelta = diffModelUsage(cu.byModel ?? {}, baseline.usage.byModel ?? {});
+    addModelUsage(this.#byModel, modelDelta);
     this.#costUSD += Math.max(0, child.costUSD - baseline.costUSD);
     this.#actualCostUSD += Math.max(0, child.actualCostUSD - baseline.actualCostUSD);
-    this.#costEstimated ||= child.costEstimated;
+    this.#costEstimated ||= Object.values(modelDelta).some((usage) => usage.costEstimated);
     this.#deps.bus.emit({
       type: "usage-updated",
       sessionId: this.id,
@@ -547,17 +614,22 @@ export class Session {
 
   /** Current cumulative token + accrued-cost view for the UI. */
   #usageSnapshot(): SessionUsage {
+    const total = sumModelUsage(this.#byModel);
     return {
-      inputTokens: this.#usage.inputTokens,
-      outputTokens: this.#usage.outputTokens,
-      totalTokens: this.#usage.inputTokens + this.#usage.outputTokens,
-      costUSD: this.#costUSD,
+      inputTokens: total.inputTokens,
+      outputTokens: total.outputTokens,
+      totalTokens: total.totalTokens,
+      costUSD: total.costUSD,
+      actualCostUSD: total.actualCostUSD,
       // The cost is an estimate when the active price came from a base-model
       // catalog fallback (e.g. an Ollama Cloud tag) rather than an exact entry.
-      ...(this.#costEstimated && this.#costUSD > 0 ? { costEstimated: true } : {}),
-      ...(this.#usage.cachedInputTokens
-        ? { cachedInputTokens: this.#usage.cachedInputTokens }
-        : {}),
+      ...(total.costEstimated && total.costUSD > 0 ? { costEstimated: true } : {}),
+      ...(total.cachedInputTokens ? { cachedInputTokens: total.cachedInputTokens } : {}),
+      ...(total.cacheWriteTokens ? { cacheWriteTokens: total.cacheWriteTokens } : {}),
+      ...(total.steps ? { steps: total.steps } : {}),
+      ...(total.turns ? { turns: total.turns } : {}),
+      ...(total.providerLatencyMs ? { providerLatencyMs: total.providerLatencyMs } : {}),
+      byModel: cloneModelUsage(this.#byModel),
     };
   }
 
@@ -597,7 +669,7 @@ export class Session {
 
   /** Cumulative token totals for this session (for persistence/diagnostics). */
   get usage(): TokenTotals {
-    return { ...this.#usage };
+    return { ...this.#usage, byModel: cloneModelUsage(this.#byModel) };
   }
 
   /** Accrued cost in USD for this session (incl. folded-in subagent cost). */
@@ -1075,8 +1147,9 @@ export class Session {
     this.#committedSteps = [];
     this.#lastPerformance = undefined;
     const perfStarted = performance.now();
-    const usageBefore = { ...this.#usage };
+    const turnModelAtStart = this.model;
     const toolStarts = new Map<string, number>();
+    let resolvedTurnModel: string | undefined;
     let modelResolveMs = 0;
     let contextPrepareMs = 0;
     let providerRequestAt = 0;
@@ -1087,6 +1160,14 @@ export class Session {
     let toolMs = 0;
     let toolSchemaTokens = 0;
     let persistMs = 0;
+    let turnInputTokens = 0;
+    let turnOutputTokens = 0;
+    let turnCachedInputTokens = 0;
+    let turnCacheWriteTokens = 0;
+    let turnSteps = 0;
+    let turnCostUSD = 0;
+    let turnActualCostUSD = 0;
+    let turnCostEstimated = false;
     // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
     // cancel that arrives mid-turn aborts this turn's signal and the NEXT turn
     // still starts clean — and so a steered prompt isn't run against a stale,
@@ -1107,6 +1188,7 @@ export class Session {
       // 400 on Anthropic/others). Estimated/base-model fallback spend can warn,
       // but never hard-stops a possibly-free local session.
       if (this.#hardBudgetExceeded()) {
+        this.#interrupted = true;
         bus.emit({
           type: "notice",
           level: "warn",
@@ -1161,6 +1243,11 @@ export class Session {
 
       const modelResolveStarted = performance.now();
       const model = await this.#resolveWithFallback(registry, config);
+      // Freeze the actual provider model immediately after fallback resolution.
+      // UI commands may change the session's NEXT model while this stream runs;
+      // pricing, telemetry, and usage for this turn must never follow that change.
+      const resolvedModelId = this.model;
+      resolvedTurnModel = resolvedModelId;
       modelResolveMs = performance.now() - modelResolveStarted;
       const contextPrepareStarted = performance.now();
       if (this.#aborted()) {
@@ -1168,7 +1255,7 @@ export class Session {
         return;
       }
       // Resolve the active model's price once per turn for live cost tracking.
-      this.#price = await this.#deps.getPricing?.(this.model);
+      this.#price = await this.#deps.getPricing?.(resolvedModelId);
       if (this.#aborted()) {
         this.#interrupted = true;
         return;
@@ -1456,11 +1543,11 @@ export class Session {
 
       // Per-provider tuning: reasoning/thinking budget + (Anthropic) caching of
       // the stable system prefix so repeated turns don't re-bill the full prompt.
-      const tuning = buildModelTuning(this.model, config, { sessionId: this.id });
+      const tuning = buildModelTuning(resolvedModelId, config, { sessionId: this.id });
       // Anthropic reports cache_read_input_tokens DISJOINT from input_tokens; fold
       // it into a superset (below) so cost, the live context %, and the compaction
       // trigger all reflect the true prompt size rather than the uncached slice.
-      const foldCachedIntoInput = cacheTokensDisjointFromInput(this.model);
+      const foldCachedIntoInput = cacheTokensDisjointFromInput(resolvedModelId);
       // First breakpoint: the system message (stable across the whole session
       // now that volatile state rides in the user turn), so its prefix is a cache
       // hit every turn. The SECOND breakpoint — the trailing conversation message
@@ -1561,7 +1648,7 @@ export class Session {
               // armed. Most providers accept tool_choice:"none"; Meta Model API
               // only allows "auto" (anything else is HTTP 400). For meta, empty
               // activeTools is enough — toolsDisabled still hard-refuses execute.
-              const isMeta = this.model.startsWith("meta/");
+              const isMeta = resolvedModelId.startsWith("meta/");
               if (isMeta) {
                 return { ...base, activeTools: [] as string[] };
               }
@@ -1594,18 +1681,22 @@ export class Session {
             // Cache writes are a separately-priced slice of the prompt total.
             // AI SDK 7 exposes them in inputTokenDetails; retain the provider
             // metadata fallback for adapters that have not populated that field.
-            const sdkCacheWrites = usageDetailNumber(usage, "inputTokenDetails", "cacheWriteTokens");
-            const cacheWrites = foldCachedIntoInput
-              ? sdkCacheWrites ?? (
-                  Number(
+            const sdkCacheWrites = usageDetailNumber(
+              usage,
+              "inputTokenDetails",
+              "cacheWriteTokens",
+            );
+            const cacheWrites =
+              sdkCacheWrites ??
+              (foldCachedIntoInput
+                ? Number(
                     (
                       providerMetadata as
                         | { anthropic?: { cacheCreationInputTokens?: unknown } }
                         | undefined
                     )?.anthropic?.cacheCreationInputTokens ?? 0,
                   ) || 0
-                )
-              : 0;
+                : 0);
             // AI SDK 7 normalizes inputTokens to the complete prompt total and
             // exposes cache slices in inputTokenDetails. Do not add cache reads or
             // writes again here: they are already included in that total. We keep
@@ -1621,6 +1712,9 @@ export class Session {
             // Best-effort, errors isolated by the HookBus.
             await this.#deps.hooks?.run("step.finish", { sessionId: this.id });
             addUsage(this.#usage, stepUsage);
+            this.#usage.cacheWriteTokens =
+              (this.#usage.cacheWriteTokens ?? 0) + Math.max(0, cacheWrites);
+            this.#usage.steps = (this.#usage.steps ?? 0) + 1;
             // Track the provider's real prompt size (the true context fill) and
             // surface it live — the JSON estimate omitted the system prompt + tool
             // schemas, so it read far too low.
@@ -1651,8 +1745,25 @@ export class Session {
               cacheWrites,
             );
             this.#costUSD += stepCostUSD;
-            if (this.#price?.estimated) this.#costEstimated = true;
+            const estimated = this.#price?.estimated === true;
+            if (estimated) this.#costEstimated = true;
             else this.#actualCostUSD += stepCostUSD;
+            addModelStep(
+              this.#byModel,
+              resolvedModelId,
+              stepUsage,
+              cacheWrites,
+              stepCostUSD,
+              estimated,
+            );
+            turnInputTokens += stepUsage?.inputTokens ?? 0;
+            turnOutputTokens += stepUsage?.outputTokens ?? 0;
+            turnCachedInputTokens += stepUsage?.cachedInputTokens ?? 0;
+            turnCacheWriteTokens += Math.max(0, cacheWrites);
+            turnSteps += 1;
+            turnCostUSD += stepCostUSD;
+            if (estimated && stepCostUSD > 0) turnCostEstimated = true;
+            else turnActualCostUSD += stepCostUSD;
             bus.emit({
               type: "usage-updated",
               sessionId: this.id,
@@ -1800,6 +1911,12 @@ export class Session {
         if (histRef && this.#history[this.#history.length - 1] === histRef) this.#history.pop();
       }
       this.busy = false;
+      const providerLatencyMs = Math.max(0, generationMs - toolMs);
+      if (resolvedTurnModel) {
+        settleModelTurn(this.#byModel, resolvedTurnModel, providerLatencyMs);
+        this.#usage.turns = (this.#usage.turns ?? 0) + 1;
+        this.#usage.providerLatencyMs = (this.#usage.providerLatencyMs ?? 0) + providerLatencyMs;
+      }
       const persistStarted = performance.now();
       await this.#persist();
       persistMs = performance.now() - persistStarted;
@@ -1807,7 +1924,7 @@ export class Session {
         this.#lastPerformance = {
           turnId: opts.performance.turnId,
           sessionId: this.id,
-          model: this.model,
+          model: resolvedTurnModel ?? turnModelAtStart,
           serviceTier: config.latency.providerTier,
           startedAt: opts.performance.startedAt,
           queueDelayMs: opts.performance.queueDelayMs,
@@ -1824,10 +1941,16 @@ export class Session {
           toolMs,
           toolSchemaTokens,
           persistMs,
-          inputTokens: this.#usage.inputTokens - usageBefore.inputTokens,
-          cachedInputTokens:
-            (this.#usage.cachedInputTokens ?? 0) - (usageBefore.cachedInputTokens ?? 0),
-          outputTokens: this.#usage.outputTokens - usageBefore.outputTokens,
+          inputTokens: turnInputTokens,
+          cachedInputTokens: turnCachedInputTokens,
+          cacheWriteTokens: turnCacheWriteTokens,
+          outputTokens: turnOutputTokens,
+          steps: turnSteps,
+          providerLatencyMs,
+          costUSD: turnCostUSD,
+          actualCostUSD: turnActualCostUSD,
+          ...(turnCostEstimated ? { costEstimated: true } : {}),
+          outcome: this.#lastError ? "failed" : this.#interrupted ? "cancelled" : "completed",
         };
       }
       bus.emit({ type: "turn-finished", sessionId: this.id });
@@ -2141,6 +2264,7 @@ export class Session {
           tasks: this.#tasks,
           usage: {
             ...this.#usage,
+            byModel: cloneModelUsage(this.#byModel),
             costUSD: this.#costUSD,
             actualCostUSD: this.#actualCostUSD,
             ...(this.#costEstimated && this.#costUSD > 0 ? { costEstimated: true } : {}),

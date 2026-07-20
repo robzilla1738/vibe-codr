@@ -1,5 +1,15 @@
 import { test, expect } from "bun:test";
-import { addUsage, computeCost, type TokenTotals } from "./usage.ts";
+import type { ModelUsage } from "@vibe/shared";
+import {
+  addModelStep,
+  addModelUsage,
+  addUsage,
+  computeCost,
+  diffModelUsage,
+  settleModelTurn,
+  sumModelUsage,
+  type TokenTotals,
+} from "./usage.ts";
 
 test("addUsage folds step usage, treating missing fields as zero", () => {
   const total: TokenTotals = { inputTokens: 0, outputTokens: 0 };
@@ -15,6 +25,66 @@ test("addUsage accumulates cached input tokens when reported", () => {
   addUsage(total, { inputTokens: 50, outputTokens: 5 }); // no cache field
   addUsage(total, { inputTokens: 50, outputTokens: 5, cachedInputTokens: 40 });
   expect(total.cachedInputTokens).toBe(120);
+});
+
+test("per-model buckets retain cache, latency, steps, turns, actual, and estimated cost", () => {
+  const byModel: Record<string, ModelUsage> = {};
+  addModelStep(
+    byModel,
+    "mock/a",
+    { inputTokens: 100, outputTokens: 20, cachedInputTokens: 60 },
+    10,
+    0.4,
+    false,
+  );
+  settleModelTurn(byModel, "mock/a", 125);
+  addModelStep(byModel, "mock/b", { inputTokens: 40, outputTokens: 5 }, 0, 0.2, true);
+  settleModelTurn(byModel, "mock/b", 75);
+
+  expect(byModel["mock/a"]).toMatchObject({
+    totalTokens: 120,
+    cachedInputTokens: 60,
+    cacheWriteTokens: 10,
+    steps: 1,
+    turns: 1,
+    providerLatencyMs: 125,
+    costUSD: 0.4,
+    actualCostUSD: 0.4,
+  });
+  expect(byModel["mock/b"]?.costEstimated).toBeTrue();
+  const total = sumModelUsage(byModel);
+  expect(total).toMatchObject({
+    inputTokens: 140,
+    outputTokens: 25,
+    totalTokens: 165,
+    cachedInputTokens: 60,
+    cacheWriteTokens: 10,
+    steps: 2,
+    turns: 2,
+    providerLatencyMs: 200,
+    actualCostUSD: 0.4,
+    costEstimated: true,
+  });
+  expect(total.costUSD).toBeCloseTo(0.6, 10);
+});
+
+test("continued child usage diffs per model without triangular re-folding", () => {
+  const baseline: Record<string, ModelUsage> = {};
+  addModelStep(baseline, "mock/a", { inputTokens: 10, outputTokens: 2 }, 0, 0.1, false);
+  settleModelTurn(baseline, "mock/a", 10);
+  const current = structuredClone(baseline);
+  addModelStep(current, "mock/b", { inputTokens: 20, outputTokens: 4 }, 3, 0.2, true);
+  settleModelTurn(current, "mock/b", 20);
+
+  const parent: Record<string, ModelUsage> = {};
+  addModelUsage(parent, diffModelUsage(current, baseline));
+  expect(Object.keys(parent)).toEqual(["mock/b"]);
+  expect(parent["mock/b"]).toMatchObject({ inputTokens: 20, outputTokens: 4, turns: 1 });
+
+  // The next continuation baselines the already-cumulative child. With no new
+  // usage there is no second fold of either prior turn.
+  addModelUsage(parent, diffModelUsage(current, current));
+  expect(parent["mock/b"]).toMatchObject({ inputTokens: 20, outputTokens: 4, turns: 1 });
 });
 
 test("computeCost prices input and output per million tokens", () => {

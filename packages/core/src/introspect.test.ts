@@ -65,6 +65,40 @@ test("formatCost explains a zero cost", () => {
   expect(out).toContain("no pricing");
 });
 
+test("formatCost adds compact model rows only for multi-model sessions", () => {
+  const bucket = (inputTokens: number, outputTokens: number, costUSD: number) => ({
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    steps: 1,
+    turns: 1,
+    providerLatencyMs: 10,
+    costUSD,
+    actualCostUSD: costUSD,
+  });
+  const single = formatCost(
+    { ...usage, byModel: { "mock/a": bucket(1200, 340, 0.0123) } },
+    "mock/a",
+  );
+  expect(single.match(/mock\/a/g)?.length).toBe(1);
+
+  const multi = formatCost(
+    {
+      ...usage,
+      byModel: {
+        "mock/a": bucket(1000, 300, 0.01),
+        "mock/b": { ...bucket(200, 40, 0.0023), costEstimated: true },
+      },
+    },
+    "mock/b",
+  );
+  expect(multi).toContain("mock/a");
+  expect(multi).toContain("mock/b");
+  expect(multi).toContain("~$0.0023");
+});
+
 test("formatConfig masks secrets, including MCP env and HTTP headers", () => {
   const config = ConfigSchema.parse({
     providers: {

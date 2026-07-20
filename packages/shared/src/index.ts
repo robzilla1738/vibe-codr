@@ -4,6 +4,7 @@ export type {
   Role,
   Part,
   Usage,
+  ModelUsage,
   Message,
   Task,
   TaskStatus,

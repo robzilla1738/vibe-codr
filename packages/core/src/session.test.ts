@@ -287,7 +287,14 @@ test("turn performance instrumentation is content-free and correlates the user e
     attachmentsMs: 5,
     inputTokens: 10,
     outputTokens: 5,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    steps: 1,
+    costUSD: 0,
+    actualCostUSD: 0,
+    outcome: "completed",
   });
+  expect(sample?.providerLatencyMs).toBeGreaterThanOrEqual(0);
   expect(sample?.providerTtftMs).toBeGreaterThanOrEqual(0);
   expect(sample?.firstReasoningMs).toBeGreaterThanOrEqual(0);
   expect(sample?.firstVisibleTextMs).toBeGreaterThanOrEqual(0);
@@ -348,10 +355,19 @@ test("persists after a turn and can be resumed with prior context", async () => 
     id: persisted!.meta.id,
     initialModelMessages: persisted!.modelMessages,
     initialHistory: persisted!.history,
+    initialUsage: persisted!.meta.usage,
+    initialCostUSD: persisted!.meta.usage?.costUSD,
+    initialActualCostUSD: persisted!.meta.usage?.actualCostUSD,
+    initialCostEstimated: persisted!.meta.usage?.costEstimated,
   });
   await resumed.run("what was the number?");
   // The resumed session retained the prior turn plus the new exchange.
   expect(resumed.messageCount).toBeGreaterThanOrEqual(4);
+  expect(resumed.snapshot().usage.byModel?.["mock/test"]).toMatchObject({
+    inputTokens: 20,
+    outputTokens: 10,
+    turns: 2,
+  });
 });
 
 test("resume hydrates the offloaded map so prune keeps live artifact paths", async () => {
@@ -708,6 +724,14 @@ test("accumulates per-step usage and prices it (no double-counting)", async () =
   expect(usage.outputTokens).toBe(10); // 2 steps × 5
   // 20/1e6*3 + 10/1e6*15 = 0.00006 + 0.00015
   expect(usage.costUSD).toBeCloseTo(0.00021, 9);
+  expect(usage.byModel?.["mock/test"]).toMatchObject({
+    inputTokens: 20,
+    outputTokens: 10,
+    totalTokens: 30,
+    steps: 2,
+    turns: 1,
+    costUSD: usage.costUSD,
+  });
 });
 
 test("Anthropic's disjoint cache-read tokens are folded into input for cost + context", async () => {
@@ -757,6 +781,7 @@ test("Anthropic's disjoint cache-read tokens are folded into input for cost + co
   const usage = session.snapshot().usage;
   expect(usage.inputTokens).toBe(100); // folded: 10 new + 90 cached
   expect(usage.cachedInputTokens).toBe(90);
+  expect(usage.byModel?.["anthropic/claude-x"]?.cachedInputTokens).toBe(90);
   // uncached 10*3/1e6 + cached 90*0.3/1e6 + out 5*15/1e6
   expect(usage.costUSD).toBeCloseTo(0.00003 + 0.000027 + 0.000075, 12);
 });
@@ -801,6 +826,8 @@ test("AI SDK 7 cache-write details are priced without double-counting prompt tok
   await session.run("go");
   const usage = session.snapshot().usage;
   expect(usage.inputTokens).toBe(100);
+  expect(usage.cacheWriteTokens).toBe(40);
+  expect(usage.byModel?.["anthropic/claude-x"]?.cacheWriteTokens).toBe(40);
   // 60 uncached input + 40 cache-write input + 5 output tokens.
   expect(usage.costUSD).toBeCloseTo(0.00018 + 0.00015 + 0.000075, 12);
 });
@@ -902,7 +929,47 @@ test("cost accrues at the price in effect per step, across a model switch", asyn
   bus.close();
 
   // Accrual = 0.000015 + 0.00015, NOT 30 tok × $10/1M (= 0.0003).
-  expect(session.snapshot().usage.costUSD).toBeCloseTo(0.000165, 9);
+  const usage = session.snapshot().usage;
+  expect(usage.costUSD).toBeCloseTo(0.000165, 9);
+  expect(usage.byModel?.["mock/cheap"]?.costUSD).toBeCloseTo(0.000015, 9);
+  expect(usage.byModel?.["mock/dear"]?.costUSD).toBeCloseTo(0.00015, 9);
+  expect(
+    Object.values(usage.byModel ?? {}).reduce((sum, bucket) => sum + bucket.totalTokens, 0),
+  ).toBe(usage.totalTokens);
+});
+
+test("an in-flight model switch cannot relabel the resolved turn", async () => {
+  let session!: Session;
+  const model = new MockLanguageModelV3({
+    doStream: async () => {
+      session.setModel("mock/next");
+      return stream([
+        { type: "stream-start", warnings: [] },
+        { type: "text-start", id: "t" },
+        { type: "text-delta", id: "t", delta: "ok" },
+        { type: "text-end", id: "t" },
+        { type: "finish", finishReason: { unified: "stop", raw: undefined }, usage: USAGE },
+      ]) as never;
+    },
+  });
+  session = new Session({
+    config: defaultConfig(),
+    registry: mockRegistry(model),
+    toolset: new Toolset([]),
+    bus: new EventBus(),
+    cwd: process.cwd(),
+    freshness: new FreshnessRegistry(),
+    model: "mock/resolved",
+    mode: "execute",
+    getPricing: async (modelId) =>
+      modelId === "mock/resolved" ? { input: 2, output: 4 } : { input: 100, output: 100 },
+  });
+
+  await session.run("go");
+  const usage = session.snapshot().usage;
+  expect(session.model).toBe("mock/next");
+  expect(Object.keys(usage.byModel ?? {})).toEqual(["mock/resolved"]);
+  expect(usage.byModel?.["mock/resolved"]?.costUSD).toBeCloseTo(0.00004, 10);
 });
 
 test("image attachments reach the model as multimodal content", async () => {
@@ -1489,7 +1556,11 @@ test("model failover: an unresolvable primary switches to the first working fall
         { type: "text-start", id: "t" },
         { type: "text-delta", id: "t", delta: "answered on the fallback" },
         { type: "text-end", id: "t" },
-        { type: "finish", finishReason: { unified: "stop" as const, raw: undefined }, usage: USAGE },
+        {
+          type: "finish",
+          finishReason: { unified: "stop" as const, raw: undefined },
+          usage: USAGE,
+        },
       ]) as never,
   });
   // Registry knows only "mock" — resolving "deadprov/x" throws; fallback chain
@@ -1507,12 +1578,20 @@ test("model failover: an unresolvable primary switches to the first working fall
     freshness: new FreshnessRegistry(),
     model: "deadprov/x",
     mode: "execute",
+    getPricing: async (modelId) =>
+      modelId === "mock/test" ? { input: 2, output: 4 } : { input: 100, output: 100 },
   });
   const events = await collect(bus, () => session.run("hello"));
   expect(session.lastError).toBeNull();
   expect(session.model).toBe("mock/test"); // switched, not silently substituted
   expect(events.some((e) => e.type === "model-changed" && e.model === "mock/test")).toBe(true);
   expect(events.some((e) => e.type === "notice" && e.message.includes("failing over"))).toBe(true);
+  expect(session.snapshot().usage.byModel?.["mock/test"]).toMatchObject({
+    inputTokens: 10,
+    outputTokens: 5,
+    costUSD: 0.00004,
+  });
+  expect(session.snapshot().usage.byModel?.["deadprov/x"]).toBeUndefined();
 });
 
 test("model failover: no resolvable fallback keeps the original error", async () => {

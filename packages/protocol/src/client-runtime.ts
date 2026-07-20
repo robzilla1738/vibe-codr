@@ -1,4 +1,4 @@
-import type { EngineSnapshot, UIEvent } from "./domain.ts";
+import type { EngineSnapshot, GoalCompletionStatus, UIEvent } from "./domain.ts";
 import type { ProjectSummary } from "./project.ts";
 
 /**
@@ -61,6 +61,21 @@ const UI_EVENT_TYPE_MAP = {
   "session-idle": true,
   "engine-idle": true,
 } as const satisfies Record<UIEvent["type"], true>;
+
+const GOAL_COMPLETION_STATUS_MAP = {
+  verified: true,
+  "met-unverified": true,
+  paused: true,
+  unmet: true,
+} as const satisfies Record<GoalCompletionStatus, true>;
+
+function goalCompletionFields(value: Record<string, unknown>): boolean {
+  if (value.goalCompletionStatus === undefined) return value.met === undefined || typeof value.met === "boolean";
+  if (typeof value.goalCompletionStatus !== "string" || !(value.goalCompletionStatus in GOAL_COMPLETION_STATUS_MAP)) return false;
+  if (value.met === undefined) return true;
+  if (typeof value.met !== "boolean") return false;
+  return value.met === (value.goalCompletionStatus === "verified" || value.goalCompletionStatus === "met-unverified");
+}
 
 const UI_EVENT_TYPES = new Set<UIEvent["type"]>(
   Object.keys(UI_EVENT_TYPE_MAP) as UIEvent["type"][],
@@ -404,8 +419,9 @@ export function isUIEvent(value: unknown): value is UIEvent {
     case "subagent-finished": return isRuntimeIdentifier(event.subagentId) && typeof event.result === "string";
     case "loop-tick": return isRuntimeIdentifier(event.loopId) && nonNegative(event.iteration);
     case "loop-stopped": return isRuntimeIdentifier(event.loopId) && typeof event.reason === "string";
-    case "engine-idle": return event.gate === undefined
-      || ["green", "red", "unverified", "aborted"].includes(String(event.gate));
+    case "engine-idle": return (event.gate === undefined
+      || ["green", "red", "unverified", "aborted"].includes(String(event.gate)))
+      && goalCompletionFields(event);
     case "turn-finished":
     case "session-idle": return true;
     default: return false;

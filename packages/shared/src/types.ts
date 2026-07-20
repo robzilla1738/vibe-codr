@@ -23,5 +23,6 @@ export type {
   GitInfo,
   JobInfo,
   GoalRunInfo,
+  GoalCompletionStatus,
   EngineSnapshot,
 } from "@vibe/protocol";

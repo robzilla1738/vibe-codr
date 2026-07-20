@@ -494,8 +494,12 @@ export const ConfigSchema = z.object({
        * tasks) before execution starts. Off = the legacy single blended turn —
        * the kill-switch and the fast path for trivial goals. */
       planFirst: z.boolean().default(true),
+      /** Optional independent assessor. Resolution precedence is implemented by the engine. */
+      assessorModel: z.string().min(1).optional(),
+      /** Checkless work pauses unless an existing v0.6 config is migrated for one release. */
+      checklessCompletion: z.enum(["pause", "self-report"]).default("pause"),
     })
-    .default({ maxRounds: 10, planFirst: true }),
+    .default({ maxRounds: 10, planFirst: true, checklessCompletion: "pause" }),
   /**
    * `/loop` defaults when flags are omitted. Per-invocation `--max` /
    * `--unlimited` still win. Tunable via `/config loop default max 20` or

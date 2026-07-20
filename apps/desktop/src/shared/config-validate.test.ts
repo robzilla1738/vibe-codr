@@ -12,6 +12,7 @@ describe("validateConfig", () => {
         model: "openai/gpt-5.5",
         mode: "execute",
         maxSteps: 64,
+        goal: { assessorModel: "openai/gpt-5.5", checklessCompletion: "pause" },
         providers: { openai: { apiKey: "sk-1", baseURL: "https://api.openai.com/v1" } },
       }),
     ).toEqual([]);
@@ -252,6 +253,8 @@ describe("validateConfig", () => {
     [{ budget: { limitUSD: 0 } }, "budget.limitUSD"],
     [{ goal: { maxRounds: 0 } }, "goal.maxRounds"],
     [{ goal: { maxRounds: 101 } }, "goal.maxRounds"],
+    [{ goal: { assessorModel: "" } }, "goal.assessorModel"],
+    [{ goal: { checklessCompletion: "verify" } }, "goal.checklessCompletion"],
     [{ loop: { defaultMax: 1001 } }, "loop.defaultMax"],
     [{ loop: { maxUntilEvalFailures: 0 } }, "loop.maxUntilEvalFailures"],
     [{ retry: { maxAttempts: 11 } }, "retry.maxAttempts"],

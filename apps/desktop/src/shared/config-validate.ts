@@ -95,6 +95,7 @@ const ENUM_VALUES: Record<string, readonly string[]> = {
   "build.commit.mode": ["checkpoint", "branch", "off"],
   "reasoning.effort": ["low", "medium", "high"],
   "budget.onExceed": ["warn", "stop"],
+  "goal.checklessCompletion": ["pause", "self-report"],
 };
 
 function checkEnum(value: unknown, allowed: readonly string[], path: string): string[] {
@@ -423,6 +424,10 @@ export function validateConfig(config: Record<string, unknown>): string[] {
   if (goal) {
     errors.push(...checkNumber(goal.maxRounds, { min: 1, max: 100, integer: true }, "goal.maxRounds"));
     errors.push(...checkBoolean(goal.planFirst, "goal.planFirst"));
+    if (goal.assessorModel !== undefined && (typeof goal.assessorModel !== "string" || goal.assessorModel.trim() === "")) {
+      errors.push("goal.assessorModel: must be a non-empty string");
+    }
+    errors.push(...checkEnum(goal.checklessCompletion, ENUM_VALUES["goal.checklessCompletion"]!, "goal.checklessCompletion"));
   }
   const loop = objectField(config, "loop", "loop", errors);
   if (loop) {

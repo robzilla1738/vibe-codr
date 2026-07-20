@@ -21,9 +21,12 @@ import {
 import {
   EngineCommandSchema,
   EngineSnapshotSchema,
+  GoalCompletionStatusSchema,
+  GoalRunInfoSchema,
   PROTOCOL_LIMITS_V1,
   RuntimeErrorDataV1Schema,
   UIEventSchema,
+  legacyGoalMet,
 } from "./index.ts";
 import {
   isEngineSnapshot as isClientEngineSnapshot,
@@ -50,6 +53,39 @@ const snapshot = {
 } as const;
 
 describe("canonical protocol schemas", () => {
+  test("keeps goal completion evidence explicit and legacy met derived", () => {
+    for (const status of ["verified", "met-unverified", "paused", "unmet"] as const) {
+      expect(GoalCompletionStatusSchema.parse(status)).toBe(status);
+      expect(legacyGoalMet(status)).toBe(status === "verified" || status === "met-unverified");
+      const event = {
+        type: "engine-idle",
+        sessionId: "session-1",
+        goalCompletionStatus: status,
+        met: legacyGoalMet(status),
+      } as const;
+      expect(UIEventSchema.safeParse(event).success).toBeTrue();
+      expect(isClientUIEvent(event)).toBeTrue();
+    }
+    expect(GoalCompletionStatusSchema.safeParse("self-reported-verified").success).toBeFalse();
+    const contradictory = {
+      type: "engine-idle",
+      sessionId: "session-1",
+      goalCompletionStatus: "met-unverified",
+      met: false,
+    } as const;
+    expect(UIEventSchema.safeParse(contradictory).success).toBeFalse();
+    expect(isClientUIEvent(contradictory)).toBeFalse();
+    expect(GoalRunInfoSchema.safeParse({
+      active: false,
+      phase: null,
+      round: 1,
+      max: 10,
+      pausedReason: null,
+      goalCompletionStatus: "verified",
+      met: false,
+    }).success).toBeFalse();
+  });
+
   test("round-trips representative commands, events, and snapshots", () => {
     const command = { type: "resolve-question", id: "q-1", answers: ["yes"] } as const;
     const event = {

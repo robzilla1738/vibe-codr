@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   appendProjectPermission,
   ConfigSchema,
@@ -35,6 +35,8 @@ test("defaultConfig is valid and carries the documented defaults", () => {
   // /goal autonomous-run bound: generous (exhaustive by design) but hard-capped.
   expect(c.goal.maxRounds).toBe(10);
   expect(c.goal.planFirst).toBe(true);
+  expect(c.goal.assessorModel).toBeUndefined();
+  expect(c.goal.checklessCompletion).toBe("pause");
   expect(c.loop.defaultMax).toBe(12);
   expect(c.loop.maxUntilEvalFailures).toBe(5);
   expect(c.plan.minCodeTouches).toBe(3);
@@ -52,6 +54,28 @@ test("defaultConfig is valid and carries the documented defaults", () => {
   expect(c.lsp.idleShutdownMs).toBe(300_000);
   expect(c.lsp.disabledLanguages).toEqual([]);
   expect(c.lsp.servers).toEqual({});
+});
+
+test("existing config gets one-release checkless self-report migration and one warning", async () => {
+  const previous = process.env.XDG_CONFIG_HOME;
+  const root = mkdtempSync(join(tmpdir(), "vibe-goal-migration-"));
+  process.env.XDG_CONFIG_HOME = root;
+  try {
+    await mkdir(dirname(globalConfigPath()), { recursive: true });
+    await writeFile(globalConfigPath(), JSON.stringify({ goal: { maxRounds: 4 } }));
+    const config = await loadConfig({ cwd: root });
+    expect(config.goal.checklessCompletion).toBe("self-report");
+    const migration = configSecurityNotices(config).filter((notice) => notice.includes("Goal completion migration"));
+    expect(migration).toHaveLength(1);
+
+    await writeFile(globalConfigPath(), JSON.stringify({ goal: { checklessCompletion: "pause" } }));
+    const explicit = await loadConfig({ cwd: root });
+    expect(explicit.goal.checklessCompletion).toBe("pause");
+    expect(configSecurityNotices(explicit).some((notice) => notice.includes("Goal completion migration"))).toBe(false);
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous;
+  }
 });
 
 test("provider baseURL requires an http(s) scheme + host (adversarial P10-W1)", () => {

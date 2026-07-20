@@ -508,7 +508,15 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
     (layer.security as Record<string, unknown>).trustProjectConfig === true;
   const trustProject = trustFrom(overridesRaw) || trustFrom(globalRaw);
   const droppedProjectFields: string[] = [];
+  let migratedLegacyChecklessGoal = false;
+  const migrateLegacyGoal = (layer: Record<string, unknown>): Record<string, unknown> => {
+    const goal = isPlainObject(layer.goal) ? layer.goal : {};
+    if (goal.checklessCompletion !== undefined) return layer;
+    migratedLegacyChecklessGoal = true;
+    return { ...layer, goal: { ...goal, checklessCompletion: "self-report" } };
+  };
   const projectPath = projectConfigPath(cwd);
+  const userGlobalPath = globalConfigPath();
 
   // `permissions` is the one array that must UNION across layers, not replace:
   // deepMerge's replace semantics would let a repo-local `.vibe/config.json`
@@ -533,6 +541,7 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   for (const path of configLocations(cwd)) {
     let fileConfig = await readConfigFile(path);
     if (fileConfig) {
+      if (path === userGlobalPath) fileConfig = migrateLegacyGoal(fileConfig);
       const untrustedProject = path === projectPath && !trustProject;
       // The union merge already stops a project from STRIPPING a global deny.
       // A project ADDING a BROAD allow silently widens access like
@@ -616,12 +625,21 @@ export async function loadConfig(opts: LoadOptions = {}): Promise<Config> {
   // allowHosts` — the engine mutates several of these (e.g. `/model key` writes
   // `providers[id]`), which would then leak across configs (and pollute tests).
   const config = structuredClone(result.data);
+  const notices: string[] = [];
   if (droppedProjectFields.length) {
-    const notices = [
+    notices.push(
       `Ignored untrusted project config (${cwd}/.vibe/config.json): ${droppedProjectFields.join(", ")}. ` +
         "These can execute code or redirect credentialed traffic. Set security.trustProjectConfig:true " +
         "in your global config to honor them.",
-    ];
+    );
+  }
+  if (migratedLegacyChecklessGoal) {
+    notices.push(
+      "Goal completion migration: this existing config temporarily keeps checkless self-report behavior. " +
+        "Set goal.checklessCompletion to pause (recommended) or self-report explicitly; the compatibility default is removed after v0.7.",
+    );
+  }
+  if (notices.length) {
     securityNotices.set(config, notices);
     // Survive structuredClone into the engine worker (WeakMap does not) — BUG-097.
     (config as Record<string, unknown>)[SECURITY_NOTICES_KEY] = notices;

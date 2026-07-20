@@ -10,6 +10,7 @@ export type {
   GitInfo,
   GoalContract,
   GoalRunInfo,
+  GoalCompletionStatus,
   JobInfo,
   McpServerSummary as McpServerInfo,
   Message,

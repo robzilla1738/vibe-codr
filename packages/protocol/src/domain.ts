@@ -136,6 +136,28 @@ export const GoalContractSchema = loose({
 });
 export type GoalContract = z.infer<typeof GoalContractSchema>;
 
+export const GoalCompletionStatusSchema = z.enum([
+  "verified",
+  "met-unverified",
+  "paused",
+  "unmet",
+]);
+export type GoalCompletionStatus = z.infer<typeof GoalCompletionStatusSchema>;
+
+/** Temporary v0.7 compatibility field. It never upgrades unverified work. */
+export function legacyGoalMet(status: GoalCompletionStatus): boolean {
+  return status === "verified" || status === "met-unverified";
+}
+
+function completionFieldsAgree(value: {
+  goalCompletionStatus?: GoalCompletionStatus;
+  met?: boolean;
+}): boolean {
+  return value.goalCompletionStatus === undefined
+    || value.met === undefined
+    || value.met === legacyGoalMet(value.goalCompletionStatus);
+}
+
 const SourceSchema = loose({ url: z.string(), title: z.string().optional() });
 export const PlanStateSchema = loose({
   status: z.enum(["inactive", "active", "pending", "exit_pending"]),
@@ -345,10 +367,16 @@ export const GoalRunInfoSchema = loose({
   round: nonNegative,
   max: nonNegative,
   pausedReason: z.string().nullable(),
+  goalCompletionStatus: GoalCompletionStatusSchema.optional(),
+  /** @deprecated Derived from goalCompletionStatus for one release. */
   met: z.boolean(),
   contract: GoalContractSchema.optional(),
   stagnationCount: nonNegative.optional(),
   strategyResets: nonNegative.optional(),
+}).superRefine((value, ctx) => {
+  if (!completionFieldsAgree(value)) {
+    ctx.addIssue({ code: "custom", path: ["met"], message: "met contradicts goalCompletionStatus" });
+  }
 });
 export type GoalRunInfo = z.infer<typeof GoalRunInfoSchema>;
 
@@ -861,6 +889,13 @@ const eventSchemas = {
     type: z.literal("engine-idle"),
     ...session,
     gate: z.enum(["green", "red", "unverified", "aborted"]).optional(),
+    goalCompletionStatus: GoalCompletionStatusSchema.optional(),
+    /** @deprecated Derived from goalCompletionStatus for one release. */
+    met: z.boolean().optional(),
+  }).superRefine((value, ctx) => {
+    if (!completionFieldsAgree(value)) {
+      ctx.addIssue({ code: "custom", path: ["met"], message: "met contradicts goalCompletionStatus" });
+    }
   }),
 } as const;
 

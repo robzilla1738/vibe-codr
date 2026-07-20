@@ -13,6 +13,7 @@ export type {
   EngineSnapshot,
   GitInfo,
   GoalRunInfo,
+  GoalCompletionStatus,
   JobInfo,
   ModelSummary,
   ProviderInfo,

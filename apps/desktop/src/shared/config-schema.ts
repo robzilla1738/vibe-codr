@@ -165,7 +165,12 @@ export interface VibeConfig {
     model?: string;
   };
   orchestration?: { enabled?: boolean };
-  goal?: { maxRounds?: number; planFirst?: boolean };
+  goal?: {
+    maxRounds?: number;
+    planFirst?: boolean;
+    assessorModel?: string;
+    checklessCompletion?: "pause" | "self-report";
+  };
   loop?: { defaultMax?: number; maxUntilEvalFailures?: number };
   plan?: {
     minCodeTouches?: number;

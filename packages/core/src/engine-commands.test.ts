@@ -519,11 +519,31 @@ test("goalStatusText names the run's actual state (active / paused / met / detac
   expect(paused).toContain("Run paused — interrupted (Esc)");
   expect(paused).toContain("/goal resume");
   // Met: no false "stops it" implication of a live run.
-  expect(goalStatusText("ship it", { ...base, active: false, met: true })).toContain(
+  expect(goalStatusText("ship it", { ...base, active: false, met: true, goalCompletionStatus: "verified" })).toContain(
     "verified met",
   );
+  const unverified = goalStatusText("ship it", {
+    ...base,
+    active: false,
+    met: true,
+    goalCompletionStatus: "met-unverified",
+    pausedReason: "explicit acceptance required",
+  });
+  expect(unverified).toContain("met-unverified");
+  expect(unverified).toContain("/goal accept");
+  expect(unverified).not.toContain("verified met");
   // Goal set but never ran (legacy sessions): resume still offered.
   expect(goalStatusText("ship it", { ...base, active: false })).toContain("No run attached");
+});
+
+test("/goal accept routes to the explicit unverified-completion command", async () => {
+  const sent: unknown[] = [];
+  const handle = {
+    commands: { get: () => undefined },
+    send: (command: unknown) => sent.push(command),
+  } as unknown as Parameters<typeof handleSlash>[0];
+  await handleSlash(handle, "goal", "accept");
+  expect(sent).toEqual([{ type: "accept-goal-completion" }]);
 });
 
 test("/memory control parser is strict and merge uses an explicit replacement separator", () => {

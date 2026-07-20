@@ -68,8 +68,8 @@ export const PALETTE_COMMANDS: PaletteCommand[] = [
   // Steering
   {
     name: "goal",
-    description: "North-star run (text · resume · clear · max 15 · plan first off · settings)",
-    arg: "[text|resume|clear|max N|settings]",
+    description: "North-star run (text · resume · accept · clear · max 15 · settings)",
+    arg: "[text|resume|accept|clear|max N|settings]",
   },
   {
     name: "loop",

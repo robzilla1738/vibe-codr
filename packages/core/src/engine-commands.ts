@@ -203,8 +203,13 @@ export function goalStatusText(goal: string | null, run: GoalRunInfo): string {
     const where = run.phase === "plan" ? "planning" : `round ${run.round}/${run.max}`;
     return `${head}\nRun active (${where}) — typing steers it · Esc pauses it · /goal clear stops it.`;
   }
-  if (run.met)
+  if (run.goalCompletionStatus === "verified")
     return `${head}\nRun finished — verified met. /goal <text> starts a new run · /goal clear drops the ★.`;
+  if (run.goalCompletionStatus === "met-unverified") {
+    return run.pausedReason
+      ? `${head}\nRun reached met-unverified — ${run.pausedReason}. /goal accept accepts it without calling it verified · /goal resume continues work.`
+      : `${head}\nRun finished — accepted as met-unverified. /goal <text> starts a new run · /goal clear drops the ★.`;
+  }
   if (run.pausedReason) {
     return `${head}\nRun paused — ${run.pausedReason}. /goal resume re-arms it · /goal clear drops it.`;
   }
@@ -481,6 +486,10 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
       }
       if (/^resume$/i.test(goalArg)) {
         h.send({ type: "resume-goal" });
+        break;
+      }
+      if (/^accept$/i.test(goalArg)) {
+        h.send({ type: "accept-goal-completion" });
         break;
       }
       const goalCfg = parseGoalSettings(goalArg);

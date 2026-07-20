@@ -29,6 +29,13 @@
         "web-tree-sitter": "0.25.10",
       },
     },
+    "packages/automation": {
+      "name": "@vibe/automation",
+      "version": "0.6.14",
+      "dependencies": {
+        "@vibe/protocol": "workspace:*",
+      },
+    },
     "packages/cli": {
       "name": "@vibe/cli",
       "version": "0.6.14",
@@ -444,6 +451,8 @@
     "@types/ws": ["@types/ws@8.18.1", "", { "dependencies": { "@types/node": "*" } }, "sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg=="],
 
     "@vercel/oidc": ["@vercel/oidc@3.2.0", "", {}, "sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug=="],
+
+    "@vibe/automation": ["@vibe/automation@workspace:packages/automation"],
 
     "@vibe/cli": ["@vibe/cli@workspace:packages/cli"],
 

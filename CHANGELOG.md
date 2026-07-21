@@ -4,7 +4,7 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
-## 0.7.4 — 2026-07-21
+## 0.7.5 — 2026-07-21
 
 ### Fixed
 
@@ -16,6 +16,8 @@ All notable changes to vibe-codr are documented here.
   primary response treatment across live and hydrated history.
 - The Desktop streaming guard recognizes phase-boundary flushes without
   mistaking them for per-token synchronous rendering.
+- Desktop bundle ceilings include a narrow allowance for the new Plan decision
+  surface and visible commentary hierarchy.
 
 ## 0.7.2 — 2026-07-21
 

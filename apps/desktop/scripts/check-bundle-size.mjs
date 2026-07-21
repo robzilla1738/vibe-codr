@@ -73,8 +73,11 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // Session ancestry navigation adds 286 measured bytes across the existing
 // project-rail surface. Keep a narrow 2 KB allowance; the startup chunk ceiling
 // remains unchanged.
-const totalBudget = 2_918_000;
-const chunkBudget = 2_120_000;
+// Explicit pending-plan decisions and first-class commentary add ~4 KB to the
+// startup chunk and aggregate renderer. Allow under 0.5% growth for that
+// interaction contract while keeping both ceilings tight.
+const totalBudget = 2_926_000;
+const chunkBudget = 2_130_000;
 
 if (total > totalBudget || largest > chunkBudget) {
   console.error(`Renderer bundle budget exceeded: ${total} total bytes, ${largest} largest chunk`);

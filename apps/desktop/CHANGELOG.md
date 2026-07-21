@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.7.4 — 2026-07-21
+## 0.7.5 — 2026-07-21
 
 ### Fixed
 
@@ -14,6 +14,8 @@
   consistent after history hydration.
 - Streaming verification permits the intentional commentary/final phase-boundary
   flush while continuing to reject synchronous per-token rendering.
+- Renderer budgets retain tight limits while accounting for the new Plan
+  decision popover and first-class commentary treatment.
 
 ## 0.7.2 — 2026-07-21
 

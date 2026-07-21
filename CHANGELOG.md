@@ -4,6 +4,10 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.2 — 2026-07-21
+
+- Install the locked shared protocol workspace before Desktop release verification on macOS and Windows.
+
 ## 0.7.1 — 2026-07-21
 
 - Restore Desktop config-shape parity for the additive local trace policy so locked-engine release verification cannot drift.

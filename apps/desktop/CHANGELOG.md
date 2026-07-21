@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.2 — 2026-07-21
+
+- Ensure release runners install the shared protocol dependency graph before Desktop typechecking and packaging.
+
 ## 0.7.1 — 2026-07-21
 
 - Add the engine trace policy to the Desktop config contract, closing the v0.7.0 packaged-release parity failure.

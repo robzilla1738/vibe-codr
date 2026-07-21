@@ -12,6 +12,7 @@ import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Config } from "@vibe/config";
+import { AutomationStore, machineAutomationRoot } from "@vibe/automation";
 import {
   PortableSessionManager,
   SessionStore,
@@ -42,6 +43,7 @@ import {
   renameProject,
 } from "./project-index.ts";
 import { fitTranscriptPayload, structuredTranscript } from "./transcript-history.ts";
+import { automationActivities } from "./automation-activities.ts";
 
 function write(msg: HostOutbound): void {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -510,6 +512,12 @@ export async function runHost(): Promise<void> {
         case "snapshot":
           {
             const snapshot = engine.snapshot();
+            const automationStore = new AutomationStore(machineAutomationRoot());
+            const automation = await automationActivities(
+              await automationStore.list().catch(() => []),
+              await automationStore.history().catch(() => []),
+              lastCwd,
+            );
             let history = fitTranscriptPayload(snapshot.history);
             try {
               history = structuredTranscript(engine.transcriptState());
@@ -523,6 +531,7 @@ export async function runHost(): Promise<void> {
               ok: true,
               value: {
                 ...(history === snapshot.history ? snapshot : { ...snapshot, history }),
+                activities: [...(snapshot.activities ?? []), ...automation],
                 hostInstanceId,
                 lastEventSeq: eventSequence,
               },

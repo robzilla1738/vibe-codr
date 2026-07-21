@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { open, mkdir, readFile, rename, stat, unlink, writeFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import {
   AutomationSpecV1Schema,
   automationCanMutate,
@@ -61,6 +62,10 @@ export interface AutomationStoreOptions {
 
 const MAX_HISTORY = 2_000;
 const LOCK_STALE_MS = 30_000;
+
+export function machineAutomationRoot(): string {
+  return process.env.VIBE_AUTOMATION_DIR || join(homedir(), ".vibe", "automations");
+}
 
 /** Machine-local durable scheduler state. It claims work but intentionally does
  * not open a runtime; callers execute claims and report completion. */

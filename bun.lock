@@ -135,6 +135,7 @@
         "vibecodr-engine-host": "./bin/engine-host.ts",
       },
       "dependencies": {
+        "@vibe/automation": "workspace:*",
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
         "@vibe/protocol": "workspace:*",

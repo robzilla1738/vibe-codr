@@ -1,14 +1,12 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { readFile } from "node:fs/promises";
-import { AutomationStore } from "@vibe/automation";
+import { AutomationStore, machineAutomationRoot } from "@vibe/automation";
 
 export async function runAutomationCommand(options: {
   args: string[];
   confirmMutation?: boolean;
   root?: string;
 }): Promise<{ exitCode: 0 | 1; stdout: string; stderr: string }> {
-  const store = new AutomationStore(options.root ?? join(homedir(), ".vibe", "automations"));
+  const store = new AutomationStore(options.root ?? machineAutomationRoot());
   const action = options.args[0] ?? "list";
   try {
     let value: unknown;

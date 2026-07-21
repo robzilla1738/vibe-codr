@@ -334,7 +334,9 @@ export function isUIEvent(value: unknown): value is UIEvent {
         && (sample.serviceTier === "default" || sample.serviceTier === "priority")
         && nonNegative(sample.totalMs);
     }
-    case "assistant-text-delta":
+    case "assistant-text-delta": return typeof event.delta === "string"
+      && optionalRuntimeIdentifier(event.subagentId)
+      && (event.phase === undefined || event.phase === "commentary" || event.phase === "final");
     case "reasoning-delta": return typeof event.delta === "string" && optionalRuntimeIdentifier(event.subagentId);
     case "tool-call-started": return isRuntimeIdentifier(event.toolCallId) && typeof event.toolName === "string" && optionalRuntimeIdentifier(event.subagentId);
     case "tool-call-progress": return isRuntimeIdentifier(event.toolCallId) && typeof event.chunk === "string" && optionalRuntimeIdentifier(event.subagentId);

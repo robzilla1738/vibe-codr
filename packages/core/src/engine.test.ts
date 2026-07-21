@@ -487,6 +487,34 @@ test("resuming mid-plan does not strand execution on the planModel", async () =>
   expect(engine.snapshot().model).toBe("prov/A"); // execution restored from config
 });
 
+test("authoritative inactive plan state cannot be re-armed by a leftover plan file", async () => {
+  const now = Date.now();
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-engine-stale-plan-"));
+  const sessionId = "s-stale-plan";
+  const stateRoot = globalStateDir(cwd);
+  mkdirSync(join(stateRoot, "sessions", sessionId), { recursive: true });
+  mkdirSync(join(stateRoot, "plans"), { recursive: true });
+  writeFileSync(join(stateRoot, "sessions", sessionId, "engine.json"), JSON.stringify({
+    planState: { status: "inactive", updatedAt: now },
+  }));
+  const planPath = join(stateRoot, "plans", `${sessionId}.md`);
+  writeFileSync(planPath, "# Plan — stale\n\nThis plan was already consumed.");
+
+  const engine = new Engine({
+    config: defaultConfig(),
+    cwd,
+    resume: {
+      meta: { id: sessionId, model: defaultConfig().model, mode: "execute", goal: null, createdAt: now, updatedAt: now },
+      modelMessages: [],
+      history: [],
+    },
+  });
+  await engine.bootstrap();
+
+  expect(engine.snapshot().planState).toMatchObject({ status: "inactive" });
+  expect(await Bun.file(planPath).exists()).toBe(false);
+});
+
 test("project-local skills and commands override plugin-registered ones (most-local-wins)", async () => {
   // Regression: plugins used to load AFTER the project dirs, so a plugin's
   // same-named skill/command silently beat `.vibe/skills/<name>` — the inverse

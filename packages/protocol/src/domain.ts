@@ -44,6 +44,9 @@ const runtimeIdentifier = RuntimeIdentifierSchema;
 export const ModeSchema = z.enum(["plan", "execute"]);
 export type Mode = z.infer<typeof ModeSchema>;
 
+export const AssistantOutputPhaseSchema = z.enum(["commentary", "final"]);
+export type AssistantOutputPhase = z.infer<typeof AssistantOutputPhaseSchema>;
+
 export const RoleSchema = z.enum(["user", "assistant", "system", "tool"]);
 export type Role = z.infer<typeof RoleSchema>;
 
@@ -659,6 +662,7 @@ const eventSchemas = {
     ...session,
     subagentId: runtimeIdentifier.optional(),
     delta: z.string(),
+    phase: AssistantOutputPhaseSchema.optional(),
   }),
   "reasoning-delta": loose({
     type: z.literal("reasoning-delta"),

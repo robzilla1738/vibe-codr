@@ -744,6 +744,7 @@ export class Engine implements EngineClient {
 
   /** Restore engine-side state + the last presented plan on --resume. */
   async #restoreEngineState(): Promise<void> {
+    let hasAuthoritativePlanState = false;
     try {
       const state = (await Bun.file(this.#engineStatePath()).json()) as {
         pendingHandoff?: boolean;
@@ -764,6 +765,7 @@ export class Engine implements EngineClient {
       };
       if (state.pendingHandoff) this.#pendingHandoff = true;
       if (state.proactiveRecall) this.#proactiveRecall.restore(state.proactiveRecall);
+      hasAuthoritativePlanState = state.planState !== undefined;
       if (state.planState) this.#planState = state.planState;
       if (state.planState?.status === "pending" && state.planState.plan) {
         this.#lastPlan = state.planState.plan;
@@ -795,23 +797,49 @@ export class Engine implements EngineClient {
     } catch {
       /* absent/corrupt → nothing to restore */
     }
-    // Global path first, then the pre-relocation in-project path.
-    for (const path of [
+    // Global path first, then the pre-relocation in-project path. A persisted
+    // plan file is only authoritative for legacy sessions that predate
+    // `planState`, or as the payload fallback for an explicitly pending state.
+    // Loading it for active/inactive state re-armed an already-consumed plan
+    // invisibly: the renderer had no plan card, while the engine still refused
+    // execute mode because #lastPlan was populated.
+    const planPaths = [
       this.#planPath(),
       join(this.#cwd, ".vibe", "plans", `${this.#session.id}.md`),
-    ]) {
+    ];
+    const mayRestorePlanFile =
+      !hasAuthoritativePlanState || this.#planState.status === "pending";
+    for (const path of planPaths) {
+      if (!mayRestorePlanFile) {
+        try {
+          await rm(path, { force: true });
+        } catch {
+          /* best-effort stale-plan cleanup */
+        }
+        continue;
+      }
       if (this.#lastPlan) break;
       try {
         const plan = await Bun.file(path).text();
         // Strip the "# Plan — <id>" header the writer prepends.
         this.#lastPlan = plan.replace(/^# Plan — [^\n]*\n+/, "").trim() || undefined;
-        if (this.#lastPlan && this.#planState.status === "inactive") {
+        if (this.#lastPlan && !hasAuthoritativePlanState) {
           this.#planState = { status: "pending", plan: this.#lastPlan, updatedAt: Date.now() };
+        } else if (this.#lastPlan && this.#planState.status === "pending" && !this.#planState.plan) {
+          this.#planState = { ...this.#planState, plan: this.#lastPlan };
         }
         break;
       } catch {
         /* try the next location */
       }
+    }
+    // A corrupt/incomplete pending record must not leave a plan card and the
+    // executable handoff cursor disagreeing. Fall back to the visible planning
+    // state instead of preserving a plan that cannot be approved.
+    if (this.#planState.status === "pending" && !this.#lastPlan) {
+      this.#planState = this.#session.mode === "plan"
+        ? { status: "active", updatedAt: Date.now() }
+        : { status: "inactive", updatedAt: Date.now() };
     }
     if (this.#planState.status === "inactive" && this.#session.mode === "plan") {
       this.#planState = { status: "active", updatedAt: Date.now() };

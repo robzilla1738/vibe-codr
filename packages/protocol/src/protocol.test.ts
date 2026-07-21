@@ -53,6 +53,17 @@ const snapshot = {
 } as const;
 
 describe("canonical protocol schemas", () => {
+  test("accepts optional assistant output phases and rejects unknown phases", () => {
+    for (const phase of ["commentary", "final"] as const) {
+      const event = { type: "assistant-text-delta", sessionId: "session-1", delta: "text", phase } as const;
+      expect(UIEventSchema.safeParse(event).success).toBeTrue();
+      expect(isClientUIEvent(event)).toBeTrue();
+    }
+    const invalid = { type: "assistant-text-delta", sessionId: "session-1", delta: "text", phase: "thinking" };
+    expect(UIEventSchema.safeParse(invalid).success).toBeFalse();
+    expect(isClientUIEvent(invalid)).toBeFalse();
+  });
+
   test("keeps goal completion evidence explicit and legacy met derived", () => {
     for (const status of ["verified", "met-unverified", "paused", "unmet"] as const) {
       expect(GoalCompletionStatusSchema.parse(status)).toBe(status);

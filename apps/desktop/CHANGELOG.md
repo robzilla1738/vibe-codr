@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.7.8 — 2026-07-21
+
+### Fixed
+
+- Release verification now opens completed Process detail before asserting tool
+  rows and targets the merged Tasks/Subagents control by its current accessible
+  name.
+
 ## 0.7.7 — 2026-07-21
 
 ### Improved

@@ -100,6 +100,7 @@ test("renames, archives, and deletes saved sessions through host RPC", async () 
 test("streams reasoning, tools, diffs, markdown, telemetry, and engine-idle", async () => {
   await submit("fixture:stream");
   await expect(page.getByText("Done with markdown.")).toBeVisible();
+  await page.locator(".turn-process-summary").last().click();
   await expect(page.getByRole("button", { name: /edited src\/example\.ts/ })).toBeVisible();
   await expect(page.getByText("fixture:stream")).toBeVisible();
   await expect(page.locator(".composer-metric", { hasText: "15 tok · $0.0010" })).toBeAttached();
@@ -117,6 +118,7 @@ test("streams reasoning, tools, diffs, markdown, telemetry, and engine-idle", as
   await submit("fixture:stream");
   await expect(page.getByText("Done with markdown.").last()).toBeVisible();
   const quietTurn = page.locator(".turn").last();
+  await quietTurn.locator(".turn-process-summary").click();
   const quietFailure = quietTurn.locator("button.tool-head").filter({ hasText: "exit 1" });
   await quietFailure.click();
   await expect(quietFailure).toHaveAttribute("aria-expanded", "true");
@@ -219,7 +221,7 @@ test("renders task, subagent, source, job, and checkpoint activity in the correc
   await expect(page.getByText("npm run dev")).toBeVisible();
   await expect(page.getByRole("link", { name: "http://localhost:4310" })).toBeVisible();
   await page.getByRole("button", { name: "Close jobs" }).click();
-  await page.getByRole("button", { name: "Review subagent details" }).click();
+  await page.getByRole("button", { name: "Review live task and subagent details" }).click();
   await expect(page.locator(".sidebar-line").filter({ hasText: "Before fixture change" })).toBeVisible();
   await expect(page.getByText(/Run fixture child/)).toBeVisible();
   const subagents = page.locator("#session-panel .sidebar-section").filter({ hasText: "Subagents" }).last();
@@ -233,6 +235,7 @@ test("renders task, subagent, source, job, and checkpoint activity in the correc
   await expect(page.getByRole("region", { name: "Session", exact: true })).toBeHidden();
   // Opening Session closes Jobs; leave Jobs closed so the transcript is interactive.
   await expect(page.getByRole("button", { name: "Dismiss jobs" })).toHaveCount(0);
+  await page.locator(".turn").last().locator(".turn-process-summary").click();
   await page.getByRole("button", { name: /Expand.*search.*fixture/ }).click();
   await expect(page.getByRole("link", { name: "Fixture search" })).toBeVisible();
 });

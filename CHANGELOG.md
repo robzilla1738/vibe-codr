@@ -4,6 +4,14 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.8 — 2026-07-21
+
+### Fixed
+
+- Clean CI installs now materialize the shared protocol workspace before
+  Desktop and mobile typechecking, and Desktop E2E follows the completed Process
+  disclosure and merged Tasks/Subagents control.
+
 ## 0.7.7 — 2026-07-21
 
 ### Improved

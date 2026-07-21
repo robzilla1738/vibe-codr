@@ -4,7 +4,7 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
-## 0.7.3 — 2026-07-21
+## 0.7.4 — 2026-07-21
 
 ### Fixed
 
@@ -14,6 +14,8 @@ All notable changes to vibe-codr are documented here.
 - Assistant commentary is visible in transcript order, reasoning remains a
   separate disclosure, tool headers stay inline, and final answers retain the
   primary response treatment across live and hydrated history.
+- The Desktop streaming guard recognizes phase-boundary flushes without
+  mistaking them for per-token synchronous rendering.
 
 ## 0.7.2 — 2026-07-21
 

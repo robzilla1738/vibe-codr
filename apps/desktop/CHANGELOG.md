@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.7.3 — 2026-07-21
+## 0.7.4 — 2026-07-21
 
 ### Fixed
 
@@ -12,6 +12,8 @@
 - Assistant commentary remains visible between tool calls. Reasoning and tool
   bodies use their own disclosures, while final answers remain prominent and
   consistent after history hydration.
+- Streaming verification permits the intentional commentary/final phase-boundary
+  flush while continuing to reject synchronous per-token rendering.
 
 ## 0.7.2 — 2026-07-21
 

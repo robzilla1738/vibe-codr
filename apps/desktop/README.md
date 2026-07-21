@@ -72,8 +72,8 @@ before restarting, and safely stops the engine and terminal processes first.
 
 ### What’s new in 0.6.11
 
-- Work, thinking, and tool-output rows remain expandable in Quiet, Normal, and
-  Verbose density; rows with no output no longer advertise a fake disclosure.
+- Assistant commentary stays visible while thinking and tool-output bodies remain
+  expandable in Quiet, Normal, and Verbose density; empty rows have no fake disclosure.
 - Sessions shows the active tool or task plus live tasks, agents, jobs, queue,
   changes, context, token/cost, model, mode, goal, and Local/Cloud state.
 
@@ -228,8 +228,8 @@ keyboard-contained; Session, Changes, Git, Terminal, and Jobs open in one
 edge-attached activity sidebar without replacing the chat surface. Project/session ⋯ menus are portal-mounted, trigger-anchored, and
 toggle cleanly. User-message Copy/Edit/time actions sit **under** the bubble
 (trailing-aligned); assistant actions remain below the response. Tool/thinking
-rows stay compact under a `Work · N steps` group; density supplies disclosure
-defaults while clicks and ⌘T always win. Completed tools with no output show a
+rows stay compact between visible commentary and the prominent final answer;
+density supplies disclosure defaults while clicks and ⌘T always win. Completed tools with no output show a
 static status instead of a fake chevron. Open thoughts are one quiet surface
 (no brain icon). The live Subagents pill jumps to an expandable
 per-agent review with task, activity, elapsed time, result, and Copy. User turns

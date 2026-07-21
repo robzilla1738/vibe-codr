@@ -1,5 +1,6 @@
 import {
   capTranscriptState,
+  classifyAssistantPhases,
   initialTranscript,
   reduceTranscript,
   type TranscriptAction,
@@ -137,5 +138,5 @@ export function hydrateFromHistory(history: Message[]): TranscriptState {
       toolByCallId: {},
     };
   }
-  return s;
+  return classifyAssistantPhases(s);
 }

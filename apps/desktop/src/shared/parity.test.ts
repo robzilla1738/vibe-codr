@@ -18,7 +18,7 @@ import { isDensityChangeNotice, nextDensity, toolCollapsed } from "./density";
 import { applyAtMention, atMentionState, formatAtPath, fuzzyPathScore, rankPaths } from "./file-fuzzy";
 import { hydrateFromHistory } from "./history-hydrate";
 import { ESSENTIAL_KEYS, formatKeysHelp } from "./keys-help";
-import { cycleModeAction, deriveUiMode, selectModeAction } from "./modes";
+import { commandsForPlanExitWithoutRunning, cycleModeAction, deriveUiMode, selectModeAction } from "./modes";
 import {
   chatSessions,
   chatsCwdFromHome,
@@ -268,7 +268,9 @@ describe("modes & themes", () => {
   it("gates plan-pending cycle", () => {
     const a = cycleModeAction("plan", { planPending: true });
     expect(a.optimistic).toBeNull();
-    expect(a.commands).toEqual([{ type: "set-mode", mode: "execute" }]);
+    expect(a.requiresPlanDecision).toBe(true);
+    expect(a.target).toBe("execute");
+    expect(a.commands).toEqual([]);
   });
 
   it("selects a mode directly and no-ops when unchanged", () => {
@@ -278,7 +280,18 @@ describe("modes & themes", () => {
     expect(toYolo.commands.some((c) => c.type === "set-approvals")).toBe(true);
     const gated = selectModeAction("plan", "yolo", { planPending: true });
     expect(gated.optimistic).toBeNull();
-    expect(gated.commands).toEqual([{ type: "set-mode", mode: "execute" }]);
+    expect(gated.requiresPlanDecision).toBe(true);
+    expect(gated.target).toBe("yolo");
+    expect(gated.commands).toEqual([]);
+  });
+
+  it("dismisses a pending plan before applying the requested approval mode", () => {
+    expect(commandsForPlanExitWithoutRunning("execute")).toEqual([
+      { type: "resolve-plan", decision: "keep-planning" },
+      { type: "set-mode", mode: "execute" },
+      { type: "set-approvals", mode: "ask", quiet: true },
+    ]);
+    expect(commandsForPlanExitWithoutRunning("yolo").at(-1)).toEqual({ type: "set-approvals", mode: "auto", quiet: true });
   });
 
   it("covers theme names", () => {

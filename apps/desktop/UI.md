@@ -309,16 +309,17 @@ without changing the active chat or scroll position.
 
 - Assistant output, tool output, approval panels, and the composer share the
   same reading width.
-- Tool and thinking rows share one compact sans/icon scale. A turn's reasoning,
-  tools, and intermediate progress live under one `Work · N steps` disclosure;
-  the final answer stays outside it. Each open thought is **one
+- Tool and thinking rows share one compact sans/icon scale. Assistant commentary,
+  reasoning, and tools remain in arrival order; commentary stays visible while
+  only reasoning and individual tool-output bodies use disclosures. The final
+  answer keeps the primary response treatment. Each open thought is **one
   quiet surface** (label + prose; no brain icon; no stacked empty cards).
   Copy for thinking sits on the head row.
 - Quiet, Normal, and Verbose define only the initial disclosure state. A visible
-  Work/tool/thinking control always responds to click or keyboard activation,
+  tool/thinking control always responds to click or keyboard activation,
   and ⌘T explicitly opens or closes all thinking rows. A tool with no output is
   a static completion/failure status and never renders an inert chevron.
-- Thinking groups, nested tool/thought rows, and assistant prose share the same
+- Tool/thought rows, assistant commentary, and final prose share the same
   physical left edge at every viewport width; compact label typography must not
   re-resolve the `ch` reading measure or introduce nested indentation.
 - Restarting or returning to a session preserves the structured coding view:

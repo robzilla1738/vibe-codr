@@ -135,10 +135,9 @@ whose HEAD equals the lock before it will embed a rebuilt host.
 - [x] Assistant output streams as lightweight plain text, then finalizes into Streamdown + GFM
 - [x] Diff blocks green/red hunk coloring
 - [x] Tool icons + condensed labels; expand on click; auto-expand on error
-- [x] Each turn consolidates reasoning, tools, and intermediate progress into one
-  `Work · N steps` disclosure; density supplies defaults only, every visible
-  Work/tool/thinking disclosure remains interactive, empty-output tools do not
-  advertise a fake chevron, and the final answer stays outside
+- [x] Each turn preserves visible commentary → reasoning/tool → final-answer order;
+  density supplies defaults only, every tool/thinking disclosure remains
+  interactive, and empty-output tools do not advertise a fake chevron
 - [x] Turn fold (click or keyboard-activate the user bubble / ⌘O fold-all; no persistent arrow); density quiet/normal/verbose (⌘D)
 - [x] Windowed transcript (“N earlier turns”) with progressive reveal (20 at a time)
 - [x] Per-turn item windowing for long tool runs (cap 120, step 24, reveal page)
@@ -359,7 +358,8 @@ npm run dev
 - [x] ProjectRail: active session surface highlight (no accent bar/dot); always-on search; measured context menus; archive confirm; topbar brand when rail closed
 - [x] Composer: shared transcript/activity/notice/approval/composer measure (`--transcript-measure: 40rem`), taller resting input (`--composer-input-min: 44px`); queue is one card above the composer (flat list, hover steer/dequeue)
 - [x] Explained mode menu for Plan / Agent / Yolo (icon, behavior, current
-  check, `selectModeAction`); Shift+Tab still cycles and plan-pending stays gated
+  check, `selectModeAction`); Shift+Tab still cycles and a pending plan opens the
+  explicit Run plan / Switch without running / Cancel decision on desktop and mobile
 - [x] Lucide stroke icons for chrome + composer; tool-row glyphs via renderer `tool-glyph.tsx` (shared unicode `toolIcon` labels unchanged)
 - [x] Sans UI chrome; mono reserved for real code (terminal grids, fences, tool/diff/job bodies, wordmark, rich charts)
 - [x] Streamdown markdown fences use Shiki `CodeBlock` + line numbers; theme follows app palette via `shikiThemeFor` (not hardcoded github)

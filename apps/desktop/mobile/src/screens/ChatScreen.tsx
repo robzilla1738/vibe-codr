@@ -2,8 +2,8 @@
 // mount (connect + snapshot + history hydrate), then renders the topbar,
 // transcript, live approval panels, composer, and toast. All behavior is
 // driven by useRemoteSession, which reuses the desktop's pure state machines.
-import { useEffect, useState } from "react";
-import { StyleSheet, View, Pressable } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Alert, StyleSheet, View, Pressable } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTheme } from "../theme/ThemeProvider";
 import { staticTokens as T } from "../theme/tokens";
@@ -34,6 +34,7 @@ import { encodedEngineCommandBytes, HOST_INBOUND_SAFE_BYTES } from "@shared/prot
 import { useRemoteSession } from "../hooks/useRemoteSession";
 import { commandsExpectBusy } from "@shared/command-busy";
 import { planResolutionBlockedReason } from "@shared/plan-resolution";
+import { commandsForPlanExitWithoutRunning, engineStateForUiMode } from "@shared/modes";
 import type { EngineCommand } from "@shared/commands";
 import type { RemoteEngineClient } from "../remote/RemoteEngineClient";
 import type { ConnectionConfig } from "../app/connection";
@@ -53,6 +54,8 @@ export function ChatScreen({ client, connection, onDisconnect, onSessionChange }
   const insets = useSafeAreaInsets();
   const session = useRemoteSession({ client, cwd: connection.cwd });
   const { chrome, visibleTurns, hiddenCount, revealEarlier, foldedTurns, toggleTurnFold, revealTurnItems, itemWindowFor, uiMode, modeColor, toast, bootError, booting, ready } = session;
+  const chromeRef = useRef(chrome);
+  chromeRef.current = chrome;
   const [activityOpen, setActivityOpen] = useState(false);
   const [activityTab, setActivityTab] = useState<Tab>("session");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -104,13 +107,48 @@ export function ChatScreen({ client, connection, onDisconnect, onSessionChange }
     // Plan accept blocked by an active goal run (desktop parity: answerPlan checks).
     for (const c of commands) {
       if (c.type === "resolve-plan" && c.decision === "accept") {
-        const blocked = planResolutionBlockedReason("accept", chrome.goalRun);
+        const blocked = planResolutionBlockedReason("accept", chromeRef.current.goalRun);
         if (blocked) { session.showToast(blocked, "warn"); return false; }
       }
     }
     if (commandsExpectBusy(commands)) session.dispatchChrome({ type: "set-busy", busy: true });
     return session.sendMany(commands);
   }
+
+  useEffect(() => {
+    const pending = session.pendingModeTransition;
+    if (!pending) return;
+    const runBlocked = planResolutionBlockedReason("accept", chrome.goalRun);
+    const finish = async (choice: "run" | "switch") => {
+      if (chromeRef.current.sessionId !== pending.sessionId || chromeRef.current.plan?.text !== pending.planIdentity) {
+        session.dismissPendingModeTransition();
+        return;
+      }
+      const commands: EngineCommand[] = choice === "run"
+        ? pending.target === "yolo"
+          ? [{ type: "resolve-plan", decision: "accept", approvals: "auto" }]
+          : [{ type: "set-approvals", mode: "ask", quiet: true }, { type: "resolve-plan", decision: "accept" }]
+        : commandsForPlanExitWithoutRunning(pending.target);
+      if (!await handleSend(commands)) return;
+      if (chromeRef.current.sessionId !== pending.sessionId || chromeRef.current.plan?.text !== pending.planIdentity) return;
+      session.dispatchChrome({ type: "clear-plan" });
+      const state = engineStateForUiMode(pending.target);
+      session.dispatchChrome({ type: "optimistic-mode", mode: state.mode, approvals: state.approvals });
+      session.dismissPendingModeTransition();
+    };
+    Alert.alert(
+      "Leave Plan mode?",
+      `A plan is ready. Choose what happens before switching.${runBlocked ? `\n\n${runBlocked}` : ""}`,
+      [
+        ...(!runBlocked ? [{ text: "Run plan", onPress: () => { void finish("run"); } }] : []),
+        { text: "Switch without running", onPress: () => { void finish("switch"); } },
+        { text: "Cancel", style: "cancel" as const, onPress: session.dismissPendingModeTransition },
+      ],
+      { cancelable: true, onDismiss: session.dismissPendingModeTransition },
+    );
+  // Alert actions validate current session state through chromeRef.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.pendingModeTransition]);
 
   function handleAbort() {
     void session.send({ type: "abort" });
@@ -150,7 +188,7 @@ export function ChatScreen({ client, connection, onDisconnect, onSessionChange }
         ) : null}
         {visibleTurns.length === 0 && !chrome.busy
           ? <EmptySession cwd={chrome.cwd} model={chrome.model} />
-          : <Transcript turns={visibleTurns} thinkingStream={chrome.thinkingStream} foldedTurns={foldedTurns} onToggleFold={toggleTurnFold} onEditUser={setComposerText} itemWindowFor={itemWindowFor} onRevealItems={revealTurnItems} />}
+          : <Transcript turns={visibleTurns} thinkingStream={chrome.thinkingStream} density={chrome.density} foldedTurns={foldedTurns} onToggleFold={toggleTurnFold} onEditUser={setComposerText} itemWindowFor={itemWindowFor} onRevealItems={revealTurnItems} />}
         <LivePanels chrome={chrome} pendingCapabilities={session.pendingCapabilities} onSend={handleSend} />
       </View>
       <AtMentionPicker draft={composerText} cwd={chrome.cwd} client={client} onPick={setComposerText} />

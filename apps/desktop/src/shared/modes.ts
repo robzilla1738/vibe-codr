@@ -11,6 +11,13 @@ import type { EngineCommand } from "./commands";
  */
 export type UiMode = "plan" | "execute" | "yolo";
 
+export interface PendingModeTransition {
+  sessionId: string;
+  source: "plan";
+  target: Exclude<UiMode, "plan">;
+  planIdentity: string;
+}
+
 /** Collapse (engine mode, approval mode) into the user-facing 3-way mode. */
 export function deriveUiMode(mode: string, approvals: string): UiMode {
   if (mode === "plan") return "plan";
@@ -67,7 +74,9 @@ export function commandsForUiMode(target: UiMode): EngineCommand[] {
 }
 
 export type ModeAction = {
+  target: UiMode;
   commands: EngineCommand[];
+  requiresPlanDecision: boolean;
   /** Apply to local mirrors when non-null; null = keep current chip/state. */
   optimistic: { mode: "plan" | "execute"; approvals: "ask" | "auto"; uiMode: UiMode } | null;
 };
@@ -86,17 +95,21 @@ export function selectModeAction(
   opts: { planPending?: boolean } = {},
 ): ModeAction {
   if (cur === target) {
-    return { commands: [], optimistic: null };
+    return { target, commands: [], requiresPlanDecision: false, optimistic: null };
   }
   if (opts.planPending && cur === "plan" && target !== "plan") {
     return {
-      commands: [{ type: "set-mode", mode: "execute" }],
+      target,
+      commands: [],
+      requiresPlanDecision: true,
       optimistic: null,
     };
   }
   const state = engineStateForUiMode(target);
   return {
+    target,
     commands: commandsForUiMode(target),
+    requiresPlanDecision: false,
     optimistic: { mode: state.mode, approvals: state.approvals, uiMode: target },
   };
 }
@@ -105,23 +118,31 @@ export function selectModeAction(
 export function cycleModeAction(
   cur: UiMode,
   opts: { planPending?: boolean } = {},
-): {
-  commands: EngineCommand[];
-  /** Apply to local mirrors when non-null; null = keep current chip/state. */
-  optimistic: { mode: "plan" | "execute"; approvals: "ask" | "auto"; uiMode: UiMode } | null;
-} {
+): ModeAction {
   const target = nextUiMode(cur);
   if (opts.planPending && cur === "plan" && target !== "plan") {
     return {
-      commands: [{ type: "set-mode", mode: "execute" }],
+      target,
+      commands: [],
+      requiresPlanDecision: true,
       optimistic: null,
     };
   }
   const state = engineStateForUiMode(target);
   return {
+    target,
     commands: commandsForUiMode(target),
+    requiresPlanDecision: false,
     optimistic: { mode: state.mode, approvals: state.approvals, uiMode: target },
   };
+}
+
+export function commandsForPlanExitWithoutRunning(target: Exclude<UiMode, "plan">): EngineCommand[] {
+  return [
+    { type: "resolve-plan", decision: "keep-planning" },
+    { type: "set-mode", mode: "execute" },
+    { type: "set-approvals", mode: target === "yolo" ? "auto" : "ask", quiet: true },
+  ];
 }
 
 /**

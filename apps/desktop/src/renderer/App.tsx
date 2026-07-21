@@ -25,6 +25,7 @@ import type {
   LocalRuntimeStatus,
 } from "../shared/local-runtime";
 import { planResolutionBlockedReason } from "../shared/plan-resolution";
+import { commandsForPlanExitWithoutRunning, engineStateForUiMode } from "../shared/modes";
 import {
   isChatsCwd,
   normalizeCwd,
@@ -1267,6 +1268,52 @@ export function App() {
     [commandFitsInboundLimit, session],
   );
 
+  const resolveModeTransition = useCallback(
+    async (choice: "run" | "switch" | "cancel") => {
+      const pending = session.pendingModeTransition;
+      if (!pending) return;
+      if (choice === "cancel") {
+        session.dismissPendingModeTransition();
+        return;
+      }
+      const plan = chromeRef.current.plan;
+      if (
+        chromeRef.current.sessionId !== pending.sessionId
+        || !plan
+        || plan.text !== pending.planIdentity
+      ) {
+        session.dismissPendingModeTransition();
+        return;
+      }
+
+      let sent = false;
+      if (choice === "run") {
+        if (pending.target === "execute") {
+          sent = await session.send({ type: "set-approvals", mode: "ask", quiet: true })
+            && await answerPlan("accept");
+        } else {
+          sent = await answerPlan("accept", undefined, "auto");
+        }
+      } else {
+        sent = await session.sendMany(commandsForPlanExitWithoutRunning(pending.target));
+        if (
+          sent
+          && chromeRef.current.sessionId === pending.sessionId
+          && chromeRef.current.plan?.text === pending.planIdentity
+        ) {
+          session.dispatchChrome({ type: "clear-plan" });
+        }
+      }
+
+      if (sent && chromeRef.current.sessionId === pending.sessionId) {
+        const state = engineStateForUiMode(pending.target);
+        session.dispatchChrome({ type: "optimistic-mode", mode: state.mode, approvals: state.approvals });
+      }
+      session.dismissPendingModeTransition();
+    },
+    [answerPlan, session],
+  );
+
   const answerQuestion = useCallback(
     async (answers: string[], freeform?: string) => {
       const question = chromeRef.current.question;
@@ -2294,6 +2341,7 @@ export function App() {
                     sessionId={chrome.sessionId}
                     turns={session.turns}
                     busy={chrome.busy}
+                    liveThinking={chrome.thinkingStream}
                     hiddenCount={session.hiddenCount}
                     revealPage={session.revealPage}
                     foldedTurns={session.foldedTurns}
@@ -2352,6 +2400,7 @@ export function App() {
                 sessionId={chrome.sessionId}
                 turns={session.turns}
                 busy={chrome.busy}
+                liveThinking={chrome.thinkingStream}
                 hiddenCount={session.hiddenCount}
                 revealPage={session.revealPage}
                 foldedTurns={session.foldedTurns}
@@ -2545,6 +2594,9 @@ export function App() {
                 catalogOpen={pickerMatchesDraft(picker, draft, modelTarget)}
                 onCycleMode={session.cycleMode}
                 onSelectMode={session.selectMode}
+                pendingModeTransition={session.pendingModeTransition}
+                onResolveModeTransition={(choice) => void resolveModeTransition(choice)}
+                modeTransitionRunDisabledReason={planResolutionBlockedReason("accept", chrome.goalRun)}
                 disabled={!session.ready || session.booting || cloudTransitioning}
                 commandNames={chrome.commandNames}
                 cwd={cwd}

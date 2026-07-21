@@ -7,6 +7,7 @@
  */
 
 import { isDensityChangeNotice } from "./density";
+import type { AssistantOutputPhase } from "./events";
 import { GLYPH } from "./glyphs";
 import { truncateWidth } from "./markdown-blocks";
 import { appendRollingText } from "./stream-cap";
@@ -49,7 +50,7 @@ export type Block =
       origin?: "user" | "engine";
       label?: string;
     }
-  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean; timestamp: number }
+  | { kind: "assistant"; id: number; text: string; streaming: boolean; gap: boolean; timestamp: number; phase?: AssistantOutputPhase }
   | {
       kind: "tool";
       id: number;
@@ -228,7 +229,7 @@ export type TranscriptAction =
       label?: string;
     }
   /** A coalesced batch of streamed assistant text (app.tsx buffers per frame). */
-  | { type: "delta"; text: string; timestamp?: number }
+  | { type: "delta"; text: string; timestamp?: number; phase?: AssistantOutputPhase }
   /** Land the streaming reply: flip `streaming` off so <markdown> closes fences. */
   | { type: "finalize" }
   /** `at` = app-time stamp (ms); with tool-finish's it yields the row's duration. */
@@ -258,20 +259,62 @@ export type TranscriptAction =
   | { type: "clear-turn" };
 
 /** Finalize the streaming reply: land it (flip `streaming` off) and clear the cursor. */
-function finalizeActive(s: TranscriptState): TranscriptState {
+function finalizeActive(s: TranscriptState, phase?: AssistantOutputPhase): TranscriptState {
   if (s.activeAssistant < 0) return s;
   const b = s.blocks[s.activeAssistant];
   if (b?.kind !== "assistant" || !b.streaming) return { ...s, activeAssistant: -1 };
   const blocks = s.blocks.slice();
-  blocks[s.activeAssistant] = { ...b, streaming: false };
+  blocks[s.activeAssistant] = { ...b, streaming: false, ...(phase && !b.phase ? { phase } : {}) };
   return { ...s, blocks, activeAssistant: -1 };
+}
+
+function markUnphasedBeforeTool(s: TranscriptState): TranscriptState {
+  let turnStart = 0;
+  for (let index = s.blocks.length - 1; index >= 0; index -= 1) {
+    if (s.blocks[index]?.kind === "user") { turnStart = index + 1; break; }
+  }
+  let changed = false;
+  const blocks = s.blocks.map((block, index) => {
+    if (index < turnStart || block.kind !== "assistant" || block.phase) return block;
+    changed = true;
+    return { ...block, phase: "commentary" as const };
+  });
+  return changed ? { ...s, blocks } : s;
+}
+
+export function classifyAssistantPhases(state: TranscriptState): TranscriptState {
+  const blocks = state.blocks.slice();
+  let unresolved: number[] = [];
+  const settleTurn = () => {
+    if (!unresolved.length) return;
+    const finalIndex = unresolved[unresolved.length - 1]!;
+    for (const index of unresolved) {
+      const block = blocks[index];
+      if (block?.kind === "assistant" && !block.phase) blocks[index] = { ...block, phase: index === finalIndex ? "final" : "commentary" };
+    }
+    unresolved = [];
+  };
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index]!;
+    if (block.kind === "user") settleTurn();
+    else if (block.kind === "assistant" && !block.phase) unresolved.push(index);
+    else if (block.kind === "tool" && unresolved.length) {
+      for (const pending of unresolved) {
+        const assistant = blocks[pending];
+        if (assistant?.kind === "assistant" && !assistant.phase) blocks[pending] = { ...assistant, phase: "commentary" };
+      }
+      unresolved = [];
+    }
+  }
+  settleTurn();
+  return blocks.some((block, index) => block !== state.blocks[index]) ? { ...state, blocks } : state;
 }
 
 /** Apply one action, returning the next immutable state. Pure — no signals, no timers. */
 export function reduceTranscript(s: TranscriptState, a: TranscriptAction): TranscriptState {
   switch (a.type) {
     case "user": {
-      const f = finalizeActive(s);
+      const f = classifyAssistantPhases(finalizeActive(s));
       return {
         ...f,
         blocks: [
@@ -294,6 +337,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
     case "delta": {
       const cur = s.blocks[s.activeAssistant];
       if (s.activeAssistant >= 0 && cur && cur.kind === "assistant") {
+        if (a.phase && cur.phase && a.phase !== cur.phase) return reduceTranscript(finalizeActive(s), a);
         const blocks = s.blocks.slice();
         blocks[s.activeAssistant] = {
           ...cur,
@@ -302,6 +346,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
             a.text,
             ASSISTANT_OUTPUT_MAX_CHARS,
           ),
+          ...(a.phase ? { phase: a.phase } : {}),
         };
         return { ...s, blocks };
       }
@@ -315,6 +360,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           streaming: true,
           gap: true,
           timestamp: a.timestamp ?? Date.now(),
+          ...(a.phase ? { phase: a.phase } : {}),
         },
       ];
       return { ...s, blocks, nextId: s.nextId + 1, activeAssistant: blocks.length - 1 };
@@ -322,7 +368,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
     case "finalize":
       return finalizeActive(s);
     case "tool-start": {
-      const f = finalizeActive(s);
+      const f = markUnphasedBeforeTool(finalizeActive(s, "commentary"));
       const label = toolLabel(a.toolName, a.input);
       // A subagent reply / task-DAG report is markdown prose; a web-search result
       // list renders as clean source cards — both instead of raw dumped lines.
@@ -587,7 +633,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       };
     }
     case "clear-turn": {
-      const f = finalizeActive(s);
+      const f = classifyAssistantPhases(finalizeActive(s));
       // The turn is over (finished or aborted): settle any still-live tool rows
       // so an interrupted call doesn't spin forever with a stale output tail.
       const blocks = f.blocks.some((b) => b.kind === "tool" && !b.done)

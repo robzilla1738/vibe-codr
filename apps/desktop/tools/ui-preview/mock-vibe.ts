@@ -273,9 +273,9 @@ function previewDropAttachments(): void {
 
 /* ────────────────────────── scenario timelines ────────────────────────── */
 
-async function streamAssistant(text: string, chunk = 48): Promise<void> {
+async function streamAssistant(text: string, chunk = 48, phase?: "commentary" | "final"): Promise<void> {
   for (let i = 0; i < text.length; i += chunk) {
-    emit({ type: "assistant-text-delta", sessionId: SID, delta: text.slice(i, i + chunk) });
+    emit({ type: "assistant-text-delta", sessionId: SID, delta: text.slice(i, i + chunk), ...(phase ? { phase } : {}) });
     await sleep(4);
   }
 }
@@ -283,6 +283,8 @@ async function streamAssistant(text: string, chunk = 48): Promise<void> {
 async function chatTurn(): Promise<void> {
   emit({ type: "user-message", sessionId: SID, text: "Add dark mode support to the settings page — respect the system preference and let users override it." });
   await sleep(40);
+
+  await streamAssistant("I’ll trace the current theme state, update the settings control, then run the focused settings tests.", 48, "commentary");
 
   emit({ type: "reasoning-delta", sessionId: SID, delta: "Scanning the settings tree for the appearance panel and the theme provider so the toggle lands in the right place." });
   await sleep(60);
@@ -325,6 +327,8 @@ async function chatTurn(): Promise<void> {
       "",
       "All 12 settings tests pass. Want me to sweep the remaining hard-coded colors in `src/components` next?",
     ].join("\n"),
+    48,
+    "final",
   );
 
   emit({ type: "tasks-updated", sessionId: SID, tasks: TASKS_DONE });

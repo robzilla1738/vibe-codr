@@ -17,7 +17,7 @@ import { parseSources } from "@shared/sources";
 import { safeExternalUrl } from "@shared/external-url";
 import { Linking } from "react-native";
 
-export function Transcript({ turns, thinkingStream, foldedTurns, onToggleFold, onEditUser, itemWindowFor, onRevealItems }: { turns: Turn[]; thinkingStream: string; foldedTurns: Set<number>; onToggleFold: (key: number) => void; onEditUser: (text: string) => void; itemWindowFor: (key: number, count: number) => { start: number; hidden: number; revealPage: number }; onRevealItems: (key: number, hidden: number) => void }) {
+export function Transcript({ turns, thinkingStream, density, foldedTurns, onToggleFold, onEditUser, itemWindowFor, onRevealItems }: { turns: Turn[]; thinkingStream: string; density: string; foldedTurns: Set<number>; onToggleFold: (key: number) => void; onEditUser: (text: string) => void; itemWindowFor: (key: number, count: number) => { start: number; hidden: number; revealPage: number }; onRevealItems: (key: number, hidden: number) => void }) {
   const { colors } = useTheme();
   const s = makeStyles(colors);
   const listRef = useRef<FlatList>(null);
@@ -73,14 +73,14 @@ export function Transcript({ turns, thinkingStream, foldedTurns, onToggleFold, o
                     <Txt variant="caption" color={colors.textSubtle}>↑ Reveal {w.revealPage} more items</Txt>
                   </Pressable>
                 ) : null}
-                {visibleItems.map((b: Block) => <BlockRow key={b.id} block={b} expanded={expanded.has(b.id)} copied={copiedId === b.id} onCopy={() => void copy(b.id, blockText(b))} onToggle={() => toggle(b.id)} />)}
+                {visibleItems.map((b: Block) => <BlockRow key={b.id} block={b} density={density} expanded={expanded.has(b.id)} copied={copiedId === b.id} onCopy={() => void copy(b.id, blockText(b))} onToggle={() => toggle(b.id)} />)}
               </>
             );
           })()}
-          {item.turn === turns[turns.length - 1] && thinkingStream ? (
+          {item.turn === turns[turns.length - 1] && thinkingStream && density !== "quiet" ? (
             <View style={s.thinking}>
               <Text style={s.thinkingDot}>{GLYPH.think}</Text>
-              <Txt variant="ui" color={colors.textSecondary} numberOfLines={1}>{thinkingStream}</Txt>
+              <View style={{ flex: 1 }}><Txt variant="caption" color={colors.textSubtle}>Thinking</Txt><Txt variant="ui" color={colors.textSecondary}>{thinkingStream}</Txt></View>
             </View>
           ) : null}
         </View>
@@ -108,20 +108,23 @@ function UserBubble({ block, folded, hiddenItems, copied, onToggle, onCopy, onEd
   );
 }
 
-function BlockRow({ block, expanded, copied, onCopy, onToggle }: { block: Block; expanded: boolean; copied: boolean; onCopy: () => void; onToggle: () => void }) {
+function BlockRow({ block, density, expanded, copied, onCopy, onToggle }: { block: Block; density: string; expanded: boolean; copied: boolean; onCopy: () => void; onToggle: () => void }) {
   const { colors } = useTheme();
   const s = makeStyles(colors);
   switch (block.kind) {
-    case "assistant":
+    case "assistant": {
+      const commentary = block.phase === "commentary";
       return (
-        <View style={s.assistant}>
+        <View style={[s.assistant, commentary && s.assistantCommentary]}>
           {block.gap ? <View style={s.gap} /> : null}
           <Markdown text={block.text} />
           {block.streaming ? <Text style={s.cursor}>▋</Text> : null}
-          {!block.streaming && block.text ? <View style={s.assistantActions}><Pressable accessibilityLabel="Copy answer" onPress={onCopy} hitSlop={8} style={s.actionButton}><Icon name={copied ? "Check" : "Copy"} size={13} color={copied ? colors.add : colors.textSubtle} /></Pressable><Txt variant="micro" color={colors.textSubtle}>{formatMessageTime(block.timestamp)}</Txt></View> : null}
+          {!commentary && !block.streaming && block.text ? <View style={s.assistantActions}><Pressable accessibilityLabel="Copy answer" onPress={onCopy} hitSlop={8} style={s.actionButton}><Icon name={copied ? "Check" : "Copy"} size={13} color={copied ? colors.add : colors.textSubtle} /></Pressable><Txt variant="micro" color={colors.textSubtle}>{formatMessageTime(block.timestamp)}</Txt></View> : null}
         </View>
       );
-    case "tool":
+    }
+    case "tool": {
+      const toolOpen = expanded || block.isError || density === "verbose";
       return (
         <Pressable onPress={onToggle} style={({ pressed }) => [s.tool, pressed && { backgroundColor: colors.surfaceSubtle }]}>
           <View style={s.toolHead}>
@@ -129,9 +132,9 @@ function BlockRow({ block, expanded, copied, onCopy, onToggle }: { block: Block;
             <Txt variant="caption" color={colors.textSubtle} style={{ flex: 1, fontWeight: "400" }} numberOfLines={1}>{block.label}</Txt>
             {block.tail && !block.done ? <Txt variant="caption" mono color={colors.textSubtle} numberOfLines={1} style={{ flexShrink: 1 }}>{block.tail}</Txt> : null}
             {block.output.length > 0 ? <Pressable accessibilityLabel="Copy tool output" onPress={onCopy} hitSlop={8} style={s.actionButton}><Icon name={copied ? "Check" : "Copy"} size={13} color={copied ? colors.add : colors.textSubtle} /></Pressable> : null}
-            <Text style={s.chev}>{expanded ? "▾" : "▸"}</Text>
+            <Text style={s.chev}>{toolOpen ? "▾" : "▸"}</Text>
           </View>
-          {expanded && block.output.length > 0 ? (
+          {toolOpen && block.output.length > 0 ? (
             <View style={s.toolOutput}>
               {block.isSources ? renderSources(block.output.join("\n"), colors, s) : null}
               {block.isMarkdown ? <Markdown text={block.output.join("\n")} /> : null}
@@ -140,16 +143,18 @@ function BlockRow({ block, expanded, copied, onCopy, onToggle }: { block: Block;
           ) : null}
         </Pressable>
       );
+    }
     case "thinking":
+      if (density === "quiet") return null;
       return (
         <Pressable onPress={onToggle} style={({ pressed }) => [s.thinkingRow, pressed && { backgroundColor: colors.surfaceSubtle }]}>
           <View style={s.toolHead}>
             <Text style={s.thinkGlyph}>✻</Text>
             <Txt variant="caption" color={colors.muted} style={{ flex: 1 }} numberOfLines={1}>{block.seconds ? `Thinking · ${block.seconds}s` : "Thinking"}</Txt>
             {block.text ? <Pressable accessibilityLabel="Copy reasoning" onPress={onCopy} hitSlop={8} style={s.actionButton}><Icon name={copied ? "Check" : "Copy"} size={13} color={copied ? colors.add : colors.textSubtle} /></Pressable> : null}
-            <Text style={s.chev}>{expanded ? "▾" : "▸"}</Text>
+            <Text style={s.chev}>{density === "verbose" || expanded ? "▾" : "▸"}</Text>
           </View>
-          {expanded ? <View style={s.toolOutput}><Text style={s.toolOutputText}>{block.text}</Text></View> : null}
+          {density === "verbose" || expanded ? <View style={s.toolOutput}><Text style={s.toolOutputText}>{block.text}</Text></View> : null}
         </Pressable>
       );
     case "notice": {
@@ -206,6 +211,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>["colors"]) {
     assistantActions: { minHeight: 26, flexDirection: "row", alignItems: "center", gap: T.sXs, paddingTop: T.s2xs },
     actionButton: { width: 24, height: 24, alignItems: "center", justifyContent: "center", borderRadius: T.radiusSm },
     assistant: { marginBottom: T.sSm },
+    assistantCommentary: { opacity: 0.78 },
     gap: { height: T.sSm },
     cursor: { color: colors.accent, fontFamily: "SF Mono", fontSize: T.textCode },
     tool: { borderRadius: T.radiusSm, paddingHorizontal: T.sXs, paddingVertical: 3, marginBottom: 2, minHeight: 30 },

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import { shouldClearBusyOnSendFailure } from "../../shared/busy-on-send-failure";
 import type { PendingCapabilityRequest } from "../../shared/cloud";
 import type { EngineCommand } from "../../shared/commands";
-import type { UIEvent } from "../../shared/events";
+import type { AssistantOutputPhase, UIEvent } from "../../shared/events";
 import { GLYPH } from "../../shared/glyphs";
 import { hydrateFromHistory } from "../../shared/history-hydrate";
 import { estimateJsonUtf8Bytes } from "../../shared/json-size";
@@ -12,6 +12,7 @@ import {
   modeColor,
   modeWord,
   selectModeAction,
+  type PendingModeTransition,
   type UiMode,
 } from "../../shared/modes";
 import { isUIEvent } from "@vibe/protocol/client-runtime";
@@ -136,7 +137,9 @@ export function useSession(cwd: string | null) {
   const [ready, setReady] = useState(false);
   const [pendingCapabilities, setPendingCapabilities] = useState<PendingCapabilityRequest[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [pendingModeTransition, setPendingModeTransition] = useState<PendingModeTransition | null>(null);
   const deltaBuf = useRef("");
+  const deltaPhase = useRef<AssistantOutputPhase | undefined>(undefined);
   const progressBuf = useRef<Map<string, string>>(new Map());
   const reasoningBuf = useRef("");
   const reasoningStarted = useRef<number | null>(null);
@@ -165,6 +168,12 @@ export function useSession(cwd: string | null) {
   const uiMode: UiMode = deriveUiMode(chrome.mode, chrome.approvals);
 
   useEffect(() => {
+    setPendingModeTransition((pending) => pending
+      && pending.sessionId === chrome.sessionId
+      && pending.planIdentity === chrome.plan?.text ? pending : null);
+  }, [chrome.plan, chrome.sessionId]);
+
+  useEffect(() => {
     applyPalette(getTheme(chrome.theme), chrome.accent || undefined, chrome.theme);
     document.documentElement.style.setProperty("--mode", modeColor(uiMode));
   }, [chrome.theme, chrome.accent, uiMode]);
@@ -183,8 +192,10 @@ export function useSession(cwd: string | null) {
     }
     if (deltaBuf.current) {
       const text = deltaBuf.current;
+      const phase = deltaPhase.current;
       deltaBuf.current = "";
-      dispatchTranscript({ type: "delta", text });
+      deltaPhase.current = undefined;
+      dispatchTranscript({ type: "delta", text, ...(phase ? { phase } : {}) });
     }
     // Coalesce live thinking/trail chrome onto the same 24ms cadence as text
     // so multi-minute reasoning does not re-render the full App tree per token.
@@ -330,6 +341,8 @@ export function useSession(cwd: string | null) {
           // Commit reasoning before the first answer token. Keep prior answer
           // chunks buffered so normal text streaming stays coalesced at 24ms.
           landReasoning();
+          if (deltaBuf.current && event.phase && deltaPhase.current && event.phase !== deltaPhase.current) flushDeltas();
+          if (event.phase) deltaPhase.current = event.phase;
           deltaBuf.current = appendRollingText(
             deltaBuf.current,
             event.delta,
@@ -576,8 +589,10 @@ export function useSession(cwd: string | null) {
   );
 
   const clearSessionLocal = useCallback(() => {
+    setPendingModeTransition(null);
     suppressAfterClear.current = true;
     deltaBuf.current = "";
+    deltaPhase.current = undefined;
     progressBuf.current.clear();
     reasoningBuf.current = "";
     reasoningStarted.current = null;
@@ -612,11 +627,13 @@ export function useSession(cwd: string | null) {
       setBooting(true);
       setBootError(null);
       setReady(false);
+      setPendingModeTransition(null);
       setFoldedTurns(new Set());
       setRevealTurns(0);
       setRevealedTurnItems(new Map());
       suppressAfterClear.current = false;
       deltaBuf.current = "";
+      deltaPhase.current = undefined;
       progressBuf.current.clear();
       reasoningBuf.current = "";
       reasoningStarted.current = null;
@@ -770,6 +787,7 @@ export function useSession(cwd: string | null) {
    * Unlike bootstrap this never starts or replaces the engine owner. */
   const attachCurrent = useCallback(async (attachCwd: string, appearance?: AttachedAppearance): Promise<boolean> => {
     const request = bootstrapGate.current.begin();
+    setPendingModeTransition(null);
     bootstrapHandoff.current = true;
     bootstrapEvents.current = [];
     bootstrapEventBytes.current = 0;
@@ -840,6 +858,7 @@ export function useSession(cwd: string | null) {
       // Host death mid-bootstrap must reopen the event filter so Retry/New work.
       bootstrapHandoff.current = false;
       bootstrapEvents.current = [];
+      setPendingModeTransition(null);
       setBootError(message);
       setReady(false);
       setBooting(false);
@@ -874,6 +893,11 @@ export function useSession(cwd: string | null) {
   const cycleMode = useCallback(() => {
     if (modeTransitioning.current) return;
     const action = cycleModeAction(uiMode, { planPending: !!chrome.plan });
+    if (action.requiresPlanDecision && chrome.plan && chrome.sessionId) {
+      setPendingModeTransition({ sessionId: chrome.sessionId, source: "plan", target: action.target as Exclude<UiMode, "plan">, planIdentity: chrome.plan.text });
+      return;
+    }
+    if (action.commands.length === 0 && !action.optimistic) return;
     modeTransitioning.current = true;
     void (async () => {
       try {
@@ -885,24 +909,21 @@ export function useSession(cwd: string | null) {
             mode: action.optimistic.mode,
             approvals: action.optimistic.approvals,
           });
-        } else if (chrome.plan) {
-          // Silent no-op felt broken — surface why the chip didn't move (TUI parity).
-          dispatchTranscript({
-            type: "notice",
-            text: "Approve or revise the plan first (Enter / type / Esc) — mode stays PLAN.",
-            level: "info",
-          });
         }
       } finally {
         modeTransitioning.current = false;
       }
     })();
-  }, [uiMode, chrome.plan, sendMany]);
+  }, [uiMode, chrome.plan, chrome.sessionId, sendMany]);
 
   const selectMode = useCallback(
     (target: UiMode) => {
       if (modeTransitioning.current) return;
       const action = selectModeAction(uiMode, target, { planPending: !!chrome.plan });
+      if (action.requiresPlanDecision && chrome.plan && chrome.sessionId) {
+        setPendingModeTransition({ sessionId: chrome.sessionId, source: "plan", target: action.target as Exclude<UiMode, "plan">, planIdentity: chrome.plan.text });
+        return;
+      }
       if (action.commands.length === 0 && !action.optimistic) return;
       modeTransitioning.current = true;
       void (async () => {
@@ -915,20 +936,16 @@ export function useSession(cwd: string | null) {
               mode: action.optimistic.mode,
               approvals: action.optimistic.approvals,
             });
-          } else if (chrome.plan && target !== "plan") {
-            dispatchTranscript({
-              type: "notice",
-              text: "Approve or revise the plan first (Enter / type / Esc) — mode stays PLAN.",
-              level: "info",
-            });
           }
         } finally {
           modeTransitioning.current = false;
         }
       })();
     },
-    [uiMode, chrome.plan, sendMany],
+    [uiMode, chrome.plan, chrome.sessionId, sendMany],
   );
+
+  const dismissPendingModeTransition = useCallback(() => setPendingModeTransition(null), []);
 
   const foldAllTurns = useCallback(() => {
     setFoldedTurns((prev) => {
@@ -1073,6 +1090,8 @@ export function useSession(cwd: string | null) {
       attachCurrent,
       cycleMode,
       selectMode,
+      pendingModeTransition,
+      dismissPendingModeTransition,
       dispatchChrome,
       clearSessionLocal,
       setBusy,
@@ -1106,6 +1125,8 @@ export function useSession(cwd: string | null) {
       attachCurrent,
       cycleMode,
       selectMode,
+      pendingModeTransition,
+      dismissPendingModeTransition,
       clearSessionLocal,
       setBusy,
       setSubagentModel,

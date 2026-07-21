@@ -18,7 +18,7 @@ import {
 } from "../../shared/commands-catalog";
 import { applyComposerPaste } from "../../shared/composer-edit";
 import { densityLabel, isTranscriptDensity } from "../../shared/density";
-import { modeWord, type UiMode } from "../../shared/modes";
+import { modeWord, type PendingModeTransition, type UiMode } from "../../shared/modes";
 import { accentNameOf } from "../../shared/themes";
 import { applyAtMention, useAtMention } from "../hooks/useAtMention";
 import { useFloatingAnchor } from "../hooks/useFloatingAnchor";
@@ -274,6 +274,9 @@ export function Composer({
   catalogOpen,
   onCycleMode,
   onSelectMode,
+  pendingModeTransition,
+  onResolveModeTransition,
+  modeTransitionRunDisabledReason,
   disabled,
   commandNames,
   cwd,
@@ -305,6 +308,9 @@ export function Composer({
   catalogOpen: boolean;
   onCycleMode: () => void;
   onSelectMode: (mode: UiMode) => void;
+  pendingModeTransition?: PendingModeTransition | null;
+  onResolveModeTransition?: (choice: "run" | "switch" | "cancel") => void;
+  modeTransitionRunDisabledReason?: string | null;
   disabled?: boolean;
   commandNames: string[];
   cwd: string | null;
@@ -605,8 +611,12 @@ export function Composer({
       : null;
   const slashPresentation = useRetainedValue(liveSlashPresentation);
   const slashBox = useFloatingAnchor(wrapRef, slashPresence.mounted);
-  const modeBox = useFloatingAnchor(modeTriggerRef, modePresence.mounted);
+  const modeBox = useFloatingAnchor(modeTriggerRef, modePresence.mounted || !!pendingModeTransition);
   const insertBox = useFloatingAnchor(insertTriggerRef, insertPresence.mounted);
+
+  useEffect(() => {
+    if (pendingModeTransition) setModeOpen(false);
+  }, [pendingModeTransition]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (modeOpen && ["Enter", "ArrowDown", "ArrowUp", "Escape", "Home", "End"].includes(e.key)) {
@@ -1198,6 +1208,34 @@ export function Composer({
         })()
       : null;
 
+  const modeDecision = pendingModeTransition && modeBox && onResolveModeTransition
+    ? createPortal(
+        <div
+          className="mode-decision-popover popover-surface"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="mode-decision-title"
+          style={{
+            left: Math.max(12, Math.min(modeBox.left, window.innerWidth - 372)),
+            bottom: window.innerHeight - modeBox.top + 8,
+            width: Math.min(360, window.innerWidth - 24),
+          }}
+        >
+          <div className="mode-decision-copy">
+            <strong id="mode-decision-title">Leave Plan mode?</strong>
+            <span>A plan is ready. Choose what happens before switching to {displayModeLabel(pendingModeTransition.target)}.</span>
+          </div>
+          <div className="mode-decision-actions">
+            <button type="button" className="button primary" disabled={!!modeTransitionRunDisabledReason} title={modeTransitionRunDisabledReason ?? undefined} onClick={() => onResolveModeTransition("run")}>Run plan</button>
+            <button type="button" className="button" onClick={() => onResolveModeTransition("switch")}>Switch without running</button>
+            <button type="button" className="button ghost" onClick={() => onResolveModeTransition("cancel")}>Cancel</button>
+          </div>
+          {modeTransitionRunDisabledReason ? <div className="mode-decision-reason">{modeTransitionRunDisabledReason}</div> : null}
+        </div>,
+        document.body,
+      )
+    : null;
+
   const insertMenu =
     insertPresence.mounted && insertBox
       ? createPortal(
@@ -1358,6 +1396,7 @@ export function Composer({
               <IconChevron open={modeOpen} size={12} />
             </button>
             {modeMenu}
+            {modeDecision}
           </div>
           {onExecutionTargetChange ? (
             <div

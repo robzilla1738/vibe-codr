@@ -133,97 +133,30 @@ function PlainToolBody({
   );
 }
 
-type ActivityBlock = Extract<Block, { kind: "tool" | "thinking" }>;
-
-function isActivityBlock(block: Block): block is ActivityBlock {
-  return block.kind === "tool" || block.kind === "thinking";
-}
-
-function ThinkingGroup({
-  groupId,
-  blocks,
-  active,
-  density,
-  theme,
-  now,
-  onSetExpanded,
-}: {
-  groupId: string;
-  blocks: Block[];
-  active: boolean;
-  density: TranscriptDensity;
-  theme: string;
-  now: number;
-  onSetExpanded: (id: number, expanded: boolean) => void;
-}) {
-  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const items = blocks.filter((block) => block.kind !== "thinking" || showThinkingRows(density));
-  const stepCount = blocks.filter(isActivityBlock).length;
-  if (items.length === 0) return null;
-  const open = expandedOverride ?? density === "verbose";
-  const visibleItems = open ? items : items.filter((block) => block.kind === "notice");
-
-  return (
-    <div
-      className={`thinking-group${open ? " is-open" : ""}${active ? " is-live" : ""}`}
-    >
-      <button
-        type="button"
-        className="thinking-group-head"
-        aria-expanded={open}
-        aria-controls={groupId}
-        onClick={() => setExpandedOverride(!open)}
-      >
-        <span className="thinking-group-label">
-          <IconChevron open={open} size={13} />
-          <span>{active ? "Working" : "Work"}</span>
-        </span>
-        <span className="thinking-group-meta">
-          {stepCount} {stepCount === 1 ? "step" : "steps"}
-        </span>
-      </button>
-      <div className="thinking-group-items" id={groupId}>
-        {visibleItems.map((block) => (
-          <BlockView
-            key={block.id}
-            block={block}
-            density={density}
-            theme={theme}
-            now={now}
-            onSetExpanded={onSetExpanded}
-            activityContext
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 const BlockView = memo(function BlockView({
   block,
   density,
   theme,
   now,
   onSetExpanded,
-  activityContext = false,
 }: {
   block: Block;
   density: TranscriptDensity;
   theme: string;
   now: number;
   onSetExpanded: (id: number, expanded: boolean) => void;
-  activityContext?: boolean;
 }) {
   switch (block.kind) {
-    case "assistant":
+    case "assistant": {
+      const commentary = block.phase === "commentary";
       return (
-        <div className={`block-assistant${activityContext ? " is-progress" : ""}${!activityContext && !block.streaming && block.text ? " has-actions" : ""}${block.streaming ? " streaming" : ""}`}>
+        <div className={`block-assistant${commentary ? " is-commentary" : " is-final"}${!commentary && !block.streaming && block.text ? " has-actions" : ""}${block.streaming ? " streaming" : ""}`}>
           <div className="md">
             <MarkdownView streaming={block.streaming} theme={theme}>
               {block.text}
             </MarkdownView>
           </div>
-          {!activityContext && !block.streaming && block.text ? (
+          {!commentary && !block.streaming && block.text ? (
             <div className="assistant-actions hover-reveal" role="toolbar" aria-label="Assistant message actions">
               <CopyButton text={block.text} label="Copy answer" />
               <time className="message-time" dateTime={new Date(block.timestamp).toISOString()}>
@@ -233,6 +166,7 @@ const BlockView = memo(function BlockView({
           ) : null}
         </div>
       );
+    }
     case "tool": {
       const collapsed = toolCollapsed(density, block);
       const expandable = block.output.length > 0;
@@ -456,29 +390,15 @@ const BlockView = memo(function BlockView({
 });
 
 const TranscriptTurn = memo(function TranscriptTurn({
-  turn, folded, itemStart, itemHidden, itemRevealPage, active, density, theme, now,
+  turn, folded, itemStart, itemHidden, itemRevealPage, active, liveThinking, density, theme, now,
   onSetBlockExpanded, onToggleTurn, onEdit, onRevealTurnItems,
 }: {
   turn: Turn; folded: boolean; itemStart: number; itemHidden: number; itemRevealPage: number;
-  active: boolean; density: TranscriptDensity; theme: string; now: number;
+  active: boolean; liveThinking?: string; density: TranscriptDensity; theme: string; now: number;
   onSetBlockExpanded: (id: number, expanded: boolean) => void; onToggleTurn: (key: number) => void;
   onEdit: (text: string) => void; onRevealTurnItems: (turnKey: number, hidden: number) => void;
 }) {
   const renderedItems = groupTranscriptItems(turn.items, itemStart).map((item) => {
-    if (item.kind === "activity") {
-      return (
-        <ThinkingGroup
-          key={`work-${turn.key}`}
-          groupId={`work-items-${turn.key}`}
-          blocks={item.blocks}
-          active={active}
-          density={density}
-          theme={theme}
-          now={now}
-          onSetExpanded={onSetBlockExpanded}
-        />
-      );
-    }
     return (
       <BlockView
         key={item.block.id}
@@ -525,6 +445,15 @@ const TranscriptTurn = memo(function TranscriptTurn({
           </button>
         )}
         {!folded && renderedItems}
+        {!folded && active && liveThinking && density !== "quiet" ? (
+          <details className="thinking-row" open>
+            <summary className="thinking-head">
+              <span className="thinking-label"><IconChevron open size={13} />Thinking</span>
+              <span className="thinking-meta">live</span>
+            </summary>
+            <div className="thinking-body">{liveThinking}</div>
+          </details>
+        ) : null}
       </div>
     </section>
   );
@@ -534,6 +463,7 @@ export function TranscriptView({
   sessionId,
   turns,
   busy,
+  liveThinking,
   hiddenCount,
   revealPage,
   foldedTurns,
@@ -551,6 +481,7 @@ export function TranscriptView({
   sessionId: string;
   turns: Turn[];
   busy: boolean;
+  liveThinking?: string;
   hiddenCount: number;
   revealPage: number;
   foldedTurns: Set<number>;
@@ -657,7 +588,7 @@ export function TranscriptView({
                 key={turn.key}
                 turn={turn} folded={folded} itemStart={itemWindow.start}
                 itemHidden={itemWindow.hidden} itemRevealPage={itemWindow.revealPage}
-                active={active} density={density} theme={theme} now={active ? now : 0}
+                active={active} liveThinking={active ? liveThinking : undefined} density={density} theme={theme} now={active ? now : 0}
                 onSetBlockExpanded={onSetBlockExpanded} onToggleTurn={onToggleTurn} onEdit={onEdit}
                 onRevealTurnItems={onRevealTurnItems}
               />

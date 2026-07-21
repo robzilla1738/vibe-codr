@@ -2049,9 +2049,20 @@ html[data-scheme="light"] .chat-column:not(.is-empty)::after {
   width: min(100%, var(--reading-max));
 }
 
+.block-assistant.is-commentary {
+  color: var(--text-muted);
+  font-size: var(--text-ui);
+  line-height: 1.5;
+}
+
+.block-assistant.is-commentary .md p,
+.block-assistant.is-commentary .md ul,
+.block-assistant.is-commentary .md ol {
+  margin-block: 0.35em;
+}
+
 /* Flow spacing is owned by `.turn-content`; adjacent block types must not
    quietly add a second margin on top of it. */
-.thinking-group + .block-assistant,
 .tool-row + .block-assistant {
   margin-top: 0;
   padding-top: 0;
@@ -2937,127 +2948,6 @@ html[data-scheme="light"] .md .md-streaming-pre {
     opacity: 0.85;
     pointer-events: auto;
   }
-}
-
-.thinking-group {
-  width: min(100%, var(--prose-max));
-  max-width: 100%;
-  min-width: 0;
-  margin: 0 auto;
-  border: 0;
-}
-
-.thinking-group-head {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  min-height: var(--transcript-compact-row-h);
-  box-sizing: border-box;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-xs);
-  padding: 3px var(--space-xs) 3px 0;
-  border: 0;
-  border-radius: var(--radius-sm);
-  color: var(--muted);
-  cursor: pointer;
-  background: transparent;
-  font-family: var(--font-sans);
-  font-size: var(--text-caption);
-  font-weight: var(--weight-medium);
-  line-height: var(--leading-ui);
-  text-align: left;
-  list-style: none;
-  transition: color var(--dur-fast) var(--ease-standard), background-color var(--dur-fast) var(--ease-standard);
-}
-
-.thinking-group-head::-webkit-details-marker { display: none; }
-
-.thinking-group-head:hover {
-  color: var(--assistant);
-  background: color-mix(in oklab, var(--surface) 28%, transparent);
-}
-
-.thinking-group-head:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
-  color: var(--assistant);
-}
-
-.thinking-group.is-live .thinking-group-label > span:last-child,
-.thinking-group.is-live .thinking-group-meta {
-  color: transparent;
-  background: linear-gradient(
-    90deg,
-    color-mix(in oklab, var(--muted) 76%, transparent) 0%,
-    var(--assistant) 46%,
-    color-mix(in oklab, var(--muted) 76%, transparent) 82%
-  );
-  background-size: 220% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  animation: thinking-shimmer var(--dur-thinking-shimmer) var(--ease-standard) infinite;
-}
-
-@keyframes thinking-shimmer {
-  from { background-position: 120% 0; }
-  to { background-position: -120% 0; }
-}
-
-.thinking-group-label {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: var(--space-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.thinking-group-label .icon-chevron {
-  color: color-mix(in oklab, var(--assistant) 78%, var(--muted));
-  opacity: 0.72;
-}
-
-.thinking-group-meta {
-  flex: 0 0 auto;
-  color: var(--text-subtle);
-  font-size: var(--text-caption);
-  font-variant-numeric: tabular-nums;
-  font-weight: var(--weight-regular);
-  white-space: nowrap;
-}
-
-.thinking-group-meta::before {
-  content: "·";
-  margin-right: var(--space-2xs);
-  color: color-mix(in oklab, var(--text-subtle) 72%, transparent);
-}
-
-.thinking-group-items {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  /* Nested thoughts/tools keep the same transcript edge as prose. */
-  margin: 4px 0 0;
-  padding: 0 0 2px;
-}
-
-.thinking-group-items:empty { display: none; }
-
-/* Progress narration belongs to the expandable work trace, not the primary
-   answer hierarchy. It stays readable when requested without creating another
-   full-width transcript beat between every tool call. */
-.thinking-group-items > .block-assistant.is-progress {
-  width: 100%;
-  padding: 2px var(--space-sm) 2px calc(13px + var(--space-xs) + 2px);
-  color: var(--text-muted);
-  font-size: var(--text-ui);
-  line-height: 1.45;
-}
-
-.thinking-group-items > .block-assistant.is-progress .md p {
-  margin-block: 0.25em;
 }
 
 .thinking-head {
@@ -5379,6 +5269,37 @@ html.electron-transparent .composer-wrap:focus-within {
   bottom: auto;
   left: auto;
   top: auto;
+}
+
+.mode-decision-popover {
+  position: fixed;
+  z-index: var(--z-popover);
+  box-sizing: border-box;
+  padding: var(--space-base);
+  font-family: var(--font-sans);
+}
+
+.mode-decision-copy {
+  display: grid;
+  gap: var(--space-xs);
+  color: var(--text-muted);
+  font-size: var(--text-ui);
+  line-height: 1.45;
+}
+
+.mode-decision-copy strong { color: var(--text); }
+
+.mode-decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-top: var(--space-base);
+}
+
+.mode-decision-reason {
+  margin-top: var(--space-sm);
+  color: var(--warning);
+  font-size: var(--text-caption);
 }
 
 .mode-option {

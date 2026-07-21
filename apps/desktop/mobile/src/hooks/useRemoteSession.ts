@@ -7,11 +7,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { shouldClearBusyOnSendFailure } from "@shared/busy-on-send-failure";
 import type { EngineCommand } from "@shared/commands";
-import type { UIEvent } from "@shared/events";
+import type { AssistantOutputPhase, UIEvent } from "@shared/events";
 import { GLYPH } from "@shared/glyphs";
 import { hydrateFromHistory } from "@shared/history-hydrate";
 import { estimateJsonUtf8Bytes } from "@shared/json-size";
-import { cycleModeAction, deriveUiMode, modeColor, selectModeAction, type UiMode } from "@shared/modes";
+import { cycleModeAction, deriveUiMode, modeColor, selectModeAction, type PendingModeTransition, type UiMode } from "@shared/modes";
 import { isUIEvent } from "@shared/protocol";
 import {
   ASSISTANT_OUTPUT_MAX_CHARS,
@@ -86,8 +86,10 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
   const [booting, setBooting] = useState(false);
   const [ready, setReady] = useState(false);
   const [pendingCapabilities, setPendingCapabilities] = useState<PendingCapabilityRequest[]>([]);
+  const [pendingModeTransition, setPendingModeTransition] = useState<PendingModeTransition | null>(null);
 
   const deltaBuf = useRef("");
+  const deltaPhase = useRef<AssistantOutputPhase | undefined>(undefined);
   const progressBuf = useRef<Map<string, string>>(new Map());
   const reasoningBuf = useRef("");
   const reasoningStarted = useRef<number | null>(null);
@@ -183,7 +185,9 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
     if (deltaBuf.current) {
       const text = deltaBuf.current;
       deltaBuf.current = "";
-      dispatchTranscript({ type: "delta", text });
+      const phase = deltaPhase.current;
+      deltaPhase.current = undefined;
+      dispatchTranscript({ type: "delta", text, ...(phase ? { phase } : {}) });
     }
     if (reasoningBuf.current) {
       dispatchChrome({ type: "set-thinking", text: reasoningBuf.current });
@@ -242,9 +246,16 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
         else if (CLEAR_SCOPED_TYPES.has(event.type) || event.type === "turn-finished" || event.type === "session-idle" || event.type === "engine-idle") return;
       }
       if (event.type === "session-start") {
+        setPendingModeTransition(null);
         dispatchChrome({ type: "seed-from-session-start", event, snap: lastSnap.current });
       } else {
         dispatchChrome({ type: "event", event });
+      }
+      if (event.type === "plan-presented") setPendingModeTransition(null);
+      if (event.type === "plan-state-changed") {
+        setPendingModeTransition((pending) => pending
+          && event.state.status === "pending"
+          && event.state.plan === pending.planIdentity ? pending : null);
       }
       switch (event.type) {
         case "user-message":
@@ -257,6 +268,8 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
         case "assistant-text-delta":
           if (event.subagentId || !event.delta) break;
           landReasoning();
+          if (deltaBuf.current && event.phase && deltaPhase.current && event.phase !== deltaPhase.current) flushDeltas();
+          if (event.phase) deltaPhase.current = event.phase;
           deltaBuf.current = appendRollingText(deltaBuf.current, event.delta, ASSISTANT_OUTPUT_MAX_CHARS);
           if (flushTimer.current == null) flushTimer.current = setTimeout(flushDeltas, 24);
           break;
@@ -346,8 +359,10 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
   }, [endTurn, flushDeltas, landReasoning]);
 
   const clearSessionLocal = useCallback(() => {
+    setPendingModeTransition(null);
     suppressAfterClear.current = true;
     deltaBuf.current = "";
+    deltaPhase.current = undefined;
     progressBuf.current.clear();
     reasoningBuf.current = "";
     reasoningStarted.current = null;
@@ -359,6 +374,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
   }, []);
 
   const bootstrap = useCallback(async (opts: { cwd: string; resume?: string; continueLatest?: boolean }) => {
+    setPendingModeTransition(null);
     if (!client) return false;
     const request = bootstrapGate.current.begin();
     bootstrapHandoff.current = true;
@@ -371,6 +387,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
     suppressAfterClear.current = false;
     lastSnap.current = null;
     deltaBuf.current = "";
+    deltaPhase.current = undefined;
     progressBuf.current.clear();
     reasoningBuf.current = "";
     reasoningStarted.current = null;
@@ -430,6 +447,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
   }, [client, handleEvent]);
 
   const switchSession = useCallback(async (opts: { cwd: string; resume?: string; continueLatest?: boolean }) => {
+    setPendingModeTransition(null);
     if (!client) return false;
     const request = bootstrapGate.current.begin();
     bootstrapHandoff.current = true;
@@ -442,6 +460,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
     suppressAfterClear.current = false;
     lastSnap.current = null;
     deltaBuf.current = "";
+    deltaPhase.current = undefined;
     progressBuf.current.clear();
     reasoningBuf.current = "";
     reasoningStarted.current = null;
@@ -534,23 +553,10 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
   const cycleMode = useCallback(() => {
     if (modeTransitioning.current) return;
     const action = cycleModeAction(uiMode, { planPending: !!chrome.plan });
-    modeTransitioning.current = true;
-    void (async () => {
-      try {
-        const sent = await sendMany(action.commands);
-        if (!sent) return;
-        if (action.optimistic) {
-          dispatchChrome({ type: "optimistic-mode", mode: action.optimistic.mode, approvals: action.optimistic.approvals });
-        } else if (chrome.plan) {
-          dispatchTranscript({ type: "notice", text: "Approve or revise the plan first (Enter / type / Esc) — mode stays PLAN.", level: "info" });
-        }
-      } finally { modeTransitioning.current = false; }
-    })();
-  }, [uiMode, chrome.plan, sendMany]);
-
-  const selectMode = useCallback((target: UiMode) => {
-    if (modeTransitioning.current) return;
-    const action = selectModeAction(uiMode, target, { planPending: !!chrome.plan });
+    if (action.requiresPlanDecision && chrome.plan && chrome.sessionId) {
+      setPendingModeTransition({ sessionId: chrome.sessionId, source: "plan", target: action.target as Exclude<UiMode, "plan">, planIdentity: chrome.plan.text });
+      return;
+    }
     if (action.commands.length === 0 && !action.optimistic) return;
     modeTransitioning.current = true;
     void (async () => {
@@ -559,12 +565,30 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
         if (!sent) return;
         if (action.optimistic) {
           dispatchChrome({ type: "optimistic-mode", mode: action.optimistic.mode, approvals: action.optimistic.approvals });
-        } else if (chrome.plan && target !== "plan") {
-          dispatchTranscript({ type: "notice", text: "Approve or revise the plan first (Enter / type / Esc) — mode stays PLAN.", level: "info" });
         }
       } finally { modeTransitioning.current = false; }
     })();
-  }, [uiMode, chrome.plan, sendMany]);
+  }, [uiMode, chrome.plan, chrome.sessionId, sendMany]);
+
+  const selectMode = useCallback((target: UiMode) => {
+    if (modeTransitioning.current) return;
+    const action = selectModeAction(uiMode, target, { planPending: !!chrome.plan });
+    if (action.requiresPlanDecision && chrome.plan && chrome.sessionId) {
+      setPendingModeTransition({ sessionId: chrome.sessionId, source: "plan", target: action.target as Exclude<UiMode, "plan">, planIdentity: chrome.plan.text });
+      return;
+    }
+    if (action.commands.length === 0 && !action.optimistic) return;
+    modeTransitioning.current = true;
+    void (async () => {
+      try {
+        const sent = await sendMany(action.commands);
+        if (!sent) return;
+        if (action.optimistic) {
+          dispatchChrome({ type: "optimistic-mode", mode: action.optimistic.mode, approvals: action.optimistic.approvals });
+        }
+      } finally { modeTransitioning.current = false; }
+    })();
+  }, [uiMode, chrome.plan, chrome.sessionId, sendMany]);
 
   // Wire transport events while a client is present.
   useEffect(() => {
@@ -625,6 +649,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
     client.onFatal = (message: string) => {
       bootstrapHandoff.current = false;
       bootstrapEvents.current = [];
+      setPendingModeTransition(null);
       setBootError(message);
       setReady(false);
       setBooting(false);
@@ -647,6 +672,7 @@ export function useRemoteSession({ client, cwd }: UseRemoteSessionArgs) {
     chrome, transcript, turns, uiMode, modeColor: modeColor(uiMode),
     toast, showToast, bootError, booting, ready, connectionState, pendingCapabilities,
     bootstrap, switchSession, send, sendMany, clearSessionLocal, cycleMode, selectMode,
+    pendingModeTransition, dismissPendingModeTransition: () => setPendingModeTransition(null),
     visibleTurns, hiddenCount, revealEarlier, foldedTurns, foldAllTurns, toggleTurnFold,
     revealTurnItems, itemWindowFor,
     dispatchChrome, dispatchTranscript,

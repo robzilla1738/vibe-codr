@@ -464,8 +464,8 @@ npm run dev
     cards, the collapsed `Memory · N notes` row, and its expanded note list. Scroll
     away from the bottom after edits and confirm Jump to latest sits beside the
     changed-files chip, not above it.
-14. In each Quiet, Normal, and Verbose density, open and close a Work group and
-    a tool/thinking row. Compact steps retain no brain icon and one surface per
+14. In each Quiet, Normal, and Verbose density, confirm commentary remains
+    visible and open/close individual tool/thinking rows. Compact steps retain no brain icon and one surface per
     open thought; density only chooses the default. Confirm ⌘T closes Verbose
     thinking, then reopens it, and that a completed tool with no output has no
     chevron or disclosure semantics.

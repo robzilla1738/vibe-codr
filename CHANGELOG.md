@@ -4,6 +4,17 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.3 — 2026-07-21
+
+### Fixed
+
+- Resumed sessions no longer re-arm stale plan files or strand users in Plan
+  mode. Leaving a pending plan now offers explicit Run, Switch without running,
+  and Cancel choices on Desktop and mobile, scoped to the active session.
+- Assistant commentary is visible in transcript order, reasoning remains a
+  separate disclosure, tool headers stay inline, and final answers retain the
+  primary response treatment across live and hydrated history.
+
 ## 0.7.2 — 2026-07-21
 
 - Install the locked shared protocol workspace before Desktop release verification on macOS and Windows.

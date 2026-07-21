@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.7.3 — 2026-07-21
+
+### Fixed
+
+- Resumed Plan sessions now use an explicit Run plan / Switch without running /
+  Cancel decision on desktop and mobile, with stale acknowledgements unable to
+  mutate a newly opened session.
+- Assistant commentary remains visible between tool calls. Reasoning and tool
+  bodies use their own disclosures, while final answers remain prominent and
+  consistent after history hydration.
+
 ## 0.7.2 — 2026-07-21
 
 - Ensure release runners install the shared protocol dependency graph before Desktop typechecking and packaging.

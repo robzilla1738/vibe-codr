@@ -1,6 +1,7 @@
 import { estimateJsonUtf8Bytes } from "../shared/json-size";
 import {
   type Block,
+  classifyAssistantPhases,
   MAX_RETAINED_TRANSCRIPT_BLOCKS,
   type TranscriptState,
 } from "../shared/reducer";
@@ -170,7 +171,8 @@ function transcriptBlock(value: unknown): value is Block {
         && typeof block.gap === "boolean"
         && typeof block.timestamp === "number"
         && Number.isFinite(block.timestamp)
-        && block.timestamp >= 0;
+        && block.timestamp >= 0
+        && (block.phase === undefined || block.phase === "commentary" || block.phase === "final");
     case "thinking":
       return typeof block.text === "string"
         && typeof block.collapsed === "boolean"
@@ -304,7 +306,7 @@ export function decodeTranscriptCacheRecord(value: unknown): TranscriptState | n
     return isTranscriptState(parsed)
       && isSettled(parsed)
       && cached.signature === transcriptContentSignature(parsed)
-      ? settle(parsed)
+      ? classifyAssistantPhases(settle(parsed))
       : null;
   } catch {
     return null;

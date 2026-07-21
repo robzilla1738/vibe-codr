@@ -14,6 +14,8 @@ import {
   type PluginContributionType,
   type PluginManifestV1,
 } from "./manifest.ts";
+import { PluginWorkerClient } from "./worker-client.ts";
+import type { JsonValue } from "./worker-protocol.ts";
 
 /** Surface handed to a plugin's `register(api)` entrypoint. */
 export interface PluginApi {
@@ -60,16 +62,21 @@ export interface PluginHostDeps {
   /** Roll back a skill dir registered mid-failed plugin load (BUG-099). */
   removeSkillDir?: (path: string) => void;
   logger?: Logger;
+  /** Explicit exception for bundled or user-approved provider factories. */
+  trustedInProcessPlugins?: readonly string[];
 }
 
 /**
- * Loads plugin modules and wires them to the host registries. Plugins run
- * in-process for v1. Failures are logged and skipped, never fatal.
+ * Loads plugin modules and wires them to the host registries. Manifested
+ * third-party plugins run in a scrubbed child process unless the caller has
+ * explicitly approved that exact specifier for trusted in-process execution.
+ * Failures are logged and skipped, never fatal.
  */
 export class PluginHost {
   #deps: PluginHostDeps;
   #log: Logger;
   #statuses: PluginStatus[] = [];
+  #workers: PluginWorkerClient[] = [];
 
   constructor(deps: PluginHostDeps) {
     this.#deps = deps;
@@ -87,10 +94,18 @@ export class PluginHost {
     }));
   }
 
+  /** Reap every isolated plugin process. Idempotent and safe during teardown. */
+  async close(): Promise<void> {
+    const workers = this.#workers;
+    this.#workers = [];
+    await Promise.all(workers.map((worker) => worker.close().catch(() => undefined)));
+  }
+
   /** Import and register each plugin module specifier (npm name or path).
    * `timeoutMs` bounds each plugin's register() (default 15s); exposed mainly for
    * tests. */
   async load(specifiers: string[], opts: { timeoutMs?: number } = {}): Promise<void> {
+    await this.close();
     this.#statuses = [];
     const deadline = opts.timeoutMs ?? PLUGIN_REGISTER_TIMEOUT_MS;
     // BUG-071: reloading the same plugins must not double-register hooks.
@@ -129,6 +144,87 @@ export class PluginHost {
         if (incompatible) {
           this.#statuses.push({ ...baseStatus, status: "incompatible", reason: incompatible });
           this.#log.error(`rejected plugin ${spec}: ${incompatible}`);
+          continue;
+        }
+      }
+      if (metadata.manifest && !this.#deps.trustedInProcessPlugins?.includes(spec)) {
+        try {
+          const started = await PluginWorkerClient.start({
+            specifier: metadata.entry,
+            cwd: process.cwd(),
+            startupTimeoutMs: deadline,
+            rpcTimeoutMs: Math.max(deadline, 1_000),
+          });
+          if (started.result.status === "trusted-in-process-approval-required") {
+            this.#statuses.push({
+              ...baseStatus,
+              status: "degraded",
+              reason: "Provider plugin requires explicit trusted-in-process approval",
+            });
+            continue;
+          }
+          const worker = started.client;
+          const registered = emptyRegisteredContributions();
+          const declared = new Set(metadata.manifest.contributions);
+          const actual = new Set<PluginContributionType>();
+          if (started.result.metadata.tools.length) actual.add("tools");
+          if (started.result.metadata.commands.length) actual.add("commands");
+          if (started.result.metadata.hooks.length) actual.add("hooks");
+          const undeclared = [...actual].filter((type) => !declared.has(type));
+          if (undeclared.length) {
+            await worker.close();
+            throw new Error(`plugin ${metadata.manifest.name} registered undeclared ${undeclared.join(", ")} contribution`);
+          }
+          for (const tool of started.result.metadata.tools) {
+            this.#deps.registerTool({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+              readOnly: tool.readOnly,
+              ...(tool.concurrencySafe === undefined ? {} : { concurrencySafe: tool.concurrencySafe }),
+              ...(tool.network === undefined ? {} : { network: tool.network }),
+              ...(tool.modes === undefined ? {} : { modes: tool.modes }),
+              execute: async (input, context) => {
+                const value = await worker.callTool(tool.name, input as JsonValue, {
+                  cwd: context.cwd,
+                  sessionId: context.sessionId,
+                  toolCallId: context.toolCallId,
+                }, context.abortSignal);
+                if (value && typeof value === "object" && !Array.isArray(value) && "output" in value) {
+                  return value as { output: string | Record<string, unknown>; isError?: boolean };
+                }
+                return { output: typeof value === "string" ? value : JSON.stringify(value) };
+              },
+            });
+            registered.tools.push(tool.name);
+          }
+          for (const command of started.result.metadata.commands) {
+            this.#deps.commands.register({
+              name: command.name,
+              description: command.description,
+              source: "plugin",
+              run: (args) => worker.runCommand(command.name, args),
+            });
+            registered.commands.push(command.name);
+          }
+          for (const hook of started.result.metadata.hooks) {
+            this.#deps.hooks.on(hook, async (payload) => await worker.runHook(hook, payload as unknown as JsonValue) as never);
+            registered.hooks.push(hook);
+          }
+          const missing = metadata.manifest.contributions.filter((type) => registered[type].length === 0);
+          this.#workers.push(worker);
+          this.#statuses.push({
+            ...baseStatus,
+            status: metadata.provenance.verified && missing.length === 0 ? "loaded" : "degraded",
+            ...(missing.length ? { reason: `Declared contributions not registered: ${missing.join(", ")}` }
+              : !metadata.provenance.verified ? { reason: "Local plugin is unverified and isolated" } : {}),
+            registeredContributions: registered,
+          });
+          continue;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "isolated plugin failed";
+          this.#statuses.push({ ...baseStatus, status: reason.includes("undeclared") ? "incompatible" : "failed", reason });
+          this.#log.error(`failed to load isolated plugin ${spec}: ${reason}`);
           continue;
         }
       }

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.7.0 — 2026-07-20
+
+### Added
+
+- Trace inspection, configurable supervised runtime capacity, safe launch
+  queues, native background notifications, session ancestry navigation, and
+  shared automation schedules/history in the existing Jobs surface.
+- ACP/VS Code interoperability and canonical protocol adoption without moving
+  agent-loop behavior into the presentation shell.
+
+### Improved
+
+- A full idle runtime pool now reclaims the least-recently-used safe session
+  immediately while working, needs-input, and needs-review sessions remain
+  protected.
+- Continue on Phone renders the same ancestry and automation activity contracts,
+  while Cloud remains experimental until physical-device and paid packaged
+  firewall-brokering gates are independently proven.
+
 ## 0.6.14 — 2026-07-19
 
 ### Fixed

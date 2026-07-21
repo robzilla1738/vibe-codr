@@ -31,7 +31,7 @@
     },
     "extensions/vscode": {
       "name": "@vibe/vscode",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/acp": "workspace:*",
         "@vibe/sdk": "workspace:*",
@@ -42,7 +42,7 @@
     },
     "packages/acp": {
       "name": "@vibe/acp",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@agentclientprotocol/sdk": "1.2.1",
         "@vibe/core": "workspace:*",
@@ -54,14 +54,14 @@
     },
     "packages/automation": {
       "name": "@vibe/automation",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/protocol": "workspace:*",
       },
     },
     "packages/cli": {
       "name": "@vibe/cli",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "bin": {
         "vibecodr": "./bin/vibecodr.ts",
         "vibe": "./bin/vibecodr.ts",
@@ -83,7 +83,7 @@
     },
     "packages/cloud-agentd": {
       "name": "@vibe/cloud-agentd",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "bin": {
         "cloud-agentd": "./bin/cloud-agentd.ts",
         "vibe-cloud-bootstrap": "./bin/cloud-bootstrap.ts",
@@ -105,7 +105,7 @@
     },
     "packages/config": {
       "name": "@vibe/config",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/shared": "workspace:*",
         "zod": "^4.0.0",
@@ -113,7 +113,7 @@
     },
     "packages/core": {
       "name": "@vibe/core",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/plugins": "workspace:*",
@@ -126,11 +126,11 @@
     },
     "packages/eval": {
       "name": "@vibe/eval",
-      "version": "0.6.14",
+      "version": "0.7.0",
     },
     "packages/macos-bridge": {
       "name": "@vibe/macos-bridge",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "bin": {
         "vibecodr-engine-host": "./bin/engine-host.ts",
       },
@@ -146,7 +146,7 @@
     },
     "packages/plugins": {
       "name": "@vibe/plugins",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/providers": "workspace:*",
         "@vibe/shared": "workspace:*",
@@ -154,14 +154,14 @@
     },
     "packages/protocol": {
       "name": "@vibe/protocol",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "zod": "^4.0.0",
       },
     },
     "packages/providers": {
       "name": "@vibe/providers",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/shared": "workspace:*",
@@ -190,7 +190,7 @@
     },
     "packages/runtime": {
       "name": "@vibe/runtime",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/config": "workspace:*",
         "@vibe/core": "workspace:*",
@@ -201,14 +201,14 @@
     },
     "packages/sdk": {
       "name": "@vibe/sdk",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/protocol": "workspace:*",
       },
     },
     "packages/server": {
       "name": "@vibe/server",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/core": "workspace:*",
         "@vibe/protocol": "workspace:*",
@@ -218,7 +218,7 @@
     },
     "packages/shared": {
       "name": "@vibe/shared",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/protocol": "workspace:*",
         "zod": "^4.0.0",
@@ -226,7 +226,7 @@
     },
     "packages/tools": {
       "name": "@vibe/tools",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/shared": "workspace:*",
         "ai": "^7.0.30",
@@ -235,7 +235,7 @@
     },
     "packages/tui": {
       "name": "@vibe/tui",
-      "version": "0.6.14",
+      "version": "0.7.0",
       "dependencies": {
         "@vibe/shared": "workspace:*",
       },
@@ -258,6 +258,7 @@
   },
   "overrides": {
     "@babel/core": "7.29.6",
+    "brace-expansion": "2.1.2",
   },
   "packages": {
     "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@1.2.1", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-jwYUdOQR7tc+Zfch53VL4JJyUNK/46q03uUTYb+PjECsmnNl94XFXOfYLJ8RBpMNidXd1rpOAVgb0vqD98xImA=="],
@@ -560,7 +561,7 @@
 
     "bowser": ["bowser@2.14.1", "", {}, "sha512-tzPjzCxygAKWFOJP011oxFHs57HzIhOEracIgAePE4pqB3LikALKnSzUyU4MGs9/iCEUuHlAJTjTc5M+u7YEGg=="],
 
-    "brace-expansion": ["brace-expansion@2.1.1", "", { "dependencies": { "balanced-match": "^1.0.0" } }, "sha512-WR1cURNjuvBLMZBMbqM0UoE+WAfdUcEV1ccD8PVBVOI+Z3ND4+SZbN8RsfT2bMuG1qwz5RFvPukSZm5fF2D5eA=="],
+    "brace-expansion": ["brace-expansion@2.1.2", "", { "dependencies": { "balanced-match": "^1.0.0" } }, "sha512-w5JZcKgdhDOgOwm8H+KgbosopHMuGcl6qbulwjtz3SM7I7P3yW1eAjzMPLrIE+NQ9vjgANKHWeMHnrT0OXW1oA=="],
 
     "browserslist": ["browserslist@4.28.4", "", { "dependencies": { "baseline-browser-mapping": "^2.10.38", "caniuse-lite": "^1.0.30001799", "electron-to-chromium": "^1.5.376", "node-releases": "^2.0.48", "update-browserslist-db": "^1.2.3" }, "bin": { "browserslist": "cli.js" } }, "sha512-MTc8i/x9jBQd1iMw2CFGS+rwMa07eYjLR0CCTLDACl9xhxy+nIs3KeML/biicXtk9JrZ6dnnTatmc7ErPXIxqw=="],
 

@@ -525,5 +525,5 @@ test("project-local skills and commands override plugin-registered ones (most-lo
   expect(engine.skills.get("foo")?.description).toBe("project foo");
   // The project FILE command wins over the plugin's registration.
   expect(engine.commands.get("bar")?.source).toBe("file");
-  expect(engine.commands.get("bar")?.run("x").kind).toBe("prompt");
+  expect((await engine.commands.get("bar")?.run("x"))?.kind).toBe("prompt");
 });

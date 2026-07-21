@@ -1,6 +1,6 @@
 {
   "name": "vibe-codr",
-  "version": "0.6.14",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,7 @@
     "vibecodr": "bun packages/cli/bin/vibecodr.ts",
     "build": "turbo run build",
     "build:all": "bun run build && npm --prefix apps/desktop run build",
-    "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr && bun build packages/cli/src/engine-worker-entry.ts --compile --outfile dist/vibecodr-engine-worker && bun scripts/release/build-app.ts dist/vibecodr-app.js",
+    "build:binary": "bun build packages/cli/bin/vibecodr.ts --compile --outfile dist/vibecodr && bun build packages/cli/src/engine-worker-entry.ts --compile --outfile dist/vibecodr-engine-worker && bun build packages/plugins/src/worker-entry.ts --compile --outfile dist/vibecodr-plugin-worker && bun scripts/release/build-app.ts dist/vibecodr-app.js",
     "build:sdk": "bun scripts/release/build-sdk.ts",
     "build:acp": "bun scripts/release/build-acp.ts",
     "build:vscode": "bun scripts/release/build-vscode.ts",
@@ -88,7 +88,8 @@
     "bun": ">=1.2.0"
   },
   "overrides": {
-    "@babel/core": "7.29.6"
+    "@babel/core": "7.29.6",
+    "brace-expansion": "2.1.2"
   },
   "patchedDependencies": {
     "@opentui/core@0.4.2": "patches/@opentui%2Fcore@0.4.2.patch"

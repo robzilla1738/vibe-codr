@@ -4,6 +4,39 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.0 — 2026-07-20
+
+### Added
+
+- A transport-neutral runtime platform with canonical protocol schemas, a
+  privacy-preserving run ledger, trace inspection/export, a loopback REST/SSE
+  server, typed SDK, ACP adapter, and thin VS Code client.
+- Evidence-explicit goal completion, independent assessor selection, strict CI
+  exits, sandboxed command loop conditions, and isolated model/profile evals.
+- Durable automation specifications, leases, idempotent claims, local controls,
+  and shared Desktop/mobile Jobs visibility for schedules and run history.
+- Session ancestry, `/fork` and `/tree`, cross-client lineage navigation, and
+  private redacted local HTML sharing.
+- Bounded semantic session digests with freshness, provenance, pin/forget/merge
+  controls, plus signed extension catalogs, exact integrity locks, rollback,
+  capability review, and crash-isolated third-party worker execution.
+- A durable Needs-your-Mac `macos` tool for explicitly approved local open and
+  reveal actions without granting cloud runtimes arbitrary local shell access.
+
+### Improved
+
+- Worker RPCs now have general deadlines, Desktop safely reclaims idle runtime
+  capacity and queues pinned launches, and background sessions issue private
+  native notifications for decisions, failures, and completion.
+- Multi-model usage now reports cache, latency, tokens, and estimated cost per
+  model; trace retention remains local, content-free, bounded, and crash-safe.
+
+### Fixed
+
+- AI SDK 7 transcript sanitation and legacy usage fixtures are compatible, the
+  OpenTUI Babel advisory is pinned clear, and replay/cursor decisions fail
+  closed instead of silently losing or duplicating state.
+
 ## 0.6.14 — 2026-07-19
 
 ### Fixed

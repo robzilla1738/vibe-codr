@@ -40,7 +40,7 @@ test("loadCommandFiles builds a prompt command from a markdown file", async () =
   const review = cmds[0]!;
   expect(review.name).toBe("review");
   expect(review.description).toBe("Review a file");
-  const result = review.run("src/index.ts");
+  const result = await review.run("src/index.ts");
   expect(result.kind).toBe("prompt");
   expect(result.kind === "prompt" && result.text).toBe("Review the file src/index.ts carefully.");
 });
@@ -107,7 +107,7 @@ test("command and skill bodies are read lazily at invocation, not retained from 
   await Bun.write(cmdFile, "new command body");
   await Bun.write(skillFile, "---\ndescription: PDFs\n---\nnew skill body");
 
-  const result = cmds[0]!.run("");
+  const result = await cmds[0]!.run("");
   expect(result.kind === "prompt" && result.text).toBe("new command body");
   expect(await skills[0]!.load()).toBe("new skill body");
 });
@@ -122,7 +122,7 @@ test("an oversized command/skill body is capped with an honest truncation marker
   );
 
   const cmd = (await loadCommandFiles(dir))[0]!;
-  const result = cmd.run("");
+  const result = await cmd.run("");
   expect(result.kind).toBe("prompt");
   const text = result.kind === "prompt" ? result.text : "";
   // Head-capped, not the full multi-MB body — plus a marker pointing at the file.
@@ -147,7 +147,7 @@ test("a command/skill file deleted after startup fails honestly, not with a thro
   rmSync(skillFile);
 
   // Lazy reads must not throw into the slash dispatcher / use_skill.
-  const result = cmds[0]!.run("");
+  const result = await cmds[0]!.run("");
   expect(result.kind).toBe("notice");
   expect(result.kind === "notice" && result.message).toContain("could not read");
   expect(await skills[0]!.load()).toContain("could not be read");

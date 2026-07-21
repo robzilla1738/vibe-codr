@@ -58,7 +58,7 @@ test("PluginHost loads a plugin that registers a command and a hook", async () =
 
   const cmd = commands.get("hello");
   expect(cmd).toBeDefined();
-  expect(cmd!.run("").kind).toBe("notice");
+  expect((await cmd!.run("")).kind).toBe("notice");
 
   const result = await hooks.run("user.prompt.submit", { text: "hi" });
   expect(result.text).toBe("hi [seen]");
@@ -92,7 +92,7 @@ test("PluginHost reads PluginManifestV1 before import and reports local health",
       name: "test-plugin",
       version: "1.0.0",
       status: "degraded",
-      reason: "Local plugin is unverified",
+      reason: "Local plugin is unverified and isolated",
       declaredContributions: ["commands"],
       registeredContributions: expect.objectContaining({ commands: ["manifested"] }),
       provenance: expect.objectContaining({ source: "local", verified: false }),
@@ -151,7 +151,7 @@ test("PluginHost rolls back and reports undeclared contributions", async () => {
   await Bun.write(
     pluginPath,
     `export function register(api) {
-       api.registerTool({ name: "undeclared_tool", description: "x", parameters: {}, execute: async () => ({ output: "x" }) });
+       api.registerTool({ name: "undeclared_tool", description: "x", inputSchema: {}, readOnly: true, execute: async () => ({ output: "x" }) });
      }`,
   );
   await writeManifest(pluginPath);

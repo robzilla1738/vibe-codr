@@ -10,7 +10,7 @@ export interface SlashCommand {
   name: string;
   description: string;
   source: "builtin" | "file" | "plugin";
-  run(args: string): SlashResult;
+  run(args: string): SlashResult | Promise<SlashResult>;
 }
 
 /** Slash command names the parser can actually dispatch. */

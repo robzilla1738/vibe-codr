@@ -401,7 +401,7 @@ export async function handleSlash(h: EngineHandle, name: string, args: string): 
   }
   const custom = RESERVED_SLASH.has(name) ? undefined : h.commands.get(name);
   if (custom) {
-    const result = custom.run(args);
+    const result = await custom.run(args);
     if (result.kind === "prompt") {
       // Treat an expanded command like a user prompt: checkpoint, hooks,
       // and auto-verify all apply, and it starts a fresh verify budget.

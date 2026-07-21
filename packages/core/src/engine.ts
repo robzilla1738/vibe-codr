@@ -1374,6 +1374,7 @@ export class Engine implements EngineClient {
     // away; leaving them orphaned made every `bash background:true` a leak. Await
     // the SIGKILL escalation so a child that ignores SIGTERM can't outlive us.
     await this.#jobs.killAllAndWait();
+    await this.#pluginHost?.close();
     await this.#mcp.close();
     // Kill any spawned language servers (and their worker grandchildren) — a
     // no-op for the bare TS path, which has nothing to dispose.
@@ -2165,7 +2166,7 @@ export class Engine implements EngineClient {
     if (slash) {
       const cmd = this.commands.get(slash.name);
       if (cmd) {
-        const r = cmd.run(slash.args);
+        const r = await cmd.run(slash.args);
         if (r.kind === "prompt") text = r.text;
         else if (r.kind === "notice") {
           // The command failed to expand (e.g. its file vanished mid-session) —

@@ -1670,5 +1670,7 @@ const KNOWN_THEMES = new Set(THEME_NAMES);
  * a real `/redo` would have restored — it just forgoes the built-in convenience.
  * `skill` is reserved because it exists precisely to be the UNshadowable way to
  * reach a skill whose bare name collides with a built-in or custom command —
- * a custom `/skill` would take that escape hatch away. */
-const RESERVED_SLASH = new Set(["undo", "clear", "new", "compact", "exit", "quit", "skill"]);
+ * a custom `/skill` would take that escape hatch away. `details` is reserved
+ * because it is dispatched immediately as a presentation-only live control; a
+ * prompt-producing custom command must never bypass the turn queue. */
+const RESERVED_SLASH = new Set(["undo", "clear", "new", "compact", "exit", "quit", "skill", "details"]);

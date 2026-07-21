@@ -1836,8 +1836,8 @@ html[data-scheme="light"] .chat-column:not(.is-empty)::after {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-md) var(--transcript-inset) calc(var(--composer-clearance) + var(--space-md));
-  scroll-padding-bottom: calc(var(--composer-clearance) + var(--space-md));
+  padding: var(--space-md) var(--transcript-inset) calc(var(--composer-clearance) + var(--panels-clearance) + var(--space-md));
+  scroll-padding-bottom: calc(var(--composer-clearance) + var(--panels-clearance) + var(--space-md));
 }
 
 .transcript:has(> .splash) {
@@ -2053,6 +2053,18 @@ html[data-scheme="light"] .chat-column:not(.is-empty)::after {
   color: var(--text-muted);
   font-size: var(--text-ui);
   line-height: 1.5;
+}
+
+.block-assistant.is-final:not(.streaming)::before {
+  content: "Result";
+  display: block;
+  margin-bottom: var(--space-xs);
+  color: var(--text-subtle);
+  font-size: var(--text-micro);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-label);
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .block-assistant.is-commentary .md p,
@@ -2892,6 +2904,21 @@ html[data-scheme="light"] .md .md-streaming-pre {
   padding-left: var(--space-sm);
 }
 
+.tool-artifact-open {
+  min-height: 30px;
+  margin: 2px 0 var(--space-xs);
+  padding: 0 var(--space-sm);
+  border: 1px solid color-mix(in oklab, var(--border) 34%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: color-mix(in oklab, var(--surface-subtle) 42%, transparent);
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+}
+
+.tool-artifact-open:hover { color: var(--assistant); background: var(--surface); }
+.tool-artifact-open:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
 .thinking-row {
   display: flex;
   width: min(100%, var(--prose-max));
@@ -3588,7 +3615,7 @@ html[data-scheme="light"] .md .md-streaming-pre {
 /* Narrow layouts: one-line activity chips instead of full task/subagent lists */
 .panel-strip-compact {
   display: flex;
-  flex-wrap: wrap;
+  width: 100%;
   align-items: center;
   gap: var(--space-xs);
   padding: 0 2px;
@@ -3598,6 +3625,7 @@ html[data-scheme="light"] .md .md-streaming-pre {
   display: inline-flex;
   min-height: 38px;
   min-width: 0;
+  width: 100%;
   max-width: 100%;
   align-items: center;
   gap: 10px;
@@ -3645,12 +3673,71 @@ html[data-scheme="light"].electron-transparent .panel-strip-chip {
   box-shadow: var(--focus-ring);
 }
 
-.panel-strip-chip > span:last-child {
+.panel-strip-primary {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.panel-strip-meta {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+}
+
+/* Completed turns keep the answer primary and fold the exact event chronology
+   into one OpenCode/Hermes-style process disclosure. */
+.turn-process {
+  width: min(100%, var(--prose-max));
+  margin: var(--space-xs) auto var(--space-sm);
+  color: var(--text-subtle);
+  font-family: var(--font-sans);
+}
+
+.turn-process-summary {
+  display: flex;
+  min-height: var(--transcript-compact-row-h);
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 3px var(--space-xs) 3px 0;
+  cursor: pointer;
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  list-style: none;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+
+.turn-process-summary::-webkit-details-marker { display: none; }
+.turn-process-summary:hover { color: var(--muted); }
+.turn-process-summary:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-xs); }
+.turn-process.has-failures .turn-process-summary { color: color-mix(in oklab, var(--del) 78%, var(--text-subtle)); }
+.turn-process-chevron { display: inline-flex; flex: 0 0 auto; }
+.turn-process-items { display: grid; gap: 2px; margin: 4px 0 0; padding: 0; }
+
+.turn-evidence {
+  display: flex;
+  width: min(100%, var(--prose-max));
+  min-height: 32px;
+  margin: var(--space-sm) auto 0;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0;
+  color: var(--text-subtle);
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+  text-align: left;
+}
+
+.turn-evidence:hover { color: var(--muted); }
+.turn-evidence:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-xs); }
+.turn-evidence.has-failures { color: color-mix(in oklab, var(--del) 76%, var(--text-subtle)); }
+.turn-evidence-label { color: var(--assistant); font-weight: var(--weight-semibold); }
+.turn-evidence-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-evidence .icon-chevron { margin-left: auto; flex: 0 0 auto; }
 
 /* Compact post-turn review affordance. It shares the transcript footer action
    row with Jump to latest so neither control stacks over the other. */
@@ -5101,7 +5188,11 @@ html.electron-transparent .composer-wrap:focus-within {
 
 .composer-density {
   text-transform: lowercase;
+  cursor: pointer;
+  appearance: auto;
 }
+
+.composer-density option { color: var(--assistant); background: var(--overlay); }
 
 /* Composer controls share the Local / Cloud geometry. Labels, dropdowns,
    utilities, and the primary action differ by state — never by silhouette. */
@@ -7240,7 +7331,7 @@ html.electron-transparent .sidebar-heading-row { background: var(--drawer-bg); }
   width: 100%;
   height: 100%;
   padding: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   letter-spacing: 0;
 }
 
@@ -8431,8 +8522,8 @@ html[data-scheme="light"] .brand-mark-image { filter: invert(1); }
 
   .topbar { padding-right: 8px; }
   .transcript {
-    padding-bottom: calc(var(--composer-clearance) + var(--space-md));
-    scroll-padding-bottom: calc(var(--composer-clearance) + var(--space-md));
+    padding-bottom: calc(var(--composer-clearance) + var(--panels-clearance) + var(--space-md));
+    scroll-padding-bottom: calc(var(--composer-clearance) + var(--panels-clearance) + var(--space-md));
   }
   /* Keep model identity — truncate instead of hiding */
   .composer-model {

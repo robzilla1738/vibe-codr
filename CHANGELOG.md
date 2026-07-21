@@ -4,6 +4,25 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.7 — 2026-07-21
+
+### Improved
+
+- Mode and transcript-density controls now apply immediately during an active
+  turn. Density remains presentation-only—the engine continues recording the
+  complete reasoning and tool-output stream—and no control command is added to
+  the prompt queue.
+- Completed Desktop turns collapse commentary, reasoning, and tool chronology
+  into a lossless Process summary while keeping the final Result and Evidence
+  primary. Diffs open in Changes and retained subagent output is expandable.
+- Live Tasks and Subagents share one truncation-safe row above the composer, and
+  transcript clearance accounts for that row so the newest output is not hidden.
+- The Desktop terminal uses the shared sans interface voice and opens detected
+  HTTP(S) links through the guarded external-browser bridge.
+- Existing providers discover newly published models without a Desktop release:
+  live provider lists and the models.dev cache can be refreshed, while explicit
+  `provider/model-id` selection remains available for uncatalogued models.
+
 ## 0.7.6 — 2026-07-21
 
 ### Fixed

@@ -214,6 +214,11 @@ export function validateConfig(config: Record<string, unknown>): string[] {
   ) {
     errors.push("accentColor: must be empty or a 6-digit hex color such as #8b5cf6");
   }
+  const trace = objectField(config, "trace", "trace", errors);
+  if (trace) {
+    errors.push(...checkBoolean(trace.enabled, "trace.enabled"));
+    errors.push(...checkEnum(trace.content, ["none", "redacted"], "trace.content"));
+  }
   errors.push(...checkStringArray(config.plugins, "plugins"));
   if (Array.isArray(config.plugins) && config.plugins.every((entry) => typeof entry === "string")) {
     errors.push(...validatePluginSpecifiers(config.plugins));

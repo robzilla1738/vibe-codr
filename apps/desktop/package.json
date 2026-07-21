@@ -1,6 +1,6 @@
 {
   "name": "vibe-codr-desktop",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "private": true,
   "author": "robzilla1738",
   "license": "MIT",
@@ -56,6 +56,7 @@
   "dependencies": {
     "@vercel/sandbox": "^2.6.0",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
     "e2b": "^2.33.0",
     "electron-updater": "^6.8.9",

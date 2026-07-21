@@ -135,10 +135,10 @@ whose HEAD equals the lock before it will embed a rebuilt host.
 - [x] Assistant output streams as lightweight plain text, then finalizes into Streamdown + GFM
 - [x] Diff blocks green/red hunk coloring
 - [x] Tool icons + condensed labels; expand on click; auto-expand on error
-- [x] Each turn preserves visible commentary → reasoning/tool → final-answer order;
-  density supplies defaults only, every tool/thinking disclosure remains
-  interactive, and empty-output tools do not advertise a fake chevron
-- [x] Turn fold (click or keyboard-activate the user bubble / ⌘O fold-all; no persistent arrow); density quiet/normal/verbose (⌘D)
+- [x] Each turn preserves visible commentary → reasoning/tool → final-answer order
+  while live; completed process folds losslessly behind duration/tool/agent/source
+  evidence while the final Result stays primary
+- [x] Turn fold (click or keyboard-activate the user bubble / ⌘O fold-all; no persistent arrow); density quiet/normal/verbose (⌘D), with mode and density changes applying immediately mid-turn rather than entering the prompt queue
 - [x] Windowed transcript (“N earlier turns”) with progressive reveal (20 at a time)
 - [x] Per-turn item windowing for long tool runs (cap 120, step 24, reveal page)
 - [x] Electron hard-caps live reasoning state (256 KiB), the compact Trail
@@ -149,7 +149,7 @@ whose HEAD equals the lock before it will embed a rebuilt host.
 - [x] Web-search results + `sources` fences as safe external source cards
 - [x] Rich data views: bar/line/sparkline/pie/weather fenced blocks render as visual components (RichBlockView)
 - [x] Active-task windowing; completed task panels retire with the CLI
-- [x] Subagent activity rows show status/result/elapsed state without an expandable detail transcript
+- [x] Subagent activity rows show status/result/elapsed state and expand to retained detail output
 - [x] Narrow-mode tasks / subagents / thinking panels
 
 ## Catalogs & chrome
@@ -361,7 +361,7 @@ npm run dev
   check, `selectModeAction`); Shift+Tab still cycles and a pending plan opens the
   explicit Run plan / Switch without running / Cancel decision on desktop and mobile
 - [x] Lucide stroke icons for chrome + composer; tool-row glyphs via renderer `tool-glyph.tsx` (shared unicode `toolIcon` labels unchanged)
-- [x] Sans UI chrome; mono reserved for real code (terminal grids, fences, tool/diff/job bodies, wordmark, rich charts)
+- [x] Sans UI chrome and interactive terminal; mono reserved for fences, tool/diff/job bodies, wordmark, and rich charts
 - [x] Streamdown markdown fences use Shiki `CodeBlock` + line numbers; theme follows app palette via `shikiThemeFor` (not hardcoded github)
 - [x] One copy control (`CopyButton`) for fences, tool output, answers, thinking, plans; Streamdown table copy enabled
 - [x] GFM tables: Streamdown 2.5 wrapper is flex (no float); scroll on the table shell; fixed layout so prose columns don’t clip or hog width

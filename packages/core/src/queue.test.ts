@@ -100,6 +100,22 @@ test("/queue clear drops everything still waiting", async () => {
   expect(events.some((e) => e.type === "notice" && e.message.includes("Cleared 2"))).toBe(true);
 });
 
+test("/details changes transcript density immediately while a turn is busy", async () => {
+  const { engine } = mockEngine(replyModel(50));
+
+  engine.send({ type: "submit-prompt", text: "active task" });
+  for (let i = 0; i < 100 && !engine.queueState().active; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  expect(engine.queueState().active?.label).toBe("active task");
+
+  engine.send({ type: "run-slash", name: "details", args: "quiet" });
+
+  expect(engine.snapshot().details).toBe("quiet");
+  expect(engine.queueState().pending.some((item) => item.label === "/details")).toBe(false);
+  await engine.whenIdle();
+});
+
 /** Poll the event log for the queue id of a waiting prompt with `label`. */
 async function waitForQueueId(events: UIEvent[], label: string): Promise<string> {
   for (let i = 0; i < 100; i++) {

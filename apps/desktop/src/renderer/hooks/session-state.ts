@@ -199,6 +199,7 @@ export type ChromeAction =
   | { type: "seed"; snap: EngineSnapshot; cwd: string }
   | { type: "event"; event: UIEvent }
   | { type: "optimistic-mode"; mode: "plan" | "execute"; approvals: "ask" | "auto" }
+  | { type: "optimistic-density"; density: TranscriptDensity }
   | { type: "set-busy"; busy: boolean }
   | { type: "set-thinking"; text: string }
   | { type: "set-trail"; lines: string[] }
@@ -272,6 +273,8 @@ export function reduceChrome(s: SessionChrome, a: ChromeAction): SessionChrome {
     }
     case "optimistic-mode":
       return { ...s, mode: a.mode, approvals: a.approvals };
+    case "optimistic-density":
+      return { ...s, density: a.density };
     case "set-busy":
       return { ...s, busy: a.busy };
     case "set-thinking":

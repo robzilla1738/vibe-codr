@@ -1776,12 +1776,16 @@ export class Engine implements EngineClient {
       }
       case "run-slash":
         // `/queue` inspects/clears the queue, so it must run immediately rather
-        // than wait behind the work it is meant to describe. `/loop stop` too:
+        // than wait behind the work it is meant to describe. `/details` is a
+        // presentation-only control: apply it immediately so Quiet/Normal/
+        // Verbose can change during a turn without becoming queued work. `/loop
+        // stop` too:
         // queued behind an already-enqueued iteration it could not sweep the
         // tick ahead of it, so one more full model turn ran after "stop". It
         // only mutates loop/queue state (never the conversation), so running it
         // at dispatch is safe.
         if (command.name === "queue") this.#handleQueueCommand(command.args);
+        else if (command.name === "details") void this.#handleSlash(command.name, command.args);
         else if (command.name === "loop" && command.args.trim() === "stop")
           this.#handleLoop(command.args);
         else this.#enqueue(`/${command.name}`, () => this.#handleSlash(command.name, command.args));

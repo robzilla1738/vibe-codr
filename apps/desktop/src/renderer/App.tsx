@@ -1798,8 +1798,11 @@ export function App() {
         e.preventDefault();
         const next = nextDensity(session.chrome.density);
         void (async () => {
+          const previous = session.chrome.density;
+          session.dispatchChrome({ type: "optimistic-density", density: next });
           const sent = await session.send({ type: "run-slash", name: "details", args: next });
           if (sent) session.showToast(`Density · ${densityLabel(next)}`);
+          else session.dispatchChrome({ type: "optimistic-density", density: previous });
         })();
         return;
       }
@@ -2376,6 +2379,7 @@ export function App() {
                         />
                       ) : undefined
                     }
+                    onReviewDiff={() => openWorkspaceDock("changes")}
                   />
                 ) : (
                   <div className="transcript">
@@ -2435,6 +2439,7 @@ export function App() {
                     />
                   ) : undefined
                 }
+                onReviewDiff={() => openWorkspaceDock("changes")}
               />
             )}
 
@@ -2509,38 +2514,25 @@ export function App() {
               {!session.inspectorOpen &&
                 (chrome.tasksUnfinishedTotal > 0 || chrome.subagents.length > 0) && (
                 <div className="panel-strip-compact" role="group" aria-label="Live activity">
-                  {chrome.tasksUnfinishedTotal > 0 && (
-                    <button
-                      type="button"
-                      className="panel-strip-chip"
-                      onClick={() => openSessionReview()}
-                      title="Open session panel for full task list"
-                    >
-                      <StatusDot status={activeTask ? "active" : "pending"} />
-                      <span>
-                        Tasks · {taskDone}/{chrome.tasksTotal}
-                        {activeTask ? ` · ${activeTask.title}` : ""}
-                      </span>
-                    </button>
-                  )}
-                  {chrome.subagents.length > 0 && (
-                    <button
-                      type="button"
-                      className="panel-strip-chip"
-                      onClick={() => openSessionReview(undefined, "session", "subagents")}
-                      title="Review each subagent"
-                      aria-label="Review subagent details"
-                    >
-                      <StatusDot status={runningSubagents > 0 ? "active" : "done"} />
-                      <span>
-                        {runningSubagents > 0
-                          ? `Subagents · ${runningSubagents} running`
-                          : doneSubagents > 0 && doneSubagents < chrome.subagents.length
-                            ? `Subagents · ${doneSubagents}/${chrome.subagents.length} done`
-                            : `Subagents · ${chrome.subagents.length}`}
-                      </span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="panel-strip-chip"
+                    onClick={() => openSessionReview(undefined, "session", runningSubagents > 0 ? "subagents" : null)}
+                    title="Open the live task and agent timeline"
+                    aria-label="Review live task and subagent details"
+                  >
+                    <StatusDot status={activeTask || runningSubagents > 0 ? "active" : "pending"} />
+                    <span className="panel-strip-primary">{activeTask?.title ?? "Session activity"}</span>
+                    <span className="panel-strip-meta">
+                      {chrome.tasksTotal > 0 ? `${taskDone}/${chrome.tasksTotal} tasks` : ""}
+                      {chrome.tasksTotal > 0 && chrome.subagents.length > 0 ? " · " : ""}
+                      {chrome.subagents.length > 0
+                        ? runningSubagents > 0
+                          ? `${runningSubagents} agent${runningSubagents === 1 ? "" : "s"} running`
+                          : `${doneSubagents}/${chrome.subagents.length} agents done`
+                        : ""}
+                    </span>
+                  </button>
                 </div>
               )}
             </div>
@@ -2613,12 +2605,25 @@ export function App() {
                 onCycleDensity={() => {
                   const next = nextDensity(chrome.density);
                   void (async () => {
+                    const previous = chrome.density;
+                    session.dispatchChrome({ type: "optimistic-density", density: next });
                     const sent = await session.send({
                       type: "run-slash",
                       name: "details",
                       args: next,
                     });
                     if (sent) session.showToast(`Density · ${densityLabel(next)}`);
+                    else session.dispatchChrome({ type: "optimistic-density", density: previous });
+                  })();
+                }}
+                onSelectDensity={(next) => {
+                  if (next === chrome.density) return;
+                  void (async () => {
+                    const previous = chrome.density;
+                    session.dispatchChrome({ type: "optimistic-density", density: next });
+                    const sent = await session.send({ type: "run-slash", name: "details", args: next });
+                    if (sent) session.showToast(`Density · ${densityLabel(next)}`);
+                    else session.dispatchChrome({ type: "optimistic-density", density: previous });
                   })();
                 }}
                 onPasteError={session.showToast}

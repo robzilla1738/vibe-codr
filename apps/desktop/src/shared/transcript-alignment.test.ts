@@ -13,7 +13,7 @@ describe("transcript activity alignment", () => {
     expect(styles).toMatch(/--transcript-measure:\s*40rem;/);
     expect(styles).toMatch(/--prose-max:\s*var\(--transcript-measure\);/);
     expect(styles).toMatch(/--composer-max:\s*var\(--transcript-measure\);/);
-    for (const selector of [".block-assistant", ".thinking-row", ".notice", ".status-notice"]) {
+    for (const selector of [".block-assistant", ".turn-process", ".notice", ".status-notice"]) {
       expect(rule(selector)).toContain("width: min(100%, var(--prose-max))");
     }
   });
@@ -21,6 +21,11 @@ describe("transcript activity alignment", () => {
   it("keeps commentary and reasoning on the shared transcript edge", () => {
     expect(rule(".block-assistant.is-commentary")).not.toContain("margin-left");
     expect(rule(".thinking-row")).toMatch(/margin:\s*0 auto;/);
+  });
+
+  it("does not indent nested process activity", () => {
+    expect(rule(".turn-process-items")).toMatch(/margin:\s*4px 0 0;/);
+    expect(rule(".turn-process-summary")).toMatch(/padding:\s*3px var\(--space-xs\) 3px 0;/);
   });
 
   it("owns transcript spacing at the flow container instead of child margins", () => {
@@ -31,11 +36,19 @@ describe("transcript activity alignment", () => {
     expect(rule(".earlier")).toContain("calc((100% - var(--prose-max)) / 2)");
   });
 
+  it("reserves measured room for live panels above the composer", () => {
+    const clearance = String.raw`calc\(var\(--composer-clearance\) \+ var\(--panels-clearance\) \+ var\(--space-md\)\)`;
+    expect(styles).toMatch(
+      new RegExp(String.raw`^\.transcript\s*\{[\s\S]*?padding: var\(--space-md\) var\(--transcript-inset\) ${clearance};[\s\S]*?scroll-padding-bottom: ${clearance};`, "m"),
+    );
+  });
+
   it("uses one compact height for transcript controls and activity rows", () => {
     expect(styles).toMatch(/--transcript-compact-row-h:\s*30px;/);
     for (const selector of [
       ".block-automation-summary",
       ".tool-head, .thinking-head",
+      ".turn-process-summary",
       ".status-notice",
       ".status-notice-summary",
       ".earlier",

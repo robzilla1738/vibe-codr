@@ -76,8 +76,11 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // Explicit pending-plan decisions and first-class commentary add ~4 KB to the
 // startup chunk and aggregate renderer. Allow under 0.5% growth for that
 // interaction contract while keeping both ceilings tight.
-const totalBudget = 2_926_000;
-const chunkBudget = 2_130_000;
+// Process/Result/Evidence adds 1,955 measured bytes to startup; guarded URL
+// detection remains isolated in the lazy terminal chunk. Retain under 2.3 KB
+// of headroom on both measured totals.
+const totalBudget = 2_936_000;
+const chunkBudget = 2_134_000;
 
 if (total > totalBudget || largest > chunkBudget) {
   console.error(`Renderer bundle budget exceeded: ${total} total bytes, ${largest} largest chunk`);

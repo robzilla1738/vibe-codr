@@ -198,7 +198,8 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 - Project rail and activity sidebar resize or become drawers at responsive breakpoints; widths persist where resizing is available
 - Projects and session titles come from the host's read-only `listProjects` index; Electron never parses vibe-codr state directly
 - Themes via `/theme` (same 16 palettes as OpenTUI); accents via `/accent`
-- Modes: explained **Plan / Agent / Yolo** menu with neutral icons and a current check in the composer (Shift+Tab still cycles)
+- Modes: explained **Plan / Agent / Yolo** menu with neutral icons and a current check in the composer (Shift+Tab still cycles). Mode and Quiet/Normal/Verbose changes apply immediately during a turn without adding queued prompts.
+- Agent output remains chronological while live. After completion, the exact commentary/reasoning/tool process folds into one summary while the Result and Evidence remain primary; one click restores the chronology.
 - Execution: **Local / Cloud** selection in the composer; changing it opens the same reviewed handoff as `/handoff local|cloud`, names the active model, and includes configured model/subscription access by default with an explicit opt-out
 - Slash discovery: one model selector and the complete canonical command set,
   with compact Commands / Skills / System groups cycled by Tab or selected
@@ -215,8 +216,9 @@ type scale, spacing/radii, a motion system (`--ease-enter/exit/standard`,
 `--dur-*`, press-down faster than release, `prefers-reduced-motion` collapse),
 two-layer keyboard focus rings (`--focus-ring`), and an elevation grammar of
 hairlines + inset edge-highlights at rest with layered shadows reserved for
-true overlays. **Sans is the UI voice**; monospace is reserved for real code
-(terminal grids, fenced blocks, tool/diff/job output, inline code, ASCII wordmark). Icons are
+true overlays. **Sans is the UI voice**, including the interactive terminal;
+monospace is reserved for real code (fenced blocks, tool/diff/job output, inline
+code, ASCII wordmark). Icons are
 Lucide stroke wrappers in `src/renderer/icons.tsx`. The composer, transcript
 output, and approval panels share one 40rem measure. The conversation pane is
 edge-to-edge inside the workspace; the composer is a dense, continuously
@@ -281,6 +283,11 @@ Full list: type `/keys` in the composer. See also [PARITY.md](./PARITY.md).
   Grok 4.5 / Grok Build selection, and transactional save → re-bootstrap;
   setup stays open with recovery guidance until the new engine configuration
   actually starts
+- **New models normally require no desktop update:** configured providers are
+  queried live when they expose discovery, then enriched from the models.dev
+  catalog (24-hour cache). Run `/models refresh` for a newly published catalog
+  entry, or enter `/model provider/model-id` directly. A release is needed only
+  for a new provider transport/auth flow or genuinely model-specific behavior.
 - **Progressive settings**: everyday Providers, Models, Appearance, Behavior,
   Permissions, Cloud, and Instructions stay visible; the remaining technical
   sections stay searchable behind **Advanced settings**. Models keeps its default

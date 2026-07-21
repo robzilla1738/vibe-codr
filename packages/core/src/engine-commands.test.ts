@@ -135,16 +135,19 @@ test("/details sets quiet|normal|verbose and emits details-changed; bare cycles"
 
   engine.send({ type: "run-slash", name: "details", args: "quiet" });
   await engine.whenIdle();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   expect(engine.snapshot().details).toBe("quiet");
   expect(events.some((e) => e.type === "details-changed" && e.details === "quiet")).toBe(true);
 
   // Bare /details cycles quiet → normal.
   engine.send({ type: "run-slash", name: "details", args: "" });
   await engine.whenIdle();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   expect(engine.snapshot().details).toBe("normal");
 
   engine.send({ type: "run-slash", name: "details", args: "nope" });
   await engine.whenIdle();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   expect(notices(events).at(-1)?.level).toBe("warn");
   expect(engine.snapshot().details).toBe("normal");
 });

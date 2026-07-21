@@ -23,6 +23,15 @@ The complete composer footer uses the Local/Cloud control geometry: one height,
 compact rounded-rectangle silhouette, quiet border, and consistent surface.
 Mode, attachment, density, context, model, Stop, and Send do not introduce
 separate pill or circle shapes; state and contrast carry their hierarchy.
+Mode and density controls remain live while a turn runs: changes apply
+immediately and never enter the prompt queue. Density changes presentation only;
+the engine retains the complete output stream.
+
+Model discovery is runtime-owned rather than release-bound. The picker combines
+configured providers' live model lists with cached models.dev metadata;
+`/models refresh` bypasses the 24-hour cache, and a valid `provider/model-id`
+may be selected directly. Only new transport/auth requirements or explicit
+model-specific behavior require a new desktop build.
 
 The Cloud review begins with a Local → Cloud route, then uses flat provider rows,
 an explicit Moves/Stays boundary, an optional next-task field, and one billing
@@ -152,9 +161,11 @@ without changing document flow. “Load earlier” controls anchor to the same
 conversation edge rather than the wider structured-output canvas. Compact
 activity, continuation, pagination, status, and footer-action surfaces share
 `--transcript-compact-row-h` so adjacent controls do not wobble in height.
-The central chat pane fills its workspace
-edge-to-edge. Output may scroll behind the floating composer; continuous
-full-surface frost blurs that overlap. Approval cards stay opaque.
+The central chat pane fills its workspace edge-to-edge. Output may scroll behind
+the floating composer while browsing history, but bottom clearance includes the
+measured live Tasks/Subagents or approval panel so the newest response settles
+fully above it. Continuous full-surface frost blurs transient overlap. Approval
+cards stay opaque.
 
 The project rail and activity sidebar are responsive and desktop-resizable by
 pointer or keyboard. Widths persist, and narrow layouts become edge drawers
@@ -310,9 +321,9 @@ without changing the active chat or scroll position.
 - Assistant output, tool output, approval panels, and the composer share the
   same reading width.
 - Tool and thinking rows share one compact sans/icon scale. Assistant commentary,
-  reasoning, and tools remain in arrival order; commentary stays visible while
-  only reasoning and individual tool-output bodies use disclosures. The final
-  answer keeps the primary response treatment. Each open thought is **one
+  reasoning, and tools remain in arrival order while a turn is active. Once the
+  final answer lands, prior activity folds into one lossless Process disclosure;
+  Result and Evidence remain primary. Each open thought is **one
   quiet surface** (label + prose; no brain icon; no stacked empty cards).
   Copy for thinking sits on the head row.
 - Quiet, Normal, and Verbose define only the initial disclosure state. A visible
@@ -333,8 +344,10 @@ without changing the active chat or scroll position.
 - User-message Copy / Edit / time sit **under** the bubble (trailing-aligned),
   hover/focus of the bubble stack; assistant Copy stays below the response.
 - Streaming follows only near the bottom; Jump to latest restores follow.
-- Live Tasks/Subagents chips use the standard UI text scale with a 38px compact
-  target and proportionally sized activity ring so progress remains legible.
+- Live Tasks/Subagents share one standard-scale, 38px status row with a flexible
+  active title and fixed counts so long task text truncates instead of clipping.
+- The transcript reserves the measured Tasks/Subagents panel height above the
+  composer; final output and actions must never finish underneath the strip.
 - Jump to latest occupies its own centered row above live Tasks/Subagents,
   permission, plan, and gate panels; it must never cover those controls.
 - Extremely large assistant/user/reasoning payloads retain their newest useful
@@ -406,11 +419,10 @@ snippet. External links go through `ExternalLink` / host bridge.
   remounts xterm against the new owner. Git controls pause because they target
   the local base; remote Git remains available in Terminal. Finder actions stay
   explicitly local and never masquerade as a Cloud reveal.
-- All activity tabs, headers, labels, and supporting paths use the shared app
-  sans stack and tokenized type scale. The xterm grid intentionally uses
-  `--font-mono` at 12.5px with neutral letter spacing and a 1.35 line height so
-  terminal cells and the thin bar cursor remain correct. Hierarchy comes from
-  weight, color, and spacing rather than inconsistent font sizes.
+- All activity tabs, headers, labels, supporting paths, and the xterm grid use
+  the shared app sans stack and tokenized type scale. The grid remains compact at
+  12.5px with neutral letter spacing and a 1.35 line height; detected HTTP(S)
+  URLs open in the default browser through the guarded external-link bridge.
 - Git’s branches/changes/history/remotes/pull-request content stays inside the
   activity rail. It must not replace the project rail or main chat workspace.
 - Changes is a dedicated master-detail review workspace: searchable directory

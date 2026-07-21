@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.7.7 — 2026-07-21
+
+### Improved
+
+- Mode and Quiet/Normal/Verbose controls apply immediately during a running turn
+  without adding a queued prompt; density remains presentation-only and lossless.
+- Completed turns use a lossless Process / Result / Evidence hierarchy, with
+  type-aware tool summaries, Changes review for diffs, and expandable retained
+  subagent output.
+- Live Tasks and Subagents share one truncation-safe row, and measured transcript
+  clearance keeps the newest response visible above it.
+- Terminal output uses the shared sans UI voice and detected HTTP(S) URLs open
+  through the guarded external-link bridge.
+- New models on existing providers are discovered live or through refreshed
+  models.dev metadata; only new auth, transport, or model-specific behavior
+  requires a Desktop update.
+
 ## 0.7.6 — 2026-07-21
 
 ### Fixed

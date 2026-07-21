@@ -17,7 +17,7 @@ import {
   paletteState,
 } from "../../shared/commands-catalog";
 import { applyComposerPaste } from "../../shared/composer-edit";
-import { densityLabel, isTranscriptDensity } from "../../shared/density";
+import { DENSITY_LEVELS, densityLabel, isTranscriptDensity, type TranscriptDensity } from "../../shared/density";
 import { modeWord, type PendingModeTransition, type UiMode } from "../../shared/modes";
 import { accentNameOf } from "../../shared/themes";
 import { applyAtMention, useAtMention } from "../hooks/useAtMention";
@@ -291,6 +291,7 @@ export function Composer({
   busy,
   onAbort,
   onCycleDensity,
+  onSelectDensity,
   onPasteError,
   onOpenModel,
   onOpenInspector,
@@ -328,6 +329,8 @@ export function Composer({
   onAbort: () => void;
   /** Cycle transcript density (⌘D). */
   onCycleDensity?: () => void;
+  /** Select presentation density immediately, including during a live turn. */
+  onSelectDensity?: (density: TranscriptDensity) => void;
   onPasteError: (message: string) => void;
   /** Open the model picker from the model chip (real affordance, I26). */
   onOpenModel?: () => void;
@@ -1443,16 +1446,18 @@ export function Composer({
               </span>
             ))}
           </div>
-          {onCycleDensity ? (
-            <button
-              type="button"
+          {onSelectDensity ? (
+            <select
               className="composer-chip composer-density"
-              onClick={onCycleDensity}
-              title={`${isTranscriptDensity(density) ? densityLabel(density) : density} · ⌘D`}
-              aria-label={`Density ${density}. ${isTranscriptDensity(density) ? densityLabel(density) : ""}. Press to cycle.`}
+              value={isTranscriptDensity(density) ? density : "normal"}
+              onChange={(event) => onSelectDensity(event.currentTarget.value as TranscriptDensity)}
+              title={`${isTranscriptDensity(density) ? densityLabel(density) : density} · ⌘D cycles`}
+              aria-label={`Output detail: ${density}. Change immediately.`}
             >
-              {density}
-            </button>
+              {DENSITY_LEVELS.map((level) => <option key={level} value={level}>{level}</option>)}
+            </select>
+          ) : onCycleDensity ? (
+            <button type="button" className="composer-chip composer-density" onClick={onCycleDensity}>{density}</button>
           ) : null}
           {typeof ctxPct === "number" && ctxPct > 0 && (
             <button

@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal as XtermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
@@ -23,8 +24,8 @@ function themeFromTokens(): { background: string; foreground: string; cursor: st
 }
 
 function terminalFontFromTokens(): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim();
-  return value || 'ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace';
+  const value = getComputedStyle(document.documentElement).getPropertyValue("--font-sans").trim();
+  return value || '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif';
 }
 
 export function TerminalPanel({
@@ -62,7 +63,14 @@ export function TerminalPanel({
       theme: themeFromTokens(),
     });
     const fit = new FitAddon();
+    const webLinks = new WebLinksAddon((event, uri) => {
+      event.preventDefault();
+      void window.vibe.openExternal(uri).catch(() => {
+        // Leave the URL visible in the terminal so it can still be copied.
+      });
+    });
     terminal.loadAddon(fit);
+    terminal.loadAddon(webLinks);
     terminal.open(surface);
 
     let disposed = false;

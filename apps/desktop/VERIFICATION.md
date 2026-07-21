@@ -194,6 +194,8 @@ Settings, Sessions, and the xterm runtime must remain in deferred chunks: aggreg
 renderer payload may include them, but the initial/largest chunk retains its
 budget. The aggregate ceiling includes a narrow 3 KB allowance for the active
 Sessions insight surface; the startup/largest-chunk ceiling is unchanged.
+Keep only measured headroom for the Process/Result/Evidence hierarchy and lazy
+terminal-link detector; do not relax the startup ceiling broadly.
 The renderer build extracts repeated legal banners into
 `out/renderer/THIRD_PARTY_LICENSES.txt`; `verify:bundle` requires that shipped
 notice file as well as the JavaScript budgets.
@@ -344,8 +346,9 @@ field retains ownership and the sidebar stays open; move focus to sidebar
 chrome and confirm Escape closes the lane.
 Open Terminal from a project and confirm `pwd` is that project root. Then open a
 Chats session and confirm `pwd` is the user's home directory, not `~/.vibe/chats`.
-Confirm terminal chrome uses the app sans stack while the xterm grid uses the
-compact mono stack with neutral tracking, even cell spacing, and a thin cursor.
+Confirm terminal chrome and the xterm grid use the app sans stack with neutral
+tracking and a thin cursor. Print an `https://` URL, click it, and confirm it
+opens in the default browser rather than navigating the Electron window.
 Resize through narrow and wide layouts and confirm the same stylized ASCII Vibe
 Codr wordmark remains visible rather than switching to a plain text fallback.
 

@@ -745,6 +745,21 @@ export function collapsedHint(t: Extract<Block, { kind: "tool" }>): string {
     const results = t.output.filter((l) => /^\d+\.\s/.test(l)).length;
     if (results > 0) return `${results} result${results === 1 ? "" : "s"}`;
   }
+  const name = (t.toolName ?? "").toLowerCase();
+  if (/^(bash|shell|exec|terminal|run)/.test(name)) {
+    const exitLine = t.output.find((line) => /\b(?:exit|status|code)\s*[:=]?\s*\d+\b/i.test(line));
+    const exit = exitLine?.match(/\b(?:exit|status|code)\s*[:=]?\s*(\d+)\b/i)?.[1];
+    return exit && exit !== "0" ? `exit ${exit}` : "completed";
+  }
+  if (/^(read|view|open)/.test(name)) {
+    return t.output.length > 0 ? `${t.output.length} lines` : "read";
+  }
+  if (/^(write|edit|patch|apply)/.test(name)) return "changed";
+  if (/^(find|search|grep|glob|rg)/.test(name)) {
+    const matches = t.output.filter((line) => line.trim()).length;
+    return `${matches} match${matches === 1 ? "" : "es"}`;
+  }
+  if (t.output.length === 0) return "done";
   return `${t.output.length} line${t.output.length === 1 ? "" : "s"}`;
 }
 

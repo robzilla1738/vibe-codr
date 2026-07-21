@@ -16,7 +16,7 @@ import { StatusDot } from "../primitives";
 import { isSubagentTool, stripToolGlyph, ToolGlyph } from "../tool-glyph";
 import { MarkdownView } from "./MarkdownView";
 import { SourceList } from "./SourceList";
-import { groupTranscriptItems } from "./transcript-groups";
+import { groupTranscriptItems, type ProcessSummary } from "./transcript-groups";
 
 /** Keep each session's reading position while the app remains open. A fresh
  * launch intentionally starts at the latest content instead of restoring a
@@ -46,6 +46,21 @@ function scrollBehavior(pref: ScrollBehavior): ScrollBehavior {
 
 function formatMessageTime(timestamp: number): string {
   return messageTimeFormatter.format(timestamp);
+}
+
+function processSummaryLabel(summary: ProcessSummary): string {
+  const parts: string[] = [];
+  if (summary.durationMs >= 1_000) {
+    const seconds = Math.max(1, Math.round(summary.durationMs / 1_000));
+    parts.push(`Worked ${seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`}`);
+  } else {
+    parts.push("Process");
+  }
+  if (summary.tools > 0) parts.push(`${summary.tools} tool${summary.tools === 1 ? "" : "s"}`);
+  if (summary.subagents > 0) parts.push(`${summary.subagents} agent${summary.subagents === 1 ? "" : "s"}`);
+  if (summary.sources > 0) parts.push(`${summary.sources} source${summary.sources === 1 ? "" : "s"}`);
+  if (summary.failures > 0) parts.push(`${summary.failures} failed`);
+  return parts.join(" · ");
 }
 
 function memoryNotice(text: string): { count: string; details: string[] } | null {
@@ -139,12 +154,14 @@ const BlockView = memo(function BlockView({
   theme,
   now,
   onSetExpanded,
+  onReviewDiff,
 }: {
   block: Block;
   density: TranscriptDensity;
   theme: string;
   now: number;
   onSetExpanded: (id: number, expanded: boolean) => void;
+  onReviewDiff?: () => void;
 }) {
   switch (block.kind) {
     case "assistant": {
@@ -176,12 +193,16 @@ const BlockView = memo(function BlockView({
         const label = stripToolGlyph(block.label);
         return (
           <div className="tool-row subagent-row">
-            <div
+            <button
+              type="button"
               className={`tool-head subagent-head${block.isError ? " error" : ""}${!block.done ? " live" : ""}`}
-              role="status"
+              onClick={() => onSetExpanded(block.id, collapsed)}
+              aria-expanded={!collapsed}
+              aria-controls={`tool-body-${block.id}`}
               aria-label={`Subagent ${label}, ${block.done ? "done" : "running"}`}
             >
               <span className="tool-label">
+                <IconChevron open={!collapsed} size={13} />
                 <StatusDot status={block.done ? "done" : "running"} />
                 <span>{label}</span>
               </span>
@@ -189,7 +210,14 @@ const BlockView = memo(function BlockView({
                 {!block.done && block.tail ? " …" : ""}
                 {dur ? ` ${dur}` : ""}
               </span>
-            </div>
+            </button>
+            {!collapsed && (outputText || block.tail) ? (
+              <PlainToolBody id={`tool-body-${block.id}`} text={outputText || block.tail || ""}>
+                {block.isMarkdown && outputText ? (
+                  <div className="md"><MarkdownView theme={theme}>{outputText}</MarkdownView></div>
+                ) : outputText || block.tail}
+              </PlainToolBody>
+            ) : null}
           </div>
         );
       }
@@ -235,6 +263,11 @@ const BlockView = memo(function BlockView({
           {!collapsed && block.isDiff && (
             <div id={`tool-body-${block.id}`}>
               <DiffBody lines={block.output} />
+              {onReviewDiff ? (
+                <button type="button" className="tool-artifact-open" onClick={onReviewDiff}>
+                  Open in Changes
+                </button>
+              ) : null}
             </div>
           )}
           {!collapsed && !block.isDiff && block.output.length > 0 && (
@@ -391,23 +424,56 @@ const BlockView = memo(function BlockView({
 
 const TranscriptTurn = memo(function TranscriptTurn({
   turn, folded, itemStart, itemHidden, itemRevealPage, active, liveThinking, density, theme, now,
-  onSetBlockExpanded, onToggleTurn, onEdit, onRevealTurnItems,
+  onSetBlockExpanded, onToggleTurn, onEdit, onRevealTurnItems, onReviewDiff,
 }: {
   turn: Turn; folded: boolean; itemStart: number; itemHidden: number; itemRevealPage: number;
   active: boolean; liveThinking?: string; density: TranscriptDensity; theme: string; now: number;
   onSetBlockExpanded: (id: number, expanded: boolean) => void; onToggleTurn: (key: number) => void;
   onEdit: (text: string) => void; onRevealTurnItems: (turnKey: number, hidden: number) => void;
+  onReviewDiff?: () => void;
 }) {
-  const renderedItems = groupTranscriptItems(turn.items, itemStart).map((item) => {
+  const [processOpen, setProcessOpen] = useState(false);
+  useEffect(() => {
+    setProcessOpen(active);
+  }, [active, turn.key]);
+
+  const renderBlock = (block: Block) => (
+    <BlockView
+      key={block.id}
+      block={block}
+      density={density}
+      theme={theme}
+      now={now}
+      onSetExpanded={onSetBlockExpanded}
+      onReviewDiff={onReviewDiff}
+    />
+  );
+  const groupedItems = groupTranscriptItems(turn.items, itemStart, !active);
+  const compactProcess = groupedItems.find((item) => item.kind === "process");
+  const gateEvidence = turn.items
+    .filter((block): block is Extract<Block, { kind: "notice" }> => block.kind === "notice")
+    .map((block) => gateStatusNotice(block.text))
+    .find(Boolean);
+  const visualEvidence = turn.items
+    .filter((block): block is Extract<Block, { kind: "notice" }> => block.kind === "notice")
+    .map((block) => visualStatusNotice(block.text))
+    .find(Boolean);
+  const renderedItems = groupedItems.map((item) => {
+    if (item.kind === "block") return renderBlock(item.block);
+    const label = processSummaryLabel(item.summary);
     return (
-      <BlockView
-        key={item.block.id}
-        block={item.block}
-        density={density}
-        theme={theme}
-        now={now}
-        onSetExpanded={onSetBlockExpanded}
-      />
+      <details
+        key={`process-${turn.key}`}
+        className={`turn-process${item.summary.failures > 0 ? " has-failures" : ""}`}
+        open={processOpen}
+        onToggle={(event) => setProcessOpen(event.currentTarget.open)}
+      >
+        <summary className="turn-process-summary">
+          <span className="turn-process-chevron" aria-hidden><IconChevron open={processOpen} size={13} /></span>
+          <span>{label}</span>
+        </summary>
+        <div className="turn-process-items">{item.blocks.map(renderBlock)}</div>
+      </details>
     );
   });
   return (
@@ -454,6 +520,23 @@ const TranscriptTurn = memo(function TranscriptTurn({
             <div className="thinking-body">{liveThinking}</div>
           </details>
         ) : null}
+        {!folded && !active && compactProcess ? (
+          <button
+            type="button"
+            className={`turn-evidence${compactProcess.summary.failures > 0 || gateEvidence?.tone === "warning" ? " has-failures" : ""}`}
+            onClick={() => setProcessOpen((open) => !open)}
+            aria-expanded={processOpen}
+          >
+            <span className="turn-evidence-label">Evidence</span>
+            <span className="turn-evidence-meta">
+              {compactProcess.summary.tools} tool{compactProcess.summary.tools === 1 ? "" : "s"}
+              {gateEvidence ? ` · ${gateEvidence.label}` : ""}
+              {visualEvidence ? ` · visual check${visualEvidence.consoleErrors + visualEvidence.deadControls === 0 ? " passed" : " has issues"}` : ""}
+              {compactProcess.summary.sources > 0 ? ` · ${compactProcess.summary.sources} source${compactProcess.summary.sources === 1 ? "" : "s"}` : ""}
+            </span>
+            <IconChevron open={processOpen} size={12} />
+          </button>
+        ) : null}
       </div>
     </section>
   );
@@ -477,6 +560,7 @@ export function TranscriptView({
   onRevealTurnItems,
   followSignal,
   footerAccessory,
+  onReviewDiff,
 }: {
   sessionId: string;
   turns: Turn[];
@@ -499,6 +583,7 @@ export function TranscriptView({
   onRevealTurnItems: (turnKey: number, hidden: number) => void;
   followSignal: number;
   footerAccessory?: ReactNode;
+  onReviewDiff?: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const restoringSessionRef = useRef(false);
@@ -591,6 +676,7 @@ export function TranscriptView({
                 active={active} liveThinking={active ? liveThinking : undefined} density={density} theme={theme} now={active ? now : 0}
                 onSetBlockExpanded={onSetBlockExpanded} onToggleTurn={onToggleTurn} onEdit={onEdit}
                 onRevealTurnItems={onRevealTurnItems}
+                onReviewDiff={onReviewDiff}
               />
             );
           })}

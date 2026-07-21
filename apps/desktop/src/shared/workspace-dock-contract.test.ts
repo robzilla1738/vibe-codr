@@ -87,8 +87,10 @@ describe("workspace dock design contract", () => {
     for (const label of ["Session", "Changes", "Git", "Terminal", "Jobs"]) {
       expect(sidebarSource).toContain(`label: "${label}"`);
     }
-    expect(terminalSource).toContain('getPropertyValue("--font-mono")');
+    expect(terminalSource).toContain('getPropertyValue("--font-sans")');
     expect(terminalSource).toContain("fontFamily: terminalFontFromTokens()");
+    expect(terminalSource).toContain("new WebLinksAddon");
+    expect(terminalSource).toContain("window.vibe.openExternal(uri)");
     expect(terminalSource).toContain("letterSpacing: 0");
   });
 

@@ -150,6 +150,7 @@ These values are the current production tokens in `src/renderer/styles.css`:
 | `--transcript-inset` | `64px` | Desktop output side inset |
 | `--column-inset` | `48px` | Column framing and narrow fallback |
 | `--composer-clearance` | `184px` | Bottom room reserved for floating composer |
+| `--panels-clearance` | `0px` | Measured extra room for live task, gate, and approval panels |
 | `--topbar-h` | `52px` | Main stage chrome |
 | `--composer-input-min` | `44px` | Resting composer input height |
 
@@ -278,9 +279,15 @@ content hierarchy signal, not a replacement for layout.
 
 The empty-home brand is the same fixed-geometry ASCII wordmark at every window
 size; container-relative scaling changes its size without replacing it with a
-plain text fallback. Activity chrome uses sans. The xterm grid is real machine
-output and therefore uses `--font-mono` at 12.5px, neutral letter spacing, and
-1.35 line height so cells and the thin bar cursor remain geometrically correct.
+plain text fallback. Activity chrome and the xterm grid use `--font-sans`; the
+terminal keeps a compact 12.5px size, neutral letter spacing, and 1.35 line
+height. URLs detected in terminal output open through the guarded external-link
+bridge rather than navigating the app window.
+
+Completed transcript hierarchy follows `Process → Result → Evidence`: Process
+is a quiet, lossless disclosure; Result keeps the normal prose voice; Evidence
+is a compact sans metadata row. During streaming, the process stays expanded
+and chronological so compaction never hides current activity.
 
 ## Spacing and shape
 

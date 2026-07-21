@@ -97,6 +97,11 @@ describe("validateConfig", () => {
     expect(errs.some((e) => e.includes("approvalMode"))).toBe(true);
   });
 
+  it("mirrors the engine trace policy without allowing raw content", () => {
+    expect(validateConfig({ trace: { enabled: true, content: "redacted" } })).toEqual([]);
+    expect(validateConfig({ trace: { content: "raw" } }).some((error) => error.includes("trace.content"))).toBe(true);
+  });
+
   it("rejects compaction threshold out of range", () => {
     const errs = validateConfig({ compaction: { threshold: 1.5 } });
     expect(errs.some((e) => e.includes("compaction.threshold"))).toBe(true);

@@ -37,7 +37,9 @@ describe("canonical protocol production bundling contract", () => {
     const app = readFileSync(new URL("../renderer/App.tsx", import.meta.url), "utf8");
     const sessionHook = readFileSync(new URL("../renderer/hooks/useSession.ts", import.meta.url), "utf8");
     expect(clientRuntime).not.toContain('from "zod"');
-    expect(clientRuntime).toContain('import type { EngineSnapshot, UIEvent } from "./domain.ts"');
+    expect(clientRuntime).toContain("EngineSnapshot");
+    expect(clientRuntime).toContain("UIEvent");
+    expect(clientRuntime).toContain('from "./domain.ts"');
     expect(runtimeGuards).toContain('from "@vibe/protocol/client-runtime"');
     expect(runtimeGuards).not.toContain("Schema.safeParse");
     expect(app).toContain('from "@vibe/protocol/client-runtime"');

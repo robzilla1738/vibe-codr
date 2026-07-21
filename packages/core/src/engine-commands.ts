@@ -112,7 +112,9 @@ export function formatSessionTree(tree: SessionTreeNode, currentId: string): str
     const fork = node.meta.forkedAtTurnId ?? node.meta.forkedFrom?.turnId;
     lines.push(`${prefix}${branch}${node.meta.title || node.meta.id}${fork ? `  @ ${fork}` : ""}${current}`);
     const childPrefix = root ? "" : `${prefix}${last ? "   " : "│  "}`;
-    node.children.forEach((child, index) => visit(child, childPrefix, index === node.children.length - 1, false));
+    node.children.forEach((child, index) => {
+      visit(child, childPrefix, index === node.children.length - 1, false);
+    });
   };
   visit(tree, "", true, true);
   return lines.join("\n");

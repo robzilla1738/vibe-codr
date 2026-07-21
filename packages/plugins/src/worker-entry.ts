@@ -162,8 +162,14 @@ function toolContext(raw: Record<string, JsonValue>): ToolContext {
 }
 
 function safeResult(id: number, value: unknown): void {
-  if (!isJsonValue(value)) return reply(id, false, "invalid-contribution");
-  if (encodedJsonBytes(value) > PLUGIN_WORKER_LIMITS.outputBytes) return reply(id, false, "output-too-large");
+  if (!isJsonValue(value)) {
+    reply(id, false, "invalid-contribution");
+    return;
+  }
+  if (encodedJsonBytes(value) > PLUGIN_WORKER_LIMITS.outputBytes) {
+    reply(id, false, "output-too-large");
+    return;
+  }
   reply(id, true, value);
 }
 

@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 
 export interface EvalFixtureV1 {
   schemaVersion: 1;
@@ -184,7 +184,6 @@ function matchesScope(path: string, scope: string): boolean { const prefix = sco
 function lastJsonObject(output: string): Record<string, unknown> | undefined { for (const line of output.trim().split(/\r?\n/).reverse()) try { const value = JSON.parse(line); if (value && typeof value === "object" && !Array.isArray(value)) return value; } catch {} return undefined; }
 function numberField(value: Record<string, unknown> | undefined, key: string): number { const direct = value?.[key]; return typeof direct === "number" && Number.isFinite(direct) && direct >= 0 ? direct : 0; }
 function stringField(value: Record<string, unknown> | undefined, key: string): string | undefined { const direct = value?.[key]; return typeof direct === "string" && direct.length <= 240 ? direct : undefined; }
-function lines(value: string): string[] { return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).sort(); }
 function statusPaths(value: string): string[] { return value.split(/\r?\n/).filter(Boolean).map((line) => { const raw = line.slice(3); const renamed = raw.includes(" -> ") ? raw.split(" -> ").at(-1)! : raw; return renamed.replace(/^"|"$/g, ""); }).sort(); }
 function bounded(value: string): string { return value.slice(0, MAX_OUTPUT); }
 function safeName(value: string): string { return value.replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 40) || "task"; }

@@ -70,7 +70,10 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // The trace viewer adds 1,849 bytes to the exact 542d784 base (which had
 // already drifted 488 bytes over the prior cap). Keep 1,663 bytes of aggregate
 // variance room while preserving the unchanged startup/largest-chunk ceiling.
-const totalBudget = 2_916_000;
+// Session ancestry navigation adds 286 measured bytes across the existing
+// project-rail surface. Keep a narrow 2 KB allowance; the startup chunk ceiling
+// remains unchanged.
+const totalBudget = 2_918_000;
 const chunkBudget = 2_120_000;
 
 if (total > totalBudget || largest > chunkBudget) {

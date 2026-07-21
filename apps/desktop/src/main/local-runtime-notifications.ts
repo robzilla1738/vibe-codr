@@ -72,6 +72,10 @@ export class LocalRuntimeNotificationRouter {
 }
 
 function safeLabel(value: string, fallback: string): string {
-  const clean = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const printable = Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code <= 31 || code === 127 ? " " : character;
+  }).join("");
+  const clean = printable.replace(/\s+/g, " ").trim();
   return (clean || fallback).slice(0, 80);
 }

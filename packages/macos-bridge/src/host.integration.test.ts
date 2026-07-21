@@ -125,6 +125,7 @@ describe("engine host protocol boundary", () => {
     expect(await proc.next((value) => value.type === "fatal")).toEqual({
       type: "fatal",
       message: "requested session not found: ses_missing",
+      runEventTail: [],
     });
   });
   test("applies a runtime profile even when the launcher drops the cloud runtime flag", async () => {

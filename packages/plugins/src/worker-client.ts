@@ -161,7 +161,8 @@ export class PluginWorkerClient {
     if (this.#closed) return;
     this.#stdout = Buffer.concat([this.#stdout, chunk]);
     if (this.#stdout.byteLength > PLUGIN_WORKER_LIMITS.frameBytes && !this.#stdout.includes(10)) {
-      return this.#terminate("invalid-frame");
+      this.#terminate("invalid-frame");
+      return;
     }
     while (true) {
       const newline = this.#stdout.indexOf(10);
@@ -169,18 +170,29 @@ export class PluginWorkerClient {
       const frame = this.#stdout.subarray(0, newline);
       this.#stdout = this.#stdout.subarray(newline + 1);
       if (frame.byteLength === 0) continue;
-      if (frame.byteLength > PLUGIN_WORKER_LIMITS.frameBytes) return this.#terminate("invalid-frame");
+      if (frame.byteLength > PLUGIN_WORKER_LIMITS.frameBytes) {
+        this.#terminate("invalid-frame");
+        return;
+      }
       let decoded: unknown;
       try { decoded = JSON.parse(frame.toString("utf8")); }
-      catch { return this.#terminate("invalid-frame"); }
+      catch {
+        this.#terminate("invalid-frame");
+        return;
+      }
       const response = parseWorkerResponse(decoded);
       if (!response || encodedJsonBytes(response) > PLUGIN_WORKER_LIMITS.outputBytes) {
-        return this.#terminate("invalid-frame");
+        this.#terminate("invalid-frame");
+        return;
       }
       const pending = this.#pending.get(response.id);
-      if (!pending) return this.#terminate("invalid-frame");
+      if (!pending) {
+        this.#terminate("invalid-frame");
+        return;
+      }
       if (!response.ok && (response.error === "invalid-frame" || response.error === "output-too-large" || response.error === "request-limit")) {
-        return this.#terminate(response.error);
+        this.#terminate(response.error);
+        return;
       }
       this.#pending.delete(response.id);
       clearTimeout(pending.timer);

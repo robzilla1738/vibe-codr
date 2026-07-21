@@ -100,7 +100,6 @@ test("renames, archives, and deletes saved sessions through host RPC", async () 
 test("streams reasoning, tools, diffs, markdown, telemetry, and engine-idle", async () => {
   await submit("fixture:stream");
   await expect(page.getByText("Done with markdown.")).toBeVisible();
-  await page.locator(".thinking-group > .thinking-group-head").first().click();
   await expect(page.getByRole("button", { name: /edited src\/example\.ts/ })).toBeVisible();
   await expect(page.getByText("fixture:stream")).toBeVisible();
   await expect(page.locator(".composer-metric", { hasText: "15 tok · $0.0010" })).toBeAttached();
@@ -117,19 +116,18 @@ test("streams reasoning, tools, diffs, markdown, telemetry, and engine-idle", as
   await submit("/details quiet");
   await submit("fixture:stream");
   await expect(page.getByText("Done with markdown.").last()).toBeVisible();
-  const quietWork = page.locator(".thinking-group").last();
-  await quietWork.locator(".thinking-group-head").click();
-  const quietFailure = quietWork.locator("button.tool-head").filter({ hasText: "exit 1" });
+  const quietTurn = page.locator(".turn").last();
+  const quietFailure = quietTurn.locator("button.tool-head").filter({ hasText: "exit 1" });
   await quietFailure.click();
   await expect(quietFailure).toHaveAttribute("aria-expanded", "true");
-  await expect(quietWork.getByText("fixture command failed", { exact: true })).toBeVisible();
-  await expect(quietWork.getByRole("status", { name: /npm install, failed with no output/i })).toBeVisible();
+  await expect(quietTurn.getByText("fixture command failed", { exact: true })).toBeVisible();
+  await expect(quietTurn.getByRole("status", { name: /npm install, failed with no output/i })).toBeVisible();
 
   await submit("/details verbose");
-  const verboseFailure = quietWork.locator("button.tool-head").filter({ hasText: "exit 1" });
+  const verboseFailure = quietTurn.locator("button.tool-head").filter({ hasText: "exit 1" });
   await verboseFailure.click();
   await expect(verboseFailure).toHaveAttribute("aria-expanded", "false");
-  await expect(quietWork.getByText("fixture command failed", { exact: true })).toBeHidden();
+  await expect(quietTurn.getByText("fixture command failed", { exact: true })).toBeHidden();
 });
 
 test("shows actionable live insight in Sessions and settles it after the turn", async () => {
@@ -235,8 +233,6 @@ test("renders task, subagent, source, job, and checkpoint activity in the correc
   await expect(page.getByRole("region", { name: "Session", exact: true })).toBeHidden();
   // Opening Session closes Jobs; leave Jobs closed so the transcript is interactive.
   await expect(page.getByRole("button", { name: "Dismiss jobs" })).toHaveCount(0);
-  const workGroup = page.locator(".thinking-group > .thinking-group-head").last();
-  if ((await workGroup.getAttribute("aria-expanded")) !== "true") await workGroup.click();
   await page.getByRole("button", { name: /Expand.*search.*fixture/ }).click();
   await expect(page.getByRole("link", { name: "Fixture search" })).toBeVisible();
 });

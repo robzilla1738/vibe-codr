@@ -4,7 +4,7 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
-## 0.7.5 — 2026-07-21
+## 0.7.6 — 2026-07-21
 
 ### Fixed
 
@@ -18,6 +18,8 @@ All notable changes to vibe-codr are documented here.
   mistaking them for per-token synchronous rendering.
 - Desktop bundle ceilings include a narrow allowance for the new Plan decision
   surface and visible commentary hierarchy.
+- Desktop end-to-end journeys target the individual reasoning and tool
+  disclosures that replaced the removed turn-wide Work wrapper.
 
 ## 0.7.2 — 2026-07-21
 

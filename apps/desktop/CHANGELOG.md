@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.7.5 — 2026-07-21
+## 0.7.6 — 2026-07-21
 
 ### Fixed
 
@@ -16,6 +16,8 @@
   flush while continuing to reject synchronous per-token rendering.
 - Renderer budgets retain tight limits while accounting for the new Plan
   decision popover and first-class commentary treatment.
+- Electron journeys now exercise individual tool/reasoning disclosures instead
+  of the removed turn-wide Work group.
 
 ## 0.7.2 — 2026-07-21
 

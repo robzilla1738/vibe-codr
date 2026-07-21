@@ -148,6 +148,7 @@ export interface VibeConfig {
   theme?: string;
   accentColor?: string;
   details?: "quiet" | "normal" | "verbose";
+  trace?: { enabled?: boolean; content?: "none" | "redacted" };
   mouse?: boolean;
   plugins?: string[];
   toolDiscovery?: { mode?: "auto" | "direct"; directTools?: string[] };

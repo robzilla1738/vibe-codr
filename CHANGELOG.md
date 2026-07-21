@@ -4,6 +4,10 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.1 — 2026-07-21
+
+- Restore Desktop config-shape parity for the additive local trace policy so locked-engine release verification cannot drift.
+
 ## 0.7.0 — 2026-07-20
 
 ### Added

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.7.1 — 2026-07-21
+
+- Add the engine trace policy to the Desktop config contract, closing the v0.7.0 packaged-release parity failure.
+
 ## 0.7.0 — 2026-07-20
 
 ### Added

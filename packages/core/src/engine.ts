@@ -564,6 +564,7 @@ export class Engine implements EngineClient {
           },
           jobs: this.#jobs,
           sandbox: this.#sandbox,
+          externalCapability: (request) => this.requestExternalCapability(request),
         }),
       );
     // Surface tool-name collisions (MCP/plugin tools shadowing a built-in, or a

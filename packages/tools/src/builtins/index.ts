@@ -16,6 +16,7 @@ import { gitTools } from "./git.ts";
 import { BackgroundJobs, backgroundJobTools } from "./jobs.ts";
 import { createFetchCache } from "./fetch-cache.ts";
 import type { SandboxPolicy } from "../sandbox.ts";
+import { macosTool, type ExternalCapabilityRequester } from "./macos.ts";
 
 /** How long a fetched page stays cache-fresh (docs/changelogs get re-read a lot). */
 const WEBFETCH_CACHE_TTL_MS = 5 * 60_000;
@@ -30,6 +31,8 @@ export interface BuiltinToolOptions {
   /** OS sandbox policy (defense-in-depth under the permission engine): wraps every
    * `bash` + background-job spawn. Off/unavailable → base argv (no behavior change). */
   sandbox?: SandboxPolicy;
+  /** Durable machine-bound action bridge. Omitted outside capable runtimes. */
+  externalCapability?: ExternalCapabilityRequester;
 }
 
 /** All file/shell/web/plan/git built-in tools (subagent tools are added by core). */
@@ -71,6 +74,7 @@ export function builtinTools(opts: BuiltinToolOptions = {}): ToolDefinition[] {
       }),
     );
   }
+  if (opts.externalCapability) tools.push(macosTool(opts.externalCapability));
   return tools;
 }
 
@@ -88,6 +92,7 @@ export {
   packageInfoTool,
   presentPlanTool,
   repoMapTool,
+  macosTool,
   gitTools,
 };
 export { BackgroundJobs, backgroundJobTools } from "./jobs.ts";

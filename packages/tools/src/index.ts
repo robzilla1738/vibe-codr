@@ -37,7 +37,9 @@ export {
   webSearchTool,
   packageInfoTool,
   presentPlanTool,
+  macosTool,
 } from "./builtins/index.ts";
+export type { ExternalCapabilityRequester } from "./builtins/macos.ts";
 export type { WebSearchOptions } from "./builtins/web-search.ts";
 export { canonicalizeUrl } from "./builtins/searchcore.ts";
 export { unifiedDiff, type DiffResult } from "./diff.ts";

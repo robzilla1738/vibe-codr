@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.7.10 — 2026-07-21
+
+### Added
+
+- A secure, retained `WebContentsView` browser now opens ordinary content links
+  inside the activity sidebar; modifier clicks and sensitive flows remain in the
+  default browser.
+
+### Improved
+
+- Terminal output uses the mono code voice, full live theme ANSI colors, a wider
+  default pane, and copy/clear/restart/Jump to Latest controls.
+
+### Fixed
+
+- Archiving the active last project safely switches to Chats first, so Projects
+  may be empty without creating or opening another code project.
+
 ## 0.7.9 — 2026-07-21
 
 ### Added

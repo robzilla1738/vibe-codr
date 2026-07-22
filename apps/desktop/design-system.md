@@ -103,11 +103,11 @@ The shell has five primary layout regions:
    safe forks, and background-runtime state reuse these existing rows, menus,
    labels, and status treatments; they add no dashboard or layout region.
 4. **Workspace dock:** compact navigation that stays on the chat surface and
-   exposes a flat list of **Session**, **Changes**, **Git**, **Terminal**, **Jobs**, and
+   exposes a flat list of **Session**, **Changes**, **Git**, **Browser**, **Terminal**, **Jobs**, and
    **Files** only — no Local/Files double Finder entry and no commit/compare
    shortcuts (those live inside the Git activity view).
 5. **Activity sidebar:** one shared full-height right-side lane for Session,
-   Changes, Git, Terminal, and Jobs. It is an edge-attached structural grid
+   Changes, Git, Browser, Terminal, and Jobs. It is an edge-attached structural grid
    column with a hairline divider, not an inset floating card. Opening one view
    replaces the other in the same geometry. **Files** is a Finder reveal action,
    not an in-app panel.
@@ -141,6 +141,8 @@ These values are the current production tokens in `src/renderer/styles.css`:
 | `--workspace-lane-w` | `clamp(280px, 26vw, 340px)` | Shared reserved lane for dock and activity sidebar |
 | `--workspace-dock-w` | `clamp(208px, 18vw, 232px)` | Compact upper-right launcher |
 | `--activity-rail-w` | `var(--workspace-lane-w)` | Shared Session/Changes/Git/Terminal/Jobs sidebar |
+| `--browser-rail-w` | `720px` | Retained browser pane; overlays below 960px |
+| `--terminal-rail-w` | `520px` | Readable project terminal pane |
 | `--changes-rail-w` | `clamp(520px, 42vw, 680px)` | Dedicated master-detail Changes review width |
 | `--column-max` | `52rem` | Transcript, approvals, and composer column |
 | `--transcript-measure` | `40rem` | Shared conversational output, approval, and composer measure |
@@ -279,8 +281,8 @@ content hierarchy signal, not a replacement for layout.
 
 The empty-home brand is the same fixed-geometry ASCII wordmark at every window
 size; container-relative scaling changes its size without replacing it with a
-plain text fallback. Activity chrome and the xterm grid use `--font-sans`; the
-terminal keeps a compact 12.5px size, neutral letter spacing, and 1.35 line
+plain text fallback. Activity chrome uses `--font-sans`; the xterm grid uses
+`--font-mono` at 13px with neutral letter spacing and a 1.3 line
 height. URLs detected in terminal output open through the guarded external-link
 bridge rather than navigating the app window.
 
@@ -383,7 +385,7 @@ Panels must remain predictable:
   Empty pointer-sized desktop layouts use 24px toolbar controls and 11px icons
   across the compact range; non-empty navigation keeps the larger targets over
   the reclaimed chat area.
-- Session, Changes, Git, Terminal, and Jobs are mutually exclusive in the activity sidebar.
+- Session, Changes, Git, Browser, Terminal, and Jobs are mutually exclusive in the activity sidebar.
 - Session handoffs preserve the active activity view and each session's reading
   position; replacing conversation data must not reset the surrounding workspace.
 - Active-turn state stays in the composer/project row; do not add a redundant
@@ -404,8 +406,8 @@ Panels must remain predictable:
 |---|---|---|
 | Project rail | `src/renderer/layout/ProjectRail.tsx` | Collapsible Projects/Chats, stable icon/text columns, portal menus, persisted resize |
 | Sessions workspace | `src/renderer/sessions/SessionsWorkspace.tsx`, `src/shared/session-board.ts` | Persistent Board/List, search/filter/sort, explicit workflow states, honest live execution, and session mutations |
-| Workspace dock | `src/renderer/layout/WorkspaceDock.tsx` | Chat-surface navigation for Session/Changes/Git/Terminal/Jobs/Files |
-| Activity sidebar | `src/renderer/layout/ActivitySidebar.tsx`, `src/renderer/panels/Inspector.tsx`, `src/renderer/panels/TerminalPanel.tsx`, `src/renderer/panels/JobsView.tsx`, `src/renderer/git/GitPanel.tsx` | Persistent five-view switcher; full-height edge-attached geometry, compact shared header, rule-free horizontal chrome, and shared resize behavior; content never occludes chat |
+| Workspace dock | `src/renderer/layout/WorkspaceDock.tsx` | Chat-surface navigation for Session/Changes/Git/Browser/Terminal/Jobs/Files |
+| Activity sidebar | `src/renderer/layout/ActivitySidebar.tsx`, `src/renderer/panels/BrowserPanel.tsx`, `src/renderer/panels/Inspector.tsx`, `src/renderer/panels/TerminalPanel.tsx`, `src/renderer/panels/JobsView.tsx`, `src/renderer/git/GitPanel.tsx` | Persistent six-view switcher; full-height edge-attached geometry, shared header, and dedicated Browser/Terminal widths |
 | Contextual terminal | `src/main/terminal-manager.ts`, `src/renderer/panels/TerminalPanel.tsx` | Main-owned PTY at project root or user home for Chats, bounded replay, detach/reconnect across sidebar close and view switches |
 | Transcript | `src/renderer/transcript/TranscriptView.tsx` | Plain streaming text, finalized Streamdown hierarchy, anchored scrolling, foldable user turns; engine-authored continuations use compact expandable context rows, while gate and visual-check results use structured status rows |
 | Composer | `src/renderer/composer/Composer.tsx` | Floating, continuously frosted, attachment-aware, keyboard-contained menus |

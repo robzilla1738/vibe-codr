@@ -140,6 +140,8 @@
   --workspace-dock-w: clamp(208px, 18vw, 232px);
   --activity-rail-w: var(--workspace-lane-w);
   --changes-rail-w: clamp(520px, 42vw, 680px);
+  --browser-rail-w: 720px;
+  --terminal-rail-w: 520px;
   --content-max: 100%;
   /* Conversation column — transcript + panels + jobs. Composer uses --composer-max. */
   --column-max: 52rem;
@@ -1706,6 +1708,14 @@ html[data-platform="darwin"] .rail-action:hover:not(.primary):not(:focus-visible
 
 .content-inset.end-panel-open:has(> .activity-sidebar[data-active="changes"]) {
   grid-template-columns: minmax(0, 1fr) min(var(--changes-rail-w), 52%);
+}
+
+.content-inset.end-panel-open:has(> .activity-sidebar[data-active="browser"]) {
+  grid-template-columns: minmax(0, 1fr) min(var(--browser-rail-w), 62%);
+}
+
+.content-inset.end-panel-open:has(> .activity-sidebar[data-active="terminal"]) {
+  grid-template-columns: minmax(0, 1fr) min(var(--terminal-rail-w), 56%);
 }
 
 .content-inset.end-panel-open > .topbar {
@@ -4092,6 +4102,28 @@ html[data-scheme="light"].electron-transparent .panel-strip-chip {
 }
 
 @media (max-width: 960px) {
+  .content-inset.end-panel-open:has(> .activity-sidebar[data-active="browser"]) {
+    display: flex;
+  }
+
+  .content-inset.end-panel-open > .activity-sidebar[data-active="browser"] {
+    position: absolute;
+    z-index: var(--z-drawer);
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(100%, var(--browser-rail-w));
+    height: auto;
+    flex-basis: min(100%, var(--browser-rail-w));
+    border-left: 1px solid var(--border);
+    background: var(--bg);
+    box-shadow: var(--shadow-drawer-end);
+  }
+
+  .content-inset:has(> .activity-sidebar[data-active="browser"]) > .sidebar-resize-handle.is-end {
+    display: none;
+  }
+
   .workspace-dock {
     top: var(--space-xs);
     right: var(--space-xs);
@@ -4108,7 +4140,7 @@ html[data-scheme="light"].electron-transparent .panel-strip-chip {
 
   .workspace-dock-nav {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: var(--space-2xs);
     padding: var(--space-2xs);
   }
@@ -6065,6 +6097,16 @@ html.electron-transparent :is(.session-menu, .popover-surface, .keys-overlay, .o
   animation: activity-sidebar-exit var(--dur-fast) var(--ease-exit) both;
 }
 
+.activity-sidebar[data-active="browser"] {
+  width: min(var(--browser-rail-w), 62%);
+  flex-basis: min(var(--browser-rail-w), 62%);
+}
+
+.activity-sidebar[data-active="terminal"] {
+  width: min(var(--terminal-rail-w), 56%);
+  flex-basis: min(var(--terminal-rail-w), 56%);
+}
+
 @keyframes activity-sidebar-enter {
   from { opacity: 0; transform: translateX(var(--space-xs)); }
   to { opacity: 1; transform: translateX(0); }
@@ -6078,7 +6120,7 @@ html.electron-transparent :is(.session-menu, .popover-surface, .keys-overlay, .o
 .activity-sidebar-tabs {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: var(--space-2xs);
   padding: var(--space-xs) var(--space-sm);
   background: var(--drawer-bg);
@@ -6187,6 +6229,14 @@ html[data-scheme="light"].electron-transparent .activity-sidebar {
 
 .content-inset:has(> .activity-sidebar[data-active="changes"]) > .sidebar-resize-handle.is-end {
   right: calc(min(var(--changes-rail-w), 52%) - var(--space-2xs));
+}
+
+.content-inset:has(> .activity-sidebar[data-active="browser"]) > .sidebar-resize-handle.is-end {
+  right: calc(min(var(--browser-rail-w), 62%) - var(--space-2xs));
+}
+
+.content-inset:has(> .activity-sidebar[data-active="terminal"]) > .sidebar-resize-handle.is-end {
+  right: calc(min(var(--terminal-rail-w), 56%) - var(--space-2xs));
 }
 
 .content-inset > .sidebar-resize-handle.is-end::after {
@@ -7275,6 +7325,43 @@ html.electron-transparent .sidebar-heading-row { background: var(--drawer-bg); }
 .ctx-hot { color: var(--notice) !important; }
 
 /* ── Project terminal (interactive PTY) ─────────────────────────────────── */
+.browser-activity-rail {
+  background: var(--bg);
+}
+
+.browser-toolbar {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: var(--space-2xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 58%, transparent);
+  background: var(--surface-subtle);
+}
+
+.browser-toolbar form {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-xs);
+  height: 30px;
+  padding: 0 var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.browser-toolbar form:focus-within { box-shadow: var(--focus-ring); }
+.browser-toolbar input { min-width: 0; flex: 1; padding: 0; border: 0; outline: 0; background: transparent; font-family: var(--font-sans); font-size: var(--text-caption); }
+.browser-forward { transform: rotate(180deg); }
+.browser-security { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--text-subtle); }
+.browser-security.is-secure { background: var(--add); }
+.browser-security.is-insecure { background: var(--notice); }
+.browser-reload { font-size: 17px; line-height: 1; }
+.browser-error { padding: var(--space-xs) var(--space-sm); color: var(--del); background: color-mix(in oklab, var(--del) 8%, var(--bg)); font-size: var(--text-caption); }
+.browser-viewport { min-width: 0; min-height: 0; flex: 1 1 auto; background: var(--bg); }
+
 .terminal-activity-rail {
   overflow: hidden;
 }
@@ -7297,7 +7384,7 @@ html.electron-transparent .sidebar-heading-row { background: var(--drawer-bg); }
   min-height: 0;
   flex: 1 1 auto;
   margin: 0;
-  padding: var(--space-sm) var(--space-base);
+  padding: var(--space-base) var(--space-md);
   overflow: hidden;
   border: 0;
   border-radius: 0;
@@ -7309,9 +7396,28 @@ html.electron-transparent .sidebar-heading-row { background: var(--drawer-bg); }
   width: 100%;
   height: 100%;
   padding: 0;
-  font-family: var(--font-sans);
+  font-family: var(--font-mono);
   letter-spacing: 0;
 }
+
+.terminal-toolbar {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-2xs) var(--space-sm);
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 58%, transparent);
+  background: var(--surface-subtle);
+}
+
+.terminal-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--add); }
+.terminal-status-dot[data-state="error"] { background: var(--del); }
+.terminal-status-dot[data-state="exited"] { background: var(--notice); }
+.terminal-status-dot[data-state="connecting"] { background: var(--text-subtle); }
+.terminal-toolbar-label { color: var(--text-subtle); font-family: var(--font-sans); font-size: var(--text-caption); }
+.terminal-toolbar-spacer { flex: 1 1 auto; }
+.terminal-tool-button { min-height: 27px; padding: 0 var(--space-xs); font-family: var(--font-sans); font-size: var(--text-caption); }
+.terminal-surface .xterm .xterm-selection div { border-radius: 2px; }
 
 .terminal-panel-error,
 .terminal-panel-status {

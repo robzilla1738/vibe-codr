@@ -37,7 +37,7 @@ export function SidebarResizeHandle({
   label,
 }: {
   side: ResizeSide;
-  cssVar: "--project-rail-w" | "--activity-rail-w" | "--changes-rail-w";
+  cssVar: "--project-rail-w" | "--activity-rail-w" | "--changes-rail-w" | "--browser-rail-w" | "--terminal-rail-w";
   defaultWidth: number;
   min: number;
   max: number;

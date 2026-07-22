@@ -9,9 +9,10 @@ import {
   type TerminalOpenResult,
 } from "../../shared/terminal";
 import { getTheme } from "../../shared/themes";
+import { requestUrlOpen } from "../link-routing";
 import { ActivityPanelHeader } from "../layout/ActivityPanelHeader";
 
-function themeFromTokens(): { background: string; foreground: string; cursor: string; selectionBackground: string } {
+function themeFromTokens() {
   const styles = getComputedStyle(document.documentElement);
   const fallback = getTheme("default");
   const token = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
@@ -20,12 +21,28 @@ function themeFromTokens(): { background: string; foreground: string; cursor: st
     foreground: token("--assistant", fallback.assistant),
     cursor: token("--accent", fallback.primary),
     selectionBackground: token("--sel-bg", fallback.selBg),
+    black: token("--bg", fallback.background),
+    brightBlack: token("--text-subtle", fallback.muted),
+    red: token("--del", fallback.del),
+    brightRed: token("--del", fallback.del),
+    green: token("--add", fallback.add),
+    brightGreen: token("--add", fallback.add),
+    yellow: token("--notice", fallback.notice),
+    brightYellow: token("--notice", fallback.notice),
+    blue: token("--user", fallback.user),
+    brightBlue: token("--user", fallback.user),
+    magenta: token("--plan", fallback.plan),
+    brightMagenta: token("--plan", fallback.plan),
+    cyan: token("--tool", fallback.tool),
+    brightCyan: token("--tool", fallback.tool),
+    white: token("--assistant", fallback.assistant),
+    brightWhite: token("--assistant", fallback.assistant),
   };
 }
 
 function terminalFontFromTokens(): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue("--font-sans").trim();
-  return value || '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif';
+  const value = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim();
+  return value || '"SFMono-Regular", Menlo, Consolas, monospace';
 }
 
 export function TerminalPanel({
@@ -40,9 +57,13 @@ export function TerminalPanel({
   onClose: () => void;
 }) {
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<XtermTerminal | null>(null);
   const [restartNonce, setRestartNonce] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [exit, setExit] = useState<{ code: number; signal: number } | null>(null);
+  const [hasSelection, setHasSelection] = useState(false);
+  const [scrolledBack, setScrolledBack] = useState(false);
+  const [connecting, setConnecting] = useState(true);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -56,8 +77,8 @@ export function TerminalPanel({
       cursorStyle: "bar",
       cursorWidth: 1,
       fontFamily: terminalFontFromTokens(),
-      fontSize: 12.5,
-      lineHeight: 1.35,
+      fontSize: 13,
+      lineHeight: 1.3,
       letterSpacing: 0,
       scrollback: 10_000,
       theme: themeFromTokens(),
@@ -65,13 +86,12 @@ export function TerminalPanel({
     const fit = new FitAddon();
     const webLinks = new WebLinksAddon((event, uri) => {
       event.preventDefault();
-      void window.vibe.openExternal(uri).catch(() => {
-        // Leave the URL visible in the terminal so it can still be copied.
-      });
+      requestUrlOpen(uri, event);
     });
     terminal.loadAddon(fit);
     terminal.loadAddon(webLinks);
     terminal.open(surface);
+    terminalRef.current = terminal;
 
     let disposed = false;
     let sessionId: string | null = null;
@@ -131,10 +151,21 @@ export function TerminalPanel({
         if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
       });
     });
+    const selectionDisposable = terminal.onSelectionChange(() => setHasSelection(terminal.hasSelection()));
+    const scrollDisposable = terminal.onScroll(() => {
+      setScrolledBack(terminal.buffer.active.viewportY < terminal.buffer.active.baseY);
+    });
+    const refreshTheme = () => {
+      terminal.options.theme = themeFromTokens();
+      terminal.options.fontFamily = terminalFontFromTokens();
+    };
+    const themeObserver = new MutationObserver(refreshTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-scheme", "data-contrast"] });
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(surface);
 
     const open = async () => {
+      setConnecting(true);
       setError(null);
       setExit(null);
       fit.fit();
@@ -146,17 +177,22 @@ export function TerminalPanel({
           rows: terminal.rows,
         });
       } catch (reason) {
-        if (!disposed) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!disposed) {
+          setConnecting(false);
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
         return;
       }
       // Closing/switching panels detaches only; the main-owned PTY remains for
       // replay until app shutdown, even if this renderer closed mid-handshake.
       if (disposed) return;
       if (!result.ok) {
+        setConnecting(false);
         setError(result.error);
         return;
       }
       sessionId = result.id;
+      setConnecting(false);
       if (result.replay) terminal.write(result.replay);
       for (const event of pendingEvents) {
         if (event.id !== result.id) continue;
@@ -173,7 +209,11 @@ export function TerminalPanel({
       disposed = true;
       unsubscribe();
       dataDisposable.dispose();
+      selectionDisposable.dispose();
+      scrollDisposable.dispose();
+      themeObserver.disconnect();
       resizeObserver.disconnect();
+      terminalRef.current = null;
       terminal.dispose();
     };
   }, [cwd, restartNonce]);
@@ -196,6 +236,17 @@ export function TerminalPanel({
           </button>
         ) : null}
       />
+      <div className="terminal-toolbar" aria-label="Terminal controls">
+        <span className="terminal-status-dot" data-state={error ? "error" : exit ? "exited" : connecting ? "connecting" : "running"} />
+        <span className="terminal-toolbar-label">{error ? "Error" : exit ? "Exited" : connecting ? "Connecting…" : executionTarget === "cloud" ? "Cloud shell" : "Local shell"}</span>
+        <span className="terminal-toolbar-spacer" />
+        {scrolledBack ? <button type="button" className="button terminal-tool-button" onClick={() => terminalRef.current?.scrollToBottom()}>Jump to Latest</button> : null}
+        <button type="button" className="button terminal-tool-button" disabled={!hasSelection} onClick={() => {
+          const selection = terminalRef.current?.getSelection();
+          if (selection) void window.vibe.writeClipboardText(selection);
+        }}>Copy Selection</button>
+        <button type="button" className="button terminal-tool-button" onClick={() => terminalRef.current?.clear()}>Clear Display</button>
+      </div>
       <div
         ref={surfaceRef}
         className="terminal-surface"

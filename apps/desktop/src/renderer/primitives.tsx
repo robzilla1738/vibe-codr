@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { externalHref } from "../shared/sources";
+import { requestUrlOpen } from "./link-routing";
 
 export {
   MetaRow,
@@ -30,10 +31,12 @@ export function ExternalLink({
       title={safeHref}
       onClick={(event) => {
         event.preventDefault();
-        void window.vibe.openExternal(safeHref).catch(() => {
-          // The URL stays in the title so it can still be copied if the OS
-          // refuses to launch a browser. Avoid an unhandled IPC rejection.
-        });
+        requestUrlOpen(safeHref, event);
+      }}
+      onAuxClick={(event) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        requestUrlOpen(safeHref, event);
       }}
     >
       {children}

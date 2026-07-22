@@ -4,6 +4,26 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.10 — 2026-07-21
+
+### Added
+
+- Desktop now includes a retained, sandboxed in-app browser with a resizable
+  activity pane, navigation controls, secure URL validation, and external
+  routing for modifier clicks, authentication, payment, and download flows.
+
+### Improved
+
+- Terminal rendering now uses the app mono stack, a complete live-updating ANSI
+  palette, clearer spacing/status states, selection copy, display clear, restart,
+  and Jump to Latest controls without changing PTY bytes or lifetime.
+
+### Fixed
+
+- The active and final code project can be archived: Desktop first bootstraps
+  the permanent Chats workspace, then archives the project only after that safe
+  handoff succeeds.
+
 ## 0.7.9 — 2026-07-21
 
 ### Added

@@ -7,6 +7,7 @@ const TABS: Array<{ target: ActivitySidebarTarget; label: string }> = [
   { target: "session", label: "Session" },
   { target: "changes", label: "Changes" },
   { target: "git", label: "Git" },
+  { target: "browser", label: "Browser" },
   { target: "terminal", label: "Terminal" },
   { target: "jobs", label: "Jobs" },
 ];

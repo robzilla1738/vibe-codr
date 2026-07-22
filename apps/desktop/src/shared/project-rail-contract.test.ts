@@ -6,6 +6,7 @@ const source = readFileSync(
   join(process.cwd(), "src/renderer/layout/ProjectRail.tsx"),
   "utf8",
 );
+const appSource = readFileSync(join(process.cwd(), "src/renderer/App.tsx"), "utf8");
 
 describe("project rail mutation contract", () => {
   it("offers an icon-only new-chat action beside the hover actions", () => {
@@ -48,5 +49,14 @@ describe("project rail mutation contract", () => {
     expect(source).toContain("remoteOwnedSessionIds.has(id)");
     expect(source).toContain("remoteOwnedProjectCwds.has(normalizeCwd(cwd))");
     expect(source).toContain("Return this session to Local to manage it");
+  });
+
+  it("hands the active final project to Chats before archiving it", () => {
+    expect(appSource).toContain("normalizeCwd(projectCwd) === normalizeCwd(cwd)");
+    expect(appSource).toContain("const chats = chatsCwd ?? await window.vibe.ensureChatsDir()");
+    expect(appSource).toContain("if (!await openProjectAt(chats)) return false");
+    expect(appSource.indexOf("if (!await openProjectAt(chats)) return false")).toBeLessThan(
+      appSource.indexOf("window.vibe.archiveProject({ cwd: projectCwd })"),
+    );
   });
 });

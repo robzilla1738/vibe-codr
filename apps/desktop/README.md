@@ -16,7 +16,7 @@ snapshots configured model access before Local ownership is released.
 
 **Release history:** [CHANGELOG.md](./CHANGELOG.md)
 
-**Visual target:** Codex / Cursor-inspired desktop shell with OpenTUI-faithful behavior — multi-project + chats rail, seamless right workspace dock (Session / Changes / Git / Terminal / Jobs / Files), quiet empty home, terminal themes/accents, resizable sidebars, changed-files chip + master-detail Diff/File review, and one structural activity sidebar for Session / Changes / Git / Terminal / Jobs.
+**Visual target:** Codex / Cursor-inspired desktop shell with OpenTUI-faithful behavior — multi-project + chats rail, seamless right workspace dock (Session / Changes / Git / Browser / Terminal / Jobs / Files), quiet empty home, terminal themes/accents, resizable sidebars, changed-files chip + master-detail Diff/File review, and one structural activity sidebar for Session / Changes / Git / Browser / Terminal / Jobs.
 
 Sibling native shell: [`vbcodrmacos`](https://github.com/robzilla1738/vbcodrmacos) (SwiftUI). This repo is the Electron equivalent.
 
@@ -177,8 +177,8 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
   stopping the previous turn. One foreground and up to two background local
   runtimes remain owned by a bounded supervisor; working and blocked sessions
   stay pinned while expired idle runtimes are evicted.
-- **Right workspace dock:** full-label Session / Changes / Git / Terminal / Jobs / Files in an equally inset, quietly grey rounded enclosure on the chat surface; compact below ~960px
-- **Shared activity sidebar:** Session, Changes, Git, Terminal, and Jobs open in one full-height, edge-attached right pane with equal switcher tabs, one compact Workspace header, a shared resize handle, and responsive drawer behavior. Horizontal divider rules are omitted; spacing and quiet surface shifts organize the chrome. Changes pairs a recursively expandable file tree with numbered Diff/File review and saturated semantic change colors. It is a structural sibling of chat, never a floating card or overlay on desktop. Files remains a Finder reveal.
+- **Right workspace dock:** full-label Session / Changes / Git / Browser / Terminal / Jobs / Files in an equally inset, quietly grey rounded enclosure on the chat surface; compact below ~960px
+- **Shared activity sidebar:** Session, Changes, Git, Browser, Terminal, and Jobs open in one full-height, edge-attached right pane with equal switcher tabs, one compact Workspace header, dedicated persisted widths for Browser and Terminal, and responsive drawer behavior. The sandboxed retained browser overlays below 960px; Files remains a Finder reveal.
 - **Persistent contextual terminal:** project sessions open at the project root;
   Chats open at the user's home. Each effective-cwd PTY lives in the main process,
   so closing Terminal or switching views preserves commands and buffered output.
@@ -227,7 +227,7 @@ frosted floating surface so transcript text is blurred across its full bounds
 without a hard cut. Approval cards stay opaque. Queue is one quiet card above
 the composer with a flat “N Queued” list and hover steer/dequeue. Slash,
 mention, and catalog menus are floating and
-keyboard-contained; Session, Changes, Git, Terminal, and Jobs open in one
+keyboard-contained; Session, Changes, Git, Browser, Terminal, and Jobs open in one
 edge-attached activity sidebar without replacing the chat surface. Project/session ⋯ menus are portal-mounted, trigger-anchored, and
 toggle cleanly. User-message Copy/Edit/time actions sit **under** the bubble
 (trailing-aligned); assistant actions remain below the response. Tool/thinking
@@ -380,8 +380,8 @@ Shell-owned surfaces:
   pickers (model context window shown), and direct
   guided provider setup from **Set up another provider…** or unconfigured rows
 - Multi-project + Chats rail (collapsible sections, + add project / new chat, resume, filter; Continue Latest via ⇧⌘N)
-- Workspace dock: Session / Changes / Git / Terminal / Jobs / Files on the chat surface;
-  Session, Changes, Git, Terminal, and Jobs share one mutually exclusive right-side lane
+- Workspace dock: Session / Changes / Git / Browser / Terminal / Jobs / Files on the chat surface;
+  Session, Changes, Git, Browser, Terminal, and Jobs share one mutually exclusive right-side lane
 - Changed-files chip after edits, sharing one row with Jump to latest; dedicated searchable master-detail Changes review
 - Jobs activity view with live auto-follow output, localhost links, and copy
 - Anchored streaming with intentional scroll disengagement and Jump to latest

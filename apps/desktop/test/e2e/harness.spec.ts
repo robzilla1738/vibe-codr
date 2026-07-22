@@ -77,6 +77,15 @@ test("keeps empty, focus, and 200% zoom states usable", async () => {
   await page.setViewportSize({ width: 1280, height: 820 });
 });
 
+test("opens the retained browser workspace with native navigation chrome", async () => {
+  await page.getByRole("button", { name: "Open web browser" }).click();
+  await expect(page.getByRole("heading", { name: "Browser" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Web address" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close browser" })).toBeVisible();
+  await page.getByRole("button", { name: "Close browser" }).click();
+  await expect(page.getByRole("textbox", { name: "Task message" })).toBeVisible();
+});
+
 test("renames, archives, and deletes saved sessions through host RPC", async () => {
   await expect(page.getByText("Saved one", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /^Saved one/ }).click({ button: "right" });
@@ -368,7 +377,7 @@ test("opens an interactive project terminal in the shared end-panel lane", async
   await expect(surface).toBeVisible();
   const sidebar = page.getByRole("complementary", { name: "Workspace tools" });
   const widthBefore = (await sidebar.boundingBox())!.width;
-  const resizeHandle = page.getByRole("separator", { name: "Resize activity sidebar" });
+  const resizeHandle = page.getByRole("separator", { name: "Resize terminal sidebar" });
   await resizeHandle.focus();
   await resizeHandle.press("ArrowLeft");
   await expect.poll(async () => (await sidebar.boundingBox())!.width).toBeGreaterThan(widthBefore);
@@ -388,4 +397,18 @@ test("opens an interactive project terminal in the shared end-panel lane", async
   await expect(terminalToggle).toBeVisible();
   await terminalToggle.click();
   await expect(page.locator(".xterm-rows")).toContainText("terminal-persisted", { timeout: 5_000 });
+  await expect(page.getByRole("button", { name: "Clear Display" })).toBeVisible();
+});
+
+test("archives the active final project by handing off to Chats", async () => {
+  const actions = page.getByRole("button", { name: "Actions for project project" });
+  await page.getByRole("button", { name: "Collapse sessions for project" }).hover();
+  await expect(actions).toBeVisible();
+  await actions.click();
+  await page.getByRole("menuitem", { name: "Archive" }).click();
+  await page.getByRole("button", { name: "Archive", exact: true }).click();
+
+  await expect(page.getByText("Add a folder to start.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Task message" })).toBeVisible();
+  await expect(page.getByText("Chats", { exact: true })).toBeVisible();
 });

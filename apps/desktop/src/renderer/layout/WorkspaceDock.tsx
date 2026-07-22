@@ -1,7 +1,7 @@
 /** Compact environment card for the chat surface. Keep workspace tools grouped
  * here so the project rail can stay focused on navigation and sessions.
  *
- * Contract (UI.md / design-system): Session · Changes · Git · Terminal · Jobs ·
+ * Contract (UI.md / design-system): Session · Changes · Git · Browser · Terminal · Jobs ·
  * Files on the chat surface — no topbar duplicates, no Local/Files double Finder
  * entry, no commit/compare noise that belongs inside the Git end panel.
  */
@@ -11,6 +11,7 @@ import { changedFilesTotals } from "../../shared/changed-files";
 import type { ChangedFile } from "../../shared/reducer";
 import {
   IconFile,
+  IconBrowser,
   IconFolderOpen,
   IconGitBranch,
   IconJobs,
@@ -22,6 +23,7 @@ export type WorkspaceDockTarget =
   | "session"
   | "changes"
   | "git"
+  | "browser"
   | "terminal"
   | "jobs"
   | "files";
@@ -35,6 +37,7 @@ export function WorkspaceDock({
   sessionOpen,
   changesOpen,
   gitOpen,
+  browserOpen,
   terminalOpen,
   jobsOpen,
   emptyHome,
@@ -49,6 +52,7 @@ export function WorkspaceDock({
   /** True when Session end panel is open focused on file review. */
   changesOpen?: boolean;
   gitOpen: boolean;
+  browserOpen: boolean;
   terminalOpen: boolean;
   jobsOpen: boolean;
   /** Quiet toolbar treatment for the centered welcome/empty-session state. */
@@ -113,6 +117,14 @@ export function WorkspaceDock({
           disabled={!cwd}
           onClick={() => onOpen("git")}
           icon={<IconGitBranch size={15} />}
+        />
+        <DockRow
+          label="Browser"
+          ariaLabel="Open web browser"
+          title="Open links without leaving Vibe Codr"
+          active={browserOpen}
+          onClick={() => onOpen("browser")}
+          icon={<IconBrowser size={15} />}
         />
         <DockRow
           label="Terminal"

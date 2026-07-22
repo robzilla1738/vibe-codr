@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { EngineCommand } from "../shared/commands";
+import type { BrowserBounds, BrowserCommand, BrowserState } from "../shared/browser";
 import type {
   CloudFailureDetails,
   CloudProviderId,
@@ -112,6 +113,12 @@ export interface VibeApi {
   /** Ensure `~/.vibe/chats` exists and return its absolute path (one-off conversations). */
   ensureChatsDir(): Promise<string>;
   openExternal(url: string): Promise<void>;
+  browserLoad(url: string): Promise<void>;
+  browserSetBounds(bounds: BrowserBounds): void;
+  browserSetVisible(visible: boolean): void;
+  browserCommand(command: BrowserCommand): void;
+  onBrowserState(cb: (state: BrowserState) => void): () => void;
+  onBrowserFocusAddress(cb: () => void): () => void;
   showItem(path: string): Promise<void>;
   readTextFile(opts: {
     cwd: string;
@@ -252,6 +259,20 @@ const api: VibeApi = {
   openProject: () => ipcRenderer.invoke("dialog:openProject"),
   ensureChatsDir: () => ipcRenderer.invoke("app:ensureChatsDir"),
   openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
+  browserLoad: (url) => ipcRenderer.invoke("browser:load", url),
+  browserSetBounds: (bounds) => ipcRenderer.send("browser:setBounds", bounds),
+  browserSetVisible: (visible) => ipcRenderer.send("browser:setVisible", visible),
+  browserCommand: (command) => ipcRenderer.send("browser:command", command),
+  onBrowserState: (cb) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: BrowserState) => cb(state);
+    ipcRenderer.on("browser:state", handler);
+    return () => ipcRenderer.removeListener("browser:state", handler);
+  },
+  onBrowserFocusAddress: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on("browser:focusAddress", handler);
+    return () => ipcRenderer.removeListener("browser:focusAddress", handler);
+  },
   showItem: (path) => ipcRenderer.invoke("shell:showItem", path),
   readTextFile: (opts) => ipcRenderer.invoke("fs:readTextFile", opts),
   pasteClipboard: (cwd) => ipcRenderer.invoke("clipboard:paste", { cwd }),

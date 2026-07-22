@@ -83,8 +83,12 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // snapshot-safe transcript hydration add 14,229 bytes aggregate (14,116 bytes
 // startup) without pulling a new dependency into the renderer graph. Preserve
 // less than 3 KB of regression room above that measured product surface.
-const totalBudget = 2_953_000;
-const chunkBudget = 2_151_000;
+// The secure in-app browser is isolated in a 5.8 KB lazy chunk; its shared URL
+// disposition, dock route, and retained-panel ownership add under 2 KB to
+// startup. Allow 14 KB aggregate and 4 KB startup growth for that complete
+// product surface, including narrow cross-platform minifier variance room.
+const totalBudget = 2_967_000;
+const chunkBudget = 2_155_000;
 
 if (total > totalBudget || largest > chunkBudget) {
   console.error(`Renderer bundle budget exceeded: ${total} total bytes, ${largest} largest chunk`);

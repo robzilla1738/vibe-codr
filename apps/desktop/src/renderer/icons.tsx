@@ -14,6 +14,7 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  Globe,
   Laptop,
   LayoutDashboard,
   Link,
@@ -188,4 +189,8 @@ export function IconGitBranch(props: IconProps) {
 
 export function IconExternalLink(props: IconProps) {
   return <ExternalLink {...lucide(props)} />;
+}
+
+export function IconBrowser(props: IconProps) {
+  return <Globe {...lucide(props)} />;
 }

@@ -169,13 +169,13 @@ whose HEAD equals the lock before it will embed a rebuilt host.
 - [x] Native catalog dialog: focus trap (Tab cycle + focusin guard; draft-linked allows composer), arrows, Enter, Esc, focus return, aria-modal
 - [x] Catalog filtering, no-results state, current-model marker, and RPC failure feedback
 - [x] Multi-project + Chats rail with collapsible sections, section +, titles, resume/filter; Continue Latest via ⇧⌘N / menu
-- [x] Project/session rename, archive, and delete menus with in-app confirmation; project menus escape rail clipping
+- [x] Project/session rename, archive, and delete menus with in-app confirmation; active/final project archive safely hands off to Chats first; project menus escape rail clipping
 - [x] Sessions workspace: persistent Board/List views across all projects and
   Chats, search/filter/sort, automatic Active/Review/Done transitions, live
   current tool/task and wait insight plus task/agent/job/queue/change/context/
   usage/model/mode/goal telemetry, end-turn metadata refresh, honest Local/Cloud
   ownership and error state, and open/rename/archive/delete management
-- [x] Workspace dock (Session / Changes / Git / Terminal / Jobs / Files) on chat surface; no topbar duplicates
+- [x] Workspace dock (Session / Changes / Git / Browser / Terminal / Jobs / Files) on chat surface; no topbar duplicates
 - [x] Changed-files chip after edits; dock Changes opens the dedicated master-detail review
 - [x] Host fatal / boot error: primary New session recovery
 - [x] `/jobs` drawer: live auto-follow terminal (full outputTail, stick-to-bottom, jump-to-latest); Close without Esc chip; quiet status/link chips
@@ -661,7 +661,7 @@ npm run dev
 
 ## Unified activity sidebar and design-system documentation (2026-07-13)
 
-- [x] Session, Changes, Git, Terminal, and Jobs use one mutually exclusive,
+- [x] Session, Changes, Git, Browser, Terminal, and Jobs use one mutually exclusive,
   full-height right activity sidebar with shared hairline geometry, close behavior,
   Escape handling, and persisted resizing. Changes keeps a wider review-specific
   width while remaining in that same structural lane.
@@ -698,7 +698,7 @@ npm run dev
 
 ## Uniform activity chrome and diff review (2026-07-14)
 
-- [x] Session, Changes, Git, Terminal, and Jobs render one shared Workspace
+- [x] Session, Changes, Git, Browser, Terminal, and Jobs render one shared Workspace
   header primitive with identical height, padding, subtitle rhythm, close
   placement, and five equal-width switcher tabs. Header/tabs use compact
   caption/label typography and no horizontal divider rules.

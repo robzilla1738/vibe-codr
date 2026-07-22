@@ -323,7 +323,7 @@ empty-state viewports on both sides of the 720px breakpoint, verify the strip
 remains 184px wide with 24px controls and 11px icons; confirm non-empty compact
 navigation retains its larger responsive targets. Below 900px, confirm no
 topbar metadata text is visible underneath the compact dock.
-Open Session, Changes, Git, Terminal, and Jobs in turn. Each must use the same
+Open Session, Changes, Git, Browser, Terminal, and Jobs in turn. Each must use the same
 full-height edge-attached sidebar with one left divider, no outer radius/shadow,
 and no desktop scrim. Confirm each view has the same Workspace eyebrow,
 header height, title/subtitle baseline, and close-button position, and that the
@@ -336,7 +336,8 @@ compact widths use an end drawer. In Changes, collapse nested folders, filter a
 deep path, switch between files and Diff/File modes, and verify the active file
 stays visible with numbered gutters. Addition/deletion rows and counters,
 and transcript patches must use the saturated diff roles in dark, light, and
-contrast themes without changing generic error colors. In Terminal, start a delayed command, switch
+contrast themes without changing generic error colors. Open an ordinary transcript URL in Browser,
+verify Cmd-click opens externally, and confirm HTTP is marked Not secure. In Terminal, start a delayed command, switch
 to Session, then return to Terminal: the command must keep running and its output
 must replay. Close/reopen Terminal and verify the same PTY remains. If the PTY
 exits between resize/input and its exit event, confirm the panel reconnects to a
@@ -346,7 +347,7 @@ field retains ownership and the sidebar stays open; move focus to sidebar
 chrome and confirm Escape closes the lane.
 Open Terminal from a project and confirm `pwd` is that project root. Then open a
 Chats session and confirm `pwd` is the user's home directory, not `~/.vibe/chats`.
-Confirm terminal chrome and the xterm grid use the app sans stack with neutral
+Confirm terminal chrome uses the app sans stack while the xterm grid uses the mono stack with neutral
 tracking and a thin cursor. Print an `https://` URL, click it, and confirm it
 opens in the default browser rather than navigating the Electron window.
 Resize through narrow and wide layouts and confirm the same stylized ASCII Vibe

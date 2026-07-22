@@ -14,7 +14,7 @@ Electron **presentation shell** in `apps/desktop`. Do **not** reimplement `@vibe
 4. **`/clear` / `/new`:** abort if busy → `clearSessionLocal()` (transcript + overlays + `suppressAfterClear`) → forward slash to engine.
 5. Prefer porting pure modules from `vibe-codr/packages/tui` (`reducer`, `slash`, `modes`, `density`, `file-fuzzy`, `commands-catalog`) over rewriting behavior.
 6. Development host resolution must prefer the canonical monorepo root and reject a compiled `vibecodr-engine-host` when runtime source is newer, then fall back to Bun source execution. This prevents stale host behavior from being reported as a generic renderer failure.
-7. **Workspace dock stays on the chat surface** (equal top/side inset with a quiet `var(--surface-subtle)` rounded enclosure inside `content-inset` / `main-column`). Session, Changes, Git, Terminal, and Jobs open in one mutually exclusive, edge-attached right-side activity sidebar; the main column reserves that column instead of letting panels cover chat. Do not reintroduce a full-height rail tint, floating desktop panels, decorative white section lines, or topbar duplicates of Session/Changes/Git/Terminal/Jobs/Files.
+7. **Workspace dock stays on the chat surface** (equal top/side inset with a quiet `var(--surface-subtle)` rounded enclosure inside `content-inset` / `main-column`). Session, Changes, Git, Browser, Terminal, and Jobs open in one mutually exclusive, edge-attached right-side activity sidebar; the main column reserves that column except for Browser's intentional sub-960px overlay. Do not reintroduce a full-height rail tint, floating desktop panels, decorative white section lines, or topbar duplicates of Session/Changes/Git/Browser/Terminal/Jobs/Files.
 
 ## Key paths
 
@@ -32,6 +32,7 @@ Electron **presentation shell** in `apps/desktop`. Do **not** reimplement `@vibe
 | Composer attachments | `src/renderer/composer/Composer.tsx` |
 | Project rail (Projects + Chats) | `src/renderer/layout/ProjectRail.tsx`, `src/shared/project-index.ts` |
 | Workspace dock | `src/renderer/layout/WorkspaceDock.tsx` |
+| Embedded browser | `src/main/browser-controller.ts`, `src/renderer/panels/BrowserPanel.tsx`, `src/shared/link-routing.ts` |
 | Activity sidebar | `src/renderer/layout/ActivitySidebar.tsx`; view bodies in `src/renderer/panels/` and `src/renderer/git/GitPanel.tsx` |
 | Persistent contextual terminal | `src/main/terminal-manager.ts`, `src/renderer/panels/TerminalPanel.tsx`, `src/shared/terminal.ts`, `src/shared/project-index.ts` |
 | Changed-files footer chip | `src/renderer/panels/TurnChangesCard.tsx` |
@@ -101,8 +102,8 @@ cd ../.. && bun run build:macos-bridge
   - Finder drops resolve native paths with URI/plain-text fallback.
   - Changed files: footer chip beside Jump to latest + dedicated master-detail Diff/File review + Reveal.
   - Desktop rails resize with pointer/keyboard and persisted widths.
-  - Workspace dock: Session / Changes / Git / Terminal / Jobs / Files on the chat surface.
-  - Activity sidebar geometry: Session / Changes / Git / Terminal / Jobs share
+  - Workspace dock: Session / Changes / Git / Browser / Terminal / Jobs / Files on the chat surface.
+  - Activity sidebar geometry: Session / Changes / Git / Browser / Terminal / Jobs share
     one edge-attached right-side column; switching views must not replace the chat
     workspace or change the conversation scroll position. Files is the Finder reveal action.
   - Terminal close/switch detaches the renderer only. The main-owned PTY and

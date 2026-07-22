@@ -91,6 +91,9 @@ type Picker = CatalogPickerState | null;
 const TerminalPanel = lazy(() =>
   import("./panels/TerminalPanel").then((module) => ({ default: module.TerminalPanel })),
 );
+const BrowserPanel = lazy(() =>
+  import("./panels/BrowserPanel").then((module) => ({ default: module.BrowserPanel })),
+);
 const GitView = lazy(() =>
   import("./git/GitPanel").then((module) => ({ default: module.GitView })),
 );
@@ -197,6 +200,8 @@ export function App() {
   /** Bumped on N so PermissionCard can open deny-reason then confirm (card parity). */
   const [permDenyKick, setPermDenyKick] = useState(0);
   const [gitOpen, setGitOpen] = useState(false);
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserUrl, setBrowserUrl] = useState<string | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [projectRailOpen, setProjectRailOpen] = useState(true);
   const [followSignal, setFollowSignal] = useState(0);
@@ -223,7 +228,9 @@ export function App() {
         ? "git"
         : terminalOpen
           ? "terminal"
-          : null;
+          : browserOpen
+            ? "browser"
+            : null;
   const projectRailPresence = usePresence(projectRailOpen);
   const endPanelPresence = usePresence(activeEndPanel !== null);
   const renderedEndPanel = useRetainedValue(activeEndPanel);
@@ -368,6 +375,7 @@ export function App() {
     setSettingsOpen(true);
     setGitOpen(false);
     setTerminalOpen(false);
+    setBrowserOpen(false);
     session.setInspectorOpen(false);
     session.setJobsView(false);
   }, [session]);
@@ -382,6 +390,7 @@ export function App() {
     }
     setGitOpen(false);
     setTerminalOpen(false);
+    setBrowserOpen(false);
     setSessionsOpen(false);
     session.setInspectorOpen(false);
     session.setJobsView(false);
@@ -395,6 +404,7 @@ export function App() {
     setSessionsOpen(false);
     setSettingsOpen(false);
     setTerminalOpen(false);
+    setBrowserOpen(false);
     session.setInspectorOpen(false);
     session.setJobsView(false);
   }, [cwd, confirmLeaveSettings, session]);
@@ -411,6 +421,7 @@ export function App() {
     setSettingsOpen(false);
     setSessionsOpen(false);
     setTerminalOpen(false);
+    setBrowserOpen(false);
     session.setInspectorOpen(false);
     session.setJobsView(false);
     setGitOpen(true);
@@ -423,6 +434,7 @@ export function App() {
       setSessionsOpen(false);
       setGitOpen(false);
       setTerminalOpen(false);
+      setBrowserOpen(false);
       setInspectorFocusPath(null);
       setInspectorFocusSection(null);
       setInspectorTool("session");
@@ -432,6 +444,7 @@ export function App() {
     setGitOpen(false);
     setSessionsOpen(false);
     setTerminalOpen(false);
+    setBrowserOpen(false);
     session.setJobsView(false);
     session.setInspectorOpen((v) => {
       if (v) {
@@ -455,6 +468,7 @@ export function App() {
       setSessionsOpen(false);
       setGitOpen(false);
       setTerminalOpen(false);
+      setBrowserOpen(false);
       session.setJobsView(false);
       setInspectorFocusPath(path ?? null);
       setInspectorFocusSection(focusSection);
@@ -481,6 +495,7 @@ export function App() {
         setSessionsOpen(false);
         setGitOpen(false);
         setTerminalOpen(false);
+        setBrowserOpen(false);
         session.setInspectorOpen(false);
         setInspectorFocusPath(null);
         // Toggle so the dock control matches keyboard / e2e "Toggle background jobs".
@@ -492,10 +507,24 @@ export function App() {
         setSettingsOpen(false);
         setSessionsOpen(false);
         setGitOpen(false);
+        setBrowserOpen(false);
         session.setInspectorOpen(false);
         session.setJobsView(false);
         setInspectorFocusPath(null);
         setTerminalOpen((open) => !open);
+        return;
+      }
+      if (target === "browser") {
+        if (settingsOpen && !confirmLeaveSettings()) return;
+        setSettingsOpen(false);
+        setSessionsOpen(false);
+        setGitOpen(false);
+        setTerminalOpen(false);
+        session.setInspectorOpen(false);
+        session.setJobsView(false);
+        setInspectorFocusPath(null);
+        setBrowserUrl(null);
+        setBrowserOpen((open) => !open);
         return;
       }
       if (target === "changes") {
@@ -533,8 +562,29 @@ export function App() {
       setGitOpen(false);
       return;
     }
+    if (activeEndPanel === "browser") {
+      setBrowserOpen(false);
+      return;
+    }
     if (activeEndPanel === "terminal") setTerminalOpen(false);
   }, [activeEndPanel, session]);
+
+  useEffect(() => {
+    const openBrowser = (event: Event) => {
+      const url = (event as CustomEvent<{ url?: string }>).detail?.url;
+      if (!url) return;
+      setBrowserUrl(url);
+      setSettingsOpen(false);
+      setSessionsOpen(false);
+      setGitOpen(false);
+      setTerminalOpen(false);
+      session.setInspectorOpen(false);
+      session.setJobsView(false);
+      setBrowserOpen(true);
+    };
+    window.addEventListener("vibe:open-browser", openBrowser);
+    return () => window.removeEventListener("vibe:open-browser", openBrowser);
+  }, [session]);
 
   // Preview harness: auto-open a panel when a `vibe-preview-open-panel` event
   // is dispatched (used by `npm run ui:preview ?scenario=settings|git|changes|cloud-*`).
@@ -637,6 +687,7 @@ export function App() {
     setSettingsOpen(false);
     setGitOpen(false);
     setTerminalOpen(false);
+    setBrowserOpen(false);
     session.setInspectorOpen(false);
     session.setJobsView(false);
     setSessionsOpen(true);
@@ -1078,11 +1129,18 @@ export function App() {
 
   const archiveProject = useCallback(
     async (projectCwd: string) => {
-      if (projectCwd === cwd) {
-        session.showToast("Open another project before archiving this project.", "warn");
-        return false;
-      }
       try {
+        if (cwd && normalizeCwd(projectCwd) === normalizeCwd(cwd)) {
+          if (session.chrome.busy) {
+            session.showToast("Finish or stop the current turn before archiving this project.", "warn");
+            return false;
+          }
+          const chats = chatsCwd ?? await window.vibe.ensureChatsDir();
+          setChatsCwd(chats);
+          // Retire the active runtime only after Chats has bootstrapped. If the
+          // handoff fails, the current project remains active and unmodified.
+          if (!await openProjectAt(chats)) return false;
+        }
         const res = await window.vibe.archiveProject({ cwd: projectCwd });
         if (!res.ok) {
           session.showToast(res.error || "Archive project failed", "error");
@@ -1096,7 +1154,7 @@ export function App() {
         return false;
       }
     },
-    [cwd, refreshProjects, session],
+    [chatsCwd, cwd, openProjectAt, refreshProjects, session],
   );
 
   const deleteProject = useCallback(
@@ -2678,6 +2736,7 @@ export function App() {
               sessionOpen={false}
               changesOpen={false}
               gitOpen={false}
+              browserOpen={false}
               terminalOpen={false}
               jobsOpen={false}
               emptyHome={
@@ -2815,18 +2874,27 @@ export function App() {
                   />
                 </Suspense>
               )}
+
+              {renderedEndPanel === "browser" && (
+                <Suspense fallback={<section className="activity-rail browser-activity-rail" aria-label="Loading browser" />}>
+                  <BrowserPanel
+                    initialUrl={browserUrl}
+                    onClose={() => setBrowserOpen(false)}
+                  />
+                </Suspense>
+              )}
             </ActivitySidebar>
           )}
 
           {!sessionsOpen && endPanelPresence.mounted && renderedEndPanel && (
             <SidebarResizeHandle
               side="end"
-              cssVar={renderedEndPanel === "changes" ? "--changes-rail-w" : "--activity-rail-w"}
-              defaultWidth={renderedEndPanel === "changes" ? 620 : 320}
-              min={renderedEndPanel === "changes" ? 440 : 280}
-              max={renderedEndPanel === "changes" ? 800 : 520}
-              storageKey={renderedEndPanel === "changes" ? "vibe.changes-rail-width" : "vibe.activity-rail-width"}
-              label={renderedEndPanel === "changes" ? "Resize changes sidebar" : "Resize activity sidebar"}
+              cssVar={renderedEndPanel === "changes" ? "--changes-rail-w" : renderedEndPanel === "browser" ? "--browser-rail-w" : renderedEndPanel === "terminal" ? "--terminal-rail-w" : "--activity-rail-w"}
+              defaultWidth={renderedEndPanel === "changes" ? 620 : renderedEndPanel === "browser" ? 720 : renderedEndPanel === "terminal" ? 520 : 320}
+              min={renderedEndPanel === "changes" ? 440 : renderedEndPanel === "browser" ? 480 : renderedEndPanel === "terminal" ? 380 : 280}
+              max={renderedEndPanel === "changes" ? 800 : renderedEndPanel === "browser" ? 1000 : renderedEndPanel === "terminal" ? 760 : 520}
+              storageKey={renderedEndPanel === "changes" ? "vibe.changes-rail-width" : renderedEndPanel === "browser" ? "vibe.browser-rail-width" : renderedEndPanel === "terminal" ? "vibe.terminal-rail-width" : "vibe.activity-rail-width"}
+              label={`Resize ${renderedEndPanel} sidebar`}
             />
           )}
         </div>

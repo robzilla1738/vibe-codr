@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GitFullStatus } from "../../shared/git-types";
 import { ActivityPanelHeader } from "../layout/ActivityPanelHeader";
+import { requestUrlOpen } from "../link-routing";
 
 type Tab = "branches" | "changes" | "history" | "remotes" | "prs";
 
@@ -454,13 +455,7 @@ function PrsContent({ cwd, ghAvailable, showToast }: { cwd: string; ghAvailable:
   const [prDraft, setPrDraft] = useState(false);
   const [creating, setCreating] = useState(false);
 
-  const openExternal = useCallback(async (url: string) => {
-    try {
-      await window.vibe.openExternal(url);
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "Couldn’t open the link", "error");
-    }
-  }, [showToast]);
+  const openLink = useCallback((url: string, modifiers: { metaKey?: boolean; ctrlKey?: boolean; button?: number } = {}) => requestUrlOpen(url, modifiers), []);
 
   const loadPrs = useCallback(async () => {
     setLoading(true); setError(null);
@@ -474,18 +469,18 @@ function PrsContent({ cwd, ghAvailable, showToast }: { cwd: string; ghAvailable:
     setCreating(true);
     try {
       const res = await window.vibe.ghPrCreate({ cwd, title: prTitle.trim(), body: prBody.trim() || undefined, base: prBase.trim() || undefined, draft: prDraft });
-      if (res.ok) { showToast(res.url ? `PR created: ${res.url}` : "PR created", "info"); if (res.url) void openExternal(res.url); setShowCreate(false); setPrTitle(""); setPrBody(""); setPrBase(""); setPrDraft(false); void loadPrs(); }
+      if (res.ok) { showToast(res.url ? `PR created: ${res.url}` : "PR created", "info"); if (res.url) openLink(res.url); setShowCreate(false); setPrTitle(""); setPrBody(""); setPrBase(""); setPrDraft(false); void loadPrs(); }
       else { showToast(res.error ?? "Failed to create PR", "error"); }
     } catch (error) {
       showToast(error instanceof Error ? error.message : "Failed to create PR", "error");
     } finally { setCreating(false); }
-  }, [cwd, prTitle, prBody, prBase, prDraft, showToast, loadPrs, openExternal]);
+  }, [cwd, prTitle, prBody, prBase, prDraft, showToast, loadPrs, openLink]);
 
   if (!ghAvailable) {
     return (
       <div className="settings-section">
         <p className="setting-empty">GitHub CLI (<code>gh</code>) is not installed. Install it to manage pull requests.</p>
-        <button type="button" className="button" onClick={() => void openExternal("https://cli.github.com/")}>Install gh CLI</button>
+        <button type="button" className="button" onClick={(event) => openLink("https://cli.github.com/", event)}>Install gh CLI</button>
       </div>
     );
   }
@@ -511,7 +506,7 @@ function PrsContent({ cwd, ghAvailable, showToast }: { cwd: string; ghAvailable:
       {loading ? <p className="setting-empty"><span className="spinner" aria-hidden /> Loading PRs…</p>
         : error ? <div className="settings-save-error" role="alert">{error}</div>
         : prs.length === 0 ? <p className="setting-empty">No open pull requests.</p>
-        : <div className="git-pr-list">{prs.map((pr) => (<button key={pr.number} type="button" className="git-pr-row" onClick={() => void openExternal(pr.url)}><span className="git-pr-number">#{pr.number}</span><span className="git-pr-title">{pr.title}</span><span className={`git-pr-state ${pr.state.toLowerCase()}`}>{pr.state}</span><span className="git-pr-branch">{pr.head}</span></button>))}</div>}
+        : <div className="git-pr-list">{prs.map((pr) => (<button key={pr.number} type="button" className="git-pr-row" onClick={(event) => openLink(pr.url, event)}><span className="git-pr-number">#{pr.number}</span><span className="git-pr-title">{pr.title}</span><span className={`git-pr-state ${pr.state.toLowerCase()}`}>{pr.state}</span><span className="git-pr-branch">{pr.head}</span></button>))}</div>}
     </div>
   );
 }

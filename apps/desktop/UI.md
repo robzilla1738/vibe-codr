@@ -127,16 +127,16 @@ The shell has these primary surfaces:
    plan/permission/queue overlays, and a single footer action row for changed files
    plus Jump to latest.
 3. **Workspace dock** (right strip on the chat surface) — flat full-label list:
-   Session, Changes, Git, Terminal, Jobs, Files. Its equally inset rounded
+   Session, Changes, Git, Browser, Terminal, Jobs, Files. Its equally inset rounded
    `--surface-subtle` enclosure has no shadow, section dividers, or
    Local/Commit/Compare noise. It
-   switches to a six-column compact icon grid below ~960px; every target remains
+   switches to a seven-column compact icon grid below ~960px; every target remains
    outside the Electron drag region. Empty compact layouts use a denser 184px
    toolbar with 24px controls and 11px icons across the full compact range;
    non-empty navigation retains its larger responsive targets. Jobs is also
    available via `/jobs`.
 4. **Activity sidebar** — one full-height, edge-attached right pane for Session,
-   Changes, Git, Terminal, and Jobs. The active view replaces the previous view
+   Changes, Git, Browser, Terminal, and Jobs. The active view replaces the previous view
    in the same structural grid column. Files remains a Finder reveal rather
    than an in-app panel.
 5. **Changed-files footer chip** — after edits, a compact summary shares the
@@ -150,6 +150,9 @@ The shell has these primary surfaces:
    settles so the board and rail do not lag behind the transcript.
    Search, project/status/mode filters, sorting, inline rename, status movement,
    archive, delete, and resume all operate on the existing session APIs.
+   Archiving the active final code project first bootstraps Chats; a failed
+   handoff leaves the project active and unmodified, while success permits an
+   intentionally empty Projects section with Chats still usable.
 
 Transcript prose, Thinking/tool activity, notices, approval cards, and the
 composer use the same centered, font-independent `--transcript-measure: 40rem`
@@ -284,7 +287,7 @@ without changing the active chat or scroll position.
 - Lives **inside** the main column / content stage, inset equally from the top
   and side. Its rounded enclosure uses `var(--surface-subtle)` for a quiet grey
   separation from chat without becoming a separate workspace rail.
-- Rows only: Session (`Show session panel`), Changes, Git, Terminal, Jobs
+- Rows only: Session (`Show session panel`), Changes, Git, Browser, Terminal, Jobs
   (`Toggle background jobs` — toggles), Files (Finder reveal). Git may show the
   short branch name in the label; +/− meta appears on Changes when files exist.
 - No Local row (Files is the single Finder action), no Commit/Compare rows, no
@@ -293,13 +296,13 @@ without changing the active chat or scroll position.
   `/jobs`).
 - Below the `900px` drawer breakpoint, topbar metadata yields to the compact
   dock instead of rendering beneath it; Local/Cloud remains in the composer.
-- Session, Changes, Git, Terminal, and Jobs are mutually exclusive views in one shared
+- Session, Changes, Git, Browser, Terminal, and Jobs are mutually exclusive views in one shared
   right-side activity lane. Opening one closes the previous active view instead
   of replacing the whole workspace or jumping the conversation.
 - The activity sidebar is a full-height grid sibling of the topbar/chat stage,
   separated by one quiet hairline. It is never an inset floating card and never
   overlays desktop chat content.
-- A persistent top switcher keeps Session, Changes, Git, Terminal, and Jobs
+- A persistent top switcher keeps Session, Changes, Git, Browser, Terminal, and Jobs
   visible whenever the sidebar is open. Switching views replaces only the
   sidebar body; it does not close the lane or remount chat.
 - The activity header, width, structural left edge, close behavior, Escape handling, resize
@@ -392,7 +395,7 @@ snippet. External links go through `ExternalLink` / host bridge.
   markdown, sources, assumptions, and ungrounded warnings; Enter / Esc / ⌘Y.
   The footer remains visible and sits 8px above the plan-revision composer.
 
-### Session, Changes, Git, Terminal, and Jobs panels
+### Session, Changes, Git, Browser, Terminal, and Jobs panels
 
 - The wide Environment dock is a compact hairline navigation surface on
   `--bg`, without a rail tint or floating shadow. At the compact breakpoint it
@@ -403,11 +406,11 @@ snippet. External links go through `ExternalLink` / host bridge.
   Changes opens from the dock or changed-files footer chip. Git opens from the dock or
   Git shortcut; Jobs opens from the dock or `/jobs`. Sending a message must not
   reopen the activity sidebar.
-- Opening Session, Changes, Git, Terminal, or Jobs closes the previous view in
+- Opening Session, Changes, Git, Browser, Terminal, or Jobs closes the previous view in
   place. Escape, the close control, or the active dock toggle returns to the
   unchanged chat surface; a dismiss scrim is added only in compact drawer mode.
 - Switching or resuming sessions changes conversation data without closing or
-  changing the active Session/Changes/Git/Terminal/Jobs view. Changes keeps its
+  changing the active Session/Changes/Git/Browser/Terminal/Jobs view. Changes keeps its
   Diff/File mode, and transcript scroll positions are restored per session.
 - Terminal view close/switch detaches only xterm rendering. Project sessions
   open shells at the project root; one-off Chats open at the user's home instead
@@ -422,10 +425,13 @@ snippet. External links go through `ExternalLink` / host bridge.
   remounts xterm against the new owner. Git controls pause because they target
   the local base; remote Git remains available in Terminal. Finder actions stay
   explicitly local and never masquerade as a Cloud reveal.
-- All activity tabs, headers, labels, supporting paths, and the xterm grid use
-  the shared app sans stack and tokenized type scale. The grid remains compact at
-  12.5px with neutral letter spacing and a 1.35 line height; detected HTTP(S)
-  URLs open in the default browser through the guarded external-link bridge.
+- Browser uses one retained main-owned `WebContentsView` with sandboxing, no
+  preload or Node access, denied permissions, guarded HTTP(S) navigation, and a
+  persisted 720px pane. Ordinary content links open there; Cmd/Ctrl/middle-click,
+  authentication, payment, pop-up, and download flows open externally.
+- Activity chrome uses the shared sans stack; xterm uses the mono stack at 13px
+  with neutral spacing, a 1.3 line height, and the complete live theme ANSI
+  palette. URL clicks use the same Browser/external disposition contract.
 - Git’s branches/changes/history/remotes/pull-request content stays inside the
   activity rail. It must not replace the project rail or main chat workspace.
 - Changes is a dedicated master-detail review workspace: searchable directory
@@ -491,6 +497,7 @@ snippet. External links go through `ExternalLink` / host bridge.
 | Sessions workspace | `src/renderer/sessions/SessionsWorkspace.tsx`, `src/renderer/sessions/session-live-insight.ts`, `src/shared/session-board.ts` |
 | Local runtime pool, queue, notifications | `src/main/local-runtime-supervisor.ts`, `src/main/runtime-settings-store.ts`, `src/main/local-runtime-notifications.ts`, `src/shared/local-runtime.ts` |
 | Workspace dock | `src/renderer/layout/WorkspaceDock.tsx` |
+| Secure retained browser | `src/main/browser-controller.ts`, `src/renderer/panels/BrowserPanel.tsx`, `src/shared/link-routing.ts` |
 | Changed-files footer chip | `src/renderer/panels/TurnChangesCard.tsx` |
 | Diff display helpers | `src/shared/diff-view.ts`, `changed-files.ts` |
 | Rail resizing | `src/renderer/layout/SidebarResizeHandle.tsx` |

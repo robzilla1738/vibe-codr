@@ -8,6 +8,7 @@ import type { MessageBoxSyncOptions } from "electron";
 import { app, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, safeStorage, session, shell } from "electron";
 import { readTextFileCapped } from "../shared/capped-read";
 import type { EngineCommand } from "../shared/commands";
+import type { BrowserBounds, BrowserCommand } from "../shared/browser";
 import { isAllowedCwd, isAllowedProjectRoot, isAllowedRevealPath, projectCwdAllowlist } from "../shared/cwd-allowlist";
 import { composeInEditor, EDITOR_DRAFT_MAX_BYTES } from "../shared/editor-compose";
 import { safeExternalUrl } from "../shared/external-url";
@@ -23,6 +24,7 @@ import { isRendererRpcMethod } from "../shared/renderer-rpc";
 import { isProjectSummaryArray } from "../shared/runtime-guards";
 import { TtlLruCache } from "../shared/ttl-lru-cache";
 import { type AppUpdaterController, createAppUpdater } from "./app-updater";
+import { BrowserController } from "./browser-controller";
 import { CloudManager, cloudFailureDetails } from "./cloud/manager";
 import { registerConfigIpc } from "./config-ipc";
 import { EngineTransportController } from "./engine-transport-controller";
@@ -37,6 +39,11 @@ import { RuntimeSettingsStore } from "./runtime-settings-store";
 import { TerminalManager } from "./terminal-manager";
 
 let mainWindow: BrowserWindow | null = null;
+const browserController = new BrowserController(
+  () => mainWindow,
+  (state) => sendToRenderer("browser:state", state),
+  () => sendToRenderer("browser:focusAddress"),
+);
 let settingsDirty = false;
 let appUpdater: AppUpdaterController | null = null;
 const runtimeSettingsStore = new RuntimeSettingsStore(app.getPath("userData"));
@@ -594,6 +601,7 @@ function createWindow(): void {
   });
 
   mainWindow.on("closed", () => {
+    browserController.dispose();
     settingsDirty = false;
     mainWindow = null;
     setMainWindow(null);
@@ -1031,6 +1039,23 @@ function registerIpc(): void {
     const safeUrl = safeExternalUrl(url);
     if (!safeUrl) throw new Error("Unsupported external URL");
     await shell.openExternal(safeUrl);
+  });
+
+  ipcMain.handle("browser:load", async (event, url: string) => {
+    assertTrustedIpc(event);
+    await browserController.load(url);
+  });
+  ipcMain.on("browser:setBounds", (event, bounds: BrowserBounds) => {
+    assertTrustedSender(event.sender);
+    browserController.setBounds(bounds);
+  });
+  ipcMain.on("browser:setVisible", (event, visible: boolean) => {
+    assertTrustedSender(event.sender);
+    browserController.setVisible(visible === true);
+  });
+  ipcMain.on("browser:command", (event, command: BrowserCommand) => {
+    assertTrustedSender(event.sender);
+    if (["back", "forward", "reload", "stop"].includes(command)) browserController.command(command);
   });
 
   ipcMain.handle("shell:showItem", async (event, path: string) => {

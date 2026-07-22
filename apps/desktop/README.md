@@ -199,7 +199,8 @@ Scenarios: `welcome`, `splash`, `chat`, `table`, `docs`, `sources`, `busy`,
 - Projects and session titles come from the host's read-only `listProjects` index; Electron never parses vibe-codr state directly
 - Themes via `/theme` (same 16 palettes as OpenTUI); accents via `/accent`
 - Modes: explained **Plan / Agent / Yolo** menu with neutral icons and a current check in the composer (Shift+Tab still cycles). Mode and Quiet/Normal/Verbose changes apply immediately during a turn without adding queued prompts.
-- Agent output remains chronological while live. After completion, the exact commentary/reasoning/tool process folds into one summary while the Result and Evidence remain primary; one click restores the chronology.
+- Agent output remains chronological while live. After completion, exact commentary, reasoning, tools, checks, and sources fold into one lossless **Work** disclosure while the final answer remains primary; one click restores the chronology.
+- Drafts, attachments, and accepted-prompt history are scoped to the active project/session. Up/Down recalls prior prompts at the textarea boundary, and switching conversations never carries unfinished input across.
 - Execution: **Local / Cloud** selection in the composer; changing it opens the same reviewed handoff as `/handoff local|cloud`, names the active model, and includes configured model/subscription access by default with an explicit opt-out
 - Slash discovery: one model selector and the complete canonical command set,
   with compact Commands / Skills / System groups cycled by Tab or selected

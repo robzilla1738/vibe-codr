@@ -60,6 +60,15 @@ const REASONING_NAME_MAX_CHARS = 4 * 1024;
 const GIT_BRANCH_MAX_CHARS = 64 * 1024;
 const PERMISSION_TOOL_NAME_MAX_CHARS = 4 * 1024;
 const CHECKPOINT_LABEL_MAX_CHARS = 64 * 1024;
+const QUESTION_MAX_CHARS = 2 * 1024 * 1024;
+const QUESTION_HEADER_MAX_CHARS = 64 * 1024;
+const QUESTION_MAX_CHOICES = 100;
+const QUESTION_CHOICE_LABEL_MAX_CHARS = 64 * 1024;
+const QUESTION_CHOICE_DESCRIPTION_MAX_CHARS = 128 * 1024;
+const ACTIVITY_MAX_ROWS = 1_000;
+const ACTIVITY_LABEL_MAX_CHARS = 64 * 1024;
+const ACTIVITY_SUMMARY_MAX_CHARS = 256 * 1024;
+const ACTIVITY_OUTPUT_TAIL_MAX_CHARS = 256 * 1024;
 
 function boundedDisplayText(value: string, maxChars: number): string {
   return appendRollingText("", value, maxChars);
@@ -89,6 +98,67 @@ function boundedGit(git: GitInfo | null | undefined): GitInfo | null {
   return git
     ? { ...git, branch: boundedMachineText(git.branch, GIT_BRANCH_MAX_CHARS) }
     : null;
+}
+
+function boundedPlanEvidence(input: {
+  plan: string;
+  sources?: { url: string; title?: string }[];
+  assumptions?: string[];
+  ungrounded?: boolean;
+}): NonNullable<SessionChrome["plan"]> {
+  return {
+    text: appendRollingText("", input.plan, PLAN_MAX_CHARS),
+    sources: input.sources
+      ?.filter((source) =>
+        source.url.length <= PLAN_SOURCE_URL_MAX_CHARS && !source.url.includes("\0")
+      )
+      .slice(0, PLAN_MAX_SOURCES)
+      .map((source) => ({
+        url: source.url,
+        ...(source.title
+          ? { title: boundedDisplayText(source.title, PLAN_SOURCE_TITLE_MAX_CHARS) }
+          : {}),
+      })),
+    assumptions: input.assumptions
+      ?.slice(0, PLAN_MAX_ASSUMPTIONS)
+      .map((assumption) => boundedDisplayText(assumption, PLAN_ASSUMPTION_MAX_CHARS)),
+    ungrounded: input.ungrounded,
+  };
+}
+
+function boundedQuestion(question: StructuredQuestion | null | undefined): StructuredQuestion | null {
+  if (!question) return null;
+  return {
+    ...question,
+    question: boundedDisplayText(question.question, QUESTION_MAX_CHARS),
+    ...(question.header
+      ? { header: boundedDisplayText(question.header, QUESTION_HEADER_MAX_CHARS) }
+      : {}),
+    choices: question.choices.slice(0, QUESTION_MAX_CHOICES).map((choice) => ({
+      label: boundedDisplayText(choice.label, QUESTION_CHOICE_LABEL_MAX_CHARS),
+      ...(choice.description
+        ? {
+            description: boundedDisplayText(
+              choice.description,
+              QUESTION_CHOICE_DESCRIPTION_MAX_CHARS,
+            ),
+          }
+        : {}),
+    })),
+  };
+}
+
+function boundedActivities(activities: readonly ActivityInfo[]): ActivityInfo[] {
+  return activities.slice(-ACTIVITY_MAX_ROWS).map((activity) => ({
+    ...activity,
+    label: boundedDisplayText(activity.label, ACTIVITY_LABEL_MAX_CHARS),
+    ...(activity.summary
+      ? { summary: boundedDisplayText(activity.summary, ACTIVITY_SUMMARY_MAX_CHARS) }
+      : {}),
+    ...(activity.outputTail
+      ? { outputTail: appendRollingText("", activity.outputTail, ACTIVITY_OUTPUT_TAIL_MAX_CHARS) }
+      : {}),
+  }));
 }
 
 export interface OrchestrationRow {
@@ -241,15 +311,10 @@ export function reduceChrome(s: SessionChrome, a: ChromeAction): SessionChrome {
         tasksTotal: tasks.total,
         tasksCompletedTotal: tasks.completed,
         tasksUnfinishedTotal: tasks.unfinished,
-        activities: snap.activities ?? [],
-        question: snap.pendingQuestion ?? null,
+        activities: boundedActivities(snap.activities ?? []),
+        question: boundedQuestion(snap.pendingQuestion),
         plan: snap.planState?.status === "pending" && snap.planState.plan
-          ? {
-              text: appendRollingText("", snap.planState.plan, PLAN_MAX_CHARS),
-              sources: snap.planState.sources,
-              assumptions: snap.planState.assumptions,
-              ungrounded: snap.planState.ungrounded,
-            }
+          ? boundedPlanEvidence(snap.planState as typeof snap.planState & { plan: string })
           : null,
         commandNames: retainCommandNames(snap.commandNames ?? []),
       };
@@ -389,52 +454,20 @@ function applyEvent(s: SessionChrome, event: UIEvent): SessionChrome {
     case "plan-presented":
       return {
         ...s,
-        plan: {
-          text: appendRollingText("", event.plan, PLAN_MAX_CHARS),
-          sources: event.sources
-            ?.filter((source) =>
-              source.url.length <= PLAN_SOURCE_URL_MAX_CHARS &&
-              !source.url.includes("\0"),
-            )
-            .slice(0, PLAN_MAX_SOURCES)
-            .map((source) => ({
-              url: source.url,
-              ...(source.title
-                ? {
-                    title: boundedDisplayText(
-                      source.title,
-                      PLAN_SOURCE_TITLE_MAX_CHARS,
-                    ),
-                  }
-                : {}),
-            })),
-          assumptions: event.assumptions
-            ?.slice(0, PLAN_MAX_ASSUMPTIONS)
-            .map((assumption) => appendRollingText(
-              "",
-              assumption,
-              PLAN_ASSUMPTION_MAX_CHARS,
-            )),
-          ungrounded: event.ungrounded,
-        },
+        plan: boundedPlanEvidence(event),
       };
     case "plan-state-changed":
       if (event.state.status !== "pending" || !event.state.plan) return { ...s, plan: null };
       return {
         ...s,
-        plan: {
-          text: appendRollingText("", event.state.plan, PLAN_MAX_CHARS),
-          sources: event.state.sources,
-          assumptions: event.state.assumptions,
-          ungrounded: event.state.ungrounded,
-        },
+        plan: boundedPlanEvidence(event.state as typeof event.state & { plan: string }),
       };
     case "question-request":
-      return { ...s, question: event.question };
+      return { ...s, question: boundedQuestion(event.question) };
     case "question-settled":
       return s.question?.id === event.id ? { ...s, question: null } : s;
     case "activities-changed":
-      return { ...s, activities: event.activities.slice(-1_000) };
+      return { ...s, activities: boundedActivities(event.activities) };
     case "permission-request":
       return {
         ...s,
@@ -587,7 +620,10 @@ function applyEvent(s: SessionChrome, event: UIEvent): SessionChrome {
       // Subagents and the reasoning trail are per-turn — start each turn clean (TUI parity).
       return { ...s, busy: true, plan: null, subagents: [], thoughtLog: [], orchestration: [] };
     case "engine-error":
-      return { ...s, busy: false, thinkingStream: "" };
+      // engine-error precedes the queue's guaranteed engine-idle on recoverable
+      // turn failures. Clearing here allows a new prompt to race persistence,
+      // post-turn verification, and engine-authored follow-ups.
+      return { ...s, thinkingStream: "" };
     default:
       return s;
   }

@@ -66,7 +66,7 @@ describe("workspace dock design contract", () => {
       { path: "a.ts", added: 2, removed: 1 },
       { path: "b.ts", added: 0, removed: 3 },
     ]);
-    expect(totals).toEqual({ count: 2, added: 2, removed: 4 });
+    expect(totals).toEqual({ count: 2, added: 2, removed: 4, unknownCount: 0 });
   });
 
   it("opens every tool in one structural edge-attached activity sidebar", () => {

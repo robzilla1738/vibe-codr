@@ -538,6 +538,17 @@ npm run dev
 
 ## Attachments, review, and final renderer polish (2026-07-12)
 
+- [x] Drafts, attachments, and prompt recall are keyed by project plus session;
+  late paste/submit completion cannot mutate a newly selected conversation
+- [x] Turn/message/part identity and lifecycle survive history hydration and
+  reconnect; superseded-turn frames are rejected before reducer mutation
+- [x] Completed output has one lossless Work disclosure, authoritative duration,
+  honest unknown changed-file counts, and no duplicate Evidence control
+- [x] Silent work remains busy and surfaces a non-terminal status hint; engine
+  errors and intermediate idle signals cannot flicker the composer idle
+- [x] Compound controls use one ordered command batch and tool approvals correlate
+  to their exact call rather than inferred display order
+
 - [x] Finder drag/drop accepts image and file batches with removable chips,
   image previews, duplicate normalization, and project-aware `@` references
 - [x] Native dropped-file resolution uses Electron `webUtils.getPathForFile`,

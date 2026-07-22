@@ -41,7 +41,14 @@ function capTextTail(value: string, maxChars: number, kind: string): string {
  * move, so app.tsx renders it with <Index> (stable per-position rows) and only
  * the block currently being mutated re-renders. `id` is a stable click handle.
  */
-export type Block =
+export type Block = {
+  /** Canonical protocol identity; numeric id remains the local click handle. */
+  wireId?: string;
+  turnId?: string;
+  messageId?: string;
+  revision?: number;
+  turnDurationMs?: number;
+} & (
   | {
       kind: "user";
       id: number;
@@ -82,6 +89,9 @@ export type Block =
       startedAt?: number;
       /** Wall-clock the call took; the meta column shows it when it's ≥2s. */
       elapsedMs?: number;
+      lifecycle?: "queued" | "running" | "waiting-permission" | "succeeded" | "failed" | "cancelled";
+      outputPaths?: string[];
+      sources?: string[];
     }
   | {
       /** A burst of the model's reasoning, landed as a collapsed row once the
@@ -97,7 +107,8 @@ export type Block =
       /** How long the burst took, seconds (shown in the header when ≥1). */
       seconds?: number;
     }
-  | { kind: "notice"; id: number; text: string; level: "info" | "warn" | "error" };
+  | { kind: "notice"; id: number; text: string; level: "info" | "warn" | "error" }
+);
 
 /** A subagent shown in the Subagents panel while it runs and after it finishes. */
 export interface Subagent {
@@ -123,6 +134,8 @@ export interface ChangedFile {
   path: string;
   added: number;
   removed: number;
+  /** False when resume history proves the file changed but did not persist line counts. */
+  countsKnown?: boolean;
   /** Latest unified diff hunk, used by the docked review view. */
   diff?: string;
 }
@@ -227,18 +240,24 @@ export type TranscriptAction =
       timestamp?: number;
       origin?: "user" | "engine";
       label?: string;
+      turnId?: string;
+      messageId?: string;
+      partId?: string;
+      revision?: number;
     }
   /** A coalesced batch of streamed assistant text (app.tsx buffers per frame). */
-  | { type: "delta"; text: string; timestamp?: number; phase?: AssistantOutputPhase }
+  | { type: "delta"; text: string; timestamp?: number; phase?: AssistantOutputPhase; turnId?: string; messageId?: string; partId?: string; revision?: number }
   /** Land the streaming reply: flip `streaming` off so <markdown> closes fences. */
   | { type: "finalize" }
+  | { type: "set-assistant-phase"; partId?: string; phase: AssistantOutputPhase; revision?: number }
   /** `at` = app-time stamp (ms); with tool-finish's it yields the row's duration. */
-  | { type: "tool-start"; toolCallId: string; toolName: string; input: unknown; at?: number }
+  | { type: "tool-start"; toolCallId: string; toolName: string; input: unknown; at?: number; turnId?: string; messageId?: string; partId?: string; revision?: number; status?: "queued" | "running" | "waiting-permission" | "succeeded" | "failed" | "cancelled" }
   /** A chunk of live streamed output from a RUNNING call (bash stdout/stderr). */
-  | { type: "tool-progress"; toolCallId: string; chunk: string }
-  | { type: "tool-finish"; toolCallId: string; output: unknown; isError: boolean; at?: number }
+  | { type: "tool-progress"; toolCallId: string; chunk: string; turnId?: string; partId?: string; revision?: number }
+  | { type: "tool-status"; toolCallId: string; status: "queued" | "running" | "waiting-permission" | "succeeded" | "failed" | "cancelled" }
+  | { type: "tool-finish"; toolCallId: string; output: unknown; isError: boolean; at?: number; turnId?: string; messageId?: string; partId?: string; revision?: number; status?: "queued" | "running" | "waiting-permission" | "succeeded" | "failed" | "cancelled"; outputPaths?: string[]; sources?: string[] }
   /** A finished reasoning burst → a collapsed, expandable thinking row. */
-  | { type: "thinking"; text: string; seconds?: number }
+  | { type: "thinking"; text: string; seconds?: number; turnId?: string; messageId?: string; partId?: string; revision?: number }
   | {
       type: "file-changed";
       toolCallId: string;
@@ -246,10 +265,12 @@ export type TranscriptAction =
       action: "write" | "edit";
       added: number;
       removed: number;
+      countsKnown?: boolean;
       diff?: string;
       at?: number;
     }
   | { type: "notice"; text: string; level?: "info" | "warn" | "error" }
+  | { type: "turn-performance"; turnId: string; totalMs: number }
   | { type: "toggle"; id: number }
   | { type: "set-expanded"; id: number; expanded: boolean }
   /** Expand every thinking row if any is collapsed, else collapse them all
@@ -326,6 +347,10 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
             timestamp: a.timestamp ?? Date.now(),
             ...(a.origin ? { origin: a.origin } : {}),
             ...(a.label ? { label: a.label } : {}),
+            ...(a.turnId ? { turnId: a.turnId } : {}),
+            ...(a.messageId ? { messageId: a.messageId } : {}),
+            ...(a.partId ? { wireId: a.partId } : {}),
+            ...(a.revision !== undefined ? { revision: a.revision } : {}),
           },
         ],
         nextId: f.nextId + 1,
@@ -347,6 +372,10 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
             ASSISTANT_OUTPUT_MAX_CHARS,
           ),
           ...(a.phase ? { phase: a.phase } : {}),
+          ...(a.turnId ? { turnId: a.turnId } : {}),
+          ...(a.messageId ? { messageId: a.messageId } : {}),
+          ...(a.partId ? { wireId: a.partId } : {}),
+          ...(a.revision !== undefined ? { revision: a.revision } : {}),
         };
         return { ...s, blocks };
       }
@@ -361,12 +390,30 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           gap: true,
           timestamp: a.timestamp ?? Date.now(),
           ...(a.phase ? { phase: a.phase } : {}),
+          ...(a.turnId ? { turnId: a.turnId } : {}),
+          ...(a.messageId ? { messageId: a.messageId } : {}),
+          ...(a.partId ? { wireId: a.partId } : {}),
+          ...(a.revision !== undefined ? { revision: a.revision } : {}),
         },
       ];
       return { ...s, blocks, nextId: s.nextId + 1, activeAssistant: blocks.length - 1 };
     }
     case "finalize":
       return finalizeActive(s);
+    case "set-assistant-phase": {
+      if (!a.partId) return s;
+      const index = s.blocks.findIndex((block) =>
+        block.kind === "assistant" && block.wireId === a.partId
+      );
+      if (index < 0) return s;
+      const blocks = s.blocks.slice();
+      blocks[index] = {
+        ...blocks[index]!,
+        phase: a.phase,
+        ...(a.revision !== undefined ? { revision: a.revision } : {}),
+      } as Block;
+      return { ...s, blocks };
+    }
     case "tool-start": {
       const f = markUnphasedBeforeTool(finalizeActive(s, "commentary"));
       const label = toolLabel(a.toolName, a.input);
@@ -391,7 +438,12 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           isSources,
           isError: false,
           done: false,
+          lifecycle: a.status ?? "running",
           ...(a.at !== undefined ? { startedAt: a.at } : {}),
+          ...(a.turnId ? { turnId: a.turnId } : {}),
+          ...(a.messageId ? { messageId: a.messageId } : {}),
+          ...(a.partId ? { wireId: a.partId } : {}),
+          ...(a.revision !== undefined ? { revision: a.revision } : {}),
         },
       ];
       return {
@@ -410,6 +462,14 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       if (idx == null || b?.kind !== "tool" || b.done) return s;
       const blocks = s.blocks.slice();
       blocks[idx] = { ...b, tail: ((b.tail ?? "") + a.chunk).slice(-600) };
+      return { ...s, blocks };
+    }
+    case "tool-status": {
+      const idx = s.toolByCallId[a.toolCallId];
+      const block = idx == null ? undefined : s.blocks[idx];
+      if (idx == null || block?.kind !== "tool" || block.done) return s;
+      const blocks = s.blocks.slice();
+      blocks[idx] = { ...block, lifecycle: a.status };
       return { ...s, blocks };
     }
     case "tool-finish": {
@@ -466,6 +526,9 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
         isError: a.isError,
         collapsed: a.isError ? false : longOk ? true : b.collapsed,
         done: true,
+        lifecycle: a.status ?? (a.isError ? "failed" : "succeeded"),
+        ...(a.outputPaths?.length ? { outputPaths: a.outputPaths.slice(0, 100) } : {}),
+        ...(a.sources?.length ? { sources: a.sources.slice(0, 100) } : {}),
         ...(a.at !== undefined && b.startedAt !== undefined
           ? { elapsedMs: Math.max(0, a.at - b.startedAt) }
           : {}),
@@ -490,6 +553,10 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
             text,
             collapsed: true,
             ...(a.seconds !== undefined ? { seconds: a.seconds } : {}),
+            ...(a.turnId ? { turnId: a.turnId } : {}),
+            ...(a.messageId ? { messageId: a.messageId } : {}),
+            ...(a.partId ? { wireId: a.partId } : {}),
+            ...(a.revision !== undefined ? { revision: a.revision } : {}),
           },
         ],
         nextId: f.nextId + 1,
@@ -500,10 +567,12 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
       // identical file) must NOT convert the tool block into an expanded empty
       // diff and suppress its real result text. Leave the block alone so the
       // tool's own output ("no changes") lands normally.
-      if (!a.diff && a.added === 0 && a.removed === 0) return s;
+      if (!a.diff && a.added === 0 && a.removed === 0 && a.countsKnown !== false) return s;
       const suppressCallIds = { ...s.suppressCallIds, [a.toolCallId]: true as const };
       const verb = a.action === "write" ? "wrote" : "edited";
-      const header = `${GLYPH.file} ${verb} ${a.path}  +${a.added} -${a.removed}`;
+      const header = a.countsKnown === false
+        ? `${GLYPH.file} ${verb} ${a.path}`
+        : `${GLYPH.file} ${verb} ${a.path}  +${a.added} -${a.removed}`;
       // Same line budget as tool bodies — huge multi-file diffs must not pin RAM.
       const FILE_DIFF_MAX_LINES = 4_000;
       let storedDiff = a.diff
@@ -527,6 +596,11 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
           path: f.path,
           added: f.added + a.added,
           removed: f.removed + a.removed,
+          ...(
+            f.countsKnown === false || a.countsKnown === false
+              ? { countsKnown: false as const }
+              : {}
+          ),
           ...(storedDiff || f.diff ? { diff: storedDiff || f.diff } : {}),
         };
         // Treat the latest edit as newest for the retained-diff budget. Display
@@ -543,6 +617,7 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
             path: a.path,
             added: a.added,
             removed: a.removed,
+            ...(a.countsKnown === false ? { countsKnown: false as const } : {}),
             ...(storedDiff ? { diff: storedDiff } : {}),
           },
         ];
@@ -594,6 +669,20 @@ export function reduceTranscript(s: TranscriptState, a: TranscriptAction): Trans
         ],
         nextId: f.nextId + 1,
       };
+    }
+    case "turn-performance": {
+      let target = -1;
+      for (let index = s.blocks.length - 1; index >= 0; index -= 1) {
+        const block = s.blocks[index];
+        if (block?.kind === "assistant" && (!a.turnId || block.turnId === a.turnId)) {
+          target = index;
+          break;
+        }
+      }
+      if (target < 0) return s;
+      const blocks = s.blocks.slice();
+      blocks[target] = { ...blocks[target]!, turnDurationMs: Math.max(0, a.totalMs) };
+      return { ...s, blocks };
     }
     case "toggle":
       return {
@@ -665,6 +754,8 @@ export interface Turn {
   /** Stable render/fold key: the user-message id, or a negative synthetic id for a
    * preamble (so `<Index>` positions and the collapsed-turns set stay stable). */
   key: number;
+  /** Protocol-stable React identity. Numeric `key` remains the local fold key. */
+  renderKey: string;
 }
 
 /**
@@ -677,12 +768,12 @@ export function groupIntoTurns(blocks: Block[]): Turn[] {
   let cur: Turn | null = null;
   for (const b of blocks) {
     if (b.kind === "user") {
-      cur = { user: b, items: [], key: b.id };
+      cur = { user: b, items: [], key: b.id, renderKey: b.turnId ?? `local-turn-${b.id}` };
       turns.push(cur);
     } else {
       if (!cur) {
         // A block before the first user message → a keyed, node-less preamble.
-        cur = { items: [], key: -1 - turns.length };
+        cur = { items: [], key: -1 - turns.length, renderKey: `preamble-${turns.length}` };
         turns.push(cur);
       }
       cur.items.push(b);

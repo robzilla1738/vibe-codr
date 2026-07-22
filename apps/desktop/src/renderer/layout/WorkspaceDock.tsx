@@ -84,12 +84,14 @@ export function WorkspaceDock({
           ariaLabel="Show session changes"
           title={
             hasChanges
-              ? `Review ${totals.count} file${totals.count === 1 ? "" : "s"} · +${totals.added} −${totals.removed}`
+              ? totals.unknownCount > 0
+                ? `Review ${totals.count} changed file${totals.count === 1 ? "" : "s"}`
+                : `Review ${totals.count} file${totals.count === 1 ? "" : "s"} · +${totals.added} −${totals.removed}`
               : "Review session changes"
           }
           active={!!changesOpen}
           meta={
-            hasChanges ? (
+            hasChanges && totals.unknownCount === 0 ? (
               <span className="workspace-dock-meta">
                 <span className="diff-add-count">+{totals.added}</span>
                 <span className="diff-del-count">−{totals.removed}</span>

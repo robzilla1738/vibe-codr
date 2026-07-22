@@ -50,20 +50,52 @@ export type AssistantOutputPhase = z.infer<typeof AssistantOutputPhaseSchema>;
 export const RoleSchema = z.enum(["user", "assistant", "system", "tool"]);
 export type Role = z.infer<typeof RoleSchema>;
 
-const TextPartSchema = loose({ type: z.literal("text"), text: z.string() });
-const ReasoningPartSchema = loose({ type: z.literal("reasoning"), text: z.string() });
+export const PartLifecycleSchema = z.enum([
+  "queued",
+  "running",
+  "waiting-permission",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+export type PartLifecycle = z.infer<typeof PartLifecycleSchema>;
+const partIdentity = {
+  id: runtimeIdentifier.optional(),
+  turnId: runtimeIdentifier.optional(),
+  revision: nonNegativeSafeInteger.optional(),
+  startedAt: nonNegative.optional(),
+  completedAt: nonNegative.optional(),
+} as const;
+const TextPartSchema = loose({
+  type: z.literal("text"),
+  ...partIdentity,
+  text: z.string(),
+  phase: AssistantOutputPhaseSchema.optional(),
+});
+const ReasoningPartSchema = loose({
+  type: z.literal("reasoning"),
+  ...partIdentity,
+  text: z.string(),
+});
 const ToolCallPartSchema = loose({
   type: z.literal("tool-call"),
+  ...partIdentity,
   toolCallId: runtimeIdentifier,
   toolName: z.string(),
   input: z.unknown(),
+  status: PartLifecycleSchema.optional(),
+  permissionId: runtimeIdentifier.optional(),
 });
 const ToolResultPartSchema = loose({
   type: z.literal("tool-result"),
+  ...partIdentity,
   toolCallId: runtimeIdentifier,
   toolName: z.string(),
   output: z.unknown(),
   isError: z.boolean().optional(),
+  status: PartLifecycleSchema.optional(),
+  outputPaths: z.array(z.string()).optional(),
+  sources: z.array(z.string()).optional(),
 });
 export const PartSchema = z.discriminatedUnion("type", [
   TextPartSchema,
@@ -335,9 +367,12 @@ export type SessionUsage = z.infer<typeof SessionUsageSchema>;
 
 export const MessageSchema = loose({
   id: runtimeIdentifier,
+  turnId: runtimeIdentifier.optional(),
+  revision: nonNegativeSafeInteger.optional(),
   role: RoleSchema,
   parts: z.array(PartSchema),
   createdAt: finite,
+  completedAt: finite.optional(),
   usage: UsageSchema.optional(),
   subagentId: runtimeIdentifier.optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -552,7 +587,7 @@ const CancelActivityCommandSchema = loose({
 });
 const ShutdownCommandSchema = loose({ type: z.literal("shutdown") });
 
-export const EngineCommandSchema = z.discriminatedUnion("type", [
+const AtomicEngineCommandSchema = z.discriminatedUnion("type", [
   SubmitPromptCommandSchema,
   RunSlashCommandSchema,
   SetModeCommandSchema,
@@ -575,6 +610,19 @@ export const EngineCommandSchema = z.discriminatedUnion("type", [
   ResolveQuestionCommandSchema,
   CancelActivityCommandSchema,
   ShutdownCommandSchema,
+]);
+export type AtomicEngineCommand = z.infer<typeof AtomicEngineCommandSchema>;
+const CommandBatchSchema = loose({
+  type: z.literal("command-batch"),
+  commands: z.array(AtomicEngineCommandSchema).min(1).max(32),
+});
+
+/** A batch is one admitted command boundary. Nested batches are deliberately
+ * excluded so mode/approval changes and the prompt they govern cannot be
+ * interleaved with another client command. */
+export const EngineCommandSchema = z.discriminatedUnion("type", [
+  ...AtomicEngineCommandSchema.options,
+  CommandBatchSchema,
 ]);
 export type EngineCommand = z.infer<typeof EngineCommandSchema>;
 export type EngineCommandType = EngineCommand["type"];
@@ -601,6 +649,7 @@ export const ENGINE_COMMAND_SCHEMAS = {
   "resolve-question": ResolveQuestionCommandSchema,
   "cancel-activity": CancelActivityCommandSchema,
   shutdown: ShutdownCommandSchema,
+  "command-batch": CommandBatchSchema,
 } as const satisfies Record<EngineCommandType, z.ZodType>;
 export const ENGINE_COMMAND_TYPES = Object.freeze(
   Object.keys(ENGINE_COMMAND_SCHEMAS) as EngineCommandType[],
@@ -642,6 +691,13 @@ export const TurnPerformanceSampleSchema = loose({
 export type TurnPerformanceSample = z.infer<typeof TurnPerformanceSampleSchema>;
 
 const session = { sessionId: runtimeIdentifier } as const;
+const turnEventIdentity = {
+  turnId: runtimeIdentifier.optional(),
+  messageId: runtimeIdentifier.optional(),
+  partId: runtimeIdentifier.optional(),
+  revision: nonNegativeSafeInteger.optional(),
+  timestamp: nonNegative.optional(),
+} as const;
 const eventSchemas = {
   "session-start": loose({
     type: z.literal("session-start"),
@@ -655,11 +711,12 @@ const eventSchemas = {
     text: z.string(),
     origin: z.enum(["user", "engine"]).optional(),
     label: z.string().optional(),
-    turnId: runtimeIdentifier.optional(),
+    ...turnEventIdentity,
   }),
   "assistant-text-delta": loose({
     type: z.literal("assistant-text-delta"),
     ...session,
+    ...turnEventIdentity,
     subagentId: runtimeIdentifier.optional(),
     delta: z.string(),
     phase: AssistantOutputPhaseSchema.optional(),
@@ -667,32 +724,47 @@ const eventSchemas = {
   "reasoning-delta": loose({
     type: z.literal("reasoning-delta"),
     ...session,
+    ...turnEventIdentity,
     subagentId: runtimeIdentifier.optional(),
     delta: z.string(),
+  }),
+  "assistant-part-finalized": loose({
+    type: z.literal("assistant-part-finalized"),
+    ...session,
+    ...turnEventIdentity,
+    phase: AssistantOutputPhaseSchema,
   }),
   "tool-call-started": loose({
     type: z.literal("tool-call-started"),
     ...session,
+    ...turnEventIdentity,
     subagentId: runtimeIdentifier.optional(),
     toolCallId: runtimeIdentifier,
     toolName: z.string(),
     input: z.unknown(),
+    status: PartLifecycleSchema.optional(),
   }),
   "tool-call-progress": loose({
     type: z.literal("tool-call-progress"),
     ...session,
+    ...turnEventIdentity,
     subagentId: runtimeIdentifier.optional(),
     toolCallId: runtimeIdentifier,
     chunk: z.string(),
+    status: PartLifecycleSchema.optional(),
   }),
   "tool-call-finished": loose({
     type: z.literal("tool-call-finished"),
     ...session,
+    ...turnEventIdentity,
     subagentId: runtimeIdentifier.optional(),
     toolCallId: runtimeIdentifier,
     toolName: z.string(),
     output: z.unknown(),
     isError: z.boolean(),
+    status: PartLifecycleSchema.optional(),
+    outputPaths: z.array(z.string()).optional(),
+    sources: z.array(z.string()).optional(),
   }),
   "step-finished": loose({
     type: z.literal("step-finished"),
@@ -770,6 +842,8 @@ const eventSchemas = {
     id: runtimeIdentifier,
     toolName: z.string(),
     input: z.unknown(),
+    toolCallId: runtimeIdentifier.optional(),
+    turnId: runtimeIdentifier.optional(),
   }),
   "permission-settled": loose({
     type: z.literal("permission-settled"),
@@ -805,6 +879,7 @@ const eventSchemas = {
     diff: z.string(),
     added: nonNegative,
     removed: nonNegative,
+    turnId: runtimeIdentifier.optional(),
   }),
   "checkpoint-created": loose({
     type: z.literal("checkpoint-created"),
@@ -885,13 +960,23 @@ const eventSchemas = {
     sessionId: runtimeIdentifier.optional(),
     message: z.string(),
   }),
-  "turn-finished": loose({ type: z.literal("turn-finished"), ...session }),
+  "turn-finished": loose({
+    type: z.literal("turn-finished"),
+    ...session,
+    turnId: runtimeIdentifier.optional(),
+    timestamp: nonNegative.optional(),
+  }),
   "turn-performance": loose({
     type: z.literal("turn-performance"),
     ...session,
     sample: TurnPerformanceSampleSchema,
   }),
-  "session-idle": loose({ type: z.literal("session-idle"), ...session }),
+  "session-idle": loose({
+    type: z.literal("session-idle"),
+    ...session,
+    turnId: runtimeIdentifier.optional(),
+    timestamp: nonNegative.optional(),
+  }),
   "engine-idle": loose({
     type: z.literal("engine-idle"),
     ...session,

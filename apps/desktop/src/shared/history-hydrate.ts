@@ -55,6 +55,9 @@ export function hydrateFromHistory(history: Message[]): TranscriptState {
         .map((p) => p.text)
         .join("\n");
       if (text) {
+        const firstTextPart = msg.parts.find((part) => part.type === "text");
+        const turnId = msg.turnId
+          ?? (typeof msg.metadata?.turnId === "string" ? msg.metadata.turnId : undefined);
         const origin = msg.metadata?.origin === "engine" ? "engine" : undefined;
         const label = typeof msg.metadata?.label === "string" ? msg.metadata.label : undefined;
         apply({
@@ -63,15 +66,35 @@ export function hydrateFromHistory(history: Message[]): TranscriptState {
           timestamp: msg.createdAt,
           ...(origin ? { origin } : {}),
           ...(label ? { label } : {}),
+          ...(turnId ? { turnId } : {}),
+          messageId: msg.id,
+          ...(firstTextPart?.id ? { partId: firstTextPart.id } : {}),
+          ...(msg.revision !== undefined ? { revision: msg.revision } : {}),
         });
       }
     } else if (msg.role === "assistant" || msg.role === "tool") {
       for (const part of msg.parts) {
         if (msg.role === "assistant" && part.type === "text" && part.text) {
-          apply({ type: "delta", text: part.text, timestamp: msg.createdAt });
+          apply({
+            type: "delta",
+            text: part.text,
+            timestamp: part.startedAt ?? msg.createdAt,
+            ...(part.phase ? { phase: part.phase } : {}),
+            ...(part.turnId ?? msg.turnId ? { turnId: part.turnId ?? msg.turnId } : {}),
+            messageId: msg.id,
+            ...(part.id ? { partId: part.id } : {}),
+            ...(part.revision !== undefined ? { revision: part.revision } : {}),
+          });
           apply({ type: "finalize" });
         } else if (msg.role === "assistant" && part.type === "reasoning" && part.text) {
-          apply({ type: "thinking", text: part.text });
+          apply({
+            type: "thinking",
+            text: part.text,
+            ...(part.turnId ?? msg.turnId ? { turnId: part.turnId ?? msg.turnId } : {}),
+            messageId: msg.id,
+            ...(part.id ? { partId: part.id } : {}),
+            ...(part.revision !== undefined ? { revision: part.revision } : {}),
+          });
         } else if (msg.role === "assistant" && part.type === "tool-call") {
           if (pendingTools.size >= MAX_PENDING_HISTORY_TOOLS) {
             const oldest = pendingTools.keys().next().value;
@@ -83,6 +106,12 @@ export function hydrateFromHistory(history: Message[]): TranscriptState {
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             input: part.input,
+            at: part.startedAt,
+            ...(part.turnId ?? msg.turnId ? { turnId: part.turnId ?? msg.turnId } : {}),
+            messageId: msg.id,
+            ...(part.id ? { partId: part.id } : {}),
+            ...(part.revision !== undefined ? { revision: part.revision } : {}),
+            ...(part.status ? { status: part.status } : {}),
           });
         } else if (part.type === "tool-result") {
           const meta = pendingTools.get(part.toolCallId);
@@ -100,9 +129,7 @@ export function hydrateFromHistory(history: Message[]): TranscriptState {
                     ? JSON.stringify(part.output)
                     : "";
               const looksLikeDiff = /^(diff --git|@@ )/m.test(out);
-              // Reducer treats empty ±0 as no-op; use a 1-line placeholder when
-              // history has no unified diff so the Changes map still lists the path.
-              const added = looksLikeDiff ? (out.match(/^\+[^+]/gm) ?? []).length : 1;
+              const added = looksLikeDiff ? (out.match(/^\+[^+]/gm) ?? []).length : 0;
               const removed = looksLikeDiff ? (out.match(/^-[^-]/gm) ?? []).length : 0;
               apply({
                 type: "file-changed",
@@ -111,6 +138,7 @@ export function hydrateFromHistory(history: Message[]): TranscriptState {
                 action: actionFromTool(meta.toolName),
                 added,
                 removed,
+                countsKnown: looksLikeDiff,
                 diff: looksLikeDiff ? out : undefined,
               });
             }
@@ -122,6 +150,10 @@ export function hydrateFromHistory(history: Message[]): TranscriptState {
             toolCallId: part.toolCallId,
             output: part.output,
             isError: !!part.isError,
+            at: part.completedAt,
+            ...(part.status ? { status: part.status } : {}),
+            ...(part.outputPaths ? { outputPaths: part.outputPaths } : {}),
+            ...(part.sources ? { sources: part.sources } : {}),
           });
         }
       }

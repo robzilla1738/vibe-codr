@@ -194,7 +194,7 @@ Settings, Sessions, and the xterm runtime must remain in deferred chunks: aggreg
 renderer payload may include them, but the initial/largest chunk retains its
 budget. The aggregate ceiling includes a narrow 3 KB allowance for the active
 Sessions insight surface; the startup/largest-chunk ceiling is unchanged.
-Keep only measured headroom for the Process/Result/Evidence hierarchy and lazy
+Keep only measured headroom for the Work/final-answer hierarchy and lazy
 terminal-link detector; do not relax the startup ceiling broadly.
 The renderer build extracts repeated legal banners into
 `out/renderer/THIRD_PARTY_LICENSES.txt`; `verify:bundle` requires that shipped

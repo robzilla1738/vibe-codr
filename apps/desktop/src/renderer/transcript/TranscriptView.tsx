@@ -54,7 +54,7 @@ function processSummaryLabel(summary: ProcessSummary): string {
     const seconds = Math.max(1, Math.round(summary.durationMs / 1_000));
     parts.push(`Worked ${seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`}`);
   } else {
-    parts.push("Process");
+    parts.push("Work");
   }
   if (summary.tools > 0) parts.push(`${summary.tools} tool${summary.tools === 1 ? "" : "s"}`);
   if (summary.subagents > 0) parts.push(`${summary.subagents} agent${summary.subagents === 1 ? "" : "s"}`);
@@ -189,6 +189,13 @@ const BlockView = memo(function BlockView({
       const expandable = block.output.length > 0;
       const dur = toolDurationLabel(block, now);
       const outputText = block.output.join("\n");
+      const lifecycleLabel = block.lifecycle === "waiting-permission"
+        ? "waiting for approval"
+        : block.lifecycle === "cancelled"
+          ? "cancelled"
+          : !block.done
+            ? "running"
+            : block.isError ? "failed" : "done";
       if (isSubagentTool(block.toolName)) {
         const label = stripToolGlyph(block.label);
         return (
@@ -239,6 +246,9 @@ const BlockView = memo(function BlockView({
               </span>
               <span className="tool-meta">
                 {collapsed && block.done ? collapsedHint(block) : ""}
+                {block.outputPaths?.length ? ` ${block.outputPaths.length} file${block.outputPaths.length === 1 ? "" : "s"}` : ""}
+                {block.sources?.length ? ` ${block.sources.length} source${block.sources.length === 1 ? "" : "s"}` : ""}
+                {!block.done ? ` ${lifecycleLabel}` : ""}
                 {!block.done && block.tail ? " …" : ""}
                 {dur ? ` ${dur}` : ""}
               </span>
@@ -247,7 +257,7 @@ const BlockView = memo(function BlockView({
             <div
               className={`tool-head is-static${block.isError ? " error" : ""}${!block.done ? " live" : ""}`}
               role="status"
-              aria-label={`${stripToolGlyph(block.label)}, ${block.done ? block.isError ? "failed with no output" : "completed with no output" : "running"}`}
+              aria-label={`${stripToolGlyph(block.label)}, ${lifecycleLabel}${block.done ? " with no output" : ""}`}
             >
               <span className="tool-label">
                 <span className="tool-disclosure-dot" aria-hidden>·</span>
@@ -255,7 +265,7 @@ const BlockView = memo(function BlockView({
                 <span>{stripToolGlyph(block.label)}</span>
               </span>
               <span className="tool-meta">
-                {block.done ? (block.isError ? "failed · no output" : "done · no output") : "running"}
+                {block.done ? `${lifecycleLabel} · no output` : lifecycleLabel}
                 {dur ? ` ${dur}` : ""}
               </span>
             </div>
@@ -439,7 +449,7 @@ const TranscriptTurn = memo(function TranscriptTurn({
 
   const renderBlock = (block: Block) => (
     <BlockView
-      key={block.id}
+      key={block.wireId ?? block.id}
       block={block}
       density={density}
       theme={theme}
@@ -449,21 +459,12 @@ const TranscriptTurn = memo(function TranscriptTurn({
     />
   );
   const groupedItems = groupTranscriptItems(turn.items, itemStart, !active);
-  const compactProcess = groupedItems.find((item) => item.kind === "process");
-  const gateEvidence = turn.items
-    .filter((block): block is Extract<Block, { kind: "notice" }> => block.kind === "notice")
-    .map((block) => gateStatusNotice(block.text))
-    .find(Boolean);
-  const visualEvidence = turn.items
-    .filter((block): block is Extract<Block, { kind: "notice" }> => block.kind === "notice")
-    .map((block) => visualStatusNotice(block.text))
-    .find(Boolean);
   const renderedItems = groupedItems.map((item) => {
     if (item.kind === "block") return renderBlock(item.block);
     const label = processSummaryLabel(item.summary);
     return (
       <details
-        key={`process-${turn.key}`}
+        key={`process-${turn.renderKey}`}
         className={`turn-process${item.summary.failures > 0 ? " has-failures" : ""}`}
         open={processOpen}
         onToggle={(event) => setProcessOpen(event.currentTarget.open)}
@@ -519,23 +520,6 @@ const TranscriptTurn = memo(function TranscriptTurn({
             </summary>
             <div className="thinking-body">{liveThinking}</div>
           </details>
-        ) : null}
-        {!folded && !active && compactProcess ? (
-          <button
-            type="button"
-            className={`turn-evidence${compactProcess.summary.failures > 0 || gateEvidence?.tone === "warning" ? " has-failures" : ""}`}
-            onClick={() => setProcessOpen((open) => !open)}
-            aria-expanded={processOpen}
-          >
-            <span className="turn-evidence-label">Evidence</span>
-            <span className="turn-evidence-meta">
-              {compactProcess.summary.tools} tool{compactProcess.summary.tools === 1 ? "" : "s"}
-              {gateEvidence ? ` · ${gateEvidence.label}` : ""}
-              {visualEvidence ? ` · visual check${visualEvidence.consoleErrors + visualEvidence.deadControls === 0 ? " passed" : " has issues"}` : ""}
-              {compactProcess.summary.sources > 0 ? ` · ${compactProcess.summary.sources} source${compactProcess.summary.sources === 1 ? "" : "s"}` : ""}
-            </span>
-            <IconChevron open={processOpen} size={12} />
-          </button>
         ) : null}
       </div>
     </section>
@@ -670,7 +654,7 @@ export function TranscriptView({
             const active = busy && turn.key === latestTurnKey;
             return (
               <TranscriptTurn
-                key={turn.key}
+                key={turn.renderKey}
                 turn={turn} folded={folded} itemStart={itemWindow.start}
                 itemHidden={itemWindow.hidden} itemRevealPage={itemWindow.revealPage}
                 active={active} liveThinking={active ? liveThinking : undefined} density={density} theme={theme} now={active ? now : 0}

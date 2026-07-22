@@ -112,6 +112,23 @@ describe("canonical protocol schemas", () => {
       },
     } as const;
     expect(JSON.stringify(EngineCommandSchema.parse(command))).toBe(JSON.stringify(command));
+    expect(EngineCommandSchema.parse({
+      type: "command-batch",
+      commands: [
+        { type: "set-mode", mode: "plan" },
+        { type: "submit-prompt", text: "inspect it" },
+      ],
+    })).toEqual({
+      type: "command-batch",
+      commands: [
+        { type: "set-mode", mode: "plan" },
+        { type: "submit-prompt", text: "inspect it" },
+      ],
+    });
+    expect(EngineCommandSchema.safeParse({
+      type: "command-batch",
+      commands: [{ type: "command-batch", commands: [{ type: "abort" }] }],
+    }).success).toBeFalse();
     expect(JSON.stringify(UIEventSchema.parse(event))).toBe(JSON.stringify(event));
     expect(JSON.stringify(EngineSnapshotSchema.parse(snapshot))).toBe(JSON.stringify(snapshot));
   });

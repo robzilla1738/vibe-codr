@@ -35,7 +35,7 @@ export interface PerformanceSummary {
 }
 
 export interface PerformanceDiagnosticsBundle {
-  formatVersion: 1;
+  formatVersion: 2;
   generatedAt: number;
   app: {
     version: string;
@@ -48,6 +48,18 @@ export interface PerformanceDiagnosticsBundle {
     lastDay: PerformanceSummary;
     lastWeek: PerformanceSummary;
   };
+  /** Bounded content-free event order for diagnosing late/stuck tool turns. */
+  eventTrace: DiagnosticEventTraceEntry[];
+}
+
+export interface DiagnosticEventTraceEntry {
+  at: number;
+  type: string;
+  sessionId?: string;
+  turnId?: string;
+  toolCallId?: string;
+  status?: string;
+  revision?: number;
 }
 
 /** Reduce a host resolver description to a path-free diagnostics category. */

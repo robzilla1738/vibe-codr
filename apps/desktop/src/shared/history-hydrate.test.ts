@@ -41,7 +41,12 @@ describe("hydrateFromHistory", () => {
       },
     ];
     const state = hydrateFromHistory(history);
-    expect(state.changedFiles.some((f) => f.path === "src/app.ts")).toBe(true);
+    expect(state.changedFiles.find((f) => f.path === "src/app.ts")).toEqual({
+      path: "src/app.ts",
+      added: 0,
+      removed: 0,
+      countsKnown: false,
+    });
   });
 
   it("hydrates user and assistant text", () => {

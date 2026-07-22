@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added
+
+- Per-session drafts, Finder attachments, and prompt history survive navigation
+  independently, with Up/Down recall for accepted prompts.
+- Stable protocol turn/message/part identity now drives live output, reconnect
+  hydration, tool lifecycle, approval correlation, and React render keys.
+
+### Improved
+
+- Completed turns expose one lossless Work disclosure with real turn duration;
+  the duplicate Evidence toggle is gone, and silent running work uses a compact
+  status chip without pretending the turn finished.
+- Changed-file hydration distinguishes unknown line counts from real zeroes.
+
+### Fixed
+
+- Busy state waits for authoritative `engine-idle`, stale turn events are
+  quarantined, renderer collections are bounded, and compound UI transitions
+  are sent atomically rather than through interleavable IPC calls.
+
 ## 0.7.8 — 2026-07-21
 
 ### Fixed

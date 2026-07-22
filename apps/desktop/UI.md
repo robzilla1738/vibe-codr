@@ -322,10 +322,13 @@ without changing the active chat or scroll position.
   same reading width.
 - Tool and thinking rows share one compact sans/icon scale. Assistant commentary,
   reasoning, and tools remain in arrival order while a turn is active. Once the
-  final answer lands, prior activity folds into one lossless Process disclosure;
-  Result and Evidence remain primary. Each open thought is **one
+  final answer lands, prior activity folds into one lossless Work disclosure;
+  the final answer remains primary. Each open thought is **one
   quiet surface** (label + prose; no brain icon; no stacked empty cards).
   Copy for thinking sits on the head row.
+- A turn that is still authoritative-busy but emits no activity for 90 seconds
+  gets a compact `quiet 90s` status with the existing Esc interrupt affordance.
+  Silence never settles the turn and never inserts a permanent transcript row.
 - Quiet, Normal, and Verbose define only the initial disclosure state. A visible
   tool/thinking control always responds to click or keyboard activation,
   and ⌘T explicitly opens or closes all thinking rows. A tool with no output is

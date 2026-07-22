@@ -1,4 +1,4 @@
-import type { EngineCommand } from "@vibe/shared";
+import type { AtomicEngineCommand } from "@vibe/shared";
 
 /**
  * Map a typed line to an engine command. Slash lines that have a dedicated
@@ -9,7 +9,7 @@ import type { EngineCommand } from "@vibe/shared";
 /** Map a typed line to the ONE-or-MORE engine commands it expands to. Most lines
  * are a single command; `/plan <text>` / `/execute <text>` switch the mode AND
  * submit the text as the first turn (so the text isn't silently swallowed). */
-export function lineToCommands(line: string): EngineCommand[] {
+export function lineToCommands(line: string): AtomicEngineCommand[] {
   const trimmed = line.trim();
   const m = trimmed.match(/^\/(\S+)(?:\s+([\s\S]*))?$/);
   if (!m) return [{ type: "submit-prompt", text: trimmed }];
@@ -28,7 +28,7 @@ export function lineToCommands(line: string): EngineCommand[] {
   return [lineToCommand(line)];
 }
 
-export function lineToCommand(line: string): EngineCommand {
+export function lineToCommand(line: string): AtomicEngineCommand {
   const trimmed = line.trim();
   // Command name is everything up to the first space, matching the engine's
   // `parseSlash` (so hyphenated custom commands like `/run-tests` route too).

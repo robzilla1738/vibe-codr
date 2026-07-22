@@ -4,6 +4,34 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+### Added
+
+- Canonical turn, message, and part identities now carry lifecycle, revision,
+  timing, source, and output-path metadata across the engine protocol, persisted
+  history, reconnect hydration, diagnostics, and Desktop rendering.
+- Desktop drafts, attachments, and prompt history are isolated per project and
+  session; accepted prompts can be recalled with Up/Down without leaking into a
+  different conversation.
+
+### Improved
+
+- Completed Desktop turns now use one lossless Work disclosure and an always
+  primary final answer. Actual turn duration replaces inferred tool time, and
+  long silent work gets a compact non-terminal status instead of transcript
+  noise.
+- Tool calls have explicit queued, running, waiting-for-approval, succeeded,
+  failed, and cancelled states, with correlated approvals and a deterministic
+  repeated-failure circuit breaker.
+
+### Fixed
+
+- Session saves commit immutable, hashed generations through one atomic
+  manifest, recover the previous complete generation after corruption, and
+  safely prune stale generations. Renderer collections are bounded and stale
+  events from superseded turns no longer mutate the active turn.
+- Multi-command UI actions cross the host boundary as one ordered command batch,
+  and engine errors no longer falsely mark a still-running queue idle.
+
 ## 0.7.8 — 2026-07-21
 
 ### Fixed

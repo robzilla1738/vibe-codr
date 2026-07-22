@@ -90,6 +90,9 @@ function blockIdentity(block: Block): string {
     isError: block.isError,
     done: block.done,
     tail: block.tail,
+    lifecycle: block.lifecycle,
+    outputPaths: block.outputPaths,
+    sources: block.sources,
   });
 }
 
@@ -111,7 +114,13 @@ export function transcriptContentSignature(state: TranscriptState): string {
     hash = Math.imul(hash, 16777619);
   }
   for (const file of state.changedFiles) {
-    const value = JSON.stringify([file.path, file.added, file.removed, file.diff]);
+    const value = JSON.stringify([
+      file.path,
+      file.added,
+      file.removed,
+      file.countsKnown,
+      file.diff,
+    ]);
     items += 1;
     chars += value.length;
     for (let index = 0; index < value.length; index += 1) {
@@ -157,6 +166,11 @@ function optionalNonNegative(value: unknown): boolean {
 function transcriptBlock(value: unknown): value is Block {
   const block = record(value);
   if (!block || !Number.isSafeInteger(block.id) || (block.id as number) < 0) return false;
+  if (!optionalString(block.wireId)
+    || !optionalString(block.turnId)
+    || !optionalString(block.messageId)
+    || !optionalNonNegative(block.revision)
+    || !optionalNonNegative(block.turnDurationMs)) return false;
   switch (block.kind) {
     case "user":
       return typeof block.text === "string"
@@ -191,6 +205,9 @@ function transcriptBlock(value: unknown): value is Block {
         && (block.isSources === undefined || typeof block.isSources === "boolean")
         && typeof block.isError === "boolean"
         && typeof block.done === "boolean"
+        && (block.lifecycle === undefined || ["queued", "running", "waiting-permission", "succeeded", "failed", "cancelled"].includes(block.lifecycle as string))
+        && (block.outputPaths === undefined || (Array.isArray(block.outputPaths) && block.outputPaths.every((path) => typeof path === "string")))
+        && (block.sources === undefined || (Array.isArray(block.sources) && block.sources.every((source) => typeof source === "string")))
         && optionalString(block.tail)
         && optionalNonNegative(block.startedAt)
         && optionalNonNegative(block.elapsedMs);
@@ -228,6 +245,7 @@ function isTranscriptState(value: unknown): value is TranscriptState {
         && typeof file.removed === "number"
         && Number.isFinite(file.removed)
         && file.removed >= 0
+        && (file.countsKnown === undefined || typeof file.countsKnown === "boolean")
         && optionalString(file.diff);
     })
     && Number.isSafeInteger(state.nextId)

@@ -1,4 +1,4 @@
-import type { EngineCommand } from "@vibe/shared";
+import type { AtomicEngineCommand } from "@vibe/shared";
 
 /**
  * The three interaction modes the user cycles with Shift+Tab. These are a
@@ -46,7 +46,7 @@ export function engineStateForUiMode(target: UiMode): {
  * follow it). All `set-approvals` here are quiet: this is the Shift+Tab cycle,
  * where the mode chip is the feedback — the transcript confirm is for typed
  * /approvals. */
-export function commandsForUiMode(target: UiMode): EngineCommand[] {
+export function commandsForUiMode(target: UiMode): AtomicEngineCommand[] {
   switch (target) {
     case "plan":
       return [
@@ -78,7 +78,7 @@ export function cycleModeAction(
   cur: UiMode,
   opts: { planPending?: boolean } = {},
 ): {
-  commands: EngineCommand[];
+  commands: AtomicEngineCommand[];
   /** Apply to local mirrors when non-null; null = keep current chip/state. */
   optimistic: { mode: "plan" | "execute"; approvals: "ask" | "auto"; uiMode: UiMode } | null;
 } {

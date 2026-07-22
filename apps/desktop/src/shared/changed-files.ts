@@ -6,6 +6,7 @@ export interface ChangedFileLike {
   path: string;
   added: number;
   removed: number;
+  countsKnown?: boolean;
   diff?: string;
 }
 
@@ -16,6 +17,7 @@ export interface ChangedFileTreeDirectory<T extends ChangedFileLike> {
   files: number;
   added: number;
   removed: number;
+  unknownCount: number;
   children: ChangedFileTreeNode<T>[];
 }
 
@@ -121,14 +123,16 @@ export function buildChangedFileTree<T extends ChangedFileLike>(
               totals.files += 1;
               totals.added += node.file.added;
               totals.removed += node.file.removed;
+              if (node.file.countsKnown === false) totals.unknownCount += 1;
             } else {
               totals.files += node.files;
               totals.added += node.added;
               totals.removed += node.removed;
+              totals.unknownCount += node.unknownCount;
             }
             return totals;
           },
-          { files: 0, added: 0, removed: 0 },
+          { files: 0, added: 0, removed: 0, unknownCount: 0 },
         );
         return { kind: "directory", name: child.name, path: child.path, children, ...descendants };
       });
@@ -158,14 +162,17 @@ export function changedFilesTotals(files: readonly ChangedFileLike[]): {
   count: number;
   added: number;
   removed: number;
+  unknownCount: number;
 } {
   let added = 0;
   let removed = 0;
+  let unknownCount = 0;
   for (const f of files) {
     added += f.added || 0;
     removed += f.removed || 0;
+    if (f.countsKnown === false) unknownCount += 1;
   }
-  return { count: files.length, added, removed };
+  return { count: files.length, added, removed, unknownCount };
 }
 
 /** Stable display order: largest absolute churn first, then path. */
@@ -182,8 +189,12 @@ export function sortChangedFilesForDisplay<T extends ChangedFileLike>(
 
 /** Header label: "3 files changed · +40 −19" */
 export function changedFilesHeading(files: readonly ChangedFileLike[]): string {
-  const { count, added, removed } = changedFilesTotals(files);
+  const { count, added, removed, unknownCount } = changedFilesTotals(files);
   if (count === 0) return "No files changed";
   const noun = count === 1 ? "file" : "files";
+  if (unknownCount === count) return `${count} ${noun} changed`;
+  if (unknownCount > 0) {
+    return `${count} ${noun} changed · +${added} −${removed} known`;
+  }
   return `${count} ${noun} changed · +${added} −${removed}`;
 }

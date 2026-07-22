@@ -26,6 +26,16 @@ describe("session chrome state", () => {
     expect(state.lastGate).toBe("green");
   });
 
+  it("keeps busy across a recoverable engine error until engine-idle", () => {
+    let state = initialChrome("/repo");
+    state = event(state, { type: "user-message", sessionId: "s", text: "work" });
+    state = event(state, { type: "engine-error", sessionId: "s", message: "provider failed" });
+    expect(state.busy).toBe(true);
+    expect(state.thinkingStream).toBe("");
+    state = event(state, { type: "engine-idle", sessionId: "s" });
+    expect(state.busy).toBe(false);
+  });
+
   it("queues and settles permission cards by engine id", () => {
     let state = initialChrome("/repo");
     state = event(state, {
@@ -175,6 +185,68 @@ describe("session chrome state", () => {
     });
     expect(state.plan?.sources).toHaveLength(1);
     expect(state.plan?.sources?.[0]?.title?.length).toBe(64 * 1024);
+
+    state = event(state, {
+      type: "plan-state-changed",
+      sessionId: "s",
+      state: {
+        status: "pending",
+        plan: "updated",
+        sources: Array.from({ length: 700 }, (_, index) => ({
+          url: `https://example.com/${index}`,
+          title: index === 0 ? "t".repeat(80 * 1024) : `title-${index}`,
+        })),
+        assumptions: Array.from({ length: 300 }, (_, index) =>
+          index === 0 ? "a".repeat(40 * 1024) : `assumption-${index}`
+        ),
+        updatedAt: 1,
+      },
+    });
+    expect(state.plan?.sources).toHaveLength(500);
+    expect(state.plan?.sources?.[0]?.title).toHaveLength(64 * 1024);
+    expect(state.plan?.assumptions).toHaveLength(200);
+    expect(state.plan?.assumptions?.[0]).toHaveLength(32 * 1024);
+
+    state = event(state, {
+      type: "question-request",
+      sessionId: "s",
+      question: {
+        id: "q",
+        question: "q".repeat(3 * 1024 * 1024),
+        header: "h".repeat(80 * 1024),
+        choices: Array.from({ length: 120 }, (_, index) => ({
+          label: index === 0 ? "l".repeat(70 * 1024) : `choice-${index}`,
+          description: index === 0 ? "d".repeat(140 * 1024) : `description-${index}`,
+        })),
+        multiple: false,
+        allowFreeform: true,
+        createdAt: 1,
+      },
+    });
+    expect(state.question?.question).toHaveLength(2 * 1024 * 1024);
+    expect(state.question?.header).toHaveLength(64 * 1024);
+    expect(state.question?.choices).toHaveLength(100);
+    expect(state.question?.choices[0]?.label).toHaveLength(64 * 1024);
+    expect(state.question?.choices[0]?.description).toHaveLength(128 * 1024);
+
+    state = event(state, {
+      type: "activities-changed",
+      sessionId: "s",
+      activities: Array.from({ length: 1_200 }, (_, index) => ({
+        id: `activity-${index}`,
+        kind: "shell" as const,
+        label: index === 200 ? "l".repeat(80 * 1024) : `label-${index}`,
+        status: "running" as const,
+        summary: index === 200 ? "s".repeat(300 * 1024) : `summary-${index}`,
+        outputTail: index === 200 ? `old-${"x".repeat(300 * 1024)}-new` : `output-${index}`,
+      })),
+    });
+    expect(state.activities).toHaveLength(1_000);
+    expect(state.activities[0]?.id).toBe("activity-200");
+    expect(state.activities[0]?.label).toHaveLength(64 * 1024);
+    expect(state.activities[0]?.summary).toHaveLength(256 * 1024);
+    expect(state.activities[0]?.outputTail).toHaveLength(256 * 1024);
+    expect(state.activities[0]?.outputTail?.endsWith("-new")).toBe(true);
 
     state = event(state, {
       type: "goal-run",

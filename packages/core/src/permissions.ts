@@ -21,6 +21,7 @@ export type PermissionResolver = (req: {
    * become `allow` in headless/CI.
    */
   explicit: boolean;
+  toolCallId?: string;
 }) => PermissionReply | Promise<PermissionReply>;
 
 /**
@@ -239,7 +240,7 @@ export class PermissionChecker {
   async check(
     toolName: string,
     input: unknown,
-    opts: { fallback?: PermissionRule["action"] } = {},
+    opts: { fallback?: PermissionRule["action"]; toolCallId?: string } = {},
   ): Promise<PermissionResult> {
     const scope = scopeString(toolName, input);
     const canonical = resolvedPathScope(toolName, input, this.#cwd);
@@ -353,7 +354,12 @@ export class PermissionChecker {
     }
     if (finalAction === "allow") return { allowed: true };
     if (finalAction === "deny") return { allowed: false, reason: "denied by policy" };
-    const reply = await this.#resolve({ toolName, input, explicit: explicitAsk });
+    const reply = await this.#resolve({
+      toolName,
+      input,
+      explicit: explicitAsk,
+      ...(opts.toolCallId ? { toolCallId: opts.toolCallId } : {}),
+    });
     if (reply === true) return { allowed: true };
     // A denial may carry the user's typed feedback; folding it into the reason
     // puts it in the tool-error the model reads, so the denial steers rather

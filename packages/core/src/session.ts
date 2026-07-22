@@ -345,6 +345,7 @@ export class Session {
   #toolCallErrors = new Map<string, boolean>();
   #toolCallOutputs = new Map<string, unknown>();
   #toolCallAnnotations = new Map<string, string>();
+  #failureCircuits = new Map<string, { count: number; output: string }>();
   #usedTools = new Set<string>();
   /** webfetch tool-call id → the URL it was asked to fetch. `webfetch`'s OUTPUT is
    * the page BODY, so harvesting URLs from it records arbitrary in-page links
@@ -1168,6 +1169,7 @@ export class Session {
     let turnCostUSD = 0;
     let turnActualCostUSD = 0;
     let turnCostEstimated = false;
+    const turnId = opts.performance?.turnId ?? createId("turn");
     // Fresh abort controller for THIS turn. Installed here (not in abort()) so a
     // cancel that arrives mid-turn aborts this turn's signal and the NEXT turn
     // still starts clean — and so a steered prompt isn't run against a stale,
@@ -1212,17 +1214,16 @@ export class Session {
         sources: this.#sources.size ? this.#sources.format() : undefined,
         ...(backgroundFinished?.length ? { backgroundFinished } : {}),
       });
-      this.#pushUser(
+      histRef = this.#pushUser(
         input,
         images,
         opts.display,
         stateReminder,
         opts.origin,
         opts.label,
-        opts.performance?.turnId,
+        turnId,
       );
       userMsgRef = this.#modelMessages[this.#modelMessages.length - 1];
-      histRef = this.#history[this.#history.length - 1];
 
       // Plan-readiness gate: fold this prompt into the cycle's triage so
       // present_plan can be held to what the request actually demands (fresh
@@ -1337,7 +1338,13 @@ export class Session {
       const base: ToolRuntimeBase = {
         cwd: this.#deps.cwd,
         sessionId: this.id,
-        emit: (e: UIEvent) => bus.emit(e),
+        emit: (event: UIEvent) => {
+          if (event.type === "tool-call-progress" || event.type === "file-changed") {
+            bus.emit({ ...event, turnId });
+            return;
+          }
+          bus.emit(event);
+        },
         recordToolResult: (...args) => {
           const [toolCallId, isError, rawOutput, additionalContext] = args;
           this.#toolCallErrors.set(toolCallId, isError);
@@ -1345,6 +1352,35 @@ export class Session {
           if (typeof additionalContext === "string") {
             this.#toolCallAnnotations.set(toolCallId, additionalContext);
           }
+        },
+        repeatedFailure: {
+          before: (toolName, input) => {
+            if (REPEATED_FAILURE_EXEMPT_TOOLS.has(toolName)) return undefined;
+            const state = this.#failureCircuits.get(failureCircuitKey(toolName, input));
+            return state && state.count >= 3
+              ? `Stopped ${toolName} after ${state.count} identical failures for the same input.`
+              : undefined;
+          },
+          record: (toolName, input, isError, output) => {
+            if (REPEATED_FAILURE_EXEMPT_TOOLS.has(toolName)) return;
+            const key = failureCircuitKey(toolName, input);
+            if (!isError) {
+              this.#failureCircuits.delete(key);
+              return;
+            }
+            const outputKey = failureValue(output);
+            const prior = this.#failureCircuits.get(key);
+            this.#failureCircuits.delete(key);
+            this.#failureCircuits.set(key, {
+              count: prior?.output === outputKey ? prior.count + 1 : 1,
+              output: outputKey,
+            });
+            while (this.#failureCircuits.size > 256) {
+              const oldest = this.#failureCircuits.keys().next().value;
+              if (oldest === undefined) break;
+              this.#failureCircuits.delete(oldest);
+            }
+          },
         },
         // Mutation latches only after a successful non-readOnly execute (adapter
         // calls this) — not on tool-call intent, so denied writes don't trip the
@@ -1377,7 +1413,7 @@ export class Session {
         checkPermission: (
           name: string,
           input: unknown,
-          opts?: { fallback?: "allow" | "deny" | "ask" },
+          opts?: { fallback?: "allow" | "deny" | "ask"; toolCallId?: string },
         ) => checker.check(name, input, opts),
         // Plan-readiness gate for present_plan (plan mode only): rejects a plan
         // whose triage-required research never happened, bounded, then warns.
@@ -1779,6 +1815,7 @@ export class Session {
         // the model context too — keeping `#history` and `#modelMessages` in
         // lockstep (otherwise the next turn's context would be missing this turn).
         const assistant = await this.#consume(result, {
+          turnId,
           onPart: (type, toolCallId) => {
             const now = performance.now();
             if (
@@ -1953,8 +1990,9 @@ export class Session {
           outcome: this.#lastError ? "failed" : this.#interrupted ? "cancelled" : "completed",
         };
       }
-      bus.emit({ type: "turn-finished", sessionId: this.id });
-      bus.emit({ type: "session-idle", sessionId: this.id });
+      const finishedAt = Date.now();
+      bus.emit({ type: "turn-finished", sessionId: this.id, turnId, timestamp: finishedAt });
+      bus.emit({ type: "session-idle", sessionId: this.id, turnId, timestamp: finishedAt });
     }
   }
 
@@ -2343,7 +2381,7 @@ export class Session {
     origin: "user" | "engine" = "user",
     label?: string,
     turnId?: string,
-  ): void {
+  ): Message {
     // The model-facing text: the user's input, then (when present) the workspace
     // state block APPENDED so the user's own words lead and the ambient state
     // trails. This block is model-only — it is deliberately absent from the UI
@@ -2366,20 +2404,41 @@ export class Session {
     // COMPACT display when one was given — a resumed session must not re-inflate
     // N goal rounds as N full multi-line directives when the live view showed
     // one line each. The model context above always carries the full text.
-    const parts: Part[] = [{ type: "text", text: display ?? input }];
-    for (const img of images) parts.push({ type: "text", text: `[image: ${img.path}]` });
-    this.#history.push({
+    const createdAt = Date.now();
+    const parts: Part[] = [{
+      type: "text",
+      id: createId("part"),
+      turnId,
+      revision: 0,
+      startedAt: createdAt,
+      completedAt: createdAt,
+      text: display ?? input,
+    }];
+    for (const img of images) parts.push({
+      type: "text",
+      id: createId("part"),
+      turnId,
+      revision: 0,
+      startedAt: createdAt,
+      completedAt: createdAt,
+      text: `[image: ${img.path}]`,
+    });
+    const historyMessage: Message = {
       id: createId("msg"),
+      turnId,
+      revision: 0,
       role: "user",
       parts,
-      createdAt: Date.now(),
+      createdAt,
+      completedAt: createdAt,
       ...((origin === "engine" || turnId) ? {
         metadata: {
           ...(origin === "engine" ? { origin, ...(label ? { label } : {}) } : {}),
           ...(turnId ? { turnId } : {}),
         },
       } : {}),
-    });
+    };
+    this.#history.push(historyMessage);
     // `display === null` suppresses the visible user bubble (e.g. the internal
     // plan→execute handoff directive, which the model needs but the user shouldn't
     // see as a message they "sent"); otherwise show `display` (or the raw input).
@@ -2389,15 +2448,20 @@ export class Session {
         sessionId: this.id,
         text: display ?? input,
         ...(origin === "engine" ? { origin, ...(label ? { label } : {}) } : {}),
-        ...(turnId ? { turnId } : {}),
+        turnId,
+        messageId: historyMessage.id,
+        partId: parts[0]?.id,
+        revision: 0,
+        timestamp: createdAt,
       });
     }
+    return historyMessage;
   }
 
   /** Translate AI-SDK stream parts into UIEvents and accumulate the message. */
   async #consume(
     result: { fullStream: AsyncIterable<unknown> },
-    timing?: { onPart: (type: string, toolCallId?: string) => void },
+    timing?: { turnId: string; onPart: (type: string, toolCallId?: string) => void },
   ): Promise<Message | null> {
     const bus = this.#deps.bus;
     let assistant: Message | null = null;
@@ -2405,6 +2469,8 @@ export class Session {
       if (!assistant) {
         assistant = {
           id: createId("msg"),
+          turnId: timing?.turnId,
+          revision: 0,
           role: "assistant",
           parts: [],
           createdAt: Date.now(),
@@ -2413,23 +2479,42 @@ export class Session {
       return assistant;
     };
     const pendingTools = new Map<string, string>();
+    const toolPartIds = new Map<string, string>();
+    const toolInputs = new Map<string, unknown>();
+    const toolStartedAt = new Map<string, number>();
     const closePendingTools = (reason: string): void => {
       for (const [toolCallId, toolName] of pendingTools) {
+        const completedAt = Date.now();
+        const resultPartId = createId("part");
         ensure().parts.push({
           type: "tool-result",
+          id: resultPartId,
+          turnId: timing?.turnId,
+          revision: 0,
+          completedAt,
           toolCallId,
           toolName,
           output: reason,
           isError: true,
+          status: this.#interrupted ? "cancelled" : "failed",
         });
         bus.emit({
           type: "tool-call-finished",
           sessionId: this.id,
+          turnId: timing?.turnId,
+          messageId: ensure().id,
+          partId: resultPartId,
+          revision: 0,
+          timestamp: completedAt,
           toolCallId,
           toolName,
           output: reason,
           isError: true,
+          status: this.#interrupted ? "cancelled" : "failed",
         });
+        toolPartIds.delete(toolCallId);
+        toolInputs.delete(toolCallId);
+        toolStartedAt.delete(toolCallId);
       }
       pendingTools.clear();
     };
@@ -2483,17 +2568,42 @@ export class Session {
         switch (part.type) {
           case "text-delta": {
             const delta: string = part.text ?? part.textDelta ?? "";
-            appendText(ensure(), delta);
-            bus.emit({ type: "assistant-text-delta", sessionId: this.id, delta });
+            const textPart = appendText(ensure(), delta, timing?.turnId);
+            bus.emit({
+              type: "assistant-text-delta",
+              sessionId: this.id,
+              turnId: timing?.turnId,
+              messageId: ensure().id,
+              partId: textPart.id,
+              revision: textPart.revision,
+              timestamp: Date.now(),
+              delta,
+              ...(textPart.phase ? { phase: textPart.phase } : {}),
+            });
             break;
           }
           case "reasoning-delta": {
             const delta: string = part.text ?? part.textDelta ?? "";
-            appendReasoning(ensure(), delta);
-            bus.emit({ type: "reasoning-delta", sessionId: this.id, delta });
+            const reasoningPart = appendReasoning(ensure(), delta, timing?.turnId);
+            bus.emit({
+              type: "reasoning-delta",
+              sessionId: this.id,
+              turnId: timing?.turnId,
+              messageId: ensure().id,
+              partId: reasoningPart.id,
+              revision: reasoningPart.revision,
+              timestamp: Date.now(),
+              delta,
+            });
             break;
           }
           case "tool-call": {
+            for (const existing of ensure().parts) {
+              if (existing.type === "text" && !existing.phase) {
+                existing.phase = "commentary";
+                existing.revision = (existing.revision ?? 0) + 1;
+              }
+            }
             const resolved = resolveDiscoveredToolCall(
               part.toolName,
               part.input ?? part.args,
@@ -2501,6 +2611,7 @@ export class Session {
             const resolvedToolName = resolved.toolName;
             this.#usedTools.add(resolvedToolName);
             pendingTools.set(part.toolCallId, resolvedToolName);
+            toolInputs.set(part.toolCallId, resolved.input);
             // Mutation is latched in the tool adapter AFTER a successful non-
             // readOnly execute (recordMutation) — not here on tool-call intent —
             // so a permission-denied write does not trip green-gate / auto-verify.
@@ -2512,18 +2623,33 @@ export class Session {
               if (inp && typeof inp.url === "string")
                 this.#fetchInputUrls.set(part.toolCallId, inp.url);
             }
+            const startedAt = Date.now();
+            toolStartedAt.set(part.toolCallId, startedAt);
+            const toolPartId = createId("part");
+            toolPartIds.set(part.toolCallId, toolPartId);
             ensure().parts.push({
               type: "tool-call",
+              id: toolPartId,
+              turnId: timing?.turnId,
+              revision: 0,
+              startedAt,
               toolCallId: part.toolCallId,
               toolName: resolvedToolName,
               input: resolved.input,
+              status: "running",
             });
             bus.emit({
               type: "tool-call-started",
               sessionId: this.id,
+              turnId: timing?.turnId,
+              messageId: ensure().id,
+              partId: toolPartId,
+              revision: 0,
+              timestamp: startedAt,
               toolCallId: part.toolCallId,
               toolName: resolvedToolName,
               input: resolved.input,
+              status: "running",
             });
             break;
           }
@@ -2553,12 +2679,12 @@ export class Session {
             // Harvest sources: on a SUCCESSFUL research-tool result, extract the
             // URLs it surfaced and record them in the session's source ledger
             // (deduped + stably numbered), so later turns can cite them by [n].
+            const fetchedUrl = this.#fetchInputUrls.get(part.toolCallId);
             if (!isError && RESEARCH_TOOL_NAMES.has(resolvedToolName)) {
               if (resolvedToolName === "webfetch") {
                 // Record the URL actually fetched (the tool INPUT), not links
                 // harvested from the page body — those weren't pulled by the agent.
-                const fetched = this.#fetchInputUrls.get(part.toolCallId);
-                if (fetched) this.#sources.record({ url: fetched, via: resolvedToolName });
+                if (fetchedUrl) this.#sources.record({ url: fetchedUrl, via: resolvedToolName });
               } else {
                 // web_search / crawl_docs OUTPUT is a list of result/page URLs — those
                 // ARE the sources surfaced, so harvest them from the rendered text.
@@ -2572,8 +2698,27 @@ export class Session {
             const historyOutput = hasRawOutput
               ? this.#toolCallOutputs.get(part.toolCallId)
               : part.output;
+            const completedAt = Date.now();
+            const resultPartId = createId("part");
+            const outputPaths = structuredOutputPaths(
+              resolvedToolName,
+              toolInputs.get(part.toolCallId),
+              historyOutput,
+            );
+            const outputSources = !isError && RESEARCH_TOOL_NAMES.has(resolvedToolName)
+              ? resolvedToolName === "webfetch"
+                ? fetchedUrl ? [fetchedUrl] : []
+                : harvestUrls(resultText).slice(0, 100)
+              : [];
             ensure().parts.push({
               type: "tool-result",
+              id: resultPartId,
+              turnId: timing?.turnId,
+              revision: 0,
+              completedAt,
+              ...(toolStartedAt.get(part.toolCallId) !== undefined
+                ? { startedAt: toolStartedAt.get(part.toolCallId) }
+                : {}),
               toolCallId: part.toolCallId,
               toolName: resolvedToolName,
               output: historyToolOutput(
@@ -2582,36 +2727,66 @@ export class Session {
                 this.#toolCallAnnotations.get(part.toolCallId),
               ),
               ...(isError ? { isError: true } : {}),
+              status: isError ? "failed" : "succeeded",
+              ...(outputPaths.length ? { outputPaths } : {}),
+              ...(outputSources.length ? { sources: outputSources } : {}),
             });
             bus.emit({
               type: "tool-call-finished",
               sessionId: this.id,
+              turnId: timing?.turnId,
+              messageId: ensure().id,
+              partId: resultPartId,
+              revision: 0,
+              timestamp: completedAt,
               toolCallId: part.toolCallId,
               toolName: resolvedToolName,
               output: part.output,
               isError,
+              status: isError ? "failed" : "succeeded",
+              ...(outputPaths.length ? { outputPaths } : {}),
+              ...(outputSources.length ? { sources: outputSources } : {}),
             });
+            toolPartIds.delete(part.toolCallId);
+            toolInputs.delete(part.toolCallId);
+            toolStartedAt.delete(part.toolCallId);
             break;
           }
           case "tool-error": {
             const resolvedToolName = pendingTools.get(part.toolCallId) ?? part.toolName;
             pendingTools.delete(part.toolCallId);
             const output = historyToolOutput(String((part.error as Error)?.message ?? part.error));
+            const completedAt = Date.now();
+            const resultPartId = createId("part");
             ensure().parts.push({
               type: "tool-result",
+              id: resultPartId,
+              turnId: timing?.turnId,
+              revision: 0,
+              completedAt,
               toolCallId: part.toolCallId,
               toolName: resolvedToolName,
               output,
               isError: true,
+              status: "failed",
             });
             bus.emit({
               type: "tool-call-finished",
               sessionId: this.id,
+              turnId: timing?.turnId,
+              messageId: ensure().id,
+              partId: resultPartId,
+              revision: 0,
+              timestamp: completedAt,
               toolCallId: part.toolCallId,
               toolName: resolvedToolName,
               output,
               isError: true,
+              status: "failed",
             });
+            toolPartIds.delete(part.toolCallId);
+            toolInputs.delete(part.toolCallId);
+            toolStartedAt.delete(part.toolCallId);
             break;
           }
           case "abort": {
@@ -2642,7 +2817,34 @@ export class Session {
       // processing a part) so a partially-consumed SDK stream is cleaned up.
       void Promise.resolve(iterator.return?.(undefined)).catch(() => {});
     }
-    return assistant;
+    const completedAssistant = assistant as Message | null;
+    if (completedAssistant) {
+      const textParts = completedAssistant.parts.filter(
+        (item): item is Extract<Part, { type: "text" }> => item.type === "text",
+      );
+      const lastText = textParts.at(-1);
+      const completedAt = Date.now();
+      for (const textPart of textParts) {
+        if (!textPart.phase) {
+          textPart.phase = textPart === lastText ? "final" : "commentary";
+          textPart.revision = (textPart.revision ?? 0) + 1;
+        }
+        textPart.completedAt = completedAt;
+        bus.emit({
+          type: "assistant-part-finalized",
+          sessionId: this.id,
+          turnId: timing?.turnId,
+          messageId: completedAssistant.id,
+          partId: textPart.id,
+          revision: textPart.revision,
+          timestamp: completedAt,
+          phase: textPart.phase,
+        });
+      }
+      completedAssistant.completedAt = completedAt;
+      completedAssistant.revision = (completedAssistant.revision ?? 0) + 1;
+    }
+    return completedAssistant;
   }
 
   takeLastPerformance(): Omit<TurnPerformanceSample, "postTurnMs" | "totalMs"> | undefined {
@@ -2704,22 +2906,101 @@ function contentToText(content: unknown): string {
   return JSON.stringify(content);
 }
 
-function appendText(message: Message, delta: string): void {
+function appendText(
+  message: Message,
+  delta: string,
+  turnId?: string,
+): Extract<Part, { type: "text" }> {
   const last = message.parts[message.parts.length - 1] as Part | undefined;
   if (last && last.type === "text") {
     last.text += delta;
+    last.revision = (last.revision ?? 0) + 1;
+    return last;
   } else {
-    message.parts.push({ type: "text", text: delta });
+    const createdAt = Date.now();
+    const part: Extract<Part, { type: "text" }> = {
+      type: "text",
+      id: createId("part"),
+      ...(turnId ? { turnId } : {}),
+      revision: 0,
+      startedAt: createdAt,
+      text: delta,
+    };
+    message.parts.push(part);
+    return part;
   }
 }
 
-function appendReasoning(message: Message, delta: string): void {
+function appendReasoning(
+  message: Message,
+  delta: string,
+  turnId?: string,
+): Extract<Part, { type: "reasoning" }> {
   const last = message.parts[message.parts.length - 1] as Part | undefined;
   if (last?.type === "reasoning") {
     last.text = `${last.text}${delta}`.slice(-256 * 1024);
+    last.revision = (last.revision ?? 0) + 1;
+    return last;
   } else {
-    message.parts.push({ type: "reasoning", text: delta.slice(-256 * 1024) });
+    const createdAt = Date.now();
+    const part: Extract<Part, { type: "reasoning" }> = {
+      type: "reasoning",
+      id: createId("part"),
+      ...(turnId ? { turnId } : {}),
+      revision: 0,
+      startedAt: createdAt,
+      text: delta.slice(-256 * 1024),
+    };
+    message.parts.push(part);
+    return part;
   }
+}
+
+const REPEATED_FAILURE_EXEMPT_TOOLS = new Set([
+  "webfetch",
+  "web_search",
+  "crawl_docs",
+]);
+
+function failureValue(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_key, item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+      return Object.fromEntries(
+        Object.entries(item as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)),
+      );
+    }).slice(0, 32 * 1024);
+  } catch {
+    return String(value).slice(0, 32 * 1024);
+  }
+}
+
+function failureCircuitKey(toolName: string, input: unknown): string {
+  return `${toolName}\0${failureValue(input)}`;
+}
+
+function structuredOutputPaths(toolName: string, input: unknown, output: unknown): string[] {
+  if (!/(?:write|edit|create|patch|generate|save|download|move|copy)/i.test(toolName)) return [];
+  const paths = new Set<string>();
+  const visit = (value: unknown, depth: number): void => {
+    if (!value || typeof value !== "object" || depth > 2 || paths.size >= 100) return;
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (/^(?:path|file|file_path|filePath|outputPath|destination|target)$/i.test(key)) {
+        if (typeof item === "string" && item.length <= 4_096 && !item.includes("\0")) {
+          paths.add(item);
+        }
+      } else if (/^(?:paths|files|outputs|artifacts)$/i.test(key) && Array.isArray(item)) {
+        for (const entry of item.slice(0, 100)) {
+          if (typeof entry === "string" && entry.length <= 4_096 && !entry.includes("\0")) {
+            paths.add(entry);
+          } else visit(entry, depth + 1);
+        }
+      }
+    }
+  };
+  visit(input, 0);
+  visit(output, 0);
+  return [...paths];
 }
 
 function sanitizeHistoryToolValue(value: unknown, depth = 0): unknown {

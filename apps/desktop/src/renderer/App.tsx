@@ -55,6 +55,7 @@ import type {
 import { BrandWordmark } from "./branding/BrandWordmark";
 import { Composer, type ComposerMetric } from "./composer/Composer";
 import { RequestGate } from "./hooks/request-gate";
+import { useSessionComposerState } from "./hooks/useSessionComposerState";
 import { usePresence, useRetainedValue } from "./hooks/usePresence";
 import { useSession } from "./hooks/useSession";
 import { IconSidebar } from "./icons";
@@ -145,7 +146,6 @@ function formatUsage(u: { totalTokens: number; costUSD: number; costEstimated?: 
 
 export function App() {
   const [cwd, setCwd] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
   const [picker, setPicker] = useState<Picker>(null);
   const pickerPresence = usePresence(Boolean(picker));
   const renderedPicker = useRetainedValue(picker);
@@ -211,6 +211,10 @@ export function App() {
   const composerStackRef = useRef<HTMLDivElement>(null);
   const panelsRef = useRef<HTMLDivElement>(null);
   const session = useSession(cwd);
+  const composerContextKey = cwd && session.chrome.sessionId
+    ? sessionBoardKey(cwd, session.chrome.sessionId)
+    : null;
+  const { draft, setDraft, attachments, setAttachments, history, recordHistory } = useSessionComposerState(composerContextKey);
   const activeEndPanel: ActivitySidebarTarget | null = session.inspectorOpen
     ? inspectorTool
     : session.jobsView
@@ -1999,6 +2003,9 @@ export function App() {
     : "Local";
   const topbarMetaChips = [
     { key: "execution", label: executionLabel, tone: executionLabel === "Needs your Mac" ? "warn" as const : "neutral" as const },
+    session.stalled
+      ? { key: "stalled", label: "quiet 90s · Esc to interrupt", tone: "warn" as const }
+      : null,
     chrome.queuePendingTotal
       ? { key: "queue", label: `queued ${chrome.queuePendingTotal}`, tone: "neutral" as const }
       : null,
@@ -2579,9 +2586,14 @@ export function App() {
                 />
               )}
               <Composer
+                contextKey={composerContextKey!}
                 uiMode={session.uiMode}
                 draft={draft}
                 setDraft={setDraft}
+                attachments={attachments}
+                setAttachments={setAttachments}
+                inputHistory={history}
+                onRecordHistory={recordHistory}
                 onSubmit={submitLine}
                 catalogOpen={pickerMatchesDraft(picker, draft, modelTarget)}
                 onCycleMode={session.cycleMode}

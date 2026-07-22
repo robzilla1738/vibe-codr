@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { shouldClearBusyOnSendFailure } from "../../shared/busy-on-send-failure";
 import type { PendingCapabilityRequest } from "../../shared/cloud";
-import type { EngineCommand } from "../../shared/commands";
+import type { AtomicEngineCommand, EngineCommand } from "../../shared/commands";
 import type { AssistantOutputPhase, UIEvent } from "../../shared/events";
 import { GLYPH } from "../../shared/glyphs";
 import { hydrateFromHistory } from "../../shared/history-hydrate";
@@ -39,11 +39,8 @@ import { Trail, turnWindowStart, windowStartIndex } from "../../shared/trail";
 import type { EngineSnapshot } from "../../shared/types";
 import { stripVisionRelayContext } from "../../shared/vision-display";
 import { applyPalette } from "../theme/applyPalette";
-import {
-  loadTranscriptCache,
-  saveTranscriptCache,
-  transcriptConversationSignature,
-} from "../transcript-cache";
+import { saveTranscriptCache } from "../transcript-cache";
+import { transcriptForSnapshot } from "../snapshot-transcript";
 import { RequestGate } from "./request-gate";
 import { initialChrome, reduceChrome, snapshotWithAttachedAppearance, type AttachedAppearance } from "./session-state";
 
@@ -85,6 +82,7 @@ const BOOTSTRAP_EVENT_BYTES_LIMIT = 8 * 1024 * 1024;
 const CLEAR_SCOPED_TYPES = new Set<string>([
   "assistant-text-delta",
   "reasoning-delta",
+  "assistant-part-finalized",
   "tool-call-started",
   "tool-call-progress",
   "tool-call-finished",
@@ -116,7 +114,18 @@ const TURN_ITEM_REVEAL_PAGE = TURN_ITEMS_STEP;
 const TRANSCRIPT_ONLY_STREAM_TYPES = new Set<UIEvent["type"]>([
   "assistant-text-delta",
   "reasoning-delta",
+  "assistant-part-finalized",
   "tool-call-progress",
+]);
+const TURN_SCOPED_EVENT_TYPES = new Set<UIEvent["type"]>([
+  "assistant-text-delta",
+  "reasoning-delta",
+  "tool-call-started",
+  "tool-call-progress",
+  "tool-call-finished",
+  "file-changed",
+  "turn-finished",
+  "session-idle",
 ]);
 function reduceTxCapped(s: TranscriptState, a: TxAction): TranscriptState {
   return capTranscriptState(reduceTx(s, a), MAX_RETAINED_TRANSCRIPT_BLOCKS);
@@ -138,11 +147,25 @@ export function useSession(cwd: string | null) {
   const [pendingCapabilities, setPendingCapabilities] = useState<PendingCapabilityRequest[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [pendingModeTransition, setPendingModeTransition] = useState<PendingModeTransition | null>(null);
+  const [stalled, setStalled] = useState(false);
   const deltaBuf = useRef("");
   const deltaPhase = useRef<AssistantOutputPhase | undefined>(undefined);
+  const deltaIdentity = useRef<{
+    turnId?: string;
+    messageId?: string;
+    partId?: string;
+    revision?: number;
+    timestamp?: number;
+  }>({});
   const progressBuf = useRef<Map<string, string>>(new Map());
   const reasoningBuf = useRef("");
   const reasoningStarted = useRef<number | null>(null);
+  const reasoningIdentity = useRef<{
+    turnId?: string;
+    messageId?: string;
+    partId?: string;
+    revision?: number;
+  }>({});
   const flushTimer = useRef<number | null>(null);
   const suppressAfterClear = useRef(false);
   /** While true, buffer events from the replacement host so a dying old host
@@ -158,6 +181,7 @@ export function useSession(cwd: string | null) {
   const modeTransitioning = useRef(false);
   const activeSessionId = useRef("");
   const activeTurnId = useRef("");
+  const lastTurnActivityAt = useRef(0);
   const pendingFirstPaint = useRef<{ turnId: string; sessionId: string } | null>(null);
   const toastTimer = useRef<number | null>(null);
   const toastExitTimer = useRef<number | null>(null);
@@ -195,7 +219,9 @@ export function useSession(cwd: string | null) {
       const phase = deltaPhase.current;
       deltaBuf.current = "";
       deltaPhase.current = undefined;
-      dispatchTranscript({ type: "delta", text, ...(phase ? { phase } : {}) });
+      const identity = deltaIdentity.current;
+      deltaIdentity.current = {};
+      dispatchTranscript({ type: "delta", text, ...(phase ? { phase } : {}), ...identity });
     }
     // Coalesce live thinking/trail chrome onto the same 24ms cadence as text
     // so multi-minute reasoning does not re-render the full App tree per token.
@@ -210,6 +236,7 @@ export function useSession(cwd: string | null) {
     if (!text) {
       reasoningBuf.current = "";
       reasoningStarted.current = null;
+      reasoningIdentity.current = {};
       dispatchChrome({ type: "set-thinking", text: "" });
       return;
     }
@@ -217,9 +244,10 @@ export function useSession(cwd: string | null) {
       reasoningStarted.current != null
         ? Math.max(1, Math.round((Date.now() - reasoningStarted.current) / 1000))
         : undefined;
-    dispatchTranscript({ type: "thinking", text, seconds });
+    dispatchTranscript({ type: "thinking", text, seconds, ...reasoningIdentity.current });
     reasoningBuf.current = "";
     reasoningStarted.current = null;
+    reasoningIdentity.current = {};
     dispatchChrome({ type: "set-thinking", text: "" });
   }, []);
 
@@ -295,6 +323,24 @@ export function useSession(cwd: string | null) {
         }
       }
 
+      // New hosts stamp every turn stream. A delayed event from a superseded
+      // turn must never mutate the active transcript or settle its busy state.
+      // Legacy unstamped hosts remain compatible during the protocol rollout.
+      if (
+        event.type !== "user-message"
+        && TURN_SCOPED_EVENT_TYPES.has(event.type)
+        && "turnId" in event
+        && event.turnId
+        && activeTurnId.current
+        && event.turnId !== activeTurnId.current
+      ) {
+        return;
+      }
+      if (event.type === "user-message" || TURN_SCOPED_EVENT_TYPES.has(event.type)) {
+        lastTurnActivityAt.current = Date.now();
+        setStalled(false);
+      }
+
       if (event.type === "session-start") {
         dispatchChrome({
           type: "seed-from-session-start",
@@ -324,6 +370,11 @@ export function useSession(cwd: string | null) {
             text: stripVisionRelayContext(event.text),
             ...(event.origin ? { origin: event.origin } : {}),
             ...(event.label ? { label: event.label } : {}),
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            ...(event.messageId ? { messageId: event.messageId } : {}),
+            ...(event.partId ? { partId: event.partId } : {}),
+            ...(event.revision !== undefined ? { revision: event.revision } : {}),
+            ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {}),
           });
           break;
         case "plan-presented":
@@ -341,8 +392,21 @@ export function useSession(cwd: string | null) {
           // Commit reasoning before the first answer token. Keep prior answer
           // chunks buffered so normal text streaming stays coalesced at 24ms.
           landReasoning();
-          if (deltaBuf.current && event.phase && deltaPhase.current && event.phase !== deltaPhase.current) flushDeltas();
+          if (
+            deltaBuf.current
+            && (
+              event.partId && deltaIdentity.current.partId && event.partId !== deltaIdentity.current.partId
+              || event.phase && deltaPhase.current && event.phase !== deltaPhase.current
+            )
+          ) flushDeltas();
           if (event.phase) deltaPhase.current = event.phase;
+          deltaIdentity.current = {
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            ...(event.messageId ? { messageId: event.messageId } : {}),
+            ...(event.partId ? { partId: event.partId } : {}),
+            ...(event.revision !== undefined ? { revision: event.revision } : {}),
+            ...(event.timestamp !== undefined ? { timestamp: event.timestamp } : {}),
+          };
           deltaBuf.current = appendRollingText(
             deltaBuf.current,
             event.delta,
@@ -354,7 +418,19 @@ export function useSession(cwd: string | null) {
           break;
         case "reasoning-delta":
           if (event.subagentId || !event.delta) break;
+          if (
+            reasoningBuf.current
+            && event.partId
+            && reasoningIdentity.current.partId
+            && event.partId !== reasoningIdentity.current.partId
+          ) landReasoning();
           if (reasoningStarted.current == null) reasoningStarted.current = Date.now();
+          reasoningIdentity.current = {
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            ...(event.messageId ? { messageId: event.messageId } : {}),
+            ...(event.partId ? { partId: event.partId } : {}),
+            ...(event.revision !== undefined ? { revision: event.revision } : {}),
+          };
           reasoningBuf.current = appendRollingText(
             reasoningBuf.current,
             event.delta,
@@ -368,6 +444,15 @@ export function useSession(cwd: string | null) {
             flushTimer.current = window.setTimeout(flushDeltas, 24);
           }
           break;
+        case "assistant-part-finalized":
+          flushDeltas();
+          dispatchTranscript({
+            type: "set-assistant-phase",
+            partId: event.partId,
+            phase: event.phase,
+            ...(event.revision !== undefined ? { revision: event.revision } : {}),
+          });
+          break;
         case "tool-call-started":
           if (event.subagentId) break;
           flushDeltas();
@@ -377,7 +462,12 @@ export function useSession(cwd: string | null) {
             toolCallId: event.toolCallId,
             toolName: event.toolName,
             input: event.input,
-            at: Date.now(),
+            at: event.timestamp ?? Date.now(),
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            ...(event.messageId ? { messageId: event.messageId } : {}),
+            ...(event.partId ? { partId: event.partId } : {}),
+            ...(event.revision !== undefined ? { revision: event.revision } : {}),
+            ...(event.status ? { status: event.status } : {}),
           });
           break;
         case "tool-call-progress":
@@ -405,7 +495,14 @@ export function useSession(cwd: string | null) {
             toolCallId: event.toolCallId,
             output: event.output,
             isError: event.isError,
-            at: Date.now(),
+            at: event.timestamp ?? Date.now(),
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            ...(event.messageId ? { messageId: event.messageId } : {}),
+            ...(event.partId ? { partId: event.partId } : {}),
+            ...(event.revision !== undefined ? { revision: event.revision } : {}),
+            ...(event.status ? { status: event.status } : {}),
+            ...(event.outputPaths ? { outputPaths: event.outputPaths } : {}),
+            ...(event.sources ? { sources: event.sources } : {}),
           });
           break;
         case "file-changed":
@@ -421,6 +518,15 @@ export function useSession(cwd: string | null) {
             at: Date.now(),
           });
           break;
+        case "permission-request":
+          if (event.toolCallId) {
+            dispatchTranscript({
+              type: "tool-status",
+              toolCallId: event.toolCallId,
+              status: "waiting-permission",
+            });
+          }
+          break;
         case "notice":
           flushDeltas();
           dispatchTranscript({
@@ -430,7 +536,11 @@ export function useSession(cwd: string | null) {
           });
           break;
         case "engine-error":
-          endTurn({ stopWorking: true });
+          // A turn error is visible immediately, but it is not the terminal
+          // queue signal. The engine may still be persisting, running post-turn
+          // hooks, or draining a queued follow-up. Keep busy authoritative until
+          // the matching engine-idle arrives.
+          endTurn({ stopWorking: false });
           dispatchTranscript({
             type: "notice",
             text: `error: ${event.message}`,
@@ -502,6 +612,13 @@ export function useSession(cwd: string | null) {
         case "session-idle":
           endTurn({ stopWorking: false });
           break;
+        case "turn-performance":
+          dispatchTranscript({
+            type: "turn-performance",
+            turnId: event.sample.turnId,
+            totalMs: event.sample.totalMs,
+          });
+          break;
         case "engine-idle":
           endTurn({ stopWorking: true });
           if (event.gate === "red") {
@@ -560,28 +677,28 @@ export function useSession(cwd: string | null) {
   }, []);
 
   const sendMany = useCallback(
-    async (commands: EngineCommand[]): Promise<boolean> => {
+    async (commands: AtomicEngineCommand[]): Promise<boolean> => {
+      if (commands.length === 0) return true;
       const alreadyBusy = busyRef.current;
-      for (let i = 0; i < commands.length; i++) {
-        const c = commands[i]!;
-        let res: Awaited<ReturnType<typeof window.vibe.send>>;
-        try {
-          res = await window.vibe.send(c);
-        } catch (error) {
-          res = {
-            ok: false,
-            error: error instanceof Error ? error.message : "Engine command failed",
-          };
+      let res: Awaited<ReturnType<typeof window.vibe.send>>;
+      try {
+        res = await window.vibe.send(
+          commands.length === 1
+            ? commands[0]!
+            : { type: "command-batch", commands },
+        );
+      } catch (error) {
+        res = {
+          ok: false,
+          error: error instanceof Error ? error.message : "Engine command failed",
+        };
+      }
+      if (!res.ok) {
+        dispatchTranscript({ type: "notice", text: res.error, level: "error" });
+        if (shouldClearBusyOnSendFailure(commands, alreadyBusy)) {
+          dispatchChrome({ type: "set-busy", busy: false });
         }
-        if (!res.ok) {
-          dispatchTranscript({ type: "notice", text: res.error, level: "error" });
-          // Policy uses the full intended batch so a mid-batch failure of a
-          // turn-start still clears optimistic busy correctly.
-          if (shouldClearBusyOnSendFailure(commands, alreadyBusy)) {
-            dispatchChrome({ type: "set-busy", busy: false });
-          }
-          return false;
-        }
+        return false;
       }
       return true;
     },
@@ -590,12 +707,15 @@ export function useSession(cwd: string | null) {
 
   const clearSessionLocal = useCallback(() => {
     setPendingModeTransition(null);
+    setStalled(false);
     suppressAfterClear.current = true;
     deltaBuf.current = "";
     deltaPhase.current = undefined;
+    deltaIdentity.current = {};
     progressBuf.current.clear();
     reasoningBuf.current = "";
     reasoningStarted.current = null;
+    reasoningIdentity.current = {};
     trail.current.reset();
     if (flushTimer.current != null) {
       window.clearTimeout(flushTimer.current);
@@ -634,9 +754,11 @@ export function useSession(cwd: string | null) {
       suppressAfterClear.current = false;
       deltaBuf.current = "";
       deltaPhase.current = undefined;
+      deltaIdentity.current = {};
       progressBuf.current.clear();
       reasoningBuf.current = "";
       reasoningStarted.current = null;
+      reasoningIdentity.current = {};
       trail.current.reset();
       if (flushTimer.current != null) {
         window.clearTimeout(flushTimer.current);
@@ -733,20 +855,9 @@ export function useSession(cwd: string | null) {
       dispatchChrome({ type: "reset", cwd: opts.cwd });
       dispatchTranscript({ type: "reset" });
       dispatchChrome({ type: "seed", snap, cwd: opts.cwd });
-      if (snap.history?.length) {
-        const hydrated = hydrateFromHistory(snap.history);
-        const cached = await loadTranscriptCache(opts.cwd, snap.sessionId);
-        if (!bootstrapGate.current.isCurrent(request)) return false;
-        dispatchTranscript({
-          type: "replace",
-          state:
-            cached
-              && transcriptConversationSignature(cached)
-                === transcriptConversationSignature(hydrated)
-              ? cached
-              : hydrated,
-        });
-      }
+      const hydratedTranscript = await transcriptForSnapshot(opts.cwd, snap);
+      if (!bootstrapGate.current.isCurrent(request)) return false;
+      dispatchTranscript({ type: "replace", state: hydratedTranscript });
       // Replacement is now authoritative. React reducer dispatches are ordered,
       // so replay lands after reset/cache replacement and cannot be overwritten.
       // UI events emitted by both the retiring and replacement hosts can be in
@@ -806,15 +917,9 @@ export function useSession(cwd: string | null) {
       dispatchChrome({ type: "reset", cwd: attachCwd });
       dispatchTranscript({ type: "reset" });
       dispatchChrome({ type: "seed", snap, cwd: attachCwd });
-      if (snap.history?.length) {
-        const hydrated = hydrateFromHistory(snap.history);
-        const cached = await loadTranscriptCache(attachCwd, snap.sessionId);
-        if (!bootstrapGate.current.isCurrent(request)) return false;
-        dispatchTranscript({
-          type: "replace",
-          state: cached && transcriptConversationSignature(cached) === transcriptConversationSignature(hydrated) ? cached : hydrated,
-        });
-      }
+      const hydratedTranscript = await transcriptForSnapshot(attachCwd, snap);
+      if (!bootstrapGate.current.isCurrent(request)) return false;
+      dispatchTranscript({ type: "replace", state: hydratedTranscript });
       const queuedEvents = bootstrapEvents.current.filter(
         ({ event }) => "sessionId" in event && event.sessionId === snap.sessionId,
       ).map(({ event }) => event);
@@ -847,6 +952,27 @@ export function useSession(cwd: string | null) {
       return false;
     }
   }, [handleEvent]);
+
+  useEffect(() => {
+    if (!chrome.busy) {
+      setStalled(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const turnId = activeTurnId.current;
+      if (
+        !turnId
+        || stalled
+        || chrome.perms.length > 0
+        || chrome.question
+        || chrome.plan
+        || chrome.activities.some((activity) => activity.status === "running")
+        || Date.now() - lastTurnActivityAt.current < 90_000
+      ) return;
+      setStalled(true);
+    }, 5_000);
+    return () => window.clearInterval(timer);
+  }, [chrome.activities, chrome.busy, chrome.perms.length, chrome.plan, chrome.question, stalled]);
 
   useEffect(() => {
     const offEvent = window.vibe.onEvent(handleEvent);
@@ -1078,6 +1204,7 @@ export function useSession(cwd: string | null) {
       setBootError,
       booting,
       ready,
+      stalled,
       uiMode,
       modeLabel: modeWord(uiMode),
       turns: visibleTurns,
@@ -1115,6 +1242,7 @@ export function useSession(cwd: string | null) {
       bootError,
       booting,
       ready,
+      stalled,
       uiMode,
       visibleTurns,
       hiddenCount,

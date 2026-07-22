@@ -6,12 +6,15 @@ import type { EngineCommand } from "./commands";
  * often never emit `engine-idle`, so marking busy for every submit stuck the
  * Stop chrome and blocked project switches.
  *
- * Busy still *clears* only on `engine-idle` (or send failure / engine-error) —
- * this helper only controls the optimistic set.
+ * Busy still *clears* only on `engine-idle` (or a confirmed send failure before
+ * work was enqueued) — this helper only controls the optimistic set.
  */
 export function commandsExpectBusy(commands: readonly EngineCommand[]): boolean {
   for (const command of commands) {
     switch (command.type) {
+      case "command-batch":
+        if (commandsExpectBusy(command.commands)) return true;
+        break;
       case "submit-prompt":
       case "compact":
       case "steer":

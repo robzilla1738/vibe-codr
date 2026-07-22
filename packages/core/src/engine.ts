@@ -1617,6 +1617,12 @@ export class Engine implements EngineClient {
         }
         break;
       }
+      case "command-batch":
+        // Validation excludes nested batches. Process the full list within this
+        // call stack so immediate mode/approval transitions are authoritative
+        // before a paired prompt is queued, with no client command interleaving.
+        for (const nested of command.commands) this.send(nested);
+        break;
       case "set-approvals":
         // Immediate (not queued), mirroring set-mode — the mode toggle must
         // take effect at once so the next turn sees the new approval policy.
@@ -1887,6 +1893,7 @@ export class Engine implements EngineClient {
     toolName: string;
     input: unknown;
     explicit?: boolean;
+    toolCallId?: string;
   }): Promise<PermissionReply> {
     // Non-interactive (headless/`-p`/CI): a frictionless DEFAULT ask auto-allows
     // so scripted runs aren't wedged waiting for a human, but an EXPLICIT gate
@@ -1935,6 +1942,7 @@ export class Engine implements EngineClient {
         id,
         toolName: req.toolName,
         input: req.input,
+        ...(req.toolCallId ? { toolCallId: req.toolCallId } : {}),
       });
     }).finally(() => {
       if (onAbort) signal.removeEventListener("abort", onAbort);

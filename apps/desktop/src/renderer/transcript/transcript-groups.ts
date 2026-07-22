@@ -16,7 +16,7 @@ function isFinalAnswer(block: Block): boolean {
   return block.kind === "assistant" && block.phase !== "commentary" && Boolean(block.text.trim());
 }
 
-function summarizeProcess(blocks: readonly Block[]): ProcessSummary {
+function summarizeProcess(blocks: readonly Block[], turnDurationMs?: number): ProcessSummary {
   const tools = blocks.filter((block) => block.kind === "tool");
   return {
     tools: tools.length,
@@ -26,7 +26,8 @@ function summarizeProcess(blocks: readonly Block[]): ProcessSummary {
       if (!block.isSources) return count;
       return count + block.output.filter((line) => /^\d+\.\s/.test(line)).length;
     }, 0),
-    durationMs: tools.reduce((total, block) => total + (block.elapsedMs ?? 0), 0),
+    durationMs: turnDurationMs
+      ?? tools.reduce((total, block) => total + (block.elapsedMs ?? 0), 0),
   };
 }
 
@@ -47,8 +48,13 @@ export function groupTranscriptItems(
   if (finalIndex <= 0) return visible.map((block) => ({ kind: "block", block }));
 
   const process = visible.slice(0, finalIndex);
+  const finalAnswer = visible[finalIndex];
   return [
-    { kind: "process", blocks: process, summary: summarizeProcess(process) },
+    {
+      kind: "process",
+      blocks: process,
+      summary: summarizeProcess(process, finalAnswer?.turnDurationMs),
+    },
     ...visible.slice(finalIndex).map((block): TranscriptItemGroup => ({ kind: "block", block })),
   ];
 }

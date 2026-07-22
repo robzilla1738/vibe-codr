@@ -284,10 +284,10 @@ terminal keeps a compact 12.5px size, neutral letter spacing, and 1.35 line
 height. URLs detected in terminal output open through the guarded external-link
 bridge rather than navigating the app window.
 
-Completed transcript hierarchy follows `Process → Result → Evidence`: Process
-is a quiet, lossless disclosure; Result keeps the normal prose voice; Evidence
-is a compact sans metadata row. During streaming, the process stays expanded
-and chronological so compaction never hides current activity.
+Completed transcript hierarchy follows `Work → final answer`: Work is one quiet,
+lossless disclosure whose label summarizes duration, tools, agents, sources, and
+failures; the final answer keeps the normal prose voice. During streaming, work
+stays expanded and chronological so compaction never hides current activity.
 
 ## Spacing and shape
 

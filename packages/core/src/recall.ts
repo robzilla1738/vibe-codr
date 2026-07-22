@@ -33,16 +33,21 @@ export function _resetRecallCache(): void {
 async function loadHistoryCached(cwd: string, store: SessionStore, id: string): Promise<Message[]> {
   // Sessions live in the project's global state dir; older ones may still sit
   // in the legacy in-project location — stat whichever exists for the mtime key.
-  let path = join(globalStateDir(cwd), "sessions", id, "history.jsonl");
+  let path = join(globalStateDir(cwd), "sessions", id, "manifest.json");
   let mtimeMs: number;
   try {
     mtimeMs = statSync(path).mtimeMs;
   } catch {
-    path = join(cwd, ".vibe", "sessions", id, "history.jsonl");
+    path = join(globalStateDir(cwd), "sessions", id, "history.jsonl");
     try {
       mtimeMs = statSync(path).mtimeMs;
     } catch {
-      return [];
+      path = join(cwd, ".vibe", "sessions", id, "history.jsonl");
+      try {
+        mtimeMs = statSync(path).mtimeMs;
+      } catch {
+        return [];
+      }
     }
   }
   const cached = scanCache.get(path);

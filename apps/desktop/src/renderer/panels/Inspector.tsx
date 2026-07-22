@@ -230,7 +230,7 @@ export function Inspector({
   let subtitle = "Model, context, and changes";
   if (previewPath) {
     title = fileBasename(previewPath);
-    const stats = selectedFile
+    const stats = selectedFile && selectedFile.countsKnown !== false
       ? formatDiffStats(selectedFile.added, selectedFile.removed)
       : "";
     subtitle =
@@ -418,16 +418,20 @@ export function Inspector({
                       setReviewMode("diff");
                       setPreviewPath(f.path);
                     }}
-                    aria-label={`Review ${f.path}, ${formatDiffStats(f.added, f.removed)}`}
+                    aria-label={f.countsKnown === false
+                      ? `Review ${f.path}; line counts unavailable`
+                      : `Review ${f.path}, ${formatDiffStats(f.added, f.removed)}`}
                     title={`Review ${f.path}`}
                   >
                     <span className="file-path" title={f.path}>
                       {f.path}
                     </span>
-                    <span className="file-diff" aria-hidden>
-                      <span className="diff-add-count">+{f.added}</span>
-                      <span className="diff-del-count">−{f.removed}</span>
-                    </span>
+                    {f.countsKnown !== false ? (
+                      <span className="file-diff" aria-hidden>
+                        <span className="diff-add-count">+{f.added}</span>
+                        <span className="diff-del-count">−{f.removed}</span>
+                      </span>
+                    ) : null}
                   </button>
                   <button
                     type="button"

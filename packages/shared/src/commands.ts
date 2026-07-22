@@ -8,7 +8,7 @@ import type {
   UIEvent,
 } from "@vibe/protocol";
 
-export type { EngineCommand, EngineCommandType } from "@vibe/protocol";
+export type { AtomicEngineCommand, EngineCommand, EngineCommandType } from "@vibe/protocol";
 
 /**
  * The contract a UI uses to talk to the engine. The engine implementation

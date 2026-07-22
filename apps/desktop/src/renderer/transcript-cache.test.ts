@@ -48,6 +48,21 @@ describe("transcriptContentSignature", () => {
       changedFiles: [{ path: "src/app.ts", added: 1, removed: 0, diff: "+new" }],
     })).not.toBe(baseline);
   });
+
+  test("round-trips an explicitly unknown historical line count", () => {
+    const state = {
+      ...initialTranscript(),
+      changedFiles: [{ path: "src/app.ts", added: 0, removed: 0, countsKnown: false }],
+    };
+    const encoded = JSON.stringify(state);
+    expect(decodeTranscriptCacheRecord({
+      key: "/repo\u0000s",
+      savedAt: 1,
+      signature: transcriptContentSignature(state),
+      state: encoded,
+      size: encoded.length,
+    })?.changedFiles[0]?.countsKnown).toBe(false);
+  });
 });
 
 describe("transcriptConversationSignature", () => {

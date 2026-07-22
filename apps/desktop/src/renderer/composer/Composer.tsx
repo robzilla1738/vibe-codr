@@ -60,7 +60,7 @@ const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "
 
 type DroppedFile = File & { path?: string };
 
-type ComposerAttachment = {
+export type ComposerAttachment = {
   id: string;
   name: string;
   path: string;
@@ -301,6 +301,11 @@ export function Composer({
   executionTarget = "local",
   executionStatus,
   onExecutionTargetChange,
+  contextKey,
+  attachments,
+  setAttachments,
+  inputHistory,
+  onRecordHistory,
 }: {
   uiMode: UiMode;
   draft: string;
@@ -348,6 +353,12 @@ export function Composer({
   executionStatus?: string;
   /** Requests a reviewed ownership transition; selecting the active target is inert. */
   onExecutionTargetChange?: (target: "local" | "cloud") => void;
+  /** Stable project+session identity for rejecting late async composer work. */
+  contextKey: string;
+  attachments: ComposerAttachment[];
+  setAttachments: Dispatch<SetStateAction<ComposerAttachment[]>>;
+  inputHistory: readonly string[];
+  onRecordHistory: (value: string) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -357,20 +368,23 @@ export function Composer({
   const modeSelRef = useRef(0);
   const submitPending = useRef(false);
   const dragDepthRef = useRef(0);
-  const attachmentsRef = useRef<ComposerAttachment[]>([]);
+  const attachmentsRef = useRef<ComposerAttachment[]>(attachments);
+  const contextKeyRef = useRef(contextKey);
+  const historyCursor = useRef<number | null>(null);
+  const historyDraft = useRef("");
   const [sel, setSel] = useState(0);
   const [paletteGroup, setPaletteGroup] = useState<PaletteGroup>("commands");
   const [modeOpen, setModeOpen] = useState(false);
   const [modeSel, setModeSel] = useState(0);
   const [insertOpen, setInsertOpen] = useState(false);
   const [insertSel, setInsertSel] = useState(0);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [dropTarget, setDropTarget] = useState(false);
   const insertTriggerRef = useRef<HTMLButtonElement>(null);
   const insertMenuRef = useRef<HTMLDivElement>(null);
   const insertSelRef = useRef(0);
   const insertActionsRef = useRef<{ id: string; label: string; hint?: string; run: () => void; disabled?: boolean }[]>([]);
   const busyElapsed = useBusyElapsed(busy);
+  contextKeyRef.current = contextKey;
   modeSelRef.current = modeSel;
   insertSelRef.current = insertSel;
   const nameSet = useMemo(
@@ -400,12 +414,9 @@ export function Composer({
   }, [attachments]);
 
   useEffect(() => {
-    return () => {
-      for (const attachment of attachmentsRef.current) {
-        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-      }
-    };
-  }, []);
+    historyCursor.current = null;
+    historyDraft.current = "";
+  }, [contextKey]);
 
   const submitAndClear = async (line: string, originalDraft = draft) => {
     if (submitPending.current) return;
@@ -417,8 +428,11 @@ export function Composer({
       const prompt = includeAttachments
         ? [line, ...attachments.map((attachment) => attachment.token)].filter(Boolean).join(" ")
         : line;
+      const submitContextKey = contextKey;
       const accepted = await onSubmit(prompt);
+      if (contextKeyRef.current !== submitContextKey) return;
       if (accepted) {
+        onRecordHistory(originalDraft);
         setDraft((current) => current === originalDraft ? "" : current);
         if (includeAttachments) {
           for (const attachment of attachments) {
@@ -723,6 +737,37 @@ export function Composer({
       setDraft("");
       return;
     }
+    if ((e.key === "ArrowUp" || e.key === "ArrowDown") && inputHistory.length > 0) {
+      const textarea = e.currentTarget;
+      const atStart = textarea.selectionStart === 0 && textarea.selectionEnd === 0;
+      const atEnd = textarea.selectionStart === draft.length && textarea.selectionEnd === draft.length;
+      const cursor = historyCursor.current;
+      if ((e.key === "ArrowUp" && (cursor !== null || atStart || !draft))
+        || (e.key === "ArrowDown" && cursor !== null && atEnd)) {
+        e.preventDefault();
+        if (e.key === "ArrowUp") {
+          if (cursor === null) historyDraft.current = draft;
+          historyCursor.current = cursor === null
+            ? inputHistory.length - 1
+            : Math.max(0, cursor - 1);
+          setDraft(inputHistory[historyCursor.current] ?? draft);
+        } else if (cursor !== null) {
+          if (cursor < inputHistory.length - 1) {
+            historyCursor.current = cursor + 1;
+            setDraft(inputHistory[historyCursor.current] ?? draft);
+          } else {
+            historyCursor.current = null;
+            setDraft(historyDraft.current);
+          }
+        }
+        window.requestAnimationFrame(() => {
+          const current = ref.current;
+          const end = current?.value.length ?? 0;
+          current?.setSelectionRange(end, end);
+        });
+        return;
+      }
+    }
     if (e.key === "Tab" && e.shiftKey) {
       e.preventDefault();
       setModeOpen(false);
@@ -757,7 +802,9 @@ export function Composer({
   /** Shared clipboard-paste flow for both native paste and the insert menu. */
   const runPasteClipboard = (start: number, end: number) => {
     const sourceDraft = draft;
+    const pasteContextKey = contextKey;
     void window.vibe.pasteClipboard(cwd ?? undefined).then((result) => {
+      if (contextKeyRef.current !== pasteContextKey) return;
       if (result.kind === "error") {
         onPasteError(`Clipboard paste failed · ${result.error}`);
         return;
@@ -801,6 +848,7 @@ export function Composer({
         ref.current?.setSelectionRange(caret, caret);
       });
     }).catch((error: unknown) => {
+      if (contextKeyRef.current !== pasteContextKey) return;
       onPasteError(
         `Clipboard paste failed · ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -1355,7 +1403,10 @@ export function Composer({
           aria-activedescendant={activeOptionId}
           maxLength={COMPOSER_DRAFT_MAX_CHARS}
           rows={1}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            historyCursor.current = null;
+            setDraft(e.target.value);
+          }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />

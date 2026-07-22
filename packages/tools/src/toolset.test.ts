@@ -772,6 +772,45 @@ test("a THROWN tool error is normalized into the ERROR contract (not a raw throw
   expect(errors).toEqual([["t1", true]]);
 });
 
+test("a repeated-failure circuit stops an identical deterministic fourth attempt", async () => {
+  let executions = 0;
+  let failures = 0;
+  const failing: ToolDefinition = {
+    name: "deterministic",
+    description: "fails",
+    inputSchema: z.object({ path: z.string() }),
+    readOnly: true,
+    concurrencySafe: true,
+    execute: async () => {
+      executions += 1;
+      return { output: "same failure", isError: true };
+    },
+  };
+  const aiTool = toAISDKTool(failing, {
+    cwd: "/",
+    sessionId: "s",
+    emit: () => {},
+    freshness,
+    repeatedFailure: {
+      before: () => failures >= 3 ? "circuit open" : undefined,
+      record: (_name, _input, isError) => {
+        if (isError) failures += 1;
+      },
+    },
+  }) as { execute: (input: unknown, opts: unknown) => Promise<unknown> };
+  for (let index = 0; index < 3; index += 1) {
+    expect(String(await aiTool.execute(
+      { path: "same" },
+      { toolCallId: `call-${index}`, abortSignal: new AbortController().signal },
+    ))).toContain("same failure");
+  }
+  expect(String(await aiTool.execute(
+    { path: "same" },
+    { toolCallId: "call-4", abortSignal: new AbortController().signal },
+  ))).toContain("circuit open");
+  expect(executions).toBe(3);
+});
+
 test("a read-only NETWORK tool still consults the permission gate (MCP egress governance)", async () => {
   // An MCP tool the server marks readOnlyHint:true is exposed as readOnly:true +
   // network:true. readOnly must NOT short-circuit the gate — a deny/ask rule on

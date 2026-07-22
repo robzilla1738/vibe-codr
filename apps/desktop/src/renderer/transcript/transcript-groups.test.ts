@@ -21,16 +21,20 @@ describe("groupTranscriptItems", () => {
   });
 
   it("compacts completed process while leaving the final answer visible", () => {
+    const final = { ...assistant(4, "Everything is ready.", "final"), turnDurationMs: 4_200 };
     const result = groupTranscriptItems([
       assistant(1, "Checking the remaining files.", "commentary"),
       tool(2),
       thinking(3),
-      assistant(4, "Everything is ready.", "final"),
+      final,
     ], 0, true);
 
-    expect(result[0]).toMatchObject({ kind: "process", summary: { tools: 1 } });
+    expect(result[0]).toMatchObject({
+      kind: "process",
+      summary: { tools: 1, durationMs: 4_200 },
+    });
     expect(result[0]?.kind === "process" ? result[0].blocks.map((block) => block.id) : []).toEqual([1, 2, 3]);
-    expect(result[1]).toEqual({ kind: "block", block: assistant(4, "Everything is ready.", "final") });
+    expect(result[1]).toEqual({ kind: "block", block: final });
   });
 
   it("leaves a turn without model activity unchanged", () => {

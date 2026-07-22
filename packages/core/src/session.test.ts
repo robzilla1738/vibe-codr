@@ -227,10 +227,12 @@ test("streams reasoning and text deltas exactly once in provider order", async (
     "assistant-text-delta:Ready ",
     "assistant-text-delta:✓",
   ]);
-  expect(session.snapshot().history.at(-1)?.parts).toEqual([
-    { type: "reasoning", text: "Check the edge." },
-    { type: "text", text: "Ready ✓" },
+  const parts = session.snapshot().history.at(-1)?.parts;
+  expect(parts).toMatchObject([
+    { type: "reasoning", text: "Check the edge.", revision: 1 },
+    { type: "text", text: "Ready ✓", phase: "final", revision: 2 },
   ]);
+  expect(parts?.every((part) => typeof part.id === "string" && typeof part.turnId === "string")).toBe(true);
 });
 
 test("turn performance instrumentation is content-free and correlates the user event", async () => {

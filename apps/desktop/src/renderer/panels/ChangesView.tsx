@@ -99,10 +99,12 @@ function ChangedFileTree({
       >
         <span className="changes-file-type" aria-hidden>{changedFileTypeLabel(node.path)}</span>
         <span className="changes-tree-name">{node.name}</span>
-        <span className="changes-file-row-stats" aria-hidden>
-          {node.file.added > 0 ? <span className="diff-add-count">+{node.file.added}</span> : null}
-          {node.file.removed > 0 ? <span className="diff-del-count">−{node.file.removed}</span> : null}
-        </span>
+        {node.file.countsKnown !== false ? (
+          <span className="changes-file-row-stats" aria-hidden>
+            {node.file.added > 0 ? <span className="diff-add-count">+{node.file.added}</span> : null}
+            {node.file.removed > 0 ? <span className="diff-del-count">−{node.file.removed}</span> : null}
+          </span>
+        ) : null}
       </button>
     );
   });
@@ -292,8 +294,12 @@ export function ChangesView({
         subtitle={(
           <span className="changes-summary">
             <span>{totals.count === 1 ? "1 file" : `${totals.count} files`}</span>
-            <span className="diff-add-count">+{totals.added}</span>
-            <span className="diff-del-count">−{totals.removed}</span>
+            {totals.unknownCount === 0 ? (
+              <>
+                <span className="diff-add-count">+{totals.added}</span>
+                <span className="diff-del-count">−{totals.removed}</span>
+              </>
+            ) : <span>{totals.unknownCount} without line counts</span>}
           </span>
         )}
         onClose={onClose}

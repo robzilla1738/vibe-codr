@@ -12,6 +12,7 @@ const UI_EVENT_TYPE_MAP = {
   "session-start": true,
   "user-message": true,
   "assistant-text-delta": true,
+  "assistant-part-finalized": true,
   "reasoning-delta": true,
   "tool-call-started": true,
   "tool-call-progress": true,

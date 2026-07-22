@@ -28,22 +28,27 @@ export function ChangedFilesPill({
   if (files.length === 0) return null;
   const totals = changedFilesTotals(files);
   const noun = totals.count === 1 ? "file" : "files";
+  const hasUnknownCounts = totals.unknownCount > 0;
   return (
     <button
       type="button"
       className="changed-files-pill"
       onClick={onReview}
       title="Review changed files and diffs"
-      aria-label={`Review ${totals.count} changed ${noun}: plus ${totals.added}, minus ${totals.removed}`}
+      aria-label={hasUnknownCounts
+        ? `Review ${totals.count} changed ${noun}; line counts unavailable for ${totals.unknownCount}`
+        : `Review ${totals.count} changed ${noun}: plus ${totals.added}, minus ${totals.removed}`}
     >
       <span className="changed-files-pill-icon" aria-hidden>
         <IconDiff size={13} />
       </span>
       <span className="changed-files-pill-label">{totals.count} {noun} changed</span>
-      <span className="changed-files-pill-stats" aria-hidden>
-        <span className="diff-add-count">+{totals.added}</span>
-        <span className="diff-del-count">−{totals.removed}</span>
-      </span>
+      {!hasUnknownCounts ? (
+        <span className="changed-files-pill-stats" aria-hidden>
+          <span className="diff-add-count">+{totals.added}</span>
+          <span className="diff-del-count">−{totals.removed}</span>
+        </span>
+      ) : null}
       <IconChevron size={13} />
     </button>
   );
@@ -103,10 +108,12 @@ export function TurnChangesCard({
                     <span className="turn-changes-dir">{parent}</span>
                   ) : null}
                 </span>
-                <span className="turn-changes-stats" aria-label={`+${file.added} −${file.removed}`}>
-                  <span className="diff-add-count">+{file.added}</span>
-                  <span className="diff-del-count">−{file.removed}</span>
-                </span>
+                {file.countsKnown !== false ? (
+                  <span className="turn-changes-stats" aria-label={`+${file.added} −${file.removed}`}>
+                    <span className="diff-add-count">+{file.added}</span>
+                    <span className="diff-del-count">−{file.removed}</span>
+                  </span>
+                ) : null}
               </button>
             </li>
           );

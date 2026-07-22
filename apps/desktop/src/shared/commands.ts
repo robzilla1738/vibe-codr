@@ -9,7 +9,7 @@ import type {
 } from "@vibe/protocol";
 
 /** One-release compatibility facade for existing renderer/mobile imports. */
-export type { EngineCommand, EngineCommandType } from "@vibe/protocol";
+export type { AtomicEngineCommand, EngineCommand, EngineCommandType } from "@vibe/protocol";
 
 /**
  * The UI-facing client interface remains presentation-shell specific. Its wire

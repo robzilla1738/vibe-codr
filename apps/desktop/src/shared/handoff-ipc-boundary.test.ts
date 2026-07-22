@@ -18,18 +18,20 @@ describe("handoff IPC boundary", () => {
     expect(source).toContain('"resolve-permission"');
     expect(source).toContain('"resolve-plan"');
     expect(source).toContain('"resolve-external-capability"');
-    expect(source).toContain("!HANDOFF_CONTROL_COMMANDS.has(command?.type)");
+    expect(source).toContain("commandAllowedDuringHandoff(command)");
+    expect(source).toContain("command.commands.every");
   });
 
   it("keeps cloud model credentials fixed to the reviewed handoff boundary", () => {
     expect(source).toContain("bridge.isRemote");
-    expect(source).toContain('message.command.type === "set-model"');
-    expect(source).toContain('message.command.type === "set-subagent-model"');
-    expect(source).toContain('message.command.type === "set-agent-model"');
-    expect(source).toContain('message.command.name === "model"');
-    expect(source).toContain('!/^(?:|refresh(?:\\s|$))/i.test(message.command.args.trim())');
-    expect(source).toContain('message.command.name === "vision"');
-    expect(source).toContain('/^model(?:\\s|$)/i.test(message.command.args.trim())');
+    expect(source).toContain('command.type === "set-model"');
+    expect(source).toContain('command.type === "set-subagent-model"');
+    expect(source).toContain('command.type === "set-agent-model"');
+    expect(source).toContain('command.name === "model"');
+    expect(source).toContain('!/^(?:|refresh(?:\\s|$))/i.test(command.args.trim())');
+    expect(source).toContain('command.name === "vision"');
+    expect(source).toContain('/^model(?:\\s|$)/i.test(command.args.trim())');
+    expect(source).toContain("command.commands.some(commandChangesRemoteModel)");
     expect(source).toContain("Return this session to Local before changing model access");
   });
 

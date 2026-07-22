@@ -7,6 +7,7 @@ import {
   type PerformancePhase,
   type PerformancePhaseSample,
   type PerformanceSummary,
+  type DiagnosticEventTraceEntry,
 } from "../shared/performance";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -88,6 +89,7 @@ export class PerformanceStore {
   #writeTail: Promise<void> = Promise.resolve();
   #activeTurn = new Map<string, string>();
   #firstDeltaAt = new Map<string, number>();
+  #eventTrace: DiagnosticEventTraceEntry[] = [];
 
   constructor(userData: string, options: { now?: () => number } = {}) {
     this.#path = join(userData, "performance", "turns.jsonl");
@@ -96,7 +98,30 @@ export class PerformanceStore {
 
   observeEngineEvent(event: unknown): void {
     if (!event || typeof event !== "object") return;
-    const value = event as { type?: unknown; sessionId?: unknown; turnId?: unknown; subagentId?: unknown; sample?: unknown };
+    const value = event as {
+      type?: unknown;
+      sessionId?: unknown;
+      turnId?: unknown;
+      toolCallId?: unknown;
+      status?: unknown;
+      revision?: unknown;
+      subagentId?: unknown;
+      sample?: unknown;
+    };
+    if (typeof value.type === "string") {
+      this.#eventTrace.push({
+        at: this.#now(),
+        type: value.type,
+        ...(typeof value.sessionId === "string" ? { sessionId: value.sessionId } : {}),
+        ...(typeof value.turnId === "string" ? { turnId: value.turnId } : {}),
+        ...(typeof value.toolCallId === "string" ? { toolCallId: value.toolCallId } : {}),
+        ...(typeof value.status === "string" ? { status: value.status } : {}),
+        ...(typeof value.revision === "number" && Number.isFinite(value.revision)
+          ? { revision: value.revision }
+          : {}),
+      });
+      if (this.#eventTrace.length > 500) this.#eventTrace.splice(0, this.#eventTrace.length - 500);
+    }
     if (typeof value.sessionId !== "string") return;
     if (value.type === "user-message" && typeof value.turnId === "string") {
       this.#activeTurn.set(value.sessionId, value.turnId);
@@ -120,6 +145,10 @@ export class PerformanceStore {
       bridgeDelayMs: Math.max(0, receivedAt - (sample.startedAt + sample.totalMs)),
     });
     this.#activeTurn.delete(value.sessionId);
+  }
+
+  eventTrace(): DiagnosticEventTraceEntry[] {
+    return this.#eventTrace.map((entry) => ({ ...entry }));
   }
 
   recordFirstPaint(input: { turnId: string; sessionId: string; paintedAt: number }): void {

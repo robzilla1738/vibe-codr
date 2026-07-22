@@ -26,7 +26,7 @@ export interface PermissionResult {
 export type CheckPermission = (
   toolName: string,
   input: unknown,
-  opts?: { fallback?: "allow" | "deny" | "ask" },
+  opts?: { fallback?: "allow" | "deny" | "ask"; toolCallId?: string },
 ) => Promise<PermissionResult> | PermissionResult;
 
 /** Runtime context handed to a tool's `execute`. */

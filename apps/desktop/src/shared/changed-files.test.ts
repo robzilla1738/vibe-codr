@@ -24,10 +24,25 @@ describe("changed-files display helpers", () => {
   });
 
   it("totals and heading", () => {
-    expect(changedFilesTotals(files)).toEqual({ count: 3, added: 22, removed: 9 });
+    expect(changedFilesTotals(files)).toEqual({ count: 3, added: 22, removed: 9, unknownCount: 0 });
     expect(changedFilesHeading(files)).toBe("3 files changed · +22 −9");
     expect(changedFilesHeading([])).toBe("No files changed");
     expect(changedFilesHeading([files[0]!])).toBe("1 file changed · +2 −1");
+  });
+
+  it("labels historical changes without inventing line counts", () => {
+    const files = [
+      { path: "src/known.ts", added: 2, removed: 1 },
+      { path: "src/historical.ts", added: 0, removed: 0, countsKnown: false },
+    ];
+    expect(changedFilesTotals(files)).toEqual({
+      count: 2,
+      added: 2,
+      removed: 1,
+      unknownCount: 1,
+    });
+    expect(changedFilesHeading(files)).toBe("2 files changed · +2 −1 known");
+    expect(changedFilesHeading([files[1]!])).toBe("1 file changed");
   });
 
   it("sorts by churn then path", () => {
@@ -51,7 +66,14 @@ describe("changed-files display helpers", () => {
       "file:README.md",
     ]);
     const src = tree[1];
-    expect(src).toMatchObject({ kind: "directory", path: "src", files: 2, added: 5, removed: 2 });
+    expect(src).toMatchObject({
+      kind: "directory",
+      path: "src",
+      files: 2,
+      added: 5,
+      removed: 2,
+      unknownCount: 0,
+    });
     if (src?.kind === "directory") {
       expect(src.children.map((node) => `${node.kind}:${node.name}`)).toEqual([
         "directory:app",

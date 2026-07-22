@@ -3717,28 +3717,6 @@ html[data-scheme="light"].electron-transparent .panel-strip-chip {
 .turn-process-chevron { display: inline-flex; flex: 0 0 auto; }
 .turn-process-items { display: grid; gap: 2px; margin: 4px 0 0; padding: 0; }
 
-.turn-evidence {
-  display: flex;
-  width: min(100%, var(--prose-max));
-  min-height: 32px;
-  margin: var(--space-sm) auto 0;
-  align-items: center;
-  gap: var(--space-xs);
-  padding: 0;
-  color: var(--text-subtle);
-  background: transparent;
-  font-family: var(--font-sans);
-  font-size: var(--text-caption);
-  text-align: left;
-}
-
-.turn-evidence:hover { color: var(--muted); }
-.turn-evidence:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--radius-xs); }
-.turn-evidence.has-failures { color: color-mix(in oklab, var(--del) 76%, var(--text-subtle)); }
-.turn-evidence-label { color: var(--assistant); font-weight: var(--weight-semibold); }
-.turn-evidence-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.turn-evidence .icon-chevron { margin-left: auto; flex: 0 0 auto; }
-
 /* Compact post-turn review affordance. It shares the transcript footer action
    row with Jump to latest so neither control stacks over the other. */
 .changed-files-pill {

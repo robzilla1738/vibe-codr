@@ -47,7 +47,6 @@ const performanceStore = new PerformanceStore(app.getPath("userData"));
 const engineEventCoalescer = new EngineEventCoalescer((event) => {
   performanceStore.observeEngineEvent(event);
   cloudManager.observeEngineEvent(event);
-  if (event && typeof event === "object" && (event as { type?: unknown }).type === "turn-performance") return;
   sendToRenderer("engine:event", event);
 });
 bridge.onTransportWillSwitch = () => engineEventCoalescer.flush();
@@ -205,6 +204,29 @@ const HANDOFF_CONTROL_COMMANDS = new Set<EngineCommand["type"]>([
   "resolve-question",
   "resolve-external-capability",
 ]);
+
+function commandAllowedDuringHandoff(command: EngineCommand | undefined): boolean {
+  if (!command) return false;
+  if (command.type === "command-batch") {
+    return command.commands.every((nested) => HANDOFF_CONTROL_COMMANDS.has(nested.type));
+  }
+  return HANDOFF_CONTROL_COMMANDS.has(command.type);
+}
+
+function commandChangesRemoteModel(command: EngineCommand): boolean {
+  if (command.type === "command-batch") {
+    return command.commands.some(commandChangesRemoteModel);
+  }
+  return command.type === "set-model"
+    || command.type === "set-subagent-model"
+    || command.type === "set-agent-model"
+    || command.type === "run-slash"
+      && command.name === "model"
+      && !/^(?:|refresh(?:\s|$))/i.test(command.args.trim())
+    || command.type === "run-slash"
+      && command.name === "vision"
+      && /^model(?:\s|$)/i.test(command.args.trim());
+}
 
 /**
  * Treat the host project index as a capability source, but discard stale or
@@ -641,7 +663,7 @@ function registerIpc(): void {
       return {
         ok: true as const,
         value: {
-          formatVersion: 1 as const,
+          formatVersion: 2 as const,
           generatedAt,
           app: {
             version: app.getVersion(),
@@ -654,6 +676,7 @@ function registerIpc(): void {
             lastDay: await performanceStore.getPerformanceSummary({ days: 1 }),
             lastWeek: await performanceStore.getPerformanceSummary({ days: 7 }),
           },
+          eventTrace: performanceStore.eventTrace(),
         },
       };
     } catch (error) {
@@ -746,22 +769,12 @@ function registerIpc(): void {
 
   ipcMain.handle("engine:send", (event, command: EngineCommand) => {
     assertTrustedIpc(event);
-    if (cloudManager.ownershipTransitioning && !HANDOFF_CONTROL_COMMANDS.has(command?.type)) {
+    if (cloudManager.ownershipTransitioning && !commandAllowedDuringHandoff(command)) {
       return { ok: false as const, error: "Session handoff is in progress; your message was not sent" };
     }
     const message = inbound({ op: "send", command });
     if (message?.op !== "send") return { ok: false as const, error: "Invalid engine command" };
-    if (bridge.isRemote && (
-      message.command.type === "set-model"
-      || message.command.type === "set-subagent-model"
-      || message.command.type === "set-agent-model"
-      || message.command.type === "run-slash"
-        && message.command.name === "model"
-        && !/^(?:|refresh(?:\s|$))/i.test(message.command.args.trim())
-      || message.command.type === "run-slash"
-        && message.command.name === "vision"
-        && /^model(?:\s|$)/i.test(message.command.args.trim())
-    )) {
+    if (bridge.isRemote && commandChangesRemoteModel(message.command)) {
       return { ok: false as const, error: "Return this session to Local before changing model access" };
     }
     try {

@@ -7,6 +7,7 @@ import {
   realpath,
   rename,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -18,7 +19,30 @@ import { ensureStateDir, globalStateDir } from "./state-dir.ts";
 /** Current on-disk SessionMeta schema version. Bump when the meta shape changes
  * incompatibly; a loader can then detect + migrate rather than silently misparse
  * an older/newer file. Absent on pre-versioning saves (read as version 0). */
-export const SESSION_META_VERSION = 3;
+export const SESSION_META_VERSION = 4;
+
+interface SessionCommitManifest {
+  version: 1;
+  current: string;
+  previous?: string;
+  files: Record<"meta.json" | "messages.jsonl" | "history.jsonl", string>;
+  previousFiles?: Record<"meta.json" | "messages.jsonl" | "history.jsonl", string>;
+}
+
+const GENERATION_PRUNE_AGE_MS = 5 * 60 * 1000;
+
+function contentSha256(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function isSafeGeneration(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 200
+    && /^[A-Za-z0-9._-]+$/.test(value)
+    && value !== "."
+    && value !== "..";
+}
 
 export interface PersistedTurnBoundary {
   /** Stable identity used by desktop fork/revert operations. */
@@ -344,6 +368,64 @@ export class SessionStore {
     }
   }
 
+  async #readManifest(dir: string): Promise<SessionCommitManifest | null> {
+    try {
+      const parsed = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8")) as SessionCommitManifest;
+      if (
+        parsed.version !== 1
+        || !isSafeGeneration(parsed.current)
+        || parsed.previous !== undefined && !isSafeGeneration(parsed.previous)
+        || !parsed.files
+        || !(["meta.json", "messages.jsonl", "history.jsonl"] as const).every((name) =>
+          typeof parsed.files[name] === "string" && /^[a-f0-9]{64}$/.test(parsed.files[name])
+        )
+      ) return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+
+  async #committedGeneration(
+    dir: string,
+    names: readonly ("meta.json" | "messages.jsonl" | "history.jsonl")[] = [
+      "meta.json",
+      "messages.jsonl",
+      "history.jsonl",
+    ],
+  ): Promise<{ dir: string; warnings: string[] } | null> {
+    const manifest = await this.#readManifest(dir);
+    if (!manifest) return null;
+    const warnings: string[] = [];
+    for (const generation of [manifest.current, manifest.previous]) {
+      if (!generation) continue;
+      const generationDir = join(dir, "generations", generation);
+      const hashes = generation === manifest.current ? manifest.files : manifest.previousFiles;
+      if (!hashes) continue;
+      let valid = true;
+      for (const name of names) {
+        try {
+          const content = await readFile(join(generationDir, name), "utf8");
+          if (contentSha256(content) !== hashes[name]) {
+            valid = false;
+            break;
+          }
+        } catch {
+          valid = false;
+          break;
+        }
+      }
+      if (valid) {
+        if (generation !== manifest.current) {
+          warnings.push(`Recovered session from previous committed generation ${generation}`);
+        }
+        return { dir: generationDir, warnings };
+      }
+      warnings.push(`Ignored incomplete session generation ${generation}`);
+    }
+    return null;
+  }
+
   async save(meta: SessionMeta, modelMessages: ModelMessage[], history: Message[]): Promise<void> {
     if (!isSafeSessionId(meta.id)) throw new Error("invalid session id");
     if (!this.#ensured) {
@@ -369,18 +451,65 @@ export class SessionStore {
     // load. A unique temp means every rename installs ONE writer's COMPLETE file
     // (last-writer-wins with a valid file, never a corrupt mix).
     const stamp = `${process.pid}.${SessionStore.#writeSeq++}`;
+    const contents = {
+      "meta.json": JSON.stringify(normalizedMeta, null, 2),
+      "messages.jsonl": modelMessages.map((m) => JSON.stringify(m, u8Replacer)).join("\n"),
+      "history.jsonl": history.map((m) => JSON.stringify(m, u8Replacer)).join("\n"),
+    } as const;
+
+    // Commit a complete immutable generation, then atomically swing one small
+    // manifest to it. A crash before the manifest rename leaves the prior
+    // generation authoritative; a crash after it exposes all three new files.
+    const previousManifest = await this.#readManifest(dir);
+    const generation = `${Date.now().toString(36)}-${stamp}`;
+    const generationsDir = join(dir, "generations");
+    const generationTmp = join(generationsDir, `${generation}.tmp`);
+    const generationDir = join(generationsDir, generation);
+    await mkdir(generationsDir, { recursive: true });
+    await mkdir(generationTmp, { recursive: false });
+    try {
+      await Promise.all(
+        (Object.entries(contents) as [keyof typeof contents, string][]).map(([name, content]) =>
+          Bun.write(join(generationTmp, name), content)
+        ),
+      );
+      await rename(generationTmp, generationDir);
+      const files = Object.fromEntries(
+        (Object.entries(contents) as [keyof typeof contents, string][]).map(([name, content]) =>
+          [name, contentSha256(content)]
+        ),
+      ) as SessionCommitManifest["files"];
+      const manifest: SessionCommitManifest = {
+        version: 1,
+        current: generation,
+        files,
+        ...(previousManifest?.current && isSafeGeneration(previousManifest.current)
+          ? {
+              previous: previousManifest.current,
+              previousFiles: previousManifest.files,
+            }
+          : {}),
+      };
+      const manifestTmp = join(dir, `manifest.json.${stamp}.tmp`);
+      await Bun.write(manifestTmp, JSON.stringify(manifest, null, 2));
+      await rename(manifestTmp, join(dir, "manifest.json"));
+    } catch (error) {
+      await rm(generationTmp, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+
     const tmp = (name: string) => join(dir, `${name}.${stamp}.tmp`);
     const targets: [string, string, string][] = [
-      [tmp("meta.json"), join(dir, "meta.json"), JSON.stringify(normalizedMeta, null, 2)],
+      [tmp("meta.json"), join(dir, "meta.json"), contents["meta.json"]],
       [
         tmp("messages.jsonl"),
         join(dir, "messages.jsonl"),
-        modelMessages.map((m) => JSON.stringify(m, u8Replacer)).join("\n"),
+        contents["messages.jsonl"],
       ],
       [
         tmp("history.jsonl"),
         join(dir, "history.jsonl"),
-        history.map((m) => JSON.stringify(m, u8Replacer)).join("\n"),
+        contents["history.jsonl"],
       ],
     ];
     // Atomic save with ORDERED renames: write all temp files first, then rename
@@ -401,13 +530,30 @@ export class SessionStore {
         const [tmpPath, finalPath] = byName(name);
         await rename(tmpPath, finalPath);
       }
-    } catch (err) {
-      // Best-effort: remove any of our unrenamed temps, then re-throw so the
-      // caller still learns the save failed.
+    } catch {
+      // The generation manifest above is already authoritative. Root files are
+      // a one-release compatibility projection for older readers; failure to
+      // refresh them must not report the committed save as lost.
       await Promise.all(
         targets.map(([tmpPath]) => rm(tmpPath, { force: true }).catch(() => undefined)),
       );
-      throw err;
+    }
+    // Preserve a freshly re-read current/previous pair. Young directories are
+    // left alone because a concurrent writer may not have committed its
+    // manifest yet; a later save collects them once they are safely stale.
+    const committed = await this.#readManifest(dir);
+    if (committed) {
+      const retained = new Set([committed.current, committed.previous].filter(Boolean));
+      const entries = await readdir(generationsDir, { withFileTypes: true }).catch(() => []);
+      const cutoff = Date.now() - GENERATION_PRUNE_AGE_MS;
+      await Promise.all(entries.map(async (entry) => {
+        if (!entry.isDirectory() || retained.has(entry.name)) return;
+        const path = join(generationsDir, entry.name);
+        const info = await stat(path).catch(() => null);
+        if (info && info.mtimeMs < cutoff) {
+          await rm(path, { recursive: true, force: true }).catch(() => undefined);
+        }
+      }));
     }
   }
 
@@ -416,48 +562,49 @@ export class SessionStore {
     // Global dir first; sessions persisted by older versions fall back to the
     // legacy in-project dir (read-only — the next save writes globally).
     for (const dir of [this.#dir(id), join(this.#legacy, id)]) {
-      const metaFile = Bun.file(join(dir, "meta.json"));
-      if (!(await metaFile.exists())) continue;
-      let meta: SessionMeta;
-      try {
-        meta = (await metaFile.json()) as SessionMeta;
-      } catch {
-        // A corrupt/partial global meta.json (e.g. a power-loss torn write) must
-        // NOT strand an INTACT legacy copy of the same id — `continue` to the
-        // legacy root instead of returning null, so load() agrees with list()
-        // (which surfaces the legacy copy). Only after BOTH roots fail is the
-        // session truly absent.
-        continue;
-      }
-      const storedVersion = typeof meta.version === "number" ? meta.version : 0;
-      if (storedVersion > SESSION_META_VERSION) {
-        throw new Error(
-          `Session ${meta.id || id} uses metadata version ${storedVersion}; this build supports up to ${SESSION_META_VERSION}`,
-        );
-      }
-      const modelRead = await this.#readJsonl<ModelMessage>(join(dir, "messages.jsonl"));
-      const historyRead = await this.#readJsonl<Message>(join(dir, "history.jsonl"));
-      const warnings = [...modelRead.warnings, ...historyRead.warnings];
-      if (storedVersion < SESSION_META_VERSION || !Array.isArray(meta.turns)) {
-        const turns = deriveTurnBoundaries(meta.id, modelRead.items, historyRead.items, meta.turns);
-        meta = {
-          ...meta,
-          version: SESSION_META_VERSION,
-          ...(meta.usage
-            ? { usage: normalizePersistedUsage(meta.model, meta.usage, turns.length) }
-            : {}),
-          turns,
+      const committed = await this.#committedGeneration(dir);
+      const candidates = committed ? [committed.dir, dir] : [dir];
+      for (const dataDir of candidates) {
+        const metaFile = Bun.file(join(dataDir, "meta.json"));
+        if (!(await metaFile.exists())) continue;
+        let meta: SessionMeta;
+        try {
+          meta = (await metaFile.json()) as SessionMeta;
+        } catch {
+          continue;
+        }
+        const storedVersion = typeof meta.version === "number" ? meta.version : 0;
+        if (storedVersion > SESSION_META_VERSION) {
+          throw new Error(
+            `Session ${meta.id || id} uses metadata version ${storedVersion}; this build supports up to ${SESSION_META_VERSION}`,
+          );
+        }
+        const modelRead = await this.#readJsonl<ModelMessage>(join(dataDir, "messages.jsonl"));
+        const historyRead = await this.#readJsonl<Message>(join(dataDir, "history.jsonl"));
+        const warnings = [
+          ...(dataDir === committed?.dir ? committed.warnings : []),
+          ...modelRead.warnings,
+          ...historyRead.warnings,
+        ];
+        if (storedVersion < SESSION_META_VERSION || !Array.isArray(meta.turns)) {
+          const turns = deriveTurnBoundaries(meta.id, modelRead.items, historyRead.items, meta.turns);
+          meta = {
+            ...meta,
+            version: SESSION_META_VERSION,
+            ...(meta.usage
+              ? { usage: normalizePersistedUsage(meta.model, meta.usage, turns.length) }
+              : {}),
+            turns,
+          };
+          await this.save(meta, modelRead.items, historyRead.items).catch(() => undefined);
+        }
+        return {
+          meta,
+          modelMessages: modelRead.items,
+          history: historyRead.items,
+          ...(warnings.length ? { warnings } : {}),
         };
-        // First load upgrades stable turn identities atomically. Migration is
-        // best-effort: a read remains usable even if the disk is read-only.
-        await this.save(meta, modelRead.items, historyRead.items).catch(() => undefined);
       }
-      return {
-        meta,
-        modelMessages: modelRead.items,
-        history: historyRead.items,
-        ...(warnings.length ? { warnings } : {}),
-      };
     }
     return null;
   }
@@ -466,7 +613,9 @@ export class SessionStore {
    * doesn't need the much larger authoritative model transcript (messages.jsonl).
    * Returns [] if the session or its history is absent/unreadable. */
   async loadHistory(id: string): Promise<Message[]> {
-    const current = await this.#readJsonl<Message>(join(this.#dir(id), "history.jsonl"));
+    const dir = this.#dir(id);
+    const committed = await this.#committedGeneration(dir, ["history.jsonl"]);
+    const current = await this.#readJsonl<Message>(join(committed?.dir ?? dir, "history.jsonl"));
     if (current.items.length) return current.items;
     return (await this.#readJsonl<Message>(join(this.#legacy, id, "history.jsonl"))).items;
   }
@@ -506,7 +655,9 @@ export class SessionStore {
       }
       for (const id of ids) {
         if (seen.has(id)) continue;
-        const file = Bun.file(join(base, id, "meta.json"));
+        const sessionDir = join(base, id);
+        const committed = await this.#committedGeneration(sessionDir, ["meta.json"]);
+        const file = Bun.file(join(committed?.dir ?? sessionDir, "meta.json"));
         // One corrupt session must not break listing/resume for all the others.
         try {
           if (await file.exists()) seen.set(id, (await file.json()) as SessionMeta);

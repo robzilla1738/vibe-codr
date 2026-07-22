@@ -9,6 +9,13 @@ describe("commandsExpectBusy", () => {
     expect(commandsExpectBusy(lineToCommands("/execute ship it"))).toBe(true);
     expect(commandsExpectBusy([{ type: "compact" }])).toBe(true);
     expect(commandsExpectBusy([{ type: "steer", id: "q1" }])).toBe(true);
+    expect(commandsExpectBusy([{
+      type: "command-batch",
+      commands: [
+        { type: "set-mode", mode: "plan" },
+        { type: "submit-prompt", text: "inspect it" },
+      ],
+    }])).toBe(true);
   });
 
   it("does not mark pure slash / mode / model commands as busy", () => {

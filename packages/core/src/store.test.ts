@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@vibe/shared";
@@ -48,7 +48,7 @@ test("save then load round-trips a session", async () => {
   const loaded = await store.load("ses_abc");
   expect(loaded).not.toBeNull();
   expect(loaded!.meta).toMatchObject(meta);
-  expect(loaded!.meta.version).toBe(3);
+  expect(loaded!.meta.version).toBe(4);
   expect(loaded!.meta.turns).toHaveLength(1);
   expect(loaded!.modelMessages).toEqual(model);
   expect(loaded!.history).toEqual(history);
@@ -59,7 +59,7 @@ test("load rejects newer metadata versions without rewriting them", async () => 
   const dir = sessionDir(cwd, "ses_future");
   mkdirSync(dir, { recursive: true });
   const futureMeta = {
-    version: 4,
+    version: 5,
     id: "ses_future",
     model: "m/x",
     mode: "execute",
@@ -73,7 +73,7 @@ test("load rejects newer metadata versions without rewriting them", async () => 
   writeFileSync(join(dir, "history.jsonl"), "", "utf8");
   const store = new SessionStore(cwd);
 
-  await expect(store.load("ses_future")).rejects.toThrow("metadata version 4");
+  await expect(store.load("ses_future")).rejects.toThrow("metadata version 5");
   expect(await Bun.file(join(dir, "meta.json")).json()).toEqual(futureMeta);
 });
 
@@ -147,6 +147,41 @@ test("concurrent saves to the same session never produce a torn transcript", asy
     loaded!.modelMessages.map((m) => String((m as { content: string }).content).split("-")[0]),
   );
   expect(tags.size).toBe(1); // every line came from the same writer — no interleave
+});
+
+test("the commit manifest ignores torn root compatibility files", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-generation-"));
+  const store = new SessionStore(cwd);
+  const { meta, model, history } = fixture();
+  await store.save(meta, model, history);
+  const dir = sessionDir(cwd, meta.id);
+  await Bun.write(join(dir, "meta.json"), "{ torn");
+  await Bun.write(join(dir, "messages.jsonl"), "{ torn");
+  await Bun.write(join(dir, "history.jsonl"), "{ torn");
+  const loaded = await store.load(meta.id);
+  expect(loaded?.modelMessages).toEqual(model);
+  expect(loaded?.history).toEqual(history);
+});
+
+test("a corrupt current generation falls back to the previous committed generation", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "vibe-store-generation-"));
+  const store = new SessionStore(cwd);
+  const first = fixture();
+  await store.save(first.meta, first.model, first.history);
+  const secondHistory: Message[] = first.history.map((message) =>
+    message.id === "m2"
+      ? { ...message, parts: [{ type: "text", text: "new generation" }] }
+      : message
+  );
+  await store.save({ ...first.meta, updatedAt: 3 }, first.model, secondHistory);
+  const dir = sessionDir(cwd, first.meta.id);
+  const manifest = await Bun.file(join(dir, "manifest.json")).json() as { current: string };
+  await Bun.write(join(dir, "generations", manifest.current, "history.jsonl"), "{ torn");
+  const loaded = await store.load(first.meta.id);
+  expect(loaded?.history).toEqual(first.history);
+  expect(loaded?.warnings?.some((warning) =>
+    warning.includes("previous committed generation")
+  )).toBe(true);
 });
 
 test("an @image message's Uint8Array bytes round-trip through save/load (resumable)", async () => {
@@ -273,6 +308,9 @@ test("load warns and truncates at a corrupt messages.jsonl line", async () => {
     path,
     `${await Bun.file(path).text()}\n{"role":"assistant","cont\n{"role":"user","content":"after corrupt"}`,
   );
+  // Exercise the legacy JSONL recovery path; committed generations detect this
+  // corruption by hash and never parse the torn projection.
+  rmSync(join(sessionDir(cwd, a.meta.id), "manifest.json"));
   const loaded = await store.load(a.meta.id);
   expect(loaded!.modelMessages).toEqual(a.model); // the good lines survive
   expect(loaded!.warnings?.[0]).toContain("corrupt JSONL line");
@@ -346,7 +384,7 @@ test("v0-v2 usage migrates once into the saved model without promoting estimated
 
   const store = new SessionStore(cwd);
   const first = await store.load(id);
-  expect(first?.meta.version).toBe(3);
+  expect(first?.meta.version).toBe(4);
   expect(first?.meta.usage).toMatchObject({
     inputTokens: 120,
     outputTokens: 30,
@@ -405,7 +443,7 @@ test("legacy sessions derive and persist deterministic stable turn ids on first 
   const store = new SessionStore(cwd);
   const first = await store.load(meta.id);
   const second = await store.load(meta.id);
-  expect(first?.meta.version).toBe(3);
+  expect(first?.meta.version).toBe(4);
   expect(first?.meta.turns?.[0]?.id).toMatch(/^turn_[0-9a-f]{20}$/);
   expect(second?.meta.turns?.[0]?.id).toBe(first?.meta.turns?.[0]?.id);
   expect(existsSync(join(sessionDir(cwd, meta.id), "meta.json"))).toBe(true);

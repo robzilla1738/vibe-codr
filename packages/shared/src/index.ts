@@ -42,6 +42,7 @@ export type {
 
 // Engine commands (UI -> engine) + client contract
 export type {
+  AtomicEngineCommand,
   EngineCommand,
   EngineCommandType,
   EngineClient,

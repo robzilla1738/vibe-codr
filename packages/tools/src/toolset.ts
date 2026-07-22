@@ -77,6 +77,13 @@ export type ToolRuntimeBase = Pick<ToolContext, "cwd" | "sessionId" | "emit"> & 
     rawOutput?: unknown,
     additionalContext?: string,
   ) => void;
+  /** Stop a model from spending the turn on the same deterministic failure.
+   * Permission denials and transient-network tools are intentionally handled
+   * outside this circuit. */
+  repeatedFailure?: {
+    before: (toolName: string, input: unknown) => string | undefined;
+    record: (toolName: string, input: unknown, isError: boolean, output: unknown) => void;
+  };
   /**
    * Mark the current turn as having successfully mutated the workspace (or
    * other non-readOnly side effects). Called only AFTER a non-readOnly tool
@@ -695,6 +702,13 @@ export function toAISDKTool(
     }
     abortIfCancelled();
 
+    const circuitReason = base.repeatedFailure?.before(def.name, effectiveInput);
+    if (circuitReason) {
+      base.emit({ type: "notice", level: "warn", message: circuitReason });
+      base.recordToolResult?.(options.toolCallId, true, circuitReason);
+      return `ERROR: ${circuitReason} Choose a materially different approach or change the input.`;
+    }
+
     // Mid-turn flip to plan: the tool map is frozen at turn start, so write
     // tools may still be registered — hard-deny them so the mode chip and
     // behavior match (plan is read-only).
@@ -725,10 +739,10 @@ export function toAISDKTool(
         def.name,
         effectiveInput,
         def.readOnly && def.network
-          ? { fallback: "allow" }
+          ? { fallback: "allow", toolCallId: options.toolCallId }
           : isUnsandboxed
-            ? { fallback: "deny" }
-            : {},
+            ? { fallback: "deny", toolCallId: options.toolCallId }
+            : { toolCallId: options.toolCallId },
       );
       if (!decision.allowed) {
         const reason = decision.reason ?? "denied";
@@ -756,8 +770,10 @@ export function toAISDKTool(
       // A cancellation is not a tool failure — let it propagate so the turn's
       // abort semantics stay intact.
       if (ctx.abortSignal.aborted || (err as { name?: string })?.name === "AbortError") throw err;
-      base.recordToolResult?.(options.toolCallId, true);
-      return `ERROR: ${def.name} threw: ${(err as Error)?.message ?? String(err)}`;
+      const output = `${def.name} threw: ${(err as Error)?.message ?? String(err)}`;
+      base.repeatedFailure?.record(def.name, effectiveInput, true, output);
+      base.recordToolResult?.(options.toolCallId, true, output);
+      return `ERROR: ${output}`;
     }
     const after = await base.afterTool?.(def.name, result.output);
     // PostToolUse deny: the tool DID run, but the hook wants its result hidden
@@ -769,11 +785,13 @@ export function toAISDKTool(
       return `ERROR: ${after.reason ?? `tool "${def.name}" result was denied by a tool.after.execute hook`}`;
     }
     if (result.isError) {
+      base.repeatedFailure?.record(def.name, effectiveInput, true, result.output);
       base.recordToolResult?.(options.toolCallId, true, result.output);
       const text =
         typeof result.output === "string" ? result.output : JSON.stringify(result.output);
       return `ERROR: ${text}`;
     }
+    base.repeatedFailure?.record(def.name, effectiveInput, false, result.output);
     // Successful non-readOnly execute → the workspace (or durable state) changed.
     // Latch mutation HERE (not on tool-call intent) so denied/errored calls do
     // not trip the green-gate / auto-verify.

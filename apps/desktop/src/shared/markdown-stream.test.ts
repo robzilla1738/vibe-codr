@@ -51,7 +51,9 @@ describe("session delta coalescing", () => {
       source.indexOf('case "reasoning-delta"'),
     );
     expect(assistantCase).not.toMatch(/landReasoning\(\);\s*flushDeltas\(\);/);
-    expect(assistantCase).toContain("event.phase !== deltaPhase.current) flushDeltas();");
+    expect(assistantCase).toContain("event.partId !== deltaIdentity.current.partId");
+    expect(assistantCase).toContain("event.phase !== deltaPhase.current");
+    expect(assistantCase).toMatch(/\)\s*flushDeltas\(\);/);
     expect(assistantCase).toContain("deltaBuf.current = appendRollingText");
     expect(source).toMatch(/const flushDeltas[\s\S]*window\.clearTimeout\(flushTimer\.current\)/);
   });

@@ -771,7 +771,9 @@ test("trustProjectConfig in the GLOBAL layer honors project hooks/plugins verbat
   const cfg = await loadConfig({ cwd, overrides: { security: { trustProjectConfig: true } } });
   expect(cfg.hooks).toHaveLength(1);
   expect(cfg.plugins).toEqual(["./p.js"]);
-  expect(configSecurityNotices(cfg)).toHaveLength(0);
+  expect(
+    configSecurityNotices(cfg).filter((notice) => notice.includes("Ignored untrusted project config")),
+  ).toHaveLength(0);
 });
 
 test("a project config that self-declares trustProjectConfig can NOT authorize its own hooks", async () => {

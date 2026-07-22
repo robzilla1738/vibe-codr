@@ -1,6 +1,6 @@
 import { test, expect, beforeEach } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
-import { utimesSync, writeFileSync, statSync } from "node:fs";
+import { utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Message } from "@vibe/shared";
@@ -137,17 +137,18 @@ test("a rarer (higher-IDF) term outranks a ubiquitous one", async () => {
   expect(hits[0]!.sessionId).toBe("rare");
 });
 
-test("serves an unchanged session from the scan cache, and re-reads on mtime change", async () => {
+test("caches the committed generation and re-reads after an authoritative save", async () => {
   const dir = await seed();
+  const store = new SessionStore(dir);
+  const sessionDir = join(globalStateDir(dir), "sessions", "ses_a");
+  const manifestPath = join(sessionDir, "manifest.json");
   const historyPath = join(globalStateDir(dir), "sessions", "ses_a", "history.jsonl");
-  const FIXED = new Date(1_600_000_000_000);
 
-  // Pin a known mtime, then run the first search to populate the cache.
-  utimesSync(historyPath, FIXED, FIXED);
+  // Populate the cache from the immutable generation selected by the manifest.
   expect((await searchSessions(dir, "JSONC"))[0]!.sessionId).toBe("ses_a");
 
-  // Rewrite the history with content that NO LONGER contains "JSONC", but restore
-  // the identical mtime so the cache considers the file unchanged.
+  // The root history is only a compatibility projection. Mutating it must not
+  // bypass the manifest or replace the last committed generation.
   const unrelated = JSON.stringify({
     id: "m_x",
     role: "user",
@@ -155,17 +156,19 @@ test("serves an unchanged session from the scan cache, and re-reads on mtime cha
     createdAt: 1,
   });
   writeFileSync(historyPath, `${unrelated}\n`);
-  utimesSync(historyPath, FIXED, FIXED);
-  expect(statSync(historyPath).mtimeMs).toBe(FIXED.getTime()); // sanity: mtime restored
-
-  // Same mtime → served from cache → still matches the ORIGINAL (cached) content.
   const cached = await searchSessions(dir, "JSONC");
   expect(cached.length).toBeGreaterThan(0);
   expect(cached[0]!.sessionId).toBe("ses_a");
 
-  // Bump the mtime → cache invalidated → re-reads the NEW content (no "JSONC").
+  // A complete save installs a new generation and manifest. The manifest mtime
+  // is the cache key, so recall observes only the new committed history.
+  await store.save(
+    { id: "ses_a", model: "m", mode: "execute", goal: "unrelated", createdAt: 1, updatedAt: 2000 },
+    [],
+    [JSON.parse(unrelated) as Message],
+  );
   const LATER = new Date(1_600_000_100_000);
-  utimesSync(historyPath, LATER, LATER);
+  utimesSync(manifestPath, LATER, LATER);
   expect(await searchSessions(dir, "JSONC")).toEqual([]);
 });
 

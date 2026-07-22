@@ -79,8 +79,12 @@ const largest = sizes.reduce((max, item) => Math.max(max, item.bytes), 0);
 // Process/Result/Evidence adds 1,955 measured bytes to startup; guarded URL
 // detection remains isolated in the lazy terminal chunk. Retain under 2.3 KB
 // of headroom on both measured totals.
-const totalBudget = 2_936_000;
-const chunkBudget = 2_134_000;
+// Stable turn/part identity, bounded session-local composer history, and
+// snapshot-safe transcript hydration add 14,229 bytes aggregate (14,116 bytes
+// startup) without pulling a new dependency into the renderer graph. Preserve
+// less than 3 KB of regression room above that measured product surface.
+const totalBudget = 2_953_000;
+const chunkBudget = 2_151_000;
 
 if (total > totalBudget || largest > chunkBudget) {
   console.error(`Renderer bundle budget exceeded: ${total} total bytes, ${largest} largest chunk`);

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.9 — 2026-07-21
+
 ### Added
 
 - Per-session drafts, Finder attachments, and prompt history survive navigation

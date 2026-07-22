@@ -4,6 +4,8 @@ All notable changes to vibe-codr are documented here.
 
 ## Unreleased
 
+## 0.7.9 — 2026-07-21
+
 ### Added
 
 - Canonical turn, message, and part identities now carry lifecycle, revision,
